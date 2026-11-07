@@ -277,6 +277,7 @@ class AgentSessionActivityStore:
                 "room_id",
                 "thread_id",
                 "message_id",
+                "subagent",
                 "occurred_at",
             )
         }

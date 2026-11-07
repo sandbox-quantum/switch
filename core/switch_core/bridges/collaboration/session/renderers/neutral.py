@@ -59,6 +59,7 @@ from . import (
     Drawn,
     Markup,
     RequestReference,
+    call_title,
     example_value,
     surface_label,
     turn_state,
@@ -353,7 +354,7 @@ def _doing(
         )
         item = current or did[-1]
         label = "Now" if current else "Last"
-        title = item.title or "Tool call"
+        title = call_title(item) or "Tool call"
         lines.append(f"{label}: {_fit(title, max(1, budget // 4), escape=escape)}")
 
     counts = {
@@ -398,7 +399,8 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"
-    title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
+    name = call_title(item)
+    title = _fit(name, _LOG_TITLE, escape=escape) if name else _LOG_UNTITLED
     line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
     if item.text:
         line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"

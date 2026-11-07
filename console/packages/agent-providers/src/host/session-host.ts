@@ -743,6 +743,11 @@ export class HostedSession {
     return this.usage.get(turnId) ?? [];
   }
 
+  /** Whether an item of `turnId` is a subagent call, and which agent it runs. */
+  subagentOf(turnId: string, itemId: string): { agent: string | null } | null {
+    return this.toolDetails.subagentOf(this.config.session.epoch, turnId, itemId);
+  }
+
   /**
    * The agent posted to a room, through one of the Switch tools: the running
    * turn has answered, so the host has nothing to post for it.

@@ -3846,6 +3846,8 @@ class AgentSessionActivityItem(TenantScoped, Base):
     thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The Switch message that asked, where a platform puts its work marker.
     message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On a tool call that runs a subagent, `{"agent": <its name or null>}`.
+    subagent: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

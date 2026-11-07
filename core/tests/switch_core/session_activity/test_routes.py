@@ -10,7 +10,12 @@ from sqlalchemy import select
 from switch_core.bridges.agent.api.activity_routes import router
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_session_factory
-from switch_core.db.models import Agent, ApprovalRequest, TenantUsage
+from switch_core.db.models import (
+    Agent,
+    AgentSessionActivityItem,
+    ApprovalRequest,
+    TenantUsage,
+)
 from switch_core.session_activity.service import ApprovalOption, PlatformPerson
 from switch_core.sessions.contract import Answer, QuestionsResult
 from switch_core.sessions.errors import SessionError
@@ -158,6 +163,30 @@ async def test_an_ended_turn_row_carries_what_the_turn_spent(client, session_fac
     ],
 )
 async def test_usage_anywhere_but_an_ended_turn_or_malformed_is_a_422(client, body):
+    response = await client.post(f"/agent-sessions/{SESSION}/activity", json=body)
+    assert response.status_code == 422
+
+
+async def test_a_tool_call_row_names_the_subagent_it_runs(client, session_factory):
+    response = await client.post(
+        f"/agent-sessions/{SESSION}/activity",
+        json=_activity(subagent={"agent": "Explore"}),
+    )
+    assert response.json() == {"recorded": True}
+    async with session_factory() as db:
+        stored = await db.scalar(select(AgentSessionActivityItem.subagent))
+    assert stored == {"agent": "Explore"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _ended_turn(subagent={"agent": "Explore"}),
+        _activity(subagent={"agent": "Explore", "task_id": "t"}),
+        _activity(subagent={"agent": "x" * 501}),
+    ],
+)
+async def test_a_subagent_anywhere_but_a_tool_call_or_malformed_is_a_422(client, body):
     response = await client.post(f"/agent-sessions/{SESSION}/activity", json=body)
     assert response.status_code == 422
 

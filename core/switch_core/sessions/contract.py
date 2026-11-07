@@ -112,6 +112,12 @@ class Attachment(_Model):
     sha256: str | None = None
 
 
+class Subagent(_Model):
+    """The agent a tool call runs, when the call starts a subagent."""
+
+    agent: str | None
+
+
 class Item(_Model):
     item_id: Id
     turn_id: Id
@@ -122,6 +128,8 @@ class Item(_Model):
     text: str
     attachments: list[Attachment]
     origin: Origin | None
+    # Only on a tool call that starts a subagent; clients that predate it omit it.
+    subagent: Subagent | None = None
 
 
 class ApprovalOption(_Model):

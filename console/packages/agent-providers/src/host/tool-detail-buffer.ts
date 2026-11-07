@@ -217,6 +217,19 @@ export class ToolDetailBuffer {
   }
 
   /**
+   * Whether the session-v1 item `itemId` of `turnId` is a subagent call, and
+   * which agent it runs (null when the provider did not name it). Null for any
+   * other item, and for one this buffer no longer holds.
+   */
+  subagentOf(epoch: string, turnId: string, itemId: string): { agent: string | null } | null {
+    if (this.epoch !== epoch) return null;
+    for (const entry of this.turns.get(turnId)?.values() ?? [])
+      if (entry.itemId === itemId)
+        return entry.type === 'subagent' ? { agent: entry.toolName } : null;
+    return null;
+  }
+
+  /**
    * The calls held for `turnIds` (every turn when null), oldest turn first.
    * Turns are taken newest first until the answer reaches its limit, so a
    * request for many large turns leaves the oldest of them out rather than
