@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { chmod, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { parse as parseJsonc } from 'jsonc-parser';
+import { parse as parseJsonc, type ParseError } from 'jsonc-parser/lib/esm/main.js';
 import type { McpServerSpec } from '../adapter';
 import { linkHomeAsset, optionalText } from '../host/provider-home';
 import { AMP_APPROVAL_PLUGIN_SOURCE, AMP_PLUGIN_FILENAME } from './approval-plugin';
@@ -38,7 +38,8 @@ export function ampSessionDirectory(root: string, sessionId: string): string {
 export function ampMcpServer(spec: McpServerSpec, env: Record<string, string>): unknown {
   if (spec.transport === 'stdio') {
     const forwarded: Record<string, string> = {};
-    for (const name of spec.envVars ?? []) if (env[name] !== undefined) forwarded[name] = `\${${name}}`;
+    for (const name of spec.envVars ?? [])
+      if (env[name] !== undefined) forwarded[name] = `\${${name}}`;
     const resolved = { ...forwarded, ...spec.env };
     return {
       command: spec.command,
@@ -142,7 +143,7 @@ async function userSettings(ampDirectory: string): Promise<Record<string, unknow
   for (const name of ['settings.json', 'settings.jsonc']) {
     const text = await optionalText(join(ampDirectory, name));
     if (text === null) continue;
-    const errors: { error: number; offset: number }[] = [];
+    const errors: ParseError[] = [];
     const parsed: unknown = parseJsonc(text, errors, { allowTrailingComma: true });
     if (errors.length > 0)
       throw new Error(

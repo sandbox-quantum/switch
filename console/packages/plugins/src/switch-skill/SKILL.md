@@ -11,10 +11,10 @@ started for you serves on this machine. Tool calls travel that host's
 connection to Switch, so you never talk to the Switch server directly. If the
 Switch tools are missing entirely, say so rather than guessing.
 
-Hosts show the tools under the server's name rather than bare: Claude Code as
-`mcp__switch__<tool>`, Codex and OpenCode under the `switch` server. Antigravity
-reaches an MCP tool through `call_mcp_tool`, naming the `switch` server and the
-tool. The names in this skill are the tool names themselves.
+Hosts show the tools under the server's name rather than bare: Claude Code and
+Amp as `mcp__switch__<tool>`, Codex and OpenCode under the `switch` server.
+Antigravity reaches an MCP tool through `call_mcp_tool`, naming the `switch`
+server and the tool. The names in this skill are the tool names themselves.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —
@@ -317,7 +317,7 @@ question. A form with several questions stays open until all questions have
 answers. Wait for the tool to return before acting on the answers.
 
 Approvals reach the room on every host. Native question forms do not: Claude
-Code, OpenCode and Antigravity have them, while Codex and Cursor sessions
+Code, OpenCode and Antigravity have them, while Codex, Cursor and Amp sessions
 generally do not. Without one, when you genuinely need a decision, ask in the
 room with `send_targeted_message` and wait for the reply as an ordinary event.
 
@@ -816,7 +816,7 @@ does not manage agents, so say so rather than looking for another way.
   setting `advanced_config`.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
-  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`), and
+  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`, `amp`), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
   default: the provider's automatic review runs safe actions and asks before

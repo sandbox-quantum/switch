@@ -44,6 +44,10 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Amp in the provider table**, so a managed agent can run on Sourcegraph's
+  Amp CLI; its sign-in command is `amp login`.
+
 #### Security
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
@@ -2343,6 +2347,16 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Amp as an agent provider.** Sourcegraph's Amp CLI (`amp`) can run a
+  Switch agent, through its execute mode's streaming JSON with a Switch
+  plugin loaded beside it: the plugin asks Switch before every tool runs, so
+  approvals from the chat are enforced inside Amp (a declined tool never
+  runs), reports where each turn ends and cancels a turn on `!interrupt`.
+  Amp's Dial modes (low, medium, high, ultra) are the model choice, a thread
+  resumes after a restart, a message sent mid-turn is steered into the
+  running turn, and the session's Amp configuration lives beside Switch's
+  state rather than in the working tree. Sign-in is read from `amp account
+  list` or `AMP_API_KEY`, never by signing in.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

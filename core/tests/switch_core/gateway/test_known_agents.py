@@ -372,6 +372,24 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ["shell", "read_file", "write", "str_replace", "grep", "glob"],
             [],
         ),
+        (
+            "amp",
+            "Amp CLI",
+            [
+                "Bash",
+                "create_file",
+                "edit_file",
+                "undo_edit",
+                "Read",
+                "Grep",
+                "glob",
+                "read_web_page",
+                "web_search",
+                "Task",
+                "oracle",
+            ],
+            [],
+        ),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(

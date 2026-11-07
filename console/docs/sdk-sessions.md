@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity ACP and Cursor. Local sessions and sessions reached through SSH run
+Antigravity ACP, Cursor and Amp. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -150,6 +150,7 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity AC
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
 | Antigravity ACP | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
+| Amp | Yes | Its Dial modes (low, medium, high, ultra), fixed per thread | Unavailable | Images as base64 blocks; other files named in the text |
 
 Controls depend on the connected provider's reported support. OpenCode models
 that report no image input are labelled in the selector and reject images before
@@ -271,7 +272,8 @@ resumes or attaches, including ones started automatically:
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
-  uses Smart Auto, and Antigravity approves edits and asks before commands.
+  uses Smart Auto, Amp lets edits run and asks before commands and connector
+  tools, and Antigravity approves edits and asks before commands.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
 
@@ -304,7 +306,8 @@ missing login. Existing sessions are not stopped when a setup check fails.
 
 Claude uses its native auth status command. Codex uses app-server account status.
 Cursor uses its native account status output. Antigravity initializes an empty
-session without sending a prompt, and returns its native model list. OpenCode checks connected backends; a local or free backend may need no
+session without sending a prompt, and returns its native model list. Amp reads
+`amp account list`, or counts an `AMP_API_KEY` as signed in. OpenCode checks connected backends; a local or free backend may need no
 login. These checks do not prove quota or access to every model, and credentials
 can expire after a check. All model fields use the same editable picker: select a model from the host
 catalogue or enter an ID. Blank uses the provider default. Loading and failed

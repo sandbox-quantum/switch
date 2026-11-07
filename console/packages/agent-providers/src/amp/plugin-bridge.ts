@@ -63,7 +63,8 @@ export class AmpPluginBridge {
       this.handle(request, response).catch((error: unknown) => {
         const status = error instanceof RequestError ? error.status : 500;
         const message = error instanceof Error ? error.message : String(error);
-        if (!response.headersSent) response.writeHead(status, { 'content-type': 'application/json' });
+        if (!response.headersSent)
+          response.writeHead(status, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ error: message }));
       });
     });

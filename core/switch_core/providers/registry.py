@@ -154,6 +154,25 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="amp",
+        label="Amp",
+        sign_in_command="amp login",
+        connector_type="Amp CLI",
+        tools=(
+            ToolSpec(name="Bash", description="Executes shell commands"),
+            ToolSpec(name="create_file", description="Creates files"),
+            ToolSpec(name="edit_file", description="Edits existing files"),
+            ToolSpec(name="undo_edit", description="Reverts an edit"),
+            ToolSpec(name="Read", description="Reads file contents"),
+            ToolSpec(name="Grep", description="Searches file contents"),
+            ToolSpec(name="glob", description="Finds files by pattern"),
+            ToolSpec(name="read_web_page", description="Fetches web pages"),
+            ToolSpec(name="web_search", description="Searches the web"),
+            ToolSpec(name="Task", description="Delegates to a subagent"),
+            ToolSpec(name="oracle", description="Consults a reasoning model"),
+        ),
+    ),
 )
 
 

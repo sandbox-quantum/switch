@@ -241,6 +241,6 @@ what the video has to show.
 
 A CLI with its own protocol needs an adapter that implements `ProviderAdapter`
 (`console/packages/agent-providers/src/adapter.ts`). Codex (JSON-RPC
-app-server), OpenCode (HTTP and SSE) and Claude (the Agent SDK) are the
-examples. Register it in `PROVIDER_RUNTIMES` with its own `createAdapter`,
+app-server), OpenCode (HTTP and SSE), Claude (the Agent SDK) and Amp
+(execute-mode stream JSON, with a plugin for approvals) are the examples. Register it in `PROVIDER_RUNTIMES` with its own `createAdapter`,
 `checkSignIn` and `loginCommand`. Everything after step 1 is the same.

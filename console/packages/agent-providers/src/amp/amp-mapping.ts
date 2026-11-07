@@ -2,7 +2,7 @@ import type { RuntimeMode } from '../adapter';
 import type { ItemType, RequestType } from '../events';
 import { mcpApprovalContent, toolInputDetail } from '../mcp-approval';
 
-/** Amp's built-in tool names, as its stream-JSON `init.tools` lists them. */
+/** Amp's built-in tool names, as its stream-JSON `init.tools` lists them (amp 0.0.1794110442). */
 const COMMAND_TOOLS = new Set(['bash', 'shell_command', 'code_exec']);
 const FILE_CHANGE_TOOLS = new Set(['create_file', 'edit_file', 'undo_edit', 'apply_patch']);
 const WEB_TOOLS = new Set(['web_search', 'read_web_page']);
@@ -20,6 +20,14 @@ const READ_ONLY_TOOLS = new Set([
   'get_diagnostics',
   'format_file',
   'look_at',
+  'skill',
+  'load_prompt',
+  'view_media',
+  'shell_command_status',
+  'shell_command_kill',
+  'set_thread_status',
+  'wait_for_threads',
+  'subagent_stop',
   ...WEB_TOOLS,
   ...SUBAGENT_TOOLS,
 ]);
@@ -69,7 +77,10 @@ export function requestTypeForTool(toolName: string): RequestType {
   return 'tool_approval';
 }
 
-export function isBackgroundSubagentCall(toolName: string, input: Record<string, unknown>): boolean {
+export function isBackgroundSubagentCall(
+  toolName: string,
+  input: Record<string, unknown>
+): boolean {
   return lower(toolName) === 'task' && input.mode === 'async';
 }
 
@@ -85,7 +96,9 @@ export function toolTitle(toolName: string, input: Record<string, unknown>): str
   }
   if (SUBAGENT_TOOLS.has(name)) {
     const description =
-      stringField(input, 'description') ?? stringField(input, 'prompt') ?? stringField(input, 'task');
+      stringField(input, 'description') ??
+      stringField(input, 'prompt') ??
+      stringField(input, 'task');
     return description ? truncate(description) : toolName;
   }
   if (WEB_TOOLS.has(name)) {

@@ -11,7 +11,8 @@ export const AMP_LOGIN = 'amp login';
 
 const CHECK_TIMEOUT_MS = 15_000;
 
-const SIGNED_OUT = /no (saved )?accounts?|not (logged|signed) in|not authenticated|run `?amp login/i;
+const SIGNED_OUT =
+  /no (saved )?accounts?|not (logged|signed) in|not authenticated|run `?amp login/i;
 
 /**
  * Reads `amp account list`, which names the saved accounts without signing
