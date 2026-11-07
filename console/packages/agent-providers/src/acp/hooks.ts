@@ -144,6 +144,11 @@ export interface AcpProviderHooks {
    */
   promptCapabilities?: AcpPromptCapabilities;
   /**
+   * MCP transports the agent takes in `session/new` without advertising them
+   * in `initialize`. What it advertises is always honoured as well.
+   */
+  mcpCapabilities?: { http?: boolean };
+  /**
    * The ACP mode to put a new session in for Switch's runtime mode, given the
    * modes the session advertised. Omit, or return undefined, to leave the
    * agent's default.
