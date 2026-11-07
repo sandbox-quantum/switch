@@ -25,7 +25,6 @@ import json
 import re
 import time
 from collections.abc import Mapping
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
