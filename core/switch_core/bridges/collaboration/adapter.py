@@ -68,6 +68,8 @@ from switch_core.sessions.contract import (
 )
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
     from switch_core.db.models import Agent
 
 logger = logging.getLogger(__name__)
@@ -1933,6 +1935,13 @@ class PlatformAdapter(ABC):
         no tenant. Slack overrides it, because it shares one structure across
         every Slack bridge in the process and has to keep tenants apart in it.
         """
+        return None
+
+    def set_session_factory(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Install a database session factory for adapters that access shared database stores
+        (such as cross-pod event deduplication receipts). Default is a no-op."""
         return None
 
     def set_channel_team_persister(
