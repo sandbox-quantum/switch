@@ -1,0 +1,46 @@
+slug: supabase
+name: Supabase
+category: Backend platform
+description: Inspect Supabase projects, databases, logs and advisors.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Supabase rotates refresh tokens. Switch keeps the renewed token in the
+  # host and renews it before giving tools to a session.
+  refresh: rotating
+  oauth:
+    # The hosted MCP server supports OAuth dynamic client registration.
+    registration: dynamic
+    redirect: [loopback]
+    revocation_discovered: true
+  identity:
+    url: https://api.supabase.com/v1/user
+    account_id: id
+    label: email
+# The MCP endpoint does not document a fixed access-token lifetime. One hour
+# is a conservative session-token ceiling; refresh remains host-managed.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - name: supabase
+      url: "https://mcp.supabase.com/mcp?features=account,database,debugging"
+access:
+  # No project_ref keeps the account tools available so people can choose an
+  # organization and project; reads stay limited to the scopes below.
+  # These are the OAuth scopes Supabase documents for account, database,
+  # advisor and log reads. Write consent adds only database:write.
+  read:
+    scopes:
+      - organizations:read
+      - projects:read
+      - database:read
+      - logs:read
+  write:
+    scopes:
+      - organizations:read
+      - projects:read
+      - database:read
+      - logs:read
+      - database:write
+tools: { mode: pass_through }
