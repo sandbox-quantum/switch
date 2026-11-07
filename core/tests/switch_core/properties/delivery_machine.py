@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import hypothesis.strategies as st
@@ -41,6 +41,11 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switch_core.bridges.agent.protocol.agent_connections import (
+    POSITIONS_PROTOCOL_REVISION,
+    AgentConnection,
+    ClientDeclaration,
+)
 from switch_core.bridges.agent.protocol.event_buffer import CursorExpiredError
 from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.agent.protocol.stream import _opening_gaps
@@ -120,6 +125,7 @@ class Operation:
     # row and events and waits to commit. done, or failed with `error`.
     state: str = "running"
     error: BaseException | None = None
+    waited: bool = False
 
 
 @dataclass
@@ -170,6 +176,13 @@ class Delivery(RuleBasedStateMachine):
             self.url,
             connect_args={"server_settings": {"application_name": self.application}},
         )
+        try:
+            self._set_up()
+        except BaseException:
+            self._release()
+            raise
+
+    def _set_up(self) -> None:
         self.run(empty_the_database(self.engine))
         self.session_factory = create_session_factory(self.engine)
 
@@ -261,6 +274,13 @@ class Delivery(RuleBasedStateMachine):
             with contextlib.suppress(Exception):
                 self.run(asyncio.sleep(0))
             self.run(self._end_left_open())
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        """Give back the engine, the loop and the tenant context, which
+        Hypothesis would not do for a machine whose `__init__` raised."""
+        try:
             self.run(self.engine.dispose())
         finally:
             self.loop.close()
@@ -270,7 +290,7 @@ class Delivery(RuleBasedStateMachine):
         """End this machine's sessions that are still in a transaction, which a
         cancelled operation leaves, so they cannot hold a lock into the next
         example."""
-        async with create_async_engine(self.url).connect() as connection:
+        async with self.engine.connect() as connection:
             await connection.execute(
                 text(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
@@ -318,7 +338,9 @@ class Delivery(RuleBasedStateMachine):
                 quiet += 1
                 if quiet >= 4:
                     for op in running:
-                        note(f"a {op.kind} waits for a lock")
+                        if not op.waited:
+                            op.waited = True
+                            note(f"a {op.kind} waits for a lock")
                     return
             else:
                 quiet = 0
@@ -526,6 +548,7 @@ class Delivery(RuleBasedStateMachine):
         self.settle()
         if any(post.state == "parked" for post in self.posts.values()):
             if not self.run(self._has_head_row(agent)):
+                note("a read is skipped")
                 return
         self.run(self._read(agent))
 
@@ -543,19 +566,20 @@ class Delivery(RuleBasedStateMachine):
     async def _read(self, name: str) -> None:
         agent, _ = self.agents[name]
         at = self.position[name]
-        conn = SimpleNamespace(
+        now = time.monotonic()
+        conn = AgentConnection(
             id="client",
             agent_id=agent.id,
-            resume_lost=False,
-            resume_requested=0,
-            rooms=set(),
+            scope="single",
+            delivery_filter="addressed",
+            spawn_capable=False,
             position={OWN_EVENTS: at},
-            reads_conversation=False,
-            speaks_positions=True,
-            ticket=0,
+            last_beat=now,
+            opened_at=now,
+            declaration=ClientDeclaration(speaks=POSITIONS_PROTOCOL_REVISION),
         )
         gaps: list[dict[str, Any]] = list(
-            await _opening_gaps(conn, self.buffer, TENANT_ZERO_ID)  # type: ignore[arg-type]
+            await _opening_gaps(conn, self.buffer, TENANT_ZERO_ID)
         )
         while True:
             head = await self.buffer.head(TENANT_ZERO_ID, agent.id)
