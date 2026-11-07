@@ -158,8 +158,16 @@ jobs:
             properties:
               - *shared
               - 'properties/**'
+              - '.github/actions/setup-quint/**'
               - 'core/tests/switch_core/properties/**'
               - 'console/tooling-e2e/src/explore/spec/**'
+              # What the models in properties/specs follow, so a change to it
+              # runs them (and `properties/specs/README.md` maps each to its
+              # state).
+              - 'core/switch_core/bridges/agent/protocol/event_buffer.py'
+              - 'core/switch_core/bridges/agent/protocol/stream.py'
+              - 'core/switch_core/delivery/router.py'
+              - 'core/switch_core/db/stores/message_store.py'
             # The published Helm charts (switch, and the hosted controller's)
             # and what the release does to them before publishing (pins the
             # image digests into values.yaml).
@@ -513,26 +521,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version-file: console/.nvmrc
-
-      - name: Set up Java
-        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Install Quint
-        run: npm install --global @informalsystems/quint@0.32.0
-
-      # Quint downloads the model checkers on first use.
-      - name: Cache the model checkers
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.quint
-          key: quint-0.32.0
+      - name: Set up Quint
+        uses: ./.github/actions/setup-quint
 
       - name: Every invariant holds, and fails on its bug
         run: python3 properties/specs/run.py

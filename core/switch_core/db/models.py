@@ -3141,8 +3141,16 @@ class AgentEventRow(TenantScoped, Base):
     type: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     notifiable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # `clock_timestamp()`, not `now()`, which is when the transaction began. A
+    # transaction that began earlier can number its event later, so with `now()`
+    # a higher `seq` could be older than a lower one. `expire` deletes by
+    # `created_at` and `check_cursor` takes everything numbered below what it
+    # kept to be gone, so that could delete the higher and keep the lower, and a
+    # resuming reader would skip the lower without being told. The numbering
+    # transaction holds the agent's head row until it commits, so each event is
+    # inserted after every lower one.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
     )
 
 

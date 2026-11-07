@@ -14,7 +14,7 @@ every state the model can reach. A pass is exhaustive in the bounds `configs.qnt
 gives a module, and says nothing about more rooms, agents, rows or writers; the
 bounds are small because the states TLC searches multiply with each (`bus` is
 5,000 states, `retention` 35,000, `recipients` 44,000, `recipients_deep` 2.3
-million and minutes). `just properties-model --deep` adds the larger ones.
+million and minutes). `just properties-model --deep` adds the larger ones, which `properties-scheduled.yml` runs nightly.
 
 ## What the state is
 

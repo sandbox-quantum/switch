@@ -28,7 +28,8 @@ module recipients {
   ).* from "./delivery"
 }
 
-// The same with two rows a room: minutes, so it runs nightly.
+// The same with two rows a room: minutes, so `properties-scheduled.yml` runs it
+// nightly and a pull request does not.
 module recipients_deep {
   import delivery(
     ROOMS = Set("r1"), AGENTS = Set(1, 2), WRITERS = Set(1, 2),

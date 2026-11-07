@@ -745,16 +745,6 @@ class EventBuffer:
         """An insert into `agent_events` of the row `values` selects, that
         does nothing when an event from the same source is already stored
         (`uq_agent_events_source`), and returns the stored number.
-
-        `created_at` is `clock_timestamp()`, not the column's default `now()`.
-        `now()` is when the transaction began, and a transaction that began
-        earlier can number its event later, so an agent's numbers would not
-        follow `created_at`. `expire` deletes by `created_at` and `check_cursor`
-        takes everything numbered below what it kept to be gone, so that
-        reversal could delete a higher number and keep a lower one, and a
-        resuming reader would skip the lower one without being told. The
-        numbering transaction holds the agent's head row until it commits, so
-        each number is inserted after every lower one.
         """
         return (
             insert(AgentEventRow)
@@ -769,9 +759,8 @@ class EventBuffer:
                     AgentEventRow.type,
                     AgentEventRow.payload,
                     AgentEventRow.notifiable,
-                    AgentEventRow.created_at,
                 ],
-                values.add_columns(func.clock_timestamp()),
+                values,
             )
             .on_conflict_do_nothing(
                 index_elements=[
