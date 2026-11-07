@@ -1101,6 +1101,15 @@ When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 
 ## Session controls
 
+To withdraw a queued message, its original sender can use
+`!cancel @agent <turn-id>` in the same room. The full turn ID or its first
+eight characters are accepted; ambiguous prefixes are refused. Cancellation
+is available only until the host claims the turn, including before attachment
+staging. Once claimed, use `!interrupt` instead. The original message remains
+in history. Wait for a confirmed cancelled result: an acknowledgement alone
+does not mean the queued work was removed, and an unknown outcome must not
+be retried automatically.
+
 In a room your session is connected to, `!reset`, `!compact`, and `!interrupt`
 use server-authorized durable commands. They take the same permission as a
 message: only someone allowed to address you can issue them, which by default

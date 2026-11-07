@@ -13,6 +13,7 @@ import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
 import {
   followupCommandId,
+  cancelRefusal,
   retryRefusal,
   roomControlFollowup,
   roomControlRefusal,
@@ -485,6 +486,22 @@ export async function runSharedHost(
       await send({ kind: 'activity', row });
       return true;
     };
+    const sentAsInterrupted = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (
+        error.status !== 422 ||
+        item.kind !== 'activity' ||
+        item.row.kind !== 'turn' ||
+        item.row.status !== 'cancelled'
+      )
+        return false;
+      // Old servers reject this enum. Retain the local cancelled event but
+      // give that server a terminal turn rather than leaving its card queued.
+      console.warn(
+        `Switch refused cancelled status for turn ${item.row.turn_id}; reporting interrupted for compatibility: ${error.message}`
+      );
+      await send({ ...item, row: { ...item.row, status: 'interrupted' } });
+      return true;
+    };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
@@ -504,6 +521,7 @@ export async function runSharedHost(
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
+            if (await sentAsInterrupted(item, error)) continue;
             if (await sentWithoutUsage(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
@@ -734,6 +752,8 @@ export async function runSharedHost(
         console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
         return `The command is not readable: ${parsed.error.message}`;
       }
+      const recordedCancellation = await host!.replayRoomCancellation(parsed.data);
+      if (recordedCancellation) return recordedCancellation;
       const command = current(parsed.data);
       if (!command) return 'There is no turn running to interrupt.';
       if (command.sessionId !== options.session.sessionId) {
@@ -781,8 +801,8 @@ export async function runSharedHost(
           );
       // A retry asked for from a room that cannot run is answered there, where it was asked.
       if (
-        command.body.type === 'message.retry' &&
-        status?.status === 'rejected' &&
+        (command.body.type === 'message.retry' || command.body.type === 'turn.cancel') &&
+        (status?.status === 'rejected' || status?.status === 'unknown') &&
         !repeated &&
         parentChannel &&
         options.roomConnection &&
@@ -793,11 +813,14 @@ export async function runSharedHost(
             type: 'room-reply',
             roomId: command.origin.roomId,
             threadId: command.origin.threadId,
-            body: retryRefusal(status.message),
+            body:
+              command.body.type === 'turn.cancel'
+                ? cancelRefusal(status.message)
+                : retryRefusal(status.message),
           })
           .catch((error: unknown) =>
             console.warn(
-              `Could not tell room ${command.origin.roomId} that its retry was refused: ${String(error)}`
+              `Could not tell room ${command.origin.roomId} that its room command was refused: ${String(error)}`
             )
           );
       // A fresh conversation starts with the instructions this host was given,

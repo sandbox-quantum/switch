@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { CircleSlash } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ComponentProps, type ReactNode, useEffect, useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
@@ -137,6 +138,7 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     work.length > 0 ||
     isThinking(turn) ||
     turn.status === 'interrupted' ||
+    turn.status === 'cancelled' ||
     turn.status === 'error' ||
     turn.requests.length > 0 ||
     turnWarnings(turn).length > 0
@@ -210,6 +212,15 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           label={turn.status === 'queued' ? 'Queued…' : 'Thinking…'}
           active
         />
+      )}
+      {turn.status === 'cancelled' && (
+        <div role="status">
+          <WorkLogRow
+            icon={<CircleSlash aria-hidden className="size-3.5" />}
+            label="Cancelled before starting"
+            tone="passive"
+          />
+        </div>
       )}
       {ended && (
         <div role="status">

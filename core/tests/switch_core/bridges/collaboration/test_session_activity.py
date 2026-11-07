@@ -202,7 +202,10 @@ async def test_the_last_line_says_whether_the_turn_is_still_moving() -> None:
     items = await _items()
 
     assert _state(items, _turn("running")) == "Working…"
-    assert _state(items, _turn("queued")) == "Queued. Waiting for the agent to start…"
+    assert _state(items, _turn("queued")) == (
+        "Queued. Waiting for the agent to start… "
+        "To cancel, use !cancel @agent-name turn-act."
+    )
 
 
 async def test_a_turn_with_nothing_done_in_it_still_says_where_it_got_to() -> None:

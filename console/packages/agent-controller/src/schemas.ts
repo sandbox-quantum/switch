@@ -418,10 +418,8 @@ export const agentGapFrameSchema = z.looseObject({
 export type AgentGapFrame = z.infer<typeof agentGapFrameSchema>;
 
 /**
- * A room control (`!reset`, `!compact`, `!interrupt`, a Stop press) for
- * whichever session works in `room_id`. Core no longer knows the session
- * (`command.sessionId` is null); the controller does, from the placements
- * its watcher states.
+ * Room-wide controls use placement (`command.sessionId` is null). A queued
+ * turn cancellation names the recorded session instead of the current placement.
  */
 export const agentSessionCommandFrameSchema = z.object({
   agent_id: id,
