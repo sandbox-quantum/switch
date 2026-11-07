@@ -178,15 +178,53 @@ class OAuthClient(BaseModel):
         return self
 
 
+MAX_ACCOUNT_ID_PARTS = 3
+
+
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Where the account's stable id is read, and the dotted paths in the JSON
+    answer to the id and to a label people recognise (an email, a login).
+
+    Either a GET of `url` with the access token, or, with `introspection`, an
+    RFC 7662 introspection of the token at the endpoint the authorization
+    server advertises, authenticated as the client is at its token endpoint:
+    for a vendor whose MCP token reaches no account API, so the vendor itself
+    checks the live token and names whose it is. `account_id` is one path, or
+    a list of paths whose values together are the id (a workspace and a user
+    in it), each of which must be present.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
-    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    introspection: bool = False
+    account_id: (
+        Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
+        | Annotated[
+            list[Annotated[str, Field(pattern=JSON_PATH_PATTERN)]],
+            Field(min_length=2, max_length=MAX_ACCOUNT_ID_PARTS),
+        ]
+    )
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "ConnectionIdentity":
+        if (self.url is None) == (not self.introspection):
+            raise ValueError(
+                "an identity is read from a url or by introspection, exactly one"
+            )
+        if isinstance(self.account_id, list) and len(set(self.account_id)) != len(
+            self.account_id
+        ):
+            raise ValueError("an account id names each of its paths once")
+        return self
+
+    @property
+    def account_id_paths(self) -> list[str]:
+        return (
+            [self.account_id]
+            if isinstance(self.account_id, str)
+            else list(self.account_id)
+        )
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -738,6 +776,18 @@ class ConnectionDefinition(BaseModel):
                     "an entry without MCP servers names its authorization_url and "
                     "token_url, and its revocation_url where it has one"
                 )
+        identity = self.auth.identity
+        # The introspection endpoint is the one the authorization server
+        # advertises, so it is found only by discovery from an MCP server.
+        if (
+            identity is not None
+            and identity.introspection
+            and (self.mcp is None or (oauth is not None and oauth.authorization_url))
+        ):
+            raise ValueError(
+                "an identity read by introspection needs the endpoints discovered "
+                "from an MCP server"
+            )
         if self.auth.refresh not in (None, "rotating", "reusable"):
             raise ValueError("an oauth sign-in is refreshed: rotating or reusable")
         if self.token is not None and self.token.kind != "pass_through":

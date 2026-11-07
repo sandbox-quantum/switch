@@ -228,6 +228,94 @@ class TestSignIn:
             await adapter.identify(secret.access_token or "")
 
 
+INTROSPECTED = OAUTH_ENTRY.replace(
+    "    registration: dynamic\n",
+    "    registration: static\n    client_settings: EXAMPLE\n",
+).replace(
+    "    url: https://api.example.test/me\n"
+    "    account_id: account.id\n"
+    "    label: account.email\n",
+    "    introspection: true\n"
+    "    account_id: [workspace_id, user_id]\n"
+    "    label: workspace_id\n",
+)
+
+
+class TestIntrospectedIdentity:
+    """A vendor whose MCP token reaches no account API (Notion): the account is
+    whatever its advertised introspection endpoint says of the live token."""
+
+    @pytest.fixture
+    def introspecting(self, vendor) -> FakeOAuthServer:
+        vendor.metadata["introspection_endpoint"] = f"{ISSUER}/introspect"
+        return vendor
+
+    async def test_reads_the_workspace_and_user_from_introspection(
+        self, introspecting
+    ) -> None:
+        adapter, _ = _adapter(introspecting, INTROSPECTED)
+        secret = await _sign_in(adapter, introspecting)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("ws-1:user-1", "ws-1")
+        # The live token, authenticated as at the token endpoint; no GET of an
+        # account API.
+        [form] = introspecting.introspections
+        assert form["token"] == secret.access_token
+        assert form["token_type_hint"] == "access_token"
+        assert form["client_id"] == STATIC_CLIENT_ID
+        assert form["client_secret"] == STATIC_CLIENT_SECRET
+        assert IDENTITY_URL not in introspecting.paths
+
+    async def test_each_part_of_the_id_is_escaped(self, introspecting) -> None:
+        introspecting.introspected = {"workspace_id": "w:1", "user_id": "u/2"}
+        adapter, _ = _adapter(introspecting, INTROSPECTED)
+        secret = await _sign_in(adapter, introspecting)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "w%3A1:u%2F2"
+
+    async def test_an_inactive_token_is_refused(self, introspecting) -> None:
+        adapter, _ = _adapter(introspecting, INTROSPECTED)
+        await _sign_in(adapter, introspecting)
+        with pytest.raises(ReauthorizationRequiredError, match="not active"):
+            await adapter.identify("not-a-live-token")
+
+    @pytest.mark.parametrize("missing", ["workspace_id", "user_id"])
+    async def test_an_answer_missing_either_id_is_refused(
+        self, introspecting, missing
+    ) -> None:
+        del introspecting.introspected[missing]
+        adapter, _ = _adapter(introspecting, INTROSPECTED)
+        secret = await _sign_in(adapter, introspecting)
+        with pytest.raises(ServiceAdapterError, match="did not name the account"):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_a_server_that_advertises_no_introspection_is_refused(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="does not advertise"):
+            await adapter.identify(secret.access_token or "")
+        # Nothing was sent anywhere else in its place.
+        assert vendor.introspections == []
+        assert IDENTITY_URL not in vendor.paths
+
+    async def test_an_introspection_endpoint_that_is_not_https_is_refused(
+        self, vendor
+    ) -> None:
+        vendor.metadata["introspection_endpoint"] = "http://auth.example.test/i"
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        with pytest.raises(ServiceAdapterError):
+            await adapter.endpoints()
+
+    async def test_a_refused_introspection_is_an_error(self, introspecting) -> None:
+        introspecting.fail[f"{ISSUER}/introspect"] = (500, {"error": "server_error"})
+        adapter, _ = _adapter(introspecting, INTROSPECTED)
+        secret = await _sign_in(adapter, introspecting)
+        with pytest.raises(ServiceAdapterError, match="HTTP 500"):
+            await adapter.identify(secret.access_token or "")
+
+
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:
         adapter, _ = _adapter(vendor)
