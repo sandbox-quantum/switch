@@ -84,7 +84,7 @@ _CONSOLE_SIGN_IN = {
     "claude": ("claude/sign-in.ts", r"CLAUDE_LOGIN = '([^']+)'"),
     "codex": ("codex/sign-in.ts", r"CODEX_LOGIN = '([^']+)'"),
     "opencode": ("opencode/sign-in.ts", r"OPENCODE_LOGIN = '([^']+)'"),
-    "antigravity": ("antigravity/antigravity-adapter.ts", r"loginCommand: '([^']+)'"),
+    "antigravity": ("antigravity/runtime.ts", r"AGY_LOGIN = '([^']+)'"),
     "cursor": ("cursor/cursor-adapter.ts", r"CURSOR_LOGIN = '([^']+)'"),
     "deepseek-harness": (
         "deepseek-harness/deepseek-harness-acp.ts",

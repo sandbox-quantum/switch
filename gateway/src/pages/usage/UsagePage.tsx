@@ -47,7 +47,7 @@ export default function UsagePage() {
   if (!tenant.administers) {
     return (
       <Alert severity="info">
-        Only owners and admins of {tenant.name} can see its usage and budgets.
+        Only admins of {tenant.name} can see its usage and budgets.
       </Alert>
     );
   }

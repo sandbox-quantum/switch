@@ -15,7 +15,7 @@ import { providerRuntime } from '../providers/registry';
 import { EventRecorder } from '../testing/event-recorder';
 import { describeConformance, echoMcpServerSpec } from '../testing/index';
 import { noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
-import { createDeepseekHarnessAdapter } from './deepseek-harness-acp';
+import { createDeepseekHarnessAdapter, deepseekHarnessAcp } from './deepseek-harness-acp';
 
 const env = Object.fromEntries(
   [
@@ -327,7 +327,7 @@ it('real CLI discovers models, applies selection, and resumes a session without 
       logger: noopLogger,
       onExit: () => {},
     });
-    const initialized = await acpInitialize(resumed);
+    const initialized = await acpInitialize(resumed, deepseekHarnessAcp);
     expect(initialized.authMethods).toEqual([]);
     expect(initialized.agentCapabilities?.sessionCapabilities?.resume).toBeDefined();
     expect(initialized.agentCapabilities?.mcpCapabilities?.http).toBe(true);

@@ -32,7 +32,11 @@ export const roomMessageSchema = z.object({
       )
       .default([]),
     opening_message: z.string().nullish(),
-    sender_role: z.enum(['owner', 'admin', 'member']).nullish(),
+    // A server from before `owner` merged into `admin` still sends it.
+    sender_role: z
+      .enum(['admin', 'member', 'owner'])
+      .nullish()
+      .transform((role) => (role === 'owner' ? 'admin' : role)),
     /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
     switch_notice: z.string().nullish(),
   }),

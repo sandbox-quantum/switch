@@ -10,3 +10,8 @@ switchCore:
     enabled: true
     ingress:
       mode: external
+  # Rendered so the JSON settings' template is checked too.
+  disabledServices:
+    datadog: "Not offered on this server."
+  serviceAccessProfiles:
+    google-workspace: drive-file

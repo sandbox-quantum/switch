@@ -25,7 +25,7 @@ vi.mock('@renderer/lib/ipc', () => ({
   },
   events: { on: () => () => {}, emit: () => {} },
 }));
-vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
+vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl, reportOpenAttempt: vi.fn() }));
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useShowModal: (id: string) => (args: unknown) => showModal(id, args),
 }));
@@ -116,6 +116,7 @@ function row(
     onReleased?: () => void;
     olderLinks?: { count: number; onRequireConfirmation: () => void } | null;
     isAdmin?: boolean;
+    personal?: boolean;
     onConnectChat?: (() => void) | null;
     onDisconnect?: () => void;
   } = {}
@@ -132,6 +133,7 @@ function row(
       olderLinks={overrides.olderLinks ?? null}
       showBundledSignIn={false}
       isAdmin={overrides.isAdmin ?? false}
+      personal={overrides.personal ?? false}
       savingChannelCreation={false}
       onToggleChannelCreation={() => {}}
       onConnectChat={overrides.onConnectChat ?? null}
@@ -404,6 +406,25 @@ describe('the row menu', () => {
     const el = await render(row({ isAdmin: false }));
 
     expect(await openMenu(el)).not.toContain('Disconnect app…');
+  });
+
+  it('keeps the workspace’s settings out of Settings, where only your own account is shown', async () => {
+    const el = await render(
+      row({
+        personal: true,
+        identities: [IDENTITY],
+        bridge: bridge({
+          receivesWebhooks: true,
+          webhookUrl: 'https://switch.example/messaging/bridges/b-1/events',
+        }),
+      })
+    );
+
+    const items = await openMenu(el);
+    expect(items).toContain('Unlink @amaudruz.louis');
+    expect(items.some((item) => item.startsWith('Create channels'))).toBe(false);
+    expect(items).not.toContain('Copy webhook address');
+    expect(items).not.toContain('Disconnect app…');
   });
 
   it('opens on a platform that cannot create channels at all', async () => {

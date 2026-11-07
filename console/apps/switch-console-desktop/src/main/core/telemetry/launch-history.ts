@@ -1,7 +1,9 @@
 import { resolveAppVersion } from '@main/core/app/utils';
+import { pendingInstall } from '@main/core/updates/pending-install';
 import { KV } from '@main/db/kv';
 import { log } from '@main/lib/logger';
 import { IS_CANARY } from '@shared/app-identity';
+import { appVersionOf } from './app-version';
 import type { TelemetryInstallKind } from './events';
 import { trackEvent } from './telemetry-service';
 
@@ -47,6 +49,9 @@ type LaunchInputs = {
   databaseExisted: boolean;
 };
 
+/** Which kind this launch is, and the version the previous launch ran. */
+export type LaunchRecord = { kind: TelemetryInstallKind; lastVersion: string | null };
+
 /**
  * Record this launch and say which kind it is. Recorded on every launch,
  * whether or not usage is shared: it is local, and the next launch has to know
@@ -56,12 +61,12 @@ export async function recordLaunch({
   version,
   channel,
   databaseExisted,
-}: LaunchInputs): Promise<TelemetryInstallKind> {
+}: LaunchInputs): Promise<LaunchRecord> {
   const key = `lastLaunchedVersion.${channel}`;
   const lastVersion = (await store.get(key)) ?? null;
   const kind = installKindFor({ lastVersion, version, databaseExisted });
   await store.set(key, version);
-  return kind;
+  return { kind, lastVersion };
 }
 
 /** What recording this launch needs, read when boot starts it. */
@@ -75,18 +80,37 @@ export async function readThisLaunch(): Promise<LaunchInputs> {
 }
 
 /**
- * Record this launch and report it as `app_launched`. Never rejects, so boot
- * can start it without waiting on it: nothing telemetry does may stop the app
- * opening. A launch that cannot be recorded is logged and goes unreported,
- * rather than reported with a kind nobody worked out.
+ * Record this launch and report it as `app_launched`, and an upgrade as
+ * `update_installed` as well. Never rejects, so boot can start it without
+ * waiting on it: nothing telemetry does may stop the app opening. A launch that
+ * cannot be recorded is logged and goes unreported, rather than reported with a
+ * kind nobody worked out.
  */
 export async function reportLaunch(read: () => Promise<LaunchInputs>): Promise<void> {
   const recorded = (async () => recordLaunch(await read()))();
-  recording = recorded.catch(() => null);
+  recording = recorded.then(
+    (record) => record.kind,
+    () => null
+  );
+  let record: LaunchRecord;
   try {
-    trackEvent('app_launched', { install_kind: await recorded });
+    record = await recorded;
   } catch (error) {
     log.warn('telemetry: could not record this launch, so app_launched is not sent', { error });
+    return;
+  }
+  trackEvent('app_launched', { install_kind: record.kind });
+  if (record.kind !== 'updated') return;
+  try {
+    const handedOver = await pendingInstall.take();
+    trackEvent('update_installed', {
+      from_version: record.lastVersion === null ? 'unknown' : appVersionOf(record.lastVersion),
+      trigger: handedOver ? 'restart_button' : 'other',
+    });
+  } catch (error) {
+    log.warn('telemetry: could not read how this update was installed, so it is not sent', {
+      error,
+    });
   }
 }
 

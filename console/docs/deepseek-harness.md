@@ -72,6 +72,7 @@ The conformance suite accepts an optional approval prompt suffix to exercise
 DSH's per-call escalation; other providers keep their existing prompts.
 The buddy telemetry changes add the provider to its existing closed catalogue
 and disclosure. Controller and backend tests update the expected provider list.
+The shipped Buddy template includes the provider in its fallback choices.
 
 ## Verification
 

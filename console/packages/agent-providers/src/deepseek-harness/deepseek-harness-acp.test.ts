@@ -60,6 +60,9 @@ async function status(env: Record<string, string> = {}) {
     cwd,
     env: { DSH_HOME: home, ...env },
     handshake,
+    request: async () => {
+      throw new Error('Unexpected sign-in request');
+    },
   });
   return { result, handshake };
 }
@@ -184,6 +187,9 @@ describe('credential checks', () => {
       env: { DSH_HOME: home, DEEPSEEK_API_KEY: 'configured-placeholder' },
       handshake: async () => {
         throw new Error('private-provider-output');
+      },
+      request: async () => {
+        throw new Error('Unexpected sign-in request');
       },
     });
     expect(result.status).toBe('unknown');

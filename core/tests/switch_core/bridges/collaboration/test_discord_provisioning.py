@@ -177,7 +177,7 @@ def test_create_dm_channel_provisions_private_channel_with_user() -> None:
 
     assert channel_id == "101"
     created = guild.created[0]
-    assert created["name"] == "dm-louis-my-agent"
+    assert created["name"] == "my-agent-louis"
     assert created["overwrites"][guild.default_role].view_channel is False
 
 

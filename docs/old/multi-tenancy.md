@@ -90,7 +90,7 @@ tenants
   id, slug (unique), name, plan, status, created_at, deleted_at
 
 tenant_members
-  tenant_id, user_id, role (owner|admin|member), created_at
+  tenant_id, user_id, role (admin|member), created_at
   primary key (tenant_id, user_id)
 ```
 
@@ -325,7 +325,7 @@ Not part of the tenant model, but on its critical path:
 - **Tenant id on every log line and error report.** Retrofitting this is
   miserable, and without it "is this one customer or everyone?" is
   unanswerable.
-- **Per-tenant roles** (owner/admin/member) replacing reliance on the global
+- **Per-tenant roles** (admin/member) replacing reliance on the global
   `admin` flag.
 - **Audit log** — who invited whom, who connected Slack, who deleted an agent.
 - **Support access** — an explicit impersonation path with an audit trail.
