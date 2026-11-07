@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -13,6 +14,7 @@ from switch_core.connections.adapters import (
     ConnectionNotRevocable,
     IssueRequest,
     ServiceAdapterError,
+    ServiceUnavailableError,
 )
 from switch_core.connections.adapters.api_key import (
     ApiKeyAdapter,
@@ -20,7 +22,7 @@ from switch_core.connections.adapters.api_key import (
     key_token,
     render,
 )
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import CATALOG, ConnectionDefinition
 
 ENTRY = {
     "slug": "example",
@@ -137,3 +139,160 @@ async def test_a_key_is_never_issued_to_an_agent() -> None:
             AccessToken(key, datetime.now(UTC) + timedelta(hours=1)),
             IssueRequest(service="example", access="write", reach={}, resources={}),
         )
+
+
+SNOWFLAKE_FIELDS = {
+    "account": "myorg-myaccount",
+    "database": "ANALYTICS_DB",
+    "schema": "PUBLIC",
+    "server": "CORTEX_MCP",
+    "pat": "snt-synthetic-pat-secret-12345",
+}
+
+
+def _snowflake_adapter(handler) -> ApiKeyAdapter:
+    definition = CATALOG["snowflake"].definition
+    return ApiKeyAdapter(
+        definition, httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+
+
+@pytest.mark.parametrize(
+    "account",
+    [
+        "myorg-myaccount",
+        "xy12345",
+        "my_org-my_account",
+        "xy12345-us-east-1",
+        "ACCOUNT-1",
+    ],
+)
+def test_snowflake_checked_fields_accepts_valid_accounts(account: str) -> None:
+    adapter = _snowflake_adapter(lambda req: httpx.Response(200))
+    fields = {**SNOWFLAKE_FIELDS, "account": account}
+    checked = adapter.checked_fields(fields)
+    assert checked["account"] == account
+
+
+@pytest.mark.parametrize(
+    "invalid_account",
+    [
+        "attacker.com",
+        "http://myaccount",
+        "https://myaccount",
+        "myaccount:8080",
+        "user@myaccount",
+        "myaccount/path",
+        "myaccount%2fpath",
+        "..",
+        "-myaccount",
+        "myaccount-",
+        "_myaccount",
+        "myaccount_",
+        "my--account",
+        "my__account",
+        "my account",
+        "my\taccount",
+        "myaccounté",
+        "",
+        "127.0.0.1",
+        "myaccount.",
+        ".myaccount",
+    ],
+)
+def test_snowflake_checked_fields_rejects_hostile_or_malformed_accounts(
+    invalid_account: str,
+) -> None:
+    adapter = _snowflake_adapter(lambda req: httpx.Response(200))
+    fields = {**SNOWFLAKE_FIELDS, "account": invalid_account}
+    with pytest.raises(InvalidKeyError, match="Account is (invalid|required)"):
+        adapter.checked_fields(fields)
+
+
+@pytest.mark.parametrize("field_name", ["database", "schema", "server"])
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        "../traversal",
+        "db/schema",
+        "db%2fschema",
+        "db.schema",
+        "db;DROP TABLE users",
+        "db name with spaces",
+        "",
+    ],
+)
+def test_snowflake_checked_fields_rejects_invalid_path_identifiers(
+    field_name: str, invalid_value: str
+) -> None:
+    adapter = _snowflake_adapter(lambda req: httpx.Response(200))
+    fields = {**SNOWFLAKE_FIELDS, field_name: invalid_value}
+    with pytest.raises(InvalidKeyError):
+        adapter.checked_fields(fields)
+
+
+async def test_snowflake_identity_verifies_pat_against_rest_api() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={"name": "PUBLIC", "database": "ANALYTICS_DB"},
+        )
+
+    adapter = _snowflake_adapter(handler)
+    identity = await adapter.identify(SNOWFLAKE_FIELDS)
+
+    [req] = seen
+    assert req.method == "GET"
+    assert (
+        str(req.url)
+        == "https://myorg-myaccount.snowflakecomputing.com/api/v2/databases/ANALYTICS_DB/schemas/PUBLIC"
+    )
+    assert req.headers["Authorization"] == "Bearer snt-synthetic-pat-secret-12345"
+    assert (
+        req.headers["X-Snowflake-Authorization-Token-Type"]
+        == "PROGRAMMATIC_ACCESS_TOKEN"
+    )
+    expected_account_id = hashlib.sha256(b"snt-synthetic-pat-secret-12345").hexdigest()
+    assert identity.account_id == expected_account_id
+    assert (
+        identity.label
+        == "Snowflake key · myorg-myaccount · ANALYTICS_DB · PUBLIC · CORTEX_MCP"
+    )
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+async def test_snowflake_identity_refuses_invalid_or_revoked_pat(
+    status_code: int,
+) -> None:
+    adapter = _snowflake_adapter(lambda req: httpx.Response(status_code))
+    with pytest.raises(InvalidKeyError) as exc_info:
+        await adapter.identify(SNOWFLAKE_FIELDS)
+    assert "refused the key" in str(exc_info.value)
+    # Ensure the PAT secret is never exposed in the error message
+    assert "snt-synthetic-pat-secret-12345" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("status_code", [500, 502, 503])
+async def test_snowflake_identity_handles_service_unavailable(
+    status_code: int,
+) -> None:
+    adapter = _snowflake_adapter(lambda req: httpx.Response(status_code))
+    with pytest.raises(ServiceUnavailableError) as exc_info:
+        await adapter.identify(SNOWFLAKE_FIELDS)
+    assert "unavailable" in str(exc_info.value)
+    assert "snt-synthetic-pat-secret-12345" not in str(exc_info.value)
+
+
+async def test_snowflake_identity_handles_network_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("Connection timed out")
+
+    adapter = _snowflake_adapter(handler)
+    with pytest.raises(
+        ServiceUnavailableError, match="could not be reached"
+    ) as exc_info:
+        await adapter.identify(SNOWFLAKE_FIELDS)
+    assert "snt-synthetic-pat-secret-12345" not in str(exc_info.value)

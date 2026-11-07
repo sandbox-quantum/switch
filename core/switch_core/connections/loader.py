@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -45,7 +46,7 @@ MINTED_MAX_LIFETIME = 3600
 SKILL_PATH_RE = re.compile(
     r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,7}$"
 )
-FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 # A skill describes tasks, tools and limits. How a credential reaches the agent
 # is its host's business, and a skill that names one invites the agent to go
 # looking for it.
@@ -216,8 +217,9 @@ class ApiKeyField(BaseModel):
     """One value a person pastes, or picks, to connect.
 
     A `secret` field is the key itself, typed freely and never shown again.
-    Any other field is a choice among `choices` (a site, a region), which
-    templates may put in a URL: never free text.
+    A choice field is a choice among `choices` (a site, a region).
+    A pattern field is typed and held to a regular expression `pattern`.
+    Only choice and pattern fields may appear in templates: never secret fields.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -230,18 +232,27 @@ class ApiKeyField(BaseModel):
     choices: list[Annotated[str, Field(pattern=CHOICE_PATTERN)]] | None = Field(
         default=None, min_length=1, max_length=20
     )
+    pattern: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
-    def _secret_or_choice(self) -> "ApiKeyField":
+    def _secret_or_choice_or_pattern(self) -> "ApiKeyField":
         if self.name == TOKEN_PLACEHOLDER:
             raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
-        if self.secret == (self.choices is not None):
+        modes = sum([self.secret, self.choices is not None, self.pattern is not None])
+        if modes != 1:
             raise ValueError(
-                f"field {self.name} is a secret typed freely, or a choice among "
-                "choices: one of the two"
+                f"field {self.name} is a secret typed freely, a choice among "
+                "choices, or held to a pattern: one of the three (one of the two)"
             )
         if self.choices is not None and len(set(self.choices)) != len(self.choices):
             raise ValueError(f"field {self.name} lists a choice twice")
+        if self.pattern is not None:
+            try:
+                re.compile(self.pattern)
+            except re.error as e:
+                raise ValueError(
+                    f"field {self.name} pattern is not a valid regular expression: {e}"
+                ) from None
         return self
 
 
@@ -274,7 +285,7 @@ class ApiKeySignIn(BaseModel):
     call that checks them, and where they make the key (`help_url`)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    fields: list[ApiKeyField] = Field(min_length=1, max_length=4)
+    fields: list[ApiKeyField] = Field(min_length=1, max_length=8)
     identity: ApiKeyIdentity
     help_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
 
@@ -297,21 +308,102 @@ class ApiKeySignIn(BaseModel):
         return {field.name for field in self.fields}
 
     def choice_names(self) -> set[str]:
+        return {field.name for field in self.fields if field.choices is not None}
+
+    def pattern_names(self) -> set[str]:
+        return {field.name for field in self.fields if field.pattern is not None}
+
+    def public_names(self) -> set[str]:
         return {field.name for field in self.fields if not field.secret}
+
+
+def _check_pattern_url(url: str, name: str, where: str) -> None:
+    parsed = urlsplit(url)
+    field_placeholder = f"{{{name}}}"
+
+    if parsed.query and field_placeholder in parsed.query:
+        raise ValueError(
+            f"{where}'s URL may name pattern field {name!r} only as a whole host "
+            "label of a fixed-domain URL or a whole path segment, not in the query"
+        )
+    if parsed.fragment and field_placeholder in parsed.fragment:
+        raise ValueError(
+            f"{where}'s URL may name pattern field {name!r} only as a whole host "
+            "label of a fixed-domain URL or a whole path segment, not in the fragment"
+        )
+    if parsed.netloc and ":" in parsed.netloc:
+        netloc_parts = parsed.netloc.split(":")
+        if field_placeholder in netloc_parts[-1]:
+            raise ValueError(
+                f"{where}'s URL may name pattern field {name!r} only as a whole host "
+                "label of a fixed-domain URL or a whole path segment, not in the port"
+            )
+    if "@" in (parsed.netloc or ""):
+        userinfo = parsed.netloc.split("@")[0]
+        if field_placeholder in userinfo:
+            raise ValueError(
+                f"{where}'s URL may name pattern field {name!r} only as a whole host "
+                "label of a fixed-domain URL or a whole path segment, not in userinfo"
+            )
+
+    hostname = parsed.hostname or ""
+    in_host = field_placeholder in hostname
+    in_path = field_placeholder in parsed.path
+
+    if not in_host and not in_path:
+        raise ValueError(
+            f"{where}'s URL may name pattern field {name!r} only as a whole host "
+            "label of a fixed-domain URL or a whole path segment"
+        )
+
+    if in_host:
+        labels = hostname.split(".")
+        if field_placeholder not in labels:
+            raise ValueError(
+                f"{where}'s URL may name pattern field {name!r} only as a whole host "
+                "label of a fixed-domain URL, not a partial host label"
+            )
+        if hostname.count(field_placeholder) > 1:
+            raise ValueError(
+                f"{where}'s URL names pattern field {name!r} more than once in its host"
+            )
+        idx = labels.index(field_placeholder)
+        fixed_suffix = labels[idx + 1 :]
+        if len(fixed_suffix) < 2 or any(
+            "{" in label or "}" in label for label in fixed_suffix
+        ):
+            raise ValueError(
+                f"{where}'s URL must have a fixed domain following host label {name!r}"
+            )
+
+    if in_path:
+        segments = [s for s in parsed.path.split("/") if s]
+        for segment in segments:
+            if field_placeholder in segment and segment != field_placeholder:
+                raise ValueError(
+                    f"{where}'s URL may name pattern field {name!r} only as a whole "
+                    "path segment, not a partial segment"
+                )
 
 
 def check_templates(
     sign_in: "ApiKeySignIn", *, urls: list[str], values: list[str], where: str
 ) -> None:
-    """Templates name only the sign-in's fields, and a URL only its choices."""
+    """Templates name only the sign-in's fields, and a URL only its choices
+    or pattern fields in allowed positions."""
     known = sign_in.field_names()
     choices = sign_in.choice_names()
+    patterns = sign_in.pattern_names()
     for url in urls:
         for name in template_fields(url):
-            if name not in choices:
+            if name not in known:
+                raise ValueError(f"{where}'s URL names an unknown field {name!r}")
+            if name not in choices and name not in patterns:
                 raise ValueError(
                     f"{where}'s URL may name only a choice field, not {name!r}"
                 )
+            if name in patterns:
+                _check_pattern_url(url, name, where)
     for value in values:
         for name in template_fields(value):
             if name not in known:

@@ -6,6 +6,7 @@ from switch_core.connections.loader import (
     CATALOG,
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
+    ApiKeyField,
     CatalogError,
     load_catalog,
     with_access_profiles,
@@ -26,13 +27,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_snowflake():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "snowflake",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +42,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "snowflake",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["snowflake"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -348,7 +352,11 @@ def test_rejects_a_slug_that_differs_from_its_directory(catalog_copy):
 
 
 def test_rejects_an_enabled_entry_without_a_skill(catalog_copy):
-    shutil.rmtree(catalog_copy / "github" / "skill")
+    skill_dir = catalog_copy / "github" / "skill"
+    for p in skill_dir.glob("**/*"):
+        if p.is_file():
+            p.unlink()
+    shutil.rmtree(skill_dir, ignore_errors=True)
     with pytest.raises(CatalogError, match="github is enabled but has no skill"):
         load_catalog(catalog_copy)
 
@@ -1036,6 +1044,184 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     assert definition.token is not None
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_snowflake_entry_loads_and_configures_mcp_and_identity():
+    definition = CATALOG["snowflake"].definition
+    assert definition.adapter == "api_key"
+    assert definition.enabled is True
+    assert definition.category == "Analytics"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret, f.pattern is not None) for f in sign_in.fields] == [
+        ("account", False, True),
+        ("database", False, True),
+        ("schema", False, True),
+        ("server", False, True),
+        ("pat", True, False),
+    ]
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.name == "snowflake"
+    assert (
+        server.url
+        == "https://{account}.snowflakecomputing.com/api/v2/databases/{database}/schemas/{schema}/mcp-servers/{server}"
+    )
+    expected_headers = {
+        "Authorization": "Bearer {pat}",
+        "X-Snowflake-Authorization-Token-Type": "PROGRAMMATIC_ACCESS_TOKEN",
+    }
+    assert server.headers == expected_headers
+    assert sign_in.identity.method == "GET"
+    assert (
+        sign_in.identity.url
+        == "https://{account}.snowflakecomputing.com/api/v2/databases/{database}/schemas/{schema}"
+    )
+    assert sign_in.identity.headers == expected_headers
+    assert sign_in.identity.account_id is None
+    assert sign_in.identity.label is None
+    assert definition.token is not None
+    assert definition.token.kind == "pass_through"
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+
+    skill = CATALOG["snowflake"].skill_files["SKILL.md"]
+    assert "Cortex" in skill
+    assert "key_never_expires" in skill
+
+
+def test_loads_an_api_key_entry_with_pattern_fields(catalog_copy):
+    entry = """slug: example
+name: Example
+category: Observability
+description: Query Example telemetry.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - { name: api_key, label: API key, secret: true }
+      - name: tenant
+        label: Tenant
+        secret: false
+        pattern: "^[a-z0-9]+$"
+      - name: dataset
+        label: Dataset
+        secret: false
+        pattern: "^[a-z0-9_]+$"
+    identity:
+      method: GET
+      url: "https://{tenant}.example.test/api/v1/{dataset}"
+      headers: { X-Key: "{api_key}" }
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    - name: example
+      url: "https://{tenant}.example.test/mcp/{dataset}"
+      headers: { Authorization: "Token token={api_key}" }
+tools: { mode: pass_through }
+"""
+    _write_example(catalog_copy, entry)
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.adapter == "api_key"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert sign_in.pattern_names() == {"tenant", "dataset"}
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        (
+            "https://prefix-{tenant}.example.test/mcp",
+            "not a partial host label",
+        ),
+        (
+            "https://{tenant}-suffix.example.test/mcp",
+            "not a partial host label",
+        ),
+        (
+            "https://{tenant}/mcp",
+            "must have a fixed domain",
+        ),
+        (
+            "https://{tenant}.test/mcp",
+            "must have a fixed domain",
+        ),
+        (
+            "https://example.test/mcp/{dataset}-suffix",
+            "not a partial segment",
+        ),
+        (
+            "https://example.test/mcp/prefix-{dataset}",
+            "not a partial segment",
+        ),
+        (
+            "https://example.test/mcp?tenant={tenant}",
+            "not in the query",
+        ),
+    ],
+)
+def test_rejects_unsafe_pattern_field_url_templates(catalog_copy, url, message):
+    entry = f"""slug: example
+name: Example
+category: Observability
+description: Query Example telemetry.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - {{ name: api_key, label: API key, secret: true }}
+      - name: tenant
+        label: Tenant
+        secret: false
+        pattern: "^[a-z0-9]+$"
+      - name: dataset
+        label: Dataset
+        secret: false
+        pattern: "^[a-z0-9_]+$"
+    identity:
+      method: GET
+      url: "https://{{tenant}}.example.test/api/v1/validate"
+      headers: {{ X-Key: "{{api_key}}" }}
+token: {{ kind: pass_through, max_lifetime: null }}
+mcp:
+  servers:
+    - name: example
+      url: "{url}"
+      headers: {{ Authorization: "Token token={{api_key}}" }}
+tools: {{ mode: pass_through }}
+"""
+    _write_example(catalog_copy, entry)
+    with pytest.raises(CatalogError, match=message):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_invalid_api_key_field_pattern():
+    with pytest.raises(ValueError, match="not a valid regular expression"):
+        ApiKeyField(name="tenant", label="Tenant", secret=False, pattern="[unclosed")
+
+    with pytest.raises(ValueError, match="one of the three"):
+        ApiKeyField(
+            name="tenant",
+            label="Tenant",
+            secret=False,
+            choices=["a", "b"],
+            pattern="^[a-z]+$",
+        )
+
+    with pytest.raises(ValueError, match="one of the three"):
+        ApiKeyField(
+            name="tenant",
+            label="Tenant",
+            secret=True,
+            pattern="^[a-z]+$",
+        )
 
 
 def test_loads_an_api_key_entry(catalog_copy):
