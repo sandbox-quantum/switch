@@ -1,7 +1,48 @@
 slug: gitlab
 name: GitLab
 category: Source control
-description: Work with GitLab projects, merge requests and issues.
-enabled: false
+description: Read and update GitLab projects, issues, merge requests and pipelines, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # GitLab access tokens expire after 2 hours (documented expires_in: 7200);
+  # refresh tokens rotate on use.
+  refresh: rotating
+  oauth:
+    # GitLab.com dynamic client registration (RFC 7591) grants only the `mcp` scope
+    # without refresh or user scopes, preventing token renewal, identity lookup,
+    # or read-only access.
+    registration: static
+    client_settings: GITLAB
+    redirect: [core]
+    authorization_url: https://gitlab.com/oauth/authorize
+    token_url: https://gitlab.com/oauth/token
+    revocation_url: https://gitlab.com/oauth/revoke
+    unchecked: >-
+      Switch cannot check the redirect URL. Connect once to confirm.
+  identity:
+    url: https://gitlab.com/api/v4/user
+    account_id: id
+    label: username
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  servers:
+    # Requires GitLab.com; a top-level group owner or instance admin must
+    # allow MCP access. Self-managed instances are not supported today.
+    - { name: gitlab, url: "https://gitlab.com/api/v4/mcp" }
+access:
+  # GitLab offers granular read scopes (read_api, read_user), but 'api' is
+  # GitLab's only write scope for modifying projects, issues, merge requests
+  # and pipelines, and it also reaches delete endpoints.
+  read:
+    scopes:
+      - mcp
+      - read_api
+      - read_user
+  write:
+    scopes:
+      - mcp
+      - api
+      - read_user
+tools: { mode: pass_through }
