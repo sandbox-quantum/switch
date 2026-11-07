@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { describeEnv } from '../core/env.ts';
+import { HistoryCheck } from '../core/history.ts';
 import { RunContext } from '../core/run.ts';
 import { admit, assertValidHeaders } from '../core/scenario.ts';
 import {
@@ -26,6 +27,7 @@ import { probeSessionRoutes } from './session-required.ts';
 assertValidHeaders(FAST_SCENARIOS.map((scenario) => scenario.header));
 
 const run = new RunContext();
+const historyCheck = HistoryCheck.fromEnv(process.env);
 let lane: LaneResolution;
 let watch: ServerLogWatch;
 
@@ -65,6 +67,14 @@ describe('fast lane', () => {
           await scenario.run({ env, names, switchClient, mattermost, fixtures, log });
         } catch (error) {
           failure = error;
+        }
+        // Before teardown, which deletes the agents and with them their own events.
+        if (failure === null && historyCheck !== null) {
+          try {
+            await historyCheck.verify();
+          } catch (error) {
+            failure = error;
+          }
         }
         leftovers = await fixtures.teardown();
       } finally {
@@ -161,6 +171,16 @@ describe('fast lane, derived checks', () => {
     if (!env.keepArtifacts) expect(leftovers, 'teardown left artefacts behind').toEqual([]);
     expectNoServerErrors(serverErrors, observer.tag, 'while this ran');
   }, 180_000);
+
+  // A check over an empty history passes anything, so say the run gave it agents' own events.
+  it('the history checks saw agents\' own events', async (context) => {
+    if (historyCheck === null) return context.skip('SWITCH_E2E_HISTORY_CHECK is not set');
+    expect(historyCheck.checks, 'no history check ran').toBeGreaterThan(0);
+    expect(
+      historyCheck.mostEvents,
+      'no history check found an own event, so none of them checked delivery'
+    ).toBeGreaterThan(0);
+  });
 
   // Last, so they see whatever the run left the server in.
   it('the server is still ready after the run', async (context) => {

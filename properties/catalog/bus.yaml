@@ -16,7 +16,7 @@ properties:
       reader works from its own cursor, so a gap that fills in later would be
       skipped for good.
     gaps:
-      system: the history checker is a later step of the first slice
+      system: a finished run cannot show it, because retention and erasing a person delete rows and leave holes; it needs the commit order (the assertion log)
   - id: bus.lost-wakeup-only-delays
     title: A lost announcement delays a read and nothing more
     statement: >

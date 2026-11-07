@@ -24,12 +24,10 @@ properties:
     spec: delivery.qnt::OwnSeqContiguous
     levels: [model, code, system]
     owner: platform
-    status: proposed
+    status: checked
     notes: >
       Numbers come from `agent_event_heads`, not the highest stored row,
       because retention deletes old rows.
-    gaps:
-      system: the history checker is a later step of the first slice
   - id: delivery.addressed-exactly-once
     title: An addressed message reaches its agent exactly once
     statement: >
@@ -40,9 +38,7 @@ properties:
     spec: delivery.qnt::AddressedExactlyOnce
     levels: [model, code, system]
     owner: platform
-    status: proposed
-    gaps:
-      system: the history checker is a later step of the first slice
+    status: checked
   - id: delivery.no-silent-loss
     title: A resuming agent misses nothing without being told
     statement: >
@@ -54,13 +50,11 @@ properties:
     spec: delivery.qnt::NoSilentLoss
     levels: [model, code, system]
     owner: platform
-    status: proposed
+    status: checked
     notes: >
       Retention deletes old rows (`agent_event_drops`) and a restarted server
       numbers from a new boot (`agent_event_heads.first_seq`); both must
       surface as a gap, never as silence.
-    gaps:
-      system: the history checker is a later step of the first slice
   - id: delivery.unaddressed-silent
     title: An unaddressed message notifies no one
     statement: A message not addressed to an agent produces no notification for it.
@@ -88,9 +82,7 @@ properties:
     spec: delivery.qnt::NoEventsAfterLeave
     levels: [model, code, system]
     owner: platform
-    status: proposed
+    status: checked
     notes: >
       `EventBuffer.forget_room` locks the agent's head row before deleting, and
       `store` reads membership after taking that lock.
-    gaps:
-      system: the history checker is a later step of the first slice
