@@ -17,7 +17,7 @@ NAME_CHAR = r"[A-Za-z0-9._-]"
 # a valid character in agent and role names.
 _EMPHASIS = re.compile(r"[*~]")
 
-_MENTION_TOKEN = re.compile(rf"@({NAME_CHAR}+)")
+_MENTION_TOKEN = re.compile(rf"(?<!{NAME_CHAR})@({NAME_CHAR}+)")
 
 
 def strip_emphasis(text: str) -> str:
@@ -31,7 +31,12 @@ def mention_regex(name: str) -> re.Pattern[str]:
     boundary, so a prefix name is never matched inside a longer name. Kept
     per name: `re`'s own cache holds 512 patterns, fewer than the names a
     large deployment tags."""
-    return re.compile(re.escape(f"@{name}") + rf"(?!{NAME_CHAR})", re.IGNORECASE)
+    return re.compile(
+        rf"(?<!{NAME_CHAR})"
+        + re.escape(f"@{name}")
+        + rf"(?!{NAME_CHAR}*[A-Za-z0-9])",
+        re.IGNORECASE,
+    )
 
 
 def mention_tokens(text: str) -> list[str]:
@@ -40,7 +45,11 @@ def mention_tokens(text: str) -> list[str]:
     Tokens span the same characters a name may contain, so each token matches
     what `mention_regex` would treat as one whole mention.
     """
-    return _MENTION_TOKEN.findall(strip_emphasis(text))
+    return [
+        token.rstrip("._-")
+        for token in _MENTION_TOKEN.findall(strip_emphasis(text))
+        if token.rstrip("._-")
+    ]
 
 
 def unique_mention_tokens(text: str) -> list[str]:
