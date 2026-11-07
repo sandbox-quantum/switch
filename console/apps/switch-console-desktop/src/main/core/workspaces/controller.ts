@@ -104,6 +104,22 @@ import {
   requireLinkConfirmationOnServer,
   searchDirectoryOnServer,
 } from '@main/core/switch-servers/identities';
+import {
+  createLibraryItem,
+  deleteLibraryItem,
+  fetchLibraryItem,
+  fetchLibraryItemRooms,
+  fetchLibraryItems,
+  fetchReferenceTypes,
+  updateLibraryItem,
+  addPackageMember,
+  fetchPackageMembers,
+  removePackageMember,
+  createReferenceType,
+  deleteReferenceType,
+  fetchManagedReferenceTypes,
+  updateReferenceType,
+} from '@main/core/switch-servers/library-client';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
 import {
@@ -132,6 +148,21 @@ import {
 } from '@main/core/telemetry/narrow';
 import { telemetryService, trackEvent, trackEventAt } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
+import type {
+  LibraryDeleteResult,
+  LibraryDocument,
+  LibraryItem,
+  LibraryItemChanges,
+  LibraryItemInput,
+  LibraryItemRoom,
+  LibraryKind,
+  PackageMemberKind,
+  ManagedReferenceType,
+  PackageMemberRemoval,
+  ReferenceTypeChanges,
+  ReferenceTypeInput,
+  ReferenceTypeOption,
+} from '@shared/core/switch-servers/library';
 import type {
   SlackOwnAppSetup,
   SlackTokensChecked,
@@ -1079,6 +1110,123 @@ export const workspacesController = createRPCController({
   }): Promise<RoomDocumentContent> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchRoomDocument(server, params.roomId, params.documentId)
+    ),
+
+  /** The workspace library's references or documents the signed-in person may read. */
+  listLibraryItems: (params: { workspaceId: string; kind: LibraryKind }): Promise<LibraryItem[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchLibraryItems(server, params.kind)),
+
+  /** One library item; a document comes with its content. */
+  getLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+  }): Promise<LibraryItem | LibraryDocument> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchLibraryItem(server, params.kind, params.itemId)
+    ),
+
+  /** Add a reference or document to the library. Refusals propagate in the gateway's words. */
+  createLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    input: LibraryItemInput;
+  }): Promise<LibraryItem> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createLibraryItem(server, params.kind, params.input)
+    ),
+
+  /** Change a library item. */
+  updateLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+    changes: LibraryItemChanges;
+  }): Promise<LibraryItem | LibraryDocument> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateLibraryItem(server, params.kind, params.itemId, params.changes)
+    ),
+
+  /** Delete a library item, detaching it from its rooms and packages. */
+  deleteLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+  }): Promise<LibraryDeleteResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteLibraryItem(server, params.kind, params.itemId)
+    ),
+
+  /** The rooms a library item is attached to. */
+  listLibraryItemRooms: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+  }): Promise<LibraryItemRoom[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchLibraryItemRooms(server, params.kind, params.itemId)
+    ),
+
+  /** The references or documents a package holds. */
+  listPackageMembers: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+  }): Promise<LibraryItem[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchPackageMembers(server, params.packageId, params.kind)
+    ),
+
+  /** Put a reference or document in a package, or take it out. Refusals propagate in the gateway's words. */
+  addPackageMember: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+    memberId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addPackageMember(server, params.packageId, params.kind, params.memberId)
+    ),
+
+  removePackageMember: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+    memberId: string;
+  }): Promise<PackageMemberRemoval> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      removePackageMember(server, params.packageId, params.kind, params.memberId)
+    ),
+
+  /** The types a new reference may be given. */
+  listReferenceTypes: (params: { workspaceId: string }): Promise<ReferenceTypeOption[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchReferenceTypes(server)),
+
+  /** The reference types the signed-in person may change. */
+  listManagedReferenceTypes: (params: { workspaceId: string }): Promise<ManagedReferenceType[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchManagedReferenceTypes(server)),
+
+  /** Add, change or delete a reference type. Refusals propagate in the gateway's words. */
+  createReferenceType: (params: {
+    workspaceId: string;
+    input: ReferenceTypeInput;
+  }): Promise<ManagedReferenceType> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createReferenceType(server, params.input)
+    ),
+
+  updateReferenceType: (params: {
+    workspaceId: string;
+    type: string;
+    changes: ReferenceTypeChanges;
+  }): Promise<ManagedReferenceType> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateReferenceType(server, params.type, params.changes)
+    ),
+
+  deleteReferenceType: (params: { workspaceId: string; type: string }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteReferenceType(server, params.type)
     ),
 
   /** The rooms a room points at. */
