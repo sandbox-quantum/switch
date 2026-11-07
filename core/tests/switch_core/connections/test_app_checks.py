@@ -17,6 +17,7 @@ from switch_core.connections.loader import CATALOG
 
 REDIRECT = "https://switch.example.test/gateway/service-connections/google-workspace/flows/callback"
 GOOGLE = CATALOG["google-workspace"].definition
+SALESFORCE = CATALOG["salesforce"].definition
 
 
 def _http(status: int, body: object) -> httpx.AsyncClient:
@@ -50,6 +51,32 @@ class TestOAuthClient:
         [check] = result.checks
         assert (check.ok, check.field) == (ok, field)
         assert says in check.message
+
+    @pytest.mark.parametrize(
+        ("status", "error", "ok", "says", "field"),
+        [
+            # Measured: the right client, a wrong secret and a wrong redirect
+            # all answer this, and a made-up client id answers invalid_client_id.
+            (400, "unknown_error", True, "saves it unchecked", None),
+            (400, "invalid_client_id", False, "doesn't recognise", "client_secret"),
+            (401, "invalid_client", False, "doesn't recognise", "client_secret"),
+            (400, "redirect_uri_mismatch", False, REDIRECT, None),
+            (400, "something_new", False, "something_new", None),
+        ],
+    )
+    async def test_reads_salesforces_answer(
+        self, status: int, error: str, ok: bool, says: str, field: str | None
+    ) -> None:
+        result = await check_oauth_client(
+            _http(status, {"error": error}), SALESFORCE, _google(), REDIRECT
+        )
+        [check] = result.checks
+        assert (check.ok, check.field) == (ok, field)
+        assert says in check.message
+        # Saved unchecked, never called verified, with what to confirm.
+        if ok:
+            assert "accepts" not in check.message
+            assert check.note == SALESFORCE.auth.oauth.unchecked
 
     async def test_an_inconclusive_answer_the_entry_lists_saves_unchecked(
         self,

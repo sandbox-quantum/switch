@@ -19,20 +19,20 @@ PLACEHOLDERS = {
     "new-relic",
     "notion",
     "linear",
-    "salesforce",
     "box",
     "canva",
     "vercel",
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_its_live_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "salesforce",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "salesforce",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["salesforce"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +178,47 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_salesforce_entry_signs_in_as_salesforce_takes_it():
+    definition = CATALOG["salesforce"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # An External Client App each server's operator saves.
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "SALESFORCE",
+    )
+    # Core's own callback, as Google's and Airtable's.
+    assert oauth.redirect == ["core"]
+    assert (oauth.authorization_url, oauth.token_url, oauth.revocation_url) == (
+        "https://login.salesforce.com/services/oauth2/authorize",
+        "https://login.salesforce.com/services/oauth2/token",
+        "https://login.salesforce.com/services/oauth2/revoke",
+    )
+    # Salesforce answers a revocation with a 302, not to be followed.
+    assert oauth.revocation_redirects is True
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == (
+        "https://login.salesforce.com/services/oauth2/userinfo"
+    )
+    assert definition.mcp is not None
+    # SObject Mutations only: no server that deletes.
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        (
+            "salesforce",
+            "https://api.salesforce.com/platform/mcp/v1/platform/sobject-mutations",
+        )
+    ]
+    # One level, read and write, said so in the description and the skill.
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == definition.access.write.scopes
+    assert "mcp_api" in (definition.access.write.scopes or [])
+    assert "cannot delete" in definition.description
+    skill = CATALOG["salesforce"].skill_files["SKILL.md"]
+    assert "This connection can write." in skill
+    assert "It cannot\n  delete them" in skill
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
