@@ -32,12 +32,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "google-workspace",
     ]
@@ -46,6 +48,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -587,6 +590,47 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_loads_a_post_identity_call(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "  identity:\n    url: https://api.example.test/me\n",
+            "  identity:\n    method: POST\n    url: https://api.example.test/me\n",
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert identity.method == "POST"
+    assert identity.body is None
+
+
+def test_loads_a_post_identity_call_with_a_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "  identity:\n    url: https://api.example.test/me\n",
+            "  identity:\n    method: POST\n    url: https://api.example.test/me\n"
+            '    body: { "aud": "api" }\n',
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert identity.body == {"aud": "api"}
+
+
+def test_rejects_a_get_identity_call_with_a_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "  identity:\n    url: https://api.example.test/me\n",
+            "  identity:\n    url: https://api.example.test/me\n"
+            '    body: { "aud": "api" }\n',
+        ),
+    )
+    with pytest.raises(CatalogError, match="a GET identity call sends no body"):
+        load_catalog(catalog_copy)
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
@@ -1139,6 +1183,68 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
         load_catalog(catalog_copy)
 
 
+def test_the_shipped_dropbox_entry_signs_in_with_scope_split_levels():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["loopback", "core"],
+    )
+    assert oauth.client_settings == "DROPBOX"
+    # Dropbox matches a callback URI exactly, port included.
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.authorization_url == "https://www.dropbox.com/oauth2/authorize"
+    assert oauth.token_url == "https://api.dropboxapi.com/oauth2/token"
+    assert oauth.revocation_url == "https://api.dropboxapi.com/2/auth/token/revoke"
+    assert oauth.revocation_auth == "bearer_access_token"
+    # Dropbox revokes a refresh-token family, not every independent sign-in.
+    assert oauth.revocation_ends_grant is False
+    # A refresh token is issued only for offline access.
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    assert definition.auth.refresh == "reusable"
+    identity = definition.auth.identity
+    assert identity is not None
+    # get_current_account is a parameterless POST; there is no GET form.
+    assert identity.method == "POST"
+    assert identity.url == "https://api.dropboxapi.com/2/users/get_current_account"
+    assert (identity.account_id, identity.label) == ("account_id", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        14400,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    read = definition.access.read.scopes
+    write = definition.access.write.scopes
+    assert read == [
+        "account_info.read",
+        "files.metadata.read",
+        "files.content.read",
+        "sharing.read",
+        "file_requests.read",
+    ]
+    # Dropbox scopes split read from write, so the write grant adds the
+    # write scopes rather than reusing the read list.
+    assert write == read + [
+        "files.content.write",
+        "sharing.write",
+        "file_requests.write",
+    ]
+    # Dropbox's scopes split read from write, so both levels are honest:
+    # the read grant's token holds read scopes only and Dropbox refuses its
+    # write calls. Tools pass through until classified (the loader refuses
+    # listed tools on an oauth entry).
+    assert definition.tools is not None
+    assert definition.tools.mode == "pass_through"
+    assert definition.level_tools("read") == []
+    assert definition.level_tools("write") == []
+
+
 def _rewrite_google(catalog_copy, old, new):
     path = catalog_copy / "google-workspace" / "connection.yaml"
     text = path.read_text()
@@ -1200,3 +1306,36 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize("value", ["unknown", "bearer", "access_token"])
+def test_revocation_auth_rejects_unknown_modes(value):
+    from switch_core.connections.loader import OAuthClient
+
+    with pytest.raises(ValueError):
+        OAuthClient(
+            registration="static",
+            client_settings="EXAMPLE",
+            redirect=["core"],
+            revocation_url="https://example.test/revoke",
+            revocation_auth=value,
+        )
+
+
+def test_bearer_revocation_requires_fixed_endpoint():
+    from switch_core.connections.loader import OAuthClient
+
+    with pytest.raises(ValueError, match="fixed revocation_url"):
+        OAuthClient(
+            registration="static",
+            client_settings="EXAMPLE",
+            redirect=["core"],
+            remove_access="Remove it",
+            revocation_auth="bearer_access_token",
+        )
+
+
+def test_dropbox_static_public_pkce_needs_no_secret():
+    definition = CATALOG["dropbox"].definition
+    assert definition.auth.oauth.public_client
+    assert definition.auth.oauth.registration == "static"
