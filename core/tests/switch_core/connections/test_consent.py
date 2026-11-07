@@ -40,11 +40,12 @@ def test_scopes_no_level_names_are_ignored():
     [["grafana:read", "grafana:query"], ["grafana:read", "grafana:write"]],
 )
 def test_part_of_writing_is_refused(granted):
-    with pytest.raises(
-        FlowError,
-        match="^Grafana Cloud granted part of the write access Switch asks for. Connect again and allow all of it, or allow only read access.$",
-    ):
+    with pytest.raises(FlowError) as caught:
         _consent(granted)
+    assert str(caught.value) == (
+        "Grafana Cloud granted part of the write access Switch asks for. "
+        "Connect again and allow all of it, or allow only read access."
+    )
 
 
 def test_less_than_reading_is_still_refused():

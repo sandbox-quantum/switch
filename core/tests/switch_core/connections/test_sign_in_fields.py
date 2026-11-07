@@ -121,6 +121,24 @@ def test_values_are_held_to_the_pattern_and_the_safe_set():
             sign_in_field_values(fields, values)
 
 
+@pytest.mark.parametrize(
+    "value", ["https://team-a", "team-a/x", "team-a:443", "team a", "", "team-a\n"]
+)
+def test_the_safe_set_applies_even_with_a_permissive_field_pattern(value):
+    fields = load(
+        FIELDS_ENTRY.replace("^[a-z0-9-]{1,30}$", "^[\\s\\S]*$")
+    ).auth.oauth.fields
+    with pytest.raises(ValueError):
+        sign_in_field_values(fields, {"tenant": value})
+
+
+def test_the_length_limit_applies_even_with_a_permissive_field_pattern():
+    fields = load(FIELDS_ENTRY.replace("^[a-z0-9-]{1,30}$", "^.*$")).auth.oauth.fields
+    assert sign_in_field_values(fields, {"tenant": "a" * 253}) == {"tenant": "a" * 253}
+    with pytest.raises(ValueError):
+        sign_in_field_values(fields, {"tenant": "a" * 254})
+
+
 def test_render_mcp_url():
     assert (
         render_mcp_url(URL, {"tenant": "team-a"})

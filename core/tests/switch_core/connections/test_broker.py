@@ -1017,6 +1017,57 @@ class TestPassThrough:
         )
         assert grant["mcp_servers"][0]["headers"] == {"Authorization": "Bearer {token}"}
 
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            {},
+            {"sign_in_fields": None},
+            {"sign_in_fields": []},
+            {"sign_in_fields": {}},
+            {"sign_in_fields": {"tenant": "team-a/x"}},
+        ],
+    )
+    async def test_invalid_saved_fields_omit_only_the_affected_grant(
+        self, session_factory, tmp_path, secret
+    ) -> None:
+        pt = await _pass_through(
+            session_factory,
+            tmp_path / "c",
+            expires_in=3000,
+            entry=FIELDS_ENTRY,
+            secret=secret,
+            account_id="team-a:acct-1",
+        )
+        async with session_factory() as session:
+            await STORE.save_connection(
+                session,
+                user_id=pt.world.owner.id,
+                service="other",
+                consent="read",
+                granted_scopes=[],
+                account_id="other-account",
+                external_identity="ada@example.test",
+                encrypted_secret=TEST_KEYRING.encrypt("{}"),
+                oauth_client_id=None,
+            )
+            await STORE.save_grant(
+                session,
+                agent_id=pt.world.agent.id,
+                owner_id=pt.world.owner.id,
+                service="other",
+                access="read",
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id="other-account",
+                created_by=pt.world.owner.id,
+            )
+            await session.commit()
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            grants = await pt.broker.grants_for(session, agent, Principal.agent_key())
+        assert [grant["service"] for grant in grants] == ["other"]
+
     async def test_a_grant_for_another_account_names_no_server(
         self, session_factory, tmp_path
     ) -> None:

@@ -65,6 +65,7 @@ from switch_core.connections.loader import (
     ConnectionDefinition,
     TokenPolicy,
     render_mcp_url,
+    sign_in_field_values,
 )
 from switch_core.connections.organization_apps import (
     OrganizationApp,
@@ -1364,7 +1365,15 @@ class ServiceBroker:
                 )
                 if connection is None or connection.account_id != grant.account_id:
                     continue
-                values = self._secret(connection).values[SIGN_IN_FIELDS]
+                saved_fields = self._secret(connection).values.get(SIGN_IN_FIELDS)
+                if not isinstance(saved_fields, dict):
+                    continue
+                try:
+                    values = sign_in_field_values(
+                        entry.definition.auth.oauth.fields, saved_fields
+                    )
+                except ValueError:
+                    continue
             skill = None if entry is None else entry.skill_files.get("SKILL.md")
             mcp = None if entry is None else entry.definition.mcp
             cli = None if entry is None else entry.definition.cli
