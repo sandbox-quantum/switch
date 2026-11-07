@@ -12,17 +12,22 @@ import { ControllerStore } from './store';
 let dir: string;
 let bundle: string;
 let stderr: string[];
+let stdout: string[];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-main-'));
   bundle = join(dir, 'shared-host.mjs');
   writeFileSync(bundle, '');
   stderr = [];
+  stdout = [];
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
     stderr.push(String(chunk));
     return true;
   });
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    stdout.push(String(chunk));
+    return true;
+  });
 });
 
 afterEach(() => {
@@ -272,6 +277,62 @@ describe('main', () => {
       EXIT_CONFIGURATION
     );
     expect(lastLine()).toMatch(/not enrolled/);
+  });
+
+  it('prints status with --json when enrolled and when not enrolled', async () => {
+    // When not enrolled
+    const notEnrolledCode = await main(['status', '--data-dir', dir, '--json']);
+    expect(notEnrolledCode).toBe(1);
+    const notEnrolledJson = JSON.parse(stdout.join(''));
+    expect(notEnrolledJson).toEqual({ enrolled: false, dataDir: dir });
+
+    // When enrolled
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'worker-1',
+      enrolledAt: '2026-10-01T00:00:00.000Z',
+    });
+    store.close();
+
+    stdout = [];
+    const enrolledCode = await main(['status', '--data-dir', dir, '--json']);
+    expect(enrolledCode).toBe(EXIT_OK);
+    const enrolledJson = JSON.parse(stdout.join(''));
+    expect(enrolledJson.enrolled).toBe(true);
+    expect(enrolledJson.controller.id).toBe('controller-1');
+    expect(enrolledJson.controller.name).toBe('worker-1');
+    expect(enrolledJson.controller.server).toBe('https://switch.example.com');
+  });
+
+  it('prints readable status output in plain text mode', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-99',
+      server: 'https://switch.example.com',
+      name: 'app-runner',
+      enrolledAt: '2026-10-01T00:00:00.000Z',
+    });
+    store.close();
+
+    const code = await main(['status', '--data-dir', dir]);
+    expect(code).toBe(EXIT_OK);
+    const output = stdout.join('');
+    expect(output).toContain('Controller');
+    expect(output).toContain('app-runner');
+    expect(output).toContain('controller-99');
+    expect(output).toContain('https://switch.example.com');
+  });
+
+  it('prints help text and formats usage', async () => {
+    const code = await main(['help']);
+    expect(code).toBe(EXIT_OK);
+    const output = stdout.join('');
+    expect(output).toContain('Usage:');
+    expect(output).toContain('Commands:');
+    expect(output).toContain('status');
+    expect(output).toContain('doctor');
   });
 });
 
