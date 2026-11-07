@@ -31,12 +31,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "github",
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "github",
         "google-workspace",
@@ -45,6 +47,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["cloudflare"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -176,6 +179,33 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_cloudflare_entry_keeps_its_scopes_minimal():
+    definition = CATALOG["cloudflare"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.revocation_discovered) == (
+        "oauth",
+        "dynamic",
+        True,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("cloudflare", "https://mcp.cloudflare.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = set(definition.access.read.scopes)
+    write = set(definition.access.write.scopes)
+    assert {"user:read", "account:read", "offline_access"} <= read
+    assert read < write
+    assert {"zone.write", "dns.write"} <= write
+    # No account-admin, membership or token-management scopes.
+    assert not any(
+        "memberships" in s or "api-tokens" in s or ".revoke" in s for s in write
+    )
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.account_id == "result.id"
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
