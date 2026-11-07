@@ -105,6 +105,16 @@ class OAuthClient(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     registration: Literal["dynamic", "static"]
     client_settings: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,62}$")
+    # A public static client: PKCE proves it at sign-in, so the operator's
+    # settings file holds only a client_id. Only a connector whose vendor
+    # supports public clients says so here; every other static client still
+    # needs a client_secret in its file.
+    public_client: bool = False
+    # OIDC requests needed for identity/refresh, not resource authorization.
+    # Opt-in only: an explicit token scope response need not echo these.
+    request_scopes: list[Literal["offline_access", "openid", "profile", "email"]] = (
+        Field(default_factory=list)
+    )
     redirect: list[RedirectMode] = Field(min_length=1)
     loopback_ports: list[Annotated[int, Field(ge=1024, le=65535)]] | None = Field(
         default=None, min_length=1, max_length=10
@@ -134,6 +144,8 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "client_settings names a static client's settings, and only one's"
             )
+        if self.public_client and self.registration != "static":
+            raise ValueError("public_client names a static client, and only one's")
         if len(set(self.redirect)) != len(self.redirect):
             raise ValueError("a redirect mode is listed twice")
         if (self.authorization_url is None) != (self.token_url is None):
@@ -526,8 +538,14 @@ class LevelAccess(BaseModel):
 
 class ConnectionAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    read: LevelAccess
+    read: LevelAccess | None = None
     write: LevelAccess | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_level(self) -> "ConnectionAccess":
+        if self.read is None and self.write is None:
+            raise ValueError("access needs at least one read or write level")
+        return self
 
 
 class AccessProfile(BaseModel):
@@ -691,6 +709,8 @@ class ConnectionDefinition(BaseModel):
             )
 
     def _check_github(self) -> None:
+        if self.access is not None and self.access.read is None:
+            raise ValueError("a github entry needs a read level")
         if self.auth.oauth is not None or self.auth.identity is not None:
             raise ValueError(
                 "the github adapter takes its client from the GitHub App settings"
@@ -725,6 +745,28 @@ class ConnectionDefinition(BaseModel):
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
         oauth = self.auth.oauth
+        if oauth is not None and oauth.request_scopes:
+            if len(set(oauth.request_scopes)) != len(oauth.request_scopes):
+                raise ValueError("request-only scopes must be unique")
+            levels = [
+                level
+                for access in [
+                    self.access,
+                    *(p.access for p in self.access_profiles.values()),
+                ]
+                if access is not None
+                for level in (access.read, access.write)
+                if level is not None
+            ]
+            if not levels or any(
+                not level.scopes
+                or set(level.scopes) <= {"offline_access", "openid", "profile", "email"}
+                or set(level.scopes) & set(oauth.request_scopes)
+                for level in levels
+            ):
+                raise ValueError(
+                    "request-only scopes need separate resource scopes in every level"
+                )
         # Discovery starts from an MCP server, so without one the catalog names
         # the endpoints, and the client is the operator's.
         if self.mcp is None and oauth is not None:
