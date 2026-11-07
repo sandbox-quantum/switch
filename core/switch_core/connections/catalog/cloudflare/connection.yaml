@@ -1,0 +1,55 @@
+slug: cloudflare
+name: Cloudflare
+category: Infrastructure
+description: Inspect and manage Cloudflare Workers, DNS records, zones and logs.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # [MEASURED] Rotating single-use refresh token on POST https://mcp.cloudflare.com/token.
+  refresh: rotating
+  oauth:
+    # [MEASURED] RFC 7591 dynamic client registration verified via POST https://mcp.cloudflare.com/register (201 Created).
+    # Discovered via RFC 9728 and RFC 8414 metadata from https://mcp.cloudflare.com/mcp.
+    registration: dynamic
+    # [MEASURED] Loopback redirect on 127.0.0.1 (ports 39231-39235) accepted with PKCE S256.
+    redirect: [loopback]
+    # [DOCUMENTED] Revocation advertised at token endpoint in metadata.
+    revocation_discovered: true
+  identity:
+    # [DOCUMENTED] Standard Cloudflare REST API current-user identity endpoint.
+    url: https://api.cloudflare.com/client/v4/user
+    # [MEASURED] Field 'result.id' from GET /client/v4/user response.
+    account_id: result.id
+    # [MEASURED] Field 'result.email' from GET /client/v4/user response.
+    label: result.email
+# [MEASURED] Access token lifetime is 3,600 seconds (1 hour). Passes through to agent session.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # [MEASURED] Official Cloudflare remote MCP server endpoint.
+    - { name: cloudflare, url: "https://mcp.cloudflare.com/mcp" }
+access:
+  # Least access requested: only identity verification, offline refresh,
+  # and read of zones, DNS, and worker scripts. No admin, billing, or account-wide scopes.
+  read:
+    scopes:
+      - offline_access
+      - user:read
+      - account:read
+      - zone:read
+      - dns:read
+      - workers:read
+  # Write adds zone, DNS, and worker editing capabilities.
+  write:
+    scopes:
+      - offline_access
+      - user:read
+      - account:read
+      - zone:read
+      - dns:read
+      - workers:read
+      - zone:edit
+      - dns:edit
+      - workers:edit
+tools: { mode: pass_through }
