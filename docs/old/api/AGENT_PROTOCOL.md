@@ -530,6 +530,27 @@ matches, and the reply says as much rather than leaving them guessing.
 
 Attachments carry a pointer, never bytes; fetch via the media endpoint.
 
+#### `message_edit`
+
+```json
+{ "message_id": "$abc…", "edit_event_id": "$def…", "new_body": "…",
+  "revision": 1785569400000, "sender": "@switch-slack-alice:switch.local",
+  "sender_name": "alice", "timestamp": 1785569400000 }
+```
+
+Someone edited a message this agent was already given. It goes only to the
+agents the original went to, read from the original's own events: changing the
+mentions in an edit addresses nobody new, and an edit never starts a turn.
+`message_id` is the original's. The highest `revision` wins, and a repeated
+revision is delivered once. An agent that does not know this type can ignore it.
+
+A session applies it only while the turn is still queued, replacing the prompt
+and keeping the turn, its place in line, its thread and its attachments. Its card
+then says `Queued (prompt updated)`. A turn already started is left unchanged, and
+its card says `Edited after start. Turn unchanged.` There is no time limit: a
+message can be edited for as long as it waits, so an idle agent leaves almost no
+time. Only Slack and Mattermost report edits today.
+
 ### 6.3 `command`
 
 ```json
