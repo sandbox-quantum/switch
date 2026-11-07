@@ -38,14 +38,14 @@ describe('the pi runtime', () => {
     expect(providerUnsupportedReason('pi', 'darwin')).toBeNull();
   });
 
-  it('has no adapter before stage 5, and says so instead of starting Pi', () => {
-    expect(() =>
-      providerRuntime('pi').createAdapter({
-        binaryPath: undefined,
-        logger: undefined,
-        skill: '',
-        serviceSkills: [],
-      })
-    ).toThrow('not implemented (stage 5)');
+  it('builds its adapter without starting Pi, with the capabilities sessions advertise', () => {
+    const adapter = providerRuntime('pi').createAdapter({
+      binaryPath: undefined,
+      logger: undefined,
+      skill: '',
+      serviceSkills: [],
+    });
+    expect(adapter.provider).toBe('pi');
+    expect(adapter.capabilities).toMatchObject({ approvals: true, userInput: false, resume: true });
   });
 });
