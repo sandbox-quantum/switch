@@ -230,6 +230,7 @@ def _allowed_client(
     # The real reads `permitted` makes through the stores above.
     resolver.group_of = AddressingResolver.group_of.__get__(resolver)
     resolver.claimed_accounts = AddressingResolver.claimed_accounts.__get__(resolver)
+    resolver.judge = AddressingResolver.judge.__get__(resolver)
     return resolver
 
 
