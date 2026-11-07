@@ -12,17 +12,22 @@ import { ControllerStore } from './store';
 let dir: string;
 let bundle: string;
 let stderr: string[];
+let stdout: string[];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-main-'));
   bundle = join(dir, 'shared-host.mjs');
   writeFileSync(bundle, '');
   stderr = [];
+  stdout = [];
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
     stderr.push(String(chunk));
     return true;
   });
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    stdout.push(String(chunk));
+    return true;
+  });
 });
 
 afterEach(() => {
@@ -54,6 +59,151 @@ describe('main', () => {
     );
     expect(await main([])).toBe(EXIT_CONFIGURATION);
     expect(await main(['--help'])).toBe(EXIT_OK);
+  });
+
+  it('prints status as JSON without exposing the controller credential', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'build-box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.close();
+    await new FileSecretStore(dataLayout(dir).secrets).set(CONTROLLER_CREDENTIAL, 'swcc_secret');
+
+    expect(await main(['status', '--data-dir', dir, '--json'])).toBe(EXIT_OK);
+    const report = JSON.parse(stdout.join('')) as Record<string, unknown>;
+    expect(report).toMatchObject({
+      schemaVersion: 1,
+      command: 'status',
+      ok: true,
+      exitCode: 0,
+      dataDirectory: dir,
+      identity: {
+        controllerId: 'controller-1',
+        name: 'build-box',
+        server: 'https://switch.example.com',
+      },
+      assignment: { state: 'none' },
+      credential: 'present',
+    });
+    expect(stdout.join('')).not.toContain('swcc_secret');
+  });
+
+  it.each([
+    ['not-enrolled', null, { state: 'not-enrolled' }],
+    ['revoked', 'revoked', { state: 'none' }],
+  ] as const)(
+    'keeps the status JSON envelope stable for %s state',
+    async (_name, state, assignment) => {
+      if (state) {
+        const store = ControllerStore.open(join(dir, 'controller.db'));
+        store.saveIdentity({
+          controllerId: 'controller-1',
+          server: 'https://switch.example.com',
+          name: 'build-box',
+          enrolledAt: '2026-01-01T00:00:00.000Z',
+        });
+        if (state === 'revoked') store.markRevoked('2026-01-02T00:00:00.000Z');
+        store.close();
+      }
+      expect(await main(['status', '--data-dir', dir, '--json'])).toBe(
+        state ? EXIT_OK : EXIT_FAILURE
+      );
+      const report = JSON.parse(stdout.join('')) as Record<string, unknown>;
+      expect(report).toMatchObject({
+        schemaVersion: 1,
+        command: 'status',
+        ok: Boolean(state),
+        exitCode: state ? 0 : 1,
+        dataDirectory: dir,
+        assignment,
+      });
+      expect(Object.keys(report)).toEqual(
+        expect.arrayContaining([
+          'schemaVersion',
+          'command',
+          'ok',
+          'exitCode',
+          'dataDirectory',
+          'identity',
+          'assignment',
+        ])
+      );
+    }
+  );
+
+  it('reports a saved assignment in the same versioned JSON envelope', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'build-box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.saveAssignment({ revision: 4, agents: [] }, 'etag-4', '2026-01-02T00:00:00.000Z');
+    store.close();
+
+    expect(await main(['status', '--data-dir', dir, '--json'])).toBe(EXIT_OK);
+    expect(JSON.parse(stdout.join(''))).toMatchObject({
+      schemaVersion: 1,
+      command: 'status',
+      ok: true,
+      exitCode: 0,
+      assignment: { state: 'saved', revision: 4, agents: [] },
+    });
+  });
+
+  it('does not copy agent failure details into JSON status', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'build-box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.saveAssignment(
+      {
+        revision: 1,
+        agents: [
+          {
+            agent_id: 'agent-1',
+            revision: 1,
+            desired_state: 'running',
+            definition: {
+              name: 'scout',
+              display_name: null,
+              icon_url: null,
+              provider: 'claude',
+              model: null,
+              advanced_config: {},
+              instructions: '',
+              auto_approve: false,
+              auto_mode: false,
+              directory: null,
+              isolation: 'shared',
+            },
+          },
+        ],
+      },
+      null,
+      '2026-01-01T00:00:00.000Z'
+    );
+    store.recordFailure(
+      'agent-1',
+      { revision: 1, reason: 'internal', detail: 'provider stderr token=swcc_secret' },
+      '2026-01-01T00:00:00.000Z'
+    );
+    store.close();
+
+    expect(await main(['status', '--data-dir', dir, '--json'])).toBe(EXIT_OK);
+    const report = JSON.parse(stdout.join('')) as {
+      assignment: { agents: { detailAvailable?: boolean; detail?: string }[] };
+    };
+    expect(report.assignment.agents[0]).toMatchObject({ detailAvailable: true });
+    expect(report.assignment.agents[0]).not.toHaveProperty('detail');
+    expect(stdout.join('')).not.toContain('swcc_secret');
   });
 
   it('enrolls with the name and description it is given', async () => {
