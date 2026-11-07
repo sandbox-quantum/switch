@@ -39,6 +39,8 @@ MAX_SKILL_BYTES = 32 * 1024
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{0,62}$"
 HTTPS_URL_PATTERN = r"^https://[^\s/?#]+[^\s#]*$"
 JSON_PATH_PATTERN = r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$"
+# An MCP tool's name, as the MCP spec allows one.
+MCP_TOOL_NAME_PATTERN = r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$"
 # A minted token is made for the one issue, so the broker holds it to the hour
 # every token it hands out was always held to.
 MINTED_MAX_LIFETIME = 3600
@@ -179,14 +181,26 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Where the account's stable id is read, with the access token: a GET of
+    `url`, or for a vendor that says whose a token is only through its MCP
+    server (its tokens are the MCP server's own, which its API does not take)
+    a call of `mcp_tool` on the entry's first MCP server, with no arguments.
+    Then the dotted paths in the JSON answer (the tool's structured content)
+    to the id and to a label people recognise (an email, a login)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    mcp_tool: str | None = Field(default=None, pattern=MCP_TOOL_NAME_PATTERN)
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _one_way_to_ask(self) -> "ConnectionIdentity":
+        if (self.url is None) == (self.mcp_tool is None):
+            raise ValueError(
+                "an identity is read from a url or from an mcp_tool: one of the two"
+            )
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -724,6 +738,14 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
+        if (
+            self.auth.identity is not None
+            and self.auth.identity.mcp_tool is not None
+            and self.mcp is None
+        ):
+            raise ValueError(
+                "an identity read from an mcp_tool needs the entry's MCP servers"
+            )
         oauth = self.auth.oauth
         # Discovery starts from an MCP server, so without one the catalog names
         # the endpoints, and the client is the operator's.

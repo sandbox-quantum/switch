@@ -228,6 +228,110 @@ class TestSignIn:
             await adapter.identify(secret.access_token or "")
 
 
+WHOAMI = STATIC.replace(
+    "    url: https://api.example.test/me\n"
+    "    account_id: account.id\n"
+    "    label: account.email\n",
+    "    mcp_tool: whoami\n    account_id: id\n    label: email\n",
+)
+
+
+class TestIdentityFromAnMcpTool:
+    """A vendor whose MCP tokens its API does not take (Cloudflare's) says
+    whose a sign-in is only through a tool on its MCP server."""
+
+    async def test_reads_the_account_from_the_tools_structured_answer(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, WHOAMI)
+        secret = await _sign_in(adapter, vendor)
+        vendor.mcp_calls.clear()
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        assert [call["method"] for call in vendor.mcp_calls] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+        ]
+        assert vendor.mcp_calls[-1]["params"] == {"name": "whoami", "arguments": {}}
+        # The token went to the MCP server alone, never to the identity URL.
+        assert IDENTITY_URL not in vendor.paths
+
+    async def test_names_the_protocol_version_the_server_agreed(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, WHOAMI)
+        secret = await _sign_in(adapter, vendor)
+        vendor.mcp_headers.clear()
+        await adapter.identify(secret.access_token or "")
+        assert "mcp-protocol-version" not in vendor.mcp_headers[0]
+        assert {
+            headers["mcp-protocol-version"] for headers in vendor.mcp_headers[1:]
+        } == {"2025-06-18"}
+
+    async def test_reads_an_answer_streamed_as_server_sent_events(self, vendor) -> None:
+        vendor.mcp_sse = True
+        adapter, _ = _adapter(vendor, WHOAMI)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "acct-1"
+
+    async def test_keeps_to_the_session_the_server_opens_and_closes_it(
+        self, vendor
+    ) -> None:
+        vendor.mcp_sessions = True
+        adapter, _ = _adapter(vendor, WHOAMI)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "acct-1"
+        assert vendor.open_sessions == set()
+        assert len(vendor.closed_sessions) == 1
+
+    async def test_reads_json_text_where_the_tool_gives_no_structured_answer(
+        self, vendor
+    ) -> None:
+        vendor.whoami_structured = False
+        adapter, _ = _adapter(vendor, WHOAMI)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+
+    async def test_an_account_without_an_email_is_named_by_its_id(self, vendor) -> None:
+        vendor.account = {"id": "user:abc"}
+        adapter, _ = _adapter(vendor, WHOAMI)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("user:abc", "user:abc")
+
+    async def test_a_tool_that_fails_is_refused(self, vendor) -> None:
+        vendor.whoami_fails = True
+        adapter, _ = _adapter(vendor, WHOAMI)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="whoami failed"):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_a_server_without_the_tool_is_refused(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor, WHOAMI.replace("mcp_tool: whoami", "mcp_tool: me")
+        )
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(
+            ServiceAdapterError, match="did not answer with the account"
+        ):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_a_refused_token_asks_for_a_new_sign_in(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, WHOAMI)
+        await _sign_in(adapter, vendor)
+        with pytest.raises(ReauthorizationRequiredError):
+            await adapter.identify("not-a-live-token")
+
+    async def test_a_server_that_is_down_is_unavailable(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, WHOAMI)
+        secret = await _sign_in(adapter, vendor)
+        vendor.fail[MCP_URL] = (503, {"error": "unavailable"})
+        with pytest.raises(ServiceUnavailableError):
+            await adapter.identify(secret.access_token or "")
+
+
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:
         adapter, _ = _adapter(vendor)
