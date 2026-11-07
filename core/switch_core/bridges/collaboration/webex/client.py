@@ -454,9 +454,15 @@ class WebexClient:
     # ── Devices (the event socket's registration) ───────────────────────────
 
     async def devices(self, wdm_url: str) -> list[dict[str, Any]]:
-        body = await self._json(
-            "Listing the bot's devices", "GET", f"{wdm_url}/devices"
-        )
+        try:
+            body = await self._json(
+                "Listing the bot's devices", "GET", f"{wdm_url}/devices"
+            )
+        except WebexApiError as exc:
+            # An account with no devices yet is answered 404, not an empty list.
+            if exc.status == 404:
+                return []
+            raise
         devices = body.get("devices")
         return (
             [d for d in devices if isinstance(d, dict)]
