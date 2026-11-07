@@ -488,14 +488,23 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
+        arguments: dict[str, Any] = {}
+        if self._identity.method == "POST":
+            if self._identity.body is None:
+                arguments["content"] = b"null"
+                arguments["headers"] = {"Content-Type": "application/json"}
+            else:
+                arguments["json"] = self._identity.body
         response = await self._send(
             self._http.build_request(
-                "GET",
+                self._identity.method,
                 self._identity.url,
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Accept": "application/json",
+                    **arguments.pop("headers", {}),
                 },
+                **arguments,
             )
         )
         if response.status_code == 401:
@@ -571,29 +580,43 @@ class OAuthAdapter:
             raise ServiceAdapterError(
                 f"{self._name} gives Switch no way to revoke a sign-in."
             )
-        refresh_token = secret.values.get("refresh_token")
-        token, hint = (
-            (refresh_token, "refresh_token")
-            if isinstance(refresh_token, str) and refresh_token
-            else (secret.access_token, "access_token")
-        )
-        if token is None:
-            return
-        client = await self._client.credentials(endpoints)
-        identifying, headers = client_fields(endpoints, client)
-        response = await self._send(
-            self._http.build_request(
+        bearer = self._oauth.revocation_auth == "bearer_access_token"
+        if bearer:
+            token = secret.access_token
+            if not token:
+                raise ServiceAdapterError(
+                    f"{self._name} needs an access token to revoke the sign-in."
+                )
+            request = self._http.build_request(
+                "POST", url, headers={"Authorization": f"Bearer {token}"}
+            )
+        else:
+            refresh_token = secret.values.get("refresh_token")
+            token, hint = (
+                (refresh_token, "refresh_token")
+                if isinstance(refresh_token, str) and refresh_token
+                else (secret.access_token, "access_token")
+            )
+            if token is None:
+                return
+            client = await self._client.credentials(endpoints)
+            identifying, headers = client_fields(endpoints, client)
+            request = self._http.build_request(
                 "POST",
                 url,
                 data={"token": token, "token_type_hint": hint, **identifying},
                 headers=headers,
             )
-        )
+        response = await self._send(request)
         # RFC 7009: a token the server no longer knows is answered 200, but
         # some answer invalid_token; either way it is gone.
         if response.status_code == 200:
             return
-        if response.status_code == 400 and "invalid_token" in response.text:
+        if (
+            not bearer
+            and response.status_code == 400
+            and "invalid_token" in response.text
+        ):
             return
         raise ServiceAdapterError(
             f"{self._name} refused to revoke the sign-in (HTTP {response.status_code})."
