@@ -9,6 +9,9 @@ opening an issue.
 
 ## Development setup
 
+Start with the [contributor quickstart](docs/contributing/quickstart.md) for
+the walkthrough from a clone to an agent reply and your first change.
+
 **Prerequisites:** [Docker](https://docs.docker.com/get-docker/),
 [uv](https://docs.astral.sh/uv/), and [just](https://github.com/casey/just)
 (`brew install just`).
