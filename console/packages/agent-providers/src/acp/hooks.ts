@@ -1,4 +1,4 @@
-import type { ProviderCapabilities, RuntimeMode } from '../adapter';
+import type { McpServerSpec, ProviderCapabilities, RuntimeMode } from '../adapter';
 import type {
   ApprovalDecision,
   ItemType,
@@ -27,12 +27,20 @@ export interface AcpLaunch {
    * prompt, say).
    */
   rejectOutputLine?: (line: string) => string | undefined;
+  /**
+   * When true, the provider configured MCP servers during launch (e.g. via a
+   * settings file), so the adapter skips requireHttpMcp and sends empty mcpServers in session/new.
+   */
+  mcpServersInLaunch?: boolean;
+  /** Clean up resources created for the launch (e.g. temporary settings directory). */
+  release?: () => void | Promise<void>;
 }
 
 export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  mcpServers?: Record<string, McpServerSpec>;
 }
 
 /** One answered question: the option values chosen, already checked against what was offered. */
