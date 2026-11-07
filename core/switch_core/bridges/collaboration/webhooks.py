@@ -9,9 +9,9 @@ with a secret the deployment holds. That is what separates this from the
 shared `/messaging/<platform>/...` routes, which serve Switch's own distributed
 apps and are verified with the deployment's app credentials.
 
-What happens after verification is the same as there: answer the platform at
-once, hand the event to the adapter in the background, and recognise a retried
-delivery so it is handled once.
+Most adapters acknowledge first and dispatch in the background. An adapter
+opting into confirmed delivery is acknowledged after routing succeeds, so a
+failed dispatch can be retried. Receipts recognise repeats across pods.
 """
 
 from __future__ import annotations
@@ -126,6 +126,9 @@ class BridgeWebhookService:
         Dispatched with nothing bound, as a socket-delivered event is — see
         `MessagingInstallService.deliver`.
         """
+        if target.adapter.confirms_webhook_delivery:
+            await self._deliver_confirmed(target, event)
+            return
         if event.external_event_id is None:
             await self._dispatch(target, event)
             return
@@ -154,6 +157,47 @@ class BridgeWebhookService:
             await self._receipts.mark_handled(session, receipt_id=receipt_id)
             await self._receipts.prune(session)
             await session.commit()
+
+    async def _deliver_confirmed(
+        self, target: BridgeWebhookTarget, event: InboundWebhook
+    ) -> None:
+        if event.external_event_id is None:
+            raise WebhookPayloadError("Confirmed delivery requires an event id")
+        external_event_id = f"{target.bridge_id}:{event.external_event_id}"
+        async with tenant_session(self._session_factory, target.tenant_id) as session:
+            receipt = await self._receipts.claim(
+                session,
+                platform=target.bridge_type,
+                external_event_id=external_event_id,
+            )
+            if receipt is None:
+                if not await self._receipts.is_handled(
+                    session,
+                    platform=target.bridge_type,
+                    external_event_id=external_event_id,
+                ):
+                    raise WebhookBridgeStopped(
+                        "The event is still being delivered; retry"
+                    )
+                return
+            receipt_id = receipt.id
+            await session.commit()
+
+        try:
+            await self._dispatch(target, event)
+            async with tenant_session(
+                self._session_factory, target.tenant_id
+            ) as session:
+                await self._receipts.mark_handled(session, receipt_id=receipt_id)
+                await self._receipts.prune(session)
+                await session.commit()
+        except BaseException:
+            async with tenant_session(
+                self._session_factory, target.tenant_id
+            ) as session:
+                await self._receipts.release(session, receipt_id=receipt_id)
+                await session.commit()
+            raise
 
     async def _dispatch(
         self, target: BridgeWebhookTarget, event: InboundWebhook
@@ -243,6 +287,16 @@ def create_bridge_webhook_router(service: BridgeWebhookService) -> APIRouter:
                 bridge_id,
             )
             return Response(status_code=501)
+
+        if target.adapter.confirms_webhook_delivery:
+            try:
+                await service.deliver(target, event)
+            except Exception:
+                logger.exception(
+                    "Failed confirmed webhook delivery for bridge %s", bridge_id
+                )
+                return Response(status_code=503)
+            return Response(status_code=200)
 
         # Answered first, handled after: the platform's deadline is short and a
         # turn can take minutes.
