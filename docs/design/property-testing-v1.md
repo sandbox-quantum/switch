@@ -321,8 +321,12 @@ platform is in place before it is widened.
    Postgres, with interleaved writers, joins and leaves, retention, and
    resumes, checking the same properties against a reference model that
    follows the Quint state.
-4. **System.** The history checker, run after the fast lane on its throwaway
-   database, checking the same properties over everything the lane did.
+4. **System.** The history checker (`properties/history/delivery.py`), run
+   after each fast-lane scenario on its throwaway database and before the
+   scenario's agents are deleted, checking what an end state shows of the
+   same properties. It cannot show `bus.room-seq-dense` (retention and erasing
+   a person leave holes) or `delivery.decided-at-write` (it needs the room's
+   state when the row was written); those wait for the assertion log.
 5. **Assertions.** The Antithesis Python SDK's local mode confirmed (or the
    shim written), and the first assertions in the router and event buffer:
    `always` for own-event numbering, `sometimes` for a resume below a drop
@@ -344,7 +348,9 @@ The slice is done when:
 - Whether the Hypothesis state machine can interleave real concurrent
   transactions well enough, or needs explicit scheduling points (a pausable
   session wrapper) to reach the races the model finds.
-- How the history checker learns what each client received in the fast lane:
-  from the harness's own record, or from assertions on the delivery path.
+- What the history checker learns of what each client received: it reads the
+  database, not the clients, so it checks what the database says was owed and
+  kept. What a client was handed needs the harness's record or an assertion on
+  the delivery path.
 - Whether Schemathesis's tenant check needs the OpenAPI document to mark
   which fields are ids, or can find them from the schema's naming.

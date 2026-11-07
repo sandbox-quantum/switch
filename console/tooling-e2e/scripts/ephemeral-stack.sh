@@ -30,6 +30,9 @@
 # Logs and the JUnit report go to build/e2e/ephemeral/ (or $E2E_OUT); the env
 # file, the controller's state and the agent's working directory go to a
 # temporary directory, so the output holds nothing secret by construction.
+# The fast lane reads the database after each scenario with
+# properties/history/check.sh and fails the scenario on a delivery property its
+# rows break.
 # On exit the output is scanned for every secret the run used, and
 # .secret-scan-passed is written there only if none turned up: CI uploads the
 # output only when that file exists.
@@ -263,6 +266,8 @@ status=0
   export SWITCH_E2E_SECRETS_FILE="$SECRETS"
   # What the server logs, so a scenario during which it logs an error fails.
   export SWITCH_E2E_SERVER_LOG="$OUT/switch-core.log"
+  # The delivery history check, which reads the stack's database (DB_* above).
+  [ "$LANE" = fast ] && export SWITCH_E2E_HISTORY_CHECK="$REPO/properties/history/check.sh"
   # Screenshots of failed pages, and agentic transcripts and verdicts.
   export SWITCH_E2E_OUTPUT_DIR="$OUT"
   # The follow-up window the server was started with, for the scenario that waits it out.

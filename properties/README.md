@@ -46,3 +46,18 @@ is not a checker, and the gate says so:
 
 When every level a property lists has a checker, set `status: checked` and
 remove its gaps.
+
+## The history check
+
+`history/delivery.py` reads the tables a finished run leaves (`messages`,
+`agent_events`, `agent_event_heads`, `agent_event_drops`, `client_rooms`) and
+checks what the end state shows of the delivery properties. The fast lane runs
+it after each scenario, before the scenario's agents are deleted (deleting
+an agent deletes its own events), and fails the scenario on a violation. It
+needs the database, so it runs only on the stack the harness starts:
+`SWITCH_E2E_HISTORY_CHECK` names the command (`history/check.sh`). A derived
+test fails the lane if no check ever found an own event, since a check over an
+empty history passes anything.
+
+Run by hand against a stack (`just e2e-fast --keep`, then the `DB_*` variables
+from its env file): `properties/history/check.sh`.

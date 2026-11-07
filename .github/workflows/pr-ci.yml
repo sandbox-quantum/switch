@@ -144,6 +144,7 @@ jobs:
               - *shared
               - 'core/**'
               - 'console/tooling-e2e/**'
+              - 'properties/history/**'
               - 'console/pnpm-lock.yaml'
               - 'deploy/local/**'
               - '.env.example'
