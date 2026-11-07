@@ -21,7 +21,10 @@ import pytest_asyncio
 from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.agent_connections import (
+    AgentConnectionRegistry,
+    ClientDeclaration,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import (
     Binding,
@@ -195,6 +198,28 @@ class TestStatuses:
 
 
 class TestTheRegistryAsksTheController:
+    def test_lapsed_session_keeps_placement_for_resume_but_not_presence(self) -> None:
+        registry = AgentConnectionRegistry()
+        conn = registry.open(
+            agent_id="agent",
+            connection_id="connection",
+            scope="single",
+            delivery_filter="addressed",
+            spawn_capable=False,
+            position={},
+            declaration=ClientDeclaration(),
+            expected_generation=None,
+        )
+        registry.place_session("agent", "session-1", ROOM, conn.id)
+
+        assert registry.session_in_room("agent", ROOM) == "session-1"
+        assert agents_present_in(["agent"], ROOM, registry) == {"agent"}
+
+        _lapse(conn)
+
+        assert registry.session_in_room("agent", ROOM) == "session-1"
+        assert agents_present_in(["agent"], ROOM, registry) == set()
+
     def test_presence_questions(self) -> None:
         registry = AgentConnectionRegistry()
         binding = _bind(registry, "agent")
