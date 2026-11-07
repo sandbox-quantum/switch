@@ -13,7 +13,6 @@ from switch_core.connections.loader import (
 
 PLACEHOLDERS = {
     "asana",
-    "gitlab",
     "bitbucket",
     "microsoft-365",
     "new-relic",
@@ -32,6 +31,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "airtable",
         "atlassian",
         "datadog",
+        "gitlab",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
@@ -39,12 +39,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "github",
+        "gitlab",
         "google-workspace",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["gitlab"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -176,6 +178,40 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_gitlab_entry_signs_in_through_its_mcp_server():
+    definition = CATALOG["gitlab"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.revocation_discovered) == (
+        "oauth",
+        "dynamic",
+        True,
+    )
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    # GitLab's access tokens expire after two hours by default.
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        7200,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("gitlab", "https://gitlab.com/api/v4/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    # The MCP endpoint needs the mcp scope; read_user names the account.
+    assert "mcp" in definition.access.read.scopes
+    assert "read_user" in definition.access.read.scopes
+    assert "read_api" in definition.access.read.scopes
+    assert "api" in definition.access.write.scopes
+    # No admin, sudo or org-wide scopes.
+    every = set(definition.access.read.scopes) | set(definition.access.write.scopes)
+    assert not any("admin" in scope or scope == "sudo" for scope in every)
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://gitlab.com/api/v4/user"
+    assert definition.auth.identity.account_id == "id"
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
