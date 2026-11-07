@@ -1,7 +1,42 @@
 slug: box
 name: Box
 category: File storage
-description: Read and manage files stored in Box.
-enabled: false
+description: Search, read and manage files and folders stored in Box, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Box OAuth 2.0 refresh tokens rotate upon refresh.
+  refresh: rotating
+  oauth:
+    # Each server's operator registers a Box Custom App (OAuth 2.0) in the
+    # Box Developer Console and names its settings in BOX_CLIENT_CONFIG_PATH.
+    registration: static
+    client_settings: BOX
+    redirect: [loopback, core]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    authorization_url: https://account.box.com/api/oauth2/authorize
+    token_url: https://api.box.com/oauth2/token
+    revocation_url: https://api.box.com/oauth2/revoke
+  identity:
+    url: https://api.box.com/2.0/users/me
+    account_id: id
+    label: login
+# Box access tokens live 60 minutes (3,600 seconds).
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # Official Box remote MCP server. An enterprise admin must enable
+    # Box MCP integration under the Admin Console.
+    - name: box
+      url: "https://mcp.box.com"
+access:
+  read:
+    scopes:
+      - root_readonly
+  write:
+    scopes:
+      - root_readwrite
+      - ai.readwrite
+      - docgen.readwrite
+tools: { mode: pass_through }
