@@ -288,7 +288,7 @@ apps" and "Full admin interface" — not a separate view, since there's little
 enough here to configure that a full page would be a detour rather than a
 destination. Gated on the connected server's reported `user.role === "admin"`
 directly — not the broader `administersWorkspaceInScope()` helper, which also
-admits a plain workspace owner and would be too wide for a deployment-level
+admits a plain workspace admin and would be too wide for a deployment-level
 setting — and hidden entirely for anyone else, since there's nothing read-only
 to show a non-operator. Labeled "Switch Trust Endpoint", "Guardrails Policy
 ID" and "Switch Trust API key" rather than the gateway's own field names, to

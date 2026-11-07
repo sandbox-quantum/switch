@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal
+from switch_core.authz import Principal, can, can_manage
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Package, User
 from switch_core.db.stores.agent_store import AgentStore
@@ -43,6 +43,7 @@ router = APIRouter()
 
 def _to_detail(
     pkg: Package,
+    reader: Principal,
     *,
     owner_name: str | None = None,
     references_count: int = 0,
@@ -64,6 +65,9 @@ def _to_detail(
         attached_rooms_count=attached_rooms_count,
         hidden_rooms_count=hidden_rooms_count,
         created_at=str(pkg.created_at),
+        can_read=can(reader, "read", pkg),
+        can_edit=can(reader, "write", pkg),
+        can_manage=can_manage(reader, pkg.owner_id),
     )
 
 
@@ -91,6 +95,7 @@ async def _enrich(
     return [
         _to_detail(
             p,
+            reader,
             owner_name=owners.get(p.owner_id),
             references_count=ref_counts.get(p.id, 0),
             documents_count=doc_counts.get(p.id, 0),

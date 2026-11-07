@@ -124,7 +124,7 @@ class TestGetRoomGroupDetail:
             room = await rooms.create(
                 session, Room(transport_room_id="!r:test", name="r1", description="d")
             )
-            await rooms.set_group(session, room.id, parent["id"])
+            await rooms.set_group(session, room.id, parent["id"], acting_is_admin=True)
             await session.commit()
             room_id, room_name = room.id, room.name
 
@@ -188,7 +188,9 @@ class TestRoomGroupsForNonAdmins:
                 ),
             )
             for room in (own_room, hidden_room):
-                await rooms.set_group(session, room.id, group["id"])
+                await rooms.set_group(
+                    session, room.id, group["id"], acting_is_admin=True
+                )
             await session.commit()
             own_id, mine_id = own_room.id, mine.id
 

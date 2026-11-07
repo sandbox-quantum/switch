@@ -704,6 +704,7 @@ class AgentSessionActivityPublisher:
                 row,
                 target,
                 asked_at_root=_asked_at_root(turn_row),
+                broadcast=_known_root_turn(turn_row),
                 unavailable_reason=unavailable,
                 notify_external_id=recipient,
                 notify_unreachable=recipient is None
@@ -737,6 +738,7 @@ class AgentSessionActivityPublisher:
         target: _Target,
         *,
         asked_at_root: bool,
+        broadcast: bool,
         unavailable_reason: str | None,
         notify_external_id: str | None,
         notify_unreachable: bool,
@@ -753,6 +755,7 @@ class AgentSessionActivityPublisher:
             notify_external_id=notify_external_id,
             notify_unreachable=notify_unreachable,
         )
+        card = replace(card, asked_at_root=broadcast)
         thread_ref = target.thread_ref
         try:
             try:
@@ -1707,6 +1710,17 @@ def _until_the_clock_moves(elapsed: float | None) -> float:
     if elapsed is None:
         return RUNNING_CLOCK_SECONDS
     return RUNNING_CLOCK_SECONDS - elapsed % RUNNING_CLOCK_SECONDS
+
+
+def _known_root_turn(turn_row: AgentSessionActivityItem | None) -> bool:
+    """Whether the turn is recorded and was asked at the channel root. Only
+    then is its card also shown in the channel: an unrecorded turn may have
+    been a thread conversation the channel was never part of."""
+    return (
+        turn_row is not None
+        and turn_row.message_id is not None
+        and turn_row.thread_id in (None, turn_row.message_id)
+    )
 
 
 def _asked_at_root(turn_row: AgentSessionActivityItem | None) -> bool:

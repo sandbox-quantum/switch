@@ -167,6 +167,8 @@ async def _resolve_registration_user_id(
     key = await api_key_store.get_by_hash(session, token_hash)
     if key is None or key.type not in REGISTRATION_KEY_TYPES:
         raise HTTPException(status_code=401, detail="Invalid registration token")
+    if key.expired(datetime.now(UTC)):
+        raise HTTPException(status_code=401, detail="Registration token has expired")
     # Which credential this was is worth keeping: a deployment bootstrapping
     # its first agents through the shared key and a user minting a key of
     # their own are different moments in adoption, and the key type is the
@@ -493,7 +495,7 @@ async def send_message(
 ) -> dict[str, object]:
     logger.debug("Recieved message from agent %s: %s", agent.name, req.content)
     try:
-        event_id = await protocol.send_message(agent.id, req.room_id, req.content)
+        sent = await protocol.send_message(agent.id, req.room_id, req.content)
     except BudgetExceeded as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     except GuardrailBlockedError as e:
@@ -503,7 +505,10 @@ async def send_message(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
-    return {"ok": True, "event_id": event_id}
+    result: dict[str, object] = {"ok": True, "event_id": sent.event_id}
+    if sent.trust is not None:
+        result["trust"] = sent.trust.to_result()
+    return result
 
 
 @router.get("/{agent_id}/rooms/{room_id}/media", response_model=None)
@@ -590,6 +595,8 @@ async def upload_media(
         )
     except BudgetExceeded as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
+    except GuardrailBlockedError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
@@ -686,18 +693,22 @@ async def update_status(
     req: StatusRequest,
     agent: Annotated[Agent, Depends(get_agent_from_scope)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
+) -> dict[str, object]:
+    """Post a status line in the room. The result carries `trust` only when
+    Switch Trust changed or flagged it, as a sent message's does."""
+    result: dict[str, object] = {"ok": True}
     if req.detail:
         try:
-            await protocol.update_status(agent.id, req.room_id, req.detail)
+            feedback = await protocol.update_status(agent.id, req.room_id, req.detail)
         except GuardrailBlockedError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
-
-    return {"ok": True}
+        if feedback is not None:
+            result["trust"] = feedback.to_result()
+    return result
 
 
 @router.post("/{agent_id}/runtime-state")

@@ -119,6 +119,7 @@ vi.mock('./native/native-stack', () => ({
   nativeStartedAt: vi.fn(),
   readNativeDeployedVersion: native.deployed,
   readNativeTelemetry: vi.fn(async () => ({ known: true, enabled: false })),
+  readNativeAdminPages: vi.fn(async () => 'served'),
   nativeMattermostLauncher: native.launcher,
   discardNativeData: native.discard,
   nativeCoreFailureLine: native.failureLine,
@@ -496,6 +497,8 @@ it('reads a native server as running from its processes, not from Docker', async
     phase: 'running',
     runtime: 'native',
     deployedVersion: '0.11.0',
+    // Read off the running server, so its page knows whether to link to them.
+    adminPages: 'served',
   });
 });
 

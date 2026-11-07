@@ -130,7 +130,15 @@ def _app(
 
 
 def _client(app: Any, user: User) -> httpx.AsyncClient:
-    token = create_jwt(user.id, user.email, user.role, _KEYRING, TENANT_ZERO_ID)
+    token = create_jwt(
+        user.id,
+        user.email,
+        user.role,
+        _KEYRING,
+        TENANT_ZERO_ID,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
@@ -158,7 +166,7 @@ class _Seed:
             session.add(user)
             await session.flush()
             session.add(
-                TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role="owner")
+                TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role="admin")
             )
             await session.commit()
             return user

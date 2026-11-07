@@ -26,17 +26,18 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
 }));
 vi.mock('./buddy-intro-store', () => ({ buddyIntroStore: { skipped } }));
 vi.mock('./buddy-welcome-message', () => ({
-  buddySlackOpener: () => 'opener',
+  buddyChannelOpener: () => 'opener',
   buddyWelcomeMessage: ({ firstName, agentName }: { firstName: string; agentName: string }) =>
     `welcome ${firstName} from ${agentName}`,
 }));
 
 const {
   BUDDY_CHAT_NAME,
-  continueBuddyInSlack,
+  buddyRestartedHandoffRequestId,
+  continueBuddyInChannel,
   openBuddyAfterOnboarding,
   openBuddyChat,
-  resumeBuddyInSlack,
+  resumeBuddyInChannel,
 } = await import('./open-buddy');
 const { RpcError } = await import('@shared/lib/ipc/rpc-error');
 
@@ -50,6 +51,7 @@ function chatApiError(apiCode: string, status: number) {
 }
 
 const buddy = { agentId: 'a-1', name: 'switch-buddy-max' };
+const slackBridge = { id: 'b-1', type: 'slack' };
 
 function chat(
   roomId: string,
@@ -185,15 +187,15 @@ describe('openBuddyAfterOnboarding', () => {
   });
 });
 
-describe('continueBuddyInSlack', () => {
+describe('continueBuddyInChannel', () => {
   it('asks once, under a request id fixed by the agent and the connection', async () => {
     createChat.mockResolvedValue(chat('r-slack', '', 'a-1', 'direct', 'slack'));
 
     await Promise.all([
-      continueBuddyInSlack('srv-1', buddy, 'b-1'),
-      continueBuddyInSlack('srv-1', buddy, 'b-1'),
+      continueBuddyInChannel('srv-1', buddy, slackBridge, 'buddy-handoff:a-1:b-1'),
+      continueBuddyInChannel('srv-1', buddy, slackBridge, 'buddy-handoff:a-1:b-1'),
     ]);
-    await continueBuddyInSlack('srv-1', buddy, 'b-1');
+    await continueBuddyInChannel('srv-1', buddy, slackBridge, 'buddy-handoff:a-1:b-1');
 
     expect(createChat).toHaveBeenCalledTimes(2);
     expect(createChat).toHaveBeenCalledWith({
@@ -207,7 +209,7 @@ describe('continueBuddyInSlack', () => {
   });
 });
 
-describe('resumeBuddyInSlack', () => {
+describe('resumeBuddyInChannel', () => {
   const handoff = {
     serverId: 'srv-1',
     agentIds: ['a-1'],
@@ -221,16 +223,55 @@ describe('resumeBuddyInSlack', () => {
     const slackChat = chat('r-slack', '', 'a-1', 'direct', 'slack');
     createChat.mockResolvedValue(slackChat);
 
-    await expect(resumeBuddyInSlack('srv-1', 'a-1', 'b-1')).resolves.toBe(slackChat);
+    await expect(resumeBuddyInChannel('srv-1', 'a-1', slackBridge, ['U1'])).resolves.toBe(
+      slackChat
+    );
 
     expect(createChat).toHaveBeenCalledWith({ ...handoff, resumeOnly: true });
   });
 
   it('is null when none was started, and throws any other refusal', async () => {
     createChat.mockRejectedValueOnce(chatApiError('NO_SUCH_OPERATION', 404));
-    await expect(resumeBuddyInSlack('srv-1', 'a-1', 'b-1')).resolves.toBeNull();
+    await expect(resumeBuddyInChannel('srv-1', 'a-1', slackBridge, ['U1'])).resolves.toBeNull();
 
     createChat.mockRejectedValueOnce(chatApiError('REQUEST_REUSED', 409));
-    await expect(resumeBuddyInSlack('srv-1', 'a-1', 'b-1')).rejects.toThrow('refused');
+    await expect(resumeBuddyInChannel('srv-1', 'a-1', slackBridge, ['U1'])).rejects.toThrow(
+      'refused'
+    );
+  });
+
+  it('after the linked account changed, finds the hand-off started again for the one linked now', async () => {
+    const restarted = chat('r-new', '', 'a-1', 'direct', 'slack');
+    createChat.mockImplementation(async (params: { requestId: string }) => {
+      if (params.requestId === 'buddy-handoff:a-1:b-1')
+        throw chatApiError('LINKED_ACCOUNT_CHANGED', 409);
+      return restarted;
+    });
+
+    await expect(resumeBuddyInChannel('srv-1', 'a-1', slackBridge, ['U2'])).resolves.toBe(
+      restarted
+    );
+    expect(createChat).toHaveBeenLastCalledWith({
+      ...handoff,
+      requestId: 'buddy-handoff:a-1:b-1:U2',
+      resumeOnly: true,
+    });
+  });
+
+  it('keeps the account-changed refusal when nothing was started again', async () => {
+    createChat
+      .mockReset()
+      .mockRejectedValueOnce(chatApiError('LINKED_ACCOUNT_CHANGED', 409))
+      .mockRejectedValueOnce(chatApiError('NO_SUCH_OPERATION', 404));
+
+    await expect(resumeBuddyInChannel('srv-1', 'a-1', slackBridge, ['U2'])).rejects.toMatchObject({
+      data: { apiCode: 'LINKED_ACCOUNT_CHANGED' },
+    });
+  });
+});
+
+describe('buddyRestartedHandoffRequestId', () => {
+  it('extends the first request id with the account, so it is fixed and never the same', () => {
+    expect(buddyRestartedHandoffRequestId('a-1', 'b-1', 'U2')).toBe('buddy-handoff:a-1:b-1:U2');
   });
 });

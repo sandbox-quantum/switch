@@ -15,6 +15,15 @@
  */
 export type LocalServerRuntime = 'native' | 'docker';
 
+/**
+ * Whether a running native server serves the gateway's admin pages: `served`,
+ * or not and a restart would turn them on (`restart`: a server started before
+ * this Console shipped them runs on without them across the update), or not
+ * and a restart would not help (`unavailable`: a checkout with no build of
+ * them, say).
+ */
+export type LocalServerAdminPages = 'served' | 'restart' | 'unavailable';
+
 /** Lifecycle phase of the managed local stack. */
 export type LocalServerPhase = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
 
@@ -224,6 +233,9 @@ export type LocalServerStatus = {
    * up — a stopped server reports nothing, so there is nothing to be out of
    * step with. */
   deployedTelemetry: DeployedTelemetry | null;
+  /** A running native server's admin pages; null when no native server is
+   * running. A Docker server always serves them, so this is null there. */
+  adminPages: LocalServerAdminPages | null;
   /** Human-readable current step (e.g. "Pulling images…"), or null. */
   message: string | null;
   /** Populated only when `phase === 'error'`. */

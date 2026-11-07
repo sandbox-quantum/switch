@@ -383,6 +383,21 @@ class AgentConnectionStore:
         )
         return True
 
+    async def delete_agent(
+        self, session: AsyncSession, *, tenant_id: str, agent_id: str
+    ) -> None:
+        """Delete every connection row of an agent that stays, with their
+        claims and placements, so every process ends the connections when it
+        reads them (`AgentConnectionRegistry.agent_key_reissued`). Under the
+        agent's slot lock, so no move lands between."""
+        await self.lock_agent(session, agent_id)
+        await session.execute(
+            delete(AgentConnectionRecord).where(
+                AgentConnectionRecord.tenant_id == tenant_id,
+                AgentConnectionRecord.agent_id == agent_id,
+            )
+        )
+
     async def add_relay(
         self,
         session: AsyncSession,

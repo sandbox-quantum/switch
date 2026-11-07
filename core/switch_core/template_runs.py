@@ -38,6 +38,7 @@ from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceE
 from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
 from switch_core.invites import UserInviter
+from switch_core.room_service import FIXED_MEMBERSHIP
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -338,7 +339,8 @@ class TemplateAgents:
         self, tenant_id: str, owner_id: str, plan: NewAgentPlan
     ) -> tuple[list[str], list[Problem]]:
         """The rooms the agent joins, by id: each must exist, be one the owner
-        sees, and one the owner may add agents to."""
+        sees, and one the owner may add agents to, which a direct or group
+        conversation is not (`require_membership_changeable_from_outside`)."""
         if not plan.joins:
             return [], []
         async with tenant_session(self._protocol.session_factory, tenant_id) as session:
@@ -371,6 +373,15 @@ class TemplateAgents:
                         plan.slot,
                         "join_not_allowed",
                         f"it joins {name}, and you may not add agents to that room.",
+                    )
+                )
+            elif matches[0].channel_type in FIXED_MEMBERSHIP:
+                problems.append(
+                    Problem(
+                        plan.slot,
+                        "join_fixed_membership",
+                        f"it joins {name}, a {matches[0].channel_type} conversation, "
+                        "whose platform fixes who is in it.",
                     )
                 )
             else:

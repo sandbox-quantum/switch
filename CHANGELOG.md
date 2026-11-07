@@ -44,7 +44,102 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **An agent is told when Switch Trust changed or flagged what it sent.** The
+  result of `post_message` and `send_targeted_message`, the agent HTTP message
+  endpoint, the status endpoint, and the media upload endpoint (for a caption
+  and the files) now carries a `trust` field when Switch Trust did something:
+  `{"outcome": "redacted", "delivered": "<what the room received>"}` when
+  parts were redacted, or `alerted` / `errored` with the `note` posted under
+  the message. A redaction that came with a flag or an incomplete check, say a
+  caption redacted beside a file that was flagged, also says `alert`:
+  `alerted` or `errored`. A message Switch Trust left alone has no `trust`
+  field, so its result is as before. Until now an agent whose words were
+  redacted had no way to know.
+
+#### Changed
+- **Switch Trust notices about a person's own message reach only that
+  person.** When someone's message is blocked, redacted, flagged or not fully
+  checked, the notice used to be posted in the channel, where everyone could
+  see what they had tried to say. Now it goes to the sender alone: an
+  ephemeral message on Slack and Mattermost, and a direct message from the bot
+  on Discord and Telegram. A direct message only works for someone who
+  accepts one: on Discord, unless they turned off messages from server
+  members; on Telegram, only once they have started a chat with the bot, which
+  most members of a group never have, so there most notices are still posted
+  in the group. Microsoft Teams has no way for a bot to do either unprompted,
+  so there the notice is still posted in the channel, as it is for a post by
+  an app or by Telegram's anonymous group admins. switch-core logs a warning
+  each time a notice goes to the channel for want of a private route. Notices
+  about an agent's message are still posted for the room.
+
 #### Security
+- **Only the people in a direct or group conversation decide who is in it.**
+  The room routes and the agent tools added agents and people to one from
+  outside it, though its platform fixes its members; a DM the bridge adopted
+  is writable by every member, so anyone could put their own agent in someone
+  else's DM and have it receive their messages. The room routes now refuse
+  adding or removing with a 409, as do `invite_agent_to_room`,
+  `add_users_to_room` and `remove_agent_from_room`, and a template whose new
+  agent joins one is refused before anything is made. Rooms carry
+  `can_change_members`, false for one, and Switch Console no longer offers
+  it. The people in the conversation still invite and remove agents with
+  `!invite-agent` and `!remove-agent`, and a Switch Console chat still
+  changes its own through its chat routes.
+- **Adding to a package takes being able to read what is added.** Only the
+  package owner's reading was checked, and a package lists what it holds to
+  everyone who may read it, so someone who could edit a publicly writable
+  package could add a private reference or document by id and then read it.
+- **A refused agent transfer names the services it uses to its owner only.**
+  An admin who tried to transfer someone's agent was told which of the owner's
+  connections it was granted, which the owner's service access otherwise
+  shows nobody.
+- **Sign out of all devices.** Signing out used to clear only that browser's
+  cookie, so a copied cookie or a browser left signed in elsewhere stayed
+  valid until it expired. The account menu now has **Sign out of all
+  devices**, which ends every session the account holds
+  (`POST /auth/sessions/revoke`), and the server administrator can do the
+  same for anyone (`POST /users/{id}/sessions/revoke`, recorded in the server
+  audit log). Changing a password, including a reset made directly in the
+  database, and losing the server-admin role also end every session; the
+  device that changed its own password stays signed in. Sessions from before
+  this release stay valid.
+- **Dashboard sessions end 14 days after sign-in.** A session could be
+  refreshed forever, so a browser that stayed active never had to sign in
+  again. Refreshing or switching workspace now keeps the original sign-in
+  time, and 14 days after it the session ends and the person signs in again,
+  however active they are. A session still ends after 24 hours without a
+  refresh. Sessions from before this release count from when their cookie
+  was issued.
+- **Registration keys expire.** A registration key made under API keys
+  worked until someone deleted it. A new key now expires after 90 days by
+  default; when creating it you can choose 1 year instead, or **Never**,
+  which warns that the key keeps working if it leaks. `POST /api-keys`
+  takes `expires_in_days` (1 to 365, or `"never"`; 90 when left out), the
+  key list shows each key's expiry or **No expiry**, and an expired key is
+  refused with 401 by the agent API, the MCP server and agent registration.
+  Its owner can still reveal it under API keys, to see which key it was.
+  Keys made before this release, agents' own keys and the deployment's
+  bootstrap key do not expire.
+- **Messages with files attached are checked by Switch Trust.** A message with
+  a file used to skip the check entirely, typed text included, both from a
+  person on a chat platform and from an agent sending files. Now the text is
+  checked as any message is, and so is the text inside each file: plain text,
+  JSON, YAML, CSV, Markdown, source code and anything else that reads as
+  text whatever type or name it is sent with, Word documents (.docx) and
+  PDFs. All of it is checked before anything
+  reaches the room. If the text or any file is blocked, nothing from the
+  message is delivered and the sender is told why. A file whose text Switch
+  Trust would redact blocks the message too, since a file cannot be redacted
+  safely. Files with no text to read, such as images, archives and other
+  binaries, are delivered without a check or a note, since Switch never reads
+  their kind. Scanned or encrypted PDFs and files that cannot be opened are
+  delivered with a note on the message saying Switch Trust did not check
+  them. Only the first
+  20,000 characters of a file are checked (and at most 200 pages of a PDF):
+  anything past that reaches agents unchecked, and the message carries a note
+  saying the rest was not checked. switch-core now depends on `pypdf` to read
+  PDFs.
 - **Counts and replies no longer name private rooms either.** Beyond the
   room listings below, a reference, document or package's attached-rooms count
   took in every room it was attached to, an agent's detail named every room
@@ -109,11 +204,96 @@ version of their own to them without also giving them a release of their own.
   whole workspace and have no owner, so any member could rename, move or
   delete one. Creating, changing and deleting a group, from the dashboard,
   the API or an agent's `create_room_group`, now needs a workspace admin (for
-  an agent, its owner). Anyone can still file a room they can write into an
-  existing group. Group room counts, and the rooms `get_room_group_detail`
-  lists, now leave out private rooms the caller cannot read.
+  an agent, its owner). Group room counts, and the rooms
+  `get_room_group_detail` lists, now leave out private rooms the caller
+  cannot read.
+- **Only a workspace admin puts a room in a room group.** A room's group can
+  decide who may address an agent, since an addressing policy can admit
+  everyone in a group's rooms, so any member who filed a room they could
+  write into a group could address that group's agents. Putting a room in a
+  group, whether when creating it, from the room's page, from the groups
+  page or through an agent's `create_room`, now needs a workspace admin (for
+  an agent, its owner). Running a template that makes a room group now
+  needs a workspace admin too, and an agent cannot run one, since it runs
+  templates without its owner's admin reach. Taking a room out of its group
+  still only needs write access to the room.
 
 #### Added
+- **The gateway says what the caller may do with every object it shows**, so
+  no page works a permission out for itself. Alongside the room, template and
+  agent flags already there:
+  - references, reference types, documents and packages carry `can_edit` and
+    `can_manage`, documents and rooms `can_transfer`, and rooms
+    `can_change_members`;
+  - agents carry `can_edit_options`, `can_rename`, `can_transfer` with
+    `transfer_blocked_reason`, and, on their detail, `can_change_manage_agents`
+    and `can_grant_services`; an agent's sub-agents carry them too;
+  - workspace and organization members carry `can_change_role` and
+    `can_remove`, workspace members `can_receive_transfer`, and organization
+    members `can_grant_org_admin`;
+  - `GET /tenants/current` carries `can_delete` and
+    `can_manage_data_protection` (setting messages to be deleted, listing
+    and erasing people: its admins by their own membership), and
+    `GET /organizations/current` `administers` and `can_manage_members`;
+  - API keys carry `can_reveal` and `can_delete`, machines `can_edit` and
+    `can_remove`, managed agents `can_edit` and `can_delete`;
+  - messaging apps carry `can_manage` and `can_delete`, installs
+    `can_disconnect`, claims on a chat account `can_unlink`, connections
+    `can_revoke`, and the operator's list of accounts `can_delete`.
+  Each is decided by the same rule its route enforces, and a test holds every
+  flag to its route for each kind of caller. A flag says whether the caller
+  may, not whether there is anything left to do: an ended install or a revoked
+  machine says that by its own status.
+- **The server's administrator can delete someone's account.** The Users page
+  has a Delete action (`DELETE /users/{id}`) that removes the account in every
+  workspace, with the same refusals as deleting your own. Administrator
+  accounts and your own account are refused, and every attempt is recorded in
+  the server audit log with its outcome.
+- **Transfer ownership.** The owner, or a workspace admin, can hand an agent,
+  room, package, reference, reference type, library document or template to
+  another member of the workspace (`POST /ownership/transfer`, and a Transfer
+  ownership action on the detail pages). Each transfer is audited. An agent
+  that uses its owner's service connections, is managed on its owner's
+  machine, can manage agents, has sub-agents or signs in with its own OAuth
+  client is refused; any other agent gets a new API key that only the new
+  owner can see, so it has to be reconnected. Chats and room documents are not
+  transferable.
+- **Workspaces keep messages for a chosen time.** A workspace admin sets a
+  message-retention window on the Workspace page; once an hour, messages older
+  than it are deleted with their attachments, and stored files no message
+  carries any more are swept. Lapsed invitations, settled approval requests
+  and expired install links are deleted 30 days after they end.
+- **A workspace admin can erase a person.** The People list on the Workspace
+  page erases everything a person sent in the workspace, in every room: their
+  messages, the files only those carried, the copies kept for agents, and
+  their name on approval answers. It works for people on a chat platform,
+  people from a chat app that has since been disconnected, and members who
+  wrote from Switch Console. A chat-platform person's identity goes too; a
+  Switch Console member keeps their account and can go on writing. The admin
+  confirms by typing the person's name, and the request and its outcome are
+  recorded in the audit log.
+- **A deleted account's messages read "Former member".** Deleting an account
+  keeps the messages it sent, so conversations stay whole, but takes the
+  person's name off them, off the copies kept for agents and commands, and
+  out of the names of the Switch Console chats they were in. Invitations
+  addressed to their email are deleted in every workspace, whether or not
+  they were still open. Erasing the messages themselves is the workspace
+  admin's erase action above.
+- **A deleted workspace's audit history goes after two years.** It is kept
+  while the workspace exists and for two years after it is deleted, then
+  deleted by the hourly retention pass. The server's own record of the
+  deletion stays. Deleting audit rows needs the schema owner's connection
+  (`DB_OWNER_USER` and `DB_OWNER_PASSWORD`); without it, switch-core logs an
+  error at startup saying the history will not be purged.
+- **Workspace admins can delete an empty workspace.** Workspace settings has a
+  Delete workspace action that asks for the workspace's name
+  (`DELETE /tenants/{id}`). It is refused, with what is left by kind and count,
+  until the workspace has no rooms (archived ones included), agents, packages,
+  references, reference types, documents, templates, room groups, messaging or
+  service connections, machines, connectors, skills or other members. Its audit
+  history is kept, and the deletion is recorded in the server audit log. The
+  server's default workspace can't be deleted. Deleting your account now also
+  deletes a workspace you leave empty.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
@@ -134,6 +314,21 @@ version of their own to them without also giving them a release of their own.
   the agent's binding to it. The socket's first frame offers calls
   (`calls.max_in_flight`, 64); a call over that is answered 429
   `capacity_exceeded` without running, so the controller sends it over HTTP.
+- **Organizations can follow WorkOS (experimental, off by default).** With
+  `ORGANIZATION_DIRECTORY=workos`, an organization an operator links to a
+  WorkOS organization (`switch-link-workos`) takes its members, and who is
+  its Org Admin, from there: at sign-in, from WorkOS's events every 30
+  seconds, and in a full check once a day. A change from WorkOS is applied
+  even when it breaks a rule Switch keeps (the last Org Admin, agents left
+  without an owner who can act for them), and the Organization page tells
+  its admins what is left to fix. With a members service configured
+  (`MEMBERS_SERVICE_URL`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URL`), an Org
+  Admin's role changes and removals on the Organization page are made in
+  WorkOS too, with the admin's own WorkOS token, which the dashboard gets by
+  sending them through the organization's sign-in when needed. Without one,
+  making someone Org Admin is done in WorkOS, and taking it away in Switch
+  lasts only while WorkOS agrees. Adding someone new is done in WorkOS either
+  way. Setup and limits: `docs/old/workos-directory.md`.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)
@@ -250,6 +445,52 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Admins step down and leave from their own row.** The workspace and
+  organization members pages offer changing your own role and leaving, while
+  another admin remains; the last one is refused, as before. Leaving the
+  workspace your session is on moves the session to your other workspace, or
+  to none, as deleting a workspace does, rather than leaving it on one you
+  left.
+- **A room's own document is changed in its room.** `PATCH` and
+  `DELETE /documents/{id}` refuse one with a 409, and its library flags say no.
+- **Revoking an invitation that has already ended is refused** with a 409,
+  rather than rewriting when, and by whom, it ended.
+- **An addressing rule that can never let anyone in is refused when it is
+  saved**, with a 422 naming the rule and why: one that names no rooms or no
+  room groups, or lets in no people, no agents, not the owner and not the
+  platform. Next to other rules it changed nothing while looking as if it did,
+  and a policy of only such rules shut the agent off, its owner included.
+  Policies already saved are left as they are.
+- **Removing a member hands what they own to an admin.** Their rooms,
+  packages, references, reference types, library documents and templates in
+  that workspace stayed theirs, though they could no longer reach them, and
+  were only cleared when their account was deleted. They now pass to the
+  admin removing them, or, when the removal comes from the organization's
+  directory or from an operator who is not a member, to the workspace's
+  longest-standing other admin. The same happens in a workspace an
+  organization admin reached only through that role, when they lose it. Each
+  is audited as an ownership transfer. Chats, a room's own documents and a
+  template whose name the admin already uses, in any workspace, stay as they
+  were, and a member who owns agents still can't be removed
+  until those are transferred or deleted.
+- **One role runs a workspace: owner merges into admin.** Every workspace
+  `owner` becomes an `admin`, and every admin now manages every member, other
+  admins included, as well as everything an owner could. A workspace always
+  keeps at least one admin: demoting or removing the last one is refused
+  (409), and so is deleting the account of the last admin of a workspace
+  others are in. Two admins demoting each other at once can't both succeed. A
+  client that still asks for `owner`, in an invitation or a role change, gets
+  `admin`. The organization issue `workspace_without_owner` is now
+  `workspace_without_admin`. The migration is not expand-only: until every
+  replica runs this release, an older one creating a workspace writes `owner`,
+  which the new check refuses, and an older one sees former owners as plain
+  admins with no last-admin rule. Roll every replica together.
+- **Only the owner or a workspace admin can change a reference's, reference
+  type's, package's or library document's visibility.** This tightens
+  permissions: before, anyone with write access could, so on a publicly
+  writable resource any member could make it private and lock everyone else
+  out of it and the rooms that use it.
+  Editing its other fields still needs only write access, as it does for rooms.
 - **Unlinking a resource from a room is for those taking part in it.** It
   took write access to the room, which on a publicly writable room, the
   default, is everyone's. It is now for the room's owner, people in it (in
@@ -565,6 +806,37 @@ version of their own to them without also giving them a release of their own.
   still stands, but the room is told Switch could not verify the inviter
   and the owner is named there so they can remove it. Agents already in a
   room are untouched: only agents about to be added are judged.
+- **Two organization admins demoting or removing each other at once** could
+  leave the refused one without their keys and connections in the workspaces
+  they reached as an organization admin: those were taken away before the
+  last-admin check that refused the change. The check is now made, under a
+  lock held until the change is saved, before anything is taken away.
+- **Deleting an API key an agent still signs in with** failed with a 500. It
+  is refused with a 409 that says to delete the agent; once the agent is gone,
+  its leftover key can be deleted.
+- **Attaching a document or package that is already attached**, to a room or
+  a package, failed with a 500. It now changes nothing, as for a reference,
+  and attaching anything a room already has is no longer reported as a new
+  attachment.
+- **A package in a room's list said the caller may open it** only on that
+  list; every route now works it out from the package's read rule.
+- **Stable Switch Console can link chat accounts again.** Since links have to
+  be confirmed from the account with a one-time code, a claim from a Console
+  that cannot show the code was refused with "Update Switch Console", and no
+  stable release could show it, so nobody on stable could link a new account.
+  Switch now issues the code anyway and returns it as the 409's text, which
+  stable Switch Console shows in the link dialog: what to post from the
+  account and that the code expires in 30 minutes. An account already
+  confirmed links normally. An admin linking someone else from an older client
+  is still refused while the link needs confirming, since the code would be
+  shown to the admin.
+- **A file that names nobody now follows the conversation like text does.**
+  A post with one or more files and no mention never reached the room's
+  assigned agent, the agent whose thread it was posted in, or the agent the
+  sender was just talking to, even with follow-ups on; the same words as a
+  text message did. A post is now decided by the same rules, read from its
+  first file's caption and thread, and the agent gets the post with every
+  file on it, in that thread.
 - **The dashboard offers only the room changes the server would allow.** On
   a publicly writable room, the default, anyone could change the Access
   setting and press Save, only for the server to refuse it. Someone who could
@@ -723,6 +995,10 @@ version of their own to them without also giving them a release of their own.
   through. Slack apps that list `/run-cmd` in their manifest keep showing it,
   answering "Unknown command", until an admin deletes it; Discord and Telegram
   drop it from their command lists by themselves (#730).
+- **Deleting your account now also clears workspaces you were removed from.**
+  Removing a member leaves what they own in that workspace, and deleting their
+  account afterwards failed on it. Those rows are now deleted or handed over as
+  they are in the workspaces you are still in.
 
 ### [0.31.0] - 2026-10-20
 
@@ -2524,6 +2800,18 @@ version of their own to them without also giving them a release of their own.
   terminal can't be picked. No earlier prompt is sent again.
 
 #### Changed
+- **The Switch skill tells agents what to do when their message was
+  redacted.** When a send's result says Switch Trust redacted it, the agent
+  reads what the room received and, if that no longer makes sense, says what
+  it meant in words that pass instead of reposting the original.
+- **The Switch Trust settings say what is checked in attached files.** The
+  text inside a file is checked up to its first 20,000 characters; files with
+  no text to read, such as images and archives, are sent without being
+  checked.
+- **No Owner role.** Inviting people and changing roles offer Admin and
+  Member, and the copy says "an admin of this workspace" where it said "an
+  owner or admin". A server from before the merge that still reports `owner`
+  shows as Admin, including for workspaces stored before the update.
 - **Usage data follows an install to a working agent.** Three new
   `activation_milestone` steps (`server_ready`, `agent_ready`,
   `first_agent_session`) are each sent once per install, and only by installs
@@ -2550,6 +2838,20 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Direct and group conversations no longer offer adding or removing
+  agents**, in a room's side column, the sidebar or an agent's "Add to rooms",
+  where the server refuses it now that their platform decides who is in them.
+  People in the conversation still use `!invite-agent` and `!remove-agent`.
+- **Antigravity runs Google's own `agy` CLI, on Windows too.** Switch Console
+  finds `agy` (including `%LOCALAPPDATA%\agy\bin` on Windows), installs it with
+  Google's installers, runs sessions with `agy acp`, and checks the sign-in you
+  made with `agy acp --login` or a `GEMINI_API_KEY`, instead of a separate
+  Antigravity ACP profile that a Google sign-in never reached. Antigravity's
+  questions now reach you, too, including typed answers. A machine that only
+  has the older `antigravity-acp` runtime keeps using it until `agy` is
+  installed, and Update installs `agy` there. An Antigravity sign-in Switch
+  holds for the older runtime cannot sign `agy` in: a session given one now
+  says how to sign in on the machine instead of starting signed out.
 - **Console no longer opens to a blank window on a database a newer build
   has changed.** Stable and Canary share one database, so after Canary added a
   migration, an older build found tables it was not written for, applied
@@ -4717,6 +5019,10 @@ The Switch protocol client and MCP runtime
 ### [Unreleased]
 
 #### Added
+- **`send_attachment` tells the agent what Switch Trust did.** When Switch
+  Trust redacted the caption, or flagged or could not fully check a file, the
+  result has a `Switch Trust:` line with the same `trust` field `post_message`
+  returns. It used to say only that the files were sent.
 - **Waits its turn when Switch is busy opening connections.** A server
   pacing a reconnect storm refuses an open as `busy` with when to open again,
   which is this agent's place in its queue. The stream now waits that long,

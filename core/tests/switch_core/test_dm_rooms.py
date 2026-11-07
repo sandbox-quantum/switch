@@ -7,7 +7,8 @@ import pytest
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
-from switch_core.invites import UserInviter
+from switch_core.delivery.addressing import AddressingResolver
+from switch_core.invites import InviteGate, UserInviter
 from switch_core.room_service import RoomCreateConfig, RoomService
 
 # A DM room is a 1:1 "direct" room provisioned outbound onto a bridge (on Slack,
@@ -82,6 +83,11 @@ class _FakeAgentStore:
         )
 
 
+class _FakeExternalUserStore:
+    async def get_by_user(self, session: Any, user_id: str) -> list[Any]:
+        return []
+
+
 class _FakeBridge:
     def __init__(self, known: dict[str, str]) -> None:
         self._known = known
@@ -137,6 +143,20 @@ def _dm_service(
     svc = object.__new__(RoomService)
     svc._session_factory = lambda: _FakeSessionCM()  # type: ignore[assignment]
     svc._agent_store = _FakeAgentStore({"a1": "agent.bot"})  # type: ignore[assignment]
+    external = _FakeExternalUserStore()
+    resolver = AddressingResolver(
+        room_store=SimpleNamespace(),  # type: ignore[arg-type]
+        room_role_store=SimpleNamespace(),  # type: ignore[arg-type]
+        client_store=SimpleNamespace(),  # type: ignore[arg-type]
+        agent_store=svc._agent_store,
+        external_user_store=external,  # type: ignore[arg-type]
+        live_connection_ids=set,
+    )
+    svc._invites = InviteGate(
+        resolver=resolver,
+        agent_store=svc._agent_store,
+        external_user_store=external,  # type: ignore[arg-type]
+    )
     svc._collab_lifecycle = _FakeLifecycle({"bridge-1": bridge})  # type: ignore[assignment]
     svc._collab_bridge_store = _FakeBridgeStore(  # type: ignore[assignment]
         channel_creation_enabled=channel_creation_enabled
