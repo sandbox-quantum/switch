@@ -1,7 +1,52 @@
 slug: new-relic
 name: New Relic
 category: Observability
-description: Query New Relic telemetry and alerts.
-enabled: false
+description: Investigate New Relic telemetry, entities, alerts and incidents with your user key.
+enabled: true
+adapter: api_key
 auth:
   type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: user_key
+        label: User API key
+        secret: true
+        help: User menu, API keys. Create a User key (NRAK-...), not an ingest key. Use a user with the least required access.
+      - name: region
+        label: New Relic region
+        secret: false
+        help: Choose your account's data region (US, EU or JP). An administrator must enable New Relic MCP Server and API Keys in Feature Control Manager.
+        choices:
+          - newrelic.com
+          - eu.newrelic.com
+          - jp.newrelic.com
+    # Documented NerdGraph identity request, omitting requestContext.apiKey
+    # so the response never needs to echo the secret. No email is requested.
+    # https://docs.newrelic.com/docs/apis/nerdgraph/get-started/introduction-new-relic-nerdgraph/
+    identity:
+      method: POST
+      url: "https://api.{region}/graphql"
+      headers: { API-Key: "{user_key}", Content-Type: application/json }
+      body:
+        query: "{ requestContext { userId } }"
+      account_id: data.requestContext.userId
+    help_url: https://docs.newrelic.com/docs/agentic-ai/mcp/overview/
+# User keys have no documented expiry. Only New Relic can revoke them;
+# disconnecting forgets the key in Switch. Existing broker policy blocks
+# connecting/granting non-expiring keys and never issues them to an agent.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    # Official remote service; one fixed region selects both vendor hosts.
+    # Requires New Relic MCP Server and API Keys in Feature Control Manager,
+    # plus an organization role allowed to read MCP. NerdGraph validation
+    # alone does not prove these MCP prerequisites are satisfied.
+    # https://docs.newrelic.com/docs/agentic-ai/mcp/setup/
+    - name: new-relic
+      url: "https://mcp.{region}/mcp/"
+      headers:
+        api-key: "{user_key}"
+# Permissions follow the owner's New Relic RBAC; no separate read-only tier.
+# OAuth-only tools are unavailable; see the skill and the vendor tool reference.
+tools: { mode: pass_through }

@@ -16,7 +16,6 @@ PLACEHOLDERS = {
     "gitlab",
     "bitbucket",
     "microsoft-365",
-    "new-relic",
     "notion",
     "linear",
     "salesforce",
@@ -26,13 +25,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_the_implemented_services():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "new-relic",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "new-relic",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["new-relic"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1034,6 +1036,46 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     assert sign_in.identity.headers == {"DD-API-KEY": "{api_key}"}
     # A key never expires, so it is never handed to an agent.
     assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_new_relic_entry_uses_the_documented_identity_and_mcp_contract():
+    definition = CATALOG["new-relic"].definition
+    assert definition.enabled is True
+    assert definition.adapter == "api_key"
+    assert (definition.auth.type, definition.auth.refresh) == ("api_key", "none")
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(field.name, field.secret) for field in sign_in.fields] == [
+        ("user_key", True),
+        ("region", False),
+    ]
+    assert sign_in.fields[1].choices == [
+        "newrelic.com",
+        "eu.newrelic.com",
+        "jp.newrelic.com",
+    ]
+    identity = sign_in.identity
+    assert (identity.method, identity.url) == (
+        "POST",
+        "https://api.{region}/graphql",
+    )
+    assert identity.headers == {
+        "API-Key": "{user_key}",
+        "Content-Type": "application/json",
+    }
+    assert identity.body == {"query": "{ requestContext { userId } }"}
+    assert identity.account_id == "data.requestContext.userId"
+    assert identity.label is None
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert (server.name, server.url) == ("new-relic", "https://mcp.{region}/mcp/")
+    assert server.headers == {"api-key": "{user_key}"}
+    assert definition.access is None
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    assert definition.token is not None
+    assert definition.token.kind == "pass_through"
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False
 
