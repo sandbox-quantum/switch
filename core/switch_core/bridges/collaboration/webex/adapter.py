@@ -73,6 +73,7 @@ from switch_core.bridges.collaboration.webex.cards import (
     request_card,
 )
 from switch_core.bridges.collaboration.webex.client import (
+    ServiceCatalog,
     WebexApiError,
     WebexClient,
     WebexFileTooLarge,
@@ -251,7 +252,7 @@ class WebexAdapter(PlatformAdapter):
         http: httpx.AsyncClient | None = None,
         socket_connector: Connector | None = None,
         trusts_socket: Callable[[str], bool] = is_webex_socket,
-        wdm_url: str = WDM_URL,
+        wdm_url: str | None = None,
     ) -> None:
         super().__init__()
         self._config = config
@@ -262,7 +263,11 @@ class WebexAdapter(PlatformAdapter):
         self._client = WebexClient(config.bot_token, self._http)
         self._socket_connector = socket_connector
         self._trusts_socket = trusts_socket
+        # None: the device service is the one Webex's catalog names for this
+        # bot, read on start.
         self._wdm_url = wdm_url
+        self._catalog = ServiceCatalog()
+        self._bot_email: str | None = None
         self._stream: WebexEventStream | None = None
         self._bot_id: str | None = None
         self._bot_handle = "webex-bot"
@@ -339,11 +344,26 @@ class WebexAdapter(PlatformAdapter):
         self._bot_id = str(me["id"])
         self._bot_handle = _handle_from(me, self._bot_handle)
         self._bot_name = str(me.get("displayName") or self._bot_name)
+        emails = me.get("emails")
+        if isinstance(emails, list) and emails and isinstance(emails[0], str):
+            self._bot_email = emails[0].lower()
         if not self._listening:
             logger.info("Webex bridge is quiet here; another process holds its socket")
             return
+        await self._read_catalog()
         self._stream = self._event_stream()
         self._stream.start()
+
+    async def _read_catalog(self) -> None:
+        """Learn which regional services this bot's organisation uses."""
+        try:
+            self._catalog = await self._client.catalog()
+        except WebexApiError as exc:
+            logger.warning(
+                "Could not read Webex's service catalog (%s); assuming the US "
+                "services, which only works for an organisation hosted there",
+                exc,
+            )
 
     def _event_stream(self) -> WebexEventStream:
         extra: dict[str, Any] = {}
@@ -354,7 +374,7 @@ class WebexAdapter(PlatformAdapter):
             self._config.bot_token,
             on_activity=self._on_activity,
             on_connected=self._on_socket_open,
-            wdm_url=self._wdm_url,
+            wdm_url=self._wdm_url or self._catalog.wdm_url or WDM_URL,
             trusts_socket=self._trusts_socket,
             **extra,
         )
@@ -368,6 +388,8 @@ class WebexAdapter(PlatformAdapter):
 
     async def withdraw(self) -> None:
         """Remove the bot's device, so Webex stops holding events for it."""
+        if self._stream is None and self._catalog.wdm_url is None:
+            await self._read_catalog()
         await (self._stream or self._event_stream()).forget_device()
 
     async def ensure_channel_subscriptions(
@@ -378,26 +400,48 @@ class WebexAdapter(PlatformAdapter):
 
     # ── Inbound ─────────────────────────────────────────────────────────────
 
-    def _id_for(self, kind: str, uuid: str) -> str:
+    def _id_for(self, kind: str, uuid: str, where: str | None = None) -> str:
         """The REST id of something the socket named by uuid alone.
 
-        Built in the bot's own cluster: an organisation hosted outside the US
-        has ids in a cluster of its own, and the bot's id says which.
+        Built in the cluster of the service `where` names — the conversation an
+        activity happened in — since an organisation hosted outside the US has
+        its spaces and messages in a cluster of its own. A person's id is in
+        the bot's own cluster, which is also the fallback.
         """
-        own = decode_id(self._bot_id or "")
-        cluster = own.cluster if own is not None else "us"
+        cluster = self._catalog.cluster_for(where)
+        if cluster is None:
+            own = decode_id(self._bot_id or "")
+            cluster = own.cluster if own is not None else "us"
         return WebexId(cluster=cluster, kind=kind, uuid=uuid).encode()
+
+    def _is_bot(self, actor: dict[str, Any]) -> bool:
+        """Whether the socket's `actor` is this bot.
+
+        The socket names an actor by address in `id` and by uuid in
+        `entryUUID`, so both are checked.
+        """
+        for value in (actor.get("entryUUID"), actor.get("id")):
+            if isinstance(value, str) and same_entity(value, self._bot_id):
+                return True
+        address = actor.get("emailAddress") or actor.get("id")
+        return bool(
+            self._bot_email
+            and isinstance(address, str)
+            and address.lower() == self._bot_email
+        )
 
     async def _on_activity(self, activity: dict[str, Any]) -> None:
         verb = activity.get("verb")
-        actor = _dict(activity.get("actor"))
-        if same_entity(str(actor.get("id") or ""), self._bot_id) and verb != "add":
+        if self._is_bot(_dict(activity.get("actor"))) and verb != "add":
             return
         activity_id = str(activity.get("id") or "")
+        where = str(
+            _dict(activity.get("target")).get("url") or activity.get("url") or ""
+        )
         if not activity_id:
             return
         if verb in ("post", "share"):
-            message_id = self._id_for("MESSAGE", activity_id)
+            message_id = self._id_for("MESSAGE", activity_id, where)
             try:
                 message = await self._client.message(message_id)
             except WebexApiError as exc:
@@ -411,7 +455,9 @@ class WebexAdapter(PlatformAdapter):
                 raise
             await self._handle_message(message)
         elif verb == "cardAction":
-            await self._handle_press(self._id_for("ATTACHMENT_ACTION", activity_id))
+            await self._handle_press(
+                self._id_for("ATTACHMENT_ACTION", activity_id, where)
+            )
         elif verb == "add":
             await self._handle_added(activity)
 
@@ -609,7 +655,9 @@ class WebexAdapter(PlatformAdapter):
         target = _dict(activity.get("target"))
         if added.get("objectType") != "person" or not target.get("id"):
             return
-        room_id = self._id_for("ROOM", str(target["id"]))
+        room_id = self._id_for(
+            "ROOM", str(target["id"]), str(target.get("url") or "") or None
+        )
         try:
             room = await self._room(room_id)
         except WebexApiError as exc:

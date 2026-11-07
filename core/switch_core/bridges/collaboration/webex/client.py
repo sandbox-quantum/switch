@@ -12,7 +12,7 @@ import asyncio
 import base64
 import binascii
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import Message
 from typing import Any
 from urllib.parse import urlsplit
@@ -22,6 +22,12 @@ import httpx
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://webexapis.com/v1"
+
+# Where Webex's own clients learn which regional services an account uses. A
+# bot in an organisation hosted in Europe registers its device, and has its
+# conversations, in the European cluster; the hardcoded US service accepts the
+# registration and then delivers it nothing.
+CATALOG_URL = "https://u2c.wbx2.com/u2c/api/v1/catalog"
 
 # Hosts the bot's token may be sent to. `webexapis.com` is the public API; the
 # `wbx2.com` services are where Webex's own clients register a device and open
@@ -138,6 +144,64 @@ def same_entity(a: str | None, b: str | None) -> bool:
     left_uuid = left.uuid if left else a
     right_uuid = right.uuid if right else b
     return left_uuid.lower() == right_uuid.lower()
+
+
+@dataclass(frozen=True)
+class ServiceCatalog:
+    """The regional services one account uses, from Webex's service catalog.
+
+    `wdm_url` is where the account registers its device. `clusters` maps a
+    service host to the cluster its ids are written in: the event socket names
+    a conversation by a bare uuid and the URL of the service that holds it,
+    and the REST id of anything in it is built in that service's cluster.
+    """
+
+    wdm_url: str | None = None
+    clusters: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def read(cls, body: dict[str, Any]) -> ServiceCatalog:
+        links = body.get("serviceLinks")
+        wdm = links.get("wdm") if isinstance(links, dict) else None
+        clusters: dict[str, str] = {}
+        hosts = body.get("hostCatalog")
+        for host, entries in hosts.items() if isinstance(hosts, dict) else []:
+            for entry in entries if isinstance(entries, list) else []:
+                cluster = _public_cluster(
+                    entry.get("id") if isinstance(entry, dict) else None
+                )
+                if cluster is not None:
+                    clusters[str(host).lower()] = cluster
+                    break
+        return cls(
+            wdm_url=str(wdm).rstrip("/")
+            if isinstance(wdm, str) and is_webex_url(wdm)
+            else None,
+            clusters=clusters,
+        )
+
+    def cluster_for(self, url: str | None) -> str | None:
+        """The cluster ids are written in for things held at `url`."""
+        if not url:
+            return None
+        return self.clusters.get((urlsplit(url).hostname or "").lower())
+
+
+def _public_cluster(service_id: object) -> str | None:
+    """`urn:TEAM:eu-central-1_k:conversation` as a public id writes it.
+
+    The cluster is the first three parts. Ids in the US clusters say `us`,
+    as they did before Webex had other regions, which is also how Webex's own
+    SDK writes them.
+    """
+    if not isinstance(service_id, str):
+        return None
+    parts = service_id.split(":")
+    if len(parts) < 4 or parts[0] != "urn" or not parts[2]:
+        return None
+    if parts[2].startswith("us-"):
+        return "us"
+    return ":".join(parts[:3])
 
 
 def is_webex_url(url: str) -> bool:
@@ -280,6 +344,15 @@ class WebexClient:
             if isinstance(items, list)
             else []
         )
+
+    async def catalog(self) -> ServiceCatalog:
+        body = await self._json(
+            "Reading Webex's service catalog",
+            "GET",
+            CATALOG_URL,
+            params={"format": "hostmap"},
+        )
+        return ServiceCatalog.read(body)
 
     # ── People ──────────────────────────────────────────────────────────────
 

@@ -39,7 +39,11 @@ from switch_core.bridges.collaboration.webex.adapter import (
     WebexConnectionConfig,
 )
 from switch_core.bridges.collaboration.webex.cards import CARD_CONTENT_TYPE
-from switch_core.bridges.collaboration.webex.client import WebexApiError, WebexId
+from switch_core.bridges.collaboration.webex.client import (
+    ServiceCatalog,
+    WebexApiError,
+    WebexId,
+)
 from switch_core.bridges.collaboration.webex.text import MAX_MESSAGE_BYTES
 
 from .session_fixtures import _item, _turn, open_request
@@ -429,7 +433,7 @@ async def test_a_press_on_a_card_is_an_answer_by_position(webex: FakeWebex) -> N
         "messageId": "card-message",
         "personId": ADA,
         "roomId": ROOM,
-        "inputs": {"switch": "answer", "token": "tok-1", "position": 2},
+        "inputs": {"switch": "answer", "token": "tok-1", "position": "2"},
     }
     await adapter._on_activity(
         {"id": action_uuid, "verb": "cardAction", "actor": {"id": ADA_UUID}}
@@ -583,7 +587,9 @@ async def test_a_request_is_a_card_with_a_button_per_option(webex: FakeWebex) ->
     actions = attachment["content"]["actions"]
     assert actions
     assert all(a["data"]["token"] == "tok-1" for a in actions)
-    assert [a["data"]["position"] for a in actions] == list(range(1, len(actions) + 1))
+    assert [a["data"]["position"] for a in actions] == [
+        str(n) for n in range(1, len(actions) + 1)
+    ]
     # Webex refuses a mention beside a card, so the person is pinged on their own.
     assert "<@personId:" not in card_post["markdown"]
     assert ping["markdown"].startswith(f"<@personId:{ADA}>")
@@ -745,3 +751,44 @@ async def test_a_failed_search_is_an_error_not_an_empty_result(
     webex.refuse("GET", "/people", _json_response(500, {"message": "down"}))
     with pytest.raises(RuntimeError):
         await adapter.search_directory_users("ada@example.com")
+
+
+async def test_in_a_european_org_ids_are_built_in_the_conversations_cluster(
+    webex: FakeWebex,
+) -> None:
+    adapter, inbox = await _started(webex)
+    adapter._catalog = ServiceCatalog(
+        clusters={"conv-k.wbx2.com": "urn:TEAM:eu-central-1_k"}
+    )
+    uuid = "aaaa0000-0000-4000-8000-000000000050"
+    eu_id = WebexId("urn:TEAM:eu-central-1_k", "MESSAGE", uuid).encode()
+    webex.messages[eu_id] = {
+        "id": eu_id,
+        "roomId": DM,
+        "roomType": "direct",
+        "personId": ADA,
+        "personEmail": "ada@example.com",
+        "text": "from Frankfurt",
+    }
+    activity = _post(uuid)
+    activity["target"]["url"] = (
+        f"https://conv-k.wbx2.com/conversation/api/v1/conversations/{ROOM_UUID}"
+    )
+    await adapter._on_activity(activity)
+    assert [m.content for m in inbox.messages] == ["from Frankfurt"]
+
+
+async def test_the_bot_knows_its_own_activity_when_named_by_address(
+    webex: FakeWebex,
+) -> None:
+    adapter, inbox = await _started(webex)
+    # As the socket names an actor: address in `id`, uuid in `entryUUID`.
+    for actor in (
+        {"id": "switch@webex.bot", "emailAddress": "switch@webex.bot"},
+        {"id": "someone@else", "entryUUID": BOT_UUID},
+    ):
+        activity = _post("aaaa0000-0000-4000-8000-000000000051")
+        activity["actor"] = actor
+        await adapter._on_activity(activity)
+    assert inbox.messages == []
+    assert not any(path.startswith("/messages/") for _, path, _ in webex.sent)
