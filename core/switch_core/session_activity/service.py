@@ -199,6 +199,7 @@ class AgentSessionActivityService:
         message_id: str | None,
         occurred_at: datetime,
         usage: list[TokenSpend],
+        subagent: bool = False,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
@@ -207,6 +208,10 @@ class AgentSessionActivityService:
         """
         if kind not in SESSION_ACTIVITY_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown activity kind: {kind}")
+        if subagent and kind != "tool-activity":
+            raise SessionError(
+                "INVALID_EVENT", "Only tool activity can describe a subagent."
+            )
         if status not in ITEM_STATUSES[kind]:
             raise SessionError(
                 "INVALID_EVENT", f"{status!r} is not a status of a {kind} row."
@@ -256,6 +261,7 @@ class AgentSessionActivityService:
                     turn_id=turn_id,
                     item_id=item_id,
                     kind=kind,
+                    subagent=subagent,
                     revision=revision,
                     status=status,
                     title=title,

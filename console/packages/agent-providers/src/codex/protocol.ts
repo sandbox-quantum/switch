@@ -221,6 +221,7 @@ export type CodexThreadItem =
       senderThreadId: string;
       receiverThreadIds: string[];
       prompt: string | null;
+      agentsStates?: Record<string, { status: string; message?: string | null }>;
     }
   | {
       type: 'subAgentActivity';

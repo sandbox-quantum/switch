@@ -117,6 +117,7 @@ class Item(_Model):
     turn_id: Id
     revision: Counter
     kind: Literal["user-message", "assistant-message", "tool-activity"]
+    subagent: bool = False
     status: Literal["in-progress", "completed", "failed", "declined"]
     title: str
     text: str

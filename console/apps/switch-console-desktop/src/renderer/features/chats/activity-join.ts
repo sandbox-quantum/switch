@@ -260,7 +260,21 @@ export function isHiddenTool(item: Pick<ChatActivityItem, 'title'>): boolean {
 
 /** The tool calls a turn shows. Assistant text is left out: the room message is the copy shown. */
 export function turnTools(turn: TurnActivity): ChatActivityItem[] {
-  return turn.items.filter((item) => item.kind === 'tool-activity' && !isHiddenTool(item));
+  return turn.items.filter(
+    (item) => item.kind === 'tool-activity' && !item.subagent && !isHiddenTool(item)
+  );
+}
+
+export function turnSubagents(turn: TurnActivity): ChatActivityItem[] {
+  return turn.items
+    .filter((item) => item.kind === 'tool-activity' && item.subagent)
+    .sort((a, b) => Number(b.status === 'in-progress') - Number(a.status === 'in-progress'));
+}
+
+export function subagentStatus(item: ChatActivityItem, turn: TurnStatus): string {
+  if (item.status === 'completed') return 'done';
+  if (item.status === 'failed' || item.status === 'declined') return item.status;
+  return turn === 'running' || turn === 'queued' ? 'running' : 'not confirmed finished';
 }
 
 /** Whether the turn is running with no visible tool currently running. */
