@@ -67,6 +67,11 @@ APPS = "/gateway/connector-apps"
 GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
 AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
+AZURE_DEVOPS = "azure-devops"
+AZURE_DEVOPS_CALLBACK = (
+    f"{PUBLIC}/gateway/service-connections/{AZURE_DEVOPS}/flows/callback"
+)
+AZURE_DEVOPS_LOOPBACK = "http://127.0.0.1/switch-services/callback"
 AIRTABLE_SECRET = "example-airtable-secret-0000"
 GITHUB_CLIENT_ID = "example-github-client-id"
 GITHUB_SECRET = "example-github-secret-0000"
@@ -367,7 +372,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, AZURE_DEVOPS}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -390,6 +395,20 @@ class TestOnlyTheOperator:
             "workspacesAndBases:read",
             "data.records:write",
             "data.recordComments:write",
+        ]
+        # Azure DevOps is an RFC 8252 native client: its loopback redirect
+        # needs no pinned port, and its delegated scopes split read from
+        # write.
+        assert apps[AZURE_DEVOPS]["redirect_uris"] == [
+            AZURE_DEVOPS_LOOPBACK,
+            AZURE_DEVOPS_CALLBACK,
+        ]
+        assert apps[AZURE_DEVOPS]["redirect_uri"] == AZURE_DEVOPS_LOOPBACK
+        assert apps[AZURE_DEVOPS]["needs_public_url"] is True
+        assert apps[AZURE_DEVOPS]["scopes"] == [
+            "api://2a72489c-aab2-4b65-b93a-a91edccf33b8/Ado.Mcp.Tools",
+            "offline_access",
+            "openid",
         ]
         assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
 
@@ -946,3 +965,40 @@ class TestNoSecretLeaves:
             for text in [r.text for r in responses] + [audit, logged]:
                 assert secret not in text
         assert STATIC_CLIENT_SECRET[-4:] in responses[2].text
+
+
+class TestAzurePublicClient:
+    async def test_client_id_refusal_is_not_saved_or_claimed_verified(
+        self, world: World, operator, session_factory
+    ) -> None:
+        seen: list[dict[str, str]] = []
+        original = world.handle
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            if str(request.url) == (
+                "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
+            ):
+                form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+                seen.append(form)
+                assert form["client_id"] == "example-azure-public-client"
+                assert "client_secret" not in form
+                assert "authorization" not in request.headers
+                return httpx.Response(400, json={"error": "invalid_grant"})
+            return original(request)
+
+        world.handle = handle
+        apps = await world.install()
+        async with world.harness.client() as client:
+            answer = await client.put(
+                f"{APPS}/{AZURE_DEVOPS}",
+                json={"client_id": "example-azure-public-client", "replace": False},
+                cookies=cookies_for(operator),
+            )
+            assert answer.status_code == 422, answer.text
+            assert "No credentials or redirect have been verified" in answer.text
+            response = await client.get(APPS, cookies=cookies_for(operator))
+        [azure] = [x for x in response.json()["apps"] if x["slug"] == AZURE_DEVOPS]
+        assert azure["source"] == "none"
+        assert azure["secrets"] == {}
+        assert seen
+        assert AZURE_DEVOPS not in apps.oauth_clients()
