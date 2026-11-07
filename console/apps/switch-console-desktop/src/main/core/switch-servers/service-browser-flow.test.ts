@@ -63,7 +63,7 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.resetAllMocks();
 });
-async function start(service = 'example') {
+async function start(service = 'example', fields?: Record<string, string>) {
   vi.mocked(cancelServiceConnection).mockResolvedValue(undefined);
   vi.mocked(completeServiceConnection).mockResolvedValue({
     warning: null,
@@ -76,7 +76,7 @@ async function start(service = 'example') {
     mode: 'loopback',
   }));
   const open = vi.fn().mockResolvedValue(undefined);
-  const id = await startServiceBrowserFlow(server, service, open);
+  const id = await startServiceBrowserFlow(server, service, open, fields);
   flows.push([service, id]);
   const input = vi.mocked(startServiceConnection).mock.calls[0]![2];
   return { id, input, open, url: `http://127.0.0.1:${input.port}/switch-services/callback` };
@@ -244,4 +244,10 @@ it('says which ports to free when every one is taken, and starts nothing', async
   } finally {
     await new Promise((resolve) => busy.close(resolve));
   }
+});
+
+it('passes the sign-in fields to Core', async () => {
+  const fields = { stack: 'x.grafana.net' };
+  const { input } = await start('example', fields);
+  expect(input.fields).toEqual(fields);
 });

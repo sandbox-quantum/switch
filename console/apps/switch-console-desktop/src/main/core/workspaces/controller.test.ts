@@ -925,7 +925,8 @@ describe('selecting the workspace’s tenant before the call', () => {
     expect(serviceBrowserFlow.startServiceBrowserFlow).toHaveBeenCalledWith(
       srv,
       'example',
-      expect.any(Function)
+      expect.any(Function),
+      undefined
     );
     expect(serviceBrowserFlow.getServiceBrowserFlow).toHaveBeenCalledWith(srv, 'example', 'flow-1');
     expect(serviceBrowserFlow.cancelServiceBrowserFlow).toHaveBeenCalledWith(
@@ -936,6 +937,26 @@ describe('selecting the workspace’s tenant before the call', () => {
     expect(connectServiceWithKey).toHaveBeenCalledWith(srv, 'example', { api_key: 'synthetic' });
     expect(disconnectService).toHaveBeenCalledWith(srv, 'example');
     expect(disconnectGitHub).toHaveBeenCalledWith(srv);
+  });
+
+  it('passes fields through', async () => {
+    const { decodeJwtTenantId } = await import('@main/core/switch-servers/gateway-client');
+    vi.mocked(decodeJwtTenantId).mockReturnValue('tenant-b');
+    requireWorkspace.mockResolvedValue(workspace('tenant-b'));
+    getSessionCookie.mockResolvedValue('synthetic-cookie');
+    serviceBrowserFlow.startServiceBrowserFlow.mockResolvedValue('flow-1');
+    const fields = { stack: 'x.grafana.net' };
+    await workspacesController.startServiceConnection({
+      workspaceId: 'ws',
+      service: 'example',
+      fields,
+    });
+    expect(serviceBrowserFlow.startServiceBrowserFlow).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'example',
+      expect.any(Function),
+      fields
+    );
   });
 
   it('refuses a workspace with no tenant where its server has several', async () => {
