@@ -5,7 +5,10 @@ name: E2E scheduled
 #
 #   after a merge to main  the provider lane on a throwaway stack. Real model
 #                          calls, so not on every PR, and never a required check
-#   nightly                the provider lane again, then a notification
+#   nightly                the provider lane again and the explore lane (Bombadil
+#                          driving the gateway UI at random for 30 minutes, the
+#                          `ui` properties in properties/catalog/ui.yaml), then
+#                          a notification
 #   a release tag          (switch-v*, candidates included) every lane that runs
 #                          on a throwaway stack: fast, provider and agentic, on
 #                          the tagged commit, always reported. A candidate may
@@ -67,6 +70,15 @@ jobs:
       lane: fast
       agent_type: claude-code
 
+  explore:
+    name: Explore lane
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/e2e.yml
+    with:
+      lane: explore
+      agent_type: claude-code
+      explore_time_limit: 30m
+
   agentic:
     name: Agentic lane
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
@@ -80,7 +92,7 @@ jobs:
 
   notify:
     name: Report
-    needs: [provider, fast, agentic]
+    needs: [provider, fast, explore, agentic]
     if: ${{ always() && github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
@@ -92,6 +104,8 @@ jobs:
           PROVIDER_SUMMARY: ${{ needs.provider.outputs.summary }}
           FAST_RESULT: ${{ needs.fast.result }}
           FAST_SUMMARY: ${{ needs.fast.outputs.summary }}
+          EXPLORE_RESULT: ${{ needs.explore.result }}
+          EXPLORE_SUMMARY: ${{ needs.explore.outputs.summary }}
           AGENTIC_RESULT: ${{ needs.agentic.result }}
           AGENTIC_SUMMARY: ${{ needs.agentic.outputs.summary }}
         run: |
@@ -114,6 +128,10 @@ jobs:
             title='Switch E2E nightly'
           fi
           lines="$(line 'Provider lane (ephemeral)' "$PROVIDER_RESULT" "$PROVIDER_SUMMARY")"
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            lines="$(printf '%s\n%s' "$lines" \
+              "$(line 'Explore lane (ephemeral)' "$EXPLORE_RESULT" "$EXPLORE_SUMMARY")")"
+          fi
           if [ "$tagged" = true ]; then
             lines="$(printf '%s\n%s\n%s' \
               "$(line 'Fast lane (ephemeral)' "$FAST_RESULT" "$FAST_SUMMARY")" \

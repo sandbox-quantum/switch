@@ -1,0 +1,73 @@
+properties:
+  - id: ui.no-console-errors
+    title: No gateway page logs an error to the browser console
+    statement: >
+      In every state the explorer reaches while it drives the gateway UI at
+      random, no page has logged an error to the console.
+    kind: safety
+    formality: semi-formal
+    levels: [ui]
+    owner: platform
+    status: checked
+  - id: ui.no-uncaught-exceptions
+    title: No gateway page throws an exception nothing caught
+    statement: >
+      In every state the explorer reaches, no page has thrown an exception that
+      nothing handled.
+    kind: safety
+    formality: semi-formal
+    levels: [ui]
+    owner: platform
+    status: checked
+  - id: ui.no-unhandled-rejections
+    title: No gateway page leaves a rejected promise unhandled
+    statement: >
+      In every state the explorer reaches, no page has left a promise rejected
+      with nothing to handle it.
+    kind: safety
+    formality: semi-formal
+    levels: [ui]
+    owner: platform
+    status: checked
+  - id: ui.signs-in
+    title: The explorer signs in from the login page
+    statement: >
+      Starting on the login page with the admin's credentials, the explorer
+      reaches a signed-in page (one showing the navigation rail) within 30
+      seconds.
+    kind: liveness
+    formality: semi-formal
+    levels: [ui]
+    owner: platform
+    status: checked
+  - id: ui.stays-signed-in
+    title: A signed-in session is not lost while the UI is used
+    statement: >
+      Once signed in, the explorer never sees the login form again: it cannot
+      sign out, so the login page means the session was dropped.
+    kind: safety
+    formality: semi-formal
+    levels: [ui]
+    owner: platform
+    status: checked
+  - id: ui.no-error-banner
+    title: No gateway page opens showing an error banner
+    statement: >
+      A page the explorer has just opened shows no error banner, once it has
+      fetched what it needs. A banner that appears after a click is how the
+      gateway refuses what random input asked for, and is not a violation.
+    kind: safety
+    formality: semi-formal
+    levels: [ui]
+    owner: platform
+    status: checked
+  - id: ui.no-server-errors
+    title: The gateway answers no request from the UI with a 5xx
+    statement: >
+      Of the `/gateway` requests the page makes while the explorer drives it,
+      none is answered with a server error.
+    kind: safety
+    formality: semi-formal
+    levels: [ui]
+    owner: platform
+    status: checked
