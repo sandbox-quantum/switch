@@ -1,7 +1,62 @@
 slug: gitlab
 name: GitLab
 category: Source control
-description: Work with GitLab projects, merge requests and issues.
-enabled: false
+description: Read and update GitLab projects, issues, merge requests and pipelines, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # GitLab offers dynamic client registration, but not enough of it.
+    # Measured live on 2026-10-31: POST https://gitlab.com/oauth/register
+    # answers scope "mcp" and grant_types ["authorization_code"] whatever
+    # the request asks for — asking for read_api, read_user and the
+    # refresh_token grant changes neither. A client registered that way
+    # can never call the identity endpoint below, and with no refresh
+    # grant its sign-ins could not be renewed. So each server's operator
+    # registers a GitLab application instead, with the scopes named under
+    # access, and names its settings in GITLAB_CLIENT_CONFIG_PATH or
+    # saves it under Connectors in the dashboard.
+    registration: static
+    client_settings: GITLAB
+    # Sign-ins come back to Core's own callback, the address the operator
+    # registers in the GitLab application.
+    redirect: [core]
+    authorization_url: https://gitlab.com/oauth/authorize
+    token_url: https://gitlab.com/oauth/token
+    revocation_url: https://gitlab.com/oauth/revoke
+  # The identity read uses GitLab's current-user endpoint, which expects
+  # a read_user or api grant; the operator's application carries
+  # read_user at both levels (see access), which is what a dynamically
+  # registered client could never be given. A live connect remains the
+  # end-to-end proof, and is still pending.
+  identity:
+    url: https://gitlab.com/api/v4/user
+    account_id: id
+    label: username
+# GitLab's access tokens live two hours (expires_in 7200); a refreshed
+# one is minted only from the refresh token, and GitLab rotates both on
+# every refresh, which is why refresh is rotating above.
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  # GitLab's MCP server is in beta. A top-level group owner must turn MCP
+  # server access on for their group before anyone in it can connect; a
+  # person whose groups have not done this cannot connect. A
+  # self-managed instance serves the same endpoint at
+  # https://<host>/api/v4/mcp and is enabled by its admin; this entry
+  # connects to gitlab.com.
+  servers:
+    - { name: gitlab, url: "https://gitlab.com/api/v4/mcp" }
+access:
+  # The MCP server needs a token carrying `mcp`, and its tools then call
+  # the REST API with that same token, so the levels are told apart by
+  # the REST scope the token carries: read_api keeps a read grant from
+  # writing, api is what lets a write grant change anything, and
+  # read_user covers the identity read at both levels. The tools
+  # themselves pass through unclassified.
+  read:
+    scopes: [mcp, read_api, read_user]
+  write:
+    scopes: [mcp, api, read_user]
+tools: { mode: pass_through }
