@@ -3,5 +3,7 @@ name: Microsoft 365
 category: Productivity
 description: Work with OneDrive, Outlook, Word and Excel.
 enabled: false
+# Keep this as a placeholder until a tenant confirms WorkIQ.Read is accepted
+# by MCP and Switch can identify the account from a validated OIDC ID token.
 auth:
   type: oauth
