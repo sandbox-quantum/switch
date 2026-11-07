@@ -22,6 +22,7 @@ CODEX = known_agents()["codex"]
 OPENCODE = known_agents()["opencode"]
 ANTIGRAVITY = known_agents()["antigravity"]
 CURSOR = known_agents()["cursor"]
+CLINE = known_agents()["cline"]
 
 
 def _agent(metadata: dict | None) -> SimpleNamespace:
@@ -279,6 +280,22 @@ class TestCursorKnownAgent:
             (True, "auto_session"),
         ]:
             profile = CURSOR.build_profile(
+                GenericAgentOptions(auto_session=auto_session)
+            )
+            assert profile.connection_model == expected
+            assert profile.message_exchange
+            assert profile.command_capabilities.interrupt == "session_dependent"
+            assert profile.pre_invocation_mediation == []
+
+
+class TestClineKnownAgent:
+    def test_registry_and_profile(self) -> None:
+        assert isinstance(CLINE, GenericKnownAgent)
+        for auto_session, expected in [
+            (False, "session_addressable"),
+            (True, "auto_session"),
+        ]:
+            profile = CLINE.build_profile(
                 GenericAgentOptions(auto_session=auto_session)
             )
             assert profile.connection_model == expected
