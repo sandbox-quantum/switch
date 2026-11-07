@@ -1627,6 +1627,16 @@ it.each([422, 401, 500])(
         status === 422
       );
       expect(host.turns).toHaveLength(1);
+      const journal = (await readFile(join(host.root, 'events.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .map(
+          (line) => JSON.parse(line) as { body: { type: string; turnId?: string; status?: string } }
+        );
+      const terminal = journal
+        .filter((event) => event.body.type === 'turn.upsert' && event.body.turnId === target)
+        .at(-1);
+      expect(terminal?.body.status).toBe('cancelled');
     } finally {
       host.switchCore.state.cancelledStatus = null;
       await host.stop();
