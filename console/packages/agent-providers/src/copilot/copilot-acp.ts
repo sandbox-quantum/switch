@@ -1,5 +1,6 @@
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks, AcpSignInInput } from '../acp/hooks';
+import type { AcpToolCall } from '../acp/protocol';
 import { readiness, signInWith, type ProviderReadiness } from '../readiness';
 
 export const COPILOT_LOGIN = 'copilot login';
@@ -72,6 +73,35 @@ async function askCopilot({ cwd, handshake, request }: AcpSignInInput): Promise<
 }
 
 /**
+ * Copilot titles an MCP tool call `<server>-<tool>` in its `tool_call` update,
+ * then asks permission for the same call titled with the bare `<tool>`. The
+ * server is what is left of the first title once `-<tool>` is taken off, which
+ * stays exact for server names that hold a hyphen themselves. The update's
+ * title is kept per tool call until the permission request for it arrives.
+ */
+const mcpTitles = new Map<string, string>();
+const MAX_MCP_TITLES = 256;
+
+function copilotMcpServerOf(toolCall: AcpToolCall): string | undefined {
+  const { toolCallId, title } = toolCall;
+  if (!title) return undefined;
+  const seen = mcpTitles.get(toolCallId);
+  if (seen === undefined || seen === title) {
+    // A tool call's first sighting; remember its title for the permission request.
+    if (seen === undefined && !/\s/.test(title) && title.includes('-')) {
+      if (mcpTitles.size >= MAX_MCP_TITLES) mcpTitles.delete(mcpTitles.keys().next().value!);
+      mcpTitles.set(toolCallId, title);
+    }
+    return undefined;
+  }
+  mcpTitles.delete(toolCallId);
+  const suffix = `-${title}`;
+  return seen.endsWith(suffix) && seen.length > suffix.length
+    ? seen.slice(0, -suffix.length)
+    : undefined;
+}
+
+/**
  * GitHub Copilot CLI's ACP server, `copilot --acp --stdio` (public preview).
  * Copilot has no permission modes over ACP and `--yolo` is not honoured
  * there, so the generic adapter answers its permission requests for the
@@ -88,6 +118,9 @@ export const copilotAcp: AcpProviderHooks = {
     approvals: true,
     userInput: false,
   },
+  // Copilot's ACP server takes MCP servers over HTTP and SSE only; a stdio
+  // server in `session/new` is dropped with a log line and nothing else.
+  mcpServerOf: copilotMcpServerOf,
   launch: ({ binaryPath, env }) => ({ command: binaryPath, args: ['--acp', '--stdio'], env }),
   loginCommand: COPILOT_LOGIN,
   // Copilot's own token, its home, and its bring-your-own-key provider. GH_TOKEN

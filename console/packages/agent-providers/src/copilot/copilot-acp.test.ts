@@ -164,6 +164,42 @@ it('asks in the room in approval-required mode, and passes a denial back', async
   });
 });
 
+it('runs the session’s own MCP tools without asking, matching the call to its server by title', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  // As Copilot 1.0.107 sends them: `<server>-<tool>` in the update, the bare tool in the request.
+  const update = (toolCallId: string, title: string) =>
+    server.send({
+      method: 'session/update',
+      params: {
+        sessionId: 'native',
+        update: { sessionUpdate: 'tool_call', toolCallId, title, kind: 'other', status: 'pending' },
+      },
+    });
+  const ask = (id: number, toolCallId: string, title: string) =>
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId, title, kind: 'other', status: 'pending' },
+        options: permissionOptions,
+      },
+    });
+  update('mcp-1', 'switch-switch_echo');
+  ask(72, 'mcp-1', 'switch_echo');
+  await flush();
+  expect(server.received.find((m) => m.id === 72)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'allow_once' },
+  });
+  expect(events.some((e) => e.type === 'request.opened')).toBe(false);
+  // A tool whose title only looks prefixed, by a server this session did not register, still asks.
+  update('other-1', 'elsewhere-switch_echo');
+  ask(73, 'other-1', 'switch_echo');
+  await flush();
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
+});
+
 it('reads the sign-in from the environment first: a model provider, then Copilot’s own token', () => {
   expect(copilotEnvSignIn({})).toBeUndefined();
   expect(
