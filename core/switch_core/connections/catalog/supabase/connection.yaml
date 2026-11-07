@@ -1,0 +1,36 @@
+slug: supabase
+name: Supabase
+category: Database
+description: Inspect and manage Supabase projects, databases, schemas and edge functions, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39251, 39252, 39253, 39254, 39255]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.supabase.com/v1/profile
+    account_id: id
+    label: email
+# Supabase OAuth access tokens live 1 hour; refresh rotates.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - name: supabase
+      url: "https://mcp.supabase.com/mcp"
+access:
+  read:
+    scopes:
+      - "projects:read"
+      - "database:read"
+  write:
+    scopes:
+      - "projects:read"
+      - "database:read"
+      - "database:write"
+tools: { mode: pass_through }
