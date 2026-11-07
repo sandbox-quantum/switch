@@ -117,8 +117,10 @@ anyone.
   provided Switch knows her. Mention markup an agent writes itself, such as
   `<@personEmail:…>` or `<@all>`, is shown as plain text and notifies no one.
 - **Requests** are Adaptive Cards with one button per option. A press goes back
-  to Switch, which checks it against the request, and the card is redrawn
-  once it's answered. You can also answer by typing the option's number.
+  to Switch, which checks it against the request. Once it's answered, the card
+  is replaced by one without buttons that says what was chosen and by whom,
+  for example "Chosen by Ada Lovelace from Webex". You can also answer by
+  typing the option's number.
 - **A turn in progress** is one message that's edited as the turn moves, then
   edited once more to say how it ended.
 - **Files** go both ways. Webex carries up to 100 MB in one file, and what
@@ -154,6 +156,10 @@ failing.
 - **A card can't mention anyone.** Webex refuses mentions in a message that
   carries a card. When a request needs someone's answer, the mention goes in a
   short message right after the card.
+- **A card can't be edited.** Webex refuses any edit to a message that carries
+  a card. So when a request changes, Switch posts the new card in the same
+  thread and deletes the old one, and the card moves to the bottom of the
+  thread.
 - **One file per message.** Several files from an agent arrive as several
   messages.
 - **Deleting a room takes the bot out of the space.** A bot can't delete or
