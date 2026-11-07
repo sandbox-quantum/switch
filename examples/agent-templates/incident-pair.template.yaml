@@ -1,0 +1,84 @@
+# Incident response pair: two agents and the room they share.
+#
+# A specialized template for DevOps, SRE, and on-call engineering teams.
+# Switch Console creates each entry of `agents:`, in its own working
+# directory backed by the chosen coding provider. The server creates the
+# `room:` with both agents and invites the on-call engineer.
+version: 1
+
+params:
+  team:
+    type: string
+    description: Prefix for every name this template creates
+    pattern: "[a-z][a-z0-9-]*"
+    default: ops
+  provider:
+    type: provider
+    description: Which coding agent backs both. The first one installed is chosen.
+    default: [claude, codex, opencode]
+    input: advanced
+  location:
+    type: location
+    description: The machine both run on.
+    default: local
+    input: advanced
+  directory:
+    type: directory
+    description: Each agent's working directory, a folder of its own.
+    default: "{$agents_dir}/{agent}"
+    input: advanced
+  bridge:
+    type: bridge
+    description: Where the room is mirrored (Slack, Telegram, Teams, Discord, Mattermost).
+    default: [$first]
+
+agents:
+  - name: "{team}-recon"
+    description: Analyzes production crash reports, stack traces, and live AST
+    addressing: anyone
+    provider: "{provider}"
+    location: "{location}"
+    directory: "{directory}"
+    instructions: |
+      You are the incident forensics agent for the team. When an exception or
+      runtime failure report arrives in your room:
+
+      1. Parse the stack trace, identifying the failing service, file, function,
+         and exact line number.
+      2. Inspect the live Abstract Syntax Tree (AST) in your directory to confirm
+         the failing statement and identify the root cause.
+      3. Hand off the diagnosed context directly to @{team}-hotfix with the
+         reproduction command, failing inputs, and suggested fix strategy.
+
+      Never guess a line number or exception cause you did not verify on disk.
+
+  - name: "{team}-hotfix"
+    description: Synthesizes surgical patches, runs test suites, and gates deployment
+    addressing: owner-agents
+    provider: "{provider}"
+    location: "{location}"
+    directory: "{directory}"
+    instructions: |
+      You are the hotfix engineer for the incident pair. When @{team}-recon
+      hands you a root-cause diagnosis:
+
+      1. Synthesize the smallest surgical patch that fixes the failure without
+         introducing side effects.
+      2. Run the unit test and regression suite before and after applying the
+         candidate diff to verify the fix.
+      3. Post the unified diff and test report into the room, and pause at the
+         human-in-the-loop gate, asking {$creator} to review and approve
+         deployment. Only deploy after explicit confirmation.
+
+# The room is created on the messaging app the `bridge` input names.
+# `{$creator}` puts the on-call engineer in it, so the agents' forensics reach them.
+room:
+  name: "{team}-incident-room"
+  description: Autonomous incident forensics and surgical hotfix pair with human gating
+  bridge: "{bridge}"
+  agents: ["{team}-recon", "{team}-hotfix"]
+  users: ["{$creator}"]
+
+kickoff: |
+  @{team}-recon and @{team}-hotfix: your incident room is live.
+  @{team}-recon: say hello in one line and confirm your readiness to triage runtime alerts.
