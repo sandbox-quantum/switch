@@ -616,6 +616,40 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## Supabase
+
+Built from sign-in runs against a free Supabase organization through
+Supabase's hosted MCP server, with dynamically registered clients:
+
+- Supabase offers dynamic registration. Asked for a public client, it answers
+  with a secret that never expires and names no authentication method, so the
+  secret goes as HTTP Basic. It matches a loopback redirect exactly, port
+  included (one without the registered port is refused), so Supabase connects
+  through Switch Console on the same five fixed ports as Atlassian.
+- Its consent screen picks one organization and grants every scope asked for,
+  with nothing to untick. Supabase's `/v1/profile` refuses OAuth tokens, so the
+  account is the organization, read as `0.id` from `/v1/organizations`, which
+  must list exactly one.
+- Access tokens live 24 hours, and each refresh returns a new refresh token;
+  a spent one is answered 404. Supabase advertises no revocation endpoint, so
+  disconnecting says where to remove Switch: the organization's settings,
+  OAuth Apps, Authorized apps.
+- Scopes: read covers organizations, projects, databases, logs and edge
+  functions; write adds database and edge function writes. Not asked for:
+  `projects:write` (creating, pausing and restoring projects, which can add to
+  the bill), `secrets:read` (the projects' keys), `environment` (development
+  branches, billed by the hour) and `storage` (off by default on the server).
+- The server lists 31 tools, 19 with `?read_only=true`, which also runs SQL in
+  a read-only transaction. With only the read scopes, the normal server refuses
+  `execute_sql` outright for want of `database:write`, so a read grant is
+  given the read-only server (`read_url`). Supabase grants every scope asked
+  for and Switch Console asks for the write level, so connections today are
+  read and write.
+
+To connect: Connectors in Switch Console, then Supabase. Nothing needs
+configuring on the server. To roll back, add `supabase` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every

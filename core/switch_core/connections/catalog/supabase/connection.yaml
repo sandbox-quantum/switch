@@ -1,0 +1,73 @@
+slug: supabase
+name: Supabase
+category: Database
+description: Inspect and change the databases and edge functions of your Supabase projects, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Each refresh returns a new refresh token, and Supabase forgets the one
+  # used (measured: reusing it answers 404, no such refresh token).
+  refresh: rotating
+  oauth:
+    # Supabase offers dynamic registration, so Core registers its own client.
+    # It answers with a secret and names no authentication method, so the
+    # secret goes as HTTP Basic (RFC 7591's default). The secret does not
+    # expire (client_secret_expires_at is 0).
+    registration: dynamic
+    # Supabase matches a loopback redirect exactly, port included (measured:
+    # a redirect without the registered port is refused), so sign-ins come
+    # back to Switch Console on a port registered with the client.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Supabase advertises no revocation endpoint.
+    remove_access: >-
+      Remove it in Supabase under your organization's settings, OAuth Apps,
+      Authorized apps. Until then it can still reach that organization.
+  identity:
+    # Supabase's /v1/profile refuses OAuth tokens ("does not support oauth
+    # access yet"). Its consent screen picks one organization, and the sign-in
+    # reaches that one: the connection is the organization, read from the
+    # list of organizations, which must hold exactly that one.
+    url: https://api.supabase.com/v1/organizations
+    account_id: 0.id
+    label: 0.name
+# Supabase's access tokens live 24 hours (measured), and Supabase offers no
+# way to ask for a shorter one or to revoke one alone, so an agent's copy may
+# outlive its grant by up to that long. Agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    # The read-only server leaves out the tools that change projects,
+    # migrations, functions and branches (31 tools down to 19) and runs SQL in
+    # a read-only transaction (measured: CREATE TABLE is refused, SELECT
+    # runs). With the read scopes alone, the normal server refuses execute_sql
+    # outright, as it needs database:write, so a read grant could not query
+    # at all without it.
+    - name: supabase
+      url: "https://mcp.supabase.com/mcp"
+      read_url: "https://mcp.supabase.com/mcp?read_only=true"
+access:
+  # Supabase's consent screen grants every scope asked for, with nothing to
+  # untick, so a connection is granted the write level. Not asked for:
+  # projects:write (creating, pausing and restoring projects, which can add to
+  # the organization's bill), secrets:read (the projects' API keys),
+  # environment (development branches, which are billed by the hour) and
+  # storage (its tools are off by default on Supabase's MCP server).
+  read:
+    scopes:
+      - organizations:read
+      - projects:read
+      - database:read
+      - analytics:read
+      - edge_functions:read
+  write:
+    scopes:
+      - organizations:read
+      - projects:read
+      - database:read
+      - analytics:read
+      - edge_functions:read
+      - database:write
+      - edge_functions:write
+tools: { mode: pass_through }

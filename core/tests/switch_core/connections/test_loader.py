@@ -26,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_the_built_connections():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "supabase",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "supabase",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["supabase"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -228,6 +231,64 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_supabase_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["supabase"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    # Supabase matches a loopback redirect's port, so the ports are fixed.
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    # Supabase advertises no revocation endpoint, so people remove Switch in
+    # the organization's settings.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None
+    assert "Authorized apps" in oauth.remove_access
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        24 * 3600,
+    )
+    # The read-only server is what a read grant is given.
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert (server.name, server.url_for("write"), server.url_for("read")) == (
+        "supabase",
+        "https://mcp.supabase.com/mcp",
+        "https://mcp.supabase.com/mcp?read_only=true",
+    )
+    assert definition.access is not None and definition.access.write is not None
+    read = [
+        "organizations:read",
+        "projects:read",
+        "database:read",
+        "analytics:read",
+        "edge_functions:read",
+    ]
+    assert definition.access.read.scopes == read
+    assert definition.access.write.scopes == [
+        *read,
+        "database:write",
+        "edge_functions:write",
+    ]
+    # Never the scopes that bill (projects, branches) or reveal keys.
+    every = set(definition.access.write.scopes)
+    assert not every & {"projects:write", "secrets:read"}
+    assert not any(scope.startswith(("environment:", "storage:")) for scope in every)
+    # The one organization the sign-in reaches, from the list Supabase answers.
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.account_id, identity.label) == (
+        "https://api.supabase.com/v1/organizations",
+        "0.id",
+        "0.name",
+    )
 
 
 RESTRICTED_DRIVE = {
