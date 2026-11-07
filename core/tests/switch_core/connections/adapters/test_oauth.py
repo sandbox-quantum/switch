@@ -227,6 +227,41 @@ class TestSignIn:
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
             await adapter.identify(secret.access_token or "")
 
+    async def test_identity_via_rfc7662_introspection_with_composite_account_id(
+        self, vendor
+    ) -> None:
+        intro_text = (
+            STATIC.replace(
+                "    url: https://api.example.test/me\n"
+                "    account_id: account.id\n"
+                "    label: account.email\n",
+                "    introspection: true\n"
+                "    account_id: [workspace_id, user_id]\n"
+                "    label: workspace_id\n",
+            )
+        )
+        adapter, _ = _adapter(vendor, intro_text)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("ws-1:usr-1", "ws-1")
+
+    async def test_introspection_fails_loudly_when_token_is_inactive(
+        self, vendor
+    ) -> None:
+        intro_text = (
+            STATIC.replace(
+                "    url: https://api.example.test/me\n"
+                "    account_id: account.id\n"
+                "    label: account.email\n",
+                "    introspection: true\n"
+                "    account_id: [workspace_id, user_id]\n"
+                "    label: workspace_id\n",
+            )
+        )
+        adapter, _ = _adapter(vendor, intro_text)
+        with pytest.raises(ReauthorizationRequiredError, match="not active"):
+            await adapter.identify("inactive_or_expired_token")
+
 
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:
