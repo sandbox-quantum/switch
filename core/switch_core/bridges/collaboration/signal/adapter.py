@@ -35,7 +35,11 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import Field, field_validator
 
-from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
+from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
+    AgentIdentity,
+    PlatformAdapter,
+)
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -62,6 +66,9 @@ _UUID = re.compile(
 #: A group's channel id is this prefix and the group's base64 id; anything
 #: else is the other party of a direct conversation.
 GROUP_PREFIX = "group."
+
+#: The reaction an agent's work is shown with.
+WORKING_EMOJI = "👀"
 
 #: Signal clients send a longer body as a file; stay under it.
 MAX_MESSAGE = 2000
@@ -277,6 +284,8 @@ class SignalAdapter(PlatformAdapter):
     keeps_quiet_unless_listening: ClassVar[bool] = True
     # A Signal group notifies its members of every message.
     every_message_notifies_members: ClassVar[bool] = True
+    # The account reacts 👀 to the message being worked on; every agent shares it.
+    supports_activity_reactions: ClassVar[bool] = True
 
     #: Swapped for an `httpx.MockTransport` in tests.
     _transport: ClassVar[httpx.AsyncBaseTransport | None] = None
@@ -367,6 +376,12 @@ class SignalAdapter(PlatformAdapter):
                 f"{config.account} is not registered or linked in this signal-cli "
                 "daemon. Register it (signal-cli register) or link it (signal-cli link) first."
             )
+
+    @classmethod
+    def exclusive_resource(cls, connection_config: dict[str, object]) -> str | None:
+        """One connection per Signal account: two would each read its messages."""
+        account = connection_config.get("account")
+        return f"Signal account {account}" if account else None
 
     @classmethod
     def outbound_urls(cls, connection_config: dict[str, object]) -> list[str]:
@@ -729,6 +744,41 @@ class SignalAdapter(PlatformAdapter):
             )
         except BridgeOperationError:
             logger.debug("Signal refused a typing indicator", exc_info=True)
+
+    async def notify_working(
+        self, channel_id: str, agent_name: str, thread_root_id: str | None
+    ) -> None:
+        await self.send_typing(channel_id, agent_name, True)
+
+    async def mark_activity(
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
+    ) -> None:
+        """React 👀 to the message being worked on, or take the reaction back.
+
+        One mark between every agent, since they share the account. Signal
+        keeps one reaction per account per message, so adding it again, or
+        removing one that is not there, changes nothing.
+        """
+        if mark != "working":
+            return
+        timestamp, author = _parse_ref(message_ref)
+        await self._rpc(
+            "sendReaction",
+            {
+                "emoji": WORKING_EMOJI,
+                "targetAuthor": author,
+                "targetTimestamp": timestamp,
+                "remove": not on,
+                **self._target(channel_id),
+            },
+        )
 
     async def send_attachment(
         self,

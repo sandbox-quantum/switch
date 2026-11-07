@@ -194,6 +194,7 @@ def test_signal_is_registered() -> None:
     assert SignalAdapter.keeps_quiet_unless_listening is True
     assert SignalAdapter.supports_channel_creation is False
     assert SignalAdapter.supports_directory_search is False
+    assert SignalAdapter.supports_activity_reactions is True
 
 
 def test_config_normalises_its_fields() -> None:
@@ -224,6 +225,14 @@ def test_config_normalises_its_fields() -> None:
 def test_config_refuses_what_it_cannot_use(field: str, value: str, says: str) -> None:
     with pytest.raises(ValidationError, match=says):
         _config(**{field: value})
+
+
+def test_one_connection_per_account() -> None:
+    assert (
+        SignalAdapter.exclusive_resource({"account": ACCOUNT})
+        == f"Signal account {ACCOUNT}"
+    )
+    assert SignalAdapter.exclusive_resource({}) is None
 
 
 def test_outbound_urls_name_the_daemon() -> None:
@@ -565,6 +574,37 @@ async def test_delete_message_deletes_for_everyone(daemon: Daemon) -> None:
     await adapter.delete_message(ALICE, f"1700000000123:{ALICE}")
     assert daemon.sent("remoteDelete") == [
         {"account": ACCOUNT, "targetTimestamp": 1_700_000_000_123, "groupId": GROUP}
+    ]
+
+
+async def test_working_reaction_goes_on_and_comes_off(daemon: Daemon) -> None:
+    adapter, _ = await _started()
+    ref = f"1699999999000:{ALICE}"
+    await adapter.mark_activity(
+        f"group.{GROUP}", ref, agent_name="claude", mark="working", on=True
+    )
+    await adapter.mark_activity(
+        f"group.{GROUP}", ref, agent_name="claude", mark="working", on=False
+    )
+    await adapter.mark_activity(ALICE, ref, agent_name="claude", mark="queued", on=True)
+    assert daemon.sent("sendReaction") == [
+        {
+            "account": ACCOUNT,
+            "emoji": "👀",
+            "targetAuthor": ALICE,
+            "targetTimestamp": 1_699_999_999_000,
+            "remove": remove,
+            "groupId": GROUP,
+        }
+        for remove in (False, True)
+    ]
+
+
+async def test_notify_working_shows_typing(daemon: Daemon) -> None:
+    adapter, _ = await _started()
+    await adapter.notify_working(ALICE, "claude", None)
+    assert daemon.sent("sendTyping") == [
+        {"account": ACCOUNT, "stop": False, "recipient": [ALICE]}
     ]
 
 

@@ -75,7 +75,11 @@ In Switch Console, open **Connect a messaging app** and choose **Signal**.
 
 When you connect, Switch checks that a signal-cli daemon answers at that
 address and that it serves the account. If the check fails, the error says
-what to fix.
+what to fix. A Signal account can be connected to Switch only once, since two
+connections would both read its messages.
+
+While an agent works on a message, the account reacts to it with 👀 and shows
+as typing. The reaction is taken back when the agent is done.
 
 ## Using your own account
 
