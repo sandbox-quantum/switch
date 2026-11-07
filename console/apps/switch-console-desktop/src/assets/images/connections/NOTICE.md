@@ -29,6 +29,7 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14.
 | `box.svg` | Box | Simple Icons 16.33.0, `box` | CC0-1.0; guidelines https://www.box.com/en-gb/about-us/press | `#0061D5`, white in dark theme |
 | `airtable.svg` | Airtable | Simple Icons 16.33.0, `airtable` | CC0-1.0 | black in light theme, `#18BFFF` in dark theme |
 | `vercel.svg` | Vercel | Simple Icons 16.33.0, `vercel` | CC0-1.0; guidelines https://vercel.com/geist/brands | theme foreground |
+| `supabase.svg` | Supabase | Simple Icons 16.33.0, `supabase` | CC0-1.0; guidelines https://supabase.com/brand-assets | `#3ECF8E` |
 | `canva.svg` | Canva | Canva "Icon logo" from https://www.canva.dev/assets/connect/Canva-logos.zip | Canva Connect brand guidelines (https://www.canva.dev/docs/connect/guidelines/brand/) permit the unmodified icon logo in an integration's UI; gradient ids renamed only | full colour, unmodified |
 
 Simple Icons' CC0 dedication covers the drawings; it does not grant any
