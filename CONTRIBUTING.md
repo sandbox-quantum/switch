@@ -35,6 +35,10 @@ See [`docs/old/LOCAL_DEVELOPMENT.md`](docs/old/LOCAL_DEVELOPMENT.md) for the
 fuller account of this setup — what each port serves, and how to point
 Switch Console at your local server.
 
+## First contribution in 15 minutes
+
+New contributors can follow the [contributor quickstart](docs/contributing/quickstart.md) for a focused clone-to-first-change path, including the local service stack, Switch Console, and test commands.
+
 ## Common commands
 
 Run `just` with no arguments to list every recipe. The most-used ones:
