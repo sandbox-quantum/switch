@@ -120,3 +120,23 @@ def test_help_shaped_output_over_the_cap_splits() -> None:
     assert len(chunks) >= 2
     assert all(len(c) <= MAX_MESSAGE for c in chunks)
     assert _rejoin(chunks) == body
+
+
+def test_long_line_in_tagged_fence_stays_under_the_cap() -> None:
+    chunks = chunk_message("```json\n" + "a" * 3000 + "\n```")
+    assert all(len(c) <= MAX_MESSAGE for c in chunks)
+
+
+def test_no_empty_code_block_chunk_is_posted() -> None:
+    chunks = chunk_message("```typescript\n" + "x" * 3000 + "\n```")
+    assert "```typescript\n```" not in chunks
+    assert all(len(c) <= MAX_MESSAGE for c in chunks)
+
+
+@pytest.mark.parametrize("lang", ["json", "typescript", "python", "rust", "cpp", ""])
+def test_long_code_lines_with_various_language_tags(lang: str) -> None:
+    body = f"```{lang}\n" + "x" * 2500 + "\n```"
+    chunks = chunk_message(body)
+    assert all(len(c) <= MAX_MESSAGE for c in chunks)
+    assert all(c.count("```") % 2 == 0 for c in chunks)
+    assert f"```{lang}\n```" not in chunks
