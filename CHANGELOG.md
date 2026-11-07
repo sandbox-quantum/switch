@@ -443,6 +443,18 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **The Canva connection.** A person connects Canva from Switch Console and a
+  granted agent searches, reads, creates, exports and changes designs, as that
+  person, through Canva's MCP server. Read access requests `design:meta:read`
+  and `design:content:read`; write access adds `design:content:write`. Each
+  server's operator registers a Canva integration with Switch Console's five
+  loopback redirect addresses and the scopes it
+  needs, then saves it under Connector apps or names it in
+  `CANVA_CLIENT_CONFIG_PATH`; see `docs/old/canva-setup.md`. Sign-ins return
+  to Switch Console, so no `GATEWAY_PUBLIC_URL` is needed. Canva's MCP server
+  must be enabled for the integration in its Developer Portal, which Switch
+  cannot check. Disconnecting revokes the sign-in at Canva, which ends that
+  person's consent for the integration.
 
 #### Changed
 - **Admins step down and leave from their own row.** The workspace and
