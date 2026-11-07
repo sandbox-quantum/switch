@@ -116,6 +116,8 @@ def _capabilities(reader: Principal, doc: Document) -> dict[str, Any]:
     library = doc.room_id is None
     manage = library and can_manage(reader, doc.owner_id)
     return {
+        # The library's own rule, whatever the scope: its read route asks it.
+        "can_read": can(reader, "read", doc),
         "can_edit": library and can(reader, "write", doc),
         "can_manage": manage,
         "can_transfer": manage,
