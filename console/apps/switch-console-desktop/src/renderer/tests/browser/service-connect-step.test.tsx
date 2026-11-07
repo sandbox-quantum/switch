@@ -7,7 +7,7 @@
  */
 import { type ReactNode, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 
@@ -120,7 +120,7 @@ async function signIn(): Promise<void> {
   switchServers.startServiceConnection.mockResolvedValue('flow-1');
   await vi.waitFor(() => expect(button(/^connect example/i, dialog())).toBeDefined());
   await act(async () => button(/^connect example/i, dialog())!.click());
-  expect(switchServers.startServiceConnection).toHaveBeenCalledWith('server', 'example');
+  expect(switchServers.startServiceConnection).toHaveBeenCalledWith('server', 'example', {});
 }
 
 it('connects through the sign-in as soon as the server has kept the account', async () => {
@@ -194,4 +194,84 @@ it('counts a cancel of a sign-in the server already dropped as cancelled', async
   await vi.waitFor(() => expect(button(/^connect example/i, dialog())).toBeDefined());
   expect(dialog().querySelector('[role="alert"]')).toBeNull();
   expect(closable()).toBe(true);
+});
+
+describe('sign-in fields', () => {
+  const connection: ConnectionCatalogEntry = {
+    ...EXAMPLE,
+    sign_in_fields: [
+      {
+        name: 'stack',
+        label: 'Grafana Cloud stack',
+        help: "Your stack's address, such as example-stack.grafana.net, without https://.",
+        pattern: '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.grafana\\.net$',
+      },
+    ],
+  };
+  const step = () => (
+    <ServiceConnectStep
+      calls={serverServiceCalls('server')}
+      connection={connection}
+      onBack={() => {}}
+    />
+  );
+
+  it('keeps Connect off until the stack fits', async () => {
+    await render(step());
+    expect(button(/^connect example/i, dialog())!.disabled).toBe(true);
+  });
+
+  it('defers an invalid pattern to Core once the field is nonempty', async () => {
+    await render(
+      <ServiceConnectStep
+        calls={serverServiceCalls('server')}
+        connection={{
+          ...connection,
+          sign_in_fields: [{ ...connection.sign_in_fields![0]!, pattern: '[' }],
+        }}
+        onBack={() => {}}
+      />
+    );
+    const input = dialog().querySelector<HTMLInputElement>('#service-sign-in-example-stack')!;
+    expect(input).toBeInstanceOf(HTMLInputElement);
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    expect(button(/^connect example/i, dialog())!.disabled).toBe(true);
+    await act(async () => {
+      setter.call(input, '  ');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(button(/^connect example/i, dialog())!.disabled).toBe(true);
+    await act(async () => {
+      setter.call(input, 'example-stack.grafana.net');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(button(/^connect example/i, dialog())!.disabled).toBe(false);
+  });
+
+  it('keeps Connect off for a URL and trims spaces', async () => {
+    switchServers.startServiceConnection.mockResolvedValue('flow-1');
+    switchServers.getServiceFlow.mockResolvedValue({
+      status: 'pending',
+      account: null,
+      error: null,
+      warning: null,
+    });
+    await render(step());
+    const input = dialog().querySelector<HTMLInputElement>('#service-sign-in-example-stack')!;
+    expect(input).toBeInstanceOf(HTMLInputElement);
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const type = async (value: string) =>
+      act(async () => {
+        setter.call(input, value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    await type('https://example-stack.grafana.net/');
+    expect(button(/^connect example/i, dialog())!.disabled).toBe(true);
+    await type('  example-stack.grafana.net ');
+    expect(button(/^connect example/i, dialog())!.disabled).toBe(false);
+    await act(async () => button(/^connect example/i, dialog())!.click());
+    expect(switchServers.startServiceConnection).toHaveBeenCalledWith('server', 'example', {
+      stack: 'example-stack.grafana.net',
+    });
+  });
 });

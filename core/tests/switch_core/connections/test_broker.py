@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import delete, event, select, update
@@ -59,6 +60,7 @@ from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.standing import availability, connectable, standing
 from tests.switch_core.connections.test_loader import (
     CLI_ENTRY,
+    FIELDS_ENTRY,
     OAUTH_ENTRY,
     _write_example,
 )
@@ -934,6 +936,9 @@ async def _pass_through(
     expires_in: float,
     max_lifetime: int = 3600,
     entry: str = OAUTH_ENTRY,
+    secret: dict[str, Any] | None = None,
+    account_id: str = "acct-1",
+    grant_account_id: str | None = None,
 ) -> PassThrough:
     vendor = FakeVendor()
     vendor.pass_through = True
@@ -961,11 +966,12 @@ async def _pass_through(
             service="example",
             consent="write",
             granted_scopes=["read:items", "write:items"],
-            account_id="acct-1",
+            account_id=account_id,
             external_identity="ada@example.test",
             encrypted_secret=TEST_KEYRING.encrypt(
                 json.dumps(
                     {
+                        **(secret or {}),
                         "access_token": "owner_access_0",
                         "expires_at": time.time() + expires_in,
                         "refresh_token": "owner_refresh_0",
@@ -983,7 +989,7 @@ async def _pass_through(
             tool_mode="deny",
             tools=[],
             resources={},
-            account_id="acct-1",
+            account_id=grant_account_id if grant_account_id is not None else account_id,
             created_by=owner.id,
         )
         await session.commit()
@@ -991,6 +997,124 @@ async def _pass_through(
 
 
 class TestPassThrough:
+    async def test_the_grant_names_the_tenants_server(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory,
+            tmp_path / "c",
+            expires_in=3000,
+            entry=FIELDS_ENTRY,
+            secret={"sign_in_fields": {"tenant": "team-a"}},
+            account_id="team-a:acct-1",
+        )
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            [grant] = await pt.broker.grants_for(session, agent, Principal.agent_key())
+        assert (
+            grant["mcp_servers"][0]["url"] == "https://mcp.example.test/v1/mcp/team-a"
+        )
+        assert grant["mcp_servers"][0]["headers"] == {"Authorization": "Bearer {token}"}
+
+    @pytest.mark.parametrize(
+        "secret",
+        [
+            {},
+            {"sign_in_fields": None},
+            {"sign_in_fields": []},
+            {"sign_in_fields": {}},
+            {"sign_in_fields": {"tenant": "team-a/x"}},
+        ],
+    )
+    async def test_invalid_saved_fields_omit_only_the_affected_grant(
+        self, session_factory, tmp_path, secret
+    ) -> None:
+        pt = await _pass_through(
+            session_factory,
+            tmp_path / "c",
+            expires_in=3000,
+            entry=FIELDS_ENTRY,
+            secret=secret,
+            account_id="team-a:acct-1",
+        )
+        async with session_factory() as session:
+            await STORE.save_connection(
+                session,
+                user_id=pt.world.owner.id,
+                service="other",
+                consent="read",
+                granted_scopes=[],
+                account_id="other-account",
+                external_identity="ada@example.test",
+                encrypted_secret=TEST_KEYRING.encrypt("{}"),
+                oauth_client_id=None,
+            )
+            await STORE.save_grant(
+                session,
+                agent_id=pt.world.agent.id,
+                owner_id=pt.world.owner.id,
+                service="other",
+                access="read",
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id="other-account",
+                created_by=pt.world.owner.id,
+            )
+            await session.commit()
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            grants = await pt.broker.grants_for(session, agent, Principal.agent_key())
+        assert [grant["service"] for grant in grants] == ["other"]
+
+    async def test_a_grant_for_another_account_names_no_server(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory,
+            tmp_path / "c",
+            expires_in=3000,
+            entry=FIELDS_ENTRY,
+            secret={"sign_in_fields": {"tenant": "team-b"}},
+            account_id="team-b:acct-1",
+            grant_account_id="team-a:acct-1",
+        )
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            assert (
+                await pt.broker.grants_for(session, agent, Principal.agent_key()) == []
+            )
+
+    async def test_an_agent_without_an_owner_does_not_look_up_tenant_fields(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        pt = await _pass_through(
+            session_factory,
+            tmp_path / "c",
+            expires_in=3000,
+            entry=FIELDS_ENTRY,
+            secret={"sign_in_fields": {"tenant": "team-a"}},
+            account_id="team-a:acct-1",
+        )
+
+        async def reject_ownerless_lookup(session, user_id, service):
+            assert user_id is not None
+            return await original_get_connection(session, user_id, service)
+
+        original_get_connection = pt.broker._store.get_connection
+        monkeypatch.setattr(pt.broker._store, "get_connection", reject_ownerless_lookup)
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            agent.owner_id = None
+            with session.no_autoflush:
+                assert (
+                    await pt.broker.grants_for(session, agent, Principal.agent_key())
+                    == []
+                )
+
     async def test_the_grant_names_the_vendors_mcp_servers_and_skill(
         self, session_factory, tmp_path
     ) -> None:

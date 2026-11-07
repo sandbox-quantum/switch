@@ -54,6 +54,14 @@ export function knownUnavailableCode(code: string | null): UnavailableCode | nul
   return UNAVAILABLE_CODES.find((known) => known === code) ?? null;
 }
 
+export const serviceSignInFieldSchema = z.object({
+  name: z.string(),
+  label: z.string(),
+  help: z.string(),
+  pattern: z.string(),
+});
+export type ServiceSignInField = z.infer<typeof serviceSignInFieldSchema>;
+
 export const connectionCatalogEntrySchema = z.object({
   slug: z.string(),
   name: z.string(),
@@ -85,6 +93,7 @@ export const connectionCatalogEntrySchema = z.object({
   loopback_ports: z.array(z.number().int()).nullable(),
   /** The fields a person pastes to connect it, for a service connected with a key; else null. */
   key: serviceKeyFormSchema.nullable(),
+  sign_in_fields: z.array(serviceSignInFieldSchema).optional(),
   /** The connected account as people recognise it; null when not connected. */
   external_identity: z.string().nullable(),
   /** What the person allowed when they connected; null when not connected or not said. */
@@ -110,6 +119,7 @@ export const connectionCatalogSchema = z.object({
         token_lifetime: true,
         loopback_ports: true,
         key: true,
+        sign_in_fields: true,
         external_identity: true,
         consent: true,
         workspace_enabled: true,
@@ -137,6 +147,7 @@ export const serviceConnectionsSchema = z.object({
       token_lifetime: z.number().nullable().default(null),
       loopback_ports: z.array(z.number().int()).nullable().default(null),
       key: serviceKeyFormSchema.nullable().default(null),
+      sign_in_fields: z.array(serviceSignInFieldSchema).default([]),
       external_identity: z.string().nullable().default(null),
       consent: z.enum(['read', 'write']).nullable().default(null),
       workspace_enabled: z.boolean().nullable().default(null),

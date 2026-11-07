@@ -95,6 +95,7 @@ async def _owned(
 
 class StartFlow(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    fields: dict[str, str] = Field(default_factory=dict, max_length=4)
     port: int = Field(strict=True, ge=1024, le=65535)
     state: str = Field(pattern=TOKEN_PATTERN)
     completion_secret: str = Field(pattern=TOKEN_PATTERN)
@@ -130,6 +131,7 @@ async def start(
     try:
         flow = await flows.start(
             definition=definition,
+            fields=body.fields,
             tenant_id=require_tenant_id(),
             user_id=user.id,
             state=body.state,
@@ -138,7 +140,7 @@ async def start(
             owner_label=f"{user.name} ({user.email}) in {tenant.name}",
         )
     except FlowError as error:
-        raise HTTPException(409, str(error)) from None
+        raise HTTPException(error.status_code, str(error)) from None
     if flow.mode == "core":
         url = flows.authorize_url(service, body.state)
     else:

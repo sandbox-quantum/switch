@@ -1,5 +1,5 @@
 import { ExternalLink } from 'lucide-react';
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   canCloseConnectFlow,
   connectFlowReducer,
@@ -17,6 +17,7 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { ServiceCalls } from './service-calls';
+import { fieldMatches, ServiceFieldInputs } from './service-field-inputs';
 
 /**
  * Connecting a service through Switch's generic sign-in: the browser signs in
@@ -37,6 +38,11 @@ export function ServiceConnectStep({
   onConnected?: (warning: string | null) => void;
 }) {
   const service = connection.slug;
+  const fields = connection.sign_in_fields ?? [];
+  const [values, setValues] = useState<Record<string, string>>({});
+  const fieldsReady = fields.every((field) =>
+    fieldMatches(field.pattern, (values[field.name] ?? '').trim())
+  );
   const [state, dispatch] = useReducer(
     connectFlowReducer,
     connection.status === 'connected',
@@ -85,11 +91,14 @@ export function ServiceConnectStep({
   }, [service, flowId, connection.name]);
   const fallback = `Could not update the ${connection.name} connection.`;
   const start = async () => {
+    const trimmedValues = Object.fromEntries(
+      fields.map((field) => [field.name, (values[field.name] ?? '').trim()])
+    );
     dispatch({ type: 'act' });
     try {
       dispatch({
         type: 'started',
-        flowId: await calls.startSignIn(service),
+        flowId: await calls.startSignIn(service, trimmedValues),
       });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
@@ -132,6 +141,18 @@ export function ServiceConnectStep({
           </p>
         ) : (
           <>
+            {fields.length > 0 && (
+              <ServiceFieldInputs
+                idPrefix={`service-sign-in-${service}`}
+                label={`${connection.name} sign-in`}
+                fields={fields}
+                values={values}
+                disabled={busy}
+                onChange={(fieldName, value) =>
+                  setValues((current) => ({ ...current, [fieldName]: value }))
+                }
+              />
+            )}
             <p className="text-sm text-foreground-muted">{connection.description}</p>
             <p className="text-sm text-foreground-muted">
               {connected
@@ -181,7 +202,10 @@ export function ServiceConnectStep({
               </Button>
             )}
             {(!connected || error) && (
-              <Button disabled={busy || !connection.connectable} onClick={() => void start()}>
+              <Button
+                disabled={busy || !connection.connectable || !fieldsReady}
+                onClick={() => void start()}
+              >
                 Connect {connection.name} <ExternalLink className="size-4" />
               </Button>
             )}

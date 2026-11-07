@@ -3796,6 +3796,7 @@ export async function getConnectionCatalog(
     token_lifetime: entry.token_lifetime,
     loopback_ports: entry.loopback_ports,
     key: entry.key,
+    sign_in_fields: entry.sign_in_fields,
     external_identity: entry.external_identity,
     consent: entry.consent,
     workspace_enabled: entry.workspace_enabled,
@@ -4142,7 +4143,7 @@ const serviceFlows = (service: string) =>
 export async function startServiceConnection(
   server: SwitchServer,
   service: string,
-  input: { port: number; state: string; completion_secret: string }
+  input: { port: number; state: string; completion_secret: string; fields?: Record<string, string> }
 ): Promise<ServiceFlowStart> {
   if (!isHttpsOrLoopback(new URL(server.url)))
     throw new Error('Service connections require HTTPS, unless the server is on this computer.');
@@ -4151,7 +4152,12 @@ export async function startServiceConnection(
       await gatewayFetch(server, serviceFlows(service), {
         authenticated: true,
         method: 'POST',
-        body: input,
+        body: {
+          port: input.port,
+          state: input.state,
+          completion_secret: input.completion_secret,
+          ...(input.fields && Object.keys(input.fields).length > 0 ? { fields: input.fields } : {}),
+        },
       })
     ).json()
   );

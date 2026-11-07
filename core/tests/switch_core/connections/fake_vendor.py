@@ -13,6 +13,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 import secrets
 import time
 import uuid
@@ -328,6 +329,8 @@ class FakeOAuthServer:
     """
 
     def __init__(self, *, rotating: bool = True, lifetime: int = 3600) -> None:
+        self.per_path: bool = False
+        self.mcp_urls: list[str] = []
         self.rotating = rotating
         self.lifetime = lifetime
         self.resource_metadata_path = "/.well-known/oauth-protected-resource/v1/mcp"
@@ -419,6 +422,11 @@ class FakeOAuthServer:
         if where in self.fail:
             status, body = self.fail[where]
             return _json(status, body)
+        if self.per_path and re.fullmatch(
+            r"https://mcp\.example\.test/\.well-known/oauth-protected-resource/v1/mcp/[^/]+",
+            where,
+        ):
+            return _json(200, {"resource": MCP_URL, "authorization_servers": [ISSUER]})
         if where == f"https://mcp.example.test{self.resource_metadata_path}":
             return _json(200, {"resource": MCP_URL, "authorization_servers": [ISSUER]})
         if where == "https://mcp.example.test/.well-known/oauth-protected-resource":
@@ -445,7 +453,10 @@ class FakeOAuthServer:
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
             return _json(200, {"account": self.account})
-        if where == MCP_URL:
+        if where == MCP_URL or (
+            self.per_path
+            and re.fullmatch(r"https://mcp\.example\.test/v1/mcp/[^/]+", where)
+        ):
             return self._mcp(request)
         return _json(404, {"error": "not_found"})
 
@@ -538,8 +549,11 @@ class FakeOAuthServer:
         return _json(201, answer)
 
     def _mcp(self, request: httpx.Request) -> httpx.Response:
+        self.mcp_urls.append(str(request.url))
         if self._bearer(request) is None:
             named = f"https://mcp.example.test{self.resource_metadata_path}"
+            if self.per_path and request.url.path != "/v1/mcp":
+                named = f"https://mcp.example.test/.well-known/oauth-protected-resource{request.url.path}"
             return _json(
                 401,
                 {"error": "invalid_token"},

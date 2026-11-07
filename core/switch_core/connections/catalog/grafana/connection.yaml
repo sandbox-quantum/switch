@@ -1,0 +1,64 @@
+slug: grafana
+name: Grafana Cloud
+category: Observability
+description: >-
+  Search dashboards and query metrics, logs and traces in Grafana Cloud, as you.
+  Needs Grafana Assistant; each person connected counts as an Assistant user.
+# Gate 0 failed: a token issued for one stack received HTTP 200 from a
+# made-up other-stack endpoint; no second real stack was available. Keep off
+# until Grafana binds the token to its stack.
+enabled: false
+adapter: oauth
+auth:
+  type: oauth
+  # Grafana documents one-hour access tokens that refresh for 30 days, then the
+  # person signs in again. The live probe reported refresh rotation and
+  # expires_in 3600; the 30-day window has not been measured.
+  refresh: rotating
+  oauth:
+    # The person types their stack, and Switch signs in to that stack's own MCP
+    # server ("Connect multiple stacks" in Grafana's Cloud MCP docs). Each stack
+    # is represented separately, but Gate 0 did not establish token isolation
+    # (see enabled above), so this entry remains switched off.
+    fields:
+      - name: stack
+        label: Grafana Cloud stack
+        help: Your stack's address, such as example-stack.grafana.net, without https://.
+        pattern: '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.grafana\.net$'
+    # Grafana offers dynamic registration, and every stack shares its
+    # registration and token endpoints, so one client serves them all and
+    # nothing is set up on the server.
+    registration: dynamic
+    redirect: [loopback]
+    # Grafana advertises no revocation endpoint.
+    remove_access: >-
+      Switch forgets this sign-in, but Grafana still lists it. Remove it in your
+      stack under Grafana Assistant, Settings, Connectors, MCP clients, Your
+      connections.
+  # No REST endpoint accepts the MCP server's token. user_info is read-only,
+  # takes no arguments and returns login, email, name and orgs, but no numeric
+  # id. The same login signs in to every stack, so the account is the stack and
+  # the login together. Core supplies connection.stack from the field, never from
+  # Grafana's answer, its orgs or the token's claims.
+  identity:
+    mcp_tool: user_info
+    account_id: [connection.stack, login]
+    label: login
+# The live probe reported expires_in 3600, so an agent's copy can outlive
+# its grant by up to an hour. The old access token still worked after refresh.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: grafana, url: "https://mcp.grafana.com/mcp/{stack}" }
+access:
+  # Grafana's consent page has three checkboxes. Read covers dashboards, alerts,
+  # incidents, metrics, logs, traces and profiles. Query runs SQL against data
+  # sources as written, which can change data, so it is never part of read.
+  # Write changes dashboards, alerts, incidents and data sources; only org Admins
+  # can grant it, so an Editor connects read-only by clearing Query. A sign-in
+  # granted Query or Write without the other is refused, never recorded as read.
+  read:
+    scopes: [grafana:read]
+  write:
+    scopes: [grafana:read, grafana:query, grafana:write]
+tools: { mode: pass_through }

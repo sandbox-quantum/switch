@@ -27,9 +27,11 @@ the skill file sessions are then given.
 """
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -64,6 +66,71 @@ RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
 # authorization request is Core's to set.
 AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+
+
+FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+# What a session host puts in a template for a token that is not made of
+# fields: the whole token, as an OAuth entry's servers take it.
+TOKEN_PLACEHOLDER = "token"
+SIGN_IN_FIELD_VALUE_PATTERN = r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*"
+CONNECTION_PATH_PREFIX = "connection."
+
+
+class SignInField(BaseModel):
+    """One value a person types to choose the account's MCP server.
+    Its pattern and the URL's safe character set both hold the value to it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    name: str = Field(pattern=FIELD_NAME_PATTERN)
+    label: str = Field(min_length=1, max_length=80, pattern=r"^[^\r\n]+$")
+    help: str = Field(min_length=1, max_length=200, pattern=r"^[^\r\n]+$")
+    pattern: str = Field(min_length=3, max_length=200)
+
+    @model_validator(mode="after")
+    def _valid_pattern(self) -> "SignInField":
+        if self.name == TOKEN_PLACEHOLDER:
+            raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
+        if not self.pattern.startswith("^") or not self.pattern.endswith("$"):
+            raise ValueError("a sign-in field pattern is anchored with ^ and $")
+        try:
+            re.compile(self.pattern, re.ASCII)
+        except re.error as error:
+            raise ValueError("a sign-in field pattern must compile") from error
+        return self
+
+
+def sign_in_field_values(
+    fields: Sequence[SignInField], values: Mapping[str, object]
+) -> dict[str, str]:
+    """Hold each supplied value to its field's pattern and the URL's safe set."""
+    if set(values) != {field.name for field in fields}:
+        raise ValueError("Enter exactly this service's sign-in fields.")
+    result = {}
+    for field in fields:
+        value = values[field.name]
+        if (
+            not isinstance(value, str)
+            or len(value) > 253
+            or re.fullmatch(SIGN_IN_FIELD_VALUE_PATTERN, value, re.ASCII) is None
+            or re.fullmatch(field.pattern, value, re.ASCII) is None
+        ):
+            raise ValueError(f"{field.label} is not valid. {field.help}")
+        result[field.name] = value
+    return result
+
+
+def render_mcp_url(template: str, values: Mapping[str, str]) -> str:
+    """Fill the checked URL, keeping a host label to one label."""
+    host = urlsplit(template).netloc
+    result = template
+    for name in template_fields(template):
+        if name not in values:
+            raise ValueError(f"missing sign-in field {name}")
+        value = values[name]
+        if f"{{{name}}}" in host and "." in value:
+            raise ValueError(f"{name} must fill only one host label")
+        result = result.replace(f"{{{name}}}", value)
+    return result
 
 
 class OAuthClient(BaseModel):
@@ -103,6 +170,7 @@ class OAuthClient(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    fields: list[SignInField] = Field(default_factory=list, max_length=4)
     registration: Literal["dynamic", "static"]
     client_settings: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,62}$")
     redirect: list[RedirectMode] = Field(min_length=1)
@@ -184,19 +252,25 @@ class ConnectionIdentity(BaseModel):
     people recognise (an email, a login)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
-    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
+    account_id: (
+        Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
+        | list[Annotated[str, Field(pattern=JSON_PATH_PATTERN)]]
+    ) = Field(min_length=1)
     label: str = Field(pattern=JSON_PATH_PATTERN)
 
+    @model_validator(mode="after")
+    def _source(self) -> "ConnectionIdentity":
+        if (self.url is None) == (self.mcp_tool is None):
+            raise ValueError("identity names exactly one of url or mcp_tool")
+        return self
 
-FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+
 HEADER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 # A choice ends up in a URL's host or path, so it is a plain DNS-ish word.
 CHOICE_PATTERN = r"^[a-z0-9][a-z0-9.-]{0,62}$"
 TEMPLATE_FIELD_RE = re.compile(r"\{([^{}]*)\}")
-# What a session host puts in a template for a token that is not made of
-# fields: the whole token, as an OAuth entry's servers take it.
-TOKEN_PLACEHOLDER = "token"
 
 
 def template_fields(template: str) -> list[str]:
@@ -519,7 +593,7 @@ class LevelAccess(BaseModel):
     def _one_kind(self) -> "LevelAccess":
         if (self.scopes is None) == (self.permissions is None):
             raise ValueError("an access level holds scopes or permissions, not both")
-        if not (self.scopes or self.permissions):
+        if self.permissions == {}:
             raise ValueError("an access level needs at least one scope or permission")
         return self
 
@@ -528,6 +602,17 @@ class ConnectionAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     read: LevelAccess
     write: LevelAccess | None = None
+    unscoped: bool = False
+
+    @model_validator(mode="after")
+    def _scopes(self) -> "ConnectionAccess":
+        levels = [level for level in (self.read, self.write) if level is not None]
+        if self.unscoped:
+            if self.write is None or any(level.scopes != [] for level in levels):
+                raise ValueError("unscoped access needs empty read and write scopes")
+        elif any(level.scopes == [] for level in levels):
+            raise ValueError("empty scopes require unscoped access")
+        return self
 
 
 class AccessProfile(BaseModel):
@@ -611,6 +696,8 @@ class ConnectionDefinition(BaseModel):
             self._check_api_key()
         if self.access_profiles:
             self._check_access_profiles()
+        if self.access is not None and self.access.unscoped and self.adapter != "oauth":
+            raise ValueError("only oauth supports unscoped access")
         if self.adapter != "api_key":
             if self.auth.api_key is not None:
                 raise ValueError("only the api_key adapter has key fields")
@@ -724,6 +811,13 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
+        if (
+            self.auth.identity is not None
+            and self.auth.identity.mcp_tool is not None
+            and self.mcp is None
+        ):
+            raise ValueError("mcp_tool identity needs an MCP server")
+        self._check_sign_in_fields()
         oauth = self.auth.oauth
         # Discovery starts from an MCP server, so without one the catalog names
         # the endpoints, and the client is the operator's.
@@ -751,6 +845,77 @@ class ConnectionDefinition(BaseModel):
             for level in (self.access.read, self.access.write)
         ):
             raise ValueError("an oauth entry's levels name OAuth scopes")
+
+    def _check_sign_in_fields(self) -> None:
+        oauth = self.auth.oauth
+        identity = self.auth.identity
+        fixed_urls = [identity.url] if identity is not None else []
+        if oauth is not None:
+            fixed_urls.extend(
+                [oauth.authorization_url, oauth.token_url, oauth.revocation_url]
+            )
+        if any(url and ("{" in url or "}" in url) for url in fixed_urls):
+            raise ValueError(
+                "an oauth entry's authorization, token, revocation and identity URLs stay fixed"
+            )
+        fields = oauth.fields if oauth is not None else []
+        names = {field.name for field in fields}
+        if len(names) != len(fields):
+            raise ValueError("two sign-in fields share a name")
+        used = set()
+        for server in self.mcp.servers if self.mcp is not None else []:
+            markers = template_fields(server.url)
+            if not set(markers) <= names:
+                raise ValueError(
+                    "an oauth entry's MCP URL names only its sign-in fields"
+                )
+            parts = urlsplit(server.url)
+            labels = parts.netloc.split(".")
+            for name in markers:
+                marker = f"{{{name}}}"
+                path_uses = parts.path.split("/").count(marker)
+                host_uses = sum(
+                    label == marker
+                    and len(labels[index + 1 :]) >= 2
+                    and all(
+                        re.fullmatch(r"[A-Za-z0-9-]+", literal)
+                        for literal in labels[index + 1 :]
+                    )
+                    for index, label in enumerate(labels)
+                )
+                if (
+                    ":" in parts.netloc
+                    or "@" in parts.netloc
+                    or server.url.count(marker) != path_uses + host_uses
+                ):
+                    raise ValueError(
+                        f"{name} fills a whole path segment, or a whole host label "
+                        "left of a fixed domain, of an MCP URL"
+                    )
+            used.update(markers)
+        if used != names:
+            raise ValueError("every sign-in field is used in an MCP URL")
+        if (
+            fields
+            and oauth is not None
+            and oauth.registration != "dynamic"
+            and oauth.authorization_url is None
+        ):
+            raise ValueError(
+                "an entry with sign-in fields registers dynamically or names its "
+                "authorization_url and token_url"
+            )
+        account_id = identity.account_id if identity is not None else []
+        paths = [account_id] if isinstance(account_id, str) else account_id
+        connections = {
+            path for path in paths if path.startswith(CONNECTION_PATH_PREFIX)
+        }
+        expected = {CONNECTION_PATH_PREFIX + name for name in names}
+        if (fields and not isinstance(account_id, list)) or connections != expected:
+            raise ValueError(
+                "the account id lists every sign-in field as connection.<name>, "
+                "and no other connection path"
+            )
 
     def level_tools(self, access: AccessLevel) -> list[str]:
         """Every tool a grant at `access` may be given. None are named while
@@ -790,7 +955,7 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
                 f"Connection {slug} skill exceeds {MAX_SKILL_BYTES} bytes."
             )
         try:
-            content = raw.decode("utf-8")
+            content = raw.decode("utf-8").replace("\r\n", "\n")
         except UnicodeDecodeError:
             raise CatalogError(
                 f"Connection {slug} skill file is not UTF-8: {relative}"
