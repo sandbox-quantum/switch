@@ -65,6 +65,16 @@ endpoints are discovered from the first MCP server: the metadata its 401 names
 metadata (RFC 8414), which must offer PKCE with S256. A dynamically registered
 client always discovers. Placeholder entries keep their short form.
 
+For a vendor whose MCP tokens reach no account endpoint, `identity` names
+`introspection: true` in place of `url`. The token then goes to the
+`introspection_endpoint` the discovered metadata advertises (RFC 7662), sent
+the way the client authenticates at the token endpoint, and only an answer
+with `active: true` names an account. Without that endpoint the sign-in
+fails. Either way `account_id` may list several paths, such as
+`[workspace_id, user_id]` for a user who is one of several in a workspace:
+each must name one string or number, and they are escaped and joined with
+`:`, so the same person in two workspaces is two accounts.
+
 The adapter is named for how it signs in, `oauth`, not for how its tools are
 reached. Its entry delivers its tools one of two ways, never both: the vendor's
 MCP servers (`mcp`), or the vendor's command-line tool (`cli`), which the

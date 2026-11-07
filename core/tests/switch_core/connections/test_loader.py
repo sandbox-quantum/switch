@@ -757,6 +757,112 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
         load_catalog(catalog_copy)
 
 
+GET_IDENTITY = (
+    "  identity:\n"
+    "    url: https://api.example.test/me\n"
+    "    account_id: account.id\n"
+    "    label: account.email\n"
+)
+INTROSPECTION_IDENTITY = (
+    "  identity:\n"
+    "    introspection: true\n"
+    "    account_id: [workspace_id, user_id]\n"
+    "    label: username\n"
+)
+
+
+def test_loads_an_identity_read_by_introspection(catalog_copy):
+    _write_example(
+        catalog_copy, OAUTH_ENTRY.replace(GET_IDENTITY, INTROSPECTION_IDENTITY)
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.introspection) == (None, True)
+    assert identity.account_id == ["workspace_id", "user_id"]
+
+
+def test_a_get_identity_stays_as_it_was(catalog_copy):
+    _write_example(catalog_copy)
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.introspection, identity.account_id) == (
+        "https://api.example.test/me",
+        False,
+        "account.id",
+    )
+
+
+@pytest.mark.parametrize(
+    ("identity", "message"),
+    [
+        (
+            GET_IDENTITY.replace(
+                "  identity:\n", "  identity:\n    introspection: true\n"
+            ),
+            "from a url or by introspection",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace(
+                "introspection: true", "introspection: false"
+            ),
+            "from a url or by introspection",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace(
+                "introspection: true", 'introspection: "yes"'
+            ),
+            "introspection",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace(
+                "[workspace_id, user_id]", "[workspace_id, workspace_id]"
+            ),
+            "lists a path twice",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace("[workspace_id, user_id]", "[user_id]"),
+            "account_id",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace("[workspace_id, user_id]", "[]"),
+            "account_id",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace(
+                "[workspace_id, user_id]", "[workspace_id, user/id]"
+            ),
+            "account_id",
+        ),
+    ],
+)
+def test_rejects_an_identity_that_is_not_one_clear_source(
+    catalog_copy, identity, message
+):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(GET_IDENTITY, identity))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize("without", ["discovery", "an mcp server"])
+def test_introspection_needs_a_discovered_authorization_server(catalog_copy, without):
+    entry = (
+        OAUTH_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: static\n"
+            "    client_settings: EXAMPLE\n"
+            "    authorization_url: https://auth.example.test/authorize\n"
+            "    token_url: https://auth.example.test/token\n"
+            "    revocation_url: https://auth.example.test/revoke\n",
+        )
+        if without == "discovery"
+        else CLI_ENTRY
+    )
+    assert GET_IDENTITY in entry
+    _write_example(catalog_copy, entry.replace(GET_IDENTITY, INTROSPECTION_IDENTITY))
+    with pytest.raises(CatalogError, match="introspection asks the authorization"):
+        load_catalog(catalog_copy)
+
+
 def test_placeholders_keep_their_short_form():
     for slug in PLACEHOLDERS:
         definition = CATALOG[slug].definition
