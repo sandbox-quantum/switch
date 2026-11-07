@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "sentry",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "sentry",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["sentry"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -311,6 +314,61 @@ def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
 def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
     with pytest.raises(CatalogError, match=message):
         with_access_profiles(CATALOG, chosen)
+
+
+def test_the_shipped_sentry_entry_signs_in_and_configures_adapter():
+    definition = CATALOG["sentry"].definition
+    assert definition.slug == "sentry"
+    assert definition.name == "Sentry"
+    assert definition.category == "Observability"
+    assert definition.enabled is True
+    assert definition.adapter == "oauth"
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (oauth.registration, oauth.redirect) == ("dynamic", ["loopback"])
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == ("https://sentry.io/api/0/users/me/", "id", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("sentry", "https://mcp.sentry.dev/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["org:read"]
+    assert definition.access.write.scopes == [
+        "org:read",
+        "project:write",
+        "team:write",
+        "event:write",
+        "alerts:write",
+    ]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    assert "SKILL.md" in CATALOG["sentry"].skill_files
+    assert "Investigate software defects" in CATALOG["sentry"].skill_files["SKILL.md"]
+
+
+def test_sentry_catalog_entry():
+    entry = CATALOG["sentry"].definition
+    assert entry.slug == "sentry"
+    assert entry.enabled is True
+    assert entry.category == "Observability"
+    assert entry.adapter == "oauth"
+    assert entry.mcp.servers[0].url == "https://mcp.sentry.dev/mcp"
+    assert "org:read" in entry.access.read.scopes
+    assert "event:write" in entry.access.write.scopes
+    assert "event:admin" not in entry.access.write.scopes
 
 
 @pytest.fixture

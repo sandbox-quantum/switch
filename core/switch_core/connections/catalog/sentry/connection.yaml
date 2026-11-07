@@ -1,0 +1,48 @@
+slug: sentry
+name: Sentry
+category: Observability
+description: Query Sentry error issues, stack traces, tags, and releases acting with your Sentry credentials.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://sentry.io/api/0/users/me/
+    account_id: id
+    label: email
+# Sentry MCP OAuth access tokens expire after 8 hours (28,800 seconds) as observed
+# from mcp.sentry.dev's authorization server response (expires_in: 28800).
+# A refresh token rotation strategy is employed to issue fresh tokens upon expiration.
+token:
+  kind: pass_through
+  max_lifetime: 28800
+# Sentry's official remote MCP server at https://mcp.sentry.dev/mcp handles user authentication
+# via OAuth and maps access to the organizations and projects authorized by the user.
+# The read level requests org:read to permit issue search and trace inspection.
+# The write level includes project:write, team:write, event:write, and alerts:write to
+# enable issue assignment, tagging, and status updates. Deletion capabilities (event:admin)
+# are explicitly excluded. Destructive actions require explicit human sign-off in SKILL.md.
+mcp:
+  servers:
+    - name: sentry
+      url: "https://mcp.sentry.dev/mcp"
+access:
+  read:
+    scopes:
+      - "org:read"
+  write:
+    scopes:
+      - "org:read"
+      - "project:write"
+      - "team:write"
+      - "event:write"
+      - "alerts:write"
+tools:
+  mode: pass_through
