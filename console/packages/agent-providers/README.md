@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `kimi` | `kimi acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection through a `model` config option, MCP registration, approvals and questions; hooks for its sign-in check, modes, tool naming and questions. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -68,13 +69,14 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| kimi (ACP) | Kimi Code 2.3.3 | 10/10 (2026-10-27) | Run with `KIMI_MODEL_PROVIDER_TYPE=openai` on Google's free Gemini API (gemini-flash-lite-latest) through a local OpenAI-compatible endpoint. A free Kimi account signs in, but Moonshot answers every turn with 403 until the account has a Kimi Code plan, so no turn ran on Moonshot's own models. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
-covers the protocol and chooses behaviour from what the agent advertises in
-`initialize` and `session/new`:
+Cursor, Antigravity and Kimi Code run on one adapter, `src/acp/acp-adapter.ts`,
+which covers the protocol and chooses behaviour from what the agent advertises
+in `initialize` and `session/new`:
 
 - resume uses `session/load` when the agent advertises `loadSession`, else
   `session/resume` when it advertises `sessionCapabilities.resume`, else asks
@@ -86,7 +88,8 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/kimi/kimi-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -127,3 +130,17 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+**Kimi Code** is Moonshot AI's `kimi` binary (npm `@moonshot-ai/kimi-code`,
+2.x), which replaced the archived Python Kimi CLI; it runs as `kimi acp`.
+`initialize` lists its `login` method whether or not it is signed in, so the
+sign-in check asks `session/resume` for a session that does not exist: Kimi
+checks its credentials first and answers `auth_required` when signed out and
+an unknown session otherwise, opening and writing nothing. Its modes are
+permission levels: `default` asks, `yolo` runs routine commands and edits and
+still asks for dangerous commands, sensitive files and `.git` internals, and
+`auto` approves everything and refuses questions. Approval-required runs in
+`default`, and auto and full access in `yolo`. A tool call names its MCP
+server in its title (`mcp__<server>__<tool>`), its subagent tools are `Agent`
+and `AgentSwarm`, and without an elicitation form its questions arrive as
+permission requests with one `q0_opt_<n>` option per answer.
