@@ -263,6 +263,34 @@ export function turnTools(turn: TurnActivity): ChatActivityItem[] {
   return turn.items.filter((item) => item.kind === 'tool-activity' && !isHiddenTool(item));
 }
 
+/** How many messages were steered into the turn while it ran. */
+export function steeredCount(turn: TurnActivity): number {
+  return turn.items.filter((item) => item.kind === 'user-message' && item.delivery === 'steered')
+    .length;
+}
+
+/** Whether the turn's own message arrived while another turn ran, and it waits for that one. */
+export function queuedBehind(turn: TurnActivity): boolean {
+  return (
+    turn.status === 'queued' &&
+    turn.items.some((item) => item.kind === 'user-message' && item.delivery === 'queued')
+  );
+}
+
+/** What a turn's message says while it has not started: behind another turn, or about to start. */
+export function queuedLabel(turn: TurnActivity): string {
+  return queuedBehind(turn) ? 'Queued behind the running turn…' : 'Queued…';
+}
+
+/** The line saying messages joined the turn while it ran, or null when none did. */
+export function steeredLabel(turn: TurnActivity): string | null {
+  const steered = steeredCount(turn);
+  if (steered === 0) return null;
+  return steered === 1
+    ? '1 message steered into this turn'
+    : `${steered} messages steered into this turn`;
+}
+
 /** Whether the turn is running with no visible tool currently running. */
 export function isThinking(turn: TurnActivity): boolean {
   return (

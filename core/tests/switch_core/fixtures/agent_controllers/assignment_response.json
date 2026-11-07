@@ -17,6 +17,7 @@
         "instructions": "Review pull requests in this repository.",
         "auto_mode": true,
         "auto_approve": false,
+        "mid_turn_messages": "steer",
         "directory": "/home/example/src/project",
         "isolation": "shared"
       }

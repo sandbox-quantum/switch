@@ -41,6 +41,27 @@ export function runtimeModeFor(settings: { autoApprove: boolean; autoMode: boole
   return 'approval-required';
 }
 
+/**
+ * What an agent's sessions do with a message sent while a turn is running:
+ * `steer` delivers it into the running turn, from the person who started that
+ * turn or the agent's owner, and `queue` always runs it as a turn of its own
+ * once the running one ends. Agents steer unless set to queue.
+ */
+export type MidTurnMessages = 'steer' | 'queue';
+export const DEFAULT_MID_TURN_MESSAGES: MidTurnMessages = 'steer';
+
+/**
+ * The session input (`Capability.input`) an agent's setting selects on its
+ * provider: steering only where both the setting and the provider allow it.
+ * A provider that cannot steer queues, whatever the agent is set to.
+ */
+export function sessionInputFor(
+  capabilities: Pick<ProviderCapabilities, 'steering'>,
+  midTurnMessages: MidTurnMessages
+): 'steer' | 'queue' {
+  return capabilities.steering && midTurnMessages === 'steer' ? 'steer' : 'queue';
+}
+
 export interface StdioMcpServerSpec {
   transport: 'stdio';
   command: string;

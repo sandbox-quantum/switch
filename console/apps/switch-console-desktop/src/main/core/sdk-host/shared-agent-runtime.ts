@@ -23,6 +23,7 @@ import {
   type HostStartSource,
   runtimeModeFor,
   SessionHostFailedError,
+  sessionInputFor,
   sharedConfigSchema,
   sharedSessionRoot,
   type SharedHostConfig,
@@ -469,7 +470,7 @@ export async function buildSharedHostConfig(
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: sessionInputFor(capabilities, agent.midTurnMessages),
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,

@@ -32,6 +32,7 @@ from switch_core.management.advanced_config import provider_fields
 from switch_core.management.errors import ManagementError
 from switch_core.management.placement import is_revoked, provider_auth
 from switch_core.management.schemas import (
+    DEFAULT_MID_TURN_MESSAGES,
     CreateManagedAgentRequest,
     DefinitionV1,
     PatchManagedAgentRequest,
@@ -349,6 +350,9 @@ class ManagementAgentOperations:
             "advanced_config": row.definition.get("advanced_config", {}),
             "auto_mode": row.definition.get("auto_mode", False),
             "auto_approve": row.definition.get("auto_approve", False),
+            "mid_turn_messages": row.definition.get(
+                "mid_turn_messages", DEFAULT_MID_TURN_MESSAGES
+            ),
             "directory": row.definition.get("directory"),
             "machine": None
             if controller is None

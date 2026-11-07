@@ -211,6 +211,32 @@ async def test_usage_on_a_turn_that_has_not_ended_is_refused(service):
         )
 
 
+async def test_a_message_sent_mid_turn_keeps_how_it_was_delivered(service):
+    """Steered into the running turn or queued behind it, as the host said;
+    a message that started its turn says nothing."""
+    for item_id, delivery in [
+        ("user-1", None),
+        ("user-2", "steered"),
+        ("user-3", "queued"),
+    ]:
+        await service.report_item(
+            AGENT,
+            SESSION,
+            **_step(
+                item_id=item_id,
+                kind="user-message",
+                status="completed",
+                delivery=delivery,
+            ),
+        )
+    steps = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert [(step.item_id, step.delivery) for step in steps] == [
+        ("user-1", None),
+        ("user-2", "steered"),
+        ("user-3", "queued"),
+    ]
+
+
 async def test_a_turns_steps_are_read_in_the_order_first_reported(service):
     for item_id, kind, status in [
         ("turn", "turn", "running"),
@@ -241,6 +267,11 @@ async def test_a_turns_steps_are_read_in_the_order_first_reported(service):
         ({"kind": "notice", "status": "info"}, "starts with"),
         ({"command_id": "c-1"}, "carries a command id"),
         ({"title": "x" * 501}, "at most"),
+        ({"delivery": "steered"}, "Only a user message"),
+        (
+            {"kind": "user-message", "status": "completed", "delivery": "sideways"},
+            "Only a user message",
+        ),
     ],
 )
 async def test_malformed_steps_are_refused(service, overrides, message):

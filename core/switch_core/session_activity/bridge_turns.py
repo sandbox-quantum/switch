@@ -72,6 +72,7 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
             text=step.text,
             attachments=[],
             origin=None,
+            delivery=step.delivery,  # type: ignore[arg-type]
         )
         for step in steps
     ]
@@ -118,5 +119,16 @@ def status_state(
         for item in view.items
         if item.kind == "tool-activity"
     )
+    # A message steered into the turn changes its state line, and one queued
+    # behind another turn changes it while it waits. Left out when there is
+    # none, so a message drawn before this was counted is not drawn again.
+    delivered = ",".join(
+        f"{item.item_id}:{item.delivery}"
+        for item in view.items
+        if item.kind == "user-message" and item.delivery is not None
+    )
+    marks = f"/{delivered}" if delivered else ""
     closed = ":closed" if closed_by_platform else ""
-    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}"
+    return (
+        f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{marks}{closed}"
+    )

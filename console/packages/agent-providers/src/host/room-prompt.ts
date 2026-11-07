@@ -37,6 +37,11 @@ export const roomMessageSchema = z.object({
       .enum(['admin', 'member', 'owner'])
       .nullish()
       .transform((role) => (role === 'owner' ? 'admin' : role)),
+    /**
+     * The sender is the agent's owner, as Switch read them when the message
+     * arrived. Absent from a server that predates it, which reads as not.
+     */
+    sender_is_owner: z.boolean().nullish(),
     /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
     switch_notice: z.string().nullish(),
   }),
@@ -166,6 +171,12 @@ export function roomCommand(input: {
    * opening words (`opening_message`), if any, are told.
    */
   firstOfConversation: boolean;
+  /**
+   * How the session takes a message sent while a turn is running: its
+   * `capabilities.input`. `steer` only asks; the session decides whether
+   * this message may join the running turn.
+   */
+  delivery: 'queue' | 'steer';
 }): Command {
   const { payload } = input.message;
   const attachments: Attachment[] = input.attachments
@@ -217,7 +228,9 @@ export function roomCommand(input: {
       roomId: input.roomId,
       threadId: payload.thread_id ?? null,
       messageId: payload.message_id,
+      // Switch's own reading of the sender, never the message's words.
+      ...(payload.sender_is_owner === true ? { actorIsAgentOwner: true } : {}),
     },
-    body: { type: 'message.send', text, attachments, delivery: 'queue' },
+    body: { type: 'message.send', text, attachments, delivery: input.delivery },
   };
 }

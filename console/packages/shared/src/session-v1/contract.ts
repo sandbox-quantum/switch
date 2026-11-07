@@ -14,8 +14,20 @@ export type Origin = {
   roomId: Id | null;
   threadId: Id | null;
   messageId: Id | null;
+  /**
+   * The actor is the owner of the agent the command is for, as Switch read the
+   * sender when the message arrived. Set by the host only from Switch's own
+   * account of a room message, never from a client. Absent means not known to
+   * be the owner.
+   */
+  actorIsAgentOwner?: boolean;
 };
 export type Capability = {
+  /**
+   * What the session does with a message sent while a turn is running:
+   * `steer` delivers it into the running turn when the rules allow it, and
+   * `queue` always runs it as a turn of its own once the running one ends.
+   */
   input: 'queue' | 'steer';
   approvals: boolean;
   questions: boolean;
@@ -44,6 +56,12 @@ export type Item = {
   text: string;
   attachments: Attachment[];
   origin: Origin | null;
+  /**
+   * For a user message sent while another turn was running: `steered` when it
+   * was delivered into that running turn, `queued` when it waits to run as a
+   * turn of its own. Absent for a message that started a turn straight away.
+   */
+  delivery?: 'steered' | 'queued';
 };
 export type ApprovalOption = {
   optionId: Id;

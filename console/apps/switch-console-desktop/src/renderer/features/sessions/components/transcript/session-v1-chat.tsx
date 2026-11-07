@@ -471,6 +471,13 @@ export function SessionV1Chat({
                   <div className="max-w-[85%] rounded-2xl bg-background-1 px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap">
                     {item.text}
                   </div>
+                  {item.delivery && (
+                    <span className="text-tiny text-foreground-passive">
+                      {item.delivery === 'steered'
+                        ? 'Steered into the running turn'
+                        : 'Queued behind the running turn'}
+                    </span>
+                  )}
                 </div>
               ) : item.kind === 'assistant-message' ? (
                 <div className="text-sm leading-relaxed">

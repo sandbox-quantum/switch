@@ -303,6 +303,19 @@ version of their own to them without also giving them a release of their own.
   of the rooms it is in they may not read. All are decided by the same
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
+- **A message sent while an agent works can steer the running turn.** A room
+  message from whoever started the turn, or from the agent's owner, in that
+  turn's thread now reaches the running turn on Claude Code, Codex and
+  OpenCode, so the agent can change course; anyone else's, and any other
+  thread's, waits for a turn of its own, as before. A managed agent's
+  definition takes `mid_turn_messages` (`steer`, the default, or `queue`), on
+  the machines page too, and a definition stored before it steers. A client
+  that leaves the key out when it saves the agent keeps the stored value. The
+  message event says `sender_is_owner`. Activity rows take `delivery`
+  (`steered` or `queued`) on a user message, stored in a new
+  `session_activity_items.delivery` column (migration `5d2c8a71e9f4`), and
+  every platform's card says "1 message steered into this turn", or that a
+  turn is queued behind the running one.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -2746,6 +2759,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Steer the running turn with a message sent mid-turn.** A message from
+  whoever started the turn, or from you as the agent's owner, in the same
+  thread joins the turn the agent is running on Claude Code, Codex and
+  OpenCode; anyone else's waits for its own turn. On by default: an agent's
+  settings have "Steer with mid-turn messages" to turn it off, and other
+  providers always queue. The chat's work log says how many messages were
+  steered into a turn, and when a turn is queued behind the running one.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
@@ -4890,6 +4910,10 @@ tags; see RELEASING.md.
   computer passes the session's provider and how it started to Console over
   its IPC channel, for Console's usage data. A controller with no parent
   listening, on an SSH host or run as a service, sends nothing.
+- **Managed agents steer the running turn with mid-turn messages.** A
+  definition's `mid_turn_messages` (`steer` unless the server says `queue`)
+  sets the watcher's session to steer where the provider can. A value this
+  build does not know queues.
 - **Waits its turn when Switch is busy opening connections.** An open or an
   attach refused as `busy` comes with when to try again, the controller's
   place in the server's queue, and the controller now waits that long

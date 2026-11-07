@@ -1,4 +1,10 @@
-import type { ModelSelection, ProviderCapabilities, RuntimeMode } from '../adapter';
+import { DEFAULT_MID_TURN_MESSAGES, sessionInputFor } from '../adapter';
+import type {
+  MidTurnMessages,
+  ModelSelection,
+  ProviderCapabilities,
+  RuntimeMode,
+} from '../adapter';
 import type { SharedHostConfig } from './shared-config';
 
 export type SharedHostProvider = SharedHostConfig['start']['provider'];
@@ -11,7 +17,10 @@ export interface BuildSharedHostConfigInput {
     env: Readonly<Record<string, string>>;
     model: ModelSelection | undefined;
   };
-  capabilities: Pick<ProviderCapabilities, 'approvals' | 'userInput'>;
+  capabilities: Pick<ProviderCapabilities, 'approvals' | 'userInput'> &
+    Partial<Pick<ProviderCapabilities, 'steering'>>;
+  /** The agent's setting for messages sent mid-turn; steers when absent. */
+  midTurnMessages?: MidTurnMessages;
   execution: {
     credentialsPath: string;
     inheritEnv: readonly string[];
@@ -43,7 +52,10 @@ export function buildSharedHostConfig(input: BuildSharedHostConfigInput): Shared
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: sessionInputFor(
+          { steering: input.capabilities.steering ?? false },
+          input.midTurnMessages ?? DEFAULT_MID_TURN_MESSAGES
+        ),
         approvals: input.capabilities.approvals,
         questions: input.capabilities.userInput,
         interrupt: true,

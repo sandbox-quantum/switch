@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   ready: vi.fn(),
   sidecarEnsure: vi.fn(),
   watchers: vi.fn(),
+  /** Whether the provider's adapter says it can steer a running turn. */
+  steering: { value: false },
 }));
 
 // Console runs every agent here; none was moved to a managed machine.
@@ -90,7 +92,9 @@ vi.mock('@main/core/switch-rooms/switch-room-service', () => ({
 vi.mock('@main/core/agent-runtime/impl/provider-adapter-registry', () => ({
   providerAdapterRegistry: {
     supports: () => true,
-    get: () => ({ capabilities: { approvals: true, userInput: true } }),
+    get: () => ({
+      capabilities: { approvals: true, userInput: true, steering: mocks.steering.value },
+    }),
   },
 }));
 vi.mock('@main/core/agents/agent-launch-config', () => ({
@@ -448,6 +452,35 @@ it.each([
       { kind: 'local' } as LocationTransport
     );
     expect(config.start.input.runtimeMode).toBe(runtimeMode);
+  }
+);
+
+it.each([
+  { steering: true, midTurnMessages: 'steer', input: 'steer' },
+  { steering: true, midTurnMessages: 'queue', input: 'queue' },
+  { steering: false, midTurnMessages: 'steer', input: 'queue' },
+] as const)(
+  'takes mid-turn messages as the agent is set to, where the provider can steer ($input)',
+  async ({ steering, midTurnMessages, input }) => {
+    mocks.steering.value = steering;
+    try {
+      mocks.agent.mockResolvedValue({
+        id: 'agent-1',
+        name: 'scout',
+        switchAgentId: 'remote-agent',
+        autoApprove: false,
+        autoMode: false,
+        midTurnMessages,
+      });
+      const config = await buildSharedHostConfig(
+        session,
+        { sessionPath: '/work', sessionEnvVars: {} },
+        { kind: 'local' } as LocationTransport
+      );
+      expect(config.session.capabilities.input).toBe(input);
+    } finally {
+      mocks.steering.value = false;
+    }
   }
 );
 

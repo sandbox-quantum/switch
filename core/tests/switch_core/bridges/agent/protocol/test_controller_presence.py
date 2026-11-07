@@ -51,8 +51,10 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.recipient import (
     _STARTING_SESSION_MESSAGE,
+    NO_SENDER,
     AgentRecipient,
     CloudMachineState,
+    SenderFacts,
     _GateOutcome,
 )
 from switch_core.transport import InboundMessage, RoomRef
@@ -625,10 +627,10 @@ def _addressing_client(
     ns._fresh_agent = _fresh_agent
     ns._gate_addressed = _gate_addressed
 
-    async def _sender_role(*_args: Any) -> str | None:
-        return None
+    async def _sender(*_args: Any) -> SenderFacts:
+        return NO_SENDER
 
-    ns._sender_role = _sender_role
+    ns._sender = _sender
 
     async def _no_notice(*_args: Any) -> None:
         return None

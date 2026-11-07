@@ -139,6 +139,18 @@ export class HostedSession {
   /** Recent tool input and output, in memory only, under the same rules as reasoning. */
   private readonly toolDetails = new ToolDetailBuffer();
   private activeTurn: string | null = null;
+  /** The active turn, once its provider has been handed it: only then can a message join it. */
+  private sentTurn: string | null = null;
+  /**
+   * Turns the provider took as turns of their own although another was
+   * running: a message asked to steer that the provider would not fold in.
+   * Each becomes the active turn when the one before it ends.
+   */
+  private readonly followingTurns: string[] = [];
+  /** The commands steered into each running turn, finished when that turn is. */
+  private readonly steered = new Map<string, string[]>();
+  /** A message is on its way to join the running turn. */
+  private steering = false;
   private serial: Promise<unknown> = Promise.resolve();
   private eventSerial: Promise<unknown> = Promise.resolve();
   private publishing: Promise<unknown> = Promise.resolve();
@@ -568,7 +580,7 @@ export class HostedSession {
     this.decisionPending = true;
     this.decisionCode = code;
     this.queue.length = 0;
-    this.activeTurn = null;
+    this.clearTurns();
     this.config.session.status = 'error';
     this.config.session.capabilities = {
       ...this.config.session.capabilities,
@@ -918,8 +930,8 @@ export class HostedSession {
       );
     if (body.type === 'message.send') {
       if (this.stopped) throw new Error('Session stop has been requested.');
-      if (body.delivery !== 'queue')
-        throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
+      // A message asked to steer is never refused for it: one the session
+      // cannot steer (`steerTarget`) is queued, as every message was before.
       if (eventBytes(command) > 60 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
       if (body.attachments.length && !this.config.stageAttachments)
@@ -999,27 +1011,21 @@ export class HostedSession {
           commandId: command.commandId,
           origin: command.origin,
         });
-        await this.publish({
-          type: 'turn.upsert',
-          turnId,
-          commandId: command.commandId,
-          status: 'queued',
-        });
-        await this.publish({
-          type: 'item.upsert',
-          item: {
-            itemId: `user-${command.commandId}`,
+        const into = this.steerTarget(command);
+        if (into !== null) await this.steer(command, into);
+        else {
+          // Said only of a message that waits behind other work, so a reader
+          // can tell it apart from one that was steered.
+          const waiting = this.activeTurn !== null || this.queue.length > 0;
+          await this.publish({
+            type: 'turn.upsert',
             turnId,
-            revision: 1,
-            kind: 'user-message',
-            status: 'completed',
-            title: '',
-            text: body.text,
-            attachments: body.attachments,
-            origin: command.origin,
-          },
-        });
-        this.queue.push(command);
+            commandId: command.commandId,
+            status: 'queued',
+          });
+          await this.publishUserMessage(command, turnId, waiting ? 'queued' : null);
+          this.queue.push(command);
+        }
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -1211,8 +1217,131 @@ export class HostedSession {
     return status;
   }
 
+  /**
+   * The running turn a message is delivered into, or null for it to queue.
+   *
+   * A message steers only when it asks to, the session steers (its agent's
+   * setting allows it and its provider can), and the running turn has already
+   * reached the provider. Even then it must come from the same conversation
+   * as the message that started the turn (`sameConversation`), and from the
+   * person who sent that message or the agent's owner. Anyone else's message
+   * waits for a turn of its own, so in a shared room one person cannot
+   * redirect work another person asked for.
+   */
+  private steerTarget(command: Command): string | null {
+    if (command.body.type !== 'message.send' || command.body.delivery !== 'steer') return null;
+    if (this.config.session.capabilities.input !== 'steer' || !this.adapter.capabilities.steering)
+      return null;
+    const running = this.activeTurn;
+    if (running === null || this.sentTurn !== running || this.followingTurns.length > 0)
+      return null;
+    const started = this.commands.get(running)?.origin;
+    if (!started || !sameConversation(started, command.origin)) return null;
+    const allowed =
+      command.origin.actorId === started.actorId || command.origin.actorIsAgentOwner === true;
+    return allowed ? running : null;
+  }
+
+  /**
+   * Hands a message to the provider while `into` runs, for it to join that
+   * turn. The provider says what it did: a message it folded in is shown in
+   * the running turn, marked steered, and finishes with it. One it ran as a
+   * turn of its own instead (Codex refusing `turn/steer`, or the running turn
+   * ending just as the message arrived) is that turn, which runs after the
+   * current one; the queue waits for it. A message the provider refused fails
+   * as its own turn, as a queued one does, so it can be run again.
+   */
+  private async steer(command: Command, into: string): Promise<void> {
+    if (command.body.type !== 'message.send') return;
+    const turnId = command.commandId;
+    let steeredInto: string | undefined;
+    // Nothing else is sent while this one is on its way, so the queue cannot
+    // start a turn under it if the running turn ends meanwhile.
+    this.steering = true;
+    try {
+      const attachments = command.body.attachments.length
+        ? await this.config.stageAttachments!(command.body.attachments)
+        : [];
+      if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
+      // Staging can take a while; a turn that ended meanwhile has nothing to join.
+      if (this.activeTurn !== into || this.sentTurn !== into) {
+        await this.publish({ type: 'turn.upsert', turnId, commandId: turnId, status: 'queued' });
+        await this.publishUserMessage(command, turnId, this.activeTurn ? 'queued' : null);
+        this.queue.push(command);
+        return;
+      }
+      await this.inbox.append({ type: 'dispatched', commandId: turnId });
+      this.dispatched.add(turnId);
+      ({ steeredInto } = await this.adapter.sendTurn({
+        sessionId: this.config.session.sessionId,
+        turnId,
+        text: command.body.text,
+        attachments,
+      }));
+    } catch (error) {
+      await this.publish({ type: 'turn.upsert', turnId, commandId: turnId, status: 'error' });
+      await this.publishUserMessage(command, turnId, null);
+      await this.publish({
+        type: 'notice',
+        level: 'error',
+        code: 'TURN_FAILED',
+        message: String(error),
+      });
+      await this.replyIfUnposted(turnId, 'error', String(error));
+      return;
+    } finally {
+      this.steering = false;
+    }
+    if (steeredInto !== undefined) {
+      this.steered.set(steeredInto, [...(this.steered.get(steeredInto) ?? []), turnId]);
+      await this.publishUserMessage(command, steeredInto, 'steered');
+      return;
+    }
+    // The provider started a turn of its own: it runs next, ahead of the queue.
+    const waiting = this.activeTurn !== null;
+    if (waiting) this.followingTurns.push(turnId);
+    else {
+      this.activeTurn = turnId;
+      this.sentTurn = turnId;
+    }
+    // It may already have said the turn started, and a queued turn published
+    // after that would read as one gone back to waiting.
+    await this.eventSerial;
+    await this.publishing;
+    if (!this.snapshot().turns.some((turn) => turn.turnId === turnId))
+      await this.publish({ type: 'turn.upsert', turnId, commandId: turnId, status: 'queued' });
+    await this.publishUserMessage(command, turnId, waiting ? 'queued' : null);
+  }
+
+  /**
+   * The message as the transcript shows it, in `turnId`; `delivery` says how a
+   * message sent during another turn was handled, null for one that was not.
+   */
+  private publishUserMessage(
+    command: Command,
+    turnId: string,
+    delivery: 'steered' | 'queued' | null
+  ): Promise<void> {
+    if (command.body.type !== 'message.send') return Promise.resolve();
+    return this.publish({
+      type: 'item.upsert',
+      item: {
+        itemId: `user-${command.commandId}`,
+        turnId,
+        revision: 1,
+        kind: 'user-message',
+        status: 'completed',
+        title: '',
+        text: command.body.text,
+        attachments: command.body.attachments,
+        origin: command.origin,
+        ...(delivery === null ? {} : { delivery }),
+      },
+    });
+  }
+
   private async runNext(): Promise<void> {
-    if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
+    if (this.activeTurn || this.steering || this.shuttingDown || this.stopped || this.fault) return;
     const command = this.queue.shift();
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
@@ -1229,6 +1358,8 @@ export class HostedSession {
         text: command.body.text,
         attachments,
       });
+      // Not when the turn has already ended: there is nothing left to steer into.
+      if (this.activeTurn === command.commandId) this.sentTurn = command.commandId;
     } catch (error) {
       await this.publish({
         type: 'turn.upsert',
@@ -1331,7 +1462,7 @@ export class HostedSession {
         if (turn.status === 'running' || turn.status === 'queued')
           await this.publish({ ...turn, status: 'interrupted' });
       this.queue.length = 0;
-      this.activeTurn = null;
+      this.clearTurns();
       this.questions.clear();
     }
     if (event.type === 'session.started') {
@@ -1419,14 +1550,34 @@ export class HostedSession {
       });
       this.finished.add(event.turnId);
       if (event.usage.length > 0) this.usage.set(event.turnId, event.usage);
+      // A message steered into the turn was answered in it, so it is done too.
+      for (const commandId of this.steered.get(event.turnId) ?? []) {
+        await this.inbox.append({ type: 'finished', commandId });
+        this.finished.add(commandId);
+      }
+      this.steered.delete(event.turnId);
     }
     await this.publishAll(this.projector.ingest(event, Date.now()));
     if (event.type === 'turn.completed') {
       await this.replyIfUnposted(event.turnId, event.outcome, event.message ?? null);
-      this.activeTurn = null;
+      const following = this.followingTurns.indexOf(event.turnId);
+      if (following >= 0) this.followingTurns.splice(following, 1);
+      else {
+        // A turn the provider already took runs next, ahead of the queue.
+        this.activeTurn = this.followingTurns.shift() ?? null;
+        this.sentTurn = this.activeTurn;
+      }
       void this.runNext().catch((error: unknown) => this.fail(error));
       void this.refreshContext().catch((error: unknown) => this.fail(error));
     }
+  }
+
+  /** Forget every running turn, as the provider's own end of them does. */
+  private clearTurns(): void {
+    this.activeTurn = null;
+    this.sentTurn = null;
+    this.followingTurns.length = 0;
+    this.steered.clear();
   }
 
   private validateAnswer(command: Command): PendingQuestion {
@@ -1626,6 +1777,18 @@ function cap(text: string, limit: number): string {
         .slice(0, limit - 1)
         .join('')
         .trimEnd()}…`;
+}
+
+/**
+ * Whether a message is in the conversation the running turn was asked in: the
+ * same room, and either a reply in the thread that turn's message is in (or
+ * opened), or, like that message, outside any thread. A message in any other
+ * thread is about something else and waits for a turn of its own.
+ */
+export function sameConversation(started: Origin, incoming: Origin): boolean {
+  if (started.surface !== incoming.surface || started.roomId !== incoming.roomId) return false;
+  if (incoming.threadId === null) return started.threadId === null;
+  return incoming.threadId === (started.threadId ?? started.messageId);
 }
 
 type QuestionsContent = Extract<Request['content'], { kind: 'questions' }>;

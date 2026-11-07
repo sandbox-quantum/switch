@@ -163,6 +163,13 @@ export const agentDefinitionSchema = z.object({
   auto_approve: z.boolean(),
   /** The provider's own automatic review. Absent from servers older than the setting. */
   auto_mode: z.boolean().default(false),
+  /**
+   * What a message sent while a turn runs does: `steer` joins the running
+   * turn where the provider can, `queue` waits for a turn of its own. Absent
+   * from servers older than the setting, and read then as `steer`, the
+   * default; a value this build does not know reads as `unknown` and queues.
+   */
+  mid_turn_messages: receivedEnum(['steer', 'queue']).optional(),
   directory: z.string().nullable(),
   /** `shared`: the agent host runs in this controller's process; `isolated`: in a process of its own. */
   isolation: receivedEnum(['shared', 'isolated']),

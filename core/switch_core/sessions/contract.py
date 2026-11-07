@@ -89,6 +89,9 @@ class Origin(_Model):
     room_id: Id | None
     thread_id: Id | None
     message_id: Id | None
+    # The actor is the agent's owner, as Switch read the sender of a room
+    # message. Absent from a host that predates it, which means not known.
+    actor_is_agent_owner: bool = False
 
 
 class Capability(_Model):
@@ -122,6 +125,9 @@ class Item(_Model):
     text: str
     attachments: list[Attachment]
     origin: Origin | None
+    # For a user message sent while another turn ran: "steered" into that
+    # turn, or "queued" behind it. None for every other item.
+    delivery: Literal["steered", "queued"] | None = None
 
 
 class ApprovalOption(_Model):

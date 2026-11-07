@@ -80,7 +80,53 @@ def turn_state(
     reporting — the duration stays, because that is the turn's own. What a
     turn left unfinished is not covered by it: that is an outcome, and it is
     reported wherever the turn is.
+
+    How messages sent while the turn ran were delivered is said here too, in
+    the same line on every platform: a turn that a message was steered into
+    ends with how many (`steered_note`), and a turn whose own message arrived
+    while another ran says, while it waits, that it is queued behind that one.
     """
+    state = _state(
+        items, turn, tool_detail=tool_detail, elapsed_seconds=elapsed_seconds
+    )
+    steered = steered_note(items)
+    return state if steered is None else f"{state} {steered}"
+
+
+# A turn's message that arrived while another turn ran, and waits for it.
+QUEUED_BEHIND = "Queued behind the running turn. It starts when that turn ends."
+
+
+def steered_note(items: list[Item]) -> str | None:
+    """How many messages were steered into this turn while it ran, or None.
+
+    One count rather than a line per message: the messages themselves are in
+    the room already, and what the card adds is that the turn took them in.
+    """
+    steered = sum(
+        1
+        for item in items
+        if item.kind == "user-message" and item.delivery == "steered"
+    )
+    if not steered:
+        return None
+    if steered == 1:
+        return "1 message steered into this turn."
+    return f"{steered} messages steered into this turn."
+
+
+def _state(
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    tool_detail: bool,
+    elapsed_seconds: float | None,
+) -> str:
+    """Where the turn got to, before anything is said about steered messages."""
+    if turn.status == "queued" and any(
+        item.kind == "user-message" and item.delivery == "queued" for item in items
+    ):
+        return QUEUED_BEHIND
     state = TURN_STATE[turn.status]
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:

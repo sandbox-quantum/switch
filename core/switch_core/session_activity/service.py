@@ -93,6 +93,9 @@ ITEM_STATUSES: dict[str, frozenset[str]] = {
     "notice": frozenset({"info", "warning", "error"}),
 }
 
+# How a user message sent while another turn ran was handled.
+MESSAGE_DELIVERIES = frozenset({"steered", "queued"})
+
 Decision = Literal["accept", "acceptForSession", "decline", "cancel"]
 DECISIONS: tuple[Decision, ...] = ("accept", "acceptForSession", "decline", "cancel")
 RequestKind = Literal["approval", "questions"]
@@ -199,11 +202,14 @@ class AgentSessionActivityService:
         message_id: str | None,
         occurred_at: datetime,
         usage: list[TokenSpend],
+        delivery: str | None = None,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
         `usage` is what the turn spent, and only a turn's own row, reported as
-        ended, carries it.
+        ended, carries it. `delivery` says how a user message sent while
+        another turn ran was handled ("steered" into that turn, or "queued"
+        behind it), and only a user message carries it.
         """
         if kind not in SESSION_ACTIVITY_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown activity kind: {kind}")
@@ -229,6 +235,13 @@ class AgentSessionActivityService:
         if usage and not (kind == "turn" and status in TURN_ENDED):
             raise SessionError(
                 "INVALID_EVENT", "Only an ended turn's own row carries its usage."
+            )
+        if delivery is not None and (
+            kind != "user-message" or delivery not in MESSAGE_DELIVERIES
+        ):
+            raise SessionError(
+                "INVALID_EVENT",
+                "Only a user message says how it was delivered: steered or queued.",
             )
         if len(title) > MAX_TITLE_CHARS or len(text) > MAX_TEXT_CHARS:
             raise SessionError(
@@ -264,6 +277,7 @@ class AgentSessionActivityService:
                     room_id=room_id,
                     thread_id=thread_id,
                     message_id=message_id,
+                    delivery=delivery,
                     occurred_at=occurred_at,
                 ),
             )

@@ -3828,6 +3828,11 @@ class AgentSessionActivityItem(TenantScoped, Base):
             "'tool-activity', 'notice')",
             name="ck_session_activity_items_kind",
         ),
+        CheckConstraint(
+            "delivery IS NULL OR (kind = 'user-message' "
+            "AND delivery IN ('steered', 'queued'))",
+            name="ck_session_activity_items_delivery",
+        ),
         Index("ix_session_activity_items_updated_at", "updated_at"),
     )
 
@@ -3846,6 +3851,9 @@ class AgentSessionActivityItem(TenantScoped, Base):
     thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The Switch message that asked, where a platform puts its work marker.
     message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On a user message sent while another turn ran: "steered" into that turn,
+    # or "queued" behind it. Null on every other row.
+    delivery: Mapped[str | None] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
