@@ -22,11 +22,13 @@ Tags, by level (`<id>` is the property's id):
     system `@checks("<id>")` on a history check
     ui     `@property <id>` in the doc comment directly above a Bombadil export
 
-An assertion in the server (`always`, `sometimes`, `reachable`, ... from
-`antithesis.assertions`) whose message starts with a property id, alone or
+An assertion in the server from `antithesis.assertions` that states something
+(`always*`, `unreachable`) and whose message starts with a property id, alone or
 before `: `, is evidence at the `system` level: the run's assertion log is read
-after the fast lane (`properties/history/assertions.py`). A message that does
-not start with an id is not about a catalog property and is left alone.
+after the fast lane (`properties/history/assertions.py`). `sometimes*` and
+`reachable` only show a state was reached, so they are not evidence. A message
+that does not start with an id is not about a catalog property, and one that is
+not a string literal is an error.
 
 It needs only PyYAML and Pydantic:
 
@@ -64,9 +66,8 @@ CODE_GLOB = "core/tests/switch_core/properties/**/*.py"
 SYSTEM_GLOB = "properties/history/**/*.py"
 UI_GLOB = "console/tooling-e2e/src/explore/spec/*.ts"
 ASSERT_GLOB = "core/switch_core/**/*.py"
-ASSERT_FUNCTIONS = frozenset(
-    {"always", "always_or_unreachable", "sometimes", "reachable", "unreachable"}
-)
+ASSERT_PREFIXES = ("always", "sometimes", "reachable", "unreachable")
+ASSERT_EVIDENCE = ("always", "unreachable")
 ASSERT_MESSAGE = re.compile(
     r"^(?P<id>[a-z][a-z0-9]*\.[a-z][a-z0-9]*(-[a-z0-9]+)*)(: |$)"
 )
@@ -209,43 +210,74 @@ def _python_tags(
     return tags, problems
 
 
-def _assertion_tags(tree: ast.AST, label: str) -> list[tuple[str, Tag]]:
-    """Assertions from the Antithesis SDK whose message names a property."""
-    imported = {
-        alias.asname or alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        and node.module is not None
-        and node.module.split(".")[0] == "antithesis"
-        for alias in node.names
-    } & ASSERT_FUNCTIONS
+def _assertion_tags(
+    tree: ast.AST, label: str
+) -> tuple[list[tuple[str, Tag]], list[str]]:
+    """Assertions from `antithesis.assertions` whose message names a property,
+    and every assertion call whose message is not a string literal.
+
+    The SDK keys an assertion by its message, so a message built at run time
+    would make unbounded ids, and the gate could not read which property it is
+    for. Only the assertions that state something (`always*`, `unreachable`)
+    are evidence; `sometimes*` and `reachable` show a state was reached, which
+    is not the property holding."""
+    functions: dict[str, str] = {}
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "antithesis.assertions":
+            for alias in node.names:
+                functions[alias.asname or alias.name] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module == "antithesis":
+            for alias in node.names:
+                if alias.name == "assertions":
+                    modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "antithesis.assertions":
+                    modules.add(alias.asname or "antithesis.assertions")
     tags: list[tuple[str, Tag]] = []
+    problems: list[str] = []
+
+    def called(func: ast.expr) -> str | None:
+        if isinstance(func, ast.Name):
+            return functions.get(func.id)
+        if isinstance(func, ast.Attribute) and ast.unparse(func.value) in modules:
+            return func.attr
+        return None
 
     def visit(node: ast.AST, owner: str) -> None:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             owner = node.name
+        name = called(node.func) if isinstance(node, ast.Call) else None
         if (
             isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in imported
+            and name is not None
+            and name.startswith(ASSERT_PREFIXES)
         ):
-            message = None
-            if len(node.args) > 1:
-                message = node.args[1]
-            else:
-                message = next(
+            position = 2 if "_than" in name else 1
+            message = (
+                node.args[position]
+                if len(node.args) > position
+                else next(
                     (kw.value for kw in node.keywords if kw.arg == "message"), None
                 )
-            if isinstance(message, ast.Constant) and isinstance(message.value, str):
+            )
+            if not (
+                isinstance(message, ast.Constant) and isinstance(message.value, str)
+            ):
+                problems.append(
+                    f"{label}:{node.lineno}: `{name}` takes its message as a string literal"
+                )
+            elif name.startswith(ASSERT_EVIDENCE):
                 match = ASSERT_MESSAGE.match(message.value)
                 if match:
                     tags.append((match["id"], Tag("system", label, owner)))
         for child in ast.iter_child_nodes(node):
             visit(child, owner)
 
-    if imported:
+    if functions or modules:
         visit(tree, "<module>")
-    return tags
+    return tags, problems
 
 
 def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
@@ -287,7 +319,9 @@ def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
         except SyntaxError as error:
             problems.append(f"{label}: cannot be read for assertions: {error}")
             continue
-        for tagged, tag in _assertion_tags(tree, label):
+        tags, tag_problems = _assertion_tags(tree, label)
+        problems.extend(tag_problems)
+        for tagged, tag in tags:
             found[tagged].append(tag)
 
     for path in sorted(root.glob(UI_GLOB)):

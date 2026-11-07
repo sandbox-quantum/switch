@@ -164,8 +164,9 @@ def test_the_assertion_log_fails_on_a_false_always_a_reached_unreachable_and_a_m
         ]
     )
     found = history_assertions.problems(
-        history_assertions.read(log),
+        history_assertions.read(log)[1],
         ["d: false then true", "e: only false", "f: never called"],
+        ["e: only false", "g: not called"],
     )
     assert [line.split(":")[0] for line in found] == [
         "always",
@@ -173,13 +174,19 @@ def test_the_assertion_log_fails_on_a_false_always_a_reached_unreachable_and_a_m
         "unreachable",
         "never satisfied",
         "never satisfied",
+        "never called",
     ]
     assert "a: broke" in found[0] and "b: broke" in found[1]
     assert "e: only false" in found[3] and "f: never called" in found[4]
+    assert "g: not called" in found[5]
 
 
 def test_a_clean_assertion_log_passes_and_a_line_that_is_not_json_is_an_error() -> None:
     clean = "\n".join([_record("Always", "a", True), _record("Sometimes", "b", True)])
-    assert history_assertions.problems(history_assertions.read(clean), ["b"]) == []
+    header, records = history_assertions.read(clean)
+    assert not header
+    assert history_assertions.problems(records, ["b"], ["a"]) == []
     with pytest.raises(ValueError, match="line 2"):
         history_assertions.read(_record("Always", "a", True) + "\nnot json")
+    with pytest.raises(ValueError, match="no message"):
+        history_assertions.read('{"antithesis_assert": {"display_type": "Always"}}')

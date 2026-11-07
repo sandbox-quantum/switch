@@ -69,6 +69,8 @@ for port in 4173 5432 8000 8065 8081; do
 done
 
 rm -rf "$OUT"; mkdir -p "$OUT"
+# Absolute, for what is handed to the server and to `uv run --project`, which do not start here.
+OUT="$(cd "$OUT" && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/switch-e2e.XXXXXX")"
 chmod 700 "$WORK"
 ENV_FILE="$WORK/stack.env"
@@ -259,7 +261,6 @@ if [ "$LANE" = browser ] || [ "$LANE" = explore ]; then
   BROWSER_ENV=(SWITCH_GATEWAY_UI_URL=http://127.0.0.1:4173)
 fi
 
-ASSERTION_REQUIRE=()
 echo "Running the $LANE lane…"
 status=0
 (
@@ -290,14 +291,16 @@ status=0
       --outputFile.junit="$OUT/junit.xml" ${VITEST_ARGS[@]+"${VITEST_ARGS[@]}"}
 ) || status=$?
 
-# The assertions the server made while the fast lane ran: an `always` that was
-# false, an `unreachable` that was reached, or a `sometimes` the lane never made
-# true fails the run. The ids are the ones the lane is known to reach; the rest
-# need longer or different runs (retention, restarts).
-if [ "$LANE" = fast ]; then
+# The assertions the server made while the whole fast lane ran (not a filtered
+# run, which may never reach them): an `always` that was false or an
+# `unreachable` that was reached fails the run, and so does an assertion the lane
+# is known to reach going uncalled, which says the code is no longer there. The
+# `sometimes` the lane cannot reach (retention, a leave) are not required.
+if [ "$LANE" = fast ] && [ ${#VITEST_ARGS[@]} -eq 0 ]; then
   echo "Checking the run's assertions…"
   uv run --project core python "$REPO/properties/history/assertions.py" "$OUT/assertions.jsonl" \
-    ${ASSERTION_REQUIRE[@]+"${ASSERTION_REQUIRE[@]}"} || status=1
+    --called "reached: an event is not stored for an agent that left the room or already has it" \
+    || status=1
 fi
 
 if [ "$status" != 0 ]; then
