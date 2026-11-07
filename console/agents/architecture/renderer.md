@@ -25,8 +25,8 @@ All paths are relative to `apps/switch-console-desktop/`.
   holds location stores and `location-selectors.ts`
 - `remote-hosts/` — SSH hosts: the host list and detail views, reachability notices, and
   host setup
-- `switch-rooms/` — Switch room membership and the inline bridge pane
-  (`room-embed-layer.tsx`)
+- `switch-rooms/` — Switch room membership, and the pane that sends a bridged room out to
+  its messaging app (`room-embed-layer.tsx`)
 - `chats/` — direct chats with agents: timeline, composer and agent activity
 - `switch-servers/` — Switch server connections, including a Switch Console-managed server
 - `sidebar/` — app sidebar

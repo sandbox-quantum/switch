@@ -156,7 +156,7 @@ const behind = {
   drift: { deployed: '0.10.0', expected: '0.11.0', direction: 'upgrade' },
 };
 const inStep = { deployedVersion: '0.11.0', drift: null };
-const ports = { gateway: 1, api: 2, mattermost: 3, postgres: 4 };
+const ports = { gateway: 1, api: 2, postgres: 4 };
 
 function present(running: boolean): StackOnHost {
   return {

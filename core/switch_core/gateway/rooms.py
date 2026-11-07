@@ -34,7 +34,7 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.gateway.auth import (
     authorize_room,
     get_current_user,
@@ -726,7 +726,6 @@ async def run_template_document(
     source = vouched_source(
         body.template,
         loaded,
-        agent_management=config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=config.feature_flags[SWITCH_BUDDY],
     )
     inputs = body.inputs or {}

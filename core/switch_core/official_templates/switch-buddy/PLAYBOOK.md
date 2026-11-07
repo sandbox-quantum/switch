@@ -56,7 +56,7 @@ them pick.
 
 | Page | Link |
 |---|---|
-| This server's own settings, when their Switch Console runs it: start, stop, restart, update, the Mattermost beside it | `switchdash://open/server` |
+| This server's own settings, when their Switch Console runs it: start, stop, restart, update | `switchdash://open/server` |
 | Every room | `switchdash://open/rooms` |
 | A room | `switchdash://open/room/<room-id>` |
 | Templates (`tab=agent`, `room` or `group`) | `switchdash://open/templates` |
@@ -68,14 +68,12 @@ them pick.
 - A room's id comes from `list_rooms`, a template's from `list_templates` (only
   templates saved on the server have a page).
 
-## Server settings and bundled Mattermost
+## Server settings
 
-Starting, stopping, restarting or updating the server, and turning the bundled
-Mattermost on or off: `switchdash://open/server`. Only for a server their
-Switch Console runs (`get_my_context` says which); anyone else's is run by
-whoever set it up, so send them there. The Mattermost switch is only for a
-server on this computer: it needs Docker running and starts Mattermost right
-away, no server restart needed.
+Starting, stopping, restarting or updating the server:
+`switchdash://open/server`. Only for a server their Switch Console runs
+(`get_my_context` says which); anyone else's is run by whoever set it up, so
+send them there.
 
 ## Their own messaging app
 
