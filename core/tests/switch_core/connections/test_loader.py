@@ -21,22 +21,23 @@ PLACEHOLDERS = {
     "linear",
     "salesforce",
     "box",
-    "canva",
     "vercel",
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_the_implemented_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "canva",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "canva",
         "datadog",
         "github",
         "google-workspace",
@@ -45,6 +46,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["canva"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -228,6 +230,42 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_canva_entry_uses_static_oauth_with_design_scopes():
+    definition = CATALOG["canva"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "CANVA",
+    )
+    assert oauth.redirect == ["loopback"]
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.authorization_url is None and oauth.token_url is None
+    assert oauth.revocation_url == "https://api.canva.com/rest/v1/oauth/revoke"
+    assert oauth.revocation_ends_grant is True
+    assert oauth.unchecked is not None
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        14400,
+    )
+    assert definition.mcp is not None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("canva", "https://api.canva.com/connect/v1/mcp")
+    ]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.canva.com/rest/v1/users/me"
+    assert definition.auth.identity.account_id == "team_user.user_id"
+    assert definition.auth.identity.label == "team_user.user_id"
+    access = definition.access
+    assert access is not None and access.write is not None
+    assert access.read.scopes == ["design:meta:read", "design:content:read"]
+    assert access.write.scopes == [*access.read.scopes, "design:content:write"]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 RESTRICTED_DRIVE = {

@@ -105,20 +105,21 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
     )
 
 
-def test_airtable_is_set_up_by_its_operators_own_client() -> None:
-    assert "airtable" not in build_adapters(
+@pytest.mark.parametrize("service", ["airtable", "canva"])
+def test_a_shipped_static_service_needs_its_operators_own_client(service: str) -> None:
+    assert service not in build_adapters(
         CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
     adapters = build_adapters(
         CATALOG,
         github_app=None,
         oauth_clients={
-            "airtable": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+            service: OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
         },
         http=HTTP,
         registration=REG,
     )
-    adapter = adapters["airtable"]
+    adapter = adapters[service]
     assert isinstance(adapter, OAuthAdapter)
     assert isinstance(adapter._client, StaticClient)
     assert adapter._client.client.client_id == "c"
