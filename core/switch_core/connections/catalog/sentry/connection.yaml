@@ -1,0 +1,47 @@
+slug: sentry
+name: Sentry
+category: Observability
+description: Inspect errors, stack traces, and triage Sentry issues, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Sentry rotates the refresh token on each use; the previous access token
+  # and refresh token are invalidated upon refresh.
+  refresh: rotating
+  oauth:
+    # Sentry's remote MCP server supports dynamic client registration (RFC 7591):
+    # Core registers its own client on first connection and reuses it.
+    registration: dynamic
+    # Sentry matches loopback redirect ports strictly, registered dynamically.
+    redirect: [loopback]
+    loopback_ports: [39251, 39252, 39253, 39254, 39255]
+    prompt: consent
+    # Sentry supports RFC 7009 token revocation.
+    revocation_discovered: true
+  identity:
+    url: "https://sentry.io/api/0/users/me/"
+    account_id: id
+    label: email
+# Sentry OAuth access tokens live one hour; Core refreshes automatically.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: sentry, url: "https://mcp.sentry.dev/mcp" }
+access:
+  # Sentry scopes project, team and event capabilities under write scopes.
+  # Sentry MCP tools pass through and include issue triage (resolve, ignore, assign).
+  # Both levels request the write scopes so agents can inspect and triage issues.
+  read:
+    scopes:
+      - org:read
+      - project:write
+      - team:write
+      - event:write
+  write:
+    scopes:
+      - org:read
+      - project:write
+      - team:write
+      - event:write
+tools: { mode: pass_through }
