@@ -93,6 +93,7 @@ type AgentState = {
 /** Whether an agent host filtering to what addresses the agent is handed this event, as Switch decides. */
 export function isNotifiable(type: string, payload: Record<string, unknown>): boolean {
   if (type === 'message') return payload.addressed === true;
+  if (type === 'message_edit') return true;
   if (type === 'room_join') return payload.listening === true;
   if (type === 'command') return false;
   return type.startsWith('task_');

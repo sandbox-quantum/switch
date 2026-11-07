@@ -118,3 +118,32 @@ def test_a_warning_too_long_for_the_message_is_cut() -> None:
     assert len(lines) == 1
     assert len(lines[0]) <= 10
     assert lines[0].startswith("⚠️")
+
+
+# ── A queued message edited before the agent took it ─────────────────────────
+
+
+def _message(revision: int) -> Item:
+    return _item(kind="user-message", status="completed", title="", revision=revision)
+
+
+def test_a_queued_turn_whose_message_was_edited_says_it_will_run_the_edit() -> None:
+    """The host revises its copy of the message when an edit replaces it in
+    the queue, so the person who fixed a typo sees the fix was taken."""
+    lines = _status([_message(revision=2)], "queued", tool_detail=True)
+
+    assert lines == [
+        "**Queued with the edited message. Waiting for the agent to start…**"
+    ]
+
+
+def test_a_queued_turn_whose_message_was_not_edited_says_only_that_it_waits() -> None:
+    lines = _status([_message(revision=1)], "queued", tool_detail=True)
+
+    assert lines == ["**Queued. Waiting for the agent to start…**"]
+
+
+def test_once_it_runs_the_turn_says_what_it_is_doing_as_any_turn_does() -> None:
+    lines = _status([_message(revision=2)], "running", tool_detail=True)
+
+    assert lines[0] == "**Working…**"

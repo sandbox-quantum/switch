@@ -32,6 +32,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundEdit,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
@@ -61,6 +62,7 @@ from switch_core.db.stores.room_store import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.logging_context import log_context
+from switch_core.messages.edits import Edit, edit_content
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
     BRIDGE_ERRORS,
@@ -114,6 +116,7 @@ if TYPE_CHECKING:
     from switch_core.clients.workspace_consumer import WorkspaceConsumer
     from switch_core.events import CommandEvent
     from switch_core.room_service import RoomService
+    from switch_core.trust.client import TrustCheckResult
 
 
 logger = logging.getLogger(__name__)
@@ -123,6 +126,7 @@ _InboundEventT = TypeVar(
     InboundInteraction,
     InboundMessage,
     InboundCommand,
+    InboundEdit,
     InboundAgentJoin,
     InboundUserJoin,
     InboundAppJoin,
@@ -156,6 +160,62 @@ _HUMAN_ACTOR_MINTING_SECONDS = 2.0
 def _is_thread_reply(content: Mapping[str, object]) -> bool:
     relates = content.get("m.relates_to")
     return isinstance(relates, dict) and relates.get("rel_type") == "m.thread"
+
+
+@dataclass(frozen=True)
+class _TrustAdmitted:
+    """What a person said, as Switch Trust lets it into the room: redacted or
+    annotated where its verdict says so, and what the sender is told once it
+    is there."""
+
+    check: TrustCheckResult
+    content: str
+    notices: tuple[tuple[str, AdminMessageType], ...]
+
+    @property
+    def blocked(self) -> bool:
+        """Not let into the room at all.
+
+        A REDACTED verdict with nothing to redact with is not safe to treat
+        as a pass: sending the original content then would be
+        indistinguishable from not checking at all, so it is handled like a
+        block.
+        """
+        return self.check.blocked or (
+            self.check.outcome == "redacted" and self.check.redacted_content is None
+        )
+
+
+async def _trust_admitted(
+    trust_client: TrustClient, content: str, room_id: str
+) -> _TrustAdmitted:
+    """Switch Trust's verdict on what a person said in a room, and what of it
+    the room gets."""
+    check = await check_message(
+        trust_client, role="user", content=content, room_id=room_id
+    )
+    notices: list[tuple[str, AdminMessageType]] = []
+    if check.redacted_content is not None:
+        content = check.redacted_content
+        redaction_notice = trust_redaction_notice(check)
+        if redaction_notice is not None:
+            notices.append((redaction_notice, AdminMessageType.TRUST_REDACTED))
+    annotation = trust_annotation(check)
+    if annotation is not None:
+        content = f"{content}\n\n{annotation}"
+        # The room itself never relays a human-authored event back out
+        # to a platform (see handle_outbound_message's human-sender
+        # skip), so without this the sender would never see the
+        # annotation their own client just appended to their message.
+        notices.append(
+            (
+                annotation,
+                AdminMessageType.TRUST_ALERTED
+                if check.outcome == "alerted"
+                else AdminMessageType.TRUST_ERRORED,
+            )
+        )
+    return _TrustAdmitted(check=check, content=content, notices=tuple(notices))
 
 
 @dataclass
@@ -522,6 +582,7 @@ class CollaborationCore:
             self._adapter.set_interaction_handler(
                 self._traced("interaction", self._handle_inbound_interaction)
             )
+        self._adapter.set_edit_handler(self._traced("edit", self._handle_inbound_edit))
         if self._activity_publisher is not None:
             self._adapter.set_activity_resolver(
                 self._activity_publisher.activity_shown_at
@@ -1186,25 +1247,14 @@ class CollaborationCore:
             content = f"{content}\n{notes}" if content.strip() else notes
 
         if not msg.attachments:
-            check = await check_message(
-                self._trust_client,
-                role="user",
-                content=content,
-                room_id=room_id,
-            )
-            # A REDACTED verdict with nothing to redact with is not safe to
-            # treat as a pass: sending the original content then would be
-            # indistinguishable from not checking at all, so it is handled
-            # like a block.
-            if check.blocked or (
-                check.outcome == "redacted" and check.redacted_content is None
-            ):
+            admitted = await _trust_admitted(self._trust_client, content, room_id)
+            if admitted.blocked:
                 logger.warning(
                     "[BRIDGE-IN] message from %s not relayed — Switch Trust "
                     "outcome=%s (policy=%s) — room %s",
                     msg.sender_name,
-                    check.outcome,
-                    check.policy_id,
+                    admitted.check.outcome,
+                    admitted.check.policy_id,
                     transport_room_id,
                 )
                 await self._post_trust_notice(
@@ -1215,18 +1265,13 @@ class CollaborationCore:
                     AdminMessageType.TRUST_BLOCKED,
                 )
                 return
-            if check.redacted_content is not None:
-                content = check.redacted_content
-            annotation = trust_annotation(check)
-            if annotation is not None:
-                content = f"{content}\n\n{annotation}"
             with writes_derived_from(
                 human_actor.client_id,
                 _post_source(self._bridge_id, msg.channel_id, msg.message_ref),
             ):
                 event_id = await human_actor.send_message(
                     transport_room_id,
-                    content,
+                    admitted.content,
                     format="markdown",
                     thread_root_id=thread_root_id,
                     metered=True,
@@ -1246,23 +1291,8 @@ class CollaborationCore:
             # actually confirmed to have reached the room — posting this
             # beforehand risks telling them their message was flagged/
             # redacted when it never got there at all.
-            if check.redacted_content is not None:
-                redaction_notice = trust_redaction_notice(check)
-                if redaction_notice is not None:
-                    await self._post_trust_notice(
-                        msg, redaction_notice, AdminMessageType.TRUST_REDACTED
-                    )
-            if annotation is not None:
-                # The room itself never relays a human-authored event back out
-                # to a platform (see handle_outbound_message's human-sender
-                # skip), so without this the sender would never see the
-                # annotation their own client just appended to their message.
-                notice_type = (
-                    AdminMessageType.TRUST_ALERTED
-                    if check.outcome == "alerted"
-                    else AdminMessageType.TRUST_ERRORED
-                )
-                await self._post_trust_notice(msg, annotation, notice_type)
+            for notice, notice_type in admitted.notices:
+                await self._post_trust_notice(msg, notice, notice_type)
             # Record the correlation so a later reply (either direction) threads.
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
@@ -1418,8 +1448,93 @@ class CollaborationCore:
                 external_post_id=msg.message_ref,
             )
 
+    async def _handle_inbound_edit(self, edit: InboundEdit) -> None:
+        """Someone edited a post this bridge relayed into a room.
+
+        The room gets the edit as a row of its own naming the message the post
+        became (`messages/edits.py`), and the router takes it to the agents
+        that message reached. The new text passes Switch Trust as the post
+        did. A post that never reached a room has no message to edit.
+        """
+        if await self._is_registered_agent(edit.sender_name):
+            return
+        room_ids = self._channel_to_room.get(edit.channel_id)
+        original = (
+            await self._event_for_external_post(edit.message_ref)
+            if room_ids is not None
+            else None
+        )
+        if room_ids is None or original is None:
+            logger.info(
+                "[BRIDGE-IN] edit of post %s in channel %s not relayed: the post "
+                "is not a message in any room",
+                edit.message_ref,
+                edit.channel_id,
+            )
+            return
+        room_id, transport_room_id = room_ids
+        human_actor = await self._ensure_human_in_room(
+            external_user_id=edit.sender_id,
+            external_username=edit.sender_name,
+            room_id=room_id,
+            transport_room_id=transport_room_id,
+        )
+        if human_actor is None:
+            return
+        admitted = await _trust_admitted(
+            self._trust_client, self._adapter.translate_inbound(edit.content), room_id
+        )
+        if admitted.blocked:
+            logger.warning(
+                "[BRIDGE-IN] edit from %s not relayed — Switch Trust "
+                "outcome=%s (policy=%s) — room %s",
+                edit.sender_name,
+                admitted.check.outcome,
+                admitted.check.policy_id,
+                transport_room_id,
+            )
+            await self._post_trust_notice(
+                edit,
+                "🚫 Your edit was blocked by Switch Trust and was not delivered "
+                "to the room. Agents have your message as you first sent it.",
+                AdminMessageType.TRUST_BLOCKED,
+            )
+            return
+        # Numbered from the post and this edit of it, so the platform
+        # delivering the edit again writes nothing new.
+        source = _post_source(self._bridge_id, edit.channel_id, edit.message_ref)
+        with writes_derived_from(
+            human_actor.client_id, f"{source}\x1fedit\x1f{edit.edited_at}"
+        ):
+            event_id = await human_actor.send_message(
+                transport_room_id,
+                f"* {admitted.content}",
+                format="text",
+                metered=False,
+                extra_content=edit_content(
+                    Edit(
+                        original_event_id=original,
+                        body=admitted.content,
+                        edited_at=edit.edited_at,
+                    )
+                ),
+            )
+        if event_id is None:
+            logger.error(
+                "[BRIDGE-IN] failed to relay an edit from %s into room %s — "
+                "agents keep the message as first sent",
+                edit.sender_name,
+                transport_room_id,
+            )
+            return
+        for notice, notice_type in admitted.notices:
+            await self._post_trust_notice(edit, notice, notice_type)
+
     async def _post_trust_notice(
-        self, msg: InboundMessage, body: str, message_type: AdminMessageType
+        self,
+        msg: InboundMessage | InboundEdit,
+        body: str,
+        message_type: AdminMessageType,
     ) -> None:
         """Tell the sender, and only the sender, what Switch Trust did with
         their message: blocked, redacted, flagged, or not fully checked.

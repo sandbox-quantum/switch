@@ -44,6 +44,17 @@ TURN_STATE = {
     "error": "Turn ended with an error.",
 }
 
+# A queued turn whose message was edited while it waited: the person who fixed
+# a typo sees the agent will start on the fixed message, not the one they sent.
+QUEUED_EDITED = "Queued with the edited message. Waiting for the agent to start…"
+
+
+def message_edited(items: list[Item]) -> bool:
+    """Whether the message a turn was started by was edited before the turn
+    took it: the host revises its copy of the message, at a higher revision,
+    to what the agent will be given."""
+    return any(item.kind == "user-message" and item.revision > 1 for item in items)
+
 
 def turn_state(
     items: list[Item],
@@ -82,6 +93,8 @@ def turn_state(
     reported wherever the turn is.
     """
     state = TURN_STATE[turn.status]
+    if turn.status == "queued" and message_edited(items):
+        state = QUEUED_EDITED
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
             return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"

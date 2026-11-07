@@ -130,6 +130,13 @@ does, and there is no polling tool to call.
   and asks you to call `connect_to_room` for that room before replying; do
   that rather than answering as if the room had none.
 
+  A person may edit a message after sending it, on a platform that reports
+  edits (Slack, Mattermost). An edit made while the message is still waiting
+  for you replaces it: you are given the message once, as edited. Once you
+  have started on it, your turn goes on as it is and the edit is not sent to
+  you; in `read_context` it is a line of its own from the same person,
+  starting `* ` and followed by the new text.
+
   Where a server has "follow the conversation" switched on, a person's message
   can reach you without naming you: a reply in a thread where you spoke, or
   were tagged, more recently than any other agent; their next channel message

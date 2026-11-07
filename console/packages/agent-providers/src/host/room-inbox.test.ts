@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { SharedRoomInbox } from './room-inbox';
+import { roomInputId, SharedRoomInbox } from './room-inbox';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -134,4 +134,20 @@ it('replays a release written before the delivery was acknowledged', async () =>
   expect(inbox.pending()).toEqual([
     { type: 'received', sequence: 4, roomId: 'room', messageId: 'message-1' },
   ]);
+});
+
+it('takes an edit of a message as a delivery of its own, under the edit', () => {
+  const edit = {
+    type: 'message_edit',
+    room_id: 'room',
+    payload: {
+      message_id: 'message',
+      edit_id: 'edit',
+      sender: '@person:test',
+      sender_name: 'Person',
+      body: 'now this',
+      edited_at: 1,
+    },
+  };
+  expect(roomInputId(edit)).toBe('edit');
 });

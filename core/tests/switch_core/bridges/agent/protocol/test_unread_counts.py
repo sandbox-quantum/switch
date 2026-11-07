@@ -26,6 +26,7 @@ from switch_core.bridges.agent.protocol.event_buffer import (
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     CommandPayload,
+    MessageEditPayload,
     MessagePayload,
 )
 from switch_core.db.models import TENANT_ZERO_ID
@@ -513,6 +514,38 @@ async def test_only_unaddressed_messages_are_counted(
     await _chatter(session_factory, ROOM_A)
 
     assert (await _unread(buffer, ROOM_A)).count == 1
+
+
+async def test_an_edit_handed_to_the_agent_is_not_chatter(
+    db_buffer: EventBuffer, session_factory: SessionFactory
+) -> None:
+    """An edit of a message the agent was sent reaches it as an event of its
+    own (`message_edit`), so, like the message, it is not what went past it."""
+    buffer = db_buffer
+    await buffer.ensure_counting(TENANT_ZERO_ID, AGENT, READER, ROOM_A)
+    await _addressed(buffer, session_factory, ROOM_A)
+    edit = await say(session_factory, ROOM_A, "* @agent over to you, now")
+    await buffer.enqueue(
+        TENANT_ZERO_ID,
+        AGENT,
+        ROOM_A,
+        AgentEvent(
+            type="message_edit",
+            room_id=ROOM_A,
+            payload=MessageEditPayload(
+                message_id="$asked",
+                edit_id=edit.transport_event_id,
+                sender="@alice:test",
+                sender_name="Alice",
+                body="@agent over to you, now",
+                edited_at=1,
+            ),
+        ),
+        room_seq=edit.seq,
+        message_key=edit.transport_event_id,
+    )
+
+    assert (await _unread(buffer, ROOM_A)).count == 0
 
 
 async def test_several_files_posted_as_one_message_count_once(
