@@ -757,6 +757,36 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
         load_catalog(catalog_copy)
 
 
+@pytest.mark.parametrize(
+    ("account_id", "label"), [("0.id", "0.name"), ("data.0.id", "data.0.name")]
+)
+def test_an_identity_path_may_index_the_one_entry_of_a_list(
+    catalog_copy, account_id, label
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "account_id: account.id", f"account_id: {account_id}"
+        ).replace("label: account.email", f"label: {label}"),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.account_id, identity.label) == (account_id, label)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("account_id: account.id", "account_id: 1.id"),
+        ("label: account.email", "label: data.2.name"),
+    ],
+)
+def test_an_identity_path_indexes_only_the_one_entry(catalog_copy, old, new):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match="indexes it with 0"):
+        load_catalog(catalog_copy)
+
+
 MCP_SERVER_LINE = '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n'
 
 

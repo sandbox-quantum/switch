@@ -182,12 +182,27 @@ class OAuthClient(BaseModel):
 class ConnectionIdentity(BaseModel):
     """Where the account's stable id is read: a GET of `url` with the access
     token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    people recognise (an email, a login).
+
+    A `0` in a path indexes a list, for a vendor that answers with the one
+    account a sign-in reaches inside a list (Supabase's organizations). The
+    list must hold exactly that one entry, or the sign-in fails.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _a_list_holds_one_account(self) -> "ConnectionIdentity":
+        for path in (self.account_id, self.label):
+            if any(part.isdigit() and part != "0" for part in path.split(".")):
+                raise ValueError(
+                    f"identity path {path} indexes a list, which must hold "
+                    "exactly one entry, so it indexes it with 0"
+                )
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"

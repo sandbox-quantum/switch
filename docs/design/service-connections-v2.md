@@ -73,6 +73,11 @@ tools by level could hold a grant to reading, and only for an entry that also
 has a write level. A pass-through grant takes its connection's level, so a
 read-level connection's grants call the read-only server.
 
+An identity path may index a list with `0`, for a vendor that answers with the
+one account a sign-in reaches inside a list (Supabase's organizations, since
+its sign-in picks one). The list must hold exactly that entry: an answer with
+none or several fails the sign-in rather than picking one.
+
 The adapter is named for how it signs in, `oauth`, not for how its tools are
 reached. Its entry delivers its tools one of two ways, never both: the vendor's
 MCP servers (`mcp`), or the vendor's command-line tool (`cli`), which the
