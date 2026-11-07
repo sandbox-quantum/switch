@@ -91,3 +91,23 @@ async def test_invalid_advertised_resource_is_a_sanitized_adapter_error(resource
         with pytest.raises(ServiceAdapterError) as raised:
             await adapter.endpoints()
     assert str(raised.value) == "The vendor's resource is not an https URL."
+
+
+async def test_missing_advertised_resource_uses_the_configured_tenant_url():
+    from tests.switch_core.connections.adapters.test_oauth_sign_in_fields import (
+        _adapter as field_adapter,
+    )
+    from tests.switch_core.connections.test_loader import FIELDS_ENTRY
+
+    vendor = FakeOAuthServer()
+    vendor.per_path = True
+    vendor.fail[
+        "https://mcp.example.test/.well-known/oauth-protected-resource/v1/mcp/team-a"
+    ] = (200, {"authorization_servers": [ISSUER]})
+    async with vendor.client() as http:
+        adapter = field_adapter(http, FIELDS_ENTRY).for_fields({"tenant": "team-a"})
+        secret = await _sign_in(adapter, vendor)
+        await adapter.refresh(secret)
+    expected = MCP_URL + "/team-a"
+    assert vendor.authorizations[-1]["resource"] == expected
+    assert [form["resource"] for form in vendor.token_requests] == [expected, expected]

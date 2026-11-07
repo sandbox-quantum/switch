@@ -320,7 +320,7 @@ class OAuthAdapter:
             ],
             "protected resource metadata",
         )
-        resource_url = _https(resource.get("resource"), "resource")
+        resource_url = _https(resource.get("resource", mcp_url), "resource")
         servers = resource.get("authorization_servers")
         if not isinstance(servers, list) or not servers:
             raise ServiceAdapterError(
