@@ -18,6 +18,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    tuple_,
     update,
 )
 from sqlalchemy.dialects.postgresql import insert
@@ -29,6 +30,7 @@ from switch_core.db.models import (
     AgentSessionActivityItem,
     AgentSessionPlacement,
     ApprovalRequest,
+    Room,
     SwitchCoreProcess,
 )
 
@@ -38,6 +40,10 @@ if TYPE_CHECKING:
 TURN_ITEM_ID = "turn"
 # The ends a turn can be run again from: it failed, or it was stopped.
 RETRYABLE_TURN_STATUSES = frozenset({"error", "interrupted"})
+# How many tool-activity rows one transaction empties when a setting is turned
+# off: each updated row fires the NOTIFY trigger on commit, so keeping each
+# batch small bounds the notification burst per commit.
+SCRUB_BATCH_SIZE = 50
 
 
 class ApprovalRequestStore:
@@ -375,6 +381,66 @@ class AgentSessionActivityStore:
             )
         )
         return list(result.scalars())
+
+    async def scrub_hidden_tool_text(
+        self,
+        session: AsyncSession,
+        *,
+        room_id: str | None,
+        agent_id: str | None,
+        batch_size: int = SCRUB_BATCH_SIZE,
+    ) -> int:
+        """Empty the stored input and output of up to `batch_size` tool calls
+        that tool details no longer show: the room's setting when it has one,
+        else its agent's.
+
+        Run in batches when a setting is turned off or cleared, for the room or
+        the agent that changed. Each updated row fires the table's NOTIFY
+        trigger on commit, so callers commit one batch at a time until this
+        returns 0.
+        """
+        room_flag = (
+            select(Room.metadata_["tool_details"].as_boolean())
+            .where(Room.id == AgentSessionActivityItem.room_id)
+            .scalar_subquery()
+        )
+        agent_flag = (
+            select(Agent.tool_details)
+            .where(Agent.id == AgentSessionActivityItem.agent_id)
+            .scalar_subquery()
+        )
+        hidden = or_(
+            room_flag.is_(False),
+            and_(room_flag.is_(None), func.coalesce(agent_flag, False).is_(False)),
+        )
+        scope = [
+            AgentSessionActivityItem.kind == "tool-activity",
+            AgentSessionActivityItem.text != "",
+            hidden,
+        ]
+        if room_id is not None:
+            scope.append(AgentSessionActivityItem.room_id == room_id)
+        if agent_id is not None:
+            scope.append(AgentSessionActivityItem.agent_id == agent_id)
+        key = (
+            AgentSessionActivityItem.tenant_id,
+            AgentSessionActivityItem.agent_id,
+            AgentSessionActivityItem.session_id,
+            AgentSessionActivityItem.turn_id,
+            AgentSessionActivityItem.item_id,
+        )
+        batch = (
+            select(*key)
+            .where(*scope)
+            .order_by(AgentSessionActivityItem.updated_at.desc())
+            .limit(batch_size)
+        )
+        result = await session.execute(
+            update(AgentSessionActivityItem)
+            .where(tuple_(*key).in_(batch))
+            .values(text="")
+        )
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def prune_before(self, session: AsyncSession, cutoff: datetime) -> int:
         result = await session.execute(

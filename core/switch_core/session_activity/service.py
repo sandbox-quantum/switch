@@ -35,7 +35,11 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import (
+    RoomStore,
+    tool_details_in,
+    tool_details_shown,
+)
 from switch_core.db.stores.session_activity_store import (
     TURN_ITEM_ID,
     AgentSessionActivityStore,
@@ -44,6 +48,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.process_lease import LEASE_TTL
+from switch_core.session_activity.redaction import redact_secrets
 from switch_core.sessions.contract import (
     TURN_ENDED,
     ApprovalResult,
@@ -238,8 +243,20 @@ class AgentSessionActivityService:
             )
         tenant_id = require_tenant_id()
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
-            if room_id is not None:
+            shown: bool | None = (
                 await self._require_member(db, agent_id, room_id)
+                if room_id is not None
+                else None
+            )
+            if kind == "tool-activity" and text:
+                if shown is None:
+                    shown = tool_details_shown(
+                        None,
+                        await db.scalar(
+                            select(Agent.tool_details).where(Agent.id == agent_id)
+                        ),
+                    )
+                text = redact_secrets(text) if shown else ""
             prior_status = (
                 await self._activity.status_for_update(
                     db, agent_id, session_id, turn_id, item_id
@@ -590,12 +607,17 @@ class AgentSessionActivityService:
 
     async def _require_member(
         self, db: AsyncSession, agent_id: str, room_id: str
-    ) -> None:
-        found = await self._rooms.get_with_membership(db, room_id, agent_id)
+    ) -> bool:
+        """Require `agent_id` in `room_id`, returning whether tool details show there."""
+        found = await self._rooms.get_with_membership_and_tool_details(
+            db, room_id, agent_id
+        )
         if found is None:
             raise SessionError("NOT_FOUND", f"Room not found: {room_id}")
-        if not found[1]:
+        room, member, agent_tool_details = found
+        if not member:
             raise SessionError("NOT_AUTHORIZED", "Agent is not a member of this room.")
+        return tool_details_shown(tool_details_in(room.metadata_), agent_tool_details)
 
     async def _require_may_address(
         self,

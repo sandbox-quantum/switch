@@ -48,11 +48,27 @@ LINKED_CHANNEL_NAME_KEY = "linked_channel_name"
 FOLLOW_UPS_OFF_KEY = "follow_ups_off"
 # `!assign-agent @name`: the agent id every message in the room goes to.
 MAIN_AGENT_KEY = "main_agent_id"
+# `!tool-details on|off`: show, or never show, what tool calls were given and
+# returned in this room. Absent defers to each agent's own setting, and with
+# neither set tool details are off, so no room needs a backfill.
+TOOL_DETAILS_KEY = "tool_details"
 
 
 def follow_ups_enabled_in(metadata: dict | None) -> bool:
     """Whether a room's metadata leaves follow-ups on."""
     return (metadata or {}).get(FOLLOW_UPS_OFF_KEY) is not True
+
+
+def tool_details_in(metadata: dict | None) -> bool | None:
+    """A room's own `!tool-details` setting: None when it has not set one."""
+    value = (metadata or {}).get(TOOL_DETAILS_KEY)
+    return value if isinstance(value, bool) else None
+
+
+def tool_details_shown(room: bool | None, agent: bool | None) -> bool:
+    """Whether tool input and output show: the room's setting when it has one,
+    else the agent's, else off."""
+    return room if room is not None else agent is True
 
 
 def main_agent_in(metadata: dict | None) -> str | None:
@@ -96,6 +112,20 @@ class RoomStore:
             session, room_id, FOLLOW_UPS_OFF_KEY, None if enabled else True
         )
 
+    async def tool_details_setting(
+        self, session: AsyncSession, room_id: str
+    ) -> bool | None:
+        """The room's `!tool-details` setting, None until someone sets one."""
+        room = await session.get(Room, room_id)
+        return None if room is None else tool_details_in(room.metadata_)
+
+    async def set_tool_details(
+        self, session: AsyncSession, room_id: str, value: bool | None
+    ) -> None:
+        """Set the room's tool-details setting, or clear it with None. Raises
+        ValueError for a room that does not exist."""
+        await self._set_metadata_key(session, room_id, TOOL_DETAILS_KEY, value)
+
     async def main_agent_id(self, session: AsyncSession, room_id: str) -> str | None:
         """The room's main agent (`!assign-agent`), or None."""
         room = await session.get(Room, room_id)
@@ -136,19 +166,32 @@ class RoomStore:
         come back in one statement — the pair is the single most frequent
         authorization question in the bridge.
         """
+        found = await self.get_with_membership_and_tool_details(
+            session, room_id, agent_id
+        )
+        if found is None:
+            return None
+        return found[0], found[1]
+
+    async def get_with_membership_and_tool_details(
+        self, session: AsyncSession, room_id: str, agent_id: str
+    ) -> tuple[Room, bool, bool | None] | None:
+        """The room, whether `agent_id` is a member, and `agent.tool_details`,
+        in one statement."""
         result = await session.execute(
-            select(Room, room_agents.c.agent_id)
+            select(Room, room_agents.c.agent_id, Agent.tool_details)
             .outerjoin(
                 room_agents,
                 (Room.id == room_agents.c.room_id)
                 & (room_agents.c.agent_id == agent_id),
             )
+            .outerjoin(Agent, Agent.id == agent_id)
             .where(Room.id == room_id)
         )
         row = result.one_or_none()
         if row is None:
             return None
-        return row[0], row[1] is not None
+        return row[0], row[1] is not None, row[2]
 
     async def get_by_transport_room_id(
         self, session: AsyncSession, transport_room_id: str
