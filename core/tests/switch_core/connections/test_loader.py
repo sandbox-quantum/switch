@@ -617,6 +617,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     assert oauth is not None
     assert oauth.client_settings == "EXAMPLE"
     assert oauth.revocation_url == "https://auth.example.test/revoke"
+    assert oauth.revocation_redirects is False
 
 
 @pytest.mark.parametrize(
@@ -651,6 +652,11 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    revocation_ends_grant: true\n",
             "revocation_ends_grant",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_redirects: true\n",
+            "revocation_redirects",
         ),
         ("redirect: [loopback, core]", "redirect: []", "redirect"),
         ("redirect: [loopback, core]", "redirect: [browser]", "redirect"),

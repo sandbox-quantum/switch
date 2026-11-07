@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import parse_qs, unquote_plus, urlsplit
+from urllib.parse import parse_qs, unquote_plus, urlencode, urlsplit
 
 import httpx
 
@@ -351,6 +351,8 @@ class FakeOAuthServer:
         self.spent_refresh: set[str] = set()
         self.token_requests: list[dict[str, str]] = []
         self.revoked: list[dict[str, str]] = []
+        # Answer a revocation with a redirect, as Salesforce's is answered.
+        self.revoke_redirects = False
         self.mcp_calls: list[dict[str, Any]] = []
         self.paths: list[str] = []
         self.fail: dict[str, tuple[int, Any]] = {}
@@ -440,6 +442,14 @@ class FakeOAuthServer:
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
+            if self.revoke_redirects:
+                return httpx.Response(
+                    302,
+                    headers={
+                        "Location": "https://pod.example.test/revoke?"
+                        + urlencode({"token": form.get("token", "")})
+                    },
+                )
             return httpx.Response(200)
         if where == IDENTITY_URL and request.method == "GET":
             if self._bearer(request) is None:

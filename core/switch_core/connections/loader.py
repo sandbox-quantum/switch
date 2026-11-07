@@ -87,6 +87,11 @@ class OAuthClient(BaseModel):
     account through the same client then does not revoke the sign-in it
     replaces, as that would end the new one too.
 
+    `revocation_redirects`: the vendor answers a revocation it has carried out
+    with a redirect, as Salesforce's does: a 302 to the token's own instance,
+    with the token in the query. Switch takes it as done and never follows
+    it, so the token is not sent again in a URL.
+
     `unchecked`: what a static client's operator must see to themselves,
     because asking the vendor about the client cannot show it; said with every
     check that passes.
@@ -122,6 +127,7 @@ class OAuthClient(BaseModel):
     revocation_discovered: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
+    revocation_redirects: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
 
     @model_validator(mode="after")
@@ -163,6 +169,12 @@ class OAuthClient(BaseModel):
         ):
             raise ValueError(
                 "revocation_ends_grant is for a vendor Switch revokes sign-ins at"
+            )
+        if self.revocation_redirects and (
+            self.revocation_url is None and not self.revocation_discovered
+        ):
+            raise ValueError(
+                "revocation_redirects is for a vendor Switch revokes sign-ins at"
             )
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")
