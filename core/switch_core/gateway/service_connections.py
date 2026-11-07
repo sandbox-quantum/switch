@@ -154,6 +154,11 @@ async def list_service_connections(
                 "key": _key_form(definition),
                 "status": broker.connection_status(standing, connection),
                 "consent": None if connection is None else connection.consent,
+                "requested_access": (
+                    "write" if definition.access and definition.access.write else "read"
+                )
+                if definition.auth.type == "oauth"
+                else None,
                 "external_identity": (
                     None if connection is None else connection.external_identity
                 ),
