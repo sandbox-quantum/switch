@@ -32,6 +32,10 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+from switch_core.bridges.collaboration.email.adapter import (
+    EmailAdapter,
+    EmailConnectionConfig,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.collaboration.lifecycle_service import (
@@ -53,6 +57,7 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("teams", TeamsAdapter, TeamsConnectionConfig),
     PlatformRegistration("discord", DiscordAdapter, DiscordConnectionConfig),
     PlatformRegistration("telegram", TelegramAdapter, TelegramConnectionConfig),
+    PlatformRegistration("email", EmailAdapter, EmailConnectionConfig),
 )
 
 
