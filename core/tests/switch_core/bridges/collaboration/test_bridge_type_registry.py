@@ -28,6 +28,10 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+from switch_core.bridges.collaboration.whatsapp.adapter import (
+    WhatsAppAdapter,
+    WhatsAppConnectionConfig,
+)
 from switch_core.keys import Keyring
 from tests.ownership import SoleOwner
 
@@ -110,6 +114,29 @@ def test_telegram_adapter_registers_with_expected_required_fields() -> None:
     assert set(schema["required"]) == {"bot_token", "bot_username"}
 
 
+def test_whatsapp_adapter_registers_with_cloud_api_credentials() -> None:
+    service = _service()
+    service.register_adapter("whatsapp", WhatsAppAdapter, WhatsAppConnectionConfig)
+
+    schema = service.get_config_schema("whatsapp")
+    assert set(schema["properties"]) == {
+        "access_token",
+        "phone_number_id",
+        "app_secret",
+        "verify_token",
+        "api_version",
+    }
+    assert set(schema["required"]) == {
+        "access_token",
+        "phone_number_id",
+        "app_secret",
+        "verify_token",
+    }
+    assert WhatsAppAdapter.receives_webhooks is True
+    assert WhatsAppAdapter.docs_slug == "whatsapp"
+    assert "placeholder" in (WhatsAppAdapter.icon_svg() or "")
+
+
 def test_get_config_schema_exposes_required_fields() -> None:
     service = _service()
     service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
@@ -140,10 +167,11 @@ def test_get_config_schema_unknown_type_raises() -> None:
 # ── Channel-creation capability ──────────────────────────────────────────────
 
 
-def test_only_telegram_cannot_create_channels() -> None:
-    # A platform fact, not a preference. Telegram's Bot API has no call to make
-    # a chat; every other platform Switch bridges to does.
+def test_telegram_and_whatsapp_cannot_create_channels() -> None:
+    # A platform fact, not a preference. Neither the Telegram Bot API nor the
+    # WhatsApp Cloud API has a call for Switch to create a chat.
     assert TelegramAdapter.supports_channel_creation is False
+    assert WhatsAppAdapter.supports_channel_creation is False
     for adapter in (SlackAdapter, MattermostAdapter, DiscordAdapter, TeamsAdapter):
         assert adapter.supports_channel_creation is True
 
