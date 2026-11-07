@@ -46,7 +46,12 @@ import {
   updateRoom,
   updateRoomRole,
 } from "../../data/api";
-import { useAgents, useBridgeUsers, useRoom } from "../../data/hooks";
+import {
+  useAgents,
+  useBridgeUsers,
+  useInvitableAgentIds,
+  useRoom,
+} from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
@@ -659,6 +664,12 @@ function ParticipantsSection({
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading } = useAgents();
+  const {
+    data: invitableAgentIds,
+    loading: eligibilityLoading,
+    error: eligibilityError,
+    refetch: refetchEligibility,
+  } = useInvitableAgentIds(room.id, undefined, canWrite);
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -674,13 +685,14 @@ function ParticipantsSection({
     () =>
       (allAgents ?? [])
         .filter((a) => !room.agent_ids.includes(a.id))
+        .filter((a) => invitableAgentIds?.includes(a.id))
         .map((a) => ({
           id: a.id,
           primary: a.name,
           secondary: a.connector_type ?? "",
           search: `${a.name} ${a.connector_type ?? ""}`.toLowerCase(),
         })),
-    [allAgents, room.agent_ids],
+    [allAgents, room.agent_ids, invitableAgentIds],
   );
 
   // Subagent counts, so the add-agent picker can offer "include subagents"
@@ -807,7 +819,10 @@ function ParticipantsSection({
               size="small"
               variant="outlined"
               startIcon={<AddIcon />}
-              onClick={() => setAddAgentOpen(true)}
+              onClick={() => {
+                refetchEligibility();
+                setAddAgentOpen(true);
+              }}
               sx={{ alignSelf: "flex-start" }}
             >
               Add agent
@@ -818,7 +833,8 @@ function ParticipantsSection({
               searchPlaceholder="Search agents…"
               submitLabel="Add"
               options={addableAgentOptions}
-              loading={agentsLoading}
+              loading={agentsLoading || eligibilityLoading}
+              subtitle={eligibilityError ? "Could not check invite permissions. Close and reopen to retry." : undefined}
               subToggleCount={(id) => childCountByParent.get(id) ?? 0}
               subToggleLabel={(n) => `Also add ${n} subagent(s)`}
               onClose={() => setAddAgentOpen(false)}

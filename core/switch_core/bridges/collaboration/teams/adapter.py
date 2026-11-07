@@ -3828,6 +3828,7 @@ class TeamsAdapter(PlatformAdapter):
         recipient = activity.get("recipient") or {}
         bot_id = str(recipient.get("id", ""))
         channel_name = await self._resolve_channel_name(activity, channel_id)
+        adder = activity.get("from") or {}
 
         for member in members_added:
             member_id = str(member.get("id", ""))
@@ -3859,6 +3860,10 @@ class TeamsAdapter(PlatformAdapter):
                             joiner_id, str(member.get("name") or "")
                         ),
                         channel_name=channel_name,
+                        added_by_external_user_id=(
+                            str(adder.get("aadObjectId") or adder.get("id") or "")
+                            or None
+                        ),
                     )
                 )
 

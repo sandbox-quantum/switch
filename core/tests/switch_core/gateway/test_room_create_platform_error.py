@@ -20,8 +20,10 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
 )
+from switch_core.db.models import Agent
 from switch_core.gateway.rooms import create_room
 from switch_core.gateway.schemas import RoomCreateRequest
+from switch_core.invites import Inviter, InviteRefused
 
 _GRAPH_REFUSAL = (
     "create channel 'Switch Test Room' in team team-1 failed (403): "
@@ -34,7 +36,7 @@ class _RaisingRoomService:
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
-    async def create_room(self, config: Any) -> Any:
+    async def create_room(self, config: Any, *, invited_by: object = None) -> Any:
         raise self._exc
 
 
@@ -64,6 +66,14 @@ async def _call(exc: Exception) -> HTTPException:
             is_admin=False,
         )
     return excinfo.value
+
+
+async def test_an_owner_s_refusal_is_403_carrying_the_sentence_people_read() -> None:
+    agent = Agent(name="helper", display_name="Helper")
+    exc = await _call(InviteRefused([agent], Inviter.person("u1")))
+
+    assert exc.status_code == 403
+    assert "only takes instructions" in exc.detail
 
 
 async def test_platform_refusal_is_502_carrying_the_platforms_words() -> None:

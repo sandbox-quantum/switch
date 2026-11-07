@@ -94,6 +94,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import MENTIONS_KEY, AddressingResolver
+from switch_core.invites import Inviter, InviteRefused
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
@@ -1123,13 +1124,82 @@ class ChatService:
             )
             if agent_id in await self._room_store.get_agent_ids(session, room.id):
                 return room
-        await self._room_service.add_agents_to_room(
-            room.id,
-            agent_ids=[agent_id],
-            with_agents=lambda session: self._group_if_several_agents(session, room),
-        )
+        try:
+            await self._room_service.add_agents_to_room(
+                room.id,
+                agent_ids=[agent_id],
+                with_agents=lambda session: self._group_if_several_agents(
+                    session, room
+                ),
+                invited_by=Inviter.person(actor.id),
+            )
+        except InviteRefused as refused:
+            raise ChatError(403, "AGENT_NOT_ALLOWED", str(refused)) from refused
+        except ValueError as exc:
+            raise ChatError(422, "AGENT_NOT_ADDED", str(exc)) from exc
         async with tenant_session(self.session_factory, tenant_id) as session:
             return await self._room(session, tenant_id, room_id)
+
+    async def tell_owner(self, agent: Agent, body: str) -> None:
+        """Reach an agent's owner in a private chat of their own, for when no room
+        they share with the news would. Found again by its request id, so an owner
+        has one place to look however many notices there are."""
+        assert agent.owner_id is not None
+        async with tenant_session(self.session_factory, agent.tenant_id) as session:
+            owner = await self._user_store.get(session, agent.owner_id)
+            # Someone removed from the workspace gets no new chats in it.
+            if owner is None or not await self.has_tenant_role(
+                session, agent.tenant_id, owner.id
+            ):
+                raise ChatError(
+                    403, "NOT_A_MEMBER", "This agent's owner is not in this workspace."
+                )
+        room = await self._owner_notices_room(agent.tenant_id, owner)
+        await self._room_service.post_notice(room, body)
+
+    async def _owner_notices_room(self, tenant_id: str, owner: User) -> Room:
+        """The owner's notices chat, ready to be read.
+
+        An owner may have archived or left it. A notice they would never see is
+        worse than the chat coming back, because it is about something happening
+        to their agent. It isn't a group chat in any sense the `group_chats` flag
+        governs, so it goes round that check.
+        """
+        try:
+            room = await self._open_chat(
+                tenant_id,
+                owner,
+                agent_ids=[],
+                member_user_ids=[],
+                name="Switch notices",
+                request_id=OWNER_NOTICES_REQUEST_ID,
+                greeting=None,
+                kind="group",
+                bridge_id=None,
+                resume_only=False,
+            )
+        except ChatError as refusal:
+            if refusal.code != "NOT_A_MEMBER":
+                raise
+            room = await self._rejoin_owner_notices(tenant_id, owner)
+        if room.archived_at is not None:
+            await self._room_service.set_room_archived(room.id, False)
+            self._memberships_changed(tenant_id, [owner.id], [room.id])
+        return room
+
+    async def _rejoin_owner_notices(self, tenant_id: str, owner: User) -> Room:
+        """Back into a notices chat they left."""
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            operation = await self._operation(
+                session, owner.id, OWNER_NOTICES_REQUEST_ID
+            )
+            assert operation is not None and operation.room_id is not None
+            room = await self._room(session, tenant_id, operation.room_id)
+        client = await self.member_actor(tenant_id, owner)
+        await self._join(tenant_id, room, client)
+        await self._make_lasting(tenant_id, owner.id, room.id)
+        self._memberships_changed(tenant_id, [owner.id], [room.id])
+        return room
 
     async def _locked_room(self, session: AsyncSession, room_id: str) -> Room:
         """The room row, locked against another membership change until this
@@ -1424,6 +1494,35 @@ class ChatService:
             )
         if member_user_ids or kind == "group" or not agent_ids:
             self._require_group_chats()
+        return await self._open_chat(
+            tenant_id,
+            user,
+            agent_ids=agent_ids,
+            member_user_ids=member_user_ids,
+            name=name,
+            request_id=request_id,
+            greeting=greeting,
+            kind=kind,
+            bridge_id=bridge_id,
+            resume_only=resume_only,
+        )
+
+    async def _open_chat(
+        self,
+        tenant_id: str,
+        user: User,
+        *,
+        agent_ids: list[str],
+        member_user_ids: list[str],
+        name: str | None,
+        request_id: str,
+        greeting: str | None,
+        kind: Literal["group"] | None,
+        bridge_id: str | None,
+        resume_only: bool,
+    ) -> Room:
+        """`create_chat` once its feature flags have had their say."""
+        direct = kind != "group" and len(agent_ids) == 1 and not member_user_ids
         if greeting is not None:
             if len(agent_ids) != 1 or kind == "group":
                 raise ChatError(
@@ -1558,8 +1657,13 @@ class ChatService:
                                     if greeting is not None
                                     else None
                                 ),
-                            )
+                            ),
+                            invited_by=Inviter.person(user.id),
                         )
+                    except InviteRefused as refused:
+                        raise ChatError(
+                            403, "AGENT_NOT_ALLOWED", str(refused)
+                        ) from refused
                     except ValueError as exc:
                         raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
                     room = created.room
@@ -2344,6 +2448,9 @@ class ChatService:
         if not prefix:
             return body
         return f"{prefix} {body}" if body else prefix
+
+
+OWNER_NOTICES_REQUEST_ID = "switch-owner-notices"
 
 
 def _may_use(agent: Agent, user: User, *, room_id: str, group_id: str | None) -> bool:

@@ -17,6 +17,7 @@ vi.mock("../../data/AuthContext", () => ({
 vi.mock("../../data/hooks", () => ({
   useAgents: vi.fn(),
   useBridgeUsers: vi.fn(),
+  useInvitableAgentIds: vi.fn(),
   useRoom: vi.fn(),
   useRoomGroups: vi.fn(),
 }));
@@ -121,6 +122,12 @@ describe("RoomDetailPage permissions", () => {
       error: null,
       refetch: vi.fn(),
     });
+    vi.mocked(hooks.useInvitableAgentIds).mockReturnValue({
+      data: [agent.id],
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
     vi.mocked(hooks.useBridgeUsers).mockReturnValue({
       data: [],
       loading: false,
@@ -133,6 +140,31 @@ describe("RoomDetailPage permissions", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it("offers only the agents this person could actually bring in", async () => {
+    vi.mocked(hooks.useAgents).mockReturnValue({
+      data: [
+        agent,
+        { ...agent, id: "a2", name: "open-to-me" },
+        { ...agent, id: "a3", name: "someone-elses" },
+      ],
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    vi.mocked(hooks.useInvitableAgentIds).mockReturnValue({
+      data: ["a1", "a2"],
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    viewAs({ can_write: true, can_manage: true, can_unlink: false });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
+
+    await screen.findByText("open-to-me");
+    expect(screen.queryByText("someone-elses")).toBeNull();
   });
 
   it("lets someone who may write but not manage edit everything but access", async () => {

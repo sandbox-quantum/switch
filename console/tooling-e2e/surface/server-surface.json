@@ -799,6 +799,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/rooms/invitable-agents",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/rooms/template-schema",
       "auth": "session",
       "flags": []

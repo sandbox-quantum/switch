@@ -97,6 +97,20 @@ form lists the live set and the fields each one requires.
   on Telegram because `/` is the platform's own convention, and on Teams
   because a manifest command list only *types* the command into the compose box
   for the bot to parse.
+- **Inviting agents.** An agent's addressing policy also decides who can invite
+  it, so someone it won't take instructions from can't pull it into their room.
+  Slack, Telegram, Teams and Discord have one shared bot, so on them an agent
+  normally joins through `!invite-agent`, which is judged as whoever typed it.
+  Mattermost gives each agent its own bot, which can be added on the platform, and
+  its event doesn't say who did it. When Switch can't tell who added an agent, the
+  join stands, because refusing would leave a channel broken for a reason nobody
+  there could fix. Switch posts a notice, logs a warning, and tells the agent's
+  owner: by mention if they have an account on that platform, otherwise in a private
+  "Switch notices" chat in Switch Console. When a platform does name who added it,
+  that person is judged, and if refused the bot isn't added to the room, though it
+  stays in the platform channel until someone removes it. Agents already in a room
+  stay when a policy tightens. A direct chat isn't an invite; every message in it is
+  still judged.
 - **"Open in Switch Console" links.** Agents surface a `switchdash://…` deeplink with
   their runtime status. Platforms that only render `http(s)` links (Discord,
   Telegram and Teams) need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to

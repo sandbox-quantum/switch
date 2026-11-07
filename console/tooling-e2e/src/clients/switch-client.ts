@@ -664,6 +664,15 @@ export class SwitchClient {
     return rows.map(toRoomSummary);
   }
 
+  async invitableAgentIds(roomId: string): Promise<string[]> {
+    const query = new URLSearchParams({ room_id: roomId });
+    const result = await this.gateway<{ agent_ids: string[] }>(
+      "GET",
+      `/rooms/invitable-agents?${query}`,
+    );
+    return result.agent_ids;
+  }
+
   async getRoom(roomId: string): Promise<RoomDetail> {
     return toRoomDetail(await this.gateway<RawRoom>("GET", `/rooms/${roomId}`));
   }

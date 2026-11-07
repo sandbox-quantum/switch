@@ -46,7 +46,9 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
         def __init__(self) -> None:
             self.configs: list[Any] = []
 
-        async def create_room(self, config: Any) -> SimpleNamespace:
+        async def create_room(
+            self, config: Any, *, invited_by: object = None
+        ) -> SimpleNamespace:
             self.configs.append(config)
             return SimpleNamespace(room=room)
 
@@ -63,7 +65,11 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
     async def _adopt_existing_room(channel_id: str) -> tuple[str, str] | None:
         return None
 
+    async def _disclose_unverified_joins(*_args: object) -> None:
+        return None
+
     return SimpleNamespace(
+        _disclose_unverified_joins=_disclose_unverified_joins,
         _adapter=_Adapter(),
         _room_service=_RoomService(),
         _resolve_agents_for_channel=_resolve_agents_for_channel,

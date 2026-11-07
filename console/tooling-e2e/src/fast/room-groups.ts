@@ -24,6 +24,7 @@ export const roomGroupPaths: FastScenario = {
       'get_room_group_detail',
       'create_room',
       'DELETE /gateway/room-groups/{group_id}',
+      'GET /gateway/rooms/invitable-agents',
     ],
     lane: 'fast',
     environments: WRITABLE,
@@ -95,6 +96,7 @@ export const roomGroupPaths: FastScenario = {
 
     const made = await call<{ id: string }>('create_room', { ...roomArgs, group_name: secondPath });
     fixtures.defer(`room ${room} (${made.id})`, () => switchClient.deleteRoom(made.id));
+    expect(await switchClient.invitableAgentIds(made.id)).toContain(agent.id);
     const detail = await call<RoomGroup>('get_room_group_detail', { group_id: second.id });
     expect(detail.member_rooms).toEqual([{ id: made.id, name: room }]);
     const other = await call<RoomGroup>('get_room_group_detail', { group_id: first.id });

@@ -471,6 +471,21 @@ export async function updateRoomObserve(
   });
 }
 
+export async function fetchInvitableAgentIds(
+  roomId?: string,
+  groupId?: string,
+): Promise<string[] | null> {
+  const params = new URLSearchParams();
+  if (roomId) params.set("room_id", roomId);
+  else if (groupId) params.set("group_id", groupId);
+  const query = params.toString();
+  const q = query ? `?${query}` : "";
+  const result = await fetchJson<{ agent_ids: string[] }>(
+    `/rooms/invitable-agents${q}`,
+  );
+  return result?.agent_ids ?? null;
+}
+
 export async function addRoomAgents(
   roomId: string,
   agentIds: string[],
