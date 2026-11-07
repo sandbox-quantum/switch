@@ -32,6 +32,7 @@ async def _turn(service, session_id: str, status: str) -> None:
         status=status,
         title="Working",
         text="",
+        detail=None,
         command_id=None,
         room_id=None,
         thread_id=None,

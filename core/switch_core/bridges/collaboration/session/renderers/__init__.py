@@ -417,6 +417,16 @@ class Markup:
         """
         return self.code(text)
 
+    def block(self, text: str) -> str:
+        """Several lines read as they are: a tool call's input and output.
+
+        Fenced the way `code` is, by a run of backticks longer than any inside,
+        so output that holds a fence of its own cannot close this one early.
+        """
+        longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+        fence = "`" * max(3, longest + 1)
+        return f"{fence}\n{text}\n{fence}"
+
 
 MARKDOWN = Markup()
 

@@ -388,6 +388,17 @@ version of their own to them without also giving them a release of their own.
   Workspace token. With Helm, set `switchCore.serviceAccessProfiles` (and
   `switchCore.disabledServices` for `DISABLED_SERVICES`). Without the setting
   nothing changes.
+- **A room can see what its agents' tool calls did.** Off unless the room's
+  owner or a workspace admin turns it on (`PATCH /rooms/{room_id}` with
+  `show_tool_detail`). The session host then sends each call's input, output
+  and exit code with secrets masked, as an optional `detail` on the call's
+  activity row, and the room opens it on demand: in the call's card on Slack,
+  and in the **Show activity** reply on Mattermost and Discord; Teams and
+  Telegram show the call by its name alone. The server keeps the detail
+  (`session_activity_items.detail`) only while the room has it on, checked as
+  the row is written, and draws it only while it still does, so turning it off
+  takes it out of anything drawn after. `connect_to_room` tells the agent when
+  its calls can be seen. See `docs/tool-detail.md` (#803).
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -2751,6 +2762,18 @@ version of their own to them without also giving them a release of their own.
   connection's menu on the server page. The connection restarts with it and
   keeps its rooms. Offered on connections to your own bot, not on ones that
   came from installing Switch's app.
+- **Tool calls in a room's settings.** A room's settings switch on whether
+  people there can open what its agents' tool calls did. The session host masks
+  secrets in a call's input and output, those it handed the agent and its MCP
+  servers included, before sending them, and sends them only for a turn whose
+  room allows it. A server that predates this refuses the detail, and the row
+  goes again without it (#803).
+- **One set of secret patterns for the log and for tool calls.** The desktop
+  log's patterns move to `@switch-console/shared/secret-redaction`, and the
+  session host uses the same set. It now also masks a quoted value whole,
+  `--flag value` credentials, `Authorization: Basic`, a bare `Bearer` value,
+  the password in a URL, `secret_key` and `access_key` names, AWS `ASIA` keys
+  and Google `AIza` keys (#803).
 - **Airtable's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks

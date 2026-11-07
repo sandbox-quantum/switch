@@ -60,6 +60,7 @@ def _step(**overrides):
         status="in-progress",
         title="Ran `pytest`",
         text="12 passed",
+        detail=None,
         command_id=None,
         room_id=None,
         thread_id=None,
@@ -140,6 +141,7 @@ def _turn(turn_id: str, revision: int, status: str, usage=()):
         status=status,
         title="",
         text="",
+        detail=None,
         usage=list(usage),
     )
 

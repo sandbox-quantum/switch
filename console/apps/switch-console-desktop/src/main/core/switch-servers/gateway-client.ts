@@ -3368,6 +3368,7 @@ export async function fetchRooms(server: SwitchServer): Promise<RemoteRoomSummar
  * single-room read carries. */
 type RoomDetailJson = RoomSummaryJson & {
   instructions?: string | null;
+  show_tool_detail?: boolean;
   agent_ids?: string[];
   connected_user_names?: string[];
   /** Absent from a server that predates it; kept absent rather than read as
@@ -3398,6 +3399,7 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
   return {
     ...mapRoomSummary(r),
     instructions: r.instructions ?? null,
+    showToolDetail: r.show_tool_detail === true,
     agentIds: r.agent_ids ?? [],
     connectedUserNames: r.connected_user_names ?? [],
     channelOnDelete: r.channel_on_delete,
@@ -3471,9 +3473,10 @@ export async function updateRoom(
     instructions?: string;
     readVisibility?: RoomVisibility;
     writeVisibility?: RoomVisibility;
+    showToolDetail?: boolean;
   }
 ): Promise<RemoteRoomDetail> {
-  const { readVisibility, writeVisibility, ...fields } = changes;
+  const { readVisibility, writeVisibility, showToolDetail, ...fields } = changes;
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
     authenticated: true,
     method: 'PATCH',
@@ -3481,6 +3484,7 @@ export async function updateRoom(
       ...fields,
       ...(readVisibility !== undefined ? { read_visibility: readVisibility } : {}),
       ...(writeVisibility !== undefined ? { write_visibility: writeVisibility } : {}),
+      ...(showToolDetail !== undefined ? { show_tool_detail: showToolDetail } : {}),
     },
   });
   return mapRoomDetail((await res.json()) as RoomDetailJson);
