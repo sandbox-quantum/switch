@@ -182,7 +182,7 @@ async def test_bad_protocol_answers_are_bounded_and_sanitized(response, code):
 
 
 async def test_advertised_resource_never_changes_identity_destination():
-    from tests.switch_core.connections.fake_vendor import MCP_URL, FakeOAuthServer
+    from tests.switch_core.connections.fake_vendor import FakeOAuthServer
 
     vendor = FakeOAuthServer()
     original = vendor.client()
@@ -203,7 +203,7 @@ async def test_advertised_resource_never_changes_identity_destination():
 
     identity_adapter = adapter(handle)
     endpoints = await identity_adapter.endpoints()
-    assert endpoints.resource == MCP_URL
+    assert endpoints.resource == "https://other.example.test/mcp"
     assert (await identity_adapter.identify("secret")).account_id == "ada"
     assert len(calls) == 4
 

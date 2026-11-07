@@ -55,7 +55,7 @@ async def test_a_bound_adapter_discovers_through_its_tenants_server():
         bound = adapter.for_fields({"tenant": "team-a"})
         assert bound._client is adapter._client
         assert bound._http is adapter._http
-        assert (await bound.endpoints()).resource == MCP_URL + "/team-a"
+        assert (await bound.endpoints()).resource == MCP_URL
     assert "https://mcp.example.test/v1/mcp/team-a" in vendor.paths
     assert vendor.mcp_urls == ["https://mcp.example.test/v1/mcp/team-a"]
 
@@ -98,8 +98,12 @@ async def test_refresh_without_fields_asks_to_reconnect(operation):
 
 async def test_the_account_takes_the_tenant_from_the_field_not_the_vendor():
     calls = []
+    discovery = FakeOAuthServer()
+    discovery.per_path = True
 
     def respond(request):
+        if "authorization" not in request.headers:
+            return discovery.handle(request)
         calls.append(str(request.url))
         assert request.headers["authorization"] == "Bearer example-bearer-value"
         message = json.loads(request.content)
@@ -145,6 +149,7 @@ async def test_the_account_takes_the_tenant_from_the_field_not_the_vendor():
     }
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
         adapter = _adapter(http, yaml.safe_dump(entry)).for_fields({"tenant": "team-a"})
+        assert (await adapter.endpoints()).resource == MCP_URL
         identity = await adapter.identify("example-bearer-value")
     assert identity.account_id == "team-a:ada"
     assert calls == ["https://mcp.example.test/v1/mcp/team-a"] * 4

@@ -79,8 +79,8 @@ class AuthorizationEndpoints:
     registration: str | None
     # Where a sign-in is revoked (RFC 7009), as the metadata advertises it.
     revocation: str | None
-    # The MCP server the endpoints were discovered from, named as the
-    # `resource` of every authorization and token request (RFC 8707). None
+    # The advertised protected resource, named as the `resource` of every
+    # authorization and token request (RFC 8707). None
     # where the catalog names the endpoints.
     resource: str | None
     client_authentication: ClientAuthentication
@@ -159,9 +159,21 @@ def s256(verifier: str) -> str:
 
 
 def _https(url: object, what: str) -> str:
-    if not isinstance(url, str) or urlsplit(url).scheme != "https":
-        raise ServiceAdapterError(f"The vendor's {what} is not an https URL.")
-    return url
+    if isinstance(url, str):
+        try:
+            parsed = urlsplit(url)
+            if (
+                parsed.scheme == "https"
+                and parsed.hostname
+                and parsed.username is None
+                and parsed.password is None
+            ):
+                # Accessing the port also validates malformed authorities.
+                parsed.port
+                return url
+        except ValueError:
+            pass
+    raise ServiceAdapterError(f"The vendor's {what} is not an https URL.")
 
 
 def _path_value(document: Any, path: str) -> Any:
@@ -308,6 +320,7 @@ class OAuthAdapter:
             ],
             "protected resource metadata",
         )
+        resource_url = _https(resource.get("resource"), "resource")
         servers = resource.get("authorization_servers")
         if not isinstance(servers, list) or not servers:
             raise ServiceAdapterError(
@@ -363,7 +376,7 @@ class OAuthAdapter:
                 if revocation is None
                 else _https(revocation, "revocation endpoint")
             ),
-            resource=mcp_url,
+            resource=resource_url,
             client_authentication=(
                 "client_secret_basic" if basic_only else "client_secret_post"
             ),
@@ -486,11 +499,12 @@ class OAuthAdapter:
             "response_type": "code",
             "client_id": client.client_id,
             "redirect_uri": redirect_uri,
-            "scope": " ".join(scopes),
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        if scopes:
+            query["scope"] = " ".join(scopes)
         for key, value in self._oauth.authorization_params.items():
             query[key] = value
         if self._oauth.prompt is not None:
