@@ -6,6 +6,14 @@ import { log } from '@main/lib/logger';
 import { CHECKOUT_IMAGE_TAG } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { LocalServerBundle } from './bundle';
 import { downloadFile, extractArchive } from './download';
+import {
+  buildGatewayUi,
+  checkoutGatewayUi,
+  GATEWAY_UI_DIR_NAME,
+  gatewayUiBuildFailed,
+  gatewayUiFailedMarker,
+  gatewayUiOrNull,
+} from './gateway-ui';
 import type { NativeLayout } from './native-paths';
 import { runCommand } from './run-command';
 import { SWITCH_CORE_PYTHON, switchSourceArchiveUrl } from './toolchain-pins';
@@ -25,6 +33,9 @@ export type SwitchCoreInstall = {
   projectDir: string;
   /** The environment's Python interpreter. */
   python: string;
+  /** The gateway's built pages for switch-core to serve, or null when there
+   * are none to hand it (see gateway-ui.ts). */
+  gatewayUiDir: string | null;
 };
 
 function venvPython(venv: string): string {
@@ -82,8 +93,9 @@ async function uvSync(
 type Marker = { version?: unknown; source?: unknown; bundleRoot?: unknown; format?: unknown };
 
 /** Raised when how an install from the bundle is laid out changes, so one made
- * the old way is redone (2: the bundle is reached as a site directory). */
-const BUNDLE_INSTALL_FORMAT = '2';
+ * the old way is redone (2: the bundle is reached as a site directory; 3: the
+ * gateway's pages are copied beside the source). */
+const BUNDLE_INSTALL_FORMAT = '3';
 
 /** What the install in `dir` was made from, or null when there is none. */
 async function readMarker(dir: string): Promise<Marker | null> {
@@ -92,6 +104,27 @@ async function readMarker(dir: string): Promise<Marker | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether a dev build with no bundle, starting switch-core `version`, would
+ * hand it the gateway's pages. An install of that version already there is
+ * reused as it is (see `markerMatches`): one made from a bundle has whatever
+ * the bundle shipped and is never built for, having no gateway source. A
+ * downloaded one, or none yet, gets its pages built, unless building them for
+ * it already failed in a way that would repeat.
+ */
+export async function downloadedInstallWouldServePages(
+  layout: NativeLayout,
+  version: string
+): Promise<boolean> {
+  const dir = path.join(layout.switchCore, version);
+  const gatewayUi = path.join(dir, GATEWAY_UI_DIR_NAME);
+  const marker = await readMarker(dir);
+  if (marker?.version === version && marker.source === 'bundle') {
+    return (await gatewayUiOrNull(gatewayUi)) !== null;
+  }
+  return !(await gatewayUiBuildFailed(gatewayUi));
 }
 
 /** Whether an install made from `marker` serves `version` from `bundle`: one
@@ -118,6 +151,10 @@ function markerMatches(
  * With `checkoutRoot` (dev builds only) the checkout's own `core/` is used
  * instead and re-synced on every start, so a start runs whatever is in the
  * working tree.
+ *
+ * The gateway's pages come along: copied from the bundle, the checkout's own
+ * build, or — with `buildGatewayUiFromSource`, for dev builds — built from the
+ * downloaded source once per version.
  */
 export async function installSwitchCore(opts: {
   layout: NativeLayout;
@@ -127,6 +164,9 @@ export async function installSwitchCore(opts: {
   owner: string;
   repo: string;
   checkoutRoot: string | null;
+  /** Build the gateway's pages from a downloaded source when the install has
+   * none: dev builds, which have Node and npm, only. */
+  buildGatewayUiFromSource: boolean;
   onMessage: (message: string) => void;
 }): Promise<SwitchCoreInstall> {
   const { layout, uv, bundle, version, owner, repo, checkoutRoot, onMessage } = opts;
@@ -136,11 +176,19 @@ export async function installSwitchCore(opts: {
     const venv = path.join(layout.switchCore, CHECKOUT_IMAGE_TAG, 'venv');
     onMessage(`Installing switch-core from ${checkoutRoot}…`);
     await uvSync(uv, layout, projectDir, venv);
+    const gatewayUiDir = await checkoutGatewayUi(checkoutRoot);
+    if (gatewayUiDir === null) {
+      onMessage(
+        'The checkout has no build of the admin pages, so the server starts without them; ' +
+          'run `just gateway-build` and restart it to add them.'
+      );
+    }
     return {
       version: CHECKOUT_IMAGE_TAG,
       sourceRoot: checkoutRoot,
       projectDir,
       python: venvPython(venv),
+      gatewayUiDir,
     };
   }
 
@@ -149,22 +197,38 @@ export async function installSwitchCore(opts: {
   const projectDir = path.join(src, 'core');
   const venv = path.join(dir, 'venv');
   const python = venvPython(venv);
+  const gatewayUi = path.join(dir, GATEWAY_UI_DIR_NAME);
+  // A downloaded install whose pages are missing (one made before they were
+  // built) gets a go at them, unless building them for this install already
+  // failed; a bundled one has whatever its bundle shipped.
+  const pagesFor = async (source: 'bundle' | 'download'): Promise<string | null> => {
+    const existing = await gatewayUiOrNull(gatewayUi);
+    if (existing !== null || source === 'bundle' || !opts.buildGatewayUiFromSource) {
+      return existing;
+    }
+    if (await gatewayUiBuildFailed(gatewayUi)) return null;
+    return buildGatewayUi({ layout, sourceRoot: src, destination: gatewayUi, onMessage });
+  };
   // Checked by running it, not by its file existing: an environment made from
   // the app's bundled Python stops working if the app moves.
-  if (markerMatches(await readMarker(dir), version, bundle) && (await runs(python))) {
-    return { version, sourceRoot: src, projectDir, python };
+  const marker = await readMarker(dir);
+  if (markerMatches(marker, version, bundle) && (await runs(python))) {
+    const source = marker?.source === 'bundle' ? 'bundle' : 'download';
+    return { version, sourceRoot: src, projectDir, python, gatewayUiDir: await pagesFor(source) };
   }
 
   if (bundle !== null) {
     onMessage(`Installing switch-core ${version}…`);
     await installFromBundle(layout, uv, bundle, src, venv);
+    await rm(gatewayUi, { recursive: true, force: true });
+    if (bundle.gatewayUi !== null) await cp(bundle.gatewayUi, gatewayUi, { recursive: true });
     await writeMarker(dir, {
       version,
       source: 'bundle',
       bundleRoot: bundle.root,
       format: BUNDLE_INSTALL_FORMAT,
     });
-    return { version, sourceRoot: src, projectDir, python };
+    return { version, sourceRoot: src, projectDir, python, gatewayUiDir: await pagesFor('bundle') };
   }
 
   onMessage(`Downloading switch-core ${version}…`);
@@ -182,7 +246,9 @@ export async function installSwitchCore(opts: {
   await rm(venv, { recursive: true, force: true });
   await uvSync(uv, layout, projectDir, venv);
   await writeMarker(dir, { version, source: 'download', uv: uv.version });
-  return { version, sourceRoot: src, projectDir, python };
+  await rm(gatewayUi, { recursive: true, force: true });
+  await rm(gatewayUiFailedMarker(gatewayUi), { force: true });
+  return { version, sourceRoot: src, projectDir, python, gatewayUiDir: await pagesFor('download') };
 }
 
 async function writeMarker(dir: string, marker: Record<string, string>): Promise<void> {
@@ -300,6 +366,7 @@ export async function existingSwitchCoreInstall(
           sourceRoot: checkoutRoot,
           projectDir: path.join(checkoutRoot, 'core'),
           python,
+          gatewayUiDir: await checkoutGatewayUi(checkoutRoot),
         }
       : null;
   }
@@ -307,7 +374,13 @@ export async function existingSwitchCoreInstall(
   const src = path.join(dir, 'src');
   const python = venvPython(path.join(dir, 'venv'));
   if ((await readMarker(dir))?.version !== version || !(await runs(python))) return null;
-  return { version, sourceRoot: src, projectDir: path.join(src, 'core'), python };
+  return {
+    version,
+    sourceRoot: src,
+    projectDir: path.join(src, 'core'),
+    python,
+    gatewayUiDir: await gatewayUiOrNull(path.join(dir, GATEWAY_UI_DIR_NAME)),
+  };
 }
 
 /** Remove installed releases other than `keep`, once a start on it has

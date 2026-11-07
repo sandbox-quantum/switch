@@ -14,6 +14,7 @@ import {
   type DockerAvailability,
   type LocalActivityEntry,
   type LocalServerRuntime,
+  type LocalServerAdminPages,
   type LocalServerStatus,
   type StartLocalServerResult,
   managedServerUpgradeBlockedReason,
@@ -66,6 +67,7 @@ import {
   nativeStackRunning,
   nativeStartedAt,
   readNativeDeployedVersion,
+  readNativeAdminPages,
   readNativeTelemetry,
   resetNativeStack,
   startNativeStack,
@@ -117,6 +119,7 @@ function initialStatus(): LocalServerStatus {
     drift: null,
     checkoutBuild: null,
     deployedTelemetry: null,
+    adminPages: null,
     message: null,
     error: null,
     failedTo: null,
@@ -267,6 +270,16 @@ export class LocalServerService {
     return { root, enabled: await isCheckoutBuildEnabled(host), forcedBy: null };
   }
 
+  /** A running native server's admin pages, read off the server; null for a
+   * Docker one, which always serves them. */
+  private async adminPages(
+    native: boolean,
+    layout: NativeLayout
+  ): Promise<LocalServerAdminPages | null> {
+    if (!native) return null;
+    return readNativeAdminPages(layout, this.checkoutRootForStart(), localServerBundleRoot());
+  }
+
   /** The checkout the next start should build from, or null to run the
    * released switch-core. */
   private checkoutRootForStart(): string | null {
@@ -345,6 +358,7 @@ export class LocalServerService {
           deployedTelemetry: native
             ? await readNativeTelemetry(layout)
             : await readDeployedTelemetry(host),
+          adminPages: await this.adminPages(native, layout),
         });
       }
       const version = native
@@ -455,6 +469,7 @@ export class LocalServerService {
             deployedTelemetry: native
               ? await readNativeTelemetry(layout)
               : await readDeployedTelemetry(host),
+            adminPages: await this.adminPages(native, layout),
           });
         }
         return;
@@ -504,6 +519,7 @@ export class LocalServerService {
       notice: null,
       mattermostState: null,
       deployedTelemetry: null,
+      adminPages: null,
     });
     await recordLocalActivity('crashed', error);
   }
@@ -565,7 +581,11 @@ export class LocalServerService {
 
   private async runStart(activate: boolean): Promise<StartLocalServerResult> {
     if (this.busy) {
-      return { kind: 'error', message: 'A local-server operation is already in progress.' };
+      return {
+        kind: 'error',
+        message: 'A local-server operation is already in progress.',
+        failure: 'operation_in_progress',
+      };
     }
     this.busy = true;
     this.startAbort = new AbortController();
@@ -683,6 +703,7 @@ export class LocalServerService {
           deployedTelemetry: ranNative
             ? await readNativeTelemetry(layout)
             : await readDeployedTelemetry(host),
+          adminPages: await this.adminPages(ranNative, layout),
           notice:
             moveFailure !== null
               ? `Could not move this server off Docker, so it is still running on Docker: ` +
@@ -707,7 +728,7 @@ export class LocalServerService {
       this.failUpgrade(message);
       await recordLocalActivity('start-failed', message);
       reportManagedServerStartThrew('local');
-      return { kind: 'error', message };
+      return { kind: 'error', message, failure: 'unexpected' };
     } finally {
       host.dispose();
       this.busy = false;
@@ -806,6 +827,7 @@ export class LocalServerService {
         message: null,
         error: null,
         deployedTelemetry: null,
+        adminPages: null,
         notice: null,
         mattermostState: null,
         upgrade: upgrade && upgradeState(upgrade, false),
@@ -838,6 +860,7 @@ export class LocalServerService {
         message: null,
         error: null,
         deployedTelemetry: null,
+        adminPages: null,
         notice: null,
         mattermostState: null,
         upgrade: upgrade && upgradeState(upgrade, false),
@@ -884,6 +907,7 @@ export class LocalServerService {
         message: null,
         error: null,
         deployedTelemetry: null,
+        adminPages: null,
         notice: null,
         mattermostState: null,
         deployedVersion: null,

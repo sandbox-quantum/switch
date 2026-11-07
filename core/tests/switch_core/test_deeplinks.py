@@ -204,6 +204,13 @@ class TestConsoleCatalogue:
 class TestParseConsoleLink:
     """The same rules Switch Console reads a link by (`parseConsoleLink`)."""
 
+    def test_reads_a_tab_the_page_had_before_as_the_one_it_became(self) -> None:
+        link = parse_console_link("switchdash://open/settings?tab=general")
+        assert link is not None
+        assert link.tab == "general"
+        assert link.page_name == "Switch Console's preferences"
+        assert parse_console_link("switchdash://open/settings?tab=browser") is None
+
     def test_reads_a_page_its_id_and_its_tab(self) -> None:
         link = parse_console_link("switchdash://open/agent/a-1?tab=settings&server=x")
         assert link is not None

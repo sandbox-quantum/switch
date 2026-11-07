@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { Command, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
+  type ConversationHistoryTurn,
   ProviderConversationUnavailableError,
   type ProviderAdapter,
   type TurnAttachment,
@@ -160,6 +161,8 @@ async function start(
     instructions?: string | null;
     /** The provider takes developer messages mid-conversation; each one is recorded here. */
     developerMessages?: string[];
+    /** The session continues a conversation started outside Switch, which had these turns. */
+    continuing?: ConversationHistoryTurn[];
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
@@ -270,6 +273,8 @@ async function start(
       };
     },
   };
+  const continuing = opts.continuing;
+  if (continuing) adapter.conversationHistory = vi.fn(async () => structuredClone(continuing));
   if (opts.conversationLost)
     vi.mocked(adapter.startSession).mockRejectedValueOnce(
       new ProviderConversationUnavailableError(
@@ -311,8 +316,10 @@ async function start(
         env: {},
         mcpServers: {},
         connectorMcpServers: [],
+        ...(continuing ? { resume: { nativeSessionId: 'cli-copy' } } : {}),
       },
       ...(opts.rooms ? { roomConnection: { connectionId: 'controller' } } : {}),
+      importHistory: continuing !== undefined,
       parent: channel,
       parkAfterMs: opts.parkAfterMs ?? null,
       instructions: opts.instructions ?? null,
@@ -460,6 +467,36 @@ it('turns a room message it was handed into a fenced prompt, once', async () => 
     expect(turn!.text).toContain('(2 unaddressed room messages arrived');
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('starts a continued conversation as new here: its instructions are not news, and its first room message opens it', async () => {
+  const host = await start({
+    rooms: true,
+    instructions: '',
+    continuing: [
+      {
+        turnId: 'prompt-1',
+        items: [
+          {
+            itemId: 'prompt-1',
+            kind: 'user-message',
+            status: 'completed',
+            title: '',
+            text: 'Fix the build',
+          },
+        ],
+      },
+    ],
+  });
+  try {
+    expect(await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') })).toMatchObject({
+      ok: true,
+    });
+    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.turns[0]!.text).not.toContain('instructions were');
   } finally {
     expect(await host.stop()).toBeNull();
   }

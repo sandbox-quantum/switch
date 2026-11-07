@@ -82,7 +82,9 @@ than no column — it reads as a guarantee the code does not make.
 
 `role` is a checked string rather than an enum type, matching how `users.role`
 is already stored. Phase 2 owns making these roles mean something; Phase 1 only
-records them so the migration loses no information.
+records them so the migration loses no information. `owner` has since merged
+into `admin` (migration `a3c5e7f9b1d2`), and the check now allows only `admin`
+and `member`.
 
 ## Which tables are scoped
 

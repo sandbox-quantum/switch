@@ -44,6 +44,19 @@ Protocol = Annotated[AgentCore, Depends(get_protocol)]
 Broker = Annotated[ServiceBroker, Depends(get_service_broker)]
 
 
+def _controller(view: dict[str, Any]) -> dict[str, Any]:
+    """`view` with what the caller may do with the machine. Every machine
+    these routes return is the caller's own, to rename and remove; removing a
+    revoked one again changes nothing, which `revoked_at` says."""
+    return {**view, "can_edit": True, "can_remove": True}
+
+
+def _managed_agent(view: dict[str, Any]) -> dict[str, Any]:
+    """`view` with what the caller may do with the managed agent: every one
+    these routes return is the caller's own, to change or stop managing."""
+    return {**view, "can_edit": True, "can_delete": True}
+
+
 async def _revoke_controller_tokens(
     session: AsyncSession, broker: ServiceBroker, *conditions: Any
 ) -> None:
@@ -100,7 +113,12 @@ async def enroll_console(
 async def list_controllers(
     session: Session, user: CurrentUser, management: Management
 ) -> list[dict[str, Any]]:
-    return await management.list_controllers(session, require_tenant_id(), user.id)
+    return [
+        _controller(view)
+        for view in await management.list_controllers(
+            session, require_tenant_id(), user.id
+        )
+    ]
 
 
 @router.patch("/controllers/{controller_id}")
@@ -112,12 +130,14 @@ async def update_controller(
     management: Management,
 ) -> dict[str, Any]:
     """Rename the machine and/or change its description."""
-    return await management.update_controller(
-        session,
-        require_tenant_id(),
-        user.id,
-        controller_id,
-        {key: getattr(body, key) for key in body.model_fields_set},
+    return _controller(
+        await management.update_controller(
+            session,
+            require_tenant_id(),
+            user.id,
+            controller_id,
+            {key: getattr(body, key) for key in body.model_fields_set},
+        )
     )
 
 
@@ -184,15 +204,22 @@ async def withdraw_sealed_login(
 async def list_managed_agents(
     session: Session, user: CurrentUser, management: Management
 ) -> list[dict[str, Any]]:
-    return await management.list_managed_agents(session, require_tenant_id(), user.id)
+    return [
+        _managed_agent(view)
+        for view in await management.list_managed_agents(
+            session, require_tenant_id(), user.id
+        )
+    ]
 
 
 @router.get("/agents/{agent_id}")
 async def get_managed_agent(
     agent_id: str, session: Session, user: CurrentUser, management: Management
 ) -> dict[str, Any]:
-    return await management.get_managed_agent(
-        session, require_tenant_id(), user.id, agent_id
+    return _managed_agent(
+        await management.get_managed_agent(
+            session, require_tenant_id(), user.id, agent_id
+        )
     )
 
 
@@ -204,8 +231,10 @@ async def create_managed_agent(
     management: Management,
     protocol: Protocol,
 ) -> dict[str, Any]:
-    return await management.create_managed_agent(
-        session, require_tenant_id(), user.id, body, protocol
+    return _managed_agent(
+        await management.create_managed_agent(
+            session, require_tenant_id(), user.id, body, protocol
+        )
     )
 
 
@@ -230,7 +259,7 @@ async def put_managed_agent(
     await _revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.agent_id == agent_id
     )
-    return view
+    return _managed_agent(view)
 
 
 @router.patch("/agents/{agent_id}")
@@ -258,7 +287,7 @@ async def patch_managed_agent(
     await _revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.agent_id == agent_id
     )
-    return view
+    return _managed_agent(view)
 
 
 @router.delete("/agents/{agent_id}")

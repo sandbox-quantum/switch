@@ -15,6 +15,15 @@
  */
 export type LocalServerRuntime = 'native' | 'docker';
 
+/**
+ * Whether a running native server serves the gateway's admin pages: `served`,
+ * or not and a restart would turn them on (`restart`: a server started before
+ * this Console shipped them runs on without them across the update), or not
+ * and a restart would not help (`unavailable`: a checkout with no build of
+ * them, say).
+ */
+export type LocalServerAdminPages = 'served' | 'restart' | 'unavailable';
+
 /** Lifecycle phase of the managed local stack. */
 export type LocalServerPhase = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
 
@@ -224,6 +233,9 @@ export type LocalServerStatus = {
    * up — a stopped server reports nothing, so there is nothing to be out of
    * step with. */
   deployedTelemetry: DeployedTelemetry | null;
+  /** A running native server's admin pages; null when no native server is
+   * running. A Docker server always serves them, so this is null there. */
+  adminPages: LocalServerAdminPages | null;
   /** Human-readable current step (e.g. "Pulling images…"), or null. */
   message: string | null;
   /** Populated only when `phase === 'error'`. */
@@ -287,7 +299,23 @@ export type StartLocalServerResult =
   // history was copied out of it, and the copy failed. The stack is untouched
   // and still on `deployed`; retrying is safe and resumes where it stopped.
   | { kind: 'matrix-migration-failed'; deployed: string; expected: string; detail: string }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string; failure: ManagedStartFailure };
+
+/**
+ * Which way a start failed that the result has no kind of its own for, as a
+ * code rather than its message: `start_refused` is the start's own check turning
+ * it down before anything ran, `health_timeout` a server that started but never
+ * answered, `core_exited` one that stopped during startup, `running_as_root` the
+ * app run as root (the local database refuses it), `operation_in_progress`
+ * another start or stop already running, and `unexpected` anything that threw.
+ */
+export type ManagedStartFailure =
+  | 'start_refused'
+  | 'health_timeout'
+  | 'core_exited'
+  | 'running_as_root'
+  | 'operation_in_progress'
+  | 'unexpected';
 
 /** Outcome of starting a remote stack: a start's, or `cancelled` when the user
  * stopped waiting for another Console's hold on the stack, before anything

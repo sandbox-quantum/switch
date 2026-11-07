@@ -30,7 +30,9 @@ import { type RoomRoleSpec, createRoom } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
 import { useAgents, useBridges, useBridgeUsers, useRoomGroups } from "../../data/hooks";
+import { useAuth } from "../../data/AuthContext";
 import { flattenTree } from "./groupTree";
+import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
 
 type ChannelSource = "existing" | "new";
 
@@ -39,6 +41,8 @@ export default function RoomCreateFormBody() {
   const { data: agents } = useAgents();
   const { data: bridges } = useBridges();
   const { data: groups } = useRoomGroups();
+  // Only a workspace admin may put a room in a group.
+  const { canAdminTenant } = useAuth();
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -249,9 +253,15 @@ export default function RoomCreateFormBody() {
         helperText="Surfaced to agents on connect. Use this to set the room's purpose, rules, or expected outputs."
       />
 
-      <AccessSelect value={access} onChange={setAccess} disabled={submitting} />
+      <AccessSelect
+        value={access}
+        onChange={setAccess}
+        disabled={submitting}
+        helpers={ROOM_ACCESS_HELPERS}
+        optionLabels={ROOM_ACCESS_OPTION_LABELS}
+      />
 
-      {(groups ?? []).length > 0 && (
+      {canAdminTenant && (groups ?? []).length > 0 && (
         <TextField
           select
           label="Group (optional)"
