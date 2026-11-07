@@ -13,9 +13,10 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "e7710a1b2c3d"
-down_revision: str | Sequence[str] | None = "c7715ebb95c9"
+down_revision: str | Sequence[str] | None = "b7e1d4c9a2f6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+expand_only: bool = True
 
 _POLICY = (
     "CREATE POLICY tenant_isolation ON room_schedules FOR ALL "

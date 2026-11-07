@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import RoomSchedule
@@ -119,19 +119,21 @@ class RoomScheduleStore:
     async def fetch_due_schedules(
         self,
         session: AsyncSession,
-        as_of: datetime,
+        as_of: datetime | None = None,
         limit: int = 50,
     ) -> list[RoomSchedule]:
         """Fetch and lock due schedules that are active and scheduled to run at or before `as_of`.
 
         Uses `with_for_update(skip_locked=True)` to prevent duplicate execution across
-        multiple concurrent worker processes or pods.
+        multiple concurrent worker processes or pods. Compares against the database's now()
+        when `as_of` is omitted.
         """
+        cutoff = func.now() if as_of is None else as_of
         stmt = (
             select(RoomSchedule)
             .where(
                 RoomSchedule.status == "active",
-                RoomSchedule.next_run_at <= as_of,
+                RoomSchedule.next_run_at <= cutoff,
             )
             .order_by(RoomSchedule.next_run_at.asc())
             .limit(limit)
