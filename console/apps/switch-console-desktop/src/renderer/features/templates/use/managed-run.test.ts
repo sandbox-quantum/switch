@@ -182,6 +182,31 @@ describe('directories', () => {
 });
 
 describe('runAgent', () => {
+  it.each([null, 'https://github.com/acme/{team}'])(
+    'fills instruction parameters before appending repository guidance for %s',
+    (repoUrl) => {
+      const agent = runAgent({
+        slot: 'red-a',
+        name: 'red-a',
+        entry: entry({
+          instructions: 'You are {agent}. Work in {workdir}. Keep {unknown} and {"key": 1}.',
+          repoUrl,
+        }),
+        values: { agent: 'overridden', team: 'red', workdir: '/work/red' },
+        displayName: null,
+        provider: 'claude',
+        machine: LAPTOP,
+        directoryText: '{$agents_dir}/red-a',
+      });
+      const instructions = 'You are red-a. Work in /work/red. Keep {unknown} and {"key": 1}.';
+      expect(agent.instructions).toBe(
+        repoUrl
+          ? `${instructions}\n\nYou work on the repository https://github.com/acme/red. If your working directory is not a clone of it yet, clone https://github.com/acme/red into it first.`
+          : instructions
+      );
+    }
+  );
+
   it('sends the agent as the server takes it', () => {
     const agent = runAgent({
       slot: 'red-a',
