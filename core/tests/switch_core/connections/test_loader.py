@@ -13,7 +13,6 @@ from switch_core.connections.loader import (
 
 PLACEHOLDERS = {
     "asana",
-    "gitlab",
     "bitbucket",
     "microsoft-365",
     "new-relic",
@@ -26,9 +25,10 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_implemented_services():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
+        "gitlab",
         "airtable",
         "atlassian",
         "datadog",
@@ -39,6 +39,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "github",
+        "gitlab",
         "google-workspace",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
@@ -46,6 +47,50 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["gitlab"].skill_files
+
+
+def test_gitlab_uses_static_oauth_with_identity_renewal_and_official_mcp():
+    definition = CATALOG["gitlab"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, definition.auth.type) == ("oauth", "oauth")
+    assert (oauth.registration, oauth.client_settings, oauth.redirect) == (
+        "static",
+        "GITLAB",
+        ["core"],
+    )
+    assert oauth.loopback_ports is None
+    # Discovery keeps the adapter's S256 capability check in use.
+    assert oauth.authorization_url is None and oauth.token_url is None
+    assert oauth.revocation_discovered and oauth.revocation_url is None
+    assert oauth.unchecked
+    assert definition.auth.refresh == "rotating"
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.account_id, identity.label) == (
+        "https://gitlab.com/api/v4/user",
+        "id",
+        "username",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        7200,
+    )
+    assert definition.mcp is not None and definition.cli is None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("gitlab", "https://gitlab.com/api/v4/mcp")
+    ]
+    assert definition.tools is not None
+    assert definition.tools.mode == "pass_through"
+
+
+def test_gitlab_requests_only_the_intended_scopes_at_each_level():
+    access = CATALOG["gitlab"].definition.access
+    assert access is not None and access.write is not None
+    assert set(access.read.scopes or []) == {"mcp", "read_api", "read_user"}
+    assert set(access.write.scopes or []) == {"mcp", "api", "read_user"}
 
 
 GOOGLE = "https://www.googleapis.com/auth/"

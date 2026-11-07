@@ -306,6 +306,31 @@ const AIRTABLE = app({
   workspaces: 0,
 });
 
+describe("GitLab application setup", () => {
+  it("shows its confidential application, exact callback and catalog scopes", () => {
+    const callback = `${PUBLIC_URL}/gateway/service-connections/gitlab/flows/callback`;
+    const gitlab = app({
+      ...AIRTABLE,
+      slug: "gitlab",
+      name: "GitLab",
+      redirect_uri: callback,
+      redirect_uris: [callback],
+      scopes: ["mcp", "read_api", "read_user", "api"],
+    });
+    const steps = setupInstructions(gitlab, "internal", PUBLIC_URL);
+    expect(steps[0]!.link).toEqual({
+      label: "Open GitLab applications",
+      href: "https://gitlab.com/-/user_settings/applications",
+    });
+    expect(steps.flatMap((s) => s.copy)).toEqual([callback]);
+    expect(steps.find((s) => s.text.includes("Confidential"))?.items).toEqual([
+      "mcp", "read_api", "read_user", "api",
+    ]);
+    expect(steps.at(-1)!.text).toMatch(/top-level group owner/);
+    expect(changeBlocked(gitlab, null)).toBe(true);
+  });
+});
+
 /** An app whose sign-ins return to Switch Console, on one of several ports. */
 const LOOPBACK = app({
   ...AIRTABLE,
