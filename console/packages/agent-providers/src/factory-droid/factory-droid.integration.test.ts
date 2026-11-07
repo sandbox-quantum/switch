@@ -23,10 +23,6 @@ describeConformance('factory-droid', {
       ? null
       : 'Factory Droid is not signed in (set FACTORY_API_KEY, or run droid and sign in)';
   },
-  skip: {
-    'user-input':
-      'Droid asks AskUser questions only as form elicitations, which this provider does not map yet.',
-  },
   timeoutMs: 300_000,
   mcpServers: { echo: echoMcpServerSpec() },
   env,

@@ -284,3 +284,179 @@ it('checks the sign-in with the doctor, never starting a session or a sign-in', 
   expect(handshake).not.toHaveBeenCalled();
   expect(request).not.toHaveBeenCalled();
 });
+
+// Form emitted by Droid 1.6.0 for an AskUser multiple-choice question.
+const droidForm = {
+  sessionId: 'native',
+  mode: 'form',
+  message: 'Droid needs your answers to continue.',
+  requestedSchema: {
+    type: 'object',
+    properties: {
+      question_1: {
+        type: 'string',
+        title: 'Color',
+        description: 'Which color?',
+        oneOf: [
+          { const: 'option_0', title: 'red' },
+          { const: 'option_1', title: 'green' },
+          { const: 'option_2', title: 'blue' },
+          { const: 'other', title: 'Other answer' },
+        ],
+      },
+      question_1_other: {
+        type: 'string',
+        title: 'Color: Other answer',
+        description: 'Enter your answer here if you select Other answer.',
+      },
+    },
+    required: ['question_1'],
+  },
+};
+
+it('announces elicitation and answers Droid with the selected option ID', async () => {
+  const { adapter, server, events } = await setup();
+  expect(adapter.capabilities.userInput).toBe(true);
+  expect(server.received[0]?.params).toMatchObject({
+    clientCapabilities: { elicitation: { form: {} } },
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask' });
+  server.send({ id: 300, method: 'elicitation/create', params: droidForm });
+  await flush();
+  const event = events.find((e) => e.type === 'user-input.requested');
+  if (!event || event.type !== 'user-input.requested') throw new Error('No question');
+  expect(event.questions).toEqual([
+    {
+      id: 'question_1',
+      header: 'Color',
+      question: 'Which color?',
+      options: [
+        { value: 'option_0', label: 'red' },
+        { value: 'option_1', label: 'green' },
+        { value: 'option_2', label: 'blue' },
+      ],
+      multiSelect: false,
+      allowCustomAnswer: true,
+    },
+  ]);
+  await adapter.respondToUserInput('s', event.requestId, { question_1: 'option_1' });
+  await flush();
+  expect(server.received.find((m) => m.id === 300)?.result).toEqual({
+    action: 'accept',
+    content: { question_1: 'option_1' },
+  });
+  expect(events.filter((e) => e.type === 'user-input.resolved')).toHaveLength(1);
+});
+
+it('answers Droid custom input with the Other sentinel and companion text', async () => {
+  const { adapter, server, events } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask' });
+  server.send({ id: 301, method: 'elicitation/create', params: droidForm });
+  await flush();
+  const event = events.find((e) => e.type === 'user-input.requested');
+  if (!event || event.type !== 'user-input.requested') throw new Error('No question');
+  await adapter.respondToUserInput('s', event.requestId, { question_1: 'purple' });
+  await flush();
+  expect(server.received.find((m) => m.id === 301)?.result).toEqual({
+    action: 'accept',
+    content: { question_1: 'other', question_1_other: 'purple' },
+  });
+});
+
+it('maps multi-select Droid options and a typed answer into the right fields', async () => {
+  const { adapter, server, events } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask' });
+  const { oneOf, ...property } = droidForm.requestedSchema.properties.question_1;
+  server.send({
+    id: 302,
+    method: 'elicitation/create',
+    params: {
+      ...droidForm,
+      requestedSchema: {
+        properties: {
+          ...droidForm.requestedSchema.properties,
+          question_1: { ...property, type: 'array', items: { anyOf: oneOf } },
+        },
+      },
+    },
+  });
+  await flush();
+  const event = events.find((e) => e.type === 'user-input.requested');
+  if (!event || event.type !== 'user-input.requested') throw new Error('No question');
+  expect(event.questions[0]).toMatchObject({ multiSelect: true, allowCustomAnswer: true });
+  await adapter.respondToUserInput('s', event.requestId, { question_1: ['option_0', 'purple'] });
+  await flush();
+  expect(server.received.find((m) => m.id === 302)?.result).toEqual({
+    action: 'accept',
+    content: { question_1: ['option_0', 'other'], question_1_other: 'purple' },
+  });
+});
+
+it('keeps multiple questions separate including free text', async () => {
+  const { adapter, server, events } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask' });
+  server.send({
+    id: 303,
+    method: 'elicitation/create',
+    params: {
+      ...droidForm,
+      requestedSchema: {
+        properties: {
+          ...droidForm.requestedSchema.properties,
+          question_2: { type: 'string', title: 'Why?', description: 'Explain your choice.' },
+        },
+      },
+    },
+  });
+  await flush();
+  const event = events.find((e) => e.type === 'user-input.requested');
+  if (!event || event.type !== 'user-input.requested') throw new Error('No question');
+  expect(event.questions.map((q) => q.id)).toEqual(['question_1', 'question_2']);
+  await adapter.respondToUserInput('s', event.requestId, {
+    question_1: 'option_2',
+    question_2: 'It is calm',
+  });
+  await flush();
+  expect(server.received.find((m) => m.id === 303)?.result).toEqual({
+    action: 'accept',
+    content: { question_1: 'option_2', question_2: 'It is calm' },
+  });
+});
+
+it('declines malformed forms and non-form elicitations without opening questions', async () => {
+  const { adapter, server, events } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask' });
+  const forms: unknown[] = [
+    null,
+    { mode: 'url' },
+    { requestedSchema: { properties: { q: null } } },
+    { requestedSchema: { properties: { q: { oneOf: [null] } } } },
+  ];
+  forms.forEach((params, n) =>
+    server.send({
+      id: 310 + n,
+      method: 'elicitation/create',
+      params: params as Record<string, unknown>,
+    })
+  );
+  await flush();
+  for (const id of [310, 311, 312, 313])
+    expect(server.received.find((m) => m.id === id)?.result).toEqual({ action: 'decline' });
+  expect(events.filter((e) => e.type === 'user-input.requested')).toHaveLength(0);
+});
+
+it('cancels multiple pending forms on interrupt and outside a turn', async () => {
+  const { adapter, server, events } = await setup();
+  server.send({ id: 320, method: 'elicitation/create', params: droidForm });
+  await flush();
+  expect(server.received.find((m) => m.id === 320)?.result).toEqual({ action: 'cancel' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask' });
+  for (const id of [321, 322]) server.send({ id, method: 'elicitation/create', params: droidForm });
+  await flush();
+  expect(events.filter((e) => e.type === 'user-input.requested')).toHaveLength(2);
+  await adapter.interruptTurn('s');
+  await flush();
+  for (const id of [321, 322])
+    expect(server.received.find((m) => m.id === id)?.result).toEqual({ action: 'cancel' });
+  expect(events.filter((e) => e.type === 'user-input.resolved')).toHaveLength(2);
+});

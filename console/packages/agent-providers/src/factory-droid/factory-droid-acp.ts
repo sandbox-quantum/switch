@@ -1,8 +1,11 @@
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
+import type { AcpElicitationRequest } from '../acp/form-elicitation';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
+import { ACP_CANCELLED } from '../acp/protocol';
 import type { RuntimeMode } from '../adapter';
 import { execProvider } from '../provider-process';
 import { commandOutput, readiness, signInWith, type ProviderReadiness } from '../readiness';
+import { droidAnswer, droidQuestions } from './factory-droid-elicitation';
 import { isDroidSubagent } from './factory-droid-subagent';
 
 /** Droid has no login subcommand: run bare, it starts its sign-in when it holds none. */
@@ -69,10 +72,7 @@ export const factoryDroidAcp: AcpProviderHooks = {
     steering: false,
     resume: true,
     approvals: true,
-    // Droid asks its AskUser questions as form elicitations whose answers it
-    // reads back in its own shape; until those are mapped, it is not told the
-    // client takes them and answers its own questions as cancelled.
-    userInput: false,
+    userInput: true,
   },
   launch: ({ binaryPath, env }) => ({
     command: binaryPath,
@@ -102,6 +102,21 @@ export const factoryDroidAcp: AcpProviderHooks = {
   },
   sessionMode: (runtimeMode) => DROID_MODES[runtimeMode],
   itemType: (toolCall) => (isDroidSubagent(toolCall) ? 'subagent' : undefined),
+  // Droid exposes AskUser through ACP form elicitation.
+  clientCapabilities: { elicitation: { form: {} } },
+  extensions: (context, on) => {
+    on.request('elicitation/create', async (params) => {
+      if (!params || typeof params !== 'object' || Array.isArray(params))
+        return { action: 'decline' };
+      const request = params as AcpElicitationRequest;
+      const questions = droidQuestions(request);
+      if (!questions.length) return { action: 'decline' };
+      const result = await context.askQuestions(questions, (selected) =>
+        droidAnswer(request, selected)
+      );
+      return result === ACP_CANCELLED ? { action: 'cancel' } : result;
+    });
+  },
   // Droid 1.5.0 names an MCP tool's server in `_meta.factory`.
   mcpServerOf: (toolCall) => {
     const factory = toolCall._meta?.factory as { source?: unknown; server?: unknown } | undefined;
