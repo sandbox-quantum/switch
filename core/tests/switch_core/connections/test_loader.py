@@ -23,6 +23,7 @@ PLACEHOLDERS = {
     "box",
     "canva",
     "vercel",
+    "zendesk",
 }
 
 

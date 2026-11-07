@@ -603,6 +603,35 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## Zendesk
+
+Listed as coming soon (`enabled: false`), as agreed on the issue. Zendesk
+documents no hosted MCP server and no command-line tool an agent can run
+(`zcli` builds and deploys Zendesk apps; it has no ticket commands), and the
+catalog takes neither a community MCP server nor a new shape for one vendor.
+The entry goes live when Zendesk's announced MCP server ships. Until then the
+card says so, and nothing is handed to an agent.
+
+The plan for that entry, so the work is ready when the server is:
+
+- **Sign-in.** OAuth, not an API token: Zendesk stops issuing API tokens on
+  27 October 2026. Zendesk's OAuth endpoints are per account
+  (`https://<subdomain>.zendesk.com/oauth/authorizations/new` and
+  `/oauth/tokens`), so the entry needs the person's subdomain at connect, the
+  same per-account address Snowflake needs (below). A global OAuth client,
+  which Zendesk must approve, signs people in on any account; a client made in
+  one account's Admin Center signs in only there.
+- **Identity.** `GET /api/v2/users/me.json` answers with the signed-in user. A
+  token Zendesk does not take is answered with Zendesk's anonymous user (no
+  `id`, `role: end-user`), still HTTP 200, so the check treats a user without
+  an id as a failed check rather than as a person. Recorded from Zendesk's
+  documented responses, not a live account: the tests will say so.
+- **Access.** `read` for the read level; `read write` (`tickets:write`) for the
+  write level. Neither level asks for `users:write`, `organizations:write` or
+  any admin scope.
+- **Token lifetime.** Zendesk's refreshable OAuth tokens carry an expiry and a
+  refresh token; the lifetime is to be measured and written in the entry.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every
