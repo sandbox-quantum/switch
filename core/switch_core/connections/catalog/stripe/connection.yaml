@@ -1,0 +1,46 @@
+slug: stripe
+name: Stripe
+category: Billing
+description: Look up Stripe customers, payments and subscriptions, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # [MEASURED] Rotating single-use refresh tokens on POST https://mcp.stripe.com/token.
+  refresh: rotating
+  oauth:
+    # [MEASURED] RFC 7591 dynamic client registration verified via POST https://mcp.stripe.com/register (201 Created).
+    # Discovered via RFC 9728 and RFC 8414 metadata from https://mcp.stripe.com.
+    registration: dynamic
+    # [MEASURED] Loopback redirect on 127.0.0.1 (ports 39231-39235) accepted with PKCE S256.
+    redirect: [loopback]
+    # [DOCUMENTED] revocation_endpoint is advertised in metadata at the token endpoint.
+    revocation_discovered: true
+  identity:
+    # [DOCUMENTED] MCP identity tool on mcp.stripe.com discovered through the remote MCP server.
+    # Live probes show no HTTP endpoint (such as /v1/account or /userinfo) accepts MCP tokens.
+    mcp_tool: list_available_accounts_or_orgs
+    # [MEASURED] Path to account context. Resolves only when exactly one account is returned;
+    # zero or multiple accounts fail sign-in loudly without guessing a default.
+    account_id: accounts.stripe_context
+    # [MEASURED] Path to human-readable account name.
+    label: accounts.name
+# [MEASURED] Access token lifetime is 3,600 seconds (1 hour). Passes through to agent session.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # [MEASURED] Official Stripe remote MCP server endpoint.
+    - { name: stripe, url: "https://mcp.stripe.com" }
+access:
+  # [DOCUMENTED] Stripe advertises a single OAuth scope: 'mcp'.
+  # [MEASURED] Stripe MCP does not filter tools by OAuth scope: 'stripe_api_write' appears
+  # in tools/list even under read consent. Therefore both read and write levels request 'mcp',
+  # granting write capabilities at the protocol level.
+  # The skill enforces read-only defaults, test-mode recommendation, and strict confirmation.
+  read:
+    scopes:
+      - mcp
+  write:
+    scopes:
+      - mcp
+tools: { mode: pass_through }

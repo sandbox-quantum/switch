@@ -179,14 +179,27 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Where the account's stable id is read: an authenticated GET of `url` or
+    an MCP tool call `mcp_tool` with the access token, and the dotted paths in
+    its JSON answer to the id and to a label people recognise."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
-    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
+    account_id: (
+        Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
+        | Annotated[
+            list[Annotated[str, Field(pattern=JSON_PATH_PATTERN)]],
+            Field(min_length=1, max_length=8),
+        ]
+    )
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "ConnectionIdentity":
+        if (self.url is None) == (self.mcp_tool is None):
+            raise ValueError("identity needs exactly one of url or mcp_tool")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -705,6 +718,9 @@ class ConnectionDefinition(BaseModel):
     def _check_oauth(self) -> None:
         if self.auth.type != "oauth":
             raise ValueError("the oauth adapter signs in with OAuth")
+        identity = self.auth.identity
+        if identity is not None and identity.mcp_tool is not None and self.mcp is None:
+            raise ValueError("an MCP identity needs an MCP server")
         if self.mcp is not None and self.cli is not None:
             raise ValueError(
                 "an oauth entry's tools are its MCP servers or its command-line "
@@ -790,7 +806,7 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
                 f"Connection {slug} skill exceeds {MAX_SKILL_BYTES} bytes."
             )
         try:
-            content = raw.decode("utf-8")
+            content = raw.decode("utf-8").replace("\r\n", "\n")
         except UnicodeDecodeError:
             raise CatalogError(
                 f"Connection {slug} skill file is not UTF-8: {relative}"
