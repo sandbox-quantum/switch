@@ -81,6 +81,16 @@ def test_a_call_that_said_something_says_it_beside_the_name() -> None:
     assert lines[1] == "⌗ ✓ Ran the tests — 42 passed"
 
 
+def test_a_subagent_name_is_shown_with_its_status_in_the_neutral_log() -> None:
+    item = _item(
+        title="Inspect the routes",
+        status="in-progress",
+        subagent={"agent": "Explore", "taskId": "task-42"},
+    )
+
+    assert _log([item])[1] == "⌗ ▸ Explore: Inspect the routes"
+
+
 def test_how_a_call_went_is_on_the_line_rather_than_left_to_the_tally() -> None:
     """The status line counts failures. The log says which ones."""
     items = [_call(title="Read it"), _call("failed", title="Wrote it")]

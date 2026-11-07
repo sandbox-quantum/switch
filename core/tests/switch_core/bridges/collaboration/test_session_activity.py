@@ -76,6 +76,28 @@ def _plan(items: list[Item]) -> dict[str, Any]:
     return block
 
 
+def test_subagent_name_and_status_are_visible_on_its_activity_card() -> None:
+    running = _item(
+        itemId="child",
+        status="in-progress",
+        title="Inspect the routes",
+        subagent={"agent": "Explore", "taskId": "task-42"},
+    )
+    finished = running.model_copy(update={"status": "completed", "revision": 2})
+
+    running_task = next(
+        task for task in _plan([running])["tasks"] if task["task_id"] != "switch-session"
+    )
+    finished_task = next(
+        task for task in _plan([finished])["tasks"] if task["task_id"] != "switch-session"
+    )
+
+    assert running_task["title"] == "Explore: Inspect the routes"
+    assert running_task["status"] == "in_progress"
+    assert finished_task["title"] == "Explore: Inspect the routes"
+    assert finished_task["status"] == "complete"
+
+
 def _turn_cards(block: dict[str, Any]) -> list[dict[str, Any]]:
     """A section's cards without the session card that heads every one of them.
 
