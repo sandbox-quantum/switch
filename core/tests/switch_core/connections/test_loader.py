@@ -26,18 +26,20 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_dropbox_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "google-workspace",
     ]
@@ -45,6 +47,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -313,6 +316,66 @@ def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
         with_access_profiles(CATALOG, chosen)
 
 
+def test_the_shipped_dropbox_entry_signs_in_as_dropbox_was_found_to_need():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Dropbox answers dynamic registration with its own fixed list of
+    # loopback redirects, so each server's operator registers an app.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "DROPBOX"
+    # The endpoints are discovered from the MCP server.
+    assert (oauth.authorization_url, oauth.token_url) == (None, None)
+    # A refresh token comes only with offline access, and survives its use.
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    assert definition.auth.refresh == "reusable"
+    # Dropbox's advertised revocation endpoint is not RFC 7009: it takes the
+    # access token as a bearer, and ends that sign-in alone.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, True)
+    assert oauth.revocation_bearer is True
+    assert oauth.revocation_ends_grant is False
+    assert oauth.remove_access is None
+    identity = definition.auth.identity
+    assert identity is not None
+    # Dropbox's account call is a POST that takes no arguments.
+    assert (identity.method, identity.url, identity.body) == (
+        "POST",
+        "https://api.dropboxapi.com/2/users/get_current_account",
+        None,
+    )
+    assert (identity.account_id, identity.label) == ("account_id", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        14400,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = ["account_info.read", "files.metadata.read", "files.content.read"]
+    assert definition.access.read.scopes == read
+    assert definition.access.write.scopes == [*read, "files.content.write"]
+    # Nothing that reaches other people or deletes for good.
+    every = set(definition.access.write.scopes)
+    assert not any(
+        scope.startswith(("sharing.", "file_requests.", "team_")) for scope in every
+    )
+    assert "files.permanent_delete" not in every
+
+
+def test_existing_oauth_entries_read_the_account_with_a_get():
+    for slug in ("airtable", "atlassian", "google-workspace"):
+        identity = CATALOG[slug].definition.auth.identity
+        assert identity is not None
+        assert (identity.method, identity.body) == ("GET", None)
+
+
 @pytest.fixture
 def catalog_copy(tmp_path):
     root = tmp_path / "catalog"
@@ -547,6 +610,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -589,6 +653,39 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.level_tools("write") == []
 
 
+def test_an_identity_post_may_send_no_body(catalog_copy):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace("method: GET", "method: POST"))
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.body) == ("POST", None)
+
+
+def test_an_identity_post_may_send_a_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    method: GET\n", "    method: POST\n    body: { fields: [id] }\n"
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert identity.body == {"fields": ["id"]}
+
+
+def test_takes_a_vendors_offline_token_parameter(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    authorization_params:\n      token_access_type: offline\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+
+
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     _write_example(
         catalog_copy,
@@ -629,7 +726,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -642,6 +739,19 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
         ),
         ("registration: dynamic", "registration: static", "client_settings"),
         (
+            "    method: GET\n",
+            "    method: GET\n    body: { fields: [id] }\n",
+            "a GET identity call sends no body",
+        ),
+        ("    method: GET\n", "", "method"),
+        ("method: GET", "method: PUT", "method"),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    authorization_params:\n      response_type: token\n",
+            "authorization_params",
+        ),
+        (
             "    registration: dynamic\n",
             "    registration: dynamic\n    client_settings: EXAMPLE\n",
             "client_settings",
@@ -651,6 +761,11 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    revocation_ends_grant: true\n",
             "revocation_ends_grant",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_bearer: true\n",
+            "revocation_bearer",
         ),
         ("redirect: [loopback, core]", "redirect: []", "redirect"),
         ("redirect: [loopback, core]", "redirect: [browser]", "redirect"),

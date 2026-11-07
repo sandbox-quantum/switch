@@ -63,7 +63,9 @@ AdapterName = Literal["github", "oauth", "api_key"]
 RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
 # authorization request is Core's to set.
-AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+AuthorizationParam = Literal[
+    "access_type", "include_granted_scopes", "token_access_type"
+]
 
 
 class OAuthClient(BaseModel):
@@ -82,6 +84,11 @@ class OAuthClient(BaseModel):
     themselves, and what the sign-in does until they do, said whenever Switch
     drops one it cannot revoke.
 
+    `revocation_bearer`: the vendor's revocation endpoint is its own API call
+    rather than RFC 7009's form: it takes the access token as a bearer and no
+    body, and ends that token's refresh token with it, as Dropbox's
+    `/2/auth/token/revoke` does. Only with a revocation endpoint.
+
     `revocation_ends_grant`: revoking any of an account's sign-ins through
     the client ends all of them, as Google's does. A reconnect to the same
     account through the same client then does not revoke the sign-in it
@@ -98,8 +105,9 @@ class OAuthClient(BaseModel):
     `select_account`, to let the person choose the account), one value or
     several separated by spaces, as OAuth writes it.
     So are `authorization_params`, which only a vendor-specific key may name
-    (`access_type: offline`, for a vendor that hands out a refresh token only
-    when asked), never one Core sets itself.
+    (`access_type: offline` for Google, `token_access_type: offline` for
+    Dropbox: vendors that hand out a refresh token only when asked), never one
+    Core sets itself.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -121,6 +129,7 @@ class OAuthClient(BaseModel):
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
+    revocation_bearer: bool = False
     revocation_ends_grant: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
 
@@ -158,6 +167,13 @@ class OAuthClient(BaseModel):
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
             )
+        if self.revocation_bearer and (
+            self.revocation_url is None and not self.revocation_discovered
+        ):
+            raise ValueError(
+                "revocation_bearer says how a revocation endpoint is called, so "
+                "it needs revocation_url or revocation_discovered"
+            )
         if self.revocation_ends_grant and (
             self.revocation_url is None and not self.revocation_discovered
         ):
@@ -179,14 +195,24 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
+    """Where the account's stable id is read: `method` to `url` with the access
     token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    people recognise (an email, a login). A POST sends `body` as JSON, or no
+    body at all without one (Dropbox's account call takes none); a GET sends
+    none."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"]
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    body: dict[str, object] | None = None
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _no_body_for_get(self) -> "ConnectionIdentity":
+        if self.method == "GET" and self.body is not None:
+            raise ValueError("a GET identity call sends no body")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"

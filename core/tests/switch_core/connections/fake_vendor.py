@@ -351,7 +351,18 @@ class FakeOAuthServer:
         self.spent_refresh: set[str] = set()
         self.token_requests: list[dict[str, str]] = []
         self.revoked: list[dict[str, str]] = []
+        # Revocation as Dropbox's: the access token as a bearer, no body, and
+        # its refresh token ended with it. The bearers revoked; the access
+        # tokens it answers as expired; each token's sign-in.
+        self.revocation_bearer = False
+        self.bearer_revoked: list[str] = []
+        self.expired_access: set[str] = set()
+        self.grant_of: dict[str, str] = {}
         self.mcp_calls: list[dict[str, Any]] = []
+        # The account call answers this method alone, as Dropbox's answers
+        # only a POST; the bodies it was sent, as bytes.
+        self.identity_method = "GET"
+        self.identity_bodies: list[bytes] = []
         self.paths: list[str] = []
         self.fail: dict[str, tuple[int, Any]] = {}
         self.metadata: dict[str, Any] = {
@@ -397,11 +408,13 @@ class FakeOAuthServer:
         separator = "&" if "?" in query["redirect_uri"] else "?"
         return f"{query['redirect_uri']}{separator}code={code}&state={query['state']}"
 
-    def mint(self, scopes: list[str]) -> dict[str, Any]:
+    def mint(self, scopes: list[str], grant: str | None = None) -> dict[str, Any]:
         access = f"vendor_access_{secrets.token_hex(8)}"
         refresh = f"vendor_refresh_{secrets.token_hex(8)}"
         self.live_access[access] = scopes
         self.live_refresh[refresh] = scopes
+        grant = grant or secrets.token_hex(4)
+        self.grant_of[access] = self.grant_of[refresh] = grant
         return {
             "access_token": access,
             "token_type": "Bearer",
@@ -436,18 +449,44 @@ class FakeOAuthServer:
             return self._token(request)
         if where == f"{ISSUER}/register" and request.method == "POST":
             return self._register(request)
+        if (
+            where == f"{ISSUER}/revoke"
+            and request.method == "POST"
+            and self.revocation_bearer
+        ):
+            return self._revoke_bearer(request)
         if where == f"{ISSUER}/revoke" and request.method == "POST":
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
-        if where == IDENTITY_URL and request.method == "GET":
+        if where == IDENTITY_URL and request.method == self.identity_method:
+            self.identity_bodies.append(request.content)
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
             return _json(200, {"account": self.account})
         if where == MCP_URL:
             return self._mcp(request)
         return _json(404, {"error": "not_found"})
+
+    def _revoke_bearer(self, request: httpx.Request) -> httpx.Response:
+        """Dropbox's /2/auth/token/revoke: a form body is refused, and the
+        bearer's whole sign-in (its refresh token and every access token from
+        it) is ended."""
+        if request.content:
+            return _json(400, {"error": "Invalid authorization value"})
+        header = request.headers.get("authorization", "")
+        token = header.removeprefix("Bearer ") if header.startswith("Bearer ") else ""
+        if token in self.expired_access:
+            return _json(401, {"error": {".tag": "expired_access_token"}})
+        if token not in self.live_access:
+            return _json(401, {"error": {".tag": "invalid_access_token"}})
+        self.bearer_revoked.append(token)
+        grant = self.grant_of[token]
+        for live in (self.live_access, self.live_refresh):
+            for ended in [t for t in live if self.grant_of.get(t) == grant]:
+                del live[ended]
+        return _json(200, None)
 
     def _bearer(self, request: httpx.Request) -> list[str] | None:
         header = request.headers.get("authorization", "")
@@ -506,11 +545,12 @@ class FakeOAuthServer:
             scopes = self.live_refresh.get(refresh)
             if scopes is None or refresh in self.spent_refresh:
                 return _json(400, {"error": "invalid_grant"})
+            grant = self.grant_of.get(refresh)
             if self.rotating:
                 self.spent_refresh.add(refresh)
                 del self.live_refresh[refresh]
-                return _json(200, self.mint(scopes))
-            minted = self.mint(scopes)
+                return _json(200, self.mint(scopes, grant))
+            minted = self.mint(scopes, grant)
             del self.live_refresh[minted.pop("refresh_token")]
             return _json(200, minted)
         return _json(400, {"error": "unsupported_grant_type"})
