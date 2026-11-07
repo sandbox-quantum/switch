@@ -28,6 +28,9 @@ the one users act on.
 
 ## Reference pages at this level
 
+- [`SCHEDULES.md`](SCHEDULES.md): room schedules, the messages Switch posts
+  to a room's agents at a set time, and what happens to a missed run or an
+  agent that left.
 - [`TEMPLATES.md`](TEMPLATES.md): the template language, the one YAML
   document that describes agents and rooms to create and the params a
   deployer fills in. The bundled Switch expert (`switch-expert/template.yaml`)

@@ -24,6 +24,7 @@ import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-server
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { roomTitle } from './room-labels';
 import { roomDetailKey, useRoomDetail } from './room-participants';
+import { RoomSchedulesSection } from './room-schedules-section';
 import {
   AccessAndGroupFields,
   ArchiveRoomSection,
@@ -195,6 +196,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             administersWorkspace={administersWorkspaceById(workspaceId)}
           />
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
+          {workspaceId ? <RoomSchedulesSection workspaceId={workspaceId} room={room} /> : null}
           <RoomInfoSection room={room} />
           <section
             id="room-settings-archive"

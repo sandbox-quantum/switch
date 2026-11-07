@@ -26,12 +26,14 @@ import {
   beginChatClaim,
   changeTemplateRun,
   createRoomFromTemplate,
+  createRoomSchedule,
   runTemplateDocument,
   runTemplateWithAgents,
   type TemplateRunAgent,
   type TemplateRunResult,
   createTemplate,
   deleteRoom,
+  deleteRoomSchedule,
   deleteTemplate,
   disconnectChat,
   exportRoomYaml,
@@ -55,6 +57,7 @@ import {
   fetchRoomGroups,
   fetchRoomRoles,
   fetchRooms,
+  fetchRoomSchedules,
   fetchTemplateDetail,
   fetchTemplateRuns,
   fetchTemplates,
@@ -88,6 +91,7 @@ import {
   updateAgentIcon,
   syncRoomName,
   updateRoom,
+  updateRoomSchedule,
   updateTemplate,
   addLinkedRoom,
   fetchLibrary,
@@ -201,10 +205,12 @@ import type {
   RemoteRoomDetail,
   RemoteRoomGroup,
   RemoteRoomRole,
+  RemoteRoomSchedule,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
   RetireOutcome,
   RoomRoleInput,
+  RoomScheduleDraft,
   SwitchServer,
   TeamsTeamsResult,
   UpdateBridgeParams,
@@ -215,6 +221,7 @@ import type {
   RoomDocumentContent,
   RoomResource,
   RoomResourceKind,
+  UpdateRoomScheduleChanges,
 } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
@@ -989,6 +996,43 @@ export const workspacesController = createRPCController({
         readVisibility: params.readVisibility,
         writeVisibility: params.writeVisibility,
       })
+    ),
+
+  /** A room's scheduled messages, for its configuration page. */
+  listRoomSchedules: (params: {
+    workspaceId: string;
+    roomId: string;
+  }): Promise<RemoteRoomSchedule[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomSchedules(server, params.roomId)),
+
+  /** Schedule a message in a room. The gateway's refusal (no write access, an
+   * agent not in the room, unusable timing) propagates for the form to show. */
+  createRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomSchedule(server, params.roomId, params.draft)
+    ),
+
+  updateRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    changes: UpdateRoomScheduleChanges;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSchedule(server, params.roomId, params.scheduleId, params.changes)
+    ),
+
+  deleteRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.scheduleId)
     ),
 
   /** File a room under a group, or take it out of one (null). */

@@ -44,6 +44,7 @@ dependencies = [
     "httpcore>=1.0.9,<2",
     "pypdf>=6.21.4,<7",
     "uvloop>=0.21,<1 ; sys_platform != 'win32'",
+    "croniter>=6.2,<7",
 ]
 
 # Repo coordinates point at the public switch repo — see RELEASING.md.
@@ -75,6 +76,7 @@ dev = [
     "pytest-xdist>=3.6",
     "pytest-split>=0.10",
     "pytest-timeout>=2.3",
+    "types-croniter>=6.2.4.20261006",
 ]
 
 [tool.ruff]
