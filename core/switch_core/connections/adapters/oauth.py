@@ -730,16 +730,19 @@ class OAuthAdapter:
             raise ServiceAdapterError("identity_result")
         return account
 
+    def _for_secret(self, secret: ConnectionSecret) -> OAuthAdapter:
+        values = secret.values.get(SIGN_IN_FIELDS) or {}
+        if not values:
+            raise ReauthorizationRequiredError(
+                f"Connect {self._name} again: this connection does not record its sign-in fields."
+            )
+        return self.for_fields(values)
+
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
         if self._oauth.fields and not self._fields:
-            values = secret.values.get(SIGN_IN_FIELDS) or {}
-            if not values:
-                raise ReauthorizationRequiredError(
-                    f"Connect {self._name} again: this connection does not record its sign-in fields."
-                )
-            return await self.for_fields(values).refresh(secret)
+            return await self._for_secret(secret).refresh(secret)
         refresh_token = secret.values.get("refresh_token")
         if not isinstance(refresh_token, str) or not refresh_token:
             raise ReauthorizationRequiredError(
@@ -776,12 +779,7 @@ class OAuthAdapter:
 
     async def revoke_connection(self, secret: ConnectionSecret) -> None:
         if self._oauth.fields and not self._fields:
-            values = secret.values.get(SIGN_IN_FIELDS) or {}
-            if not values:
-                raise ReauthorizationRequiredError(
-                    f"Connect {self._name} again: this connection does not record its sign-in fields."
-                )
-            return await self.for_fields(values).revoke_connection(secret)
+            return await self._for_secret(secret).revoke_connection(secret)
         if self._oauth.revocation_url is None and not self._oauth.revocation_discovered:
             raise ConnectionNotRevocable(
                 f"Switch has stopped using the {self._name} sign-in but cannot "
