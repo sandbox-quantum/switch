@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -804,3 +805,126 @@ class TestWorkspaceSwitch:
             "so it still works. Remove Switch under Connected apps in Example.",
         }
         assert await _connection(session_factory, ada.id) is None
+
+
+@pytest.mark.parametrize("failure", [None, "code", "scope", "identity"])
+@pytest.mark.parametrize("organization", [False, True])
+@pytest.mark.parametrize("changed", [False, True])
+async def test_first_success_marks_only_unchanged_saved_client_verified(
+    session_factory, tmp_path, monkeypatch, changed, organization, failure
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from switch_core.db.models import (
+        Organization,
+        OrganizationAppCredential,
+        ServiceAppCredential,
+        Tenant,
+    )
+
+    world = _world(session_factory, tmp_path / "catalog")
+    ada = await add_member(session_factory, "ada")
+    # This fixture uses dynamic registration; capture its actual client ID
+    # after starting the flow, then provide the saved-app metadata being checked.
+    async with world.harness.client() as client:
+        console = Console(client, ada)
+        code = await _loopback_code(world, console)
+        flow = await _flow_row(session_factory, console.state)
+        client_id = flow.details["client_id"]
+        model = OrganizationAppCredential if organization else ServiceAppCredential
+        conditions = [model.service == "example"]
+        organization_id = "verified-org"
+        async with session_factory() as session:
+            if organization:
+                session.add(
+                    Organization(id=organization_id, slug=organization_id, name="O")
+                )
+                await session.flush()
+                await session.execute(
+                    update(Tenant)
+                    .where(Tenant.id == flow.tenant_id)
+                    .values(organization_id=organization_id)
+                )
+                conditions.append(model.organization_id == organization_id)
+            session.add(
+                model(
+                    **({"organization_id": organization_id} if organization else {}),
+                    service="example",
+                    client_id=client_id,
+                    settings={"verification": "unverified"},
+                    encrypted_secrets=TEST_KEYRING.encrypt("{}"),
+                    updated_by=ada.id,
+                )
+            )
+            await session.commit()
+        world.harness.gateway_app.state.connector_apps = SimpleNamespace(
+            specs={"example": True},
+            effective=lambda service: SimpleNamespace(source="saved"),
+            apply=AsyncMock(),
+            announce=Mock(),
+        )
+        organization_changed = Mock()
+        if organization:
+            monkeypatch.setattr(
+                world.broker,
+                "organization_app",
+                AsyncMock(
+                    return_value=OrganizationApp(
+                        organization_id=organization_id,
+                        adapter=world.broker._adapters["example"],
+                        github_app=None,
+                        problem=None,
+                        changed_at=datetime.now(UTC),
+                    )
+                ),
+            )
+            world.harness.gateway_app.state.organization_apps = SimpleNamespace(
+                changed=organization_changed
+            )
+        if changed:
+            original = world.flows.complete
+
+            async def exchange_then_replace(*args, **kwargs):
+                result = await original(*args, **kwargs)
+                async with session_factory() as session:
+                    await session.execute(
+                        update(model)
+                        .where(*conditions)
+                        .values(
+                            client_id="replacement-client", updated_at=datetime.now(UTC)
+                        )
+                    )
+                    await session.commit()
+                return result
+
+            monkeypatch.setattr(world.flows, "complete", exchange_then_replace)
+        if failure == "code":
+            code = "invalid-code"
+        elif failure == "scope":
+            mint = world.vendor.mint
+            world.vendor.mint = lambda scopes: mint([])
+        elif failure == "identity":
+            world.vendor.account = {}
+        complete = await console.complete(code)
+        if failure is None:
+            assert complete.status_code == 200, complete.text
+        else:
+            assert complete.status_code != 200, complete.text
+            assert await _connection(session_factory, ada.id) is None
+    async with session_factory() as session:
+        row = await session.scalar(select(model).where(*conditions))
+        assert row.settings["verification"] == (
+            "unverified" if changed or failure else "verified"
+        )
+    assert world.harness.gateway_app.state.connector_apps.apply.await_count == (
+        0 if changed or organization or failure else 1
+    )
+    assert world.harness.gateway_app.state.connector_apps.announce.call_count == (
+        0 if changed or organization or failure else 1
+    )
+    assert organization_changed.call_count == (
+        1 if organization and not changed and not failure else 0
+    )
+    if organization and not changed and not failure:
+        organization_changed.assert_called_once_with(organization_id, "example")

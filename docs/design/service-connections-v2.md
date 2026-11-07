@@ -447,6 +447,32 @@ Then:
 - Say in the entry's comments what the vendor needs turned on (Datadog's MCP
   access) and anything measured rather than documented (a token's lifetime).
 
+## Shared OAuth catalog opt-ins
+
+`auth.identity.mcp_tool` names a read-only MCP identity tool called without
+arguments, instead of an authenticated JSON GET `url`. Exactly one source is
+required. Core validates the advertised tool is read-only with no arguments
+before calling it. The configured `account_id` must resolve to one nonempty
+string or integer in the JSON object. `account_id` also accepts a nonempty
+list of paths, for example `[userId, hubId]`. Every component must resolve to
+one nonempty string or integer; each component is percent-encoded and joined
+with `:` so separators in vendor ids cannot create collisions. The original
+single-path form preserves the vendor id unchanged. Missing ids, arrays and multiple-account
+results fail sign-in; no first-account selection is performed. Calls are
+bounded to 15 seconds and 64 KiB, refuse redirects and sanitize vendor errors
+and identity-transport diagnostics. Other entries keep their REST identity.
+
+`access.unscoped: true` is only for vendors that advertise and document no
+OAuth scopes. The catalog entry must cite that evidence in a YAML comment.
+Both Read and Write scope lists must be empty; it is valid only for the
+OAuth adapter. Authorization omits `scope`, and consent always records Write,
+never Read. This does not enforce read-only tools. Entries without the opt-in
+still require nonempty scopes. Enforcing a narrower level with listed tools
+is outside this change.
+
+Neither feature enables a connector. Each connector supplies its own verified
+identity mapping, evidence comments, skill, tests and live acceptance.
+
 ## Atlassian
 
 Built from a sign-in run against a test Atlassian Cloud site with default MCP
