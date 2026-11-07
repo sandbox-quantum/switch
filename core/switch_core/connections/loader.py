@@ -790,7 +790,7 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
                 f"Connection {slug} skill exceeds {MAX_SKILL_BYTES} bytes."
             )
         try:
-            content = raw.decode("utf-8").replace("\r\n", "\n")
+            content = raw.decode("utf-8")
         except UnicodeDecodeError:
             raise CatalogError(
                 f"Connection {slug} skill file is not UTF-8: {relative}"

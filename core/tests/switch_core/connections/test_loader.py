@@ -77,20 +77,20 @@ def test_the_shipped_cloudflare_entry_signs_in_as_the_spike_found_it_must():
         "offline_access",
         "user:read",
         "account:read",
-        "zone:read",
-        "dns:read",
-        "workers:read",
+        "zone.read",
+        "dns.read",
+        "workers-scripts.read",
     ]
     assert definition.access.write.scopes == [
         "offline_access",
         "user:read",
         "account:read",
-        "zone:read",
-        "dns:read",
-        "workers:read",
-        "zone:edit",
-        "dns:edit",
-        "workers:edit",
+        "zone.read",
+        "dns.read",
+        "workers-scripts.read",
+        "zone.write",
+        "dns.write",
+        "workers-scripts.write",
     ]
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.cloudflare.com/client/v4/user"
@@ -1252,3 +1252,23 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+def test_cloudflare_scopes_are_all_in_advertised_scopes_supported():
+    definition = CATALOG["cloudflare"].definition
+    assert definition.access is not None and definition.access.write is not None
+    advertised = {
+        "offline_access",
+        "user:read",
+        "account:read",
+        "zone.read",
+        "zone.write",
+        "dns.read",
+        "dns.write",
+        "workers-scripts.read",
+        "workers-scripts.write",
+    }
+    used = set(definition.access.read.scopes or []) | set(
+        definition.access.write.scopes or []
+    )
+    assert used.issubset(advertised)

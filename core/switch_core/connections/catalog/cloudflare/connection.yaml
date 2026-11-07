@@ -6,50 +6,50 @@ enabled: true
 adapter: oauth
 auth:
   type: oauth
-  # [MEASURED] Rotating single-use refresh token on POST https://mcp.cloudflare.com/token.
+  # [DOCUMENTED] Advertises refresh_token in grant_types_supported at https://mcp.cloudflare.com/.well-known/oauth-authorization-server.
   refresh: rotating
   oauth:
-    # [MEASURED] RFC 7591 dynamic client registration verified via POST https://mcp.cloudflare.com/register (201 Created).
-    # Discovered via RFC 9728 and RFC 8414 metadata from https://mcp.cloudflare.com/mcp.
+    # [DOCUMENTED] RFC 7591 dynamic client registration endpoint https://mcp.cloudflare.com/register advertised in RFC 8414 metadata.
     registration: dynamic
-    # [MEASURED] Loopback redirect on 127.0.0.1 (ports 39231-39235) accepted with PKCE S256.
+    # [DOCUMENTED] RFC 8252 loopback redirection on 127.0.0.1 for public native desktop clients per PKCE S256.
     redirect: [loopback]
-    # [DOCUMENTED] Revocation advertised at token endpoint in metadata.
+    # [DOCUMENTED] Revocation advertised at token endpoint in RFC 8414 metadata.
     revocation_discovered: true
   identity:
-    # [DOCUMENTED] Standard Cloudflare REST API current-user identity endpoint.
+    # [UNVERIFIED] REST user identity endpoint (GET https://api.cloudflare.com/client/v4/user).
+    # Needs live verification that an MCP-issued token is accepted by this endpoint (HTTP 200).
     url: https://api.cloudflare.com/client/v4/user
-    # [MEASURED] Field 'result.id' from GET /client/v4/user response.
+    # [DOCUMENTED] Field 'result.id' in Cloudflare user API response.
     account_id: result.id
-    # [MEASURED] Field 'result.email' from GET /client/v4/user response.
+    # [DOCUMENTED] Field 'result.email' in Cloudflare user API response.
     label: result.email
-# [MEASURED] Access token lifetime is 3,600 seconds (1 hour). Passes through to agent session.
+# [DOCUMENTED] Standard 1-hour access token lifetime (3,600s) for Cloudflare OAuth tokens.
 token: { kind: pass_through, max_lifetime: 3600 }
 mcp:
   servers:
-    # [MEASURED] Official Cloudflare remote MCP server endpoint.
+    # [DOCUMENTED] Official Cloudflare remote MCP server endpoint.
     - { name: cloudflare, url: "https://mcp.cloudflare.com/mcp" }
 access:
-  # Least access requested: only identity verification, offline refresh,
-  # and read of zones, DNS, and worker scripts. No admin, billing, or account-wide scopes.
+  # Scopes chosen strictly from scopes_supported at https://mcp.cloudflare.com/.well-known/oauth-authorization-server.
+  # Least access requested: offline refresh, user/account inspection, and read of zones, DNS, and worker scripts.
   read:
     scopes:
       - offline_access
       - user:read
       - account:read
-      - zone:read
-      - dns:read
-      - workers:read
-  # Write adds zone, DNS, and worker editing capabilities.
+      - zone.read
+      - dns.read
+      - workers-scripts.read
+  # Write adds zone, DNS, and worker script modification scopes.
   write:
     scopes:
       - offline_access
       - user:read
       - account:read
-      - zone:read
-      - dns:read
-      - workers:read
-      - zone:edit
-      - dns:edit
-      - workers:edit
+      - zone.read
+      - dns.read
+      - workers-scripts.read
+      - zone.write
+      - dns.write
+      - workers-scripts.write
 tools: { mode: pass_through }
