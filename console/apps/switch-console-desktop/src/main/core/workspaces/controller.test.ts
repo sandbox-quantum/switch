@@ -945,7 +945,7 @@ describe('selecting the workspace’s tenant before the call', () => {
     requireWorkspace.mockResolvedValue(workspace('tenant-b'));
     getSessionCookie.mockResolvedValue('synthetic-cookie');
     serviceBrowserFlow.startServiceBrowserFlow.mockResolvedValue('flow-1');
-    const fields = { stack: 'x.grafana.net' };
+    const fields = { stack: 'example-stack.grafana.net' };
     await workspacesController.startServiceConnection({
       workspaceId: 'ws',
       service: 'example',

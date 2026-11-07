@@ -247,7 +247,7 @@ it('says which ports to free when every one is taken, and starts nothing', async
 });
 
 it('passes the sign-in fields to Core', async () => {
-  const fields = { stack: 'x.grafana.net' };
+  const fields = { stack: 'example-stack.grafana.net' };
   const { input } = await start('example', fields);
   expect(input.fields).toEqual(fields);
 });
