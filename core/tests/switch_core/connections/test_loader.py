@@ -12,6 +12,7 @@ from switch_core.connections.loader import (
 )
 
 PLACEHOLDERS = {
+    "clickup",
     "asana",
     "gitlab",
     "bitbucket",
