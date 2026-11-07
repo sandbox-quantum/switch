@@ -45,6 +45,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     ChannelNotBindable,
     PlatformAdapter,
+    PrivateNoticeRefused,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -69,6 +70,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -539,6 +541,9 @@ class TelegramAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Telegram"
     # The Bot API has no call to delete or archive a chat.
     channel_on_delete = "left"
+    #: A bot cannot show a group message to one member alone, so a notice
+    #: about one goes to them in their private chat with the bot.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "direct_message"
     docs_slug: ClassVar[str | None] = "telegram"
     # A quiet self-registered bridge does not poll: Telegram hands each update
     # to a single getUpdates caller, so a poller in every process would split
@@ -1376,6 +1381,34 @@ class TelegramAdapter(PlatformAdapter):
             self._admin_body(self.translate_outbound(content), drawn),
             thread_root_id,
         )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """A message in the person's private chat with the bot, naming the
+        group the message was posted in, split over several if it is past
+        Telegram's length cap. Telegram lets a bot write to someone only after
+        they have started a chat with it, and most members of a group never
+        have, so its refusal is raised as `PrivateNoticeRefused`."""
+        where = f" in {html.escape(channel_name)}" if channel_name else ""
+        bot = self._require_bot()
+        body = f"About your message{where}:\n{self.translate_outbound(content)}"
+        try:
+            for chunk in chunk_message(body):
+                await bot.send_message(
+                    chat_id=int(user_id),
+                    text=chunk,
+                    parse_mode=ParseMode.HTML,
+                    link_preview_options=_NO_PREVIEW,
+                )
+        except Forbidden as refused:
+            raise PrivateNoticeRefused(str(refused)) from refused
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
