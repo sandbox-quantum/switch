@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type {
   McpServerSpec,
   ModelSelection,
@@ -69,6 +69,24 @@ function baseEnv(extra: Record<string, string> | undefined): Record<string, stri
 let counter = 0;
 const nextId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${++counter}`;
 
+/** Starts a session only while its conformance scenario is still alive. */
+export async function startConformanceSession(
+  scope: { readonly closed: boolean },
+  adapter: ProviderAdapter,
+  input: ProviderSessionStartInput
+): Promise<Awaited<ReturnType<ProviderAdapter['startSession']>>> {
+  if (scope.closed) throw new Error('Conformance scenario already ended');
+  try {
+    const session = await adapter.startSession(input);
+    if (scope.closed) throw new Error('Conformance scenario already ended');
+    return session;
+  } catch (error) {
+    // Teardown may have run before startSession registered its process.
+    if (scope.closed) await adapter.stopAll();
+    throw error;
+  }
+}
+
 /**
  * The behaviors every adapter must exhibit against the real provider. Each
  * scenario gets its own adapter, working directory and session, and each
@@ -83,26 +101,108 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       unavailable = await options.unavailableReason();
     });
 
-    const adapters: ProviderAdapter[] = [];
-    const dirs: string[] = [];
-    afterAll(async () => {
-      await Promise.allSettled(adapters.map((adapter) => adapter.stopAll()));
-      await Promise.allSettled(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
-    });
+    interface ScenarioScope {
+      adapters: ProviderAdapter[];
+      dirs: string[];
+      recorders: EventRecorder[];
+      closed: boolean;
+      cleaning?: Promise<void>;
+    }
+    const scopes = new Set<ScenarioScope>();
 
-    async function setup(overrides: Partial<ProviderSessionStartInput> = {}): Promise<{
+    function assertOpen(scope: ScenarioScope): void {
+      if (scope.closed) throw new Error('Conformance scenario already ended');
+    }
+
+    // Cleanup is shared by the scenario's finally and Vitest's afterEach.
+    // The latter also runs when Vitest times out a still-pending test body.
+    async function cleanup(scope: ScenarioScope): Promise<void> {
+      if (scope.cleaning) return scope.cleaning;
+      scope.closed = true;
+      scope.cleaning = (async () => {
+        const failures: unknown[] = [];
+        for (const recorder of scope.recorders.splice(0)) {
+          try {
+            recorder.dispose();
+          } catch (error) {
+            failures.push(error);
+          }
+        }
+        const stopped = await Promise.allSettled(
+          scope.adapters.map((adapter) => adapter.stopAll())
+        );
+        const removed = await Promise.allSettled(
+          scope.dirs.map((dir) => rm(dir, { recursive: true, force: true }))
+        );
+        for (let index = stopped.length - 1; index >= 0; index--) {
+          const result = stopped[index]!;
+          if (result.status === 'fulfilled') scope.adapters.splice(index, 1);
+          else failures.push(result.reason);
+        }
+        for (let index = removed.length - 1; index >= 0; index--) {
+          const result = removed[index]!;
+          if (result.status === 'fulfilled') scope.dirs.splice(index, 1);
+          else failures.push(result.reason);
+        }
+        if (failures.length) throw new AggregateError(failures, 'Conformance cleanup failed');
+        scopes.delete(scope);
+      })();
+      try {
+        await scope.cleaning;
+      } finally {
+        scope.cleaning = undefined;
+      }
+    }
+
+    async function cleanupAll(): Promise<void> {
+      const results = await Promise.allSettled([...scopes].map(cleanup));
+      const failures = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : []
+      );
+      if (failures.length) throw new AggregateError(failures, 'Conformance cleanup failed');
+    }
+
+    afterEach(cleanupAll);
+    // Retry resources whose cleanup failed, including after a timed-out test.
+    afterAll(cleanupAll);
+
+    async function createAdapter(scope: ScenarioScope): Promise<ProviderAdapter> {
+      assertOpen(scope);
+      const adapter = await options.createAdapter();
+      if (scope.closed) {
+        await adapter.stopAll();
+        throw new Error('Conformance scenario ended while creating its adapter');
+      }
+      scope.adapters.push(adapter);
+      return adapter;
+    }
+
+    function createRecorder(scope: ScenarioScope, adapter: ProviderAdapter): EventRecorder {
+      assertOpen(scope);
+      const recorder = new EventRecorder(adapter);
+      scope.recorders.push(recorder);
+      return recorder;
+    }
+
+    async function setup(
+      scope: ScenarioScope,
+      overrides: Partial<ProviderSessionStartInput> = {}
+    ): Promise<{
       adapter: ProviderAdapter;
       recorder: EventRecorder;
       cwd: string;
       sessionId: string;
       input: ProviderSessionStartInput;
     }> {
-      const adapter = await options.createAdapter();
-      adapters.push(adapter);
+      const adapter = await createAdapter(scope);
       const cwd = await mkdtemp(join(tmpdir(), 'switch-conformance-'));
-      dirs.push(cwd);
+      if (scope.closed) {
+        await rm(cwd, { recursive: true, force: true });
+        throw new Error('Conformance scenario ended while creating its directory');
+      }
+      scope.dirs.push(cwd);
       await writeFile(join(cwd, 'README.md'), '# conformance scratch\n');
-      const recorder = new EventRecorder(adapter);
+      const recorder = createRecorder(scope, adapter);
       const sessionId = nextId('session');
       const input: ProviderSessionStartInput = {
         sessionId,
@@ -117,22 +217,28 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       return { adapter, recorder, cwd, sessionId, input };
     }
 
-    function scenario(id: ConformanceScenario, run: () => Promise<void>) {
+    function scenario(id: ConformanceScenario, run: (scope: ScenarioScope) => Promise<void>) {
       it(
         id,
         async (ctx) => {
           if (unavailable) return ctx.skip(`${name} unavailable: ${unavailable}`);
           const reason = options.skip?.[id];
           if (reason) return ctx.skip(reason);
-          await run();
+          const scope: ScenarioScope = { adapters: [], dirs: [], recorders: [], closed: false };
+          scopes.add(scope);
+          try {
+            await run(scope);
+          } finally {
+            await cleanup(scope);
+          }
         },
         timeoutMs
       );
     }
 
-    scenario('simple-turn', async () => {
-      const { adapter, recorder, sessionId, input } = await setup();
-      const session = await adapter.startSession(input);
+    scenario('simple-turn', async (scope) => {
+      const { adapter, recorder, sessionId, input } = await setup(scope);
+      const session = await startConformanceSession(scope, adapter, input);
       expect(session.sessionId).toBe(sessionId);
       expect(session.nativeSessionId).toBeTruthy();
       await recorder.waitFor('session.started', (e) => e.sessionId === sessionId, 30_000);
@@ -155,9 +261,9 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       expect(adapter.hasSession(sessionId)).toBe(false);
     });
 
-    scenario('file-write-full-access', async () => {
-      const { adapter, recorder, sessionId, cwd, input } = await setup();
-      await adapter.startSession(input);
+    scenario('file-write-full-access', async (scope) => {
+      const { adapter, recorder, sessionId, cwd, input } = await setup(scope);
+      await startConformanceSession(scope, adapter, input);
       const turnId = nextId('turn');
       await adapter.sendTurn({
         sessionId,
@@ -172,11 +278,11 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       expect((await readFile(join(cwd, 'marker.txt'), 'utf8')).trim()).toBe(TOKEN);
     });
 
-    scenario('approval-required', async () => {
-      const { adapter, recorder, sessionId, cwd, input } = await setup({
+    scenario('approval-required', async (scope) => {
+      const { adapter, recorder, sessionId, cwd, input } = await setup(scope, {
         runtimeMode: 'approval-required',
       });
-      await adapter.startSession(input);
+      await startConformanceSession(scope, adapter, input);
       const turnId = nextId('turn');
       await adapter.sendTurn({
         sessionId,
@@ -199,11 +305,11 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       expect((await readFile(join(cwd, 'approved.txt'), 'utf8')).trim()).toBe(TOKEN);
     });
 
-    scenario('approval-declined', async () => {
-      const { adapter, recorder, sessionId, cwd, input } = await setup({
+    scenario('approval-declined', async (scope) => {
+      const { adapter, recorder, sessionId, cwd, input } = await setup(scope, {
         runtimeMode: 'approval-required',
       });
-      await adapter.startSession(input);
+      await startConformanceSession(scope, adapter, input);
       const turnId = nextId('turn');
       await adapter.sendTurn({
         sessionId,
@@ -217,9 +323,9 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       await expect(readFile(join(cwd, 'declined.txt'), 'utf8')).rejects.toThrow();
     });
 
-    scenario('interrupt', async () => {
-      const { adapter, recorder, sessionId, input } = await setup();
-      await adapter.startSession(input);
+    scenario('interrupt', async (scope) => {
+      const { adapter, recorder, sessionId, input } = await setup(scope);
+      await startConformanceSession(scope, adapter, input);
       const turnId = nextId('turn');
       await adapter.sendTurn({
         sessionId,
@@ -241,9 +347,9 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       expect(next.outcome).toBe('completed');
     });
 
-    scenario('steer-mid-turn', async () => {
-      const { adapter, recorder, sessionId, input } = await setup();
-      await adapter.startSession(input);
+    scenario('steer-mid-turn', async (scope) => {
+      const { adapter, recorder, sessionId, input } = await setup(scope);
+      await startConformanceSession(scope, adapter, input);
       const turnId = nextId('turn');
       await adapter.sendTurn({
         sessionId,
@@ -270,9 +376,9 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       expect(text).toContain(TOKEN);
     });
 
-    scenario('resume', async () => {
-      const first = await setup();
-      const session = await first.adapter.startSession(first.input);
+    scenario('resume', async (scope) => {
+      const first = await setup(scope);
+      const session = await startConformanceSession(scope, first.adapter, first.input);
       const turnId = nextId('turn');
       await first.adapter.sendTurn({
         sessionId: first.sessionId,
@@ -282,11 +388,10 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       await first.recorder.waitFor('turn.completed', (e) => e.turnId === turnId, timeoutMs);
       await first.adapter.stopSession(first.sessionId);
 
-      const second = await options.createAdapter();
-      adapters.push(second);
-      const recorder = new EventRecorder(second);
+      const second = await createAdapter(scope);
+      const recorder = createRecorder(scope, second);
       const resumedId = nextId('session');
-      await second.startSession({
+      await startConformanceSession(scope, second, {
         ...first.input,
         sessionId: resumedId,
         resume: { nativeSessionId: session.nativeSessionId },
@@ -302,9 +407,9 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       expect(recorder.assistantText(askId)).toContain(`pelican-${TOKEN}`);
     });
 
-    scenario('user-input', async () => {
-      const { adapter, recorder, sessionId, input } = await setup();
-      await adapter.startSession(input);
+    scenario('user-input', async (scope) => {
+      const { adapter, recorder, sessionId, input } = await setup(scope);
+      await startConformanceSession(scope, adapter, input);
       const turnId = nextId('turn');
       await adapter.sendTurn({
         sessionId,
@@ -329,9 +434,9 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       expect(recorder.assistantText(turnId).toLowerCase()).toContain('green');
     });
 
-    scenario('subagent', async () => {
-      const { adapter, recorder, sessionId, input } = await setup();
-      await adapter.startSession(input);
+    scenario('subagent', async (scope) => {
+      const { adapter, recorder, sessionId, input } = await setup(scope);
+      await startConformanceSession(scope, adapter, input);
       const turnId = nextId('turn');
       await adapter.sendTurn({
         sessionId,
@@ -355,7 +460,7 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       expect(recorder.assistantText(turnId)).toContain(TOKEN);
     });
 
-    scenario('mcp-registered', async () => {
+    scenario('mcp-registered', async (scope) => {
       if (!options.mcpServers || Object.keys(options.mcpServers).length === 0) {
         throw new Error('mcp-registered needs options.mcpServers or a skip reason');
       }
@@ -364,12 +469,12 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       // the room protocol — so calling one must not stop for an approval. It
       // did, and the session then sat waiting for a human to allow the tool it
       // needed in order to reach that human.
-      const { adapter, recorder, sessionId, input } = await setup({
+      const { adapter, recorder, sessionId, input } = await setup(scope, {
         runtimeMode: 'approval-required',
         mcpServers: options.mcpServers,
         connectorMcpServers: [],
       });
-      await adapter.startSession(input);
+      await startConformanceSession(scope, adapter, input);
       const names = Object.keys(options.mcpServers).join(', ');
       const turnId = nextId('turn');
       await adapter.sendTurn({

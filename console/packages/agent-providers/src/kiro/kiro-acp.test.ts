@@ -233,6 +233,247 @@ it('runs the session’s own MCP tools without asking, named by Kiro’s mcpTool
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
 });
 
+it('uses request-level MCP identity and fails closed on invalid or conflicting identities', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+
+  // Updates establish identities independently of the later request payloads.
+  for (const [toolCallId, serverName] of [
+    ['unknown-version', 'switch'],
+    ['conflict', 'switch'],
+    ['malformed', 'switch'],
+    ['nested-conflict', 'elsewhere'],
+    ['nested-without-request', 'elsewhere'],
+  ]) {
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId,
+        title: '@switch/list_rooms',
+        status: 'pending',
+        _meta: { kiro: { mcpTool: { version: 1, identity: { serverName } } } },
+      },
+    });
+  }
+  const options = [
+    { optionId: 'accept', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'reject', name: 'Deny', kind: 'reject_once' },
+  ];
+  const calls = [
+    {
+      id: 100,
+      toolCallId: 'registered',
+      mcpTool: { version: 1, identity: { serverName: 'switch' } },
+    },
+    {
+      id: 101,
+      toolCallId: 'unregistered',
+      mcpTool: { version: 1, identity: { serverName: 'elsewhere' } },
+    },
+    {
+      id: 102,
+      toolCallId: 'unknown-version',
+      mcpTool: { version: 2, identity: { serverName: 'switch' } },
+    },
+    {
+      id: 103,
+      toolCallId: 'conflict',
+      mcpTool: { version: 1, identity: { serverName: 'elsewhere' } },
+    },
+    { id: 104, toolCallId: 'malformed', mcpTool: null },
+  ];
+  for (const { id, toolCallId, mcpTool } of calls) {
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId, title: '@switch/list_rooms' },
+        options,
+        _meta: { kiro: { mcpTool } },
+      },
+    });
+  }
+  // A nested permission-toolCall identity must not hide a conflicting update,
+  // whether or not request-level metadata is also present.
+  for (const [id, toolCallId, includeRequestMeta] of [
+    [105, 'nested-conflict', true],
+    [106, 'nested-without-request', false],
+  ] as const) {
+    const mcpTool = { version: 1, identity: { serverName: 'switch' } };
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId, _meta: { kiro: { mcpTool } } },
+        options,
+        ...(includeRequestMeta ? { _meta: { kiro: { mcpTool } } } : {}),
+      },
+    });
+  }
+  await flush();
+  expect(server.received.find((m) => m.id === 100)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'accept' },
+  });
+  for (const id of [101, 102, 103, 104, 105, 106]) {
+    expect(server.received.find((m) => m.id === id)?.result).toBeUndefined();
+  }
+  expect(events.filter((event) => event.type === 'request.opened')).toHaveLength(6);
+  await adapter.stopAll();
+});
+
+it('retains conflicting or malformed update identities and rejects malformed nested identities', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  const toolIdentity = (serverName: string, version = 1) => ({
+    kiro: { mcpTool: { version, identity: { serverName } } },
+  });
+  const update = (toolCallId: string, meta: unknown) =>
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call_update', toolCallId, _meta: meta },
+    });
+
+  // A later valid update cannot erase either a conflicting server or a prior
+  // unknown-version identity for the same call.
+  update('conflicting-updates', toolIdentity('elsewhere'));
+  update('conflicting-updates', toolIdentity('switch'));
+  update('malformed-update', toolIdentity('switch'));
+  update('malformed-update', toolIdentity('switch', 2));
+  update('malformed-update', toolIdentity('switch'));
+  update('malformed-nested', toolIdentity('switch'));
+  update('absent-nested', toolIdentity('switch'));
+
+  const options = [
+    { optionId: 'accept', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'reject', name: 'Deny', kind: 'reject_once' },
+  ];
+  for (const [id, toolCallId, nestedMeta] of [
+    [120, 'conflicting-updates', undefined],
+    [121, 'malformed-update', undefined],
+    [122, 'malformed-nested', toolIdentity('switch', 2)],
+    [123, 'absent-nested', undefined],
+  ] as const) {
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId, ...(nestedMeta ? { _meta: nestedMeta } : {}) },
+        options,
+        _meta: toolIdentity('switch'),
+      },
+    });
+  }
+  await flush();
+  for (const id of [120, 121, 122]) {
+    expect(server.received.find((message) => message.id === id)?.result).toBeUndefined();
+  }
+  expect(server.received.find((message) => message.id === 123)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'accept' },
+  });
+  expect(events.filter((event) => event.type === 'request.opened')).toHaveLength(3);
+  await adapter.stopAll();
+});
+
+it('fails closed on malformed metadata containers but preserves fallback for unrelated metadata', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  const metadataCases: Array<{ id: number; meta?: unknown; shouldApprove: boolean }> = [
+    { id: 110, meta: null, shouldApprove: false },
+    { id: 111, meta: 'invalid', shouldApprove: false },
+    { id: 112, meta: [], shouldApprove: false },
+    { id: 113, meta: { kiro: null }, shouldApprove: false },
+    { id: 114, meta: { kiro: 'invalid' }, shouldApprove: false },
+    { id: 115, meta: { kiro: [] }, shouldApprove: false },
+    { id: 116, meta: { other: { name: 'unrelated' } }, shouldApprove: true },
+    { id: 117, meta: { kiro: { consent: { capability: 'shell' } } }, shouldApprove: true },
+    { id: 118, shouldApprove: true },
+  ];
+  for (const { id } of metadataCases) {
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: `metadata-${id}`,
+        title: '@switch/list_rooms',
+        status: 'pending',
+        _meta: { kiro: { mcpTool: { version: 1, identity: { serverName: 'switch' } } } },
+      },
+    });
+  }
+  const options = [
+    { optionId: 'accept', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'reject', name: 'Deny', kind: 'reject_once' },
+  ];
+  for (const { id, meta } of metadataCases) {
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: `metadata-${id}` },
+        options,
+        ...(meta !== undefined ? { _meta: meta } : {}),
+      },
+    });
+  }
+  await flush();
+  for (const { id, shouldApprove } of metadataCases) {
+    const response = server.received.find((message) => message.id === id)?.result;
+    if (shouldApprove) {
+      expect(response).toEqual({ outcome: { outcome: 'selected', optionId: 'accept' } });
+    } else {
+      expect(response).toBeUndefined();
+    }
+  }
+  expect(events.filter((event) => event.type === 'request.opened')).toHaveLength(6);
+  await adapter.stopAll();
+});
+
+it('recognizes Kiro subagent calls without misclassifying nested tool calls', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  for (const update of [
+    {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'task',
+      title: 'Delegate',
+      status: 'pending',
+      _meta: { kiro: { kind: 'agent-subtask' } },
+    },
+    {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'child',
+      title: 'Read',
+      status: 'pending',
+      kind: 'execute',
+      _meta: { kiro: { agentSubtaskId: 'task' } },
+    },
+    { sessionUpdate: 'tool_call_update', toolCallId: 'task', status: 'completed' },
+  ])
+    server.notify('session/update', { sessionId: 'native', update });
+  await flush();
+  const started = events.filter((event) => event.type === 'item.started');
+  expect(started).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ item: expect.objectContaining({ id: 'task', type: 'subagent' }) }),
+      expect.objectContaining({
+        item: expect.objectContaining({ id: 'child', type: 'command_execution' }),
+      }),
+    ])
+  );
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: 'item.completed',
+      item: expect.objectContaining({ id: 'task', type: 'subagent', status: 'completed' }),
+    })
+  );
+  await adapter.stopAll();
+});
+
 it('reads only a version 1 mcpTool identity, never the title', () => {
   expect(
     kiroMcpServer({ _meta: { kiro: { mcpTool: { version: 1, identity: { serverName: 's' } } } } })

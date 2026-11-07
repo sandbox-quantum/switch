@@ -26,6 +26,10 @@ describeConformance('kiro', {
       : 'Kiro CLI is not signed in (run kiro-cli login, or set KIRO_API_KEY)';
   },
   timeoutMs: 300_000,
+  skip: {
+    'user-input':
+      'Kiro CLI 3.1.0 completed the ACP question prompt with ordinary text and no structured user-input request; this provider does not expose user input.',
+  },
   mcpServers: { echo: echoMcpServerSpec() },
   env,
 });

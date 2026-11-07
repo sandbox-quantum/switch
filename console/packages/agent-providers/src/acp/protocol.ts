@@ -92,6 +92,7 @@ export interface AcpPermissionRequest {
   sessionId: string;
   toolCall: AcpToolCall;
   options: AcpPermissionOption[];
+  _meta?: Record<string, unknown>;
 }
 
 export const ACP_CANCELLED = { outcome: { outcome: 'cancelled' } } as const;

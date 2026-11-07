@@ -49,6 +49,19 @@ export function kiroMcpServer(toolCall: Pick<AcpToolCall, '_meta'>): string | un
   return typeof server === 'string' && server ? server : undefined;
 }
 
+/** Read a versioned Kiro MCP identity, preserving invalid versus absent data. */
+function kiroMetadataMcpServer(meta: unknown): string | null | undefined {
+  if (meta === undefined) return undefined;
+  if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) return null;
+  if (!Object.hasOwn(meta, 'kiro')) return undefined;
+  const kiro = (meta as Record<string, unknown>).kiro;
+  if (typeof kiro !== 'object' || kiro === null || Array.isArray(kiro)) return null;
+  if (!Object.hasOwn(kiro, 'mcpTool')) return undefined;
+  // A present but malformed or unknown-version identity must not fall back to
+  // a cached update identity and accidentally bypass an approval.
+  return kiroMcpServer({ _meta: meta as Record<string, unknown> }) ?? null;
+}
+
 /**
  * Kiro CLI over ACP, started on its V3 engine. Kiro signs itself in from the
  * sign-in `kiro-cli login` saved, or from `KIRO_API_KEY`, when it starts, so a
@@ -87,7 +100,15 @@ export const kiroAcp: AcpProviderHooks = {
   // Kiro's modes are agent configurations, not permission levels, so the
   // session keeps Kiro's default mode and the runtime mode is enforced on its
   // permission requests.
-  mcpServerOf: kiroMcpServer,
+  mcpServerOf: (toolCall) => kiroMetadataMcpServer(toolCall._meta),
+  // Kiro V3 also supplies the resolved identity on permission params.
+  permissionMcpServerOf: (request) => kiroMetadataMcpServer(request._meta),
+  // The top-level task is a subagent; child tool calls carry agentSubtaskId
+  // but are still ordinary tool calls of their own.
+  itemType: (toolCall) => {
+    const kiro = toolCall._meta?.kiro as { kind?: unknown } | undefined;
+    return kiro?.kind === 'agent-subtask' ? 'subagent' : undefined;
+  },
 };
 
 export function createKiroAdapter(options: AcpAdapterOptions = {}): AcpAdapter {

@@ -155,8 +155,17 @@ export interface AcpProviderHooks {
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
-  /** The MCP server a tool call belongs to, when the agent says so. */
-  mcpServerOf?(toolCall: AcpToolCall): string | undefined;
+  /**
+   * The MCP server a tool call belongs to. Return null for an explicitly
+   * malformed identity and undefined when none was supplied.
+   */
+  mcpServerOf?(toolCall: AcpToolCall): string | null | undefined;
+  /**
+   * A server identity carried by the permission request itself. Return null
+   * for an explicit but invalid identity to prevent fallback to cached data;
+   * undefined means no request-level identity was supplied.
+   */
+  permissionMcpServerOf?(request: AcpPermissionRequest): string | null | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**

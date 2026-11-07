@@ -129,7 +129,8 @@ interface State {
   mcpNames: Set<string>;
   /** The registered servers whose tools are allowed without asking: all but the connectors. */
   autoApprovedMcpNames: Set<string>;
-  toolServers: Map<string, string>;
+  /** Null retains conflicting or explicitly invalid identity for the turn. */
+  toolServers: Map<string, string | null>;
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
@@ -532,7 +533,21 @@ export class AcpAdapter implements ProviderAdapter {
     if (vendor) return await vendor;
     const { toolCall } = request;
     const once = request.options.find((option) => option.kind === 'allow_once');
-    const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    const updateServer = state.toolServers.get(toolCall.toolCallId);
+    const toolCallServer = this.hooks.mcpServerOf?.(toolCall);
+    const requestServer = this.hooks.permissionMcpServerOf?.(request);
+    const serverNames = [updateServer, toolCallServer, requestServer].filter(
+      (name): name is string => typeof name === 'string'
+    );
+    // Do not grant MCP-based auto-approval when a request carries malformed
+    // identity or any identities for this tool call disagree.
+    const server =
+      updateServer === null ||
+      toolCallServer === null ||
+      requestServer === null ||
+      serverNames.some((name) => name !== serverNames[0])
+        ? undefined
+        : serverNames[0];
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
     if (
@@ -633,7 +648,15 @@ export class AcpAdapter implements ProviderAdapter {
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
     const server = this.hooks.mcpServerOf?.(update);
-    if (server !== undefined) state.toolServers.set(update.toolCallId, server);
+    if (server !== undefined) {
+      const seen = state.toolServers.get(update.toolCallId);
+      // Keep conflicts and malformed identities for the turn; a later update
+      // must not replace them with an apparently trusted server name.
+      state.toolServers.set(
+        update.toolCallId,
+        seen === undefined || seen === server ? server : null
+      );
+    }
     const text = (update.content ?? [])
       .map((part) =>
         part.type === 'diff' ? `${part.path}\n${part.newText ?? ''}` : (part.content?.text ?? '')
@@ -653,7 +676,7 @@ export class AcpAdapter implements ProviderAdapter {
       type:
         (old?.type !== 'tool_call' ? old?.type : undefined) ??
         this.hooks.itemType?.(update) ??
-        (server !== undefined || update.toolCallId.startsWith('mcp_')
+        (typeof server === 'string' || update.toolCallId.startsWith('mcp_')
           ? 'mcp_tool_call'
           : update.kind === 'execute'
             ? 'command_execution'
