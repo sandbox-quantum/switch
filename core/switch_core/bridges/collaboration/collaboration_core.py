@@ -1267,7 +1267,7 @@ class CollaborationCore:
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
                 transport_event_id=event_id,
-                external_post_id=msg.message_ref,
+                external_post_id=msg.root_id or msg.message_ref if thread_root_id is None else msg.message_ref,
             )
             return
 
@@ -1415,7 +1415,7 @@ class CollaborationCore:
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
                 transport_event_id=first_event_id,
-                external_post_id=msg.message_ref,
+                external_post_id=msg.root_id or msg.message_ref if thread_root_id is None else msg.message_ref,
             )
 
     async def _post_trust_notice(
