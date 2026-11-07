@@ -473,7 +473,7 @@ jobs:
   properties:
     name: Property catalog
     # Reads the catalog and the checkers' tags and runs nothing, so it needs
-    # only Python and is its own small job. The checkers themselves run where
+    # only Python with PyYAML and Pydantic and is its own small job. The checkers themselves run where
     # their code does: the Quint models and the history checker, and the
     # Hypothesis tests in the backend tests.
     needs: changes
@@ -489,17 +489,14 @@ jobs:
           python-version: '3.12'
           enable-cache: true
 
-      - name: Sync dependencies
-        run: uv sync --project core
-
       - name: The catalog and its checkers agree
-        run: uv run --project core python properties/gate/gate.py check
+        run: uv run --no-project --with 'pyyaml>=6,<7' --with 'pydantic>=2,<3' python properties/gate/gate.py check
 
       - name: Property coverage
         run: |
           {
             echo '```'
-            uv run --project core python properties/gate/gate.py table
+            uv run --no-project --with 'pyyaml>=6,<7' --with 'pydantic>=2,<3' python properties/gate/gate.py table
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
 

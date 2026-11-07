@@ -196,7 +196,7 @@ test *args:
 # `just properties` checks the catalog in properties/catalog against the checkers'
 # tags (nothing runs); `just properties table` prints each property by level.
 properties command="check":
-    uv run --project core python properties/gate/gate.py {{ command }}
+    uv run --no-project --with 'pyyaml>=6,<7' --with 'pydantic>=2,<3' python properties/gate/gate.py {{ command }}
 
 # ── End-to-end proof for "follow the conversation" ─────────────────────────────
 # Plays every journey as two people in a fresh local Mattermost against
