@@ -680,3 +680,8 @@ def test_a_dtd_in_utf16_is_still_refused() -> None:
     ).encode("utf-16")
     file_text = extract_file_text(_docx_with(document), _DOCX_TYPE, "evil.docx")
     assert file_text.text is None
+
+def test_limit_memory_noop_when_resource_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(file_text_module, "resource", None)
+    file_text_module._limit_memory(1024 * 1024)
+
