@@ -119,7 +119,7 @@ describe('addWorkspaceThrough', () => {
   });
 
   it('offers nothing on a server from before organizations', () => {
-    const all = [workspace('a', null, { role: 'owner' })];
+    const all = [workspace('a', null, { role: 'admin' })];
     const [group] = groupByOrganization(all);
 
     expect(addWorkspaceThrough(group!, all, null)).toBeNull();

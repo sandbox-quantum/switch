@@ -1,19 +1,36 @@
 from collections.abc import Collection
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import (
+    ColumnElement,
     bindparam,
+    delete,
     func,
     or_,
     select,
     text,
+    update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.attachments import ATTACHMENT_GROUP_KEY
 from switch_core.db.id_lists import any_of
-from switch_core.db.models import Message, MessageAttachment
+from switch_core.db.models import Message, MessageAttachment, Room, require_tenant_id
 from switch_core.db.notify_ddl import SET_WRITER_ANNOUNCES
 from switch_core.db.raw import RawStatement
+
+
+@dataclass(frozen=True)
+class DeletedMessages:
+    event_ids: list[str]
+    #: The keys agents' copies of them are stored under (`agent_events.message_key`):
+    #: the attachment group id for a file sent as part of several, else the event id.
+    message_keys: set[str]
+    #: The files the deleted messages carried. Others may still quote them.
+    uris: set[str]
+    #: The rooms they were deleted from.
+    room_ids: set[str]
 
 
 class MessageStore:
@@ -194,13 +211,109 @@ class MessageStore:
         so an empty live log answers 0 whatever has been backfilled into it.
         With `types`, the position of the last row of those types.
         """
-        query = select(func.coalesce(func.max(Message.seq), 0)).where(
-            Message.room_id == room_id
-        )
         if types is not None:
-            query = query.where(Message.event_type.in_(list(types)))
-        result = await session.execute(query)
-        return max(int(result.scalar_one()), 0)
+            result = await session.execute(
+                select(func.coalesce(func.max(Message.seq), 0)).where(
+                    Message.room_id == room_id,
+                    Message.event_type.in_(list(types)),
+                )
+            )
+            return max(int(result.scalar_one()), 0)
+        head = await _ROOM_HEAD.all(session, {"room_id": room_id})
+        return max(int(head[0].head), 0)
+
+    async def delete_sent_before(
+        self, session: AsyncSession, cutoff: datetime, *, limit: int
+    ) -> DeletedMessages:
+        """Delete up to `limit` of the bound tenant's oldest messages sent before
+        `cutoff`, with their attachments.
+
+        See `_delete_where` for what else changes and what does not.
+        """
+        return await self._delete_where(session, Message.sent_at < cutoff, limit=limit)
+
+    async def delete_sent_by(
+        self, session: AsyncSession, *, transport_user_id: str, limit: int
+    ) -> DeletedMessages:
+        """Delete up to `limit` of the messages one participant sent in the bound
+        tenant, with their attachments.
+
+        Matched on `sender_id`, the participant's transport id, rather than
+        `sender_client_id`: every row has the first, while the second is null
+        on reconstructed history, on rows older than the column, and on rows
+        whose client has been deleted. See `_delete_where` for the rest.
+        """
+        return await self._delete_where(
+            session, Message.sender_id == transport_user_id, limit=limit
+        )
+
+    async def _delete_where(
+        self, session: AsyncSession, condition: ColumnElement[bool], *, limit: int
+    ) -> DeletedMessages:
+        """Delete up to `limit` of the bound tenant's oldest messages matching
+        `condition`, with their attachments.
+
+        Each room's `seq_floor` is raised to the highest live position deleted
+        from it, in the same transaction, so `_next_seq` never reissues one.
+        This takes no room advisory lock and needs none: `_ROOM_HEAD` reads
+        the newest row and the floor in one statement, so a sender sees the
+        deletion whole or not at all, and the floor's UPDATE takes a row lock
+        that a sender's foreign-key check does not wait on. The rooms are
+        updated in id order, so two deletions at once (each replica runs
+        retention) lock them in the same order and cannot deadlock.
+        The bytes behind the attachments are not touched: a blob may be quoted
+        by a message that is kept. The result names them, and
+        `RetentionStore.delete_unreferenced_media` finds the ones nothing
+        points at any more.
+        """
+        rows = (
+            await session.execute(
+                select(
+                    Message.id,
+                    Message.room_id,
+                    Message.seq,
+                    Message.transport_event_id,
+                    func.coalesce(
+                        Message.content[ATTACHMENT_GROUP_KEY]["id"].astext,
+                        Message.transport_event_id,
+                    ).label("message_key"),
+                )
+                .where(Message.tenant_id == require_tenant_id(), condition)
+                .order_by(Message.sent_at)
+                .limit(limit)
+            )
+        ).all()
+        if not rows:
+            return DeletedMessages(
+                event_ids=[], message_keys=set(), uris=set(), room_ids=set()
+            )
+        message_ids = [r.id for r in rows]
+        uris = set(
+            (
+                await session.execute(
+                    select(MessageAttachment.uri).where(
+                        MessageAttachment.message_id.in_(message_ids)
+                    )
+                )
+            ).scalars()
+        )
+        floors: dict[str, int] = {}
+        for row in rows:
+            floors[row.room_id] = max(floors.get(row.room_id, 0), row.seq)
+        for room_id, seq in sorted(floors.items()):
+            if seq > 0:
+                await session.execute(
+                    update(Room)
+                    .where(Room.id == room_id)
+                    .values(seq_floor=func.greatest(Room.seq_floor, seq))
+                )
+        await session.execute(delete(Message).where(Message.id.in_(message_ids)))
+        return DeletedMessages(
+            event_ids=[row.transport_event_id for row in rows],
+            message_keys={row.message_key for row in rows},
+            uris=uris,
+            room_ids=set(floors),
+        )
 
     async def head_seqs(
         self,
@@ -224,6 +337,14 @@ class MessageStore:
             query = query.where(Message.event_type.in_(list(types)))
         result = await session.execute(query.group_by(Message.room_id))
         heads = {room_id: max(int(seq or 0), 0) for room_id, seq in result.all()}
+        if types is None:
+            floors = await session.execute(
+                select(Room.id, Room.seq_floor).where(
+                    any_of(Room.id, room_ids), Room.seq_floor > 0
+                )
+            )
+            for room_id, floor in floors.all():
+                heads[room_id] = max(heads.get(room_id, 0), int(floor))
         return {room_id: heads.get(room_id, 0) for room_id in room_ids}
 
     async def rooms_past(
@@ -328,8 +449,10 @@ class MessageStore:
         *,
         thread_root_event_id: str,
         limit: int,
+        before_seq: int | None = None,
     ) -> list[Message]:
-        """A thread's newest messages, its root included, newest first."""
+        """A thread's newest messages, its root included, newest first; only
+        those written before `before_seq` when it is given."""
         result = await session.execute(
             select(Message)
             .where(
@@ -338,6 +461,7 @@ class MessageStore:
                     Message.thread_root_event_id == thread_root_event_id,
                     Message.transport_event_id == thread_root_event_id,
                 ),
+                *_before(before_seq),
             )
             .order_by(Message.seq.desc())
             .limit(limit)
@@ -345,15 +469,22 @@ class MessageStore:
         return list(result.scalars().all())
 
     async def list_top_level_newest_first(
-        self, session: AsyncSession, room_id: str, *, limit: int
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        limit: int,
+        before_seq: int | None = None,
     ) -> list[Message]:
-        """The room's newest top-level messages, newest first. Replies inside
-        threads are left out."""
+        """The room's newest top-level messages, newest first; only those
+        written before `before_seq` when it is given. Replies inside threads
+        are left out."""
         result = await session.execute(
             select(Message)
             .where(
                 Message.room_id == room_id,
                 Message.thread_root_event_id.is_(None),
+                *_before(before_seq),
             )
             .order_by(Message.seq.desc())
             .limit(limit)
@@ -429,8 +560,25 @@ _LOCK_ROOM = RawStatement(text("SELECT pg_advisory_xact_lock(hashtext(:room_id))
 _LOCK_ROOM_ANNOUNCED_BY_WRITER = RawStatement(
     text(f"SELECT pg_advisory_xact_lock(hashtext(:room_id)), {SET_WRITER_ANNOUNCES}")
 )
+# The highest position the room has ever used: usually its newest row, but
+# retention may have deleted that row while a cursor that read it is still
+# past it. `rooms.seq_floor` remembers the highest live position retention
+# removed; both are read in one statement, so a deletion committing between
+# them cannot be half-seen.
 _ROOM_HEAD = RawStatement(
-    select(func.coalesce(func.max(Message.seq), 0).label("head")).where(
-        Message.room_id == bindparam("room_id")
+    select(
+        func.greatest(
+            select(func.coalesce(func.max(Message.seq), 0))
+            .where(Message.room_id == bindparam("room_id"))
+            .scalar_subquery(),
+            select(func.coalesce(func.max(Room.seq_floor), 0))
+            .where(Room.id == bindparam("room_id"))
+            .scalar_subquery(),
+        ).label("head")
     )
 )
+
+
+def _before(seq: int | None) -> list[ColumnElement[bool]]:
+    """The condition keeping rows written before `seq`; none when not given."""
+    return [] if seq is None else [Message.seq < seq]

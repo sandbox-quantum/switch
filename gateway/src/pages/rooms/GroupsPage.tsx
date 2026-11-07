@@ -303,12 +303,15 @@ function MembershipPanel({
   group,
   byId,
   rooms,
+  canAddRooms,
   onChanged,
 }: {
   selectedId: string | null;
   group: RoomGroupDetail | null;
   byId: Map<string, RoomGroupDetail>;
   rooms: RoomSummary[];
+  /** Only a workspace admin may put rooms in a group. */
+  canAddRooms: boolean;
   onChanged: () => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -323,11 +326,12 @@ function MembershipPanel({
     [rooms, selectedId, isStandalone],
   );
 
-  // Rooms eligible to add: everything not already directly in this group.
+  // Rooms eligible to add: those the viewer may change (filing a room takes
+  // write access to it) that are not already directly in this group.
   const addableOptions = useMemo<PickerOption[]>(
     () =>
       rooms
-        .filter((r) => r.group_id !== selectedId)
+        .filter((r) => r.can_write && r.group_id !== selectedId)
         .map((r) => ({
           id: r.id,
           primary: r.name,
@@ -390,7 +394,7 @@ function MembershipPanel({
         <Typography variant="h6" sx={{ flexGrow: 1 }} noWrap>
           {title}
         </Typography>
-        {!isStandalone && (
+        {!isStandalone && canAddRooms && (
           <Button
             variant="contained"
             size="small"
@@ -406,8 +410,9 @@ function MembershipPanel({
 
       {isStandalone && (
         <Typography variant="body2" color="text.secondary">
-          These rooms aren't in any group. Select a group and use “Add rooms” to
-          organize them.
+          {canAddRooms
+            ? "These rooms aren't in any group. Select a group and use “Add rooms” to organize them."
+            : "These rooms aren't in any group. A workspace admin can file them into one."}
         </Typography>
       )}
 
@@ -428,7 +433,7 @@ function MembershipPanel({
               <Typography variant="body2" sx={{ flexGrow: 1 }} noWrap>
                 {room.name}
               </Typography>
-              {!isStandalone && (
+              {!isStandalone && room.can_write && (
                 <IconButton
                   size="small"
                   onClick={() => handleRemove(room.id)}
@@ -460,7 +465,8 @@ function MembershipPanel({
 export default function GroupsPage() {
   const navigate = useNavigate();
   // Groups are shared by the workspace, so only an admin creates, edits or
-  // deletes them; anyone may file rooms they can write into one.
+  // deletes them, or puts rooms in one; anyone who can write to a room may
+  // take it out.
   const { canAdminTenant: canManageGroups } = useAuth();
   const { data: groups, loading, refetch } = useRoomGroups();
   const { data: rooms, refetch: refetchRooms } = useRooms();
@@ -563,6 +569,7 @@ export default function GroupsPage() {
               group={selectedGroup}
               byId={byId}
               rooms={roomList}
+              canAddRooms={canManageGroups}
               onChanged={refetchAll}
             />
           </Paper>

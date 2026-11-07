@@ -1,6 +1,7 @@
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import NamedTuple
 
 from sqlalchemy import (
     ColumnElement,
@@ -9,6 +10,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    true,
     update,
 )
 from sqlalchemy import func as sa_func
@@ -16,6 +18,7 @@ from sqlalchemy import tuple_ as sa_tuple
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import require_group_filing
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.db.id_lists import any_of
 from switch_core.db.models import (
@@ -320,13 +323,25 @@ class RoomStore:
         """Return rooms the user may read: publicly readable, ones they take
         part in (`involves`), or all if admin. Archived rooms are excluded
         unless `include_archived`."""
-        stmt = select(Room)
-        if not is_admin:
-            stmt = stmt.where(or_(Room.read_visibility == "public", involves(user_id)))
+        stmt = select(Room).where(readable_by(user_id, is_admin=is_admin))
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    async def visible_room_ids(
+        self,
+        session: AsyncSession,
+        room_ids: Collection[str],
+        visible: ColumnElement[bool],
+    ) -> set[str]:
+        """Of `room_ids`, the rooms `visible` holds for."""
+        if not room_ids:
+            return set()
+        result = await session.execute(
+            select(Room.id).where(Room.id.in_(room_ids), visible)
+        )
+        return set(result.scalars().all())
 
     async def involved_room_ids(
         self, session: AsyncSession, user_id: str, room_ids: Collection[str]
@@ -919,12 +934,24 @@ class RoomStore:
         await session.flush()
 
     async def set_group(
-        self, session: AsyncSession, room_id: str, group_id: str | None
+        self,
+        session: AsyncSession,
+        room_id: str,
+        group_id: str | None,
+        *,
+        acting_is_admin: bool,
     ) -> None:
-        """Assign the room to a group, or make it standalone (`group_id=None`)."""
+        """Assign the room to a group, or make it standalone (`group_id=None`).
+
+        Putting the room in a group it is not already in needs a workspace
+        admin (`require_group_filing`, raising ``PermissionError``); making
+        it standalone, or leaving it where it is, does not. Authorizing the
+        room itself is the caller's job."""
         room = await session.get(Room, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
+        if group_id is not None and group_id != room.group_id:
+            require_group_filing(acting_is_admin)
         if group_id is not None:
             group = await session.get(RoomGroup, group_id)
             if group is None:
@@ -933,13 +960,21 @@ class RoomStore:
         await session.flush()
 
     async def set_group_bulk(
-        self, session: AsyncSession, room_ids: list[str], group_id: str | None
+        self,
+        session: AsyncSession,
+        room_ids: list[str],
+        group_id: str | None,
+        *,
+        acting_is_admin: bool,
     ) -> int:
         """Assign many rooms to a group (or `None` for standalone) in one UPDATE.
 
-        The caller is responsible for validating the group and authorizing the
-        rooms. Returns the number of rows updated.
+        Putting rooms in a group needs a workspace admin
+        (`require_group_filing`). The caller is responsible for validating the
+        group and authorizing the rooms. Returns the number of rows updated.
         """
+        if group_id is not None:
+            require_group_filing(acting_is_admin)
         if not room_ids:
             return 0
         result = await session.execute(
@@ -947,6 +982,26 @@ class RoomStore:
         )
         await session.flush()
         return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+class AttachedRooms(NamedTuple):
+    """How many rooms a reference, document or package is in: every one, and
+    those a given reader may read (`readable_by`). Counted in one query, so
+    the two agree."""
+
+    every: int
+    readable: int
+
+
+def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
+    """True for a `Room` row the user may read: publicly readable, or one they
+    take part in (`involves`). Every room, for a tenant admin; only public ones
+    for a reader with no user (an agent nobody owns), who takes part in none."""
+    if is_admin:
+        return true()
+    if user_id is None:
+        return Room.read_visibility == "public"
+    return or_(Room.read_visibility == "public", involves(user_id))
 
 
 def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[bool]:
@@ -968,8 +1023,9 @@ def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[boo
 def involves(user_id: str) -> ColumnElement[bool]:
     """True for a `Room` row the user takes part in: they own it, their Switch
     Console member client or a platform account they have claimed is in it,
-    or an agent they own is. For reading and listing only; it grants no
-    write or configuration access."""
+    or an agent they own is. It grants reading and listing, and unlinking
+    resources (`authz.can_unlink_from_room`); no write or configuration
+    access."""
     return or_(
         Room.owner_id == user_id,
         exists().where(

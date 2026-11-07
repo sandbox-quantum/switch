@@ -8,14 +8,15 @@ the operation lifecycle, and the bindings placement keeps in Core.
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.config import ControllerRelease
-from switch_core.db.models import AgentControllerEnrollmentCode
+from switch_core.db.models import AgentControllerEnrollmentCode, ApiKey
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.management.bindings import load_bindings
 from switch_core.management.controller_routes import ASSIGNMENT_FORMAT
@@ -53,6 +54,18 @@ async def _code(harness: Harness, owner_cookies: dict[str, str]) -> str:
     body = response.json()
     assert body["code"].startswith("swce_")
     return str(body["code"])
+
+
+async def _expire_key(harness: Harness, secret: str) -> None:
+    """Give the key behind `secret` an expiry that has passed, as a key made
+    with one would have."""
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(ApiKey)
+            .where(ApiKey.key_hash == hashlib.sha256(secret.encode()).hexdigest())
+            .values(expires_at=harness.clock.now - timedelta(seconds=1))
+        )
+        await session.commit()
 
 
 class TestEnrollmentCodes:
@@ -177,6 +190,19 @@ class TestEnrollmentByCode:
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "enrollment_code_invalid"
 
+    async def test_a_code_whose_key_has_expired_is_refused(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        code = await _code(harness, cookies_for(owner))
+        await _expire_key(harness, code)
+        async with harness.client() as client:
+            response = await client.post(
+                "/v1/management/controllers/enroll", json=_enroll_body(code)
+            )
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "enrollment_code_invalid"
+
     async def test_an_unknown_code_is_refused(self, harness: Harness) -> None:
         async with harness.client() as client:
             response = await client.post(
@@ -217,6 +243,20 @@ class TestTokenExchange:
             response = await client.post(
                 f"/v1/management/controllers/{controller.controller_id}/token",
                 json={"credential": "swcc_wrong"},
+            )
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "invalid_credential"
+
+    async def test_a_credential_whose_key_has_expired_is_refused(
+        self, harness: Harness
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await _expire_key(harness, controller.credential)
+            response = await client.post(
+                f"/v1/management/controllers/{controller.controller_id}/token",
+                json={"credential": controller.credential},
             )
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "invalid_credential"

@@ -1,3 +1,6 @@
+import type { NewRoomChannel, RoomAccess } from '@shared/core/switch-servers/switch-servers';
+import { channelIdProblem, normalizedChannelId } from './room-channel-choices';
+
 /** What the New room dialog asks the server for: a Switch Console chat when no messaging app is chosen, else a room bridged to the chosen one. */
 export type RoomCreateRequest =
   | {
@@ -22,14 +25,34 @@ export type RoomCreateRequest =
         instructions: string | undefined;
         bridgeId: string;
         agentIds: string[];
+        channel: NewRoomChannel;
+        groupId: string | null;
+        /** Null leaves the server's default. */
+        access: RoomAccess | null;
       };
     };
+
+/** The New room dialog's More options, for a room on a messaging app. */
+export type RoomCreateOptions = {
+  channel: NewRoomChannel;
+  groupId: string | null;
+  /** Null leaves the server's default. */
+  access: RoomAccess | null;
+};
+
+export const DEFAULT_ROOM_OPTIONS: RoomCreateOptions = {
+  channel: { kind: 'new', private: false },
+  groupId: null,
+  access: null,
+};
 
 export function roomCreateRequest(form: {
   serverId: string;
   workspaceId: string;
   /** Null for Switch Console. */
   bridgeId: string | null;
+  /** The chosen app's platform, so an existing channel's id is sent as it writes it; null for Switch Console. */
+  bridgeType: string | null;
   name: string;
   description: string;
   instructions: string;
@@ -37,6 +60,8 @@ export function roomCreateRequest(form: {
   /** The people to add; a bridged room is created without them. */
   memberUserIds: string[];
   requestId: string;
+  /** A bridged room's More options; a Switch Console room has none. */
+  options: RoomCreateOptions;
 }): RoomCreateRequest {
   const name = form.name.trim();
   const agentIds = [...new Set(form.agentIds)];
@@ -62,8 +87,31 @@ export function roomCreateRequest(form: {
       instructions: form.instructions.trim() || undefined,
       bridgeId: form.bridgeId,
       agentIds,
+      ...roomOptionsParams(form.options, form.bridgeType ?? ''),
     },
   };
+}
+
+function roomOptionsParams(options: RoomCreateOptions, bridgeType: string) {
+  const channel: NewRoomChannel =
+    options.channel.kind === 'existing'
+      ? {
+          kind: 'existing',
+          externalChannelId: normalizedChannelId(bridgeType, options.channel.externalChannelId),
+        }
+      : options.channel;
+  return {
+    channel,
+    groupId: options.groupId,
+    access: options.access,
+  };
+}
+
+/** Whether the options can be sent: an existing channel has to be named, by an id of its app's shape. */
+export function roomOptionsReady(options: RoomCreateOptions, bridgeType: string): boolean {
+  if (options.channel.kind !== 'existing') return true;
+  const id = options.channel.externalChannelId;
+  return id.trim() !== '' && channelIdProblem(bridgeType, id) === null;
 }
 
 /** A room needs only a name; a bridged room's description is optional, as its channel topic is. */

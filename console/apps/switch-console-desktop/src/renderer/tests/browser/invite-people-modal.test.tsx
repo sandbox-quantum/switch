@@ -57,7 +57,7 @@ import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 
 const onClose = vi.fn();
 
-function workspace(role: 'owner' | 'admin' | 'member') {
+function workspace(role: 'admin' | 'member') {
   return {
     id: 'ws-1',
     serverId: 'srv-1',
@@ -149,8 +149,7 @@ async function type(input: HTMLInputElement, value: string): Promise<void> {
 }
 
 describe('the invite-people modal', () => {
-  it('is offered to admins and owners, not members', () => {
-    expect(administersWorkspace(workspace('owner') as never)).toBe(true);
+  it('is offered to admins, not members', () => {
     expect(administersWorkspace(workspace('admin') as never)).toBe(true);
     expect(administersWorkspace(workspace('member') as never)).toBe(false);
   });
@@ -300,7 +299,7 @@ describe('the invite-people modal', () => {
     expect(listInvitations).toHaveBeenCalledTimes(2);
   });
 
-  it('does not let an admin hand out ownership', async () => {
+  it('offers the two roles there are', async () => {
     listInvitations.mockResolvedValue({ invitations: [], emailEnabled: true });
     byId.mockReturnValue(workspace('admin'));
     const el = await render();
