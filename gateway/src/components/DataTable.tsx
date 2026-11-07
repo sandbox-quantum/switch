@@ -29,7 +29,7 @@ import {
   ToggleButton,
   Typography,
 } from "@mui/material";
-import { createContext, type ReactNode, useContext, useMemo, useState } from "react";
+import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 import {
   applyFilters,
   type ColumnFilter,
@@ -71,7 +71,9 @@ interface DataTableProps<T extends { id: string | number }> {
   onRowClick?: (params: GridRowParams<T>) => void;
   sx?: SxProps<Theme>;
   /** What a row is, for the count above the table ("12 agents", "3 of 12
-   *  agents" while filtered). Without it there is no count. */
+   *  agents" while filtered). Without it there is no count. A table with a
+   *  count, a search, quick filters or a column `filter` filters its own
+   *  rows, so the grid's own filtering is off and the count stays true. */
   noun?: TableNoun;
   /** A search box over the text `text` returns for each row. */
   search?: { label: string; text: (row: T) => string };
@@ -273,8 +275,21 @@ export default function DataTable<T extends { id: string | number }>({
   emptyState,
 }: DataTableProps<T>) {
   const apiRef = useGridApiRef();
-  const [selection, setSelection] = useState<FilterSelection>({});
-  const [query, setQuery] = useState("");
+  const [selection, setSelectionState] = useState<FilterSelection>({});
+  const [query, setQueryState] = useState("");
+  const filterHeadingId = useId();
+
+  // Narrowing the rows starts the table again from its first page. The grid
+  // does that for its own filters, but these never reach it: it only sees
+  // fewer rows, and moves only once its page no longer exists.
+  const setSelection = (update: FilterSelection | ((current: FilterSelection) => FilterSelection)) => {
+    setSelectionState(update);
+    apiRef.current?.setPage(0);
+  };
+  const setQuery = (next: string) => {
+    setQueryState(next);
+    apiRef.current?.setPage(0);
+  };
   const [picker, setPicker] = useState<{ field: string; anchor: HTMLElement } | null>(null);
 
   const filterable = useMemo(() => columns.filter((column) => column.filter), [columns]);
@@ -364,7 +379,8 @@ export default function DataTable<T extends { id: string | number }>({
       onRowClick={onRowClick}
       disableRowSelectionOnClick
       // A sticky column only sticks while it is rendered, so with one pinned
-      // every column renders rather than only those scrolled into view.
+      // every column renders rather than only those scrolled into view. Fine
+      // for the tables that pin their actions; costly for a very wide one.
       columnBufferPx={pinnedRight.length > 0 ? 1_000_000 : undefined}
       disableColumnFilter={ownFiltering}
       slots={tableOverlay ? { noRowsOverlay: TableOverlay } : undefined}
@@ -397,18 +413,22 @@ export default function DataTable<T extends { id: string | number }>({
                 {countLabel(shown.length, rows.length, noun, narrowed)}
               </Typography>
             )}
-            {quickFilters.map((quick) => (
-              <ToggleButton
-                key={`${quick.field}:${quick.value}`}
-                value={quick.value}
-                size="small"
-                selected={isQuickFilterOn(selection, quick)}
-                onChange={() => setSelection((current) => toggleQuickFilter(current, quick))}
-                sx={QUICK_FILTER_SX}
-              >
-                {quick.label}
-              </ToggleButton>
-            ))}
+            {quickFilters.length > 0 && (
+              <Stack direction="row" spacing={1} role="group" aria-label="Quick filters">
+                {quickFilters.map((quick) => (
+                  <ToggleButton
+                    key={`${quick.field}:${quick.value}`}
+                    value={quick.value}
+                    size="small"
+                    selected={isQuickFilterOn(selection, quick)}
+                    onChange={() => setSelection((current) => toggleQuickFilter(current, quick))}
+                    sx={QUICK_FILTER_SX}
+                  >
+                    {quick.label}
+                  </ToggleButton>
+                ))}
+              </Stack>
+            )}
             {search && (
               <TextField
                 value={query}
@@ -446,9 +466,11 @@ export default function DataTable<T extends { id: string | number }>({
           anchorEl={picker.anchor}
           onClose={() => setPicker(null)}
           anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-          slotProps={{ paper: { sx: { p: 1.5, minWidth: 220, maxHeight: 360 } } }}
+          slotProps={{
+            paper: { role: "dialog", "aria-labelledby": filterHeadingId, sx: { p: 1.5, minWidth: 220, maxHeight: 360 } },
+          }}
         >
-          <Typography variant="overline" color="text.secondary" component="p" sx={{ px: 1 }}>
+          <Typography id={filterHeadingId} variant="overline" color="text.secondary" component="p" sx={{ px: 1 }}>
             Filter by {pickerColumn.headerName ?? pickerColumn.field}
           </Typography>
           <Stack>

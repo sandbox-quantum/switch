@@ -1,9 +1,6 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import DataTable, { type TableColumn } from "./DataTable";
-
-// jsdom has no layout, so the grid renders no rows: these tests cover the
-// toolbar around it. The filtering itself is covered in tableFilters.test.ts.
 
 type Row = { id: number; name: string; status: string };
 
@@ -70,6 +67,31 @@ describe("DataTable toolbar", () => {
 
     expect(getComputedStyle(grid).height).toBe("320px");
     expect(getComputedStyle(grid.parentElement!).display).not.toBe("flex");
+  });
+
+  it("filters a column from its header menu", async () => {
+    render(table());
+    fireEvent.click(screen.getByRole("button", { name: /Status column menu/i }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Filter" }));
+    const picker = await screen.findByRole("dialog", { name: "Filter by Status" });
+    fireEvent.click(within(picker).getByRole("checkbox", { name: "Idle" }));
+
+    expect(screen.getByText("1 of 3 agents")).toBeTruthy();
+    expect(screen.getByText("Status: Idle")).toBeTruthy();
+  });
+
+  it("goes back to the first page when the rows are narrowed", async () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({
+      id: i + 1,
+      name: i < 11 ? `bot-${i + 1}` : `helper-${i + 1}`,
+      status: "Active",
+    }));
+    render(table({ rows: many, pageSize: 10 }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /next page/i })));
+    expect(screen.getByText("11–20 of 30")).toBeTruthy();
+
+    await act(async () => fireEvent.change(screen.getByLabelText("Search agents"), { target: { value: "bot" } }));
+    expect(screen.getByText("1–10 of 11")).toBeTruthy();
   });
 
   it("refuses a quick filter on a column without a filter", () => {
