@@ -1,0 +1,41 @@
+slug: stripe
+name: Stripe
+category: Billing
+description: Look up Stripe customers, payments and subscriptions, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # [DOCUMENTED] Advertises refresh_token in grant_types_supported at https://mcp.stripe.com/.well-known/oauth-authorization-server.
+  refresh: rotating
+  oauth:
+    # [DOCUMENTED] registration_endpoint (https://access.stripe.com/mcp/oauth2/register) advertised in RFC 8414 metadata at https://mcp.stripe.com/.well-known/oauth-authorization-server.
+    registration: dynamic
+    # [DOCUMENTED] RFC 8252 loopback redirection on 127.0.0.1 for native/public desktop clients per PKCE S256.
+    redirect: [loopback]
+    # [DOCUMENTED] revocation_endpoint (https://access.stripe.com/mcp/oauth2/revoke) advertised at https://mcp.stripe.com/.well-known/oauth-authorization-server.
+    revocation_discovered: true
+  identity:
+    # [DOCUMENTED] Identity via shared identity.mcp_tool feature (see #821/#1053) calling list_available_accounts_or_orgs.
+    # Live probes on issue #829 show no HTTP endpoint (such as /v1/account or /userinfo) accepts MCP tokens.
+    mcp_tool: list_available_accounts_or_orgs
+    # [DOCUMENTED] Path to account context. Resolves only when exactly one account is returned;
+    # zero or multiple accounts fail sign-in loudly without guessing a default.
+    account_id: accounts.stripe_context
+    # [DOCUMENTED] Path to human-readable account name.
+    label: accounts.name
+# [DOCUMENTED] Standard 1-hour access token lifetime (3,600s) advertised in OAuth token responses.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # [DOCUMENTED] Official Stripe remote MCP server endpoint.
+    - { name: stripe, url: "https://mcp.stripe.com" }
+access:
+  # [DOCUMENTED] Stripe advertises a single OAuth scope: 'mcp' (https://mcp.stripe.com/.well-known/oauth-authorization-server).
+  # Live probes on issue #829 showed Stripe's Read consent does not filter tools/list ('stripe_api_write' appears
+  # in tools/list even under read consent). Following maintainer ruling on #829, the entry exposes only the write level
+  # with 'mcp' so the connection is not misleadingly labelled read-only. Test mode is strongly recommended in SKILL.md.
+  write:
+    scopes:
+      - mcp
+tools: { mode: pass_through }
