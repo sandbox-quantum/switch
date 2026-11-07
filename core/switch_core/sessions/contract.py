@@ -18,6 +18,7 @@ expose snake_case attributes. Dump with `by_alias=True`.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -247,11 +248,19 @@ class SessionUpsert(_Model):
 class TurnUpsert(_Model):
     type: Literal["turn.upsert"]
     turn_id: Id
-    status: Literal["queued", "running", "completed", "interrupted", "error"]
+    status: Literal[
+        "queued", "running", "completed", "interrupted", "error", "cancelled"
+    ]
     command_id: Id | None
 
 
-TURN_ENDED = frozenset({"completed", "interrupted", "error"})
+TURN_ENDED = frozenset({"completed", "interrupted", "error", "cancelled"})
+
+# A turn is named by the id of the command the host made of it, a UUID
+# (`roomCommandId` in room-prompt.ts, `turnId = command.commandId` in session-host.ts).
+TURN_ID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+)
 
 
 class ItemUpsert(_Model):
@@ -371,6 +380,11 @@ class TurnInterrupt(_Model):
     turn_id: Id
 
 
+class TurnCancel(_Model):
+    type: Literal["turn.cancel"]
+    turn_id: Id
+
+
 class SessionStop(_Model):
     type: Literal["session.stop"]
 
@@ -400,6 +414,7 @@ CommandBody = Annotated[
     MessageSend
     | RequestAnswer
     | TurnInterrupt
+    | TurnCancel
     | SessionStop
     | SessionReset
     | SessionCompact

@@ -1268,13 +1268,19 @@ class MattermostAdapter(PlatformAdapter):
         dropped an option from its body on the promise of a button, and then
         went out as the text of a failure, would ask for a choice it had
         stopped printing.
+
+        Nor is there an agent here to name, so a queued turn's card names the
+        pieces of `!cancel` rather than the command.
         """
-        return self._draw(content, mention=None, responder=None, controls=False).text
+        return self._draw(
+            content, agent_name=None, mention=None, responder=None, controls=False
+        ).text
 
     def _draw(
         self,
         content: RichContent,
         *,
+        agent_name: str | None,
         mention: str | None,
         responder: str | None,
         controls: bool,
@@ -1304,6 +1310,7 @@ class MattermostAdapter(PlatformAdapter):
                     mention=mention,
                     error_summary=content.error_summary,
                     tool_detail=True,
+                    agent_name=agent_name,
                 )
                 + tail,
                 answerable=False,
@@ -1416,7 +1423,9 @@ class MattermostAdapter(PlatformAdapter):
             return []
         return answer_actions(key, url, content.reference.token, controls)
 
-    async def _render_rich(self, channel_id: str, content: RichContent) -> _Rendered:
+    async def _render_rich(
+        self, channel_id: str, agent_name: str, content: RichContent
+    ) -> _Rendered:
         mention = await self._mention(content.notify_external_id)
         responder = (
             await self._mention(content.responder_external_id)
@@ -1427,7 +1436,11 @@ class MattermostAdapter(PlatformAdapter):
             isinstance(content, RequestCard) and self._button_address() is not None
         )
         drawn = self._draw(
-            content, mention=mention, responder=responder, controls=controls
+            content,
+            agent_name=agent_name,
+            mention=mention,
+            responder=responder,
+            controls=controls,
         )
         actions = self._controls(channel_id, content, drawn)
         if not controls:
@@ -1439,7 +1452,11 @@ class MattermostAdapter(PlatformAdapter):
         # — which is not known until it has been drawn, because a form too big
         # to show faithfully is discovered by drawing it.
         plain = self._draw(
-            content, mention=mention, responder=responder, controls=False
+            content,
+            agent_name=agent_name,
+            mention=mention,
+            responder=responder,
+            controls=False,
         ).text
         return _Rendered(
             text=drawn.text if actions else plain, actions=actions, plain=plain
@@ -1466,7 +1483,7 @@ class MattermostAdapter(PlatformAdapter):
         Mattermost actually gave. A send whose outcome nobody knows raises the
         transport's own error and keeps the reservation.
         """
-        rendered = await self._render_rich(channel_id, content)
+        rendered = await self._render_rich(channel_id, agent_name, content)
         driver = self._bot_drivers.get(agent_name)
         if driver is None:
             raise RichContentFailed(
@@ -1543,7 +1560,7 @@ class MattermostAdapter(PlatformAdapter):
         # redraw would be a handle in the channel that never resolves to
         # anything new for the person it names.
         rendered = await self._render_rich(
-            channel_id, replace(content, notify_external_id=None)
+            channel_id, agent_name, replace(content, notify_external_id=None)
         )
         driver = self._bot_drivers.get(agent_name) or self._admin_driver
         loop = self._main_loop

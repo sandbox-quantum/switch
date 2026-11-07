@@ -344,6 +344,27 @@ class AgentSessionActivityStore:
         )
         return result.scalar_one_or_none()
 
+    async def queued_turns_starting_with(
+        self, session: AsyncSession, agent_id: str, room_id: str, prefix: str
+    ) -> list[AgentSessionActivityItem]:
+        """The agent's queued turns in `room_id` whose id starts with `prefix`,
+        case aside, oldest first. `prefix` is matched as text: `%` and `_` in it
+        match only themselves."""
+        result = await session.execute(
+            select(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                AgentSessionActivityItem.status == "queued",
+                func.lower(AgentSessionActivityItem.turn_id).startswith(
+                    prefix.lower(), autoescape=True
+                ),
+            )
+            .order_by(AgentSessionActivityItem.created_at)
+        )
+        return list(result.scalars())
+
     async def newest_running_turn(
         self, session: AsyncSession, agent_id: str
     ) -> AgentSessionActivityItem | None:

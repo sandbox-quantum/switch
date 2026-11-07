@@ -1,4 +1,4 @@
-import type { Command, SessionChatClient } from '@switch-console/shared/session-v1';
+import type { Command, SessionChatClient, Snapshot } from '@switch-console/shared/session-v1';
 import { Check, Loader2, Paperclip, RotateCw, Square, Wrench } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { SessionHeaderContent } from '@renderer/features/sessions/session-header-slots';
@@ -11,6 +11,20 @@ import { sessionStatePill } from './session-state';
 import { SessionStatePill } from './session-state-pill';
 import { SessionV1Controls } from './session-v1-controls';
 import { SessionV1Request } from './session-v1-request';
+
+/**
+ * The line under a turn that ended without its answer, or null. A cancelled
+ * turn was withdrawn by its sender before the agent started: said, but not as
+ * a failure.
+ */
+export function turnEndNote(
+  status: Snapshot['turns'][number]['status']
+): { text: string; failed: boolean } | null {
+  if (status === 'interrupted' || status === 'error')
+    return { text: `Turn ${status}.`, failed: true };
+  if (status === 'cancelled') return { text: 'Turn cancelled.', failed: false };
+  return null;
+}
 
 /** Both remote and local-only transports feed the same contract-shaped view. */
 export function SessionV1Chat({
@@ -111,6 +125,12 @@ export function SessionV1Chat({
     view.snapshot?.turns
       .filter((turn) => turn.status === 'interrupted' || turn.status === 'error')
       .map((turn) => [turn.turnId, turn.status])
+  );
+  const endNotes = new Map(
+    (view.snapshot?.turns ?? []).flatMap((turn) => {
+      const note = turnEndNote(turn.status);
+      return note ? [[turn.turnId, note] as const] : [];
+    })
   );
   const noticesAfter = (itemId: string | null) =>
     view.notices
@@ -500,9 +520,16 @@ export function SessionV1Chat({
                   {item.text && <p className="mt-2 whitespace-pre-wrap">{item.text}</p>}
                 </details>
               )}
-              {lastItems.get(item.turnId) === item.itemId && stoppedTurns.has(item.turnId) && (
-                <p role="status" className="mt-2 text-sm text-foreground-destructive">
-                  Turn {stoppedTurns.get(item.turnId)}.
+              {lastItems.get(item.turnId) === item.itemId && endNotes.has(item.turnId) && (
+                <p
+                  role="status"
+                  className={`mt-2 text-sm ${
+                    endNotes.get(item.turnId)!.failed
+                      ? 'text-foreground-destructive'
+                      : 'text-foreground-muted'
+                  }`}
+                >
+                  {endNotes.get(item.turnId)!.text}
                 </p>
               )}
               {item.attachments.length > 0 && (

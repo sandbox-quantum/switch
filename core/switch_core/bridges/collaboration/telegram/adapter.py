@@ -1509,6 +1509,7 @@ class TelegramAdapter(PlatformAdapter):
         """
         return self._draw(
             content,
+            agent_name=None,
             mention=None,
             responder=None,
             prefix="",
@@ -1520,6 +1521,7 @@ class TelegramAdapter(PlatformAdapter):
         self,
         content: RichContent,
         *,
+        agent_name: str | None,
         mention: str | None,
         responder: str | None,
         prefix: str,
@@ -1551,6 +1553,7 @@ class TelegramAdapter(PlatformAdapter):
                 mention=mention,
                 error_summary=content.error_summary,
                 tool_detail=False,
+                agent_name=agent_name,
             )
             fold = self._activity_fold(content, limit - len(tail) - len(body))
             return Drawn(text=f"{prefix}{body}{tail}{fold}", answerable=False)
@@ -1744,6 +1747,7 @@ class TelegramAdapter(PlatformAdapter):
         stopping = self._interrupt_turn(content)
         drawn = self._draw(
             content,
+            agent_name=agent_name,
             mention=self._mention(content.notify_external_id),
             responder=responder,
             prefix=prefix,

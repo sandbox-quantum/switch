@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -11,7 +12,9 @@ import {
 } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
+import { Journal } from './journal';
 import { Redactions } from './redaction';
+import { roomCommand, roomMessageSchema } from './room-prompt';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
 import { HostedSession, recentTurns, type RoomReply, unpostedReply } from './session-host';
 
@@ -20,6 +23,14 @@ import { HostedSession, recentTurns, type RoomReply, unpostedReply } from './ses
 // `until`), so this is the one clock: long enough for a slow disk, short
 // enough that a host that never gets there still fails.
 vi.setConfig({ testTimeout: 30_000 });
+
+/**
+ * `vi.waitFor`, for state the host writes to disk or keeps to itself without
+ * telling anyone, which `until` would never look at again.
+ */
+function poll<T>(check: () => T | Promise<T>): Promise<T> {
+  return vi.waitFor(check, { timeout: 10_000 });
+}
 
 /** A host that tells `until` each time it calls its provider or publishes an event. */
 async function startHost(
@@ -2185,4 +2196,851 @@ describe('retrying a room message', () => {
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
+});
+
+// ── Cancelling a queued room message ─────────────────────────────────────────
+const PROVIDERS = ['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const;
+
+/** `!cancel` from the room, as Switch relays it for the person who sent `turnId`. */
+function cancel(commandId: string, turnId: string, origin: Partial<Command['origin']> = {}) {
+  return {
+    ...message(commandId),
+    origin: {
+      actorId: '@person:test',
+      surface: 'mattermost',
+      roomId: 'room',
+      threadId: null,
+      messageId: `post-${commandId}`,
+      ...origin,
+    },
+    body: { type: 'turn.cancel', turnId },
+  } satisfies Command;
+}
+function statusOf(host: HostedSession, turnId: string) {
+  return host.snapshot().turns.find((turn) => turn.turnId === turnId)?.status;
+}
+function sent(adapter: ProviderAdapter): string[] {
+  return vi.mocked(adapter.sendTurn).mock.calls.map(([input]) => input.turnId);
+}
+/** Ends the turns the provider is sent, from the `from`th, until it has been sent `count`. */
+async function finishTurns(
+  adapter: ProviderAdapter,
+  emit: (event: Record<string, unknown>) => void,
+  count: number,
+  from = 1
+) {
+  for (let n = from; n <= count; n++) {
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(n));
+    emit({ type: 'turn.completed', turnId: sent(adapter)[n - 1], outcome: 'completed', usage: [] });
+  }
+}
+/** `a` running and the rest queued behind it, all sent from the room by one person. */
+async function queuedBehind(provider: Session['provider'], ...queued: string[]) {
+  const fixture = await start(provider);
+  for (const id of ['a', ...queued]) await fixture.host.command(roomMessage(id, null));
+  await until(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledOnce());
+  return fixture;
+}
+function cancelledEvents(host: HostedSession) {
+  return host
+    .replay(0)
+    .events.filter(
+      (event) => event.body.type === 'turn.upsert' && event.body.status === 'cancelled'
+    );
+}
+
+it.each(PROVIDERS)('never sends %s a message cancelled from its queue', async (provider) => {
+  const { host, adapter, emit } = await queuedBehind(provider, 'b', 'c');
+  expect(await host.command(cancel('cancel-b', 'b'))).toMatchObject({ status: 'applied' });
+  expect(statusOf(host, 'b')).toBe('cancelled');
+  await finishTurns(adapter, emit, 2);
+  await until(() => expect(statusOf(host, 'c')).toBe('completed'));
+  expect(sent(adapter)).toEqual(['a', 'c']);
+  expect(statusOf(host, 'b')).toBe('cancelled');
+  expect(cancelledEvents(host)[0]?.body).toEqual({
+    type: 'turn.upsert',
+    turnId: 'b',
+    commandId: 'b',
+    status: 'cancelled',
+  });
+});
+
+it.each(['b', 'c', 'd'])('cancels %s of three queued and keeps the rest in order', async (id) => {
+  const { host, adapter, emit } = await queuedBehind('codex', 'b', 'c', 'd');
+  expect((await host.command(cancel('cancel', id))).status).toBe('applied');
+  await finishTurns(adapter, emit, 3);
+  await host.command(roomMessage('last', null));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(4));
+  expect(sent(adapter)).toEqual(['a', ...['b', 'c', 'd'].filter((other) => other !== id), 'last']);
+});
+
+it('refuses to cancel the running turn, and leaves it running', async () => {
+  const { host, adapter } = await queuedBehind('claude');
+  await until(() => expect(statusOf(host, 'a')).toBe('running'));
+  expect(await host.command(cancel('cancel-a', 'a'))).toMatchObject({
+    status: 'rejected',
+    code: 'TURN_ALREADY_STARTED',
+  });
+  expect(adapter.interruptTurn).not.toHaveBeenCalled();
+  expect(statusOf(host, 'a')).toBe('running');
+});
+
+it('refuses to cancel a message whose attachments are being staged', async () => {
+  const { adapter, config } = setup('codex');
+  const root = await mkdtemp(join(tmpdir(), 'sdk-cancel-stage-'));
+  roots.push(root);
+  let release!: (files: Array<{ path: string; mimeType: string }>) => void;
+  const staging = new Promise<Array<{ path: string; mimeType: string }>>((done) => {
+    release = done;
+  });
+  const stageAttachments = vi.fn(() => staging);
+  const releaseAttachments = vi.fn();
+  const host = await startHost(root, { ...config, stageAttachments, releaseAttachments }, adapter);
+  hosts.push(host);
+  await until(() =>
+    expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('text/plain')
+  );
+  const command = roomMessage('with-file', null);
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.attachments = [
+    { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+  ];
+  await host.command(command);
+  await expect.poll(() => stageAttachments.mock.calls.length).toBe(1);
+  expect(await host.command(cancel('cancel', 'with-file'))).toMatchObject({
+    status: 'rejected',
+    code: 'TURN_ALREADY_STARTED',
+  });
+  release([{ path: '/execution-host/note.txt', mimeType: 'text/plain' }]);
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  expect(adapter.interruptTurn).not.toHaveBeenCalled();
+  expect(releaseAttachments).not.toHaveBeenCalled();
+});
+
+it('tells its owner which attachments a cancelled message will never stage', async () => {
+  const { adapter, config, emit } = setup('codex');
+  const root = await mkdtemp(join(tmpdir(), 'sdk-cancel-release-'));
+  roots.push(root);
+  const stageAttachments = vi.fn(async () => []);
+  const releaseAttachments = vi.fn();
+  const host = await startHost(root, { ...config, stageAttachments, releaseAttachments }, adapter);
+  hosts.push(host);
+  await until(() =>
+    expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('text/plain')
+  );
+  await host.command(roomMessage('a', null));
+  const command = roomMessage('with-file', null);
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.attachments = [
+    { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+  ];
+  await host.command(command);
+  expect((await host.command(cancel('cancel', 'with-file'))).status).toBe('applied');
+  expect(releaseAttachments).toHaveBeenCalledExactlyOnceWith(command.body.attachments);
+  await finishTurns(adapter, emit, 1);
+  await host.command(roomMessage('last', null));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(sent(adapter)).toEqual(['a', 'last']);
+  expect(stageAttachments).not.toHaveBeenCalled();
+});
+
+it('lets go of a cancelled message’s attachments even when the cancel cannot be recorded', async () => {
+  // Events are written in batches through `appendAll`; a refused record refuses its whole batch.
+  const original = Journal.prototype.appendAll;
+  const appendAll = vi.spyOn(Journal.prototype, 'appendAll').mockImplementation(async function (
+    this: Journal<unknown>,
+    values: unknown[]
+  ) {
+    const cancelled = values.some((value) => {
+      const body = (value as { body?: { type?: string; status?: string } }).body;
+      return body?.type === 'turn.upsert' && body.status === 'cancelled';
+    });
+    if (cancelled) throw new Error('Disk full');
+    return original.call(this, values);
+  });
+  try {
+    const { adapter, config } = setup('codex');
+    const root = await mkdtemp(join(tmpdir(), 'sdk-cancel-release-failed-'));
+    roots.push(root);
+    const stageAttachments = vi.fn(async () => []);
+    const releaseAttachments = vi.fn();
+    const host = await startHost(
+      root,
+      { ...config, stageAttachments, releaseAttachments },
+      adapter
+    );
+    hosts.push(host);
+    await until(() =>
+      expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('text/plain')
+    );
+    await host.command(roomMessage('a', null));
+    const command = roomMessage('with-file', null);
+    if (command.body.type !== 'message.send') throw new Error('Expected message');
+    command.body.attachments = [
+      { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+    ];
+    await host.command(command);
+    expect(await host.command(cancel('cancel', 'with-file'))).toMatchObject({
+      status: 'unknown',
+      code: 'OUTCOME_UNKNOWN',
+    });
+    expect(releaseAttachments).toHaveBeenCalledExactlyOnceWith(command.body.attachments);
+  } finally {
+    appendAll.mockRestore();
+  }
+});
+
+it.each(['cancel first', 'completion first', 'together'] as const)(
+  'either sends or cancels a message raced with the turn before it ending: %s',
+  async (order) => {
+    const { host, adapter, emit } = await queuedBehind('opencode', 'b');
+    const complete = () =>
+      emit({ type: 'turn.completed', turnId: 'a', outcome: 'completed', usage: [] });
+    let outcome;
+    if (order === 'cancel first') {
+      outcome = await host.command(cancel('cancel-b', 'b'));
+      complete();
+    } else if (order === 'completion first') {
+      complete();
+      await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+      outcome = await host.command(cancel('cancel-b', 'b'));
+    } else {
+      const cancelling = host.command(cancel('cancel-b', 'b'));
+      complete();
+      outcome = await cancelling;
+    }
+    const cancelled = outcome.status === 'applied';
+    if (!cancelled) expect(outcome.code).toBe('TURN_ALREADY_STARTED');
+    if (order !== 'together') expect(cancelled).toBe(order === 'cancel first');
+    if (!cancelled) await finishTurns(adapter, emit, 2, 2);
+    await host.command(roomMessage('last', null));
+    await until(() => expect(sent(adapter).at(-1)).toBe('last'));
+    expect(sent(adapter)).toEqual(cancelled ? ['a', 'last'] : ['a', 'b', 'last']);
+    expect(statusOf(host, 'b')).toBe(cancelled ? 'cancelled' : 'completed');
+  }
+);
+
+it('records one cancellation for a cancel delivered twice', async () => {
+  const { host } = await queuedBehind('claude', 'b');
+  const command = cancel('cancel-b', 'b');
+  expect((await host.command(command)).status).toBe('applied');
+  expect((await host.command(structuredClone(command))).status).toBe('applied');
+  expect(cancelledEvents(host)).toHaveLength(1);
+});
+
+it('says a message is already cancelled to a second cancel sent while the first waits', async () => {
+  const { host } = await queuedBehind('claude', 'b');
+  const [first, second] = await Promise.all([
+    host.command(cancel('first', 'b')),
+    host.command(cancel('second', 'b')),
+  ]);
+  expect(first).toMatchObject({ status: 'applied' });
+  expect(second).toMatchObject({ status: 'rejected', code: 'TURN_ALREADY_CANCELLED' });
+  expect(cancelledEvents(host)).toHaveLength(1);
+});
+
+/** A retry of the room message `messageId`, asked for by `actorId`. */
+function retryOf(commandId: string, messageId: string, actorId: string): Command {
+  return {
+    ...message(commandId),
+    origin: { actorId, surface: 'switch-web', roomId: 'room', threadId: null, messageId: null },
+    body: { type: 'message.retry', messageId },
+  };
+}
+
+it('leaves a retried message to its sender to cancel, not to whoever retried it', async () => {
+  const { host, adapter, emit } = await start('codex');
+  await host.command(roomMessage('first', null));
+  await until(() => expect(statusOf(host, 'first')).toBe('running'));
+  emit({
+    type: 'turn.completed',
+    turnId: 'first',
+    outcome: 'error',
+    message: 'model',
+    usage: [],
+  });
+  await until(() => expect(statusOf(host, 'first')).toBe('error'));
+  await host.command(roomMessage('busy', null));
+  await until(() => expect(statusOf(host, 'busy')).toBe('running'));
+  const retried = await host.command(retryOf('again', 'message-first', '@clicker:test'));
+  expect(retried.status).toBe('applied');
+  await until(() => expect(statusOf(host, 'again')).toBe('queued'));
+
+  const byClicker = cancel('by-clicker', 'again', { actorId: '@clicker:test' });
+  expect(await host.command(byClicker)).toMatchObject({
+    status: 'rejected',
+    code: 'NOT_YOUR_MESSAGE',
+  });
+  expect(statusOf(host, 'again')).toBe('queued');
+  expect((await host.command(cancel('by-sender', 'again'))).status).toBe('applied');
+  expect(statusOf(host, 'again')).toBe('cancelled');
+
+  await finishTurns(adapter, emit, 2, 2);
+  await host.command(roomMessage('last', null));
+  await until(() => expect(sent(adapter).at(-1)).toBe('last'));
+  expect(sent(adapter)).toEqual(['first', 'busy', 'last']);
+});
+
+it('refuses to run again a message cancelled from the queue', async () => {
+  const { host, adapter } = await queuedBehind('codex', 'b');
+  expect((await host.command(cancel('cancel-b', 'b'))).status).toBe('applied');
+
+  const retry = retryOf('again', 'message-b', '@person:test');
+  await expect(host.command(retry)).rejects.toThrow('SESSION_BUSY');
+  expect(host.snapshot().turns.map((turn) => turn.turnId)).toEqual(['a', 'b']);
+  expect(statusOf(host, 'b')).toBe('cancelled');
+  expect(sent(adapter)).toEqual(['a']);
+});
+
+it.each([
+  ['someone else', 'b', { actorId: '@other:test' }, 'NOT_YOUR_MESSAGE'],
+  ['another room', 'b', { roomId: 'other-room' }, 'TURN_NOT_FOUND'],
+  ['a Console message', 'console', {}, 'TURN_NOT_FOUND'],
+  ['a follow-up', 'followup', {}, 'TURN_NOT_FOUND'],
+  ['the running turn, named as current', 'current', {}, 'TURN_NOT_FOUND'],
+  ['an unknown turn', 'never-sent', {}, 'TURN_NOT_FOUND'],
+] as const)(
+  'refuses a cancel for %s and leaves the queue alone',
+  async (_, turnId, origin, code) => {
+    const { host, adapter, emit } = await start('cursor');
+    await host.command(roomMessage('a', null));
+    await host.command(roomMessage('b', null));
+    await host.command(message('console'));
+    const followup = roomMessage('followup', null);
+    await host.command({ ...followup, origin: { ...followup.origin, messageId: null } });
+    expect(await host.command(cancel('cancel', turnId, origin))).toMatchObject({
+      status: 'rejected',
+      code,
+    });
+    expect(['b', 'console', 'followup'].map((id) => statusOf(host, id))).toEqual([
+      'queued',
+      'queued',
+      'queued',
+    ]);
+    await finishTurns(adapter, emit, 4);
+    expect(sent(adapter)).toEqual(['a', 'b', 'console', 'followup']);
+    expect(cancelledEvents(host)).toEqual([]);
+  }
+);
+
+it('says a finished message is no longer queued', async () => {
+  const { host, adapter, emit } = await queuedBehind('codex');
+  await finishTurns(adapter, emit, 1);
+  await until(() => expect(statusOf(host, 'a')).toBe('completed'));
+  expect(await host.command(cancel('cancel-a', 'a'))).toMatchObject({
+    status: 'rejected',
+    code: 'TURN_NOT_QUEUED',
+  });
+});
+
+it('says a turn that just ended is no longer queued, before the host lets it go', async () => {
+  const original = Journal.prototype.append;
+  let release!: () => void;
+  const held = new Promise<void>((done) => {
+    release = done;
+  });
+  // The room hears of a failed turn before the turn stops being the active one.
+  const append = vi.spyOn(Journal.prototype, 'append').mockImplementation(async function (
+    this: Journal<unknown>,
+    value: unknown
+  ) {
+    if ((value as { type?: string }).type === 'room-reply') await held;
+    return original.call(this, value);
+  });
+  try {
+    const reply = vi.fn(async (_reply: RoomReply) => {});
+    const { host, adapter, emit } = await startReplying(reply);
+    await host.command(roomMessage('a', null));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+    emit({ type: 'turn.completed', turnId: 'a', outcome: 'error', message: 'boom', usage: [] });
+    await until(() => expect(statusOf(host, 'a')).toBe('error'));
+    await poll(() =>
+      expect(append.mock.calls.map(([value]) => (value as { type?: string }).type)).toContain(
+        'room-reply'
+      )
+    );
+    expect(await host.command(cancel('cancel-a', 'a'))).toMatchObject({
+      status: 'rejected',
+      code: 'TURN_NOT_QUEUED',
+    });
+    release();
+    await until(() => expect(reply).toHaveBeenCalledOnce());
+  } finally {
+    release();
+    append.mockRestore();
+  }
+});
+
+it('keeps a cancelled message cancelled across a restart, without calling it interrupted', async () => {
+  const { host, adapter, emit, root } = await queuedBehind('claude', 'b');
+  expect((await host.command(cancel('cancel-b', 'b'))).status).toBe('applied');
+  await finishTurns(adapter, emit, 1);
+  await until(() => expect(statusOf(host, 'a')).toBe('completed'));
+  await host.shutdown();
+  const next = setup('claude');
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(statusOf(recovered, 'b')).toBe('cancelled');
+  expect(recovered.status('cancel-b').status).toBe('applied');
+  const notices = recovered
+    .replay(0)
+    .events.flatMap((event) => (event.body.type === 'notice' ? [event.body.code] : []));
+  expect(notices).not.toContain('TURN_INTERRUPTED');
+  expect(next.adapter.sendTurn).not.toHaveBeenCalled();
+});
+
+/** A host restarted after `commands` were accepted and nothing more was recorded of them. */
+async function restartedAfterAccepting(root: string, ...commands: Command[]) {
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    commands.map((command) => JSON.stringify({ type: 'accepted', command }) + '\n').join('')
+  );
+  const next = setup('claude');
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  return { ...next, host: recovered };
+}
+
+it('leaves a cancel a restart cut short unknown, even after an earlier one applied', async () => {
+  const { host, root } = await queuedBehind('claude', 'b');
+  expect((await host.command(cancel('first', 'b'))).status).toBe('applied');
+  await host.shutdown();
+  const { host: recovered } = await restartedAfterAccepting(root, cancel('second', 'b'));
+  expect(recovered.status('first').status).toBe('applied');
+  expect(recovered.status('second')).toMatchObject({ status: 'unknown', code: 'HOST_RESTARTED' });
+  expect(statusOf(recovered, 'b')).toBe('cancelled');
+});
+
+it('never sends a message whose cancel a restart cut short before it was recorded', async () => {
+  const { host, root } = await queuedBehind('claude', 'b');
+  await host.shutdown();
+  const { host: recovered, adapter } = await restartedAfterAccepting(root, cancel('cancel', 'b'));
+  expect(recovered.status('cancel')).toMatchObject({ status: 'unknown', code: 'HOST_RESTARTED' });
+  expect(statusOf(recovered, 'b')).toBe('interrupted');
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+});
+
+it('stops a session around a cancelled message without touching it', async () => {
+  const { host, adapter } = await queuedBehind('codex', 'b', 'c');
+  expect((await host.command(cancel('cancel-b', 'b'))).status).toBe('applied');
+  expect((await host.command({ ...message('stop'), body: { type: 'session.stop' } })).status).toBe(
+    'applied'
+  );
+  await until(() => expect(host.snapshot().session.status).toBe('stopped'));
+  expect(['a', 'b', 'c'].map((id) => statusOf(host, id))).toEqual([
+    'interrupted',
+    'cancelled',
+    'interrupted',
+  ]);
+  expect(sent(adapter)).toEqual(['a']);
+});
+
+it('resets once the last queued message is cancelled and the turn before it ends', async () => {
+  const { host, adapter, emit } = await queuedBehind('claude', 'b');
+  expect((await host.command(cancel('cancel-b', 'b'))).status).toBe('applied');
+  await finishTurns(adapter, emit, 1);
+  await until(() => expect(statusOf(host, 'a')).toBe('completed'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(
+    (await host.command({ ...message('reset'), body: { type: 'session.reset' } })).status
+  ).toBe('applied');
+  expect(sent(adapter)).toEqual(['a']);
+});
+
+it('cancels the message a room frame queued, for the cancel Switch relays from its sender', async () => {
+  const { host, adapter } = await start('claude');
+  const post = (messageId: string) =>
+    roomMessageSchema.parse({
+      type: 'message',
+      payload: { sender: '@person:test', sender_name: 'Person', message_id: messageId, body: 'hi' },
+    });
+  const fromRoom = (messageId: string) =>
+    roomCommand({
+      agentId: 'agent',
+      sessionId: 'session',
+      epoch: host.snapshot().session.epoch,
+      roomId: '!room:test',
+      message: post(messageId),
+      surface: 'switch-web',
+      attachments: [],
+      preface: null,
+      firstOfConversation: false,
+    });
+  await host.command(fromRoom('$running'));
+  const queued = fromRoom('$queued');
+  await host.command(queued);
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  // Shaped as core's `room_control_frame`: the sender is the event's user, and
+  // the generation is left for the host to name, as `current()` does.
+  const frame = commandSchema.parse({
+    contractVersion: 1,
+    commandId: randomUUID(),
+    sessionId: 'session',
+    epoch: 'current',
+    origin: {
+      surface: 'mattermost',
+      actorId: '@person:test',
+      roomId: '!room:test',
+      threadId: null,
+      messageId: '$cancel',
+    },
+    body: { type: 'turn.cancel', turnId: queued.commandId },
+  });
+  expect((await host.command({ ...frame, epoch: host.snapshot().session.epoch })).status).toBe(
+    'applied'
+  );
+  expect(statusOf(host, queued.commandId)).toBe('cancelled');
+  expect(statusOf(host, fromRoom('$running').commandId)).toBe('running');
+});
+
+// ── A session that exits while messages are queued ───────────────────────────
+type Held = { reached: boolean; release: () => void; gate: Promise<void> };
+
+/**
+ * Holds the journal writes `key` names until each is released; every other
+ * write goes through. `done` lists what has been written, in order.
+ */
+function holdWrites(key: (value: unknown) => string | undefined) {
+  // Every write ends in `appendAll`, whether it is a single record or a batch of events.
+  const original = Journal.prototype.appendAll;
+  const held = new Map<string, Held>();
+  const done: unknown[] = [];
+  const entry = (name: string) => {
+    let found = held.get(name);
+    if (!found) {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      found = { reached: false, release, gate };
+      held.set(name, found);
+    }
+    return found;
+  };
+  const spy = vi.spyOn(Journal.prototype, 'appendAll').mockImplementation(async function (
+    this: Journal<unknown>,
+    values: unknown[]
+  ) {
+    // A held record holds the whole batch it is written in.
+    const waits = values.flatMap((value) => {
+      const name = key(value);
+      return name === undefined ? [] : [entry(name)];
+    });
+    for (const wait of waits) wait.reached = true;
+    for (const wait of waits) await wait.gate;
+    await original.call(this, values);
+    done.push(...values);
+  });
+  return {
+    done,
+    reached: (name: string) => poll(() => expect(held.get(name)?.reached).toBe(true)),
+    release: (name: string) => entry(name).release(),
+    restore: () => {
+      for (const wait of held.values()) wait.release();
+      spy.mockRestore();
+    },
+  };
+}
+/** Holds only the writes named in `names`: `interrupted:a` for a turn's status, `item:a` for its message. */
+function holdOnly(...names: string[]) {
+  return holdWrites((value) => {
+    const body = (
+      value as {
+        body?: { type?: string; turnId?: string; status?: string; item?: { turnId?: string } };
+      }
+    ).body;
+    const name =
+      body?.type === 'turn.upsert'
+        ? `${body.status}:${body.turnId}`
+        : body?.type === 'item.upsert'
+          ? `item:${body.item?.turnId}`
+          : undefined;
+    return name !== undefined && names.includes(name) ? name : undefined;
+  });
+}
+function interruptedEvents(host: HostedSession, turnId: string) {
+  return host
+    .replay(0)
+    .events.filter(
+      (event) =>
+        event.body.type === 'turn.upsert' &&
+        event.body.turnId === turnId &&
+        event.body.status === 'interrupted'
+    );
+}
+function turnFailed(host: HostedSession) {
+  return host
+    .replay(0)
+    .events.some((event) => event.body.type === 'notice' && event.body.code === 'TURN_FAILED');
+}
+/** Lets every callback already due run; nothing here waits on the disk. */
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+/** `a` handed to the provider and left waiting there until the test fails it. */
+function sendingA(adapter: ProviderAdapter, emit: (event: Record<string, unknown>) => void) {
+  let fail!: (error: Error) => void;
+  const pending = new Promise<{ turnId: string }>((_resolve, reject) => {
+    fail = reject;
+  });
+  const after = { throws: false };
+  vi.mocked(adapter.sendTurn).mockImplementation(async (input) => {
+    if (input.turnId === 'a') {
+      emit({ type: 'turn.started', turnId: 'a' });
+      return pending;
+    }
+    // Every adapter refuses a turn for a session that has gone (`require`).
+    if (after.throws) throw new Error('Session is not running');
+    emit({ type: 'turn.started', turnId: input.turnId });
+    return { turnId: input.turnId };
+  });
+  return { fail, after };
+}
+
+it('keeps a cancel that was being written when the session exited', async () => {
+  const writes = holdOnly('cancelled:b');
+  try {
+    const { host, adapter, emit } = await queuedBehind('claude', 'b', 'c');
+    const cancelling = host.command(cancel('cancel-b', 'b'));
+    await writes.reached('cancelled:b');
+    const looked = vi.spyOn(host, 'snapshot');
+    emit({ type: 'session.exited', reason: 'Provider exited' });
+    await poll(() => expect(looked).toHaveBeenCalled());
+    looked.mockRestore();
+    writes.release('cancelled:b');
+    expect(await cancelling).toMatchObject({ status: 'applied' });
+    await until(() => expect(statusOf(host, 'c')).toBe('interrupted'));
+    expect(statusOf(host, 'a')).toBe('interrupted');
+    expect(statusOf(host, 'b')).toBe('cancelled');
+    expect(interruptedEvents(host, 'b')).toEqual([]);
+    expect(sent(adapter)).toEqual(['a']);
+  } finally {
+    writes.restore();
+  }
+});
+
+it('refuses a cancel that arrives while the session exits, and ends the message interrupted', async () => {
+  const writes = holdOnly('interrupted:a');
+  try {
+    const { host, adapter, emit } = await queuedBehind('codex', 'b', 'c');
+    emit({ type: 'session.exited', reason: 'Provider exited' });
+    await writes.reached('interrupted:a');
+    const cancelling = host.command(cancel('cancel-b', 'b'));
+    writes.release('interrupted:a');
+    expect(await cancelling).toMatchObject({ status: 'rejected', code: 'TURN_NOT_QUEUED' });
+    await until(() => expect(statusOf(host, 'c')).toBe('interrupted'));
+    expect(statusOf(host, 'b')).toBe('interrupted');
+    expect(cancelledEvents(host)).toEqual([]);
+    expect(sent(adapter)).toEqual(['a']);
+  } finally {
+    writes.restore();
+  }
+});
+
+it.each([
+  ['accepts', false],
+  ['refuses', true],
+] as const)(
+  'sends nothing queued after the session exits and the running turn fails, to a provider that %s late turns',
+  async (_label, throws) => {
+    const writes = holdOnly('interrupted:a', 'interrupted:c');
+    try {
+      const { host, adapter, emit } = await start('opencode');
+      const a = sendingA(adapter, emit);
+      a.after.throws = throws;
+      for (const id of ['a', 'b', 'c']) await host.command(roomMessage(id, null));
+      await until(() => expect(statusOf(host, 'a')).toBe('running'));
+      emit({ type: 'session.exited', reason: 'Provider exited' });
+      await writes.reached('interrupted:a');
+      // The provider gives up on `a` while the exit is still being written.
+      a.fail(new Error('Provider exited'));
+      await settle();
+      writes.release('interrupted:a');
+      await writes.reached('interrupted:c');
+      // `a` has failed and been let go before the exit is done.
+      await until(() => expect(turnFailed(host)).toBe(true));
+      await settle();
+      writes.release('interrupted:c');
+      await until(() => expect(statusOf(host, 'c')).toBe('interrupted'));
+      expect(statusOf(host, 'b')).toBe('interrupted');
+      // The next message is the first thing sent after `a`.
+      await host.command(roomMessage('e', null));
+      await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+      expect(sent(adapter)).toEqual(['a', 'e']);
+    } finally {
+      writes.restore();
+    }
+  }
+);
+
+it('never sends a message that was still joining the queue when the session exited', async () => {
+  const writes = holdOnly('item:d', 'interrupted:d');
+  try {
+    const { host, adapter, emit } = await start('cursor');
+    const a = sendingA(adapter, emit);
+    for (const id of ['a', 'b']) await host.command(roomMessage(id, null));
+    await until(() => expect(statusOf(host, 'a')).toBe('running'));
+    const queueing = host.command(roomMessage('d', null));
+    await writes.reached('item:d');
+    expect(statusOf(host, 'd')).toBe('queued');
+    const looked = vi.spyOn(host, 'snapshot');
+    emit({ type: 'session.exited', reason: 'Provider exited' });
+    await poll(() => expect(looked).toHaveBeenCalled());
+    looked.mockRestore();
+    a.fail(new Error('Provider exited'));
+    await settle();
+    // `d` joins the queue after the exit emptied it, and `a` failing frees the
+    // host to take the next message before the exit is done.
+    writes.release('item:d');
+    await writes.reached('interrupted:d');
+    await until(() => expect(turnFailed(host)).toBe(true));
+    await settle();
+    writes.release('interrupted:d');
+    expect(await queueing).toMatchObject({ status: 'applied' });
+    await until(() => expect(statusOf(host, 'd')).toBe('interrupted'));
+    await host.command(roomMessage('e', null));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(sent(adapter)).toEqual(['a', 'e']);
+  } finally {
+    writes.restore();
+  }
+});
+
+it('ends each queued message once when a stop lands while the session exits', async () => {
+  const writes = holdOnly('interrupted:a', 'interrupted:c');
+  try {
+    const { host, emit } = await queuedBehind('antigravity', 'b', 'c');
+    emit({ type: 'session.exited', reason: 'Provider exited' });
+    await writes.reached('interrupted:a');
+    const stopping = host.command({ ...message('stop'), body: { type: 'session.stop' } });
+    writes.release('interrupted:a');
+    await writes.reached('interrupted:c');
+    await poll(() =>
+      expect(writes.done.some((value) => (value as { type?: string }).type === 'stopped')).toBe(
+        true
+      )
+    );
+    await settle();
+    writes.release('interrupted:c');
+    expect(await stopping).toMatchObject({ status: 'applied' });
+    await until(() => expect(statusOf(host, 'c')).toBe('interrupted'));
+    for (const id of ['a', 'b', 'c']) expect(interruptedEvents(host, id)).toHaveLength(1);
+  } finally {
+    writes.restore();
+  }
+});
+
+it('ends a message that joined the queue while the session exited with a request open', async () => {
+  const writes = holdOnly('queued:d');
+  try {
+    const { host, adapter, emit } = await queuedBehind('claude');
+    await until(() => expect(statusOf(host, 'a')).toBe('running'));
+    await openApproval(emit, host);
+    const queueing = host.command(roomMessage('d', null));
+    await writes.reached('queued:d');
+    const looked = vi.spyOn(host, 'snapshot');
+    emit({ type: 'session.exited', reason: 'Provider exited' });
+    await poll(() => expect(looked).toHaveBeenCalled());
+    looked.mockRestore();
+    // `d` reads as queued, and joins the queue, only after the exit looked:
+    // it lands while the open request is being settled.
+    writes.release('queued:d');
+    expect(await queueing).toMatchObject({ status: 'applied' });
+    await until(() => expect(host.snapshot().session.status).toBe('stopped'));
+    expect(statusOf(host, 'a')).toBe('interrupted');
+    expect(statusOf(host, 'd')).toBe('interrupted');
+    expect(interruptedEvents(host, 'd')).toHaveLength(1);
+    expect(sent(adapter)).toEqual(['a']);
+  } finally {
+    writes.restore();
+  }
+});
+
+it('ends a message once when it joins the queue after the exit has ended it', async () => {
+  const writes = holdOnly('item:d');
+  try {
+    const { host, adapter, emit } = await queuedBehind('codex');
+    await until(() => expect(statusOf(host, 'a')).toBe('running'));
+    const queueing = host.command(roomMessage('d', null));
+    await writes.reached('item:d');
+    expect(statusOf(host, 'd')).toBe('queued');
+    const looked = vi.spyOn(host, 'snapshot');
+    emit({ type: 'session.exited', reason: 'Provider exited' });
+    await poll(() => expect(looked).toHaveBeenCalled());
+    looked.mockRestore();
+    // The exit has already ended `d` when it joins the queue.
+    writes.release('item:d');
+    expect(await queueing).toMatchObject({ status: 'applied' });
+    await until(() => expect(host.snapshot().session.status).toBe('stopped'));
+    expect(statusOf(host, 'd')).toBe('interrupted');
+    expect(interruptedEvents(host, 'd')).toHaveLength(1);
+    expect(sent(adapter)).toEqual(['a']);
+  } finally {
+    writes.restore();
+  }
+});
+
+it('sends nothing, and ends nothing again, for a message being staged when the session exited', async () => {
+  const { adapter, config, emit } = setup('codex');
+  const root = await mkdtemp(join(tmpdir(), 'sdk-exit-stage-'));
+  roots.push(root);
+  let release!: (files: Array<{ path: string; mimeType: string }>) => void;
+  const staging = new Promise<Array<{ path: string; mimeType: string }>>((done) => {
+    release = done;
+  });
+  const stageAttachments = vi.fn(() => staging);
+  const host = await startHost(root, { ...config, stageAttachments }, adapter);
+  hosts.push(host);
+  await until(() =>
+    expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('text/plain')
+  );
+  const command = roomMessage('with-file', null);
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.attachments = [
+    { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+  ];
+  await host.command(command);
+  await poll(() => expect(stageAttachments).toHaveBeenCalledOnce());
+  emit({ type: 'session.exited', reason: 'Provider exited' });
+  await until(() => expect(host.snapshot().session.status).toBe('stopped'));
+  expect(statusOf(host, 'with-file')).toBe('interrupted');
+  release([{ path: '/execution-host/note.txt', mimeType: 'text/plain' }]);
+  await settle();
+  // A write the host makes after the one a send would start with: once it is
+  // done, a send would have been made.
+  expect(await host.command(cancel('probe', 'never-sent'))).toMatchObject({
+    code: 'TURN_NOT_FOUND',
+  });
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  expect(turnFailed(host)).toBe(false);
+  expect(statusOf(host, 'with-file')).toBe('interrupted');
+  expect(interruptedEvents(host, 'with-file')).toHaveLength(1);
+  // Nor does it record a dispatch that never happened.
+  const inbox = (await readFile(join(root, 'inbox.jsonl'), 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  expect(inbox).not.toContainEqual({ type: 'dispatched', commandId: 'with-file' });
+});
+
+it('sends nothing, and ends nothing again, for a message being dispatched when the session exited', async () => {
+  const writes = holdWrites((value) => {
+    const record = value as { type?: string; commandId?: string };
+    return record.type === 'dispatched' && record.commandId === 'a' ? 'dispatched:a' : undefined;
+  });
+  try {
+    const { host, adapter, emit } = await start('opencode');
+    await host.command(roomMessage('a', null));
+    await writes.reached('dispatched:a');
+    emit({ type: 'session.exited', reason: 'Provider exited' });
+    await until(() => expect(host.snapshot().session.status).toBe('stopped'));
+    expect(statusOf(host, 'a')).toBe('interrupted');
+    writes.release('dispatched:a');
+    await poll(() => expect(writes.done).toContainEqual({ type: 'dispatched', commandId: 'a' }));
+    await settle();
+    expect(adapter.sendTurn).not.toHaveBeenCalled();
+    expect(turnFailed(host)).toBe(false);
+    expect(statusOf(host, 'a')).toBe('interrupted');
+    expect(interruptedEvents(host, 'a')).toHaveLength(1);
+  } finally {
+    writes.restore();
+  }
 });

@@ -11,7 +11,9 @@ from .test_session_slack_requests import _adapter
 
 def test_the_compact_status_is_one_card_and_links_nowhere():
     adapter, _ = _adapter()
-    message = adapter._render_rich(TurnActivity([], _turn("queued"), status_only=True))
+    message = adapter._render_rich(
+        TurnActivity([], _turn("queued"), status_only=True), agent_name="cc"
+    )
     assert [block["type"] for block in message.blocks] == ["task_card"]
     assert "switchdash" not in json.dumps(message.blocks)
     assert "Console" not in json.dumps(message.blocks)
@@ -19,7 +21,9 @@ def test_the_compact_status_is_one_card_and_links_nowhere():
 
 async def test_plan_keeps_tool_details_but_fallback_is_compact():
     adapter, _ = _adapter()
-    message = adapter._render_rich(TurnActivity(await _items(), _turn("running")))
+    message = adapter._render_rich(
+        TurnActivity(await _items(), _turn("running")), agent_name="cc"
+    )
     assert message.blocks[0]["type"] == "plan"
     assert len(message.blocks[0]["tasks"]) > 1
     assert message.blocks[0]["tasks"][0] == {
@@ -32,7 +36,9 @@ async def test_plan_keeps_tool_details_but_fallback_is_compact():
 
 async def test_a_finished_plan_keeps_its_tools_and_stays_off_the_fallback():
     adapter, _ = _adapter()
-    message = adapter._render_rich(TurnActivity(await _items(), _turn("completed")))
+    message = adapter._render_rich(
+        TurnActivity(await _items(), _turn("completed")), agent_name="cc"
+    )
     assert message.blocks[0]["type"] == "plan"
     assert len(message.blocks[0]["tasks"]) > 1
     assert message.blocks[0]["tasks"][0]["status"] == "complete"
@@ -43,7 +49,7 @@ def test_request_keeps_answer_buttons_and_recovery_marker():
     adapter, _ = _adapter()
     request = open_request()
     message = adapter._render_rich(
-        RequestCard(request, RequestReference("token", "R42"))
+        RequestCard(request, RequestReference("token", "R42")), agent_name="cc"
     )
     assert message.blocks[0]["block_id"] == "switch-request:token"
     assert any(block["type"] == "actions" for block in message.blocks)
@@ -59,7 +65,8 @@ def test_only_valid_explicit_recipients_create_mentions(recipient):
             _turn("error"),
             error_summary="The request failed.",
             notify_external_id=recipient,
-        )
+        ),
+        agent_name="cc",
     )
     assert "<@" not in message.text
     assert "<!channel>" not in json.dumps(message.blocks)

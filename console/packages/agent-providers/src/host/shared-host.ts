@@ -11,6 +11,7 @@ import { cliToolsBase, pinnedBinary } from './cli-binaries';
 import { HostWaker } from './handoff';
 import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
+import { roomCancelReply } from './room-cancel-reply';
 import {
   followupCommandId,
   retryRefusal,
@@ -432,6 +433,10 @@ export async function runSharedHost(
               })
             )
           ),
+        // A cancelled message's attachments are never staged, so they go here.
+        releaseAttachments: (attachments) => {
+          for (const attachment of attachments) roomAttachments.delete(attachment.attachmentId);
+        },
       },
       adapter
     );
@@ -485,6 +490,31 @@ export async function runSharedHost(
       await send({ kind: 'activity', row });
       return true;
     };
+    // A server that predates cancelling a queued message refuses a turn row
+    // that says so. The card must still end, so the row goes again as interrupted.
+    const sentAsInterrupted = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (
+        item.kind !== 'activity' ||
+        item.row.kind !== 'turn' ||
+        item.row.status !== 'cancelled' ||
+        error.status !== 422
+      )
+        return false;
+      const row = { ...item.row, status: 'interrupted' };
+      try {
+        await send({ kind: 'activity', row });
+      } catch (retry) {
+        if (!(retry instanceof RequestError)) throw retry;
+        console.warn(
+          `Switch refused turn ${row.turn_id} as cancelled and as interrupted, so it is not shown as ended: ${error.message}; ${retry.message}`
+        );
+        return true;
+      }
+      console.warn(
+        `Switch refused turn ${row.turn_id} as cancelled, so it is shown as interrupted: ${error.message}`
+      );
+      return true;
+    };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
@@ -505,6 +535,7 @@ export async function runSharedHost(
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
             if (await sentWithoutUsage(item, error)) continue;
+            if (await sentAsInterrupted(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -722,6 +753,25 @@ export async function runSharedHost(
         return { note: roomInstructionsUnreadNote(roomId, reason), instructions: null };
       }
     };
+    /**
+     * Cancels this process has answered, or is answering, in the room. Taken
+     * before the answer goes, so the same cancel delivered twice at once is
+     * answered once; given back if the answer could not be posted.
+     */
+    const answeredCancels = new Set<string>();
+    /** Tells the room a cancel asked for there how it went, or that it could not say. */
+    const answerCancel = (command: Command, outcome: CommandStatus | null): void => {
+      const { roomId, threadId } = command.origin;
+      if (!roomId || !parentChannel || !options.roomConnection) return;
+      if (answeredCancels.has(command.commandId)) return;
+      answeredCancels.add(command.commandId);
+      void parentChannel
+        .ask({ type: 'room-reply', roomId, threadId, body: roomCancelReply(outcome) })
+        .catch((error: unknown) => {
+          answeredCancels.delete(command.commandId);
+          console.warn(`Could not tell room ${roomId} how its cancel went: ${String(error)}`);
+        });
+    };
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
@@ -750,10 +800,26 @@ export async function runSharedHost(
       const repeated = host!
         .snapshot()
         .commandStatuses.some((entry) => entry.commandId === command.commandId);
+      // A cancel is answered in the room whatever happens here, even a host
+      // that could not record it; the agent is not given a turn for it.
+      let settled = false;
       try {
-        await host!.command(command);
-      } catch (error) {
-        await host!.reject(command, error);
+        try {
+          await host!.command(command);
+        } catch (error) {
+          await host!.reject(command, error);
+        }
+        settled = true;
+      } finally {
+        if (command.body.type === 'turn.cancel')
+          answerCancel(
+            command,
+            settled
+              ? (host!
+                  .snapshot()
+                  .commandStatuses.find((entry) => entry.commandId === command.commandId) ?? null)
+              : null
+          );
       }
       const status = host!
         .snapshot()

@@ -63,6 +63,7 @@ from . import (
     surface_label,
     turn_state,
     unanswerable,
+    withdraw_hint,
 )
 
 _CONSOLE = "Open in Switch Console"
@@ -239,6 +240,14 @@ def turn_summary(
     still going.
     """
     state = turn_state(items, turn, tool_detail=True)
+    # How to withdraw a queued turn rides with the state, ahead of what was
+    # said, because it is the one thing on the message a reader can act on.
+    # Bare: a platform reaching this has no mark for a literal to put on it.
+    # Nor an agent name: the fallback is drawn from the content alone, so the
+    # card names the pieces of the command rather than the command.
+    hint = _withdraw_line(turn, agent_name=None, code=lambda text: text)
+    if hint is not None and len(state) + 1 + len(hint) <= limit:
+        state = f"{state}\n{hint}"
     said = [item for item in items if item.kind == "assistant-message"]
     if not said:
         return _truncate(state, limit)
@@ -267,6 +276,8 @@ def turn_status(
     mention: str | None = None,
     error_summary: str | None = None,
     tool_detail: bool,
+    agent_name: str | None,
+    slash_options: tuple[str, str] | None = None,
 ) -> str:
     """A turn's progress, compact enough to live in one message that is edited.
 
@@ -282,6 +293,14 @@ def turn_status(
     - where the turn got to and how long it has taken;
     - what it is doing right now, while it is still doing something;
     - how the tool calls went, once there is more than one outcome to report.
+
+    A queued turn the sender can still withdraw has one more, under the state:
+    the command that takes it, with the agent's name and the turn's id in it
+    (`withdraw_hint`). A queued turn has done nothing yet, so in practice it
+    stands where the other two would. `agent_name` is the agent the turn is
+    queued with, as `!cancel` names it, or None where the drawing has no agent
+    to name. `slash_options` asks for the slash form of the command instead,
+    as `withdraw_hint` takes it.
 
     `tool_detail` says whether this platform reports tool activity at all, and
     a platform can decline it. Where the status shares the conversation with
@@ -311,6 +330,12 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
+    hint = _withdraw_line(
+        turn, agent_name=agent_name, code=markup.code, slash_options=slash_options
+    )
+    if hint is not None and spent + len(hint) + 1 <= budget:
+        lines.append(hint)
+        spent += len(hint) + 1
     did = [item for item in items if item.kind == "tool-activity"]
     for line in _doing(
         did, turn, escape=escape, budget=budget, tool_detail=tool_detail
@@ -320,6 +345,25 @@ def turn_status(
         lines.append(line)
         spent += len(line) + 1
     return _mentioned(mention, "\n".join(lines))
+
+
+def _withdraw_line(
+    turn: TurnUpsert,
+    *,
+    agent_name: str | None,
+    code: Callable[[str], str],
+    slash_options: tuple[str, str] | None = None,
+) -> str | None:
+    """The line under a queued turn's state saying how to withdraw it, or None.
+
+    `code` is how this platform marks a literal. It does not escape: what
+    `withdraw_hint` marks literal holds no markup, and the `@` in it has to
+    reach the reader as an `@` for the copied command to name the agent.
+    """
+    pieces = withdraw_hint(turn, agent_name=agent_name, slash_options=slash_options)
+    if pieces is None:
+        return None
+    return "".join(code(text) if literal else text for text, literal in pieces)
 
 
 def _doing(

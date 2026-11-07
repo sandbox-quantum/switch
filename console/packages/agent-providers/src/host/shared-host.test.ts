@@ -14,9 +14,12 @@ import {
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
+import { Journal } from './journal';
 import { Redactions } from './redaction';
+import { roomCommandId } from './room-prompt';
 import { ServiceNotices } from './service-notices';
 import { connectParent, type ParentChannel } from './session-channel';
+import { HostedSession } from './session-host';
 import { parkAfterMs, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
 import { hostParked } from './shared-state';
 
@@ -1573,6 +1576,501 @@ it('tells the room once when every post of a turn was refused, and not when one 
     host.emit({ type: 'turn.completed', turnId: landed, outcome: 'completed', usage: [] });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(asks().filter((m) => m.ask.type === 'room-reply')).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+// ── `!cancel` from a room ─────────────────────────────────────────────────
+
+/** A `!cancel` relayed from the room, as `room_control_frame` builds it. */
+function roomCancel(commandId: string, turnId: string, actorId = '@person:test'): Command {
+  return {
+    ...relayed('current', commandId, { type: 'turn.cancel', turnId }),
+    origin: {
+      actorId,
+      surface: 'switch-web',
+      roomId: 'room',
+      threadId: 'thread',
+      messageId: `${commandId}-message`,
+    },
+  };
+}
+
+/** The turn a room message handed over as `roomMessage(sequence)` runs as. */
+const turnOf = (sequence: number) => roomCommandId('agent', 'room', `message-${sequence}`);
+
+const turnStatus = (host: Harness, turnId: string) =>
+  host.parent.sent
+    .map((message) => (message.event as { body?: Record<string, unknown> } | undefined)?.body)
+    .filter((body) => body?.type === 'turn.upsert' && body.turnId === turnId)
+    .at(-1)?.status;
+
+/** What the host asked its parent to post in a room, in order. */
+const roomReplies = (host: Harness) =>
+  host.parent.sent
+    .filter((message) => message.kind === 'ask' && message.ask?.type === 'room-reply')
+    .map((message) => message.ask);
+
+const reply = (body: string) => ({ type: 'room-reply', roomId: 'room', threadId: 'thread', body });
+
+/** A host running the first of `handoffs` with the rest queued behind it. */
+async function queuedBehindOne(handoffs: ReturnType<typeof roomMessage>[]): Promise<Harness> {
+  const host = await start({ rooms: true });
+  for (const handoff of handoffs) {
+    expect(await host.parent.ask({ type: 'room', handoff })).toMatchObject({ ok: true });
+    if (handoff === handoffs[0]) await until(() => expect(host.turns).toHaveLength(1));
+    else await until(() => expect(turnStatus(host, turnOf(handoff.sequence))).toBe('queued'));
+  }
+  return host;
+}
+
+const cancel = (host: Harness, command: Command) =>
+  host.parent.ask({ type: 'command', command, requesterName: 'louisa' });
+
+const APPLIED = 'Cancelled before the agent started. The agent will not receive it.';
+const UNCONFIRMED = "I couldn't confirm the cancellation; check the activity card.";
+
+it('answers a cancel in the thread it came from, for every outcome, and never runs the message', async () => {
+  const host = await queuedBehindOne([1, 2, 3].map((n) => roomMessage(n, `message ${n}`)));
+  try {
+    expect(await cancel(host, roomCancel('not-yours', turnOf(2), '@other:test'))).toMatchObject({
+      ok: true,
+      value: { status: 'rejected', code: 'NOT_YOUR_MESSAGE' },
+    });
+    expect(await cancel(host, roomCancel('started', turnOf(1)))).toMatchObject({
+      value: { status: 'rejected', code: 'TURN_ALREADY_STARTED' },
+    });
+    expect(await cancel(host, roomCancel('cancel', turnOf(2)))).toMatchObject({
+      value: { status: 'applied' },
+    });
+    expect(await cancel(host, roomCancel('again', turnOf(2)))).toMatchObject({
+      value: { status: 'rejected', code: 'TURN_ALREADY_CANCELLED' },
+    });
+    expect(await cancel(host, roomCancel('missing', 'no-such-message'))).toMatchObject({
+      value: { status: 'rejected', code: 'TURN_NOT_FOUND' },
+    });
+    host.emit({ type: 'turn.completed', turnId: turnOf(1), outcome: 'completed', usage: [] });
+    await until(() => expect(host.turns).toHaveLength(2));
+    expect(await cancel(host, roomCancel('ended', turnOf(1)))).toMatchObject({
+      value: { status: 'rejected', code: 'TURN_NOT_QUEUED' },
+    });
+    await until(() => expect(roomReplies(host)).toHaveLength(6));
+    expect(roomReplies(host)).toEqual([
+      reply('Only the person who sent that message can cancel it.'),
+      reply(
+        "The agent has already started on that message, so it can't be cancelled. To stop the agent's current turn, use `!interrupt` with its mention."
+      ),
+      reply(APPLIED),
+      reply('That message was already cancelled.'),
+      reply('There is no message with that ID waiting for this agent in this room.'),
+      reply('That message is no longer waiting, so there is nothing to cancel.'),
+    ]);
+    // The answer is the host's own: the agent is not given a turn to say it.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(host.turns.map((turn) => turn.turnId)).toEqual([turnOf(1), turnOf(3)]);
+    expect(turnStatus(host, turnOf(2))).toBe('cancelled');
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('cancels the message a room cancel names, filling in only the generation', async () => {
+  const host = await queuedBehindOne([1, 2].map((n) => roomMessage(n, `message ${n}`)));
+  try {
+    // `current` is the running turn only for an interrupt: a cancel naming
+    // `current` names no message, and one naming a message keeps it.
+    expect(await cancel(host, roomCancel('current', 'current'))).toMatchObject({
+      value: { status: 'rejected', code: 'TURN_NOT_FOUND' },
+    });
+    expect(await cancel(host, roomCancel('named', turnOf(2)))).toMatchObject({
+      value: { status: 'applied' },
+    });
+    expect(turnStatus(host, turnOf(1))).toBe('running');
+    expect(turnStatus(host, turnOf(2))).toBe('cancelled');
+    await until(() => expect(roomReplies(host)).toHaveLength(2));
+    expect(roomReplies(host)[1]).toEqual(reply(APPLIED));
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('gives one plain refusal for a cancel refused for any other reason', async () => {
+  const first = await start({ rooms: true, resettable: true });
+  await first.parent.ask({ type: 'room', handoff: roomMessage(1, 'first') });
+  await until(() => expect(first.turns).toHaveLength(1));
+  first.emit({ type: 'turn.completed', turnId: turnOf(1), outcome: 'completed', usage: [] });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(await first.stop()).toBeNull();
+  await rm(join(first.root, 'shared-owner.lock'));
+  // The provider lost the conversation, so the session waits for a decision
+  // to start a fresh one and takes nothing else meanwhile.
+  const host = await start({
+    rooms: true,
+    resettable: true,
+    base: first.base,
+    conversationLost: true,
+  });
+  try {
+    expect(await cancel(host, roomCancel('pending', turnOf(1)))).toMatchObject({
+      value: { status: 'rejected', code: 'COMMAND_REJECTED' },
+    });
+    await until(() => expect(roomReplies(host)).toHaveLength(1));
+    expect(roomReplies(host)[0]).toEqual(
+      reply("I couldn't cancel that message: the session refused it.")
+    );
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+/**
+ * The session's event journal refuses the write that records a turn as
+ * cancelled and, if `thereafter`, every write after it.
+ */
+function refuseCancelledWrite(thereafter: boolean) {
+  // Events are written in batches through `appendAll`; a refused record refuses its whole batch.
+  const appendAll = Journal.prototype.appendAll;
+  let refused = false;
+  vi.spyOn(Journal.prototype, 'appendAll').mockImplementation(function (
+    this: Journal<unknown>,
+    values: unknown[]
+  ) {
+    const events = (this as unknown as { path: string }).path.endsWith('events.jsonl');
+    const cancelled = values.some((value) =>
+      JSON.stringify(value).includes('"status":"cancelled"')
+    );
+    if (events && (cancelled || (refused && thereafter))) {
+      refused = true;
+      return Promise.reject(new Error('ENOSPC: no space left on device'));
+    }
+    return appendAll.call(this, values);
+  });
+}
+
+it('says it could not confirm a cancel whose outcome is unknown', async () => {
+  const host = await queuedBehindOne([1, 2].map((n) => roomMessage(n, `message ${n}`)));
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    refuseCancelledWrite(false);
+    expect(await cancel(host, roomCancel('cancel', turnOf(2)))).toMatchObject({
+      ok: true,
+      value: { status: 'unknown' },
+    });
+    await until(() => expect(roomReplies(host)).toEqual([reply(UNCONFIRMED)]));
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+it('still answers the room when a poisoned journal makes the host throw on a cancel', async () => {
+  const host = await queuedBehindOne([1, 2].map((n) => roomMessage(n, `message ${n}`)));
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    refuseCancelledWrite(true);
+    // Neither the cancel's outcome nor its refusal can be recorded: the host is faulted.
+    expect(await cancel(host, roomCancel('cancel', turnOf(2)))).toMatchObject({ ok: false });
+    await until(() => expect(roomReplies(host)).toEqual([reply(UNCONFIRMED)]));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(roomReplies(host)).toHaveLength(1);
+    expect(host.turns).toHaveLength(1);
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+it('still answers the room when a cancel fails past its refusal', async () => {
+  const host = await queuedBehindOne([1, 2].map((n) => roomMessage(n, `message ${n}`)));
+  try {
+    vi.spyOn(HostedSession.prototype, 'command').mockRejectedValueOnce(new Error('HOST_STOPPING'));
+    vi.spyOn(HostedSession.prototype, 'reject').mockRejectedValueOnce(new Error('HOST_STOPPING'));
+    expect(await cancel(host, roomCancel('cancel', turnOf(2)))).toMatchObject({ ok: false });
+    await until(() => expect(roomReplies(host)).toEqual([reply(UNCONFIRMED)]));
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+/**
+ * Switch refuses a turn row with one of `statuses` with `status`, by default
+ * 422, as a server whose list of turn statuses predates them does. The row is
+ * still in `calls`.
+ */
+function refuseTurnStatuses(statuses: string[], status = 422) {
+  const answer = globalThis.fetch;
+  vi.stubGlobal('fetch', async (url: string, options: RequestInit = {}) => {
+    const response = await answer(url, options);
+    const row =
+      typeof options.body === 'string'
+        ? (JSON.parse(options.body) as { kind?: string; status?: string } | null)
+        : null;
+    if (
+      new URL(url).pathname.endsWith('/activity') &&
+      row?.kind === 'turn' &&
+      statuses.includes(row.status ?? '')
+    )
+      return Response.json({ detail: [{ type: 'literal_error', input: row.status }] }, { status });
+    return response;
+  });
+}
+
+/** The statuses of the turn rows the host sent Switch for `turnId`, in order. */
+const turnRows = (host: Harness, turnId: string) =>
+  host.switchCore.calls
+    .filter((c) => c.path.endsWith('/activity'))
+    .map((c) => c.body as { kind: string; turn_id: string; status: string })
+    .filter((row) => row.kind === 'turn' && row.turn_id === turnId)
+    .map((row) => row.status);
+
+const SHOWN_INTERRUPTED = (turnId: string) =>
+  `Switch refused turn ${turnId} as cancelled, so it is shown as interrupted`;
+
+it('shows a cancelled message as interrupted to a server that predates cancelling', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const host = await queuedBehindOne([1, 2].map((n) => roomMessage(n, `message ${n}`)));
+  try {
+    refuseTurnStatuses(['cancelled']);
+    expect(await cancel(host, roomCancel('cancel', turnOf(2)))).toMatchObject({
+      value: { status: 'applied' },
+    });
+    await until(() =>
+      expect(turnRows(host, turnOf(2))).toEqual(['queued', 'cancelled', 'interrupted'])
+    );
+    await poll(() =>
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(SHOWN_INTERRUPTED(turnOf(2))))
+    );
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Switch refused activity'));
+    // Only what went to Switch changed: the session still has the message cancelled.
+    expect(turnStatus(host, turnOf(2))).toBe('cancelled');
+    expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('sends a turn row Switch refused for any other status only once', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const host = await start({ rooms: true });
+  try {
+    refuseTurnStatuses(['queued']);
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'first') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'second') });
+    await until(() => expect(turnRows(host, turnOf(2))).toEqual(['queued']));
+    await poll(() =>
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Switch refused activity'))
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(turnRows(host, turnOf(2))).toEqual(['queued']);
+    expect(turnRows(host, turnOf(1))).not.toContain('interrupted');
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('is shown as interrupted'));
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('gives up on a cancelled turn Switch refuses as interrupted too, and reports on', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const host = await queuedBehindOne([1, 2].map((n) => roomMessage(n, `message ${n}`)));
+  try {
+    refuseTurnStatuses(['cancelled', 'interrupted']);
+    expect(await cancel(host, roomCancel('cancel', turnOf(2)))).toMatchObject({
+      value: { status: 'applied' },
+    });
+    await until(() =>
+      expect(turnRows(host, turnOf(2))).toEqual(['queued', 'cancelled', 'interrupted'])
+    );
+    // Both refusals are in the warning, the second one's included.
+    const gaveUp = () =>
+      warn.mock.calls
+        .map(([message]) => String(message))
+        .find((message) =>
+          message.startsWith(
+            `Switch refused turn ${turnOf(2)} as cancelled and as interrupted, so it is not shown as ended: `
+          )
+        );
+    await poll(() => expect(gaveUp()).toMatch(/"input":"cancelled".*; .*"input":"interrupted"/));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Switch refused activity'));
+    // The cursor moves past the refused row: what comes next is reported, and it is not sent again.
+    host.emit({ type: 'turn.completed', turnId: turnOf(1), outcome: 'completed', usage: [] });
+    await until(() => expect(turnRows(host, turnOf(1))).toContain('completed'));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(turnRows(host, turnOf(2))).toEqual(['queued', 'cancelled', 'interrupted']);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('is shown as interrupted'));
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('sends a cancelled turn Switch refused for a reason other than its status only once', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const host = await queuedBehindOne([1, 2].map((n) => roomMessage(n, `message ${n}`)));
+  try {
+    refuseTurnStatuses(['cancelled'], 400);
+    expect(await cancel(host, roomCancel('cancel', turnOf(2)))).toMatchObject({
+      value: { status: 'applied' },
+    });
+    await until(() => expect(turnRows(host, turnOf(2))).toEqual(['queued', 'cancelled']));
+    await poll(() =>
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Switch refused activity'))
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(turnRows(host, turnOf(2))).toEqual(['queued', 'cancelled']);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('is shown as interrupted'));
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('answers a cancel once, however often and however close together it is delivered', async () => {
+  const host = await queuedBehindOne([1, 2, 3].map((n) => roomMessage(n, `message ${n}`)));
+  try {
+    const twice = roomCancel('twice', turnOf(2));
+    expect(await cancel(host, twice)).toMatchObject({ value: { status: 'applied' } });
+    expect(await cancel(host, twice)).toMatchObject({ value: { status: 'applied' } });
+    // A relay that delivers the same cancel twice at once.
+    const together = roomCancel('together', turnOf(3));
+    const answers = await Promise.all([cancel(host, together), cancel(host, together)]);
+    for (const answer of answers) expect(answer).toMatchObject({ value: { status: 'applied' } });
+    await until(() => expect(roomReplies(host)).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(roomReplies(host)).toEqual([reply(APPLIED), reply(APPLIED)]);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('answers a cancel delivered again after its answer could not be posted, and only then', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const host = await queuedBehindOne([1, 2].map((n) => roomMessage(n, `message ${n}`)));
+  /** The parent answers the `index`th room reply the host asked for: posted, or `error`. */
+  const answer = (index: number, error: string | null) => {
+    const { id } = host.parent.sent.filter(
+      (message) => message.kind === 'ask' && message.ask?.type === 'room-reply'
+    )[index]!;
+    host.parent.port.emit(
+      'message',
+      error === null
+        ? { kind: 'answer', id, ok: true, value: null }
+        : { kind: 'answer', id, ok: false, error }
+    );
+  };
+  try {
+    const lost = roomCancel('lost', turnOf(2));
+    expect(await cancel(host, lost)).toMatchObject({ value: { status: 'applied' } });
+    await until(() => expect(roomReplies(host)).toHaveLength(1));
+    answer(0, 'The room is unreachable.');
+    await poll(() =>
+      expect(warn).toHaveBeenCalledWith(
+        'Could not tell room room how its cancel went: Error: The room is unreachable.'
+      )
+    );
+    // Delivered again, even twice at once, it is answered again, once.
+    const answers = await Promise.all([cancel(host, lost), cancel(host, lost)]);
+    for (const outcome of answers) expect(outcome).toMatchObject({ value: { status: 'applied' } });
+    await until(() => expect(roomReplies(host)).toHaveLength(2));
+    answer(1, null);
+    // Once its answer is posted, a later delivery says nothing.
+    expect(await cancel(host, lost)).toMatchObject({ value: { status: 'applied' } });
+    expect(roomReplies(host)).toEqual([reply(APPLIED), reply(APPLIED)]);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('answers a cancel delivered again to a restarted host, whose answer the last one could not post', async () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const first = await queuedBehindOne([1, 2].map((n) => roomMessage(n, `message ${n}`)));
+  const answer = (host: Harness, index: number, error: string | null) => {
+    const { id } = host.parent.sent.filter(
+      (message) => message.kind === 'ask' && message.ask?.type === 'room-reply'
+    )[index]!;
+    host.parent.port.emit(
+      'message',
+      error === null
+        ? { kind: 'answer', id, ok: true, value: null }
+        : { kind: 'answer', id, ok: false, error }
+    );
+  };
+  const lost = roomCancel('lost', turnOf(2));
+  expect(await cancel(first, lost)).toMatchObject({ value: { status: 'applied' } });
+  await until(() => expect(roomReplies(first)).toHaveLength(1));
+  answer(first, 0, 'The room is unreachable.');
+  await poll(() =>
+    expect(warn).toHaveBeenCalledWith(
+      'Could not tell room room how its cancel went: Error: The room is unreachable.'
+    )
+  );
+  expect(await first.stop()).toBeNull();
+  await rm(join(first.root, 'shared-owner.lock'));
+  // The restart gave the session a new generation, so the cancel, filled in
+  // with it, no longer matches the one recorded and its outcome cannot be read.
+  const again = await start({ rooms: true, base: first.base });
+  try {
+    const conflict = { ok: false, error: 'IDEMPOTENCY_CONFLICT' };
+    expect(await cancel(again, lost)).toMatchObject(conflict);
+    await until(() => expect(roomReplies(again)).toHaveLength(1));
+    answer(again, 0, null);
+    expect(await cancel(again, lost)).toMatchObject(conflict);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(roomReplies(again)).toEqual([reply(UNCONFIRMED)]);
+  } finally {
+    expect(await again.stop()).toBeNull();
+  }
+}, 20000);
+
+it('lets go of a cancelled message’s attachments, and keeps a refused one’s', async () => {
+  const file = (name: string) => ({
+    filename: name,
+    mimetype: 'text/plain',
+    size: 5,
+    mxc: `mxc://switch/${name}`,
+    msgtype: 'm.file',
+  });
+  const host = await start({ rooms: true });
+  host.media.set('mxc://switch/kept.txt', new TextEncoder().encode('kept!'));
+  host.media.set('mxc://switch/gone.txt', new TextEncoder().encode('gone!'));
+  try {
+    const handoffs = [
+      roomMessage(1, 'first'),
+      roomMessage(2, 'kept', [file('kept.txt')]),
+      roomMessage(3, 'cancelled', [file('gone.txt')]),
+    ];
+    for (const handoff of handoffs) {
+      expect(await host.parent.ask({ type: 'room', handoff })).toMatchObject({ ok: true });
+      if (handoff === handoffs[0]) await until(() => expect(host.turns).toHaveLength(1));
+      else await until(() => expect(turnStatus(host, turnOf(handoff.sequence))).toBe('queued'));
+    }
+    expect(await cancel(host, roomCancel('refused', turnOf(2), '@other:test'))).toMatchObject({
+      value: { status: 'rejected' },
+    });
+    expect(await cancel(host, roomCancel('cancel', turnOf(3)))).toMatchObject({
+      value: { status: 'applied' },
+    });
+    host.emit({ type: 'turn.completed', turnId: turnOf(1), outcome: 'completed', usage: [] });
+    // The refused cancel left the message its attachment.
+    await until(() => expect(host.turns).toHaveLength(2));
+    expect(host.turns[1]!.attachments).toHaveLength(1);
+    host.emit({ type: 'turn.completed', turnId: turnOf(2), outcome: 'completed', usage: [] });
+    // The cancelled message's attachment, asked for again, is no longer held.
+    const accepted = (await readFile(join(host.root, 'inbox.jsonl'), 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .find((entry) => entry.type === 'accepted' && entry.command.commandId === turnOf(3));
+    expect(accepted.command.body.attachments).toHaveLength(1);
+    const resend = relayed(await host.snapshotEpoch(), 'resend', accepted.command.body);
+    expect(
+      await host.parent.ask({ type: 'command', command: resend, requesterName: null })
+    ).toMatchObject({ value: { status: 'applied' } });
+    const failed = () =>
+      host.parent.sent
+        .map((message) => (message.event as { body?: Record<string, unknown> } | undefined)?.body)
+        .find((body) => body?.type === 'notice' && body.code === 'TURN_FAILED');
+    await until(() => expect(failed()).toBeDefined());
+    expect(String(failed()!.message)).toContain('is not one this session was given in a room');
+    expect(turnStatus(host, 'resend')).toBe('error');
+    expect(host.turns).toHaveLength(2);
   } finally {
     expect(await host.stop()).toBeNull();
   }
