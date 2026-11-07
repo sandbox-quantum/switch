@@ -4,7 +4,12 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import {
+  detachedSupervision,
+  ensureSharedProcess,
+  inProcessSupervision,
+  liveSupervisor,
+} from './launch';
 import { killProcessTree } from './process-fence';
 import { SessionLinks } from './session-channel';
 import { owedSessionStart, type HostStartSource } from './session-start';
@@ -368,3 +373,42 @@ it('kills a host that will not stop for its replacement, with the session hosts 
     await rm(root, { recursive: true, force: true });
   }
 }, 60_000);
+
+it('treats a supervisor that answers EPERM as alive', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-launch-'));
+  roots.push(root);
+  await mkdir(join(root, 'supervisor'), { recursive: true });
+  await writeFile(
+    join(root, 'supervisor', 'owner.json'),
+    JSON.stringify({ pid: 4242, build: 'bundle.mjs' })
+  );
+  // Windows answers EPERM for a supervisor the caller may not signal — one at a
+  // different elevation or session. It is alive, so its build is returned
+  // rather than the probe throwing, which broke agent-host restarts on Windows.
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+    throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+  });
+  try {
+    expect(await liveSupervisor(root)).toEqual({ build: 'bundle.mjs' });
+  } finally {
+    kill.mockRestore();
+  }
+});
+
+it('treats a supervisor that answers ESRCH as gone', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-launch-'));
+  roots.push(root);
+  await mkdir(join(root, 'supervisor'), { recursive: true });
+  await writeFile(
+    join(root, 'supervisor', 'owner.json'),
+    JSON.stringify({ pid: 4242, build: 'bundle.mjs' })
+  );
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+    throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+  });
+  try {
+    expect(await liveSupervisor(root)).toBeNull();
+  } finally {
+    kill.mockRestore();
+  }
+});
