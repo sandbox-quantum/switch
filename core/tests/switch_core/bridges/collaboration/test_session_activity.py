@@ -22,6 +22,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     turn_state,
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
+    _MAX_PLAN_TASK_DETAILS,
     _MAX_SAID_DETAILS,
     _MAX_SECTION_ITEMS,
     StreamedActivity,
@@ -985,3 +986,53 @@ async def test_the_live_step_label_lands_on_the_page_the_call_is_actually_on() -
     pages = [block for block in drawn.blocks if block["type"] == "plan"]
     assert "Running: Grep" not in pages[0]["title"]
     assert pages[1]["title"].endswith("· Running: Grep")
+
+
+def _calls(count: int, text: str) -> list[Item]:
+    return [
+        _item(itemId=f"call-{index}", title=f"Ran {index}", text=text)
+        for index in range(count)
+    ]
+
+
+async def test_a_calls_input_and_output_open_in_its_card_whole_when_they_fit() -> None:
+    text = "Input: $ ls *_test.py\nOutput:\n" + "line\n" * 200
+    [card] = _turn_cards(
+        render_activity_plan(_calls(1, text), _turn("completed")).blocks[0]
+    )
+
+    assert _detail(card) == text.strip()
+    assert len(text) < _MAX_PLAN_TASK_DETAILS
+
+
+async def test_a_calls_detail_past_its_budget_says_it_was_cut() -> None:
+    text = "Output:\n" + "x" * 5_000
+    [card] = _turn_cards(
+        render_activity_plan(_calls(1, text), _turn("completed")).blocks[0]
+    )
+
+    detail = _detail(card)
+    assert len(detail) == _MAX_PLAN_TASK_DETAILS
+    assert detail.endswith("[…truncated]")
+
+
+async def test_a_call_without_detail_has_no_expansion() -> None:
+    [card] = _turn_cards(
+        render_activity_plan(_calls(1, ""), _turn("completed")).blocks[0]
+    )
+
+    assert "details" not in card
+
+
+async def test_the_worst_streamed_message_of_tool_details_is_one_slack_would_accept() -> (
+    None
+):
+    drawn = render_activity_stream(
+        _calls(2 * _MAX_SECTION_ITEMS, "漢" * _MAX_PLAN_TASK_DETAILS),
+        _turn("completed"),
+        elapsed_seconds=90,
+    )
+
+    assert _streamed_bytes(drawn) < ACCEPTED_BYTES
+    details = [_detail(task) for block in drawn.blocks for task in _turn_cards(block)]
+    assert all(detail.endswith("[…truncated]") for detail in details)
