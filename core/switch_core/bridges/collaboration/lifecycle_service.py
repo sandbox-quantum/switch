@@ -98,6 +98,19 @@ logger = logging.getLogger(__name__)
 # the message in hand. The transport gives it as long, then cancels the rest.
 STOP_GRACE_SECONDS = 5.0
 
+# A bridge that crashes while running is started again after a pause that
+# doubles with each crash in a row, up to the cap, so a platform that is still
+# coming up (Mattermost behind a Docker restart, #1510) is waited for rather
+# than given up on. A run that stayed up for the reset period ends the streak.
+CRASH_RETRY_INITIAL_SECONDS = 2.0
+CRASH_RETRY_MAX_SECONDS = 60.0
+CRASH_RETRY_RESET_SECONDS = 60.0
+
+# Failures that another attempt with the same row cannot fix: the platform
+# refused the credentials, or the config is wrong. Those stay down until the
+# bridge is edited or restarted, as a bridge that fails to start does.
+_NOT_RETRIED_AFTER_CRASH: frozenset[str] = frozenset({"auth_failed", "config_invalid"})
+
 # The kind of owned work a bridge's platform connection is (`ownership.py`),
 # keyed by bridge id.
 BRIDGE_CONNECTIONS = "bridge"
@@ -347,6 +360,10 @@ class CollaborationBridgeLifecycleService:
         # `_bridges` and leaves it here, which is what makes "configured but no
         # longer running" answerable.
         self._started: set[str] = set()
+        # Crashed bridges waiting to be started again (`_retry_after_crash`),
+        # and how many times in a row each has crashed, for the backoff.
+        self._crash_retries: dict[str, asyncio.Task[None]] = {}
+        self._crash_streaks: dict[str, int] = {}
         # Every platform a bridge has been started for in this process, never
         # removed. `running_by_platform` reports zero for each, so a platform's
         # series survives its last bridge being stopped rather than ending —
@@ -1068,6 +1085,7 @@ class CollaborationBridgeLifecycleService:
         """Start a bridge here, listening if this process holds it and quietly
         otherwise. One already running in that form is left as it is, and one
         running in the other form is restarted in this one."""
+        self._cancel_crash_retry(bridge_id)
         async with self._bridge_lock(bridge_id):
             await self._start_locked(bridge_id)
 
@@ -1412,6 +1430,7 @@ class CollaborationBridgeLifecycleService:
         platform, configured_at = self._bridge_facts.get(bridge_id, ("none", None))
         with no_tenant():
             connected = False
+            connected_at = 0.0
             try:
                 if workspace_consumer is not None:
                     await self._record_bridge_memberships(
@@ -1422,6 +1441,7 @@ class CollaborationBridgeLifecycleService:
                 # launched this task, and what follows runs until the bridge
                 # is stopped.
                 connected = True
+                connected_at = time.monotonic()
                 self._connected.add(bridge_id)
                 if workspace_consumer is None:
                     # Quiet: serving requests and webhooks until stopped.
@@ -1440,6 +1460,11 @@ class CollaborationBridgeLifecycleService:
                 await workspace_consumer.start(cursors)
             except Exception as exc:
                 logger.exception("Bridge %s crashed", bridge_id)
+                # Read before the pop below. A task already stopped (and
+                # perhaps replaced) that raised as it was being cancelled is
+                # no longer the bridge, and starting it again would undo the
+                # stop.
+                still_the_bridge = self._tasks.get(bridge_id) is asyncio.current_task()
                 self._bridges.pop(bridge_id, None)
                 self._tasks.pop(bridge_id, None)
                 self._held_resources.pop(bridge_id, None)
@@ -1487,6 +1512,88 @@ class CollaborationBridgeLifecycleService:
                             "duration_ms": duration_ms,
                         },
                     )
+                if (
+                    connected
+                    and time.monotonic() - connected_at >= CRASH_RETRY_RESET_SECONDS
+                ):
+                    self._crash_streaks.pop(bridge_id, None)
+                if not still_the_bridge:
+                    return
+                if reason in _NOT_RETRIED_AFTER_CRASH:
+                    logger.error(
+                        "Bridge %s stays down until it is edited or restarted: "
+                        "its failure (%s) would only repeat",
+                        bridge_id,
+                        reason,
+                    )
+                else:
+                    self._schedule_crash_retry(bridge_id)
+
+    def _schedule_crash_retry(self, bridge_id: str) -> None:
+        """Start a crashed bridge again after a backoff, from the same row.
+
+        Scheduled from the crashed task itself, which ends straight after, so
+        the retry is a task of its own. It gives up quietly where anything has
+        happened to the bridge since: stopped, edited, removed, started again
+        by someone else, or the process shutting down.
+        """
+        if self._owned.stopping:
+            return
+        streak = self._crash_streaks.get(bridge_id, 0)
+        self._crash_streaks[bridge_id] = streak + 1
+        delay = min(CRASH_RETRY_INITIAL_SECONDS * 2**streak, CRASH_RETRY_MAX_SECONDS)
+        started_from = self._started_rows.get(bridge_id)
+        logger.warning(
+            "Starting crashed bridge %s again in %.0fs (crash %d in a row)",
+            bridge_id,
+            delay,
+            streak + 1,
+        )
+        previous = self._crash_retries.pop(bridge_id, None)
+        if previous is not None and not previous.done():
+            previous.cancel()
+        self._crash_retries[bridge_id] = asyncio.create_task(
+            self._retry_after_crash(bridge_id, started_from, delay)
+        )
+
+    async def _retry_after_crash(
+        self, bridge_id: str, started_from: str | None, delay: float
+    ) -> None:
+        try:
+            await asyncio.sleep(delay)
+            with no_tenant():
+                async with self._bridge_lock(bridge_id):
+                    if (
+                        self._owned.stopping
+                        or not self._owned.wants(bridge_id)
+                        or bridge_id in self._bridges
+                        or bridge_id not in self._started
+                        or self._started_rows.get(bridge_id) != started_from
+                    ):
+                        return
+                    # Clears what the crash left behind (the consumer's
+                    # cursors above all, flushed so no message is posted
+                    # twice) before building the bridge afresh.
+                    await self._stop_locked(bridge_id, reason="restart")
+                    await self._start_bridge(bridge_id)
+            logger.info("Started crashed bridge %s again", bridge_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A failure before the bridge runs is one another attempt from
+            # the same row would repeat, so it is left to an edit or restart.
+            logger.exception("Could not start crashed bridge %s again", bridge_id)
+        finally:
+            if self._crash_retries.get(bridge_id) is asyncio.current_task():
+                del self._crash_retries[bridge_id]
+
+    def _cancel_crash_retry(self, bridge_id: str) -> None:
+        """A deliberate stop or start: no crash is waiting to be retried, and
+        the next crash starts its backoff afresh."""
+        self._crash_streaks.pop(bridge_id, None)
+        retry = self._crash_retries.pop(bridge_id, None)
+        if retry is not None and retry is not asyncio.current_task():
+            retry.cancel()
 
     def _note_connect_failure(self, bridge_id: str) -> None:
         """Remember that this bridge failed to come up.
@@ -1609,6 +1716,7 @@ class CollaborationBridgeLifecycleService:
         )
 
     async def stop(self, bridge_id: str, *, reason: str = "shutdown") -> None:
+        self._cancel_crash_retry(bridge_id)
         async with self._bridge_lock(bridge_id):
             await self._stop_locked(bridge_id, reason=reason)
 
@@ -1709,6 +1817,11 @@ class CollaborationBridgeLifecycleService:
             for task in unfinished:
                 task.cancel()
             await asyncio.gather(*unfinished, return_exceptions=True)
+        retries = list(self._crash_retries.values())
+        self._crash_retries.clear()
+        for retry in retries:
+            retry.cancel()
+        await asyncio.gather(*retries, return_exceptions=True)
         logger.info("Stopping all %d collaboration bridges", len(self._bridges))
         for bridge_id in list(self._bridges):
             await self.stop(bridge_id)
@@ -1846,9 +1959,10 @@ class CollaborationBridgeLifecycleService:
         Wanted where it is new here, so the process that should hold it
         claims it. Started, or restarted, where this process has not started
         it from this version of the row. A bridge already started from this
-        row is left alone, running or not: one that crashed or failed to
-        start stays down until it is edited or restarted, as it does in a
-        deployment of one process.
+        row is left alone, running or not: one that failed to start stays
+        down until it is edited or restarted, as it does in a deployment of
+        one process, and one that crashed while running is started again by
+        its own backoff (`_schedule_crash_retry`), not by the re-check.
         """
         if self._owned.stopping:
             return
