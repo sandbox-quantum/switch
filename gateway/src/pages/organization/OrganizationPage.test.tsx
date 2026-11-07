@@ -92,7 +92,7 @@ describe("OrganizationPage", () => {
       "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [
-        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
+        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01", can_change_role: true, can_grant_org_admin: true, can_remove: true },
       ],
       "GET /organizations/current/audit-events": [
         {
@@ -237,6 +237,9 @@ describe("OrganizationPage", () => {
       role: "org_admin",
       created_at: "2026-01-01",
       warning: null,
+      can_change_role: true,
+      can_grant_org_admin: true,
+      can_remove: true,
     };
     answer({
       "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
@@ -304,8 +307,10 @@ describe("OrganizationPage", () => {
   });
 
   const members = [
-    { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
+    { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01", can_change_role: true, can_remove: false },
   ];
+  // The operator restoring an admin may change roles and remove nobody; who may
+  // be made Org Admin follows where the members come from.
   const operatorRoutes = (membersAnswer: unknown, fromDirectory = false) => ({
     "GET /organizations/current": {
       id: "o1",
@@ -315,7 +320,9 @@ describe("OrganizationPage", () => {
       members_from_directory: fromDirectory,
     },
     "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
-    "GET /organizations/current/members": membersAnswer,
+    "GET /organizations/current/members": Array.isArray(membersAnswer)
+      ? membersAnswer.map((m) => ({ ...m, can_grant_org_admin: !fromDirectory }))
+      : membersAnswer,
     "GET /organizations/current/issues": new Refusal(403, "Only an organization admin may do this"),
   });
 
@@ -376,8 +383,8 @@ describe("OrganizationPage", () => {
       },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [
-        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
-        { user_id: "u3", name: "Cy", email: "cy@example.com", role: "org_admin", created_at: "2026-01-01" },
+        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01", can_change_role: true, can_grant_org_admin: false, can_remove: true },
+        { user_id: "u3", name: "Cy", email: "cy@example.com", role: "org_admin", created_at: "2026-01-01", can_change_role: true, can_grant_org_admin: false, can_remove: true },
       ],
       "GET /organizations/current/audit-events": [],
       "GET /organizations/current/issues": [],
@@ -398,7 +405,7 @@ describe("OrganizationPage", () => {
 
   describe("where changes go to the organization's account settings", () => {
     const originalLocation = window.location;
-    const bob = { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" };
+    const bob = { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01", can_change_role: true, can_grant_org_admin: true, can_remove: true };
     const routes = (patchAnswer: unknown) => ({
       "GET /organizations/current": {
         id: "o1",
@@ -578,7 +585,7 @@ describe("OrganizationPage", () => {
       "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [
-        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
+        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01", can_change_role: true, can_grant_org_admin: true, can_remove: true },
       ],
       "GET /organizations/current/audit-events": [],
       "GET /organizations/current/issues": [],
@@ -623,7 +630,7 @@ describe("OrganizationPage", () => {
       "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [
-        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
+        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01", can_change_role: true, can_grant_org_admin: true, can_remove: true },
       ],
       "GET /organizations/current/audit-events": [],
       "GET /organizations/current/issues": [],

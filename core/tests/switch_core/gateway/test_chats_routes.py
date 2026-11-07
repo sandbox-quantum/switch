@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -42,7 +42,9 @@ from switch_core.db.models import (
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import chats as chats_module
+from switch_core.gateway.auth import session_is_current
 from switch_core.gateway.chats import (
     chat_activity_events,
     chat_events,
@@ -852,6 +854,73 @@ class _Events:
                 return data
 
 
+async def _always_current() -> bool:
+    return True
+
+
+def _session_of(chats: _Harness, user: User) -> Callable[[], Awaitable[bool]]:
+    """The check a route hands its stream: the session the stream was opened
+    with, against the account as it is now."""
+    session_version = user.session_version
+
+    async def current() -> bool:
+        return await session_is_current(
+            chats.factory, UserStore(), user.id, session_version
+        )
+
+    return current
+
+
+async def _end_sessions(chats: _Harness, user: User) -> None:
+    async with chats.factory() as session:
+        await UserStore().end_sessions(session, user.id)
+        await session.commit()
+
+
+async def test_the_stream_ends_at_its_next_re_read_once_the_sessions_are_ended(
+    chats: _Harness,
+) -> None:
+    events = _Events(
+        chat_events(
+            chats.service,
+            TENANT,
+            chats.alice,
+            {},
+            ping_seconds=60.0,
+            recheck_seconds=0.05,
+            session_current=_session_of(chats, chats.alice),
+        )
+    )
+    assert (await events.next())[0] == "ready"
+
+    await _end_sessions(chats, chats.alice)
+
+    with pytest.raises(StopAsyncIteration):
+        await events.next()
+
+
+async def test_the_activity_stream_ends_once_the_sessions_are_ended(
+    chats: _Harness,
+) -> None:
+    events = _Events(
+        chat_activity_events(
+            chats.service,
+            TENANT,
+            chats.alice,
+            ping_seconds=60.0,
+            recheck_seconds=0.05,
+            queue_max=64,
+            session_current=_session_of(chats, chats.alice),
+        )
+    )
+    assert (await events.next())[0] == "ready"
+
+    await _end_sessions(chats, chats.alice)
+
+    with pytest.raises(StopAsyncIteration):
+        await events.next()
+
+
 def _stream(
     chats: _Harness, user: User, after: dict[str, int], recheck: float
 ) -> _Events:
@@ -863,6 +932,7 @@ def _stream(
             after,
             ping_seconds=60.0,
             recheck_seconds=recheck,
+            session_current=_always_current,
         )
     )
 
@@ -1191,6 +1261,7 @@ def _stream_on(process: _Process, user: User) -> _Events:
             {},
             ping_seconds=60.0,
             recheck_seconds=3600.0,
+            session_current=_always_current,
         )
     )
 
@@ -1754,6 +1825,7 @@ def _activity_stream(
             ping_seconds=ping_seconds,
             recheck_seconds=recheck_seconds,
             queue_max=queue_max,
+            session_current=_always_current,
         )
     )
 
@@ -2132,6 +2204,7 @@ def _activity_stream_on(process: _Process, user: User) -> _Events:
             ping_seconds=60.0,
             recheck_seconds=3600.0,
             queue_max=64,
+            session_current=_always_current,
         )
     )
 
