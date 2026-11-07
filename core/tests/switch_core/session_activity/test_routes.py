@@ -295,3 +295,13 @@ async def test_a_host_only_sees_its_own_agents_requests(
             select(ApprovalRequest.state).where(ApprovalRequest.request_id == "theirs")
         )
     assert state == "open"
+
+
+async def test_subagent_metadata_reaches_the_stored_activity(client, service):
+    response = await client.post(
+        f"/agent-sessions/{SESSION}/activity",
+        json=_activity(subagent={"child_id": "child-demo"}),
+    )
+    assert (response.status_code, response.json()) == (200, {"recorded": True})
+    [row] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert row.subagent == {"child_id": "child-demo"}

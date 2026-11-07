@@ -44,6 +44,8 @@ export type Item = {
   text: string;
   attachments: Attachment[];
   origin: Origin | null;
+  /** Safe child identity for subagent tool activity; no child transcript. */
+  subagent?: { childId: Id | null };
 };
 export type ApprovalOption = {
   optionId: Id;

@@ -38,17 +38,23 @@ export const attachmentSchema = z.strictObject({
     .nullable()
     .optional(),
 });
-const item = z.strictObject({
-  itemId: id,
-  turnId: id,
-  revision,
-  kind: z.enum(['user-message', 'assistant-message', 'tool-activity']),
-  status: z.enum(['in-progress', 'completed', 'failed', 'declined']),
-  title: z.string(),
-  text: z.string(),
-  attachments: z.array(attachmentSchema),
-  origin: origin.nullable(),
-});
+const item = z
+  .strictObject({
+    itemId: id,
+    turnId: id,
+    revision,
+    kind: z.enum(['user-message', 'assistant-message', 'tool-activity']),
+    status: z.enum(['in-progress', 'completed', 'failed', 'declined']),
+    title: z.string(),
+    text: z.string(),
+    attachments: z.array(attachmentSchema),
+    origin: origin.nullable(),
+    subagent: z.strictObject({ childId: id.nullable() }).optional(),
+  })
+  .refine((value) => value.subagent === undefined || value.kind === 'tool-activity', {
+    message: 'Subagent metadata belongs only to tool activity.',
+    path: ['subagent'],
+  });
 const option = z.strictObject({
   optionId: id,
   label: z.string(),

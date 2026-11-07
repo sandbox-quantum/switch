@@ -353,3 +353,26 @@ it('remembers how far it reported across a restart', async () => {
   expect(again.fresh).toBe(false);
   expect(again.cursor).toBe(7);
 });
+
+it.each([null, 'native-child'])(
+  'reports safe child metadata (%s) only on tool rows',
+  async (childId) => {
+    const report = await reporter();
+    const projected = rows(
+      report.reports(event(1, item({ subagent: { childId } })), originOf, noUsage)
+    );
+    expect(projected).toMatchObject([
+      { kind: 'tool-activity', subagent: { child_id: childId }, text: '' },
+    ]);
+    const ordinary = rows(report.reports(event(2, item({})), originOf, noUsage));
+    expect(ordinary[0]).not.toHaveProperty('subagent');
+    const message = rows(
+      report.reports(
+        event(3, item({ kind: 'assistant-message', subagent: { childId } })),
+        originOf,
+        noUsage
+      )
+    );
+    expect(message[0]).not.toHaveProperty('subagent');
+  }
+);

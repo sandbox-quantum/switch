@@ -3806,6 +3806,8 @@ class AgentSessionActivityItem(TenantScoped, Base):
     turn, so reading every step of one turn is an index range.
     """
 
+    subagent: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
     __tablename__ = "session_activity_items"
     __table_args__ = (
         PrimaryKeyConstraint(

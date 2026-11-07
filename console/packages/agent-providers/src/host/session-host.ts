@@ -272,6 +272,28 @@ export class HostedSession {
         for (const turn of snapshot.turns)
           if (turn.status === 'running' || turn.status === 'queued')
             await host.publish({ ...turn, status: 'interrupted' });
+        const unfinishedChildren = snapshot.items.filter(
+          (item) => item.kind === 'tool-activity' && item.subagent && item.status === 'in-progress'
+        );
+        for (const item of unfinishedChildren)
+          await host.publish({
+            type: 'item.upsert',
+            item: {
+              ...item,
+              revision: item.revision + 1,
+              status: 'failed',
+              title: `${item.title.slice(0, 120)} — outcome unknown after host restart`,
+              text: 'The host restarted and lost subagent tracking. Its execution outcome is unknown.',
+            },
+          });
+        if (unfinishedChildren.length)
+          await host.publish({
+            type: 'notice',
+            level: 'warning',
+            code: 'HOST_RESTARTED',
+            message:
+              'The host restarted and lost subagent tracking. Unfinished subagent activities are marked failed because their execution outcomes are unknown; they were not resent.',
+          });
         for (const command of host.commands.values()) {
           const status = host
             .snapshot()

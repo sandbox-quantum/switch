@@ -64,6 +64,7 @@ export const chatActivityItemSchema = z.object({
   occurredAt: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  subagent: z.object({ childId: z.string().min(1).nullable() }).optional(),
 });
 export type ChatActivityItem = z.infer<typeof chatActivityItemSchema>;
 

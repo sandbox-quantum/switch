@@ -57,7 +57,9 @@ from . import (
     INTERRUPT_QUEUED_NOTE,
     NO_OPTIONS,
     RequestReference,
+    activity_order,
     example_value,
+    subagent_label,
     surface_label,
     turn_state,
     unanswerable,
@@ -1165,10 +1167,11 @@ def _activity_lines(items: list[Item]) -> list[str]:
     """The tool log, newest end kept, each line marked with how it went."""
     lines: list[str] = []
     spent = 0
-    for position, item in enumerate(reversed(items), start=1):
-        title = _fit(item.title, _MAX_ACTIVITY_TITLE) if item.title else "_(untitled)_"
+    for position, item in enumerate(reversed(activity_order(items)), start=1):
+        label = subagent_label(item) if item.subagent is not None else item.title
+        title = _fit(label, _MAX_ACTIVITY_TITLE) if label else "_(untitled)_"
         line = f"{_ACTIVITY[item.status]} {title}"
-        if item.text:
+        if item.text and item.subagent is None:
             line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
         if position > _MAX_ACTIVITY_LINES or spent + len(line) + 1 > _MAX_ACTIVITY:
             lines.append(f"_…and {len(items) - position + 1} more before these._")
@@ -1212,7 +1215,7 @@ def render_activity_plan(
     both of the two it replaced, and the second of those was a status line that
     appeared before the turn had done anything.
     """
-    shown = [item for item in items if in_activity_log(item)]
+    shown = activity_order([item for item in items if in_activity_log(item)])
     kept = shown[len(shown) - _MAX_SECTION_ITEMS :]
     title = _activity_title(
         items, turn, elapsed_seconds=elapsed_seconds, omitted=len(shown) - len(kept)
@@ -1290,7 +1293,7 @@ def render_activity_stream(
     draws its blocks, and the title of a plan with no cards in it draws nothing
     — so there is no invisible header left behind by dropping it.
     """
-    shown = [item for item in items if in_activity_log(item)]
+    shown = activity_order([item for item in items if in_activity_log(item)])
     blocks = _step_blocks(
         [_settled(_plan_task(item), item, turn) for item in shown],
         _running(shown, turn),
@@ -1514,7 +1517,7 @@ def _settled(task: dict[str, Any], item: Item, turn: TurnUpsert) -> dict[str, An
     stops — marking that "Unfinished" would put the word on the one line of the
     turn where nothing was left undone.
     """
-    if item.kind == "assistant-message":
+    if item.kind == "assistant-message" or item.subagent is not None:
         return task
     if item.status != "in-progress" or turn.status in TURN_ENDED:
         task["status"] = "complete"
@@ -1569,9 +1572,15 @@ def _running(drawn: list[Item], turn: TurnUpsert) -> tuple[int, str] | None:
     between two calls there is nothing running, and a heading that went blank
     for that moment would flicker on every step.
     """
-    if turn.status in TURN_ENDED:
-        return None
-    calls = [index for index, item in enumerate(drawn) if item.kind == "tool-activity"]
+    calls = [
+        index
+        for index, item in enumerate(drawn)
+        if item.kind == "tool-activity"
+        and (
+            turn.status not in TURN_ENDED
+            or (item.subagent is not None and item.status == "in-progress")
+        )
+    ]
     if not calls:
         return None
     current = next(
@@ -1603,7 +1612,8 @@ def _plan(
     streamed timeline is built on, and the reason a plan can be edited in place
     at all.
     """
-    kept = did[len(did) - _MAX_PLAN_TASKS :]
+    ordered = activity_order(did)
+    kept = ordered[len(ordered) - _MAX_PLAN_TASKS :]
     dropped = len(did) - len(kept)
     title = turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
     if dropped:
@@ -1671,7 +1681,8 @@ def _plan_task(item: Item) -> dict[str, Any]:
             "status": "complete",
             "details": _rich_text(_truncate_prose(item.text, _MAX_SAID_DETAILS)),
         }
-    title = plain_text(item.title) if item.title else ""
+    label = subagent_label(item) if item.subagent is not None else item.title
+    title = plain_text(label) if label else ""
     if item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()
     task: dict[str, Any] = {
@@ -1680,7 +1691,7 @@ def _plan_task(item: Item) -> dict[str, Any]:
         "icon": {"type": "icon", "name": _TOOL_ICON},
         "status": _TASK_STATUS[item.status],
     }
-    details = plain_text(item.text) if item.text else ""
+    details = plain_text(item.text) if item.text and item.subagent is None else ""
     if details:
         task["details"] = _rich_text(_truncate_prose(details, _MAX_PLAN_TASK_DETAILS))
     return task

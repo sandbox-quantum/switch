@@ -60,6 +60,7 @@ from . import (
     Markup,
     RequestReference,
     example_value,
+    subagent_label,
     surface_label,
     turn_state,
     unanswerable,
@@ -226,7 +227,7 @@ def turn_summary(
     escape: Callable[[str], str],
     limit: int,
 ) -> str:
-    """One or two lines: what the agent last said, and where the turn got to.
+    """The agent's last words and turn state, with bounded child task summaries.
 
     Only the agent's own words. A person's message is skipped rather than
     taken as `items[-1]`: there is no card here to attribute it against the
@@ -238,14 +239,26 @@ def turn_summary(
     cut when the budget is tight is what was said, not whether the turn is
     still going.
     """
-    state = turn_state(items, turn, tool_detail=True)
+    state = _truncate(turn_state(items, turn, tool_detail=True), limit)
     said = [item for item in items if item.kind == "assistant-message"]
+    lines = [state]
+    # Preserve the parent's answer as this fallback always has. Child summaries
+    # may use at most half the remaining space when there is an answer; their
+    # tool text is never included. Unused summary space returns to the answer.
+    child_budget = max(0, limit - len(state)) // (2 if said else 1)
+    for line in _children(items, budget=limit, escape=escape):
+        cost = len(line) + 1
+        if cost > child_budget:
+            break
+        lines.append(line)
+        child_budget -= cost
+    status = "\n".join(lines)
     if not said:
-        return _truncate(state, limit)
+        return status
 
-    remaining = limit - len(state) - 1  # 1 for the newline between them
+    remaining = limit - len(status) - 1
     if remaining <= 0:
-        return _truncate(state, limit)
+        return status
 
     text = said[-1].text
     body = (
@@ -253,7 +266,7 @@ def turn_summary(
         if text
         else _truncate("(nothing said)", remaining)
     )
-    return f"{body}\n{state}"
+    return f"{body}\n{status}"
 
 
 def turn_status(
@@ -277,7 +290,7 @@ def turn_status(
     what `turn_summary` does, and why a platform publishing SDK sessions wants
     this instead.
 
-    Three lines at most, and usually one:
+    Usually one to three lines, followed by up to four subagents:
 
     - where the turn got to and how long it has taken;
     - what it is doing right now, while it is still doing something;
@@ -311,8 +324,10 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
-    did = [item for item in items if item.kind == "tool-activity"]
-    for line in _doing(
+    did = [
+        item for item in items if item.kind == "tool-activity" and item.subagent is None
+    ]
+    for line in _children(items, budget=budget, escape=escape) + _doing(
         did, turn, escape=escape, budget=budget, tool_detail=tool_detail
     ):
         if spent + len(line) + 1 > budget:
@@ -320,6 +335,21 @@ def turn_status(
         lines.append(line)
         spent += len(line) + 1
     return _mentioned(mention, "\n".join(lines))
+
+
+def _children(
+    items: list[Item], *, budget: int, escape: Callable[[str], str]
+) -> list[str]:
+    """Bounded child summaries, including on platforms without tool detail."""
+    children = [item for item in items if item.subagent is not None]
+    children.sort(key=lambda item: item.status != "in-progress")
+    lines = [
+        _fit(subagent_label(item), min(200, max(1, budget // 8)), escape=escape)
+        for item in children[:4]
+    ]
+    if len(children) > 4:
+        lines.append(f"…{len(children) - 4} more subagents not shown.")
+    return lines
 
 
 def _doing(
@@ -398,6 +428,8 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"
+    if item.subagent is not None:
+        return _fit(subagent_label(item), _LOG_TITLE, escape=escape)
     title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
     line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
     if item.text:

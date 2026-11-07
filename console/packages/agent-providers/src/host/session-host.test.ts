@@ -167,6 +167,63 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
     await expect(next.command(message('third'))).rejects.toThrow('STALE_EPOCH');
   }
 );
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
+  'settles lost %s subagent tracking after a completed parent without resending work',
+  async (provider) => {
+    const { root, host, emit } = await start(provider);
+    await host.command(message('parent'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    for (const [id, status, type] of [
+      ['live-child', 'in_progress', 'subagent'],
+      ['settled-child', 'completed', 'subagent'],
+      ['ordinary-tool', 'in_progress', 'tool_call'],
+    ])
+      emit({
+        type: 'item.started',
+        turnId: 'parent',
+        item: { id, type, status, title: 'Inspect module '.repeat(50), nativeChildId: id },
+      });
+    emit({ type: 'turn.completed', turnId: 'parent', outcome: 'completed', usage: [] });
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+    const before = host.snapshot();
+    const priorChild = before.items.find((item) => item.subagent?.childId === 'live-child')!;
+    // This fixture stops without provider child outcomes, as an abrupt host loss would.
+    await host.shutdown();
+    const next = setup(provider);
+    const recovered = await startHost(root, next.config, next.adapter);
+    hosts.push(recovered);
+    const after = recovered.snapshot();
+    const child = after.items.find((item) => item.itemId === priorChild.itemId)!;
+    expect(child).toEqual({
+      ...priorChild,
+      status: 'failed',
+      revision: priorChild.revision + 1,
+      title: `${priorChild.title.slice(0, 120)} — outcome unknown after host restart`,
+      text: 'The host restarted and lost subagent tracking. Its execution outcome is unknown.',
+    });
+    expect(child.title.length).toBeLessThanOrEqual(200);
+    expect(after.turns).toEqual(before.turns);
+    for (const item of before.items.filter((item) => item.itemId !== priorChild.itemId))
+      expect(after.items.find((candidate) => candidate.itemId === item.itemId)).toEqual(item);
+    expect(after.notices).toContainEqual(
+      expect.objectContaining({
+        code: 'HOST_RESTARTED',
+        level: 'warning',
+        message: expect.stringContaining('execution outcomes are unknown'),
+      })
+    );
+    expect(next.adapter.sendTurn).not.toHaveBeenCalled();
+    await recovered.shutdown();
+    const again = setup(provider);
+    const restarted = await startHost(root, again.config, again.adapter);
+    hosts.push(restarted);
+    expect(restarted.snapshot().items.find((item) => item.itemId === child.itemId)).toEqual(child);
+    expect(
+      restarted.snapshot().notices.filter((notice) => notice.code === 'HOST_RESTARTED')
+    ).toHaveLength(1);
+    expect(again.adapter.sendTurn).not.toHaveBeenCalled();
+  }
+);
 it('keeps an explicitly stopped session stopped across restart', async () => {
   const { root, host } = await start('claude');
   await host.command({ ...message('stop'), body: { type: 'session.stop' } });

@@ -40,6 +40,79 @@ const context = {
 };
 
 describe('chat projection', () => {
+  it('updates a subagent row with a late native identity without publishing child output', () => {
+    const projector = new ChatProjector(session('codex'), null);
+    projector.bindTurn('turn', context);
+    const base = {
+      provider: 'codex' as const,
+      sessionId: 'session',
+      eventId: 'event',
+      createdAt: '2026-09-07T12:00:00Z',
+      turnId: 'turn',
+    };
+    const child = {
+      id: 'delegate',
+      type: 'subagent' as const,
+      status: 'in_progress' as const,
+      title: 'Explore files',
+      text: 'private child transcript',
+      payload: { raw: 'private payload' },
+    };
+    const first = projector.ingest({ ...base, type: 'item.started', item: child }, 0);
+    expect(first).toMatchObject([
+      {
+        type: 'item.upsert',
+        item: {
+          itemId: '["turn","delegate"]',
+          kind: 'tool-activity',
+          revision: 1,
+          text: '',
+          subagent: { childId: null },
+        },
+      },
+    ]);
+    expect(
+      projector.ingest(
+        { ...base, type: 'item.updated', item: { ...child, nativeChildId: 'native-child' } },
+        10
+      )
+    ).toEqual([]);
+    expect(projector.flush(250, false)).toMatchObject([
+      {
+        type: 'item.upsert',
+        item: { itemId: '["turn","delegate"]', revision: 2, subagent: { childId: 'native-child' } },
+      },
+    ]);
+    const done = projector.ingest(
+      {
+        ...base,
+        type: 'item.completed',
+        item: { ...child, nativeChildId: 'native-child', status: 'completed' },
+      },
+      251
+    );
+    expect(done).toMatchObject([
+      {
+        type: 'item.upsert',
+        item: {
+          status: 'completed',
+          title: 'Explore files',
+          text: '',
+          subagent: { childId: 'native-child' },
+        },
+      },
+    ]);
+    expect(JSON.stringify([...first, ...done])).not.toContain('private');
+    const ordinary = projector.ingest(
+      { ...base, type: 'item.completed', item: { ...child, id: 'ordinary', type: 'tool_call' } },
+      252
+    );
+    expect(ordinary[0]).toMatchObject({ type: 'item.upsert', item: { kind: 'tool-activity' } });
+    expect(ordinary[0] && 'item' in ordinary[0] ? ordinary[0].item : {}).not.toHaveProperty(
+      'subagent'
+    );
+  });
+
   it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
     'projects %s text with bounded full replacements and immediate final state',
     (provider) => {

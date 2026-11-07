@@ -27,6 +27,8 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    field_validator,
+    model_validator,
 )
 from pydantic.alias_generators import to_camel
 
@@ -112,6 +114,10 @@ class Attachment(_Model):
     sha256: str | None = None
 
 
+class Subagent(_Model):
+    child_id: Id | None
+
+
 class Item(_Model):
     item_id: Id
     turn_id: Id
@@ -122,6 +128,22 @@ class Item(_Model):
     text: str
     attachments: list[Attachment]
     origin: Origin | None
+    subagent: Subagent | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @field_validator("subagent", mode="before")
+    @classmethod
+    def subagent_cannot_be_null(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("Subagent metadata must be omitted or an object.")
+        return value
+
+    @model_validator(mode="after")
+    def subagent_is_tool_activity(self) -> Item:
+        if self.subagent is not None and self.kind != "tool-activity":
+            raise ValueError("Only tool activity carries subagent metadata.")
+        return self
 
 
 class ApprovalOption(_Model):

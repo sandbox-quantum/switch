@@ -32,6 +32,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.commands import COMMANDS
@@ -62,6 +63,7 @@ from switch_core.gateway.agent_sessions import ApprovalRequestView
 from switch_core.gateway.auth import get_current_user, session_is_current
 from switch_core.gateway.dependencies import get_user_store
 from switch_core.session_activity.listener import Change, RoomSubscription
+from switch_core.sessions.contract import Subagent
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +222,9 @@ class ActivityItemView(CamelModel):
     occurred_at: datetime
     created_at: datetime
     updated_at: datetime
+    subagent: Subagent | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @classmethod
     def of(cls, row: AgentSessionActivityItem) -> ActivityItemView:
@@ -240,6 +245,9 @@ class ActivityItemView(CamelModel):
             occurred_at=row.occurred_at,
             created_at=row.created_at,
             updated_at=row.updated_at,
+            subagent=Subagent.model_validate(row.subagent)
+            if row.subagent is not None
+            else None,
         )
 
 

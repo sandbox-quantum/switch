@@ -107,6 +107,9 @@ export class ChatProjector {
           text: kind === 'tool-activity' ? '' : (event.item.text ?? previous?.item.text ?? ''),
           attachments: [],
           origin: kind === 'user-message' ? context.origin : null,
+          ...(event.item.type === 'subagent'
+            ? { subagent: { childId: event.item.nativeChildId ?? null } }
+            : {}),
         };
         const buffered = {
           item,

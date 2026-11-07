@@ -474,13 +474,19 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
-      const { usage: _usage, ...row } = item.row;
+    // Older servers reject optional activity metadata. Retry once with the
+    // original row shape, dropping all optional extensions together. A failed
+    // retry escapes, leaving the durable reporter cursor unchanged.
+    const sentWithoutMetadata = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (
+        item.kind !== 'activity' ||
+        error.status !== 422 ||
+        (!item.row.usage && !item.row.subagent)
+      )
+        return false;
+      const { usage: _usage, subagent: _subagent, ...row } = item.row;
       console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+        `Switch refused optional activity metadata for turn ${row.turn_id}; retrying without usage or subagent details: ${error.message}`
       );
       await send({ kind: 'activity', row });
       return true;
@@ -504,7 +510,7 @@ export async function runSharedHost(
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            if (await sentWithoutUsage(item, error)) continue;
+            if (await sentWithoutMetadata(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
