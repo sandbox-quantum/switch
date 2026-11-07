@@ -237,13 +237,16 @@ async def test_an_owner_with_no_account_here_is_told_privately() -> None:
     assert "didn't say who added it" in body
 
 
-async def test_an_agent_open_to_everyone_needs_no_disclosure() -> None:
+async def test_an_agent_open_to_everyone_is_disclosed_too() -> None:
+    # The rule is about not knowing who asked, whatever the agent's policy.
     bridge = _bridge(mapped=True)
 
     await _joined(bridge, _join("friendly", None))
 
     assert bridge._room_service.added == [("friendly", Inviter.unknown_adder())]
-    assert bridge.notices == []
+    assert len(bridge.notices) == 1
+    assert "didn't say who added" in bridge.notices[0]
+    assert [agent_id for agent_id, _ in bridge._room_service.told_owner] == ["a2"]
 
 
 async def test_a_failed_notice_does_not_undo_the_join(

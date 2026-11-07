@@ -80,8 +80,8 @@ class Inviter:
         """The platform put the agent there and did not say who asked.
 
         The join stands, because refusing would leave a channel broken for a
-        reason nobody there could fix. It is never trusted quietly: the caller
-        discloses it (`needs_disclosure`).
+        reason nobody there could fix. It is never trusted quietly: the channel,
+        the logs and the agent's owner are all told.
         """
         return cls("unknown")
 
@@ -157,8 +157,8 @@ def invite_refusal(agents: list[Agent], inviter: Inviter) -> str:
 
 
 def unverified_join_notice(agent: Agent, owner_handle: str | None) -> str:
-    """What a channel reads when a restricted agent arrives and nobody can say who
-    added it. It accuses no one: most of the time this is the owner or a teammate."""
+    """What a channel reads when an agent arrives and nobody can say who added it.
+    It accuses no one: most of the time this is the owner or a teammate."""
     label = agent_label_with_identifier(agent.display_name, agent.name)
     owner = f"its owner (@{owner_handle})" if owner_handle else "its owner"
     return (
@@ -179,12 +179,6 @@ def unverified_join_owner_notice(agent: Agent, platform: str, channel_name: str)
         "instructions from. If you didn't expect this, you can remove it from that "
         "room. It still won't act for anyone your settings don't allow."
     )
-
-
-def needs_disclosure(agent: Agent) -> bool:
-    """Whether an unverified join is worth saying out loud. An agent open to
-    everyone would have admitted whoever it was, so there is nothing to report."""
-    return not parse_policy(agent.addressing_policy).is_open()
 
 
 class InviteGate:

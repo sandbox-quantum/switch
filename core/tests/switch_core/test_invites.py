@@ -50,7 +50,6 @@ from switch_core.invites import (
     Inviter,
     InviteRefused,
     invite_refusal,
-    needs_disclosure,
     unverified_join_notice,
 )
 from switch_core.room_service import RoomCreateConfig, RoomService
@@ -316,6 +315,38 @@ async def test_a_template_run_can_seat_the_private_agents_it_just_created(
     assert [agent.id for agent in refused] == [world.other_agent.id]
 
 
+async def test_an_agent_running_a_template_is_judged_as_itself_for_others_agents(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Pinned so the choice is visible: a template an agent runs brings in the
+    agents it created, and is judged as that agent for everyone else's. Someone
+    else's agent that takes instructions from any person, but no agent, admits the
+    person and refuses the agent, even when that agent runs on the person's behalf.
+    """
+    async with session_factory() as session:
+        world = await _world(session)
+        world.other_agent.addressing_policy = AddressingPolicy(
+            rules=[AddressingRule(users="*", agents=[])]
+        ).model_dump()
+        await session.flush()
+        as_person = await _gate().refused(
+            session,
+            Inviter.person(world.owner.id),
+            [world.other_agent],
+            room_id="",
+            group_id=None,
+        )
+        as_agent = await _gate().refused(
+            session,
+            Inviter.agent(world.own_agent.id, created_for_this_run=frozenset()),
+            [world.other_agent],
+            room_id="",
+            group_id=None,
+        )
+    assert as_person == []
+    assert [agent.id for agent in as_agent] == [world.other_agent.id]
+
+
 async def test_an_agent_can_always_bring_itself_along(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -435,11 +466,7 @@ def test_a_refusal_for_several_agents_reads_naturally() -> None:
     assert "their owners" in message
 
 
-def test_only_a_restricted_agent_needs_its_unverified_join_disclosed() -> None:
-    assert needs_disclosure(
-        _agent(addressing_policy=owner_only_policy([]).model_dump())
-    )
-    assert not needs_disclosure(_agent(addressing_policy={"rules": []}))
+def test_an_unverified_join_notice_names_who_can_act() -> None:
     notice = unverified_join_notice(_agent(), "sam")
     assert "didn't say who added" in notice
     assert "its owner (@sam) can remove it" in notice

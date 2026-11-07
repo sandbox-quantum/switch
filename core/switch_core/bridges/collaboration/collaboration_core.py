@@ -64,7 +64,6 @@ from switch_core.invites import (
     Inviter,
     InviteRefused,
     invite_refusal,
-    needs_disclosure,
     unverified_join_notice,
     unverified_join_owner_notice,
 )
@@ -1977,7 +1976,7 @@ class CollaborationCore:
         agent_ids: list[str],
         inviter: Inviter,
     ) -> None:
-        """Say so when a restricted agent arrived and nobody can say who asked.
+        """Say so when an agent arrived and nobody can say who asked.
 
         The join stands, so this is its owner's chance to notice: mentioned in the
         channel if they have an account here, told privately if they don't. A
@@ -1999,7 +1998,7 @@ class CollaborationCore:
                 channel_id,
             )
             return
-        for agent in filter(needs_disclosure, agents):
+        for agent in agents:
             logger.warning(
                 "Agent %s joined channel %s and the platform did not report who "
                 "added it, so its addressing policy could not be checked",
