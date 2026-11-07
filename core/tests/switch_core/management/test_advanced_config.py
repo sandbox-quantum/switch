@@ -30,6 +30,7 @@ def test_the_served_provider_list() -> None:
         ("opencode", "OpenCode"),
         ("antigravity", "Antigravity"),
         ("cursor", "Cursor CLI"),
+        ("amp", "Amp"),
     ]
     by_id = {provider["id"]: provider for provider in providers}
     served = advanced_config_schema()["providers"]
@@ -41,7 +42,14 @@ def test_the_served_provider_list() -> None:
 def test_the_served_schema() -> None:
     providers = advanced_config_schema()["providers"]
 
-    assert set(providers) == {"claude", "codex", "opencode", "cursor", "antigravity"}
+    assert set(providers) == {
+        "claude",
+        "codex",
+        "opencode",
+        "cursor",
+        "antigravity",
+        "amp",
+    }
     assert [field["key"] for field in providers["claude"]["fields"]] == [
         "tools",
         "disallowedTools",
@@ -63,6 +71,7 @@ def test_the_served_schema() -> None:
     ]
     assert providers["cursor"] == {"fields": []}
     assert providers["antigravity"] == {"fields": []}
+    assert providers["amp"] == {"fields": []}
     claude = {field["key"]: field for field in providers["claude"]["fields"]}
     assert claude["isolation"] == {
         "key": "isolation",

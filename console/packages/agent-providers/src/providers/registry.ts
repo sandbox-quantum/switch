@@ -1,6 +1,8 @@
 import { checkAcpSignIn, createAcpAdapter } from '../acp/acp-adapter';
 import type { AcpProviderHooks } from '../acp/hooks';
 import type { ProviderAdapter } from '../adapter';
+import { createAmpAdapter } from '../amp/amp-adapter';
+import { AMP_LOGIN, checkAmpSignIn } from '../amp/sign-in';
 import { antigravityAcp } from '../antigravity/antigravity-adapter';
 import { createClaudeAdapter } from '../claude/claude-adapter';
 import { checkClaudeSignIn, CLAUDE_LOGIN } from '../claude/sign-in';
@@ -106,6 +108,18 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   },
   acpProviderRuntime(antigravityAcp),
   acpProviderRuntime(cursorAcp),
+  {
+    id: 'amp',
+    loginCommand: AMP_LOGIN,
+    inheritEnv: ['AMP_API_KEY', 'AMP_URL'],
+    unsupportedPlatforms: {
+      win32:
+        'Amp runs on Windows only inside WSL (ampcode.com/docs/cli), and Switch answers its approvals through a POSIX shell helper.',
+    },
+    createAdapter: ({ binaryPath, logger }) =>
+      createAmpAdapter({ ...(binaryPath ? { binaryPath } : {}), ...(logger ? { logger } : {}) }),
+    checkSignIn: checkAmpSignIn,
+  },
 ];
 
 const RUNTIMES = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));
