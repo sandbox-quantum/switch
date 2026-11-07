@@ -1562,6 +1562,7 @@ class SlackAdapter(PlatformAdapter):
             content.turn,
             elapsed_seconds=content.elapsed_seconds,
             interrupt_turn_id=content.interrupt_turn_id,
+            cancel_command=content.cancel_command,
         )
         blocks = drawn.blocks
         spent = drawn.spent_control
@@ -1690,6 +1691,7 @@ class SlackAdapter(PlatformAdapter):
                     content.turn,
                     elapsed_seconds=content.elapsed_seconds,
                     interrupt_turn_id=content.interrupt_turn_id,
+                    cancel_command=content.cancel_command,
                 )
                 if not content.status_only
                 else render_activity(

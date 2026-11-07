@@ -14,7 +14,8 @@ import { isControlAck } from './stop-rows';
  * requests show with it.
  */
 
-export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
+/** `cancelled`: taken out of the agent's queue before it started. */
+export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'error' | 'cancelled';
 
 export type TurnActivity = {
   sessionId: string;

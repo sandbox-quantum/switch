@@ -407,7 +407,7 @@ class TestLiveChanges:
             thread_id=None,
             surface="slack",
             requester_name="Ada",
-            target_message_id=None,
+            target=None,
         )
         assert harness.protocol.connections.relay_session_command(agent_id, command)
         (frame,) = await take(stream, 1)

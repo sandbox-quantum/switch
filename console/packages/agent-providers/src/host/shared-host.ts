@@ -13,6 +13,7 @@ import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
 import {
   followupCommandId,
+  cancelRefusal,
   retryRefusal,
   roomControlFollowup,
   roomControlRefusal,
@@ -485,6 +486,23 @@ export async function runSharedHost(
       await send({ kind: 'activity', row });
       return true;
     };
+    // A server that predates `cancelled` refuses it as a turn's status. It goes
+    // again as `interrupted`, which that server knows ends a turn, so the card
+    // stops saying the message is waiting.
+    const sentAsInterrupted = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (
+        item.kind !== 'activity' ||
+        item.row.kind !== 'turn' ||
+        item.row.status !== 'cancelled' ||
+        error.status !== 422
+      )
+        return false;
+      console.warn(
+        `Switch does not know cancelled turns, so turn ${item.row.turn_id} is shown as interrupted: ${error.message}`
+      );
+      await send({ kind: 'activity', row: { ...item.row, status: 'interrupted' } });
+      return true;
+    };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
@@ -505,6 +523,7 @@ export async function runSharedHost(
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
             if (await sentWithoutUsage(item, error)) continue;
+            if (await sentAsInterrupted(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -779,9 +798,10 @@ export async function runSharedHost(
               `Could not tell room ${owed.roomId} that its ${owed.action} was refused: ${String(error)}`
             )
           );
-      // A retry asked for from a room that cannot run is answered there, where it was asked.
+      // A retry or a cancel asked for from a room that cannot run is answered
+      // there, where it was asked.
       if (
-        command.body.type === 'message.retry' &&
+        (command.body.type === 'message.retry' || command.body.type === 'turn.cancel') &&
         status?.status === 'rejected' &&
         !repeated &&
         parentChannel &&
@@ -793,11 +813,14 @@ export async function runSharedHost(
             type: 'room-reply',
             roomId: command.origin.roomId,
             threadId: command.origin.threadId,
-            body: retryRefusal(status.message),
+            body:
+              command.body.type === 'turn.cancel'
+                ? cancelRefusal(status.message)
+                : retryRefusal(status.message),
           })
           .catch((error: unknown) =>
             console.warn(
-              `Could not tell room ${command.origin.roomId} that its retry was refused: ${String(error)}`
+              `Could not tell room ${command.origin.roomId} that its ${command.body.type} was refused: ${String(error)}`
             )
           );
       // A fresh conversation starts with the instructions this host was given,

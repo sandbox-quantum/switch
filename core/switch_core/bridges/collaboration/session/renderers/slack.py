@@ -57,6 +57,7 @@ from . import (
     INTERRUPT_QUEUED_NOTE,
     NO_OPTIONS,
     RequestReference,
+    cancel_note,
     example_value,
     surface_label,
     turn_state,
@@ -1185,6 +1186,7 @@ def render_activity_plan(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    cancel_command: str | None = None,
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
 
@@ -1232,7 +1234,9 @@ def render_activity_plan(
     # bytes that must survive whatever trimming the steps need, and a message
     # that dropped its stop button to make room for one more step line would
     # have traded the only thing on it a reader can act on.
-    control = _interrupt_block(interrupt_turn_id, turn, STREAM_SLOTS[len(blocks)])
+    control = _interrupt_block(
+        interrupt_turn_id, turn, STREAM_SLOTS[len(blocks)], cancel_command
+    )
     if control is not None:
         blocks.append(control)
     return SlackMessage(text=title, blocks=blocks)
@@ -1269,6 +1273,7 @@ def render_activity_stream(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    cancel_command: str | None = None,
 ) -> StreamedActivity:
     """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
 
@@ -1302,7 +1307,7 @@ def render_activity_stream(
     # heading of the newest plan block, and the control has no title at all.
     title = blocks[-1]["title"]
     slot = STREAM_SLOTS[len(blocks)]
-    control = _interrupt_block(interrupt_turn_id, turn, slot)
+    control = _interrupt_block(interrupt_turn_id, turn, slot, cancel_command)
     if control is None:
         return StreamedActivity(
             title=title, blocks=blocks, spent_control=_spent_control(slot)
@@ -1353,7 +1358,10 @@ def _session_card(*, live: bool) -> dict[str, Any]:
 
 
 def _interrupt_block(
-    interrupt_turn_id: str | None, turn: TurnUpsert, block_id: str
+    interrupt_turn_id: str | None,
+    turn: TurnUpsert,
+    block_id: str,
+    cancel_command: str | None,
 ) -> dict[str, Any] | None:
     """The stop control, or None where there is nothing for it to stop.
 
@@ -1399,10 +1407,17 @@ def _interrupt_block(
         "value": _truncate(interrupt_turn_id, _MAX_VALUE),
     }
     if turn.status == "queued":
+        # How to cancel the message itself rides in the same sentence: a stream
+        # cannot take a block back, and this one is replaced as the turn starts.
+        note = (
+            INTERRUPT_QUEUED_NOTE
+            if cancel_command is None
+            else f"{INTERRUPT_QUEUED_NOTE} {cancel_note(cancel_command)}"
+        )
         return {
             "type": "section",
             "block_id": block_id,
-            "text": {"type": "plain_text", "text": INTERRUPT_QUEUED_NOTE},
+            "text": {"type": "plain_text", "text": note},
             "accessory": button,
         }
     return {

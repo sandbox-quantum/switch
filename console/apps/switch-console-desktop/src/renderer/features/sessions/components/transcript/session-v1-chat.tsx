@@ -109,7 +109,10 @@ export function SessionV1Chat({
   const lastItems = new Map(view.snapshot?.items.map((item) => [item.turnId, item.itemId]));
   const stoppedTurns = new Map(
     view.snapshot?.turns
-      .filter((turn) => turn.status === 'interrupted' || turn.status === 'error')
+      .filter(
+        (turn) =>
+          turn.status === 'interrupted' || turn.status === 'error' || turn.status === 'cancelled'
+      )
       .map((turn) => [turn.turnId, turn.status])
   );
   const noticesAfter = (itemId: string | null) =>
@@ -501,7 +504,14 @@ export function SessionV1Chat({
                 </details>
               )}
               {lastItems.get(item.turnId) === item.itemId && stoppedTurns.has(item.turnId) && (
-                <p role="status" className="mt-2 text-sm text-foreground-destructive">
+                <p
+                  role="status"
+                  className={
+                    stoppedTurns.get(item.turnId) === 'cancelled'
+                      ? 'mt-2 text-sm text-foreground-muted'
+                      : 'mt-2 text-sm text-foreground-destructive'
+                  }
+                >
                   Turn {stoppedTurns.get(item.turnId)}.
                 </p>
               )}

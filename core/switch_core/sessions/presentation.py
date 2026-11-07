@@ -173,3 +173,14 @@ def activity_error_summary(turn: TurnUpsert, *, online: bool) -> str | None:
     if not online:
         return "The agent host is offline. This request cannot continue until it reconnects."
     return None
+
+
+# How much of a turn id a queued turn's message offers to `!cancel` by: a
+# whole UUID is not something anyone types into a chat, and an agent rarely
+# has enough turns queued in one room for eight hex characters to collide.
+CANCEL_ID_CHARS = 8
+
+
+def cancel_command(agent_name: str, turn_id: str) -> str:
+    """What cancels a queued turn, as its sender would type it in the room."""
+    return f"!cancel @{agent_name} {turn_id[:CANCEL_ID_CHARS]}"
