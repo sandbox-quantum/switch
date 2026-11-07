@@ -1,7 +1,50 @@
 slug: linear
 name: Linear
 category: Project management
-description: Read and update Linear issues and projects.
-enabled: false
+description: Read and update Linear issues and projects, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Linear's refresh tokens rotate: each refresh returns a new one and spends
+  # the old.
+  refresh: rotating
+  oauth:
+    # Linear's MCP server offers OAuth 2.1 with dynamic client registration,
+    # so Core registers its own client and nothing is set up on the server.
+    registration: dynamic
+    # Back through Core where the server has a public address, else straight
+    # to Switch Console. The loopback ports are fixed in case Linear matches a
+    # registered loopback redirect's port exactly.
+    redirect: [core, loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Shown on every connect, so moving from read-write to read-only asks for
+    # the narrower consent instead of reusing the wider one.
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    # Linear's API is GraphQL only, with no REST "me": the viewer query is a
+    # POST, the token in the header and never in the body.
+    method: POST
+    url: https://api.linear.app/graphql
+    body: { query: "query { viewer { id email name } }" }
+    account_id: data.viewer.id
+    label: data.viewer.email
+# Linear documents 24-hour access tokens; an agent's copy may outlive its
+# grant by up to that long, though agents still ask again hourly. Measure the
+# MCP server's own lifetime before shortening or lengthening this.
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    # The one Streamable HTTP endpoint for both levels: the scope, not a
+    # separate /mcp/readonly URL, decides what a sign-in can do.
+    - { name: linear, url: "https://mcp.linear.app/mcp" }
+access:
+  # A token with only `read` cannot reach Linear's write APIs: Linear enforces
+  # it, not just the skill. Not asked for: `admin` (workspace settings, teams,
+  # members), which an agent has no reason to change.
+  read:
+    scopes: [read]
+  write:
+    scopes: [read, write]
+tools: { mode: pass_through }

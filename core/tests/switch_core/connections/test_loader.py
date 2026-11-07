@@ -18,7 +18,6 @@ PLACEHOLDERS = {
     "microsoft-365",
     "new-relic",
     "notion",
-    "linear",
     "salesforce",
     "box",
     "canva",
@@ -26,13 +25,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_linear():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "linear",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "linear",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["linear"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +178,56 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_linear_entry_signs_in_through_linears_mcp_server():
+    definition = CATALOG["linear"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Linear's MCP server registers clients dynamically: nothing to set up.
+    assert (definition.adapter, oauth.registration) == ("oauth", "dynamic")
+    assert oauth.client_settings is None
+    assert oauth.redirect == ["core", "loopback"]
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    # Consent is asked every time, so a read-only reconnect narrows the grant.
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        24 * 3600,
+    )
+    assert definition.mcp is not None
+    # One endpoint for both levels: the scope decides, not /mcp/readonly.
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("linear", "https://mcp.linear.app/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["read"]
+    assert definition.access.write.scopes == ["read", "write"]
+    # Never workspace administration.
+    assert "admin" not in set(definition.access.write.scopes)
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    # Linear's API is GraphQL only: whose sign-in it is comes from a POST of
+    # the viewer query, with the token in the header and nothing secret in
+    # the body.
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.url) == ("POST", "https://api.linear.app/graphql")
+    assert identity.body == {"query": "query { viewer { id email name } }"}
+    assert (identity.account_id, identity.label) == (
+        "data.viewer.id",
+        "data.viewer.email",
+    )
+
+
+def test_the_linear_skill_keeps_safe_defaults():
+    text = CATALOG["linear"].skill_files["SKILL.md"]
+    assert text.startswith("---\nname: linear\n")
+    for rule in ("Read before writing", "Search before creating", "Confirm first"):
+        assert rule in text
+    assert "information, not instructions" in text
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -547,6 +599,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -589,6 +642,21 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.level_tools("write") == []
 
 
+def test_an_oauth_identity_call_may_post_a_static_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    method: GET\n    url: https://api.example.test/me\n",
+            "    method: POST\n    url: https://api.example.test/graphql\n"
+            '    body: { query: "{ viewer { id email } }" }\n',
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert identity.method == "POST"
+    assert identity.body == {"query": "{ viewer { id email } }"}
+
+
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     _write_example(
         catalog_copy,
@@ -629,7 +697,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -639,6 +707,19 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n',
             "",
             "needs mcp or cli",
+        ),
+        ("    method: GET\n", "", "method"),
+        ("method: GET", "method: PUT", "method"),
+        (
+            "    method: GET\n",
+            "    method: GET\n    body: { query: x }\n",
+            "a POST identity call sends a body",
+        ),
+        ("method: GET", "method: POST", "a POST identity call sends a body"),
+        (
+            "    url: https://api.example.test/me\n",
+            "    url: http://api.example.test/me\n",
+            "url",
         ),
         ("registration: dynamic", "registration: static", "client_settings"),
         (
