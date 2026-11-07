@@ -386,7 +386,10 @@ export default function DataTable<T extends { id: string | number }>({
     <TableFilterContext.Provider
       value={ownFiltering ? { fields: new Set(filterable.map((column) => column.field)), open: openFilter } : null}
     >
-      <Stack sx={fillHeight ? { flex: 1, minHeight: 0, width: "100%" } : { width: "100%" }}>
+      {/* The grid's root is a flex item that grows (`flex: 1`), so inside a
+          flex column it would ignore a fixed `height` and size to its rows.
+          Only a table that fills its parent is laid out as one. */}
+      <Box sx={fillHeight ? { flex: 1, minHeight: 0, width: "100%", display: "flex", flexDirection: "column" } : { width: "100%" }}>
         {hasToolbar && (
           <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 2 }}>
             {noun && (
@@ -436,7 +439,7 @@ export default function DataTable<T extends { id: string | number }>({
           </Stack>
         )}
         {fillHeight ? <Box sx={{ flex: 1, minHeight: 0 }}>{table}</Box> : table}
-      </Stack>
+      </Box>
       {picker && pickerColumn && (
         <Popover
           open

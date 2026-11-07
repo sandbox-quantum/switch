@@ -64,6 +64,14 @@ describe("DataTable toolbar", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
+  it("keeps a fixed-height table out of a flex column, where the grid would ignore its height", () => {
+    const { container } = render(table({ height: 320 }));
+    const grid = container.querySelector(".MuiDataGrid-root") as HTMLElement;
+
+    expect(getComputedStyle(grid).height).toBe("320px");
+    expect(getComputedStyle(grid.parentElement!).display).not.toBe("flex");
+  });
+
   it("refuses a quick filter on a column without a filter", () => {
     expect(() =>
       render(table({ quickFilters: [{ field: "name", value: "release-bot", label: "Release bot" }] })),
