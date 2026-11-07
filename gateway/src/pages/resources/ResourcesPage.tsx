@@ -95,14 +95,14 @@ export default function ResourcesPage() {
       </Tabs>
 
       <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-        {tab === "references" && <ReferencesTab refreshKey={refreshKey} />}
+        {tab === "references" && <ReferencesTab />}
         {tab === "types" && <ReferenceTypesTab refreshKey={refreshKey} />}
         {tab === "documents" && <DocumentsTab refreshKey={refreshKey} />}
         {tab === "packages" && <PackagesTab refreshKey={refreshKey} />}
         {tab === "templates" && <TemplatesTab refreshKey={refreshKey} />}
       </Box>
 
-      {tab === "references" && (
+      {tab === "references" && createOpen && (
         <CreateReferenceDialog
           open={createOpen}
           onClose={() => setCreateOpen(false)}
