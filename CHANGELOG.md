@@ -219,6 +219,11 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **Linear, connected as you.** Someone who connects their Linear account in
+  Switch Console, read-only or read-write, can grant it to their agents, which
+  then find, comment on and update issues and projects through Linear's own
+  MCP server. Nothing needs configuring on the server. A read-only connection
+  asks Linear for the `read` scope alone, which Linear enforces.
 - **An OAuth connector's identity call can be a POST.** A catalog entry's
   `auth.identity` names its `method`, `GET` or `POST`, and a POST sends a
   static JSON `body`, for a vendor whose account is read by a GraphQL query.

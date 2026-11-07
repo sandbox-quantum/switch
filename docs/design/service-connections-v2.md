@@ -4,7 +4,7 @@ Status: built (Phases 1 and 2). This note covers what v2 adds to
 [`service-connections-v1.md`](service-connections-v1.md): any OAuth vendor
 whose tools are its own MCP servers or its command-line tool, and any vendor
 people connect with a key they paste, connected, granted and called from a
-session on generic parts, with Atlassian (Jira), Google Workspace and Datadog
+session on generic parts, with Atlassian (Jira), Linear, Google Workspace and Datadog
 as the first. v1's tables,
 broker checks, agent routes, token cache and redaction carry over unchanged;
 GitHub works as it did.
@@ -478,6 +478,38 @@ settings:
 
 To connect: Settings, Connections in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
+## Linear
+
+Linear's official remote MCP server, `https://mcp.linear.app/mcp`, with no
+new adapter code:
+
+- Linear's MCP server offers OAuth 2.1 with dynamic client registration, so
+  Core registers its client and nothing is set up on the server.
+- A sign-in returns through Core where `GATEWAY_PUBLIC_URL` is set, and
+  otherwise straight to Switch Console on one of five fixed loopback ports.
+  `prompt=consent` is sent on every connect, so a person who reconnects
+  read-only consents to the narrower scope rather than reusing the wider one.
+- Read asks for `read` alone; write adds `write`. Linear enforces it: a token
+  with only `read` cannot reach a write API. One endpoint serves both levels;
+  the scope decides, not the separate `/mcp/readonly` URL. `admin`
+  (workspace settings, teams, members) is never asked for.
+- Linear's API is GraphQL only, with no REST account endpoint, so the identity
+  call is a POST of `query { viewer { id email name } }` to
+  `https://api.linear.app/graphql` (identity `method: POST` with a static
+  `body`). The account is the viewer's id, labelled by its email.
+- Linear documents 24-hour access tokens and rotating refresh tokens, hence
+  `max_lifetime: 86400`: an agent's copy may outlive a removed grant by up to
+  that long, though agents ask again hourly.
+- A disconnect revokes at the revocation endpoint the authorization server
+  advertises.
+- Tools pass through unchanged. The skill has the agent read before writing,
+  search before creating, confirm before changing status, assignee or
+  priority, and close, archive or delete only an item the user named.
+
+To connect: Settings, Connections in Switch Console, then Linear. Nothing
+needs configuring on the server. To roll back, add `linear` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
 ## Airtable
