@@ -219,6 +219,10 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **An OAuth connector's identity call can be a POST.** A catalog entry's
+  `auth.identity` names its `method`, `GET` or `POST`, and a POST sends a
+  static JSON `body`, for a vendor whose account is read by a GraphQL query.
+  Every shipped entry says `method: GET`.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:

@@ -132,6 +132,7 @@ class FakeVendor:
 MCP_URL = "https://mcp.example.test/v1/mcp"
 ISSUER = "https://auth.example.test"
 IDENTITY_URL = "https://api.example.test/me"
+GRAPHQL_URL = "https://api.example.test/graphql"
 STATIC_CLIENT_ID = "example-client"
 STATIC_CLIENT_SECRET = "SYNTHETIC-CLIENT-SECRET"
 MCP_TOOLS = [
@@ -368,6 +369,7 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        self.identity_bodies: list[Any] = []
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -445,6 +447,11 @@ class FakeOAuthServer:
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
             return _json(200, {"account": self.account})
+        if where == GRAPHQL_URL and request.method == "POST":
+            if self._bearer(request) is None:
+                return _json(401, {"error": "invalid_token"})
+            self.identity_bodies.append(json.loads(request.content))
+            return _json(200, {"data": {"viewer": self.account}})
         if where == MCP_URL:
             return self._mcp(request)
         return _json(404, {"error": "not_found"})

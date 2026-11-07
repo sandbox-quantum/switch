@@ -42,6 +42,7 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import (
+    GRAPHQL_URL,
     IDENTITY_URL,
     ISSUER,
     MCP_URL,
@@ -219,6 +220,29 @@ class TestSignIn:
         secret = await _sign_in(adapter, vendor)
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("1001", "1001")
+
+    async def test_reads_the_account_with_a_post_and_its_body(self, vendor) -> None:
+        text = (
+            STATIC.replace(
+                f"    method: GET\n    url: {IDENTITY_URL}\n",
+                f"    method: POST\n    url: {GRAPHQL_URL}\n"
+                '    body: { query: "{ viewer { id email } }" }\n',
+            )
+            .replace("account_id: account.id", "account_id: data.viewer.id")
+            .replace("label: account.email", "label: data.viewer.email")
+        )
+        adapter, _ = _adapter(vendor, text)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        assert vendor.identity_bodies == [{"query": "{ viewer { id email } }"}]
+        assert secret.access_token not in json.dumps(vendor.identity_bodies)
+
+    async def test_a_get_identity_call_sends_no_body(self, vendor) -> None:
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "")
+        assert vendor.identity_bodies == []
 
     async def test_an_account_without_an_id_is_refused(self, vendor) -> None:
         vendor.account = {"email": "ada@example.test"}

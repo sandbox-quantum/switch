@@ -547,6 +547,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -589,6 +590,21 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.level_tools("write") == []
 
 
+def test_an_oauth_identity_call_may_post_a_static_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    method: GET\n    url: https://api.example.test/me\n",
+            "    method: POST\n    url: https://api.example.test/graphql\n"
+            '    body: { query: "{ viewer { id email } }" }\n',
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert identity.method == "POST"
+    assert identity.body == {"query": "{ viewer { id email } }"}
+
+
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     _write_example(
         catalog_copy,
@@ -629,7 +645,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -639,6 +655,19 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n',
             "",
             "needs mcp or cli",
+        ),
+        ("    method: GET\n", "", "method"),
+        ("method: GET", "method: PUT", "method"),
+        (
+            "    method: GET\n",
+            "    method: GET\n    body: { query: x }\n",
+            "a POST identity call sends a body",
+        ),
+        ("method: GET", "method: POST", "a POST identity call sends a body"),
+        (
+            "    url: https://api.example.test/me\n",
+            "    url: http://api.example.test/me\n",
+            "url",
         ),
         ("registration: dynamic", "registration: static", "client_settings"),
         (
