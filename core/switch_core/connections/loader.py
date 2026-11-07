@@ -66,6 +66,19 @@ RedirectMode = Literal["loopback", "core"]
 AuthorizationParam = Literal["access_type", "include_granted_scopes"]
 
 
+# What a client check reads from the vendor's answer to a made-up code: one
+# that accepts the client, or one that refuses it.
+CLIENT_CHECK_ANSWERS = frozenset(
+    {
+        "invalid_grant",
+        "invalid_client",
+        "invalid_client_id",
+        "unauthorized_client",
+        "redirect_uri_mismatch",
+    }
+)
+
+
 class OAuthClient(BaseModel):
     """How Core has its OAuth client at the vendor, and where a sign-in returns.
 
@@ -95,6 +108,12 @@ class OAuthClient(BaseModel):
     `unchecked`: what a static client's operator must see to themselves,
     because asking the vendor about the client cannot show it; said with every
     check that passes.
+
+    `check_inconclusive`: the errors a vendor answers the made-up code with
+    whatever the client, so they show nothing about it, as Salesforce answers
+    `unknown_error`. Checking the client then saves it without calling it
+    verified, and leaves it to the first sign-in. A clear refusal still fails
+    the check, and is never listed here.
 
     `loopback_ports`: the only ports Switch Console's listener may use, for a
     vendor that matches a loopback redirect exactly, port included; without
@@ -129,6 +148,9 @@ class OAuthClient(BaseModel):
     revocation_ends_grant: bool = False
     revocation_redirects: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
+    check_inconclusive: (
+        list[Annotated[str, Field(pattern=r"^[a-z_]{1,64}$")]] | None
+    ) = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _consistent(self) -> "OAuthClient":
@@ -178,6 +200,19 @@ class OAuthClient(BaseModel):
             )
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")
+        if self.check_inconclusive is not None:
+            if self.unchecked is None:
+                raise ValueError(
+                    "check_inconclusive needs unchecked: what the operator "
+                    "confirms with the first sign-in"
+                )
+            if set(self.check_inconclusive) & CLIENT_CHECK_ANSWERS:
+                raise ValueError(
+                    "check_inconclusive lists an answer the check reads: "
+                    + ", ".join(
+                        sorted(set(self.check_inconclusive) & CLIENT_CHECK_ANSWERS)
+                    )
+                )
         if (
             self.revocation_url is None
             and not self.revocation_discovered

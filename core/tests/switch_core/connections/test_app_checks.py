@@ -51,6 +51,39 @@ class TestOAuthClient:
         assert (check.ok, check.field) == (ok, field)
         assert says in check.message
 
+    async def test_an_inconclusive_answer_the_entry_lists_saves_unchecked(
+        self,
+    ) -> None:
+        assert GOOGLE.auth.oauth is not None
+        oauth = GOOGLE.auth.oauth.model_copy(
+            update={"check_inconclusive": ["unknown_error"]}
+        )
+        definition = GOOGLE.model_copy(
+            update={"auth": GOOGLE.auth.model_copy(update={"oauth": oauth})}
+        )
+        result = await check_oauth_client(
+            _http(400, {"error": "unknown_error"}), definition, _google(), REDIRECT
+        )
+        [check] = result.checks
+        assert check.ok is True
+        assert "saves it unchecked" in check.message
+        assert "accepts" not in check.message
+        assert check.note == oauth.unchecked
+        # A clear refusal still fails.
+        refused = await check_oauth_client(
+            _http(401, {"error": "invalid_client"}), definition, _google(), REDIRECT
+        )
+        assert refused.ok is False
+
+    async def test_an_inconclusive_answer_fails_where_the_entry_does_not_list_it(
+        self,
+    ) -> None:
+        result = await check_oauth_client(
+            _http(400, {"error": "unknown_error"}), GOOGLE, _google(), REDIRECT
+        )
+        [check] = result.checks
+        assert check.ok is False
+
     async def test_unreachable_is_its_own_answer(self) -> None:
         def handle(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("unreachable", request=request)

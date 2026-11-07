@@ -601,6 +601,23 @@ def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     assert oauth is not None and oauth.prompt == "consent select_account"
 
 
+def test_check_inconclusive_never_lists_an_answer_the_check_reads(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: static\n"
+            "    client_settings: EXAMPLE\n"
+            "    unchecked: Connect once to confirm.\n"
+            "    check_inconclusive: [unknown_error, invalid_client_id]\n",
+        ),
+    )
+    with pytest.raises(
+        CatalogError, match="lists an answer the check reads: invalid_client_id"
+    ):
+        load_catalog(catalog_copy)
+
+
 def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     _write_example(
         catalog_copy,
@@ -657,6 +674,11 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    revocation_redirects: true\n",
             "revocation_redirects",
+        ),
+        (
+            "    remove_access:",
+            "    check_inconclusive: [unknown_error]\n    remove_access:",
+            "check_inconclusive needs unchecked",
         ),
         ("redirect: [loopback, core]", "redirect: []", "redirect"),
         ("redirect: [loopback, core]", "redirect: [browser]", "redirect"),

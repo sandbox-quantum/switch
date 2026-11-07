@@ -16,7 +16,10 @@ request it must refuse, and reads which refusal it chose.
   redirect URI is not registered. What the vendor does not show this way
   (Google and Airtable compare the redirect URI only with a real code, and
   Airtable says nothing of whether the integration is published) is the
-  entry's `unchecked`, said with the result.
+  entry's `unchecked`, said with the result. An entry's `check_inconclusive`
+  names what a vendor answers whatever the client (Salesforce's
+  `unknown_error`): the client is saved unverified, for the first sign-in to
+  check.
 
 What a check cannot prove (an App's permissions, a Google app's user type,
 which APIs are switched on) is left to the vendor's own pages.
@@ -274,7 +277,7 @@ async def check_oauth_client(
             ],
             settings={},
         )
-    if error in ("invalid_client", "unauthorized_client"):
+    if error in ("invalid_client", "invalid_client_id", "unauthorized_client"):
         return CheckResult(
             [
                 Check(
@@ -284,6 +287,23 @@ async def check_oauth_client(
                     "Copy both again from where you created the client.",
                     "client_secret",
                     None,
+                )
+            ],
+            settings={},
+        )
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    if oauth.check_inconclusive is not None and error in oauth.check_inconclusive:
+        return CheckResult(
+            [
+                Check(
+                    "client",
+                    True,
+                    f"{name} can't show whether this client secret is right "
+                    "before someone signs in, so Switch saves it unchecked. "
+                    "The first sign-in checks it.",
+                    None,
+                    oauth.unchecked,
                 )
             ],
             settings={},
