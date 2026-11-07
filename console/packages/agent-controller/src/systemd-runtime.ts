@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import {
   AGENT_ENV_VARS,
   CONTROL_FILE,
+  PROVIDER_RUNTIMES,
   clearTakenOver,
   type ProviderReadiness,
   type SharedHostConfig,
@@ -84,7 +85,12 @@ const PATH_VARIABLES = new Set([
   'CLOUDSDK_CONFIG',
   'GOOGLE_APPLICATION_CREDENTIALS',
   'AWS_PROFILE',
+  'KIMI_CODE_HOME',
 ]);
+/** What an agent may be given: the common provider settings and those each provider's runtime asks for. */
+const PROVIDER_VARIABLES = [
+  ...new Set([...AGENT_ENV_VARS, ...PROVIDER_RUNTIMES.flatMap((runtime) => runtime.inheritEnv)]),
+];
 
 type UnitState = { activeState: string; result: string; mainPid: number };
 
@@ -459,7 +465,7 @@ export class SystemdRuntime implements AgentRuntime {
    */
   private agentEnvironment(): Record<string, string> {
     const env: Record<string, string> = {};
-    for (const name of AGENT_ENV_VARS) {
+    for (const name of PROVIDER_VARIABLES) {
       const value = this.deps.env[name];
       if (value === undefined || PATH_VARIABLES.has(name)) continue;
       env[name] = value;
