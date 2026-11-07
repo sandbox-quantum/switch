@@ -1,0 +1,224 @@
+"""Each platform says why a room cannot use an existing channel: it does not
+exist, or the Switch app is not in it. The reason reaches the person who typed
+the id, so it is the platform's own, not a server error."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import discord
+import pytest
+from mattermostdriver.exceptions import NotEnoughPermissions, ResourceNotFound
+from slack_sdk.errors import SlackApiError
+
+from switch_core.bridges.collaboration.mattermost.adapter import (
+    MattermostAdapter,
+    MattermostConnectionConfig,
+)
+from switch_core.bridges.collaboration.models import ChannelNotUsable
+from tests.switch_core.bridges.collaboration.test_discord_provisioning import (
+    _adapter as _discord_adapter,
+)
+from tests.switch_core.bridges.collaboration.test_discord_provisioning import (
+    _FakeGuild,
+    _wire,
+)
+from tests.switch_core.bridges.collaboration.test_slack_adapter import (
+    _adapter as _slack_adapter,
+)
+
+
+def _run(coro: Any) -> Any:
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+# ── Slack ────────────────────────────────────────────────────────────────────
+
+
+class _SlackClient:
+    def __init__(
+        self, *, channel: dict[str, Any] | None = None, error: str = ""
+    ) -> None:
+        self._channel = channel or {}
+        self._error = error
+
+    async def conversations_info(self, **_: Any) -> dict[str, Any]:
+        if self._error:
+            raise SlackApiError("refused", {"ok": False, "error": self._error})
+        return {"channel": self._channel}
+
+
+def _slack(client: _SlackClient) -> Any:
+    adapter = _slack_adapter()
+    adapter._web_client = client  # type: ignore[assignment]
+    return adapter
+
+
+def test_slack_a_channel_the_app_is_in_is_usable() -> None:
+    _run(_slack(_SlackClient(channel={"is_member": True})).check_channel_usable("C1"))
+
+
+def test_slack_a_channel_it_cannot_find_says_so() -> None:
+    adapter = _slack(_SlackClient(error="channel_not_found"))
+    with pytest.raises(ChannelNotUsable, match="channel_not_found"):
+        _run(adapter.check_channel_usable("C1"))
+
+
+def test_slack_a_channel_the_app_is_not_in_says_so() -> None:
+    adapter = _slack(_SlackClient(channel={"is_member": False}))
+    with pytest.raises(ChannelNotUsable, match="not in Slack channel C1"):
+        _run(adapter.check_channel_usable("C1"))
+
+
+def test_slack_any_other_refusal_carries_slacks_reason() -> None:
+    adapter = _slack(_SlackClient(error="missing_scope"))
+    with pytest.raises(ChannelNotUsable, match="missing_scope"):
+        _run(adapter.check_channel_usable("C1"))
+
+
+# ── Mattermost ───────────────────────────────────────────────────────────────
+
+
+class _MattermostChannels:
+    def __init__(
+        self,
+        channel: dict[str, Any] | Exception,
+        member: bool = True,
+    ) -> None:
+        self._channel = channel
+        self._member = member
+
+    def get_channel(self, channel_id: str) -> dict[str, Any]:
+        if isinstance(self._channel, Exception):
+            raise self._channel
+        return self._channel
+
+    def get_channel_member(self, channel_id: str, user_id: str) -> dict[str, Any]:
+        if not self._member:
+            raise ResourceNotFound("not a member")
+        return {"user_id": user_id}
+
+
+class _MattermostDriver:
+    def __init__(self, channels: _MattermostChannels) -> None:
+        self.channels = channels
+
+
+def _mattermost(channels: _MattermostChannels) -> Any:
+    adapter = MattermostAdapter(
+        config=MattermostConnectionConfig(
+            url="http://mm", admin_user="admin", admin_password="pw", team_name="team"
+        )
+    )
+    adapter._admin_driver = _MattermostDriver(channels)  # type: ignore[assignment]
+    adapter._admin_user_id = "admin-id"
+    adapter._team_id = "team-1"
+    return adapter
+
+
+def _mm_check(channels: _MattermostChannels) -> None:
+    async def go() -> None:
+        adapter = _mattermost(channels)
+        adapter._main_loop = asyncio.get_running_loop()
+        await adapter.check_channel_usable("ch1")
+
+    _run(go())
+
+
+def test_mattermost_a_channel_in_the_team_is_usable() -> None:
+    _mm_check(_MattermostChannels({"team_id": "team-1", "type": "O"}, member=False))
+
+
+def test_mattermost_a_channel_it_cannot_find_says_so() -> None:
+    with pytest.raises(ChannelNotUsable, match="cannot find channel ch1"):
+        _mm_check(_MattermostChannels(ResourceNotFound("Unable to find the channel")))
+
+
+def test_mattermost_a_channel_it_may_not_see_says_so() -> None:
+    with pytest.raises(ChannelNotUsable, match="will not let"):
+        _mm_check(_MattermostChannels(NotEnoughPermissions("no permission")))
+
+
+def test_mattermost_a_channel_in_another_team_is_refused() -> None:
+    with pytest.raises(ChannelNotUsable, match="another team"):
+        _mm_check(_MattermostChannels({"team_id": "team-2", "type": "O"}))
+
+
+def test_mattermost_a_private_channel_switch_is_not_in_says_so() -> None:
+    with pytest.raises(ChannelNotUsable, match="not in private channel"):
+        _mm_check(_MattermostChannels({"team_id": "team-1", "type": "P"}, member=False))
+
+
+# ── Discord ──────────────────────────────────────────────────────────────────
+
+
+class _Permissions:
+    def __init__(self, *, view: bool, send: bool) -> None:
+        self.view_channel = view
+        self.send_messages = send
+
+
+class _DiscordChannel:
+    def __init__(
+        self, guild: _FakeGuild, *, view: bool = True, send: bool = True
+    ) -> None:
+        self.id = 555
+        self.guild = guild
+        self._permissions = _Permissions(view=view, send=send)
+
+    def permissions_for(self, member: Any) -> _Permissions:
+        return self._permissions
+
+
+class _ForbiddenResponse:
+    status = 403
+    reason = "Forbidden"
+
+
+class _ForbiddingClient:
+    def get_channel(self, channel_id: int) -> None:
+        return None
+
+    async def fetch_channel(self, channel_id: int) -> Any:
+        raise discord.Forbidden(_ForbiddenResponse(), "Missing Access")
+
+
+def test_discord_a_channel_the_bot_can_post_in_is_usable() -> None:
+    adapter = _discord_adapter()
+    guild = _FakeGuild()
+    _wire(adapter, guild, {555: _DiscordChannel(guild)})
+    _run(adapter.check_channel_usable("555"))
+
+
+def test_discord_a_channel_it_cannot_find_says_so() -> None:
+    adapter = _discord_adapter()
+    _wire(adapter, _FakeGuild(), {})
+    with pytest.raises(ChannelNotUsable, match="cannot find channel 555"):
+        _run(adapter.check_channel_usable("555"))
+
+
+def test_discord_a_channel_it_may_not_see_says_so() -> None:
+    adapter = _discord_adapter()
+    adapter._connection._client = _ForbiddingClient()  # type: ignore[assignment]
+    with pytest.raises(ChannelNotUsable, match="Missing Access"):
+        _run(adapter.check_channel_usable("555"))
+
+
+def test_discord_a_channel_the_bot_cannot_post_in_says_so() -> None:
+    adapter = _discord_adapter()
+    guild = _FakeGuild()
+    _wire(adapter, guild, {555: _DiscordChannel(guild, send=False)})
+    with pytest.raises(ChannelNotUsable, match="cannot read and post"):
+        _run(adapter.check_channel_usable("555"))
+
+
+def test_discord_an_id_that_is_not_a_number_says_so() -> None:
+    adapter = _discord_adapter()
+    _wire(adapter, _FakeGuild(), {})
+    with pytest.raises(ChannelNotUsable, match="are numbers"):
+        _run(adapter.check_channel_usable("general"))

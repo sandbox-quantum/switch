@@ -114,6 +114,8 @@ const bridge = (id: string, type: string, displayName: string) => ({
   status: 'active',
   canCreateChannels: true,
   channelIdsRefused: null,
+  privateChannels: null,
+  privateChannelNeedsLinkedAccount: false,
 });
 
 let container: HTMLDivElement | null = null;

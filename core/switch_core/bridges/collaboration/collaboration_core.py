@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.adapter import (
     agent_identity,
 )
 from switch_core.bridges.collaboration.models import (
+    ChannelInUse,
     ChannelType,
     InboundAgentJoin,
     InboundAppJoin,
@@ -1821,9 +1822,10 @@ class CollaborationCore:
 
         try:
             result = await self._room_service.create_room(config)
-        except IntegrityError:
+        except (IntegrityError, ChannelInUse):
             # Backstop: the (bridge_id, external_channel_id) unique index
-            # rejected a concurrent duplicate. Adopt the room that won the race.
+            # rejected a concurrent duplicate (room creation reports that as
+            # `ChannelInUse`). Adopt the room that won the race.
             logger.warning(
                 "Duplicate room creation for channel %s rejected by unique "
                 "constraint; adopting existing room",
