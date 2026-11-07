@@ -132,6 +132,22 @@ it('selects models through the model config option, refusing one it does not off
   expect(server.received.some((m) => m.method === 'session/set_model')).toBe(false);
 });
 
+it('registers HTTP MCP servers with an agent whose hooks say it takes them unadvertised', async () => {
+  const http = {
+    switch: { transport: 'http' as const, url: 'http://127.0.0.1:4567/mcp', headers: {} },
+  };
+  await expect(start(dummy, { mcpServers: http })).rejects.toThrow(
+    'Dummy ACP does not declare MCP over HTTP'
+  );
+  const { server } = await start(
+    { ...dummy, mcpCapabilities: { http: true } },
+    { mcpServers: http }
+  );
+  expect(server.received.find((m) => m.method === 'session/new')?.params).toMatchObject({
+    mcpServers: [{ type: 'http', name: 'switch', url: 'http://127.0.0.1:4567/mcp' }],
+  });
+});
+
 it('sends attachments as the agent advertises it can take them, else as resource links', async () => {
   agent.capabilities = { promptCapabilities: { image: true } };
   const { adapter, server } = await start();
