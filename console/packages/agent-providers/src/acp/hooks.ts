@@ -1,4 +1,4 @@
-import type { ProviderCapabilities, RuntimeMode } from '../adapter';
+import type { McpServerSpec, ProviderCapabilities, RuntimeMode } from '../adapter';
 import type {
   ApprovalDecision,
   ItemType,
@@ -28,12 +28,20 @@ export interface AcpLaunch {
    * prompt, say).
    */
   rejectOutputLine?: (line: string) => string | undefined;
+  /** Removes what `launch` prepared for this process, once the process is gone. */
+  cleanup?: () => Promise<void>;
 }
 
 export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /**
+   * The session's MCP servers; none for a sign-in check. Only a provider with
+   * `mcpServersAtLaunch` uses them here: every other agent is given them in
+   * `session/new`.
+   */
+  mcpServers: Record<string, McpServerSpec>;
 }
 
 /**
@@ -101,6 +109,13 @@ export interface AcpProviderHooks {
   capabilities: ProviderCapabilities;
   /** The command, arguments and environment to run the agent with. May prepare the host first. */
   launch(input: AcpLaunchInput): Promise<AcpLaunch> | AcpLaunch;
+  /**
+   * The agent ignores the MCP servers a client sends in `session/new` and
+   * reads its own configuration instead, so `launch` writes the session's
+   * servers there. `session/new` is then sent an empty list, and the
+   * MCP-over-HTTP check is skipped: the agent's own MCP client connects.
+   */
+  mcpServersAtLaunch?: boolean;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /**
@@ -159,6 +174,12 @@ export interface AcpProviderHooks {
   mcpServerOf?(toolCall: AcpToolCall): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
+  /**
+   * The ACP `kind` of a tool call, for an agent that doesn't label its tools
+   * (Cline marks every one `other`). Consulted before the call's own `kind`;
+   * it decides which approval a call needs and the card it shows as.
+   */
+  toolKind?(toolCall: AcpToolCall): string | undefined;
   /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.
