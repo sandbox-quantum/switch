@@ -1,0 +1,80 @@
+{
+  "checked_at": "2026-11-06T15:32:28.188137+00:00",
+  "method": "Three unauthenticated GET requests only; no registration, authorization or token exchange",
+  "responses": [
+    {
+      "url": "https://mcp.clickup.com/mcp",
+      "status": 401,
+      "www_authenticate": "Bearer realm=\"MCP Server\", error=\"invalid_token\", error_description=\"Bearer token required\", resource_metadata=\"https://mcp.clickup.com/.well-known/oauth-protected-resource/mcp\"",
+      "body": {
+        "error": "invalid_token",
+        "error_description": "Bearer token required",
+        "resource_metadata": "https://mcp.clickup.com/.well-known/oauth-protected-resource/mcp"
+      }
+    },
+    {
+      "url": "https://mcp.clickup.com/.well-known/oauth-protected-resource/mcp",
+      "status": 200,
+      "www_authenticate": null,
+      "body": {
+        "resource": "https://mcp.clickup.com/mcp",
+        "resource_name": "ClickUp MCP Server",
+        "resource_description": "API for managing ClickUp tasks, documents, and chat via MCP.",
+        "resource_type": "api",
+        "resource_owner": "ClickUp",
+        "resource_owner_url": "https://mcp.clickup.com",
+        "resource_server_origin": "https://api.clickup.com",
+        "authorization_servers": [
+          "https://mcp.clickup.com"
+        ],
+        "scopes_supported": [
+          "read",
+          "write"
+        ],
+        "bearer_methods_supported": [
+          "header"
+        ],
+        "resource_indicators_supported": true
+      }
+    },
+    {
+      "url": "https://mcp.clickup.com/.well-known/oauth-authorization-server",
+      "status": 200,
+      "www_authenticate": null,
+      "body": {
+        "issuer": "https://mcp.clickup.com",
+        "authorization_endpoint": "https://mcp.clickup.com/oauth/authorize",
+        "token_endpoint": "https://mcp.clickup.com/oauth/token",
+        "registration_endpoint": "https://mcp.clickup.com/oauth/register",
+        "response_types_supported": [
+          "code"
+        ],
+        "response_modes_supported": [
+          "query"
+        ],
+        "grant_types_supported": [
+          "authorization_code"
+        ],
+        "token_endpoint_auth_methods_supported": [
+          "none"
+        ],
+        "scopes_supported": [
+          "read",
+          "write"
+        ],
+        "code_challenge_methods_supported": [
+          "S256"
+        ],
+        "authorization_response_iss_parameter_supported": true,
+        "resource_indicators_supported": true,
+        "mcp_authorization_spec_version": "2026-07-28",
+        "mcp_server_capabilities": [
+          "task_management",
+          "document_management",
+          "chat"
+        ],
+        "mcp_server_contact": "support@clickup.com"
+      }
+    }
+  ]
+}
