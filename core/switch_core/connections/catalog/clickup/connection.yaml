@@ -1,0 +1,27 @@
+slug: clickup
+name: ClickUp
+category: Project management
+description: Read and update ClickUp tasks, lists, and docs.
+enabled: false
+# ClickUp's official remote MCP server at https://mcp.clickup.com/mcp and OAuth provider:
+# - Endpoint metadata (https://mcp.clickup.com/.well-known/oauth-authorization-server and
+#   https://mcp.clickup.com/.well-known/oauth-protected-resource):
+#     scopes_supported: ["read", "write"]
+#     grant_types_supported: ["authorization_code"] (no refresh_token grant)
+#     token_endpoint_auth_methods_supported: ["none"] (with PKCE S256)
+#     registration_endpoint: https://mcp.clickup.com/oauth/register (RFC 7591)
+# - Token lifetime probe:
+#     ClickUp's OAuth token endpoint (POST https://mcp.clickup.com/oauth/token) returns
+#     perpetual access tokens with no expires_in attribute and no refresh_token. Probing
+#     token refresh with grant_type=refresh_token returns:
+#     {"error": "unsupported_grant_type", "error_description": "Only authorization_code grant type is supported"}
+# - Identity probe:
+#     ClickUp's identity endpoint is GET https://api.clickup.com/api/v2/user.
+#
+# Because ClickUp access tokens do not expire and cannot be refreshed, handing a pass-through
+# credential to an agent creates an unrevokable risk (docs/design/service-connections-v2.md,
+# "Keys" and "Tokens"; key_never_expires check in commit 26a2c0f1). Switch requires a finite
+# max_lifetime and rotating/renewable refresh for active OAuth entries (core/switch_core/connections/loader.py),
+# so ClickUp is cataloged with enabled: false citing these probe results (#836).
+auth:
+  type: oauth
