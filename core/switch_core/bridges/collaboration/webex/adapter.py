@@ -280,10 +280,12 @@ class WebexAdapter(PlatformAdapter):
         self._seen: _Bounded = _Bounded()
         self._edits: _Bounded = _Bounded()
         self._drawn: _Bounded = _Bounded()
-        # A card's first message id -> the message showing it now. Webex will
-        # not edit a message that carries a card, so a card that changes is
+        # A card's first message id -> the message showing it now. Where Webex
+        # won't edit a message that carries a card, a card that changes is
         # posted again (`_repost`) and the publisher keeps the id it was given.
         self._reposted: _Bounded = _Bounded()
+        # False once Webex has refused to edit a card in this organisation.
+        self._cards_editable = True
         # person id -> the name Webex shows for them.
         self._names: _Bounded = _Bounded()
         self._known_channels: set[str] = set()
@@ -1162,6 +1164,12 @@ class WebexAdapter(PlatformAdapter):
         running turn stops redrawing after `_PROGRESS_EDITS`, holding the last
         edits back for how it ends — that redraw, and a card's settled state,
         are the ones a reader scrolling back needs to be right.
+
+        A card is edited where Webex allows it. Some organisations refuse any
+        edit to a message that carries one ("Support for editing messages with
+        files via Developer APIs currently disabled"). After the first such
+        refusal, and for a card out of edits, the card is posted again instead
+        (`_repost`).
         """
         body, text = await self._publication(
             channel_id,
@@ -1172,10 +1180,11 @@ class WebexAdapter(PlatformAdapter):
         message_ref = str(self._reposted.get(message_ref) or message_ref)
         if self._drawn.get(message_ref) == body:
             return
-        if "attachments" in body:
+        card = "attachments" in body
+        edits = self._edits.get(message_ref, 0)
+        if card and (not self._cards_editable or edits >= _EDIT_LIMIT):
             await self._repost(channel_id, message_ref, body, text, thread_root_id)
             return
-        edits = self._edits.get(message_ref, 0)
         final = (
             not isinstance(content, TurnActivity) or content.turn.status in TURN_ENDED
         )
@@ -1190,6 +1199,16 @@ class WebexAdapter(PlatformAdapter):
         try:
             await self._client.edit_message(message_ref, body, wait_out_throttle=False)
         except WebexApiError as exc:
+            if card and exc.status == 400:
+                logger.info(
+                    "Webex refused to edit card %s (%s); cards are posted again "
+                    "from now on",
+                    message_ref,
+                    exc,
+                )
+                self._cards_editable = False
+                await self._repost(channel_id, message_ref, body, text, thread_root_id)
+                return
             raise self._rich_failure(
                 exc, f"Webex refused the edit to {message_ref}", text
             ) from exc
@@ -1206,9 +1225,8 @@ class WebexAdapter(PlatformAdapter):
     ) -> None:
         """Show a card's new state by posting it again and deleting the old one.
 
-        Webex refuses any edit to a message that carries a card: "Support for
-        editing messages with files via Developer APIs currently disabled".
-        The new card goes first, so a deletion Webex then refuses leaves the
+        For where Webex won't edit the card, or the card is out of edits. The
+        new card goes first, so a deletion Webex then refuses leaves the
         old card above the right one rather than neither of them.
         """
         ref = await self._send(
