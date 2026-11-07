@@ -179,14 +179,39 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Where the account's stable id is read, and the dotted paths in the JSON
+    answer to the id and to a label people recognise (an email, a login).
+
+    `url`: a GET of it with the access token. `introspection`: the token sent
+    to the introspection endpoint its authorization server advertises
+    (RFC 7662), for a vendor whose tokens reach no account endpoint; the
+    vendor checks the live token there, and only an active one names an
+    account. `account_id` may list several paths, for an account that is one
+    of several under another (a user in a workspace); each must name a value,
+    and the values make the id in the order listed.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
-    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    introspection: bool = False
+    account_id: (
+        Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
+        | Annotated[
+            list[Annotated[str, Field(pattern=JSON_PATH_PATTERN)]],
+            Field(min_length=2, max_length=4),
+        ]
+    )
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "ConnectionIdentity":
+        if (self.url is None) != self.introspection:
+            raise ValueError("identity is read from a url or by introspection: one")
+        if isinstance(self.account_id, list) and len(set(self.account_id)) != len(
+            self.account_id
+        ):
+            raise ValueError("account_id lists a path twice")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -725,6 +750,20 @@ class ConnectionDefinition(BaseModel):
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
         oauth = self.auth.oauth
+        # The introspection endpoint is the one the authorization server's
+        # metadata advertises, so it is found where the others are.
+        if (
+            self.auth.identity is not None
+            and self.auth.identity.introspection
+            and (
+                self.mcp is None
+                or (oauth is not None and oauth.authorization_url is not None)
+            )
+        ):
+            raise ValueError(
+                "introspection asks the authorization server an MCP server names, "
+                "so the endpoints are discovered"
+            )
         # Discovery starts from an MCP server, so without one the catalog names
         # the endpoints, and the client is the operator's.
         if self.mcp is None and oauth is not None:

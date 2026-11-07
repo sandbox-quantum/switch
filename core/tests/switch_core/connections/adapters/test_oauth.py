@@ -228,6 +228,131 @@ class TestSignIn:
             await adapter.identify(secret.access_token or "")
 
 
+INTROSPECTED = STATIC.replace(
+    "    url: https://api.example.test/me\n"
+    "    account_id: account.id\n"
+    "    label: account.email\n",
+    "    introspection: true\n"
+    "    account_id: [workspace_id, user_id]\n"
+    "    label: username\n",
+)
+
+
+class TestIntrospection:
+    async def test_reads_the_workspace_and_user_the_vendor_says_the_token_is(
+        self, vendor
+    ) -> None:
+        vendor.introspected["username"] = "Ada"
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("ws-1:user-1", "Ada")
+        assert vendor.paths.count(f"{ISSUER}/introspect") == 1
+        assert IDENTITY_URL not in vendor.paths
+
+    async def test_asks_as_the_client_does_at_the_token_endpoint(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "")
+        [asked] = vendor.introspections
+        assert asked == {
+            "token": secret.access_token,
+            "token_type_hint": "access_token",
+            "client_id": STATIC_CLIENT_ID,
+            "client_secret": STATIC_CLIENT_SECRET,
+        }
+
+    async def test_a_public_client_sends_only_its_id(self, vendor) -> None:
+        vendor.clients["public-client"] = None
+        http = vendor.client()
+        adapter = OAuthAdapter(
+            _definition(INTROSPECTED),
+            StaticClient(
+                OAuthClientCredentials("public-client", None, authentication=None)
+            ),
+            http,
+        )
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "ws-1:user-1"
+        [asked] = vendor.introspections
+        assert set(asked) == {"token", "token_type_hint", "client_id"}
+
+    async def test_an_inactive_token_names_no_account(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        vendor.live_access.clear()
+        with pytest.raises(ReauthorizationRequiredError, match="not active"):
+            await adapter.identify(secret.access_token or "")
+
+    @pytest.mark.parametrize("missing", ["workspace_id", "user_id"])
+    async def test_an_answer_without_both_ids_is_refused(self, vendor, missing) -> None:
+        del vendor.introspected[missing]
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="did not name the account"):
+            await adapter.identify(secret.access_token or "")
+
+    @pytest.mark.parametrize("value", ["", True, None, ["ws-1"], {"id": "ws-1"}])
+    async def test_an_id_that_is_not_one_value_is_refused(self, vendor, value) -> None:
+        vendor.introspected["workspace_id"] = value
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="did not name the account"):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_a_separator_inside_an_id_names_no_other_account(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        vendor.introspected.update(workspace_id="a:b", user_id="c")
+        first = await adapter.identify(secret.access_token or "")
+        vendor.introspected.update(workspace_id="a", user_id="b:c")
+        second = await adapter.identify(secret.access_token or "")
+        assert (first.account_id, second.account_id) == ("a%3Ab:c", "a:b%3Ac")
+
+    async def test_without_an_advertised_endpoint_no_account_is_named(
+        self, vendor
+    ) -> None:
+        del vendor.metadata["introspection_endpoint"]
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="offers no token introspection"):
+            await adapter.identify(secret.access_token or "")
+        assert vendor.introspections == []
+
+    async def test_an_endpoint_that_is_not_https_is_refused(self, vendor) -> None:
+        vendor.metadata["introspection_endpoint"] = "http://auth.example.test/x"
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        with pytest.raises(ServiceAdapterError, match="introspection endpoint"):
+            await adapter.endpoints()
+
+    async def test_a_refused_client_is_an_error_not_a_lapsed_sign_in(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTED)
+        secret = await _sign_in(adapter, vendor)
+        vendor.clients[STATIC_CLIENT_ID] = "SYNTHETIC-ROTATED-SECRET"
+        with pytest.raises(ServiceAdapterError, match="HTTP 401") as raised:
+            await adapter.identify(secret.access_token or "")
+        assert not isinstance(raised.value, ReauthorizationRequiredError)
+
+    async def test_a_get_identity_reads_several_paths_too(self, vendor) -> None:
+        vendor.account = {"id": 7, "org": "org-1", "email": "ada@example.test"}
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    account_id: account.id\n",
+                "    account_id: [account.org, account.id]\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("org-1:7", "ada@example.test")
+        assert vendor.introspections == []
+
+
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:
         adapter, _ = _adapter(vendor)

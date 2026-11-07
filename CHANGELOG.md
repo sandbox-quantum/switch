@@ -56,6 +56,16 @@ version of their own to them without also giving them a release of their own.
   `alerted` or `errored`. A message Switch Trust left alone has no `trust`
   field, so its result is as before. Until now an agent whose words were
   redacted had no way to know.
+- **The Notion connection.** A person connects Notion from Switch Console,
+  choosing a workspace at Notion's consent screen, and a granted agent
+  searches, reads and edits pages, databases and comments there, as that
+  person, through Notion's hosted MCP server. Nothing needs configuring on the
+  server: Core registers its own client, and the sign-in comes back to Switch
+  Console. Notion has one scope and no read-only sign-in, so every connection
+  can write. Its tokens reach no account endpoint, so Switch reads the account
+  by token introspection (RFC 7662), which an `oauth` catalog entry can now
+  ask for in place of an account URL: the connection is that user in that
+  workspace. Disconnecting revokes the sign-in at Notion.
 
 #### Changed
 - **Switch Trust notices about a person's own message reach only that
