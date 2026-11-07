@@ -200,7 +200,8 @@ async def test_browser_handoff_completes_through_console_and_saves_encrypted(
     await relay(client, flow_id)
     github.exchange.assert_not_called()
     assert (await client.get(BASE + f"/flows/{flow_id}")).json()["status"] == "pending"
-    assert (await client.get(BASE)).json()["status"] == "not_connected"
+    before = (await client.get(BASE)).json()
+    assert (before["status"], before["can_revoke"]) == ("not_connected", False)
     completed = await complete(client, flow_id)
     assert completed.status_code == 200, completed.text
     assert completed.json() == {"warning": None, "login": "example-user"}
@@ -217,6 +218,7 @@ async def test_browser_handoff_completes_through_console_and_saves_encrypted(
         == "example/project"
     )
     assert status.json()["sso_hidden_organizations"] == []
+    assert status.json()["can_revoke"] is True
     assert "SYNTHETIC-ACCESS" not in status.text
     async with factory() as session:
         row = await session.scalar(
