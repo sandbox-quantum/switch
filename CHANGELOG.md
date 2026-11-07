@@ -47,6 +47,12 @@ version of their own to them without also giving them a release of their own.
 #### Added
 
 - **OAuth identity through MCP.** Catalog entries may identify the connected account with a verified read-only, argument-free MCP tool. Explicit unscoped OAuth entries are recorded as write access.
+- **Grafana Cloud connector.** Catalog entry switched off until Grafana binds a
+  token to its stack: a live probe received HTTP 200 from a made-up other-stack
+  endpoint. The intended connection has one stack and read or write access;
+  partial write access is refused. Requires Grafana Assistant and the Assistant
+  Cloud MCP User role or permission; connected people count as Assistant users
+  for billing. No agent skill ships while the entry is disabled.
 - **An OAuth connector can ask for sign-in fields.** Console can supply a
   team's name when starting sign-in. Core checks it before contacting the
   vendor, keeps it in the encrypted connection secret, and uses it to name
@@ -2756,6 +2762,7 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Grafana Cloud’s logo on the Connections grid.**
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

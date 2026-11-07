@@ -8,6 +8,8 @@ from switch_core.connections.loader import (
     MAX_SKILL_BYTES,
     CatalogError,
     load_catalog,
+    render_mcp_url,
+    sign_in_field_values,
     with_access_profiles,
 )
 
@@ -33,6 +35,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "grafana",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -43,6 +46,8 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
+    assert not CATALOG["grafana"].definition.enabled
+    assert not CATALOG["grafana"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
@@ -1217,3 +1222,71 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
+    path.write_bytes(raw.replace(b"\n", b"\r\n"))
+    assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()
+
+
+def test_the_shipped_grafana_entry_signs_in_per_stack():
+    definition = CATALOG["grafana"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (
+        definition.adapter,
+        oauth.registration,
+        oauth.redirect,
+        oauth.loopback_ports,
+    ) == ("oauth", "dynamic", ["loopback"], None)
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None and "MCP clients" in oauth.remove_access
+    assert [(f.name, f.label, f.pattern) for f in oauth.fields] == [
+        (
+            "stack",
+            "Grafana Cloud stack",
+            r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.grafana\.net$",
+        )
+    ]
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("grafana", "https://mcp.grafana.com/mcp/{stack}")
+    ]
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.mcp_tool, identity.url, identity.account_id, identity.label) == (
+        "user_info",
+        None,
+        ["connection.stack", "login"],
+        "login",
+    )
+    # The controller's live probe confirmed rotation and expires_in 3600.
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    access = definition.access
+    assert access is not None and access.write is not None
+    assert access.read.scopes == ["grafana:read"]
+    assert access.write.scopes == ["grafana:read", "grafana:query", "grafana:write"]
+    assert access.unscoped is False
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    values = sign_in_field_values(oauth.fields, {"stack": "example-stack.grafana.net"})
+    assert values == {"stack": "example-stack.grafana.net"}
+    assert render_mcp_url(definition.mcp.servers[0].url, values) == (
+        "https://mcp.grafana.com/mcp/example-stack.grafana.net"
+    )
+    for stack in (
+        "https://example-stack.grafana.net",
+        "example-stack.grafana.net.evil.test",
+        "Example-Stack.grafana.net",
+        "example-stack.grafana.com",
+        "grafana.net",
+    ):
+        with pytest.raises(ValueError):
+            sign_in_field_values(oauth.fields, {"stack": stack})
+    assert "Assistant" in definition.description

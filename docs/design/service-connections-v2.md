@@ -5,9 +5,9 @@ Status: built (Phases 1 and 2). This note covers what v2 adds to
 whose tools are its own MCP servers or its command-line tool, and any vendor
 people connect with a key they paste, connected, granted and called from a
 session on generic parts, with Atlassian (Jira), Google Workspace and Datadog
-as the first. v1's tables,
-broker checks, agent routes, token cache and redaction carry over unchanged;
-GitHub works as it did.
+as the first. The Grafana Cloud catalog entry is disabled after a failed stack
+isolation probe. v1's tables, broker checks, agent routes, token cache and
+redaction carry over unchanged; GitHub works as it did.
 
 ## What changes from v1
 
@@ -575,6 +575,53 @@ To connect: Settings, Connections in Switch Console, then Airtable. To roll
 back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
+
+## Grafana Cloud
+
+Built from the Grafana Cloud design and a live sign-in probe reported by the
+controller. **This entry is switched off.** Gate 0 failed: a token issued for
+one stack received HTTP 200 from a made-up other-stack endpoint; no second real
+stack was available. Keep it disabled until Grafana binds a token to its stack.
+The intended connection shape below is retained for future verification.
+
+- Each intended connection represents one stack. When enabled, Console asks
+  for its address, such as
+  `example-stack.grafana.net`, without `https://`. Core validates the field and
+  uses `https://mcp.grafana.com/mcp/{stack}`. Another stack needs another
+  connection. Dynamic registration uses Grafana's shared registration and token
+  endpoints; no operator client setup is needed.
+- Identity comes from the read-only `user_info` MCP tool, with no arguments.
+  The controller's live probe returned the keys `currentOrgId`, `email`,
+  `isGrafanaAdmin`, `login`, `name` and `orgs`, with no numeric user id. Account
+  identity combines the checked `connection.stack` with `login`; the stack is
+  supplied by Core, never taken from the answer, orgs or claims. The live probe
+  also confirmed that `user_info` is read-only and takes no arguments.
+- Grafana's consent page offers Read, Query and Write separately. Read maps to
+  `grafana:read`; write requires all of `grafana:read`, `grafana:query` and
+  `grafana:write`. Query runs SQL as written and may change data, so Query or
+  Write without the other is refused, never recorded as read. Only org Admins
+  can grant Write; Editors connect read-only by clearing Query. Chosen tool
+  areas may further limit which tools appear. The live Admin consent granted
+  all three scopes; the consent stack-picker observation remains pending.
+- The controller's live probe reported `expires_in=3600` and refresh rotation.
+  The old access token still worked after refresh. Grafana documents refresh for
+  30 days, followed by sign-in again; the 30-day window has not been measured.
+  An agent's copy can outlive its Switch grant until expiry, bounded by the
+  catalog's one-hour cap.
+- No revocation endpoint is configured. Disconnect forgets the sign-in in
+  Switch; remove the remaining grant in the stack under Grafana Assistant,
+  Settings, Connectors, MCP clients, Your connections. Confirm discovery and
+  this removal path in a further live run.
+- The stack needs Grafana Assistant enabled and the person needs the Assistant
+  Cloud MCP User role or `grafana-assistant-app.cloud-mcp:access` permission
+  (Editor and above have it). Each MCP user counts as an Assistant active user
+  for billing. `ask_assistant` and `create_investigation` use Assistant models
+  with costs and limits. A future enabled skill must reserve them for an explicit
+  request; no agent skill ships while this entry is disabled.
+
+Grafana Cloud appears as coming soon in Switch Console while `enabled: false`.
+If it is enabled after verification, connect under Settings, Connections. To
+roll back then, add `grafana` to `DISABLED_SERVICES` or restore `enabled: false`.
 
 ## Google Workspace
 
