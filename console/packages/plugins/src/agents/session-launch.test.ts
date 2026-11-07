@@ -128,6 +128,21 @@ describe('sessionLaunchConfig', () => {
     });
   });
 
+  it('explains Droid tool search after the shared skill and before agent instructions', () => {
+    const launch = sessionLaunchConfig({
+      ...BASE,
+      provider: 'factory-droid',
+      model: null,
+      advancedConfig: {},
+    });
+    expect(launch.context.startsWith(`${SWITCH_SKILL_CONTEXT}\n\n`)).toBe(true);
+    expect(launch.context).toContain('ToolSearch using select:switch___post_message');
+    expect(launch.context).toContain('Other MCP servers have their own tool names.');
+    expect(launch.context.endsWith('\n\nReview pull requests.')).toBe(true);
+    expect(launch.skill).toBe('');
+    expect(launch.instructions).toBe('Review pull requests.');
+  });
+
   it('leaves the model’s option out when no model is chosen', () => {
     expect(
       sessionLaunchConfig({

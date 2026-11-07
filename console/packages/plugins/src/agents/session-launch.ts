@@ -9,6 +9,10 @@ import type {
 import { SWITCH_SKILL_CONTEXT, SWITCH_SKILL_FILE } from '../switch-skill';
 import { pluginRegistry } from './plugin-registry';
 
+// The shared skill uses logical tool names; Droid's search needs the registered name.
+const DROID_SWITCH_TOOL_NAMES =
+  'The Switch instructions above use logical tool names. In Factory Droid, search for post_message with ToolSearch using select:switch___post_message, and call the exact name returned. Other MCP servers have their own tool names.';
+
 /**
  * How an agent's configuration becomes the provider-specific part of the
  * session it runs: the model and its options, the agent definition Claude Code
@@ -193,7 +197,11 @@ export function sessionLaunchFrom(input: {
     // others take it as system context. Codex has no skill tool, so a skill
     // file would be read with a shell command that needs approval.
     skill: provider === 'opencode' ? SWITCH_SKILL_FILE : '',
-    context: [provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT, specialization.instructions]
+    context: [
+      provider === 'opencode' ? '' : SWITCH_SKILL_CONTEXT,
+      provider === 'factory-droid' ? DROID_SWITCH_TOOL_NAMES : '',
+      specialization.instructions,
+    ]
       .filter(Boolean)
       .join('\n\n'),
     instructions: specialization.instructions ?? '',
