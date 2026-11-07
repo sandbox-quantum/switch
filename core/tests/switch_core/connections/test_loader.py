@@ -73,7 +73,7 @@ def test_the_shipped_stripe_entry_signs_in_as_the_spike_found_it_must():
         ("stripe", "https://mcp.stripe.com")
     ]
     assert definition.access is not None and definition.access.write is not None
-    assert definition.access.read.scopes == ["mcp"]
+    assert definition.access.read is None
     assert definition.access.write.scopes == ["mcp"]
     assert definition.auth.identity is not None
     assert definition.auth.identity.mcp_tool == "list_available_accounts_or_orgs"
