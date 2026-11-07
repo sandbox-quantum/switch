@@ -19,7 +19,6 @@ PLACEHOLDERS = {
     "new-relic",
     "notion",
     "linear",
-    "salesforce",
     "box",
     "canva",
     "vercel",
@@ -33,6 +32,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "salesforce",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "salesforce",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["salesforce"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -646,6 +648,16 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    registration: dynamic\n    client_settings: EXAMPLE\n",
             "client_settings",
         ),
+        (
+            "    registration: dynamic\n",
+            "    registration: dynamic\n    public_client: true\n",
+            "public_client names a static client",
+        ),
+        (
+            "    registration: dynamic\n",
+            "    registration: dynamic\n    public_client: often\n",
+            "public_client",
+        ),
         ("redirect: [loopback, core]", "redirect: [core, core]", "listed twice"),
         (
             "    redirect: [loopback, core]\n",
@@ -704,6 +716,16 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    loopback_ports: [43123, 43123]\n",
             "listed twice",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [core]\n    loopback_host: localhost\n",
+            "loopback_host names a loopback redirect",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    loopback_host: example.com\n",
+            "loopback_host",
         ),
         (
             "    redirect: [loopback, core]\n",
@@ -1139,6 +1161,46 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
         load_catalog(catalog_copy)
 
 
+def test_salesforce_uses_one_write_level_and_passes_vendor_tools_through():
+    definition = CATALOG["salesforce"].definition
+    assert definition.auth.refresh == "rotating"
+    assert definition.access.read is None
+    assert definition.access.write.scopes == ["mcp_api", "refresh_token", "openid"]
+    assert definition.tools.mode == "pass_through"
+    assert definition.tools.read is None and definition.tools.write is None
+    assert definition.auth.oauth.public_client is True
+    assert definition.auth.oauth.loopback_host == "localhost"
+    assert definition.auth.identity.account_id == "user_id"
+    assert (
+        definition.auth.identity.url
+        == "https://login.salesforce.com/services/oauth2/userinfo"
+    )
+    assert definition.token.max_lifetime == 7200
+    assert definition.auth.oauth.loopback_ports == [39251, 39252, 39253, 39254, 39255]
+    assert (
+        definition.auth.oauth.authorization_url
+        == "https://login.salesforce.com/services/oauth2/authorize"
+    )
+    assert (
+        definition.auth.oauth.token_url
+        == "https://login.salesforce.com/services/oauth2/token"
+    )
+    assert (
+        definition.auth.oauth.revocation_url
+        == "https://login.salesforce.com/services/oauth2/revoke"
+    )
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        (
+            "salesforce-reads",
+            "https://api.salesforce.com/platform/mcp/v1/platform/sobject-reads",
+        ),
+        (
+            "salesforce-mutations",
+            "https://api.salesforce.com/platform/mcp/v1/platform/sobject-mutations",
+        ),
+    ]
+
+
 def _rewrite_google(catalog_copy, old, new):
     path = catalog_copy / "google-workspace" / "connection.yaml"
     text = path.read_text()
@@ -1200,3 +1262,41 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {
+            "registration": "dynamic",
+            "client_settings": None,
+            "unchecked": "Confirm it",
+            "inconclusive_probe": [{"error": "unknown_error"}],
+        },
+        {"unchecked": None, "inconclusive_probe": [{"error": "unknown_error"}]},
+        {
+            "unchecked": "Confirm it",
+            "inconclusive_probe": [{"error": "invalid_client"}],
+        },
+        {
+            "unchecked": "Confirm it",
+            "inconclusive_probe": [
+                {"error": "invalid_grant"},
+                {"error": "invalid_grant"},
+            ],
+        },
+    ],
+)
+def test_inconclusive_probe_requires_static_explicit_nondefinite_optin(changes):
+    from switch_core.connections.loader import OAuthClient
+
+    body = {
+        "registration": "static",
+        "client_settings": "EXAMPLE",
+        "redirect": ["core"],
+        "remove_access": "Remove Switch",
+        "unchecked": "Confirm it",
+        **changes,
+    }
+    with pytest.raises(ValueError):
+        OAuthClient.model_validate(body)

@@ -357,6 +357,28 @@ class TestClientSettings:
         assert settings.client_id == "example-client"
         assert "SYNTHETIC" not in repr(settings)
 
+    def test_a_public_client_needs_no_secret(self, tmp_path: Path) -> None:
+        path = tmp_path / "client.json"
+        path.write_text(json.dumps({"client_id": "example-client"}))
+        settings = load_client_settings(
+            "EXAMPLE", {"EXAMPLE_CLIENT_CONFIG_PATH": str(path)}, public=True
+        )
+        assert settings is not None
+        assert settings.client_id == "example-client"
+        assert settings.client_secret is None
+
+    def test_a_public_client_may_still_carry_a_secret(self, tmp_path: Path) -> None:
+        path = tmp_path / "client.json"
+        path.write_text(
+            json.dumps({"client_id": "example-client", "client_secret": "SYNTHETIC"})
+        )
+        settings = load_client_settings(
+            "EXAMPLE", {"EXAMPLE_CLIENT_CONFIG_PATH": str(path)}, public=True
+        )
+        assert settings is not None
+        assert settings.client_secret == "SYNTHETIC"
+        assert "SYNTHETIC" not in repr(settings)
+
     @pytest.mark.parametrize(
         ("content", "message"),
         [

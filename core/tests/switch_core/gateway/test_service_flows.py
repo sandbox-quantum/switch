@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -77,16 +78,24 @@ def _world(
     disabled: dict[str, str] | None = None,
     workspace_gate: bool = False,
     organization_apps: object = None,
+    write_only: bool = False,
+    loopback_host: str | None = None,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
     ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
+    host = f"\n    loopback_host: {loopback_host}" if loopback_host else ""
     _write_example(
         root,
         OAUTH_ENTRY.replace(
-            "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
+            "redirect: [loopback, core]", f"redirect: {redirect}{ports}{host}"
         ),
     )
+    if write_only:
+        path = root / "example" / "connection.yaml"
+        path.write_text(
+            path.read_text().replace('  read: { scopes: ["read:items"] }\n', "")
+        )
     catalog = load_catalog(root)
     oauth = catalog["example"].definition.auth.oauth
     assert oauth is not None
@@ -99,7 +108,7 @@ def _world(
         http=vendor.client(),
         client_name="Switch (switch.example.com)",
         redirect_uris=redirect_uris(
-            "example", oauth.redirect, PUBLIC, oauth.loopback_ports
+            "example", oauth.redirect, PUBLIC, oauth.loopback_ports, oauth.loopback_host
         ),
         scopes=["read:items", "write:items"],
     )
@@ -163,10 +172,10 @@ class Console:
         )
 
 
-def _listener_code(url: str, state: str) -> str:
+def _listener_code(url: str, state: str, host: str = "127.0.0.1") -> str:
     """What Console's listener takes from the redirect it receives."""
     parts = urlsplit(url)
-    assert f"{parts.scheme}://{parts.netloc}" == f"http://127.0.0.1:{PORT}"
+    assert f"{parts.scheme}://{parts.netloc}" == f"http://{host}:{PORT}"
     assert parts.path == LOOPBACK_CALLBACK_PATH
     query = parse_qs(parts.query)
     assert query["state"] == [state]
@@ -473,6 +482,41 @@ class TestLoopbackPorts:
             code = parse_qs(back.query)["code"][0]
             assert (await console.complete(code)).status_code == 200
 
+    async def test_signs_in_through_console_on_the_localhost_name(
+        self, session_factory, tmp_path
+    ) -> None:
+        # A vendor that registers only the localhost name (Salesforce) gets it
+        # in the redirect, and the exchange names it back exactly.
+        world = _world(session_factory, tmp_path / "catalog", loopback_host="localhost")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            assert started.json()["mode"] == "loopback"
+            url = started.json()["url"]
+            query = parse_qs(urlsplit(url).query)
+            assert query["redirect_uri"] == [
+                f"http://localhost:{PORT}{LOOPBACK_CALLBACK_PATH}"
+            ]
+            assert query["state"] == [console.state]
+
+            code = _listener_code(
+                world.vendor.authorize(url), console.state, host="localhost"
+            )
+            completed = await console.complete(code)
+            assert completed.status_code == 200, completed.text
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None and connection.account_id == "acct-1"
+        [exchange] = [
+            request
+            for request in world.vendor.token_requests
+            if request["grant_type"] == "authorization_code"
+        ]
+        assert exchange["redirect_uri"] == (
+            f"http://localhost:{PORT}{LOOPBACK_CALLBACK_PATH}"
+        )
+
     async def test_refuses_a_port_the_vendor_would_not_take(
         self, session_factory, tmp_path
     ) -> None:
@@ -626,6 +670,43 @@ class TestCoreCallback:
             if request["grant_type"] == "authorization_code"
         ]
         assert exchange["redirect_uri"] == f"{PUBLIC}{FLOWS}/callback"
+
+    async def test_returns_through_core_to_consoles_localhost_listener(
+        self, session_factory, tmp_path
+    ) -> None:
+        # Where the vendor's app is on the localhost name, Core sends the
+        # browser back to Console's listener under that name.
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[core, loopback]",
+            public_url=PUBLIC,
+            loopback_host="localhost",
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            assert started.json()["mode"] == "core"
+            authorize = started.json()["url"]
+            left = await client.get(authorize.removeprefix(PUBLIC))
+            assert left.status_code == 307
+            cookie = left.cookies.get(f"switch_service_{console.state}")
+            vendor_url = left.headers["location"]
+
+            back = urlsplit(world.vendor.authorize(vendor_url))
+            path = f"{back.path}?{back.query}"
+            returned = await client.get(
+                path, cookies={f"switch_service_{console.state}": cookie}
+            )
+            assert returned.status_code == 303
+            target = urlsplit(returned.headers["location"])
+            assert f"{target.scheme}://{target.netloc}" == f"http://localhost:{PORT}"
+            assert target.path == LOOPBACK_CALLBACK_PATH
+            assert _listener_code(
+                returned.headers["location"], console.state, host="localhost"
+            )
 
     async def test_the_cookie_is_secure_except_on_this_computer(
         self, session_factory, tmp_path
@@ -804,3 +885,163 @@ class TestWorkspaceSwitch:
             "so it still works. Remove Switch under Connected apps in Example.",
         }
         assert await _connection(session_factory, ada.id) is None
+
+
+class TestWriteOnly:
+    async def test_connect_screen_catalog_and_consent_are_write(
+        self, session_factory, tmp_path, monkeypatch
+    ):
+        world = _world(session_factory, tmp_path / "catalog", write_only=True)
+        from switch_core.gateway import service_connections
+
+        monkeypatch.setattr(service_connections, "CATALOG", world.broker._catalog)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            response = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(ada)
+            )
+            example = next(
+                x for x in response.json()["connections"] if x["slug"] == "example"
+            )
+            assert example["requested_access"] == "write"
+            completed = await _loopback_connect(world, Console(client, ada))
+            assert completed.json()["consent"] == "write"
+        connection = await _connection(session_factory, ada.id)
+        assert connection.consent == "write"
+
+    async def test_missing_write_scope_fails_instead_of_connecting_read(
+        self, session_factory, tmp_path
+    ):
+        world = _world(session_factory, tmp_path / "catalog", write_only=True)
+        ada = await add_member(session_factory, "ada")
+        mint = world.vendor.mint
+        world.vendor.mint = lambda scopes: mint(["read:items"])
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            response = await console.complete(await _loopback_code(world, console))
+            assert response.status_code == 400
+            assert "needs to write" in response.text
+        assert await _connection(session_factory, ada.id) is None
+
+
+@pytest.mark.parametrize("failure", [None, "code", "scope", "identity"])
+@pytest.mark.parametrize("organization", [False, True])
+@pytest.mark.parametrize("changed", [False, True])
+async def test_first_success_marks_only_unchanged_saved_client_verified(
+    session_factory, tmp_path, monkeypatch, changed, organization, failure
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from switch_core.db.models import (
+        Organization,
+        OrganizationAppCredential,
+        ServiceAppCredential,
+        Tenant,
+    )
+
+    world = _world(session_factory, tmp_path / "catalog")
+    ada = await add_member(session_factory, "ada")
+    # This fixture uses dynamic registration; capture its actual client ID
+    # after starting the flow, then provide the saved-app metadata being checked.
+    async with world.harness.client() as client:
+        console = Console(client, ada)
+        code = await _loopback_code(world, console)
+        flow = await _flow_row(session_factory, console.state)
+        client_id = flow.details["client_id"]
+        model = OrganizationAppCredential if organization else ServiceAppCredential
+        conditions = [model.service == "example"]
+        organization_id = "verified-org"
+        async with session_factory() as session:
+            if organization:
+                session.add(
+                    Organization(id=organization_id, slug=organization_id, name="O")
+                )
+                await session.flush()
+                await session.execute(
+                    update(Tenant)
+                    .where(Tenant.id == flow.tenant_id)
+                    .values(organization_id=organization_id)
+                )
+                conditions.append(model.organization_id == organization_id)
+            session.add(
+                model(
+                    **({"organization_id": organization_id} if organization else {}),
+                    service="example",
+                    client_id=client_id,
+                    settings={"verification": "unverified"},
+                    encrypted_secrets=TEST_KEYRING.encrypt("{}"),
+                    updated_by=ada.id,
+                )
+            )
+            await session.commit()
+        world.harness.gateway_app.state.connector_apps = SimpleNamespace(
+            specs={"example": True},
+            effective=lambda service: SimpleNamespace(source="saved"),
+            apply=AsyncMock(),
+            announce=Mock(),
+        )
+        organization_changed = Mock()
+        if organization:
+            monkeypatch.setattr(
+                world.broker,
+                "organization_app",
+                AsyncMock(
+                    return_value=OrganizationApp(
+                        organization_id=organization_id,
+                        adapter=world.broker._adapters["example"],
+                        github_app=None,
+                        problem=None,
+                        changed_at=datetime.now(UTC),
+                    )
+                ),
+            )
+            world.harness.gateway_app.state.organization_apps = SimpleNamespace(
+                changed=organization_changed
+            )
+        if changed:
+            original = world.flows.complete
+
+            async def exchange_then_replace(*args, **kwargs):
+                result = await original(*args, **kwargs)
+                async with session_factory() as session:
+                    await session.execute(
+                        update(model)
+                        .where(*conditions)
+                        .values(
+                            client_id="replacement-client", updated_at=datetime.now(UTC)
+                        )
+                    )
+                    await session.commit()
+                return result
+
+            monkeypatch.setattr(world.flows, "complete", exchange_then_replace)
+        if failure == "code":
+            code = "invalid-code"
+        elif failure == "scope":
+            mint = world.vendor.mint
+            world.vendor.mint = lambda scopes: mint([])
+        elif failure == "identity":
+            world.vendor.account = {}
+        complete = await console.complete(code)
+        if failure is None:
+            assert complete.status_code == 200, complete.text
+        else:
+            assert complete.status_code != 200, complete.text
+            assert await _connection(session_factory, ada.id) is None
+    async with session_factory() as session:
+        row = await session.scalar(select(model).where(*conditions))
+        assert row.settings["verification"] == (
+            "unverified" if changed or failure else "verified"
+        )
+    assert world.harness.gateway_app.state.connector_apps.apply.await_count == (
+        0 if changed or organization or failure else 1
+    )
+    assert world.harness.gateway_app.state.connector_apps.announce.call_count == (
+        0 if changed or organization or failure else 1
+    )
+    assert organization_changed.call_count == (
+        1 if organization and not changed and not failure else 0
+    )
+    if organization and not changed and not failure:
+        organization_changed.assert_called_once_with(organization_id, "example")

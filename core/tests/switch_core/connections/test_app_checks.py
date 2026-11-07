@@ -13,10 +13,12 @@ from switch_core.connections.app_checks import (
     check_oauth_client,
 )
 from switch_core.connections.app_credentials import AppValues
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, InconclusiveProbe
 
 REDIRECT = "https://switch.example.test/gateway/service-connections/google-workspace/flows/callback"
 GOOGLE = CATALOG["google-workspace"].definition
+SALESFORCE = CATALOG["salesforce"].definition
+LOOPBACK_REDIRECT = "http://localhost:39251/switch-services/callback"
 
 
 def _http(status: int, body: object) -> httpx.AsyncClient:
@@ -50,6 +52,40 @@ class TestOAuthClient:
         [check] = result.checks
         assert (check.ok, check.field) == (ok, field)
         assert says in check.message
+
+    async def test_a_public_client_proves_its_id_alone(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(400, json={"error": "invalid_grant"})
+
+        result = await check_oauth_client(
+            httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+            SALESFORCE,
+            AppValues("example-client-id", {}, {}),
+            LOOPBACK_REDIRECT,
+        )
+        [check] = result.checks
+        assert check.ok
+        assert "accepts this client ID." in check.message
+        [request] = seen
+        assert str(request.url) == (
+            "https://login.salesforce.com/services/oauth2/token"
+        )
+        body = request.content.decode()
+        assert "client_id=example-client-id" in body
+        assert "client_secret" not in body
+
+    async def test_a_public_clients_wrong_id_is_refused(self) -> None:
+        result = await check_oauth_client(
+            _http(401, {"error": "invalid_client"}),
+            SALESFORCE,
+            AppValues("example-client-id", {}, {}),
+            LOOPBACK_REDIRECT,
+        )
+        [check] = result.checks
+        assert (check.ok, check.field) == (False, "client_id")
 
     async def test_unreachable_is_its_own_answer(self) -> None:
         def handle(request: httpx.Request) -> httpx.Response:
@@ -142,3 +178,105 @@ class TestGitHubApp:
         result = await check_github_app(_github(self.APP, {}), _github_values(short))
         failure = result.first_failure()
         assert failure is not None and "2048" in failure.message
+
+
+async def test_invalid_client_is_not_eligible_for_unverified_save():
+    result = await check_oauth_client(
+        _http(401, {"error": "invalid_client"}),
+        SALESFORCE,
+        AppValues("wrong-client", {}, {}),
+        LOOPBACK_REDIRECT,
+    )
+    assert not result.ok
+    assert not result.inconclusive
+
+
+@pytest.mark.parametrize("error", ["invalid_request", "unknown_error", "invalid_grant"])
+async def test_catalog_optin_keeps_matched_probe_false_and_unverified(error):
+    oauth = GOOGLE.auth.oauth
+    opted = GOOGLE.model_copy(
+        update={
+            "auth": GOOGLE.auth.model_copy(
+                update={
+                    "oauth": oauth.model_copy(
+                        update={"inconclusive_probe": [InconclusiveProbe(error=error)]}
+                    )
+                }
+            )
+        }
+    )
+    result = await check_oauth_client(
+        _http(400, {"error": error}), opted, _google(), REDIRECT
+    )
+    assert not result.ok and result.inconclusive
+    assert result.settings == {"verification": "unverified"}
+    assert "first sign-in" in result.checks[0].message
+    assert result.checks[0].note == oauth.unchecked
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "invalid_client",
+        "invalid_client_id",
+        "redirect_uri_mismatch",
+        "unauthorized_client",
+    ],
+)
+async def test_definite_refusal_never_becomes_inconclusive(error):
+
+    oauth = GOOGLE.auth.oauth
+    opted = GOOGLE.model_copy(
+        update={
+            "auth": GOOGLE.auth.model_copy(
+                update={
+                    "oauth": oauth.model_copy(
+                        update={
+                            "inconclusive_probe": [
+                                InconclusiveProbe(error="invalid_grant")
+                            ]
+                        }
+                    )
+                }
+            )
+        }
+    )
+    result = await check_oauth_client(
+        _http(400, {"error": error}), opted, _google(), REDIRECT
+    )
+    assert not result.ok and not result.inconclusive
+
+
+@pytest.mark.parametrize(
+    "status,body,expected",
+    [
+        (400, {"error": "invalid_request", "status": "BAD_AUTH_CODE"}, True),
+        (400, {"error": "invalid_request", "status": "WRONG_SECRET"}, False),
+        (401, {"error": "invalid_request", "status": "BAD_AUTH_CODE"}, False),
+        (400, {"error": "unknown_error", "status": "BAD_AUTH_CODE"}, False),
+    ],
+)
+async def test_probe_status_match_is_exact_and_does_not_widen_other_refusals(
+    status, body, expected
+):
+    oauth = GOOGLE.auth.oauth
+    opted = GOOGLE.model_copy(
+        update={
+            "auth": GOOGLE.auth.model_copy(
+                update={
+                    "oauth": oauth.model_copy(
+                        update={
+                            "inconclusive_probe": [
+                                InconclusiveProbe(
+                                    error="invalid_request", body_status="BAD_AUTH_CODE"
+                                )
+                            ]
+                        }
+                    )
+                }
+            )
+        }
+    )
+    result = await check_oauth_client(_http(status, body), opted, _google(), REDIRECT)
+    assert not result.ok
+    assert result.inconclusive is expected

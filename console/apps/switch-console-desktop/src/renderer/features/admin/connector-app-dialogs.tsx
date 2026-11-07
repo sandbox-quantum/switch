@@ -59,7 +59,11 @@ function useSave(serverId: string, service: string, failure: string) {
   return async (input: SaveConnectorAppInput): Promise<Refusal | null> => {
     try {
       const result = await rpc.switchServers.saveConnectorApp({ serverId, service, input });
-      if (result.kind === 'refused') return { message: result.message, field: result.field };
+      if (result.kind === 'refused')
+        return {
+          message: result.message,
+          field: result.field,
+        };
       remember(service, result.checks);
       await reload();
       return null;
@@ -244,9 +248,18 @@ export function ConnectorAppSetupDialog({
         );
         return;
       }
-      const refused = await save({ client_id: id, ...secrets, replace: mode === 'switch' });
+      const refused = await save({
+        client_id: id,
+        ...secrets,
+        replace: mode === 'switch',
+      });
       if (refused) setRefusal(refused);
-      else onSuccess(`${app.name} is ready.`);
+      else
+        onSuccess(
+          app.inconclusive_probe
+            ? `${app.name} configuration saved. Complete a real sign-in to validate it.`
+            : `${app.name} is ready.`
+        );
     } catch (cause) {
       setRefusal({
         message: failureText(cause, 'Could not ask who would reconnect.'),
@@ -270,6 +283,14 @@ export function ConnectorAppSetupDialog({
         <DialogTitle>{title}</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
+        {app.inconclusive_probe && (
+          <p role="note">
+            This vendor cannot verify the client during setup. Check and save stores it as not
+            verified; the first sign-in checks the client. Confirm the operator requirements shown
+            below.
+          </p>
+        )}
+
         {steps.length > 1 && (
           <p className="text-xs font-medium tracking-wide text-foreground-muted uppercase">
             Step {index + 1} of {steps.length} · {stepName}
@@ -356,6 +377,7 @@ export function ConnectorAppSetupDialog({
                 onChange={(event) => {
                   setClientId(event.target.value);
                   setImpact(null);
+                  setRefusal(null);
                 }}
               />
             </div>

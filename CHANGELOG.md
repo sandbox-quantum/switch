@@ -45,6 +45,11 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- Salesforce connections through the official SObject Reads and Mutations MCP
+  servers, with a public PKCE External Client App and one clearly write-capable
+  access level. Console supports Salesforce's exact localhost callback. Static
+  clients with measured inconclusive setup probes remain visibly unverified
+  until a real sign-in checks them.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption

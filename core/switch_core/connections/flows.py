@@ -181,7 +181,8 @@ class ServiceFlows:
         # service has it. The grant is then on or off.
         consent: AccessLevel = "write" if access.write is not None else "read"
         level = access.write or access.read
-        assert level.scopes is not None and access.read.scopes is not None
+        assert level is not None and level.scopes is not None
+        loopback_uri = loopback_redirect(port, definition.auth.oauth.loopback_host)
         try:
             stored = await self._flows.start(
                 kind=KIND,
@@ -192,16 +193,19 @@ class ServiceFlows:
                 mode=mode,
                 port=port,
                 redirect_uri=(
-                    loopback_redirect(port)
+                    loopback_uri
                     if mode == "loopback"
                     else core_callback(self._public_url or "", definition.slug)
                 ),
                 owner_label=owner_label,
                 details={
                     "name": definition.name,
+                    "loopback_uri": loopback_uri,
                     "consent": consent,
                     "scopes": list(level.scopes),
-                    "read_scopes": list(access.read.scopes),
+                    "read_scopes": list(access.read.scopes or [])
+                    if access.read
+                    else None,
                     "write_scopes": list(level.scopes) if consent == "write" else [],
                 },
                 completion_secret=completion_secret,
@@ -291,7 +295,7 @@ class ServiceFlows:
         )
         if taken is None:
             raise FlowError("The sign-in could not be verified.")
-        return f"{loopback_redirect(flow.port)}?" + urlencode(
+        return f"{flow.stored.details['loopback_uri']}?" + urlencode(
             {"code": code, "state": flow.state}
         )
 
@@ -355,10 +359,14 @@ class ServiceFlows:
         write_scopes = set(details["write_scopes"])
         if write_scopes and write_scopes <= granted:
             return "write"
-        if set(details["read_scopes"]) <= granted:
+        if (
+            details["read_scopes"] is not None
+            and set(details["read_scopes"]) <= granted
+        ):
             return "read"
         raise FlowError(
-            f"{details['name']} granted less than Switch needs to read. Connect "
+            f"{details['name']} granted less than Switch needs to "
+            f"{details['consent']}. Connect "
             "again and allow what it asks for."
         )
 
