@@ -32,7 +32,7 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
-const { createAcpAdapter } = await import('./acp-adapter');
+const { checkAcpSignIn, createAcpAdapter } = await import('./acp-adapter');
 
 /** The least a new ACP provider has to say about itself. */
 const dummy: AcpProviderHooks = {
@@ -403,3 +403,57 @@ it.each([
     expect(server.received.some((m) => m.id === 80 && m.result)).toBe(false);
   }
 );
+
+it('starts with an HTTP MCP server and sends empty mcpServers in session/new when mcpServersInLaunch is true even without agent http capability', async () => {
+  agent.capabilities = {};
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    launch: ({ binaryPath, env }) => ({
+      command: binaryPath,
+      args: ['--acp'],
+      env,
+      mcpServersInLaunch: true,
+    }),
+  };
+  const { server, session } = await start(hooks, {
+    mcpServers: {
+      probe: { transport: 'http', url: 'http://127.0.0.1:8080/mcp' },
+    },
+  });
+  expect(session.sessionId).toBe('s');
+  const sessionNew = server.received.find((m) => m.method === 'session/new');
+  expect(sessionNew?.params).toMatchObject({ mcpServers: [] });
+});
+
+it('fails to start with an HTTP MCP server when mcpServersInLaunch is not set and agent declares no http capability', async () => {
+  agent.capabilities = {};
+  await expect(
+    start(dummy, {
+      mcpServers: {
+        probe: { transport: 'http', url: 'http://127.0.0.1:8080/mcp' },
+      },
+    })
+  ).rejects.toThrow(
+    'Dummy ACP does not declare MCP over HTTP (agentCapabilities.mcpCapabilities.http), and the MCP server probe is only reachable that way.'
+  );
+});
+
+it('runs launch release after disposing the client in checkAcpSignIn', async () => {
+  let serverExitedWhenReleased: boolean | undefined;
+  const release = vi.fn(() => {
+    const server = servers.at(-1);
+    serverExitedWhenReleased = (server as unknown as { exited: boolean })?.exited;
+  });
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    launch: ({ binaryPath, env }) => ({
+      command: binaryPath,
+      args: ['--acp'],
+      env,
+      release,
+    }),
+  };
+  await checkAcpSignIn(hooks, { binaryPath: 'dummy-acp', cwd: '/work', env: {} });
+  expect(release).toHaveBeenCalledTimes(1);
+  expect(serverExitedWhenReleased).toBe(true);
+});
