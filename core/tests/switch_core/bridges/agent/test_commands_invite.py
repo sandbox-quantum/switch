@@ -57,7 +57,9 @@ def _build_client(
 
 
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent", args=args, thread_id=None, user_id="user-1"
+    )
 
 
 def _agent(

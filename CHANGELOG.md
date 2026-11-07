@@ -74,6 +74,22 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Security
+- **Room invites respect who may talk to the agent.** Someone an agent's
+  addressing policy does not admit could still bring it into a room, leaving
+  it among people it would only refuse and telling the inviter where it is
+  used. Every invite path now asks the same question message delivery asks,
+  through one shared check in `RoomService`: the Gateway's room page and
+  Switch Console, room creation with agents, `!invite-agent` and
+  `/invite-agent`, the `invite_agent_to_room` and `add_users_to_room` agent
+  tools, the agent-bridge API, and template runs. The check runs before
+  anything is provisioned and again inside the membership transaction, under
+  row locks, so a policy tightened a moment earlier is obeyed and a refusal
+  leaves no room, channel, membership or platform invite behind. Agents
+  already in a room are not removed by a later policy change. A messaging
+  platform that adds a bot without saying who asked is allowed the join but
+  disclosed — in the channel, in a warning log, and privately to the owner
+  when they have no account there; an unknown adder is never treated as the
+  owner or an administrator. Refusals say why and who can invite the agent.
 - **Only the people in a direct or group conversation decide who is in it.**
   The room routes and the agent tools added agents and people to one from
   outside it, though its platform fixes its members; a DM the bridge adopted

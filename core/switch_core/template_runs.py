@@ -37,6 +37,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
 from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceError
 from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
+from switch_core.invites import Inviter
 from switch_core.room_service import FIXED_MEMBERSHIP
 
 if TYPE_CHECKING:
@@ -470,11 +471,20 @@ class TemplateAgents:
         )
 
     async def create(
-        self, tenant_id: str, owner_id: str, checked: Sequence[CheckedAgent]
+        self,
+        tenant_id: str,
+        owner_id: str,
+        checked: Sequence[CheckedAgent],
+        *,
+        invited_by: Inviter,
     ) -> list[CreatedAgent]:
         """Create the checked agents with their addressing and connections.
         When one fails, the ones already created are deleted again and the
-        failure is raised as `RunUndone`."""
+        failure is raised as `RunUndone`.
+
+        `invited_by` is who is running the template: the person, or the agent
+        whose tool call started it. What the run created comes with them.
+        """
         if not checked:
             return []
         assert self._management is not None
@@ -500,7 +510,13 @@ class TemplateAgents:
                 await self._finish(tenant_id, owner_id, result["agent_id"], agent)
                 for room_id in agent.join_room_ids:
                     await self._protocol.room_service.add_agents_to_room(
-                        room_id, agent_ids=[result["agent_id"]]
+                        room_id,
+                        agent_ids=[result["agent_id"]],
+                        # The runner brings in what its run created, judged as
+                        # itself and not as the owner it acts for.
+                        invited_by=invited_by.having_created(
+                            [made.agent_id for made in created]
+                        ),
                     )
             except Exception as error:
                 raise await self.undone(

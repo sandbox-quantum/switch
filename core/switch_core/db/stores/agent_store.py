@@ -32,12 +32,26 @@ class AgentStore:
         return await session.get(Agent, agent_id)
 
     async def get_many(
-        self, session: AsyncSession, agent_ids: Collection[str]
+        self,
+        session: AsyncSession,
+        agent_ids: Collection[str],
+        *,
+        lock: bool = False,
     ) -> list[Agent]:
-        """`get` for many agents in one query; an id with no agent is left out."""
+        """`get` for many agents in one query; an id with no agent is left out.
+
+        `lock` takes a `FOR SHARE` row lock, ordered by id so two invites
+        holding several agents cannot deadlock. It is what makes an invite's
+        policy check linearise with a concurrent policy change: a writer waits
+        for the invite to commit, so the invite is ordered *before* the change
+        rather than slipping in under a policy that was already tightened.
+        """
         if not agent_ids:
             return []
-        result = await session.execute(select(Agent).where(Agent.id.in_(agent_ids)))
+        statement = select(Agent).where(Agent.id.in_(agent_ids))
+        if lock:
+            statement = statement.order_by(Agent.id).with_for_update(read=True)
+        result = await session.execute(statement)
         return list(result.scalars().all())
 
     async def get_by_name(self, session: AsyncSession, name: str) -> Agent | None:

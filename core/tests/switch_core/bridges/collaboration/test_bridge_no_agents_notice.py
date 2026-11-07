@@ -46,9 +46,21 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
         def __init__(self) -> None:
             self.configs: list[Any] = []
 
-        async def create_room(self, config: Any) -> SimpleNamespace:
+        async def create_room(
+            self, config: Any, *, invited_by: Any = None
+        ) -> SimpleNamespace:
             self.configs.append(config)
             return SimpleNamespace(room=room)
+
+    async def _disclose_unverified_joins(
+        channel_id: str,
+        channel_name: str | None,
+        agent_ids: list[str],
+        inviter: Any,
+    ) -> None:
+        """A join the platform reported is disclosed; these tests only need the
+        notice path not to explode."""
+        return None
 
     async def _resolve_agents_for_channel(
         channel_id: str, channel_type: str
@@ -69,6 +81,7 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
         _resolve_agents_for_channel=_resolve_agents_for_channel,
         _adopt_existing_room=_adopt_existing_room,
         add_room_mapping=add_room_mapping,
+        _disclose_unverified_joins=_disclose_unverified_joins,
         _provisioning_channels=set(),
         _channel_to_room={},
         _room_tenants={},
