@@ -9,6 +9,7 @@ import type {
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 import type {
+  AcpAgentCapabilities,
   AcpInitializeResult,
   AcpPermissionRequest,
   AcpPromptCapabilities,
@@ -99,6 +100,8 @@ export interface AcpProviderHooks {
   /** Executable used when the caller names none. */
   defaultBinary: string;
   capabilities: ProviderCapabilities;
+  /** Do not use legacy session/set_model when no model config option is advertised. */
+  noLegacySetModel?: boolean;
   /** The command, arguments and environment to run the agent with. May prepare the host first. */
   launch(input: AcpLaunchInput): Promise<AcpLaunch> | AcpLaunch;
   /** The command a person runs on the execution machine to sign the CLI in. */
@@ -173,7 +176,11 @@ export interface AcpProviderHooks {
    */
   clientCapabilities?: Record<string, unknown>;
   /** Register vendor-specific requests and notifications for a session. */
-  extensions?(context: AcpSessionContext, on: AcpExtensionRegistrar): void;
+  extensions?(
+    context: AcpSessionContext,
+    on: AcpExtensionRegistrar,
+    agentCapabilities: AcpAgentCapabilities
+  ): void;
 }
 
 export interface AcpSignedInQuery {

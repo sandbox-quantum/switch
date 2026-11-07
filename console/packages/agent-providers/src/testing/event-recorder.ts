@@ -70,6 +70,17 @@ export class EventRecorder {
   }
 
   summary(): string {
-    return this.events.map((event) => event.type).join(' > ') || '(none)';
+    return (
+      this.events
+        .map((event) => {
+          if (event.type === 'request.opened') {
+            return `${event.type}(${event.requestType}: ${event.title}${
+              event.connector ? `; connector=${event.connector}` : ''
+            })`;
+          }
+          return event.type;
+        })
+        .join(' > ') || '(none)'
+    );
   }
 }
