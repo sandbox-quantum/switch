@@ -32,3 +32,5 @@ the one users act on.
   document that describes agents and rooms to create and the params a
   deployer fills in. The bundled Switch expert (`switch-expert/template.yaml`)
   is the worked example.
+- [`contributing/quickstart.md`](contributing/quickstart.md): the Five-Minute
+  Quickstart guide for new contributors and hackathon participants.

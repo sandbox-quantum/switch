@@ -1,0 +1,270 @@
+# Five-Minute Quickstart for New Contributors
+
+Welcome to Agent Switch! Whether you are participating in a hackathon or making
+your first open-source contribution, this guide gets you from a fresh clone to
+a running local system, a connected desktop Console, an agent answering in a
+room, and your first code change.
+
+> **Time to complete:** ~10–15 minutes on a clean machine.
+
+---
+
+## 1. Prerequisites
+
+Before starting, install the required developer tooling:
+
+| Tool | Version / Requirement | Installation |
+|---|---|---|
+| **Python** | 3.12 or newer | [python.org](https://www.python.org/downloads/) |
+| **uv** | Fast Python package and tool runner | [astral.sh/uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh \| sh` or `brew install uv` / `winget install astral-sh.uv`) |
+| **Docker** | Docker Engine & Docker Compose running | [docker.com](https://docs.docker.com/get-docker/) (Docker Desktop, OrbStack, or Colima) |
+| **just** | Task runner for development commands | [github.com/casey/just](https://github.com/casey/just) (`brew install just` or `cargo install just`) |
+| **Node.js** | `>=24.0.0` (or active LTS) | [nodejs.org](https://nodejs.org/) (`nvm install 24`) |
+| **pnpm** | `>=10.28.0` | [pnpm.io](https://pnpm.io/installation) (`npm install -g pnpm`) |
+
+Make sure the Docker daemon is running before proceeding.
+
+---
+
+## 2. Get the Server Running Locally
+
+Clone the repository and move into it:
+
+```bash
+git clone https://github.com/sandbox-quantum/switch.git
+cd switch
+```
+
+### Step 2.1: Initialize `.env`
+
+Switch requires secret keys for the database, token generation, and the
+operator gateway. The `.env.example` file leaves secret fields blank for security.
+
+Run `just init-env` to copy `.env.example` to `.env` and automatically generate
+secure random secrets:
+
+```bash
+just init-env
+```
+
+*(Note: If you run `cp .env.example .env` manually, `just up` will refuse to start
+until `DB_OWNER_USER` and `DB_OWNER_PASSWORD` are filled. `just init-env` handles
+this for you in one step).*
+
+### Step 2.2: Install Python dependencies
+
+Install backend dependencies in `core/` using `uv`:
+
+```bash
+uv sync
+```
+
+### Step 2.3: Start supporting infrastructure
+
+Start the supporting services (PostgreSQL and Mattermost) in Docker:
+
+```bash
+just up
+```
+
+This starts Postgres (port `5432`) and a local Mattermost collaboration server
+(port `8065`).
+
+### Step 2.4: Apply database migrations
+
+Apply database schema migrations using Alembic:
+
+```bash
+just migrate
+```
+
+### Step 2.5: Run the Switch backend
+
+Run `switch-core` on `http://localhost:8000`:
+
+```bash
+just run
+```
+
+You should see log output confirming `switch-core` is listening on port `8000`.
+This process hosts the Agent Bridge API, MCP server, and management endpoints.
+Leave this terminal running.
+
+*(Optional)* If you also want to view the web operator dashboard, open another
+terminal and run:
+
+```bash
+just gateway-install   # first time only
+just gateway-dev       # runs Vite dev server on http://localhost:5173
+```
+
+---
+
+## 3. Build and Run Switch Console
+
+Switch Console is the desktop app (Electron) for managing agents, sessions, and
+rooms.
+
+In a **new terminal**:
+
+```bash
+cd console
+pnpm install
+pnpm run dev
+```
+
+> **Tip:** You can also run Switch Console configured for local development
+> from the repository root with `just local-cloud-console`.
+
+### Connect Console to your local server
+
+1. When Switch Console opens, select **Add a server** (or from the first-run
+   screen, choose **Connect to an existing server**).
+2. Enter the local server address:
+   ```text
+   http://localhost:8000
+   ```
+3. Click **Add server** (or **Connect**). Switch Console is now connected to
+   your local `switch-core` backend.
+
+---
+
+## 4. Create an Agent, a Room, and Get a Reply
+
+### 4.1 Onboard a local agent
+
+1. In the Switch Console sidebar, navigate to **Your Agents**.
+2. Click the dashed **`+`** card to create a new agent.
+3. Configure your agent:
+   - **Name:** e.g., `mock.dev.local` (or `claude-code.helper.yourname`).
+   - **Agent provider:** Choose your installed provider (Claude Code, Codex,
+     OpenCode, Antigravity ACP, or Cursor).
+   - **Working directory:** Select your `switch` repository folder or any directory
+     you would like the agent to operate in.
+4. Click **Create agent**.
+
+### 4.2 Create a room
+
+1. In the sidebar, select **Your Rooms**, then **Create room**.
+2. Fill out room settings:
+   - **Messaging app:** Select **Mattermost** (provided automatically by `just up`).
+   - **Name:** e.g., `first-room`.
+   - **Add an agent:** Select the agent you created in step 4.1.
+3. Click **Create room**.
+
+### 4.3 Get a reply
+
+1. Open the room in your messaging app:
+   - Access the local Mattermost instance at `http://localhost:8065` (or view
+     it embedded in Switch Console).
+   - Sign in with the Mattermost credentials from your `.env` (or generated by
+     `just init-env`).
+2. In the room channel, address your agent:
+   ```text
+   @mock.dev.local Hello! Can you confirm you are connected?
+   ```
+3. The agent will receive the message, process it, and reply in the channel!
+
+---
+
+## 5. Where Things Live (Making Your First Change)
+
+The Switch repository is structured across three main code trees:
+
+| Directory | What lives here | Common technologies |
+|---|---|---|
+| `core/` | The core Python backend: message bus, Agent Bridge API, MCP server, collaboration adapters, database models, and store layer | Python 3.12+, FastAPI, SQLAlchemy, asyncpg, Alembic |
+| `console/` | The Switch Console desktop application: agent session orchestrator, provider adapters, desktop UI | TypeScript, Electron, React, Vite, Tailwind CSS, pnpm workspace |
+| `gateway/` | The operator dashboard frontend | TypeScript, React, Vite, Tailwind CSS |
+| `deploy/` | Docker Compose files (`deploy/local/`) and deployment manifests | Docker Compose, Bash scripts |
+| `docs/` | Architectural specifications, protocol documentation, and contributing guides | Markdown |
+
+Pick the component you want to work on:
+- Backend logic or bridges? Look in `core/switch_core/`.
+- Desktop app UI or agent session management? Look in `console/apps/switch-console-desktop/` and `console/packages/`.
+- Web operator dashboard? Look in `gateway/src/`.
+
+---
+
+## 6. Running Tests & Quality Checks
+
+Before committing changes, make sure all tests and linters pass:
+
+### Python Backend (`core/`)
+
+```bash
+# Run backend test suite
+just test
+
+# Run a single test
+just test -k "test_name"
+
+# Lint and format check (CI mode)
+just check
+
+# Automatically format and fix lint issues
+just format
+
+# Type check with mypy
+just typecheck
+```
+
+### Switch Console (`console/`)
+
+```bash
+cd console
+
+# Run tests
+pnpm test
+
+# Run linter
+pnpm lint
+
+# Run type checks
+pnpm typecheck
+```
+
+### Gateway Frontend (`gateway/`)
+
+```bash
+just gateway-test
+```
+
+---
+
+## 7. Submitting Your Pull Request
+
+Ready to share your contribution? Follow this checklist:
+
+1. **Create a feature branch:**
+   ```bash
+   git checkout -b feat/your-feature-name
+   ```
+2. **Ensure tests and linters pass:**
+   ```bash
+   just check
+   just typecheck
+   just test
+   ```
+3. **Commit your changes:**
+   Use clear, conventional commit messages:
+   ```bash
+   git commit -m "feat(scope): concise description of changes"
+   ```
+4. **Push to your fork and open a Pull Request:**
+   - In your PR description, explain the motivation and summarize changes.
+   - **Mention the operating system you tested on** (e.g., macOS Sonoma arm64, Ubuntu 24.04 x64, Windows 11).
+5. **Sign the Contributor License Agreement (CLA):**
+   When the automated CLA bot comments on your PR, reply with the exact phrase:
+   > I have read the CLA Document and I hereby sign the CLA
+
+---
+
+## 8. Switch Changes Fast
+
+> 💡 **Moving Parts Note:**
+> Agent Switch is under rapid development, especially during hackathons and
+> feature sprints. If a command, script, or environment flag behaves
+> unexpectedly or differs from the current `main` branch, **please ask!**
+> Open an issue, comment on the relevant ticket, or reach out to the
+> maintainers. We are here to help you get unstuck.
