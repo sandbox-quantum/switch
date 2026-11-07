@@ -18,6 +18,7 @@ need `quint` and Java.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import tempfile
@@ -53,8 +54,13 @@ MUTANTS = [
 ]
 
 
-def check(module: str, invariants: list[str]) -> tuple[int, str]:
-    with tempfile.TemporaryDirectory() as out:
+def check(module: str, invariants: list[str]) -> tuple[str, str]:
+    """What `quint verify` concluded for a module, from the JSON it writes with
+    `--out` rather than from what it prints: `ok`, `violation`, or `error` when
+    it concluded nothing (a type error, a crash of TLC or Java, a changed
+    format), with whatever it said."""
+    with tempfile.TemporaryDirectory() as work:
+        report = Path(work) / "report.json"
         run = subprocess.run(
             [
                 "quint",
@@ -64,42 +70,59 @@ def check(module: str, invariants: list[str]) -> tuple[int, str]:
                 "--init=init",
                 "--step=step",
                 f"--invariant={','.join(invariants)}",
+                f"--out={report}",
                 str(SPECS / "configs.qnt"),
             ],
             capture_output=True,
             text=True,
-            cwd=out,
+            cwd=work,
         )
-    return run.returncode, run.stdout + run.stderr
+        said = run.stdout + run.stderr
+        try:
+            result = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            return "error", f"no report: {error}\n{said}"
+    status = result.get("status")
+    if result.get("stage") != "verifying":
+        return (
+            "error",
+            f"stopped at {result.get('stage')}: {result.get('errors')}\n{said}",
+        )
+    if status == "ok" and run.returncode == 0:
+        return "ok", said
+    if status == "violation" and run.returncode != 0:
+        return "violation", said
+    return "error", f"status {status!r}, exit {run.returncode}\n{said}"
 
 
 def verify(modules: list[str]) -> int:
     failures = 0
     for module in modules:
-        code, output = check(module, INVARIANTS)
-        if code == 0 and "[ok]" in output:
+        status, said = check(module, INVARIANTS)
+        if status == "ok":
             print(f"ok     {module}: {', '.join(INVARIANTS)}")
             continue
         failures += 1
-        print(f"FAILED {module}", file=sys.stderr)
-        print(output[-4000:], file=sys.stderr)
+        print(f"FAILED {module}: {status}", file=sys.stderr)
+        print(said[-4000:], file=sys.stderr)
     return failures
 
 
 def mutants() -> int:
     failures = 0
     for module, invariant in MUTANTS:
-        code, output = check(module, [invariant])
-        if "found a counterexample" in output:
+        status, said = check(module, [invariant])
+        if status == "violation":
             print(f"ok     {module} violates {invariant}")
             continue
         failures += 1
-        print(
-            f"FAILED {module}: {invariant} was not violated "
-            "(the invariant cannot see this bug)",
-            file=sys.stderr,
+        reason = (
+            f"{invariant} held, so it cannot see this bug"
+            if status == "ok"
+            else "the check did not run to a conclusion"
         )
-        print(output[-4000:], file=sys.stderr)
+        print(f"FAILED {module}: {reason}", file=sys.stderr)
+        print(said[-4000:], file=sys.stderr)
     return failures
 
 
