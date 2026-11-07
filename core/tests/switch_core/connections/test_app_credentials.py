@@ -116,7 +116,12 @@ async def _save(
             client_id=client_id,
             settings=settings or {},
             secrets=secrets,
-            secret_names=SECRET_NAMES[kind],
+            secret_names=(
+                frozenset()
+                if CATALOG[service].definition.auth.oauth
+                and CATALOG[service].definition.auth.oauth.public_client
+                else SECRET_NAMES[kind]
+            ),
             updated_by=operator,
         )
         await session.commit()
@@ -145,9 +150,13 @@ class TestSpecs:
             "github": "github_app",
             "google-workspace": "oauth_client",
             "airtable": "oauth_client",
+            "dropbox": "oauth_client",
         }
         assert specs["google-workspace"].variables == (GOOGLE_VARIABLE,)
         assert specs["airtable"].variables == ("AIRTABLE_CLIENT_CONFIG_PATH",)
+        assert specs["dropbox"].variables == ("DROPBOX_CLIENT_CONFIG_PATH",)
+        assert specs["dropbox"].public
+        assert specs["dropbox"].secret_names == frozenset()
         assert specs["github"].secret_names == {"client_secret", "private_key"}
 
 
@@ -409,3 +418,23 @@ class TestApply:
         assert after.client_secret == "example-secret-1111"
         assert state.github_app.connections is after
         assert isinstance(broker._adapters["github"], GitHubAdapter)
+
+
+def test_dropbox_public_settings_load_without_secret(session_factory, tmp_path):
+    path = tmp_path / "dropbox.json"
+    path.write_text('{"client_id": "example-public-id"}')
+    apps = _apps(session_factory, environ={"DROPBOX_CLIENT_CONFIG_PATH": str(path)})
+    configured = apps._configuration(apps.specs["dropbox"])
+    assert configured.oauth_client.client_id == "example-public-id"
+    assert configured.oauth_client.client_secret is None
+    assert configured.values.secrets == {}
+
+
+async def test_dropbox_saved_public_settings_load_without_secret(session_factory):
+    await _save(session_factory, "dropbox", client_id="example-public-id", secrets={})
+    apps = _apps(session_factory)
+    await apps.load()
+    assert apps.effective("dropbox").source == "saved"
+    client = apps.oauth_clients()["dropbox"]
+    assert client.client_id == "example-public-id"
+    assert client.client_secret is None
