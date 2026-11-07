@@ -421,7 +421,8 @@ export type AgentGapFrame = z.infer<typeof agentGapFrameSchema>;
  * A room control (`!reset`, `!compact`, `!interrupt`, a Stop press) for
  * whichever session works in `room_id`. Core no longer knows the session
  * (`command.sessionId` is null); the controller does, from the placements
- * its watcher states.
+ * its watcher states. A turn cancellation instead names the session that owns
+ * the queued turn, and must not be retargeted to a newer session in the room.
  */
 export const agentSessionCommandFrameSchema = z.object({
   agent_id: id,

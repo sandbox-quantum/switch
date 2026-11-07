@@ -267,6 +267,7 @@ def turn_status(
     mention: str | None = None,
     error_summary: str | None = None,
     tool_detail: bool,
+    cancel_command: str | None = None,
 ) -> str:
     """A turn's progress, compact enough to live in one message that is edited.
 
@@ -311,6 +312,12 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
+    if turn.status == "queued" and cancel_command:
+        literal = markup.literal(escape)
+        hint = f"Turn {markup.code(literal(turn.turn_id))}\n{markup.code(literal(cancel_command))}"
+        if spent + len(hint) + 1 <= budget:
+            lines.append(hint)
+            spent += len(hint) + 1
     did = [item for item in items if item.kind == "tool-activity"]
     for line in _doing(
         did, turn, escape=escape, budget=budget, tool_detail=tool_detail

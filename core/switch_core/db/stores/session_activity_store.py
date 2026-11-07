@@ -344,6 +344,38 @@ class AgentSessionActivityStore:
         )
         return result.scalar_one_or_none()
 
+    async def cancellation_targets(
+        self, session: AsyncSession, agent_id: str, room_id: str, target: str
+    ) -> list[AgentSessionActivityItem]:
+        """An exact id, otherwise queued prefix matches in this agent's room.
+
+        Two are enough to refuse an ambiguous prefix. Exact ended turns stay
+        discoverable so a full id gets a useful refusal, never cancellation.
+        """
+        turn = AgentSessionActivityItem
+        query = select(turn).where(
+            turn.agent_id == agent_id,
+            turn.room_id == room_id,
+            turn.item_id == TURN_ITEM_ID,
+        )
+        exact = list(
+            (
+                await session.execute(query.where(turn.turn_id == target).limit(2))
+            ).scalars()
+        )
+        if exact:
+            return exact
+        return list(
+            (
+                await session.execute(
+                    query.where(
+                        turn.status == "queued",
+                        turn.turn_id.startswith(target, autoescape=True),
+                    ).limit(2)
+                )
+            ).scalars()
+        )
+
     async def newest_running_turn(
         self, session: AsyncSession, agent_id: str
     ) -> AgentSessionActivityItem | None:

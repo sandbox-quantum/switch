@@ -864,6 +864,21 @@ export class HostedSession {
     return result;
   }
 
+  /** A replayed room cancellation keeps the generation under which it was first recorded. */
+  replayedCancellation(command: Command): Promise<Snapshot['commandStatuses'][number] | null> {
+    if (command.body.type !== 'turn.cancel' || command.epoch !== 'current')
+      return Promise.resolve(null);
+    const result = this.serial.then(() => {
+      const previous = this.commands.get(command.commandId);
+      if (!previous) return null;
+      if (!isDeepStrictEqual(previous, { ...command, epoch: previous.epoch }))
+        throw new Error('IDEMPOTENCY_CONFLICT');
+      return this.status(command.commandId);
+    });
+    this.serial = result.catch(() => {});
+    return result;
+  }
+
   /** Resolves once every command and outcome queued before it has been taken or refused. */
   barrier(): Promise<void> {
     const result = this.serial.then(() => {});
@@ -936,6 +951,7 @@ export class HostedSession {
         throw new Error('Session is not ready.');
     } else if (
       body.type !== 'turn.interrupt' &&
+      body.type !== 'turn.cancel' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
       body.type !== 'session.compact' &&
@@ -1129,6 +1145,37 @@ export class HostedSession {
           throw error;
         } finally {
           this.resetting = false;
+        }
+      } else if (body.type === 'turn.cancel') {
+        const original = this.commands.get(body.turnId);
+        if (!original || original.body.type !== 'message.send')
+          throw new Error('NOT_FOUND: this session has no such queued turn.');
+        if (
+          original.origin.actorId !== command.origin.actorId ||
+          original.origin.roomId !== command.origin.roomId
+        )
+          throw new Error('FORBIDDEN: only the original sender in the same room can cancel.');
+        if (this.activeTurn === body.turnId)
+          throw new Error('TURN_STARTED: the host has already claimed this turn; use !interrupt.');
+        const index = this.queue.findIndex((queued) => queued.commandId === body.turnId);
+        const cancelled = this.snapshot().turns.some(
+          (turn) => turn.turnId === body.turnId && turn.status === 'cancelled'
+        );
+        if (index < 0 && !cancelled)
+          throw new Error(
+            'NOT_QUEUED: this turn is no longer queued; use !interrupt if it is running.'
+          );
+        if (index >= 0) {
+          // Claim and removal cannot interleave: neither path awaits before owning the turn.
+          this.queue.splice(index, 1);
+          await this.inbox.append({ type: 'finished', commandId: body.turnId });
+          this.finished.add(body.turnId);
+          await this.publish({
+            type: 'turn.upsert',
+            turnId: body.turnId,
+            commandId: body.turnId,
+            status: 'cancelled',
+          });
         }
       } else if (body.type === 'turn.interrupt') {
         if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');

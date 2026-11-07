@@ -9,6 +9,7 @@ import {
   type SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
 import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
+import { commandSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { Handoff } from './handoff';
 import { Journal } from './journal';
@@ -846,26 +847,22 @@ export async function runAgentHost(
     };
     // Before any session is started below: a host asks for its tools as soon
     // as its provider comes up.
-    unbind.push(
-      links.answer(
-        agentId,
-        sessionToolAnswerer({
-          identity,
-          connectionId,
-          placements,
-          // Nothing is stated before the stream exists, so a move made then
-          // has not been taken by anyone: said rather than reported done.
-          publish: async () => {
-            if (!stream) throw new Error("this agent's stream to Switch is not open yet");
-            await publish();
-          },
-          // Without a stream there is no connection for Switch to have placed
-          // the session on either, so the move counts as not taken.
-          placementsNameCallRooms: () => stream?.placementsNameCallRooms ?? true,
-          redactions: links.redactions,
-        })
-      )
-    );
+    const answerSession = sessionToolAnswerer({
+      identity,
+      connectionId,
+      placements,
+      // Nothing is stated before the stream exists, so a move made then
+      // has not been taken by anyone: said rather than reported done.
+      publish: async () => {
+        if (!stream) throw new Error("this agent's stream to Switch is not open yet");
+        await publish();
+      },
+      // Without a stream there is no connection for Switch to have placed
+      // the session on either, so the move counts as not taken.
+      placementsNameCallRooms: () => stream?.placementsNameCallRooms ?? true,
+      redactions: links.redactions,
+    });
+    unbind.push(links.answer(agentId, answerSession));
     /**
      * Per session, the messages handed to it and not yet acknowledged, sent
      * down the IPC pipe one at a time and in order. Each is parked in the
@@ -1380,10 +1377,41 @@ export async function runAgentHost(
           `command ${command.commandId}`,
           restarted || relaunched ? HOST_START_MS : 0
         );
-        if (!taken)
+        if (!taken) {
           console.warn(
             `Dropped command ${command.commandId}: session ${sessionId} is not running here.`
           );
+          const parsed = commandSchema.safeParse(command);
+          if (
+            parsed.success &&
+            parsed.data.body.type === 'turn.cancel' &&
+            parsed.data.origin.roomId &&
+            (parsed.data.origin.threadId || parsed.data.origin.messageId)
+          ) {
+            const saved = await sessionConfig(sessionId);
+            if (saved)
+              try {
+                // Also bind the post to an existing message: if placement
+                // changes during the reply, Core rejects a thread outside
+                // the resolved room instead of posting into the wrong room.
+                await answerSession(
+                  { ...saved.session, root: sharedSessionRoot(sessionId) },
+                  {
+                    type: 'room-reply',
+                    roomId: parsed.data.origin.roomId,
+                    threadId: parsed.data.origin.threadId ?? parsed.data.origin.messageId,
+                    body:
+                      'I could not confirm cancellation. Check the session and turn before retrying; ' +
+                      'use !interrupt if it has started.',
+                  }
+                );
+              } catch (error) {
+                console.warn(
+                  `Could not tell room ${parsed.data.origin.roomId} that cancellation was not confirmed: ${String(error)}`
+                );
+              }
+          }
+        }
       },
       onEvent: (event) => {
         // Read as the event arrives rather than when its turn comes: what is

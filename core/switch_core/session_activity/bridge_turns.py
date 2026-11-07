@@ -46,7 +46,7 @@ class TurnView:
         (reports arriving out of order) reports no measurement rather than a
         negative one.
         """
-        if self.turn.status == "queued":
+        if self.turn.status in ("queued", "cancelled"):
             return None
         until = self.row.updated_at if self.ended else now
         elapsed = (until - self.started_at).total_seconds()

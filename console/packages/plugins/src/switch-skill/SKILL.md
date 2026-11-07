@@ -1112,6 +1112,16 @@ read context, re-assume the previous role if one was held, and confirm the resul
 to the requester in the original thread. If the role cannot be restored, report
 that limitation. Failed or unknown controls do not queue a success announcement.
 
+A sender can withdraw their queued message with `!cancel @agent <turn-id>`.
+The queued activity card shows the turn id and a command using its first eight
+characters. Switch resolves a prefix only among that agent's queued turns in
+that room and refuses zero or multiple matches; the full turn id also works.
+Only the original sender can cancel, and only before the host claims the turn,
+even if the card still says queued. Once claimed, use `!interrupt` instead.
+The original message stays in room history and the activity shows cancelled;
+deleting a message does not cancel its turn. A cancellation acknowledgement
+means the request was relayed, not that the host has already cancelled it.
+
 ## Tool index
 
 Every Switch tool you call in normal operation, one line each.

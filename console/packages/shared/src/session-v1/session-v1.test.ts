@@ -57,6 +57,42 @@ function transport() {
 }
 
 describe('session-v1 wire contract', () => {
+  it('validates turn cancellation and retains cancelled state through event and snapshot replay', () => {
+    const command = {
+      ...examples.platformAnswer,
+      body: { type: 'turn.cancel', turnId: 'queued-turn' },
+    };
+    expect(commandSchema.parse(command).body).toEqual(command.body);
+    for (const body of [
+      { type: 'turn.cancel' },
+      { type: 'turn.cancel', turnId: '' },
+      { ...command.body, force: true },
+    ])
+      expect(commandSchema.safeParse({ ...command, body }).success).toBe(false);
+    const replica = new SessionReplica(initial());
+    replica.apply(
+      event(11, {
+        type: 'turn.upsert',
+        turnId: 'queued-turn',
+        commandId: 'queued-turn',
+        status: 'queued',
+      })
+    );
+    const cancelled = event(12, {
+      type: 'turn.upsert',
+      turnId: 'queued-turn',
+      commandId: 'queued-turn',
+      status: 'cancelled',
+    });
+    replica.apply(cancelled);
+    replica.apply(cancelled);
+    expect(snapshotSchema.parse(replica.snapshot()).turns).toContainEqual(cancelled.body);
+    expect(
+      serverEventSchema.safeParse({ ...cancelled, body: { ...cancelled.body, status: 'deleted' } })
+        .success
+    ).toBe(false);
+  });
+
   it('accepts server approval expiry offsets in snapshots and events', () => {
     const expiresAt = '2026-09-11T15:30:00.123456+00:00';
     const snapshot = initial();

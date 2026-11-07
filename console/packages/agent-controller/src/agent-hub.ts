@@ -344,7 +344,17 @@ export class AgentHub {
       );
       return;
     }
-    const relayed = { ...command, sessionId: null, roomId } as unknown as SessionCommand;
+    const body = command.body as { type?: unknown } | undefined;
+    const sessionId = body?.type === 'turn.cancel' ? command.sessionId : null;
+    if (body?.type === 'turn.cancel' && (typeof sessionId !== 'string' || !sessionId)) {
+      this.deps.log.warn('Dropped a turn cancellation that names no session', {
+        agentId,
+        roomId,
+        commandId: command.commandId,
+      });
+      return;
+    }
+    const relayed = { ...command, sessionId, roomId } as unknown as SessionCommand;
     void Promise.resolve(host.deps.onSessionCommand(relayed)).catch((error: unknown) =>
       this.deps.log.error('The agent host failed a room control', {
         agentId,

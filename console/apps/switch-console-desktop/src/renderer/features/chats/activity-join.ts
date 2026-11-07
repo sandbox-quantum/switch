@@ -14,7 +14,7 @@ import { isControlAck } from './stop-rows';
  * requests show with it.
  */
 
-export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
+export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'cancelled' | 'error';
 
 export type TurnActivity = {
   sessionId: string;
@@ -184,6 +184,10 @@ export function placeTurns(
   messages.forEach((message, at) => {
     const turn = bound.get(message.messageId);
     if (!turn) return;
+    if (turn.status === 'cancelled') {
+      placed.set(message.messageId, [...(placed.get(message.messageId) ?? []), turn]);
+      return;
+    }
     let anchor = at;
     if (previous !== null) {
       const after = previous;
@@ -246,7 +250,7 @@ export function toolState(item: Pick<ChatActivityItem, 'status'>, turn: TurnStat
   if (item.status === 'completed') return 'done';
   if (item.status === 'failed') return 'failed';
   if (item.status === 'declined') return 'declined';
-  return turn === 'interrupted' || turn === 'error' ? 'failed' : 'running';
+  return turn === 'interrupted' || turn === 'cancelled' || turn === 'error' ? 'failed' : 'running';
 }
 
 /** Tool calls whose only output is the room message the user already sees. */
