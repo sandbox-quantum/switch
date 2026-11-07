@@ -5,7 +5,7 @@ import { commandSchema, hasOwnActivity } from '@switch-console/shared/session-v1
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
-import { ActivityReporter, type Report } from './activity-reporter';
+import { ActivityReporter, asToolActivity, type Report } from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { cliToolsBase, pinnedBinary } from './cli-binaries';
 import { HostWaker } from './handoff';
@@ -485,6 +485,17 @@ export async function runSharedHost(
       await send({ kind: 'activity', row });
       return true;
     };
+    // A server that predates `subagent` refuses a step row of that kind. It
+    // goes again as `tool-activity`, which the server already knows how to draw.
+    const sentAsToolActivity = async (item: Report, error: RequestError): Promise<boolean> => {
+      const fallback = asToolActivity(item);
+      if (!fallback || error.status !== 422) return false;
+      console.warn(
+        `Switch refused a subagent step, so it is reported to it as tool-activity: ${error.message}`
+      );
+      await send(fallback);
+      return true;
+    };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
@@ -505,6 +516,7 @@ export async function runSharedHost(
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
             if (await sentWithoutUsage(item, error)) continue;
+            if (await sentAsToolActivity(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
