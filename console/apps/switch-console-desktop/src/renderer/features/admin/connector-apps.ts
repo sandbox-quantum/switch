@@ -55,6 +55,7 @@ export interface SecretField {
 
 const GOOGLE = 'google-workspace';
 const AIRTABLE = 'airtable';
+const BOX = 'box';
 
 export function vendorName(app: Pick<ConnectorApp, 'slug' | 'kind' | 'name'>): string {
   if (app.kind === 'github_app') return 'GitHub';
@@ -324,6 +325,34 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === BOX)
+    return [
+      {
+        text: 'In the Box Admin Console, under Integrations, search for Box MCP server and enable it. Use a Box account your organization owns: whoever owns the credentials can delete them, and that stops every connection.',
+        copy: [],
+        link: { label: 'Open the Admin Console', href: 'https://app.box.com/master' },
+        items: [],
+      },
+      {
+        text: 'Hover over Box MCP server and choose Configure. Under Additional Configuration, choose Add Integration Credentials, name them, and open the new entry.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      redirectStep('Under Redirect URI, add each of these:', redirectUris(app)),
+      {
+        text: 'Under Access Scopes, tick root_readwrite. Leave the AI and Doc Gen scopes unticked.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: 'Save, and copy the Client ID and the Client Secret.',
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === AIRTABLE)
     return [
       {
@@ -438,6 +467,7 @@ const HELM_VALUES: Record<string, string> = {
   github: 'switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath',
   [GOOGLE]: 'switchCore.googleWorkspaceClientSecret',
   [AIRTABLE]: 'switchCore.airtableClientSecret',
+  [BOX]: 'switchCore.boxClientSecret',
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */
