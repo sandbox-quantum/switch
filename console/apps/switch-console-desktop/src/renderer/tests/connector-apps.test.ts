@@ -17,6 +17,7 @@ import {
   primaryAction,
   removeWarning,
   secretSummary,
+  secretFields,
   sentBackTo,
   setupInstructions,
   stateLabel,
@@ -525,5 +526,19 @@ describe("an app's details", () => {
       ['Sent back to', PUBLIC_URL],
       ['Need to reconnect', '2 people'],
     ]);
+  });
+});
+
+describe('public OAuth app credentials', () => {
+  it('requires only the fields the server advertises', () => {
+    expect(secretFields(app({ secrets: {} }))).toEqual([]);
+    expect(secretFields(NONE).map((field) => field.name)).toEqual(['client_secret']);
+    expect(secretFields(GITHUB).map((field) => field.name)).toEqual([
+      'client_secret',
+      'private_key',
+    ]);
+  });
+  it('does not offer to update a nonexistent public-client secret', () => {
+    expect(menuActions(app({ secrets: {} }))).toEqual(['switch_app', 'remove']);
   });
 });
