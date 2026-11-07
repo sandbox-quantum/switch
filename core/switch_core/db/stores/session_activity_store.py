@@ -344,6 +344,33 @@ class AgentSessionActivityStore:
         )
         return result.scalar_one_or_none()
 
+    async def turns_named(
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        room_id: str,
+        turn_id: str,
+        *,
+        prefix: bool,
+    ) -> list[AgentSessionActivityItem]:
+        """At most two matching turn rows, so ambiguous names are refused."""
+        result = await session.execute(
+            select(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                AgentSessionActivityItem.status == "queued"
+                if prefix
+                else literal(True),
+                AgentSessionActivityItem.turn_id.startswith(turn_id, autoescape=True)
+                if prefix
+                else AgentSessionActivityItem.turn_id == turn_id,
+            )
+            .limit(2)
+        )
+        return list(result.scalars())
+
     async def newest_running_turn(
         self, session: AsyncSession, agent_id: str
     ) -> AgentSessionActivityItem | None:

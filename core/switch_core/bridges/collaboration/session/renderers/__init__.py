@@ -41,6 +41,7 @@ TURN_STATE = {
     "running": "Working…",
     "completed": "Turn complete.",
     "interrupted": "Turn interrupted.",
+    "cancelled": "Turn cancelled before it started.",
     "error": "Turn ended with an error.",
 }
 
@@ -82,6 +83,8 @@ def turn_state(
     reported wherever the turn is.
     """
     state = TURN_STATE[turn.status]
+    if turn.status == "queued":
+        state += f" To cancel, use !cancel @agent-name {turn.turn_id[:8]}."
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
             return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"

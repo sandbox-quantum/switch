@@ -43,3 +43,14 @@ export function retryRefusal(reason: string | null): string {
     return "I couldn't try that again: my current session never worked on that message.";
   return `I couldn't try that again: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
 }
+
+/** Cancellation is confirmed by turn activity, never by the initial request. */
+export function cancelRefusal(reason: string | null): string {
+  if (reason?.includes('TURN_STARTED'))
+    return 'I already started that message. Use !interrupt to stop the running turn.';
+  if (reason?.includes('CANCEL_FORBIDDEN'))
+    return 'I could not cancel that message: only its original sender in the same room may cancel.';
+  if (reason?.includes('NOT_FOUND') || reason?.includes('NOT_QUEUED'))
+    return "I could not cancel that message: it is not waiting in this session's queue. Use !interrupt for work already running.";
+  return `I could not confirm cancellation: ${reason?.replace(/^Error: /, '') || 'the host outcome is unknown.'}`;
+}

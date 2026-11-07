@@ -100,7 +100,7 @@ export type HostBody =
   | {
       type: 'turn.upsert';
       turnId: Id;
-      status: 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
+      status: 'queued' | 'running' | 'completed' | 'interrupted' | 'cancelled' | 'error';
       commandId: Id | null;
     }
   | { type: 'item.upsert'; item: Item }
@@ -144,6 +144,8 @@ export type CommandBody =
       answer: { kind: 'approval'; optionId: Id } | { kind: 'questions'; answers: Answer[] };
     }
   | { type: 'turn.interrupt'; turnId: Id }
+  /** Withdraw an exact queued turn; the host owns the start/cancel cutoff. */
+  | { type: 'turn.cancel'; turnId: Id }
   | { type: 'session.stop' }
   | { type: 'session.reset' }
   | { type: 'session.compact' }

@@ -1340,6 +1340,18 @@ export async function runAgentHost(
       // which only Switch sees. Handed to the session's host like any other.
       onSessionCommand: async (relayed) => {
         const { requesterName, roomId, ...rest } = relayed;
+        if (
+          typeof rest.body === 'object' &&
+          rest.body !== null &&
+          'type' in rest.body &&
+          rest.body.type === 'turn.cancel' &&
+          (typeof rest.sessionId !== 'string' || !rest.sessionId || rest.sessionId === 'current')
+        ) {
+          console.warn(
+            `Dropped command ${rest.commandId}: cancellation requires its original session.`
+          );
+          return;
+        }
         const sessionId =
           rest.sessionId ?? (typeof roomId === 'string' ? placements.sessionIn(roomId) : null);
         if (!sessionId) {

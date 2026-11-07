@@ -2305,6 +2305,51 @@ it('hands a room control to the session working in its room, when Switch names o
   }
 });
 
+it('keeps cancellation on its captured session and refuses missing session routing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-cancel-routing-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const original = await existing(root, config);
+  const replacement = await existing(root, config);
+  await writeFile(
+    join(root, 'placements.json'),
+    JSON.stringify({ placements: { [replacement.sessionId]: 'room-a' } })
+  );
+  const hosts = sessionHosts();
+  await hosts.start(original.sessionRoot);
+  await hosts.start(replacement.sessionRoot);
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    const command = {
+      sessionId: original.sessionId,
+      roomId: 'room-a',
+      commandId: 'cancel',
+      body: { type: 'turn.cancel', turnId: 'queued' },
+    };
+    await streams[0]!.onSessionCommand!(command);
+    await streams[0]!.onSessionCommand!({ ...command, sessionId: null, commandId: 'missing' });
+    expect(hosts.to(original.sessionRoot)).toHaveLength(1);
+    expect(hosts.to(original.sessionRoot)[0]).toMatchObject({
+      command: { sessionId: original.sessionId, commandId: 'cancel' },
+    });
+    expect(hosts.to(replacement.sessionRoot)).toHaveLength(0);
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
 it('refuses to run without being the parent of its sessions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-detached-'));
   roots.push(root);

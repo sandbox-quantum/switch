@@ -2186,3 +2186,155 @@ describe('retrying a room message', () => {
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
 });
+
+function cancelMessage(commandId: string, turnId: string): Command {
+  return { ...message(commandId), body: { type: 'turn.cancel', turnId } } as Command;
+}
+
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
+  'withdraws a queued %s message without calling that provider for it',
+  async (provider) => {
+    const { host, adapter, emit } = await start(provider);
+    await host.command(message('working'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+    await host.command(message('withdraw'));
+    await host.command(message('keep'));
+    const receipt = await host.command(cancelMessage('cancel-withdraw', 'withdraw'));
+    expect(receipt.status).toBe('applied');
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'withdraw')?.status).toBe(
+      'cancelled'
+    );
+    expect(host.snapshot().items.some((item) => item.itemId === 'user-withdraw')).toBe(true);
+    emit({ type: 'turn.completed', turnId: 'working', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(adapter.sendTurn).mock.calls.map(([input]) => input.turnId)).toEqual([
+      'working',
+      'keep',
+    ]);
+    expect(adapter.interruptTurn).not.toHaveBeenCalled();
+  }
+);
+
+it.each(['first', 'middle', 'last'] as const)(
+  'removes the %s waiting message while preserving FIFO',
+  async (position) => {
+    const { host, adapter, emit } = await start('claude');
+    await host.command(message('working'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+    for (const id of ['first', 'middle', 'last']) await host.command(message(id));
+    await host.command(cancelMessage('cancel', position));
+    let previous = 'working';
+    for (const id of ['first', 'middle', 'last'].filter((id) => id !== position)) {
+      emit({ type: 'turn.completed', turnId: previous, outcome: 'completed', usage: [] });
+      await until(() => expect(vi.mocked(adapter.sendTurn).mock.calls.at(-1)?.[0].turnId).toBe(id));
+      previous = id;
+    }
+    expect(vi.mocked(adapter.sendTurn).mock.calls.map(([input]) => input.turnId)).toEqual([
+      'working',
+      ...['first', 'middle', 'last'].filter((id) => id !== position),
+    ]);
+  }
+);
+
+it.each([{ actorId: 'other' }, { roomId: 'other-room' }])(
+  'refuses cancellation with another origin %j',
+  async (change) => {
+    const { host, adapter, emit } = await start('claude');
+    await host.command(message('working'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+    await host.command(message('queued'));
+    const command = cancelMessage('cancel', 'queued');
+    command.origin = { ...command.origin, ...change };
+    expect(await host.command(command)).toMatchObject({
+      status: 'rejected',
+      message: expect.stringContaining('original sender'),
+    });
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'queued')?.status).toBe('queued');
+    emit({ type: 'turn.completed', turnId: 'working', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  }
+);
+
+it('refuses claimed, completed and unknown targets without marking them cancelled', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('working'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+  expect(await host.command(cancelMessage('cancel-working', 'working'))).toMatchObject({
+    status: 'rejected',
+    message: expect.stringContaining('!interrupt'),
+  });
+  emit({ type: 'turn.completed', turnId: 'working', outcome: 'completed', usage: [] });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  expect((await host.command(cancelMessage('cancel-ended', 'working'))).status).toBe('rejected');
+  expect((await host.command(cancelMessage('cancel-missing', 'missing'))).status).toBe('rejected');
+  expect(host.snapshot().turns.some((turn) => turn.status === 'cancelled')).toBe(false);
+});
+
+it('preserves cancellation and its exact receipt across restart without rerunning the turn', async () => {
+  const { host, root } = await start('claude');
+  await host.command(message('working'));
+  await host.command(message('queued'));
+  const command = cancelMessage('cancel', 'queued');
+  const receipt = await host.command(command);
+  expect(receipt.status).toBe('applied');
+  expect(await host.command(structuredClone(command))).toEqual(receipt);
+  await expect(
+    host.command({ ...command, origin: { ...command.origin, actorId: 'other' } })
+  ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
+  await expect(
+    host.command({ ...command, body: { type: 'turn.cancel', turnId: 'working' } } as Command)
+  ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
+  await host.shutdown();
+  const fixture = setup('claude');
+  const recovered = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(recovered);
+  expect(recovered.snapshot().turns.find((turn) => turn.turnId === 'queued')?.status).toBe(
+    'cancelled'
+  );
+  expect(await recovered.command(command)).toEqual(receipt);
+  expect(await recovered.replayRoomCancellation({ ...command, epoch: 'current' })).toEqual(receipt);
+  await expect(
+    recovered.replayRoomCancellation({
+      ...command,
+      epoch: 'current',
+      origin: { ...command.origin, actorId: 'other' },
+    })
+  ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
+});
+
+it('refuses cancellation after claim while attachment staging is still pending', async () => {
+  const { adapter, config } = setup('codex');
+  let release!: (files: Array<{ path: string; mimeType: string }>) => void;
+  const transfer = new Promise<Array<{ path: string; mimeType: string }>>((resolve) => {
+    release = resolve;
+  });
+  const stageAttachments = vi.fn(() => transfer);
+  const root = await mkdtemp(join(tmpdir(), 'sdk-cancel-stage-'));
+  roots.push(root);
+  const host = await startHost(root, { ...config, stageAttachments }, adapter);
+  hosts.push(host);
+  await until(() =>
+    expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('text/plain')
+  );
+  const command = message('staging');
+  if (command.body.type !== 'message.send') throw new Error('Expected message');
+  command.body.attachments = [
+    { attachmentId: randomUUID(), name: 'note.txt', mimeType: 'text/plain', bytes: 4 },
+  ];
+  await host.command(command);
+  await until(() => expect(stageAttachments).toHaveBeenCalledOnce());
+  expect(adapter.sendTurn).not.toHaveBeenCalled();
+  try {
+    expect(await host.command(cancelMessage('too-late', 'staging'))).toMatchObject({
+      status: 'rejected',
+      message: expect.stringContaining('!interrupt'),
+    });
+  } finally {
+    release([{ path: '/execution-host/note.txt', mimeType: 'text/plain' }]);
+  }
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'staging')?.status).not.toBe(
+    'cancelled'
+  );
+});

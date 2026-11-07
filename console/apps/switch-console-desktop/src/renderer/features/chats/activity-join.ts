@@ -14,7 +14,7 @@ import { isControlAck } from './stop-rows';
  * requests show with it.
  */
 
-export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
+export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'cancelled' | 'error';
 
 export type TurnActivity = {
   sessionId: string;
@@ -185,7 +185,7 @@ export function placeTurns(
     const turn = bound.get(message.messageId);
     if (!turn) return;
     let anchor = at;
-    if (previous !== null) {
+    if (previous !== null && turn.status !== 'cancelled') {
       const after = previous;
       const reply = messages.findIndex((each, index) => index > after && shown(each));
       anchor = Math.max(at, reply === -1 ? previous : reply);
@@ -198,7 +198,10 @@ export function placeTurns(
     }
     const key = messages[anchor].messageId;
     placed.set(key, [...(placed.get(key) ?? []), turn]);
-    previous = turn.status === 'interrupted' || turn.status === 'error' ? null : anchor;
+    // A cancelled queued message never produces a reply. Keep the prior turn's
+    // reply as the anchor for the next real queued turn, rather than consuming it.
+    if (turn.status !== 'cancelled')
+      previous = turn.status === 'interrupted' || turn.status === 'error' ? null : anchor;
   });
   return placed;
 }
@@ -246,7 +249,7 @@ export function toolState(item: Pick<ChatActivityItem, 'status'>, turn: TurnStat
   if (item.status === 'completed') return 'done';
   if (item.status === 'failed') return 'failed';
   if (item.status === 'declined') return 'declined';
-  return turn === 'interrupted' || turn === 'error' ? 'failed' : 'running';
+  return turn === 'interrupted' || turn === 'cancelled' || turn === 'error' ? 'failed' : 'running';
 }
 
 /** Tool calls whose only output is the room message the user already sees. */

@@ -116,3 +116,21 @@ it('shows a single call with no group line', async () => {
   expect(el.textContent).not.toMatch(/tool calls?/);
   expect(el.textContent).toContain('ls');
 });
+
+it('keeps an empty host-confirmed cancelled turn visible without thinking or retry controls', async () => {
+  const el = await render([item('turn', 'cancelled')]);
+  expect(el.querySelector('[role="status"]')?.textContent).toContain('Cancelled before starting');
+  expect(el.textContent).not.toContain('Thinking');
+  expect(el.textContent).not.toContain('Queued');
+  expect(
+    [...el.querySelectorAll('button')].some((button) =>
+      /retry|cancel/i.test(button.textContent ?? '')
+    )
+  ).toBe(false);
+});
+
+it('does not label a still-queued turn as cancelled', async () => {
+  const el = await render([item('turn', 'queued')]);
+  expect(el.textContent).toContain('Queued');
+  expect(el.textContent).not.toContain('Cancelled');
+});

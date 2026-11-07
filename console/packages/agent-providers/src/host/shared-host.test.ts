@@ -1577,3 +1577,59 @@ it('tells the room once when every post of a turn was refused, and not when one 
     expect(await host.stop()).toBeNull();
   }
 }, 20000);
+
+it.each([422, 401, 500])(
+  'only downgrades cancelled activity for a 422 response (server returns %s)',
+  async (status) => {
+    const host = await start({ rooms: true });
+    try {
+      await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Working') });
+      await until(() => expect(host.turns).toHaveLength(1));
+      await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'Queued') });
+      const rows = () =>
+        host.switchCore.calls
+          .filter((call) => call.path.endsWith('/activity'))
+          .map((call) => call.body as { turn_id: string; status: string });
+      await until(() =>
+        expect(
+          rows().some((row) => row.status === 'queued' && row.turn_id !== host.turns[0]!.turnId)
+        ).toBe(true)
+      );
+      const target = rows().find(
+        (row) => row.status === 'queued' && row.turn_id !== host.turns[0]!.turnId
+      )!.turn_id;
+      host.switchCore.state.cancelledStatus = status;
+      const command: Command = {
+        ...relayed('current', 'cancel-queued', { type: 'turn.cancel', turnId: target }),
+        origin: {
+          actorId: '@person:test',
+          surface: 'switch-web',
+          roomId: 'room',
+          threadId: null,
+          messageId: 'cancel-message',
+        },
+      };
+      await host.parent.ask({ type: 'command', command, requesterName: null });
+      await until(() =>
+        expect(rows().some((row) => row.turn_id === target && row.status === 'cancelled')).toBe(
+          true
+        )
+      );
+      if (status === 422)
+        await until(() =>
+          expect(rows().some((row) => row.turn_id === target && row.status === 'interrupted')).toBe(
+            true
+          )
+        );
+      host.switchCore.state.cancelledStatus = null;
+      await host.stop();
+      expect(rows().some((row) => row.turn_id === target && row.status === 'interrupted')).toBe(
+        status === 422
+      );
+      expect(host.turns).toHaveLength(1);
+    } finally {
+      host.switchCore.state.cancelledStatus = null;
+      await host.stop();
+    }
+  }
+);
