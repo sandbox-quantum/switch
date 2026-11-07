@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "grafana",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "grafana",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["grafana"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +179,25 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_grafana_entry_signs_in_and_names_where_to_remove_access():
+    definition = CATALOG["grafana"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration) == ("oauth", "dynamic")
+    # Grafana names no revocation endpoint, so people remove access themselves.
+    assert oauth.revocation_discovered is False
+    assert oauth.remove_access is not None and "Grafana" in oauth.remove_access
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("grafana", "https://mcp.grafana.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert "grafana:read" in definition.access.read.scopes
+    assert "grafana:write" in definition.access.write.scopes
+    assert "grafana:write" not in definition.access.read.scopes
+    assert definition.auth.identity is not None
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
