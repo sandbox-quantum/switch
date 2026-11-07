@@ -16,6 +16,9 @@ from switch_core.bridges.agent.operations import (
     my_context as _my_context,  # noqa: E402,F401
 )
 from switch_core.bridges.agent.operations import (
+    room_schedules as _room_schedules,  # noqa: E402,F401
+)
+from switch_core.bridges.agent.operations import (
     template_status as _template_status,  # noqa: E402,F401
 )
 from switch_core.bridges.agent.operations.registry import (

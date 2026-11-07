@@ -5016,6 +5016,92 @@ class TenantDataMove(TenantScoped, Base):
 # schema that has none. See `db/rls_ddl.py` for the DDL and why it takes this
 # shape; a migration carries its own frozen copy for the same reason the
 # notify trigger's migration does.
+class RoomSchedule(TenantScoped, Base):
+    """A room's durable automation; advancing it and posting are one transaction."""
+
+    __tablename__ = "room_schedules"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_room_schedules_tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "author_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            ondelete="CASCADE",
+            name="fk_room_schedules_author_agent",
+        ),
+        ForeignKeyConstraint(
+            ["room_id", "tenant_id"],
+            ["rooms.id", "rooms.tenant_id"],
+            ondelete="CASCADE",
+            name="fk_room_schedules_room",
+        ),
+        CheckConstraint("length(trim(body)) > 0", name="ck_room_schedules_body"),
+        Index(
+            "ix_room_schedules_due",
+            "tenant_id",
+            "next_run_at",
+            postgresql_where=text("NOT paused"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    author_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    author_agent_id: Mapped[str | None] = mapped_column(Text)
+    cron: Mapped[str | None] = mapped_column(Text)
+    timezone: Mapped[str] = mapped_column(Text, nullable=False, default="UTC")
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class RoomScheduleTarget(TenantScoped, Base):
+    __tablename__ = "room_schedule_targets"
+    __table_args__ = (
+        Index("ix_room_schedule_targets_tenant_schedule", "tenant_id", "schedule_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "schedule_id"],
+            ["room_schedules.tenant_id", "room_schedules.id"],
+            ondelete="CASCADE",
+            name="fk_room_schedule_targets_schedule",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            ondelete="CASCADE",
+            name="fk_room_schedule_targets_agent",
+        ),
+    )
+    schedule_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+
+
+class RoomScheduleRun(TenantScoped, Base):
+    __tablename__ = "room_schedule_runs"
+    __table_args__ = (
+        Index("ix_room_schedule_runs_tenant_schedule", "tenant_id", "schedule_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "schedule_id"],
+            ["room_schedules.tenant_id", "room_schedules.id"],
+            ondelete="CASCADE",
+            name="fk_room_schedule_runs_schedule",
+        ),
+        UniqueConstraint(
+            "schedule_id", "scheduled_for", name="uq_room_schedule_runs_occurrence"
+        ),
+    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    schedule_id: Mapped[str] = mapped_column(Text, nullable=False)
+    scheduled_for: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    message_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 attach_row_level_security(Base.metadata)
 
 # And the seven functions that are exempt from those policies, on the same

@@ -58,6 +58,10 @@ import type {
   SlackTokensChecked,
 } from '@shared/core/switch-servers/own-app-setup';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
+import type {
+  RemoteRoomSchedule,
+  RoomScheduleInput,
+} from '@shared/core/switch-servers/room-schedules';
 import {
   SERVICE_CALLBACK_PATH,
   type ServiceFlowStart,
@@ -3431,6 +3435,88 @@ export async function syncRoomName(
     method: 'POST',
   });
   return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+type RoomScheduleJson = {
+  id: string;
+  author_agent_id?: string | null;
+  body: string;
+  agent_ids: string[];
+  timezone: string;
+  cron: string | null;
+  next_run_at: string | null;
+  paused: boolean;
+  last_error: string | null;
+  last_run_at: string | null;
+};
+
+function mapRoomSchedule(row: RoomScheduleJson): RemoteRoomSchedule {
+  return {
+    id: row.id,
+    authorAgentId: row.author_agent_id ?? null,
+    body: row.body,
+    agentIds: row.agent_ids,
+    timezone: row.timezone,
+    cron: row.cron,
+    nextRunAt: row.next_run_at,
+    paused: row.paused,
+    lastError: row.last_error,
+    lastRunAt: row.last_run_at,
+  };
+}
+
+function schedulesPath(roomId: string, id?: string): string {
+  return `/rooms/${encodeURIComponent(roomId)}/schedules${id ? `/${encodeURIComponent(id)}` : ''}`;
+}
+
+export async function fetchRoomSchedules(
+  server: SwitchServer,
+  roomId: string
+): Promise<RemoteRoomSchedule[]> {
+  const res = await gatewayFetch(server, schedulesPath(roomId), { authenticated: true });
+  return ((await res.json()) as RoomScheduleJson[]).map(mapRoomSchedule);
+}
+
+export async function saveRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  input: RoomScheduleInput,
+  id?: string
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, schedulesPath(roomId, id), {
+    authenticated: true,
+    method: id ? 'PUT' : 'POST',
+    body: {
+      body: input.body,
+      agent_ids: input.agentIds,
+      timezone: input.timezone,
+      cron: input.cron,
+      run_at: input.runAt,
+    },
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+export async function pauseRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  id: string,
+  paused: boolean
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, schedulesPath(roomId, id), {
+    authenticated: true,
+    method: 'PATCH',
+    body: { paused },
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+export async function deleteRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  id: string
+): Promise<void> {
+  await gatewayFetch(server, schedulesPath(roomId, id), { authenticated: true, method: 'DELETE' });
 }
 
 /** One room in full (`GET /rooms/{id}`) — what its configuration page reads. */

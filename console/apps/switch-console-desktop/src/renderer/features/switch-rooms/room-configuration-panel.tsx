@@ -24,6 +24,7 @@ import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-server
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { roomTitle } from './room-labels';
 import { roomDetailKey, useRoomDetail } from './room-participants';
+import { RoomSchedulesSection } from './room-schedules-section';
 import {
   AccessAndGroupFields,
   ArchiveRoomSection,
@@ -79,6 +80,11 @@ const ChatConfiguration = observer(function ChatConfiguration({
                 canManage: chat.canManage,
                 canUnlink: chat.canManage,
               }}
+            />
+            <RoomSchedulesSection
+              key={`schedules-${chat.roomId}`}
+              workspaceId={workspaceId}
+              room={detail.data}
             />
             <RoomInfoSection room={detail.data} />
           </>
@@ -195,6 +201,11 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             administersWorkspace={administersWorkspaceById(workspaceId)}
           />
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
+          <RoomSchedulesSection
+            key={`schedules-${room.id}`}
+            workspaceId={workspaceId}
+            room={room}
+          />
           <RoomInfoSection room={room} />
           <section
             id="room-settings-archive"
