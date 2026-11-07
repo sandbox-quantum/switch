@@ -1980,7 +1980,7 @@ class CollaborationCore:
             return
         for agent in filter(needs_disclosure, agents):
             logger.warning(
-                "Agent %s joined channel %s and the platform did not report who "
+                "Agent %s joined channel %s without the platform reporting who "
                 "added it, so its addressing policy could not be checked",
                 agent.name,
                 channel_id,

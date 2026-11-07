@@ -907,6 +907,16 @@ class RoomService:
                 and channel_type != "direct"
             ):
                 await self._retire_channel(room.id, bridge_id, external_channel_id)
+            # The transport room was made for this attempt and its row never
+            # committed, so nothing can reach it now: take it back too.
+            try:
+                await self._provisioning.delete_room(transport_room_id)
+            except Exception:
+                logger.warning(
+                    "Could not delete transport room %s after a refused invite",
+                    transport_room_id,
+                    exc_info=True,
+                )
             raise
         finally:
             if collaboration_core and external_channel_id:

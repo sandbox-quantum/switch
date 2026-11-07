@@ -154,9 +154,21 @@ RemovalReason = Literal["access", "unlisted"]
 # Long enough for a welcome with tips; a greeting is not a document.
 GREETING_MAX_CHARS = 4000
 
-# The request id of an owner's private notices chat. Stable, so every notice
-# about an agent lands in the same conversation.
+# The request id of an owner's private notices chat. Stable per owner, so every
+# notice about their agents lands in the same conversation.
 OWNER_NOTICES_REQUEST_ID = "switch-owner-notices"
+
+
+def owner_notices_request_id(owner_id: str) -> str:
+    """The request id for one owner's notices chat.
+
+    The unique index behind it is per `(tenant, request id)`, so it has to name
+    the owner: a shared constant would allow only one owner's notices chat in a
+    workspace and make every other owner's notice fail.
+    """
+    return f"{OWNER_NOTICES_REQUEST_ID}:{owner_id}"
+
+
 RoomControl = Literal["interrupt", "reset", "compact", "retry"]
 
 
@@ -1179,7 +1191,7 @@ class ChatService:
                         read_visibility="private",
                         write_visibility="private",
                         created_by_kind="user",
-                        chat_operation_id=OWNER_NOTICES_REQUEST_ID,
+                        chat_operation_id=owner_notices_request_id(owner_id),
                     ),
                     invited_by=Inviter.person(owner_id),
                 )
@@ -1213,7 +1225,7 @@ class ChatService:
         ).scalars()
         for room in rooms:
             if (room.metadata_ or {}).get("chat_operation_id") == (
-                OWNER_NOTICES_REQUEST_ID
+                owner_notices_request_id(owner_id)
             ):
                 return room
         return None

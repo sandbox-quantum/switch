@@ -494,6 +494,8 @@ class TestCreateRoom:
         assert calls == 2
         assert [room.name for room in await _rooms(session_factory)] == ["room"]
         assert await _members(session_factory, seeded.room_id) == []
+        # The transport room made for the attempt goes with it.
+        assert _provisioning(seeded.service).deleted == ["!room-1:test"]
 
 
 class TestRefusedAgents:
