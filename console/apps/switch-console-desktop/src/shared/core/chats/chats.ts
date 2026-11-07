@@ -13,9 +13,10 @@ export const chatAgentSchema = z.object({
   displayName: z.string().nullable(),
   iconUrl: z.string().nullable(),
   provider: z.string().nullable(),
-  alias: z.string().nullable(),
-  ownerName: z.string().nullable(),
-  ownedByViewer: z.boolean(),
+  // The rest default for a server older than group chats, which does not send them.
+  alias: z.string().nullable().default(null),
+  ownerName: z.string().nullable().default(null),
+  ownedByViewer: z.boolean().default(false),
 });
 export type ChatAgent = z.infer<typeof chatAgentSchema>;
 
@@ -29,9 +30,10 @@ export const chatSummarySchema = z.object({
   canManage: z.boolean(),
   /** The viewer owns one of the agents, which keeps them in the room: they cannot leave it. */
   ownsAgent: z.boolean().default(false),
-  /** The people in the chat, by user id, sorted. */
-  memberUserIds: z.array(z.string()),
-  memberCount: z.number().int(),
+  /** The people in the chat, by user id, sorted; empty from a server older than group chats. */
+  memberUserIds: z.array(z.string()).default([]),
+  /** 0 from a server older than group chats. */
+  memberCount: z.number().int().default(0),
   /** Messages since the viewer last read the chat; 0 from a server older than read positions. */
   unreadCount: z.number().int().default(0),
   lastMessage: z
@@ -84,13 +86,15 @@ export const chatMessageSchema = z.object({
   threadRootId: z.string().nullable(),
   attachments: z.array(chatAttachmentSchema),
   clientTxn: z.string().nullable(),
-  namedAgentIds: z.array(z.string()),
+  /** The agents the message names; empty from a server older than group chats. */
+  namedAgentIds: z.array(z.string()).default([]),
   /** The people the message mentions; empty from a server older than people mentions. */
   namedUserIds: z.array(z.string()).default([]),
   /** Each mention's stretch of the body and whom it names; empty for older messages and servers. */
   mentions: z.array(chatMentionSpanSchema).default([]),
-  threadReplyCount: z.number().int(),
-  threadLastReplySeq: z.number().int().nullable(),
+  /** 0 and null from a server older than group chats. */
+  threadReplyCount: z.number().int().default(0),
+  threadLastReplySeq: z.number().int().nullable().default(null),
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 

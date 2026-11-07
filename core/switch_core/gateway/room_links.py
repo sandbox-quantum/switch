@@ -11,6 +11,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.auth import (
     get_current_user,
     get_tenant_is_admin,
+    readable_room_ids,
     require_room_access,
 )
 from switch_core.gateway.dependencies import (
@@ -32,9 +33,14 @@ router = APIRouter()
 async def get_room_link_graph(
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
-    _user: Annotated[User, Depends(get_current_user)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomGraphResponse:
-    payload = await resource_service.get_room_link_graph(session)
+    readable = await room_store.list_readable(
+        session, user.id, is_admin=is_admin, include_archived=True
+    )
+    payload = await resource_service.get_room_link_graph(session, readable)
     return RoomGraphResponse(**payload)
 
 
@@ -49,7 +55,10 @@ async def list_linked_rooms(
 ) -> list[LinkedRoomDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
     rows = await resource_service.list_linked_rooms_for_room(session, room_id)
-    return [LinkedRoomDetail(**row) for row in rows]
+    readable = await readable_room_ids(session, room_store, user, is_admin)
+    return [
+        LinkedRoomDetail(**row) for row in rows if row["target_room_id"] in readable
+    ]
 
 
 @router.get("/rooms/{room_id}/linked-rooms/inbound")
@@ -63,7 +72,12 @@ async def list_inbound_linked_rooms(
 ) -> list[InboundLinkedRoomDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
     rows = await resource_service.list_inbound_linked_rooms(session, room_id)
-    return [InboundLinkedRoomDetail(**row) for row in rows]
+    readable = await readable_room_ids(session, room_store, user, is_admin)
+    return [
+        InboundLinkedRoomDetail(**row)
+        for row in rows
+        if row["source_room_id"] in readable
+    ]
 
 
 @router.post("/rooms/{room_id}/linked-rooms", status_code=201)
@@ -77,6 +91,10 @@ async def create_linked_room(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> LinkedRoomDetail:
     await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    # The link shows the target's name and description, so it must be readable.
+    await require_room_access(
+        session, room_store, req.target_room_id, user, "read", is_admin
+    )
     try:
         row = await resource_service.attach_linked_room(
             session,

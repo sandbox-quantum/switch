@@ -134,6 +134,70 @@ export type OwnedMachine = ManagedMachine & {
   local: MachineLocal;
 };
 
+/** A provider on a machine with its version and when the machine last checked it. */
+export type MachineProviderDetail = MachineProvider & {
+  version: string | null;
+  /**
+   * Where its sign-in comes from: the machine's own (`local`) or one given to
+   * it from Switch Console (`sealed`); null when it has none or did not say.
+   */
+  authSource: 'local' | 'sealed' | null;
+  checkedAt: string | null;
+};
+
+/** An agent a machine runs, as the machine last saw it. */
+export type MachineAgentReport = {
+  agentId: string;
+  process: string;
+  attached: boolean;
+  activeSessions: number;
+  restarts10m: number;
+  since: string | null;
+  reason: string | null;
+  detail: string | null;
+};
+
+/**
+ * One of the owner's machines as the Machines page shows it: everything Switch
+ * holds about it and its last status report, revoked machines included.
+ */
+export type MachineDetail = Omit<OwnedMachine, 'providers'> & {
+  description: string | null;
+  providers: MachineProviderDetail[];
+  platform: { os: string; arch: string; osVersion: string } | null;
+  /** The controller version it last reported. */
+  version: string | null;
+  /** Its connection as Switch last recorded it: the current one, or the last; null when it never connected. */
+  connection: {
+    connectedAt: string;
+    disconnectedAt: string | null;
+    disconnectReason: string | null;
+  } | null;
+  /** The controller release Switch names for it; null when it names none, as for one Console updates. */
+  release: { wanted: string; running: string | null; current: boolean } | null;
+  /** Who moves its controller onto another release; null when it has not said. */
+  updatedBy: 'self' | 'console' | null;
+  /** Why it does not run the release Switch names yet; null when it does or has not said. */
+  update: { target: string; state: string; problem: string | null } | null;
+  /** The machine's resources as last reported; null before it has. */
+  resources: {
+    diskFreeBytes: number;
+    diskTotalBytes: number;
+    memFreeBytes: number;
+    memTotalBytes: number;
+    sessionsRunning: number;
+    sessionsMax: number;
+  } | null;
+  /** Each agent it runs, as it last reported; empty before it has. */
+  agents: MachineAgentReport[];
+  /** When it last reported its status. */
+  lastSeenAt: string | null;
+  /** When its last status report was observed on the machine. */
+  observedAt: string | null;
+  createdAt: string | null;
+  revokedAt: string | null;
+};
+
 /** The settings a managed agent's page changes; a field left out stays as the server holds it. */
 export type ManagedAgentChanges = {
   definition: Partial<ManagedAgentView['definition']>;

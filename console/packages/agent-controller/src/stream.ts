@@ -29,6 +29,7 @@ import {
   type AgentWarmFrame,
   agentWarmFrameSchema,
   assignmentChangedSchema,
+  callResultSchema,
   type ConnectionState,
   connectionStateSchema,
   type ControllerConnection,
@@ -38,8 +39,9 @@ import {
   type OperationPending,
   operationPendingSchema,
 } from './schemas';
+import type { SocketCalls } from './socket-calls';
 
-/** The schema for each frame the controller's socket carries, by its `event`. */
+/** The schema for each frame of the stream, by its `event`; each is handed to `onFrame`. */
 export const STREAM_FRAME_SCHEMAS = {
   connection_state: connectionStateSchema,
   evicted: evictedSchema,
@@ -54,6 +56,12 @@ export const STREAM_FRAME_SCHEMAS = {
   'assignment.changed': assignmentChangedSchema,
   'operation.pending': operationPendingSchema,
   'credential.revoked': credentialRevokedSchema,
+} as const satisfies Record<string, z.ZodType>;
+
+/** Every frame the controller's socket carries down: the stream's, and the answers to calls. */
+export const SOCKET_FRAME_SCHEMAS = {
+  ...STREAM_FRAME_SCHEMAS,
+  'call.result': callResultSchema,
 } as const satisfies Record<string, z.ZodType>;
 
 export type ControllerFrame =
@@ -103,6 +111,8 @@ export type ControllerStreamOptions = {
   maxBackoffMs: number;
   /** Jitter source in [0, 1); injectable for tests. */
   random: () => number;
+  /** Takes the agents' operations as calls while a socket that takes them is open. */
+  calls?: SocketCalls;
 };
 
 /**
@@ -310,6 +320,23 @@ class ControllerStream {
       if (parsed.event === 'connection_state' && typeof beat === 'number' && beat > 0)
         idleMs = Math.max(this.options.idleTimeoutMs, beat * 3000);
       touch();
+      // Calls are answered as their answers arrive, not behind the stream's frames.
+      if (parsed.event === 'call.result') {
+        const result = callResultSchema.safeParse(parsed.data);
+        if (result.success) this.options.calls?.answer(result.data);
+        else
+          this.options.log.error('Dropped a call answer that does not match the protocol', {
+            error: result.error.message,
+          });
+        return;
+      }
+      if (parsed.event === 'connection_state') {
+        const offered = connectionStateSchema.shape.calls.safeParse(
+          (parsed.data as { calls?: unknown } | null | undefined)?.calls
+        );
+        if (offered.success && offered.data)
+          this.options.calls?.open((text) => socket.send(text), offered.data.max_in_flight);
+      }
       if (parsed.event === 'ping') {
         socket.send(JSON.stringify({ type: 'pong', cursors: this.options.confirmed() }));
         return;
@@ -369,6 +396,7 @@ class ControllerStream {
       if (!this.options.signal.aborted)
         this.options.log.warn('The controller socket closed; reconnecting.', { code: closedWith });
     } finally {
+      this.options.calls?.close('The controller socket closed before Switch answered the call.');
       if (idle) clearTimeout(idle);
       socket.removeEventListener('message', onMessage);
       socket.removeEventListener('close', onClose);

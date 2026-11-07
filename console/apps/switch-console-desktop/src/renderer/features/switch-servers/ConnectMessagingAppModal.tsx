@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from '@renderer/lib/components/bridge-platform';
@@ -50,6 +50,8 @@ import { administersWorkspaceInScope } from './workspace-admin';
 type ConnectMessagingAppModalArgs = {
   /** Attach to this server instead of the active one. */
   serverId?: string;
+  /** Only this platform (`slack`), chosen already: the person picked it before opening the dialog. */
+  platform?: string;
   /** Run however the dialog goes away. A chat connected from it after the
    *  first lands on no signal Switch Console receives, so this is when to
    *  look for it. */
@@ -70,6 +72,7 @@ type Props = BaseModalProps<ConnectedApp> & ConnectMessagingAppModalArgs;
 
 export const ConnectMessagingAppModal = observer(function ConnectMessagingAppModal({
   serverId: overrideServerId,
+  platform,
   onClosed,
   onSuccess,
   onClose,
@@ -133,8 +136,12 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     queryFn: () => rpc.workspaces.listMessagingApps(workspaceId as string),
     enabled: workspaceId !== null && isAdmin,
   });
-  const installable = installableQuery.data?.installable ?? [];
-  const claimable = (installableQuery.data?.claimable ?? []).filter((c) => c.canAddChat);
+  const installable = (installableQuery.data?.installable ?? []).filter(
+    (p) => platform === undefined || p === platform
+  );
+  const claimable = (installableQuery.data?.claimable ?? []).filter(
+    (c) => c.canAddChat && (platform === undefined || c.platform === platform)
+  );
   const [useOwnApp, setUseOwnApp] = useState(false);
   // The platform whose link and code are on screen. From then on the dialog is
   // about that one chat: the other apps are a different errand, and for a
@@ -191,6 +198,11 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     },
     [types]
   );
+
+  useEffect(() => {
+    if (platform !== undefined && typeKey === null && types.some((t) => t.key === platform))
+      handleTypeChange(platform);
+  }, [platform, typeKey, types, handleTypeChange]);
 
   const trimmedName = displayName.trim();
   const missingRequired = formFields.some((field) => isMissingRequired(field, config));
@@ -322,8 +334,8 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
               {server && !isAdmin && (
                 <p className="text-xs text-destructive">
-                  Connecting a messaging app requires an owner or admin of this workspace. You are a
-                  member without admin rights, so the server would reject this.
+                  Connecting a messaging app requires an admin of this workspace. You are a member
+                  without admin rights, so the server would reject this.
                 </p>
               )}
 
@@ -597,7 +609,7 @@ function messageFor(result: Exclude<CreateBridgeResult, { kind: 'created' }>): s
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'Connecting a messaging app requires an owner or admin of this workspace.';
+      return 'Connecting a messaging app requires an admin of this workspace.';
     case 'invalid':
       // The gateway validated the credentials against the platform's own config
       // model, so its wording is more specific than anything we could invent.

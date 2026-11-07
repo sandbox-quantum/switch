@@ -105,6 +105,65 @@ export function settleTurnsByNotices(
 }
 
 /**
+ * When a turn's first step happened, or null before it has one. Switch stores
+ * a step when the host reports it, which can be well after the step. The host
+ * stamps a step with its own clock, at its latest revision, so that time can
+ * be late too. The earliest of both holds up against either.
+ */
+function firstStepAt(turn: TurnActivity): number | null {
+  if (turn.items.length === 0) return null;
+  return Math.min(
+    ...turn.items.flatMap((item) => [Date.parse(item.occurredAt), Date.parse(item.createdAt)])
+  );
+}
+
+/** One of the agent's own messages in the room, not a host notice or a control acknowledgement. */
+function isAgentReply(message: ChatMessage, agentId: string): boolean {
+  return (
+    message.sender.kind === 'agent' &&
+    message.sender.agentId === agentId &&
+    !isSessionStartingNotice(message) &&
+    !turnEndNotice(message) &&
+    !isControlAck(message)
+  );
+}
+
+/**
+ * Where a turn's requests show, by the message each shows under: after the
+ * agent's messages of that turn sent before the request settled, so the text
+ * leading up to a question reads above it. An open request shows after the
+ * turn's latest message so far. `anchorId` is where the turn itself shows.
+ * Shortcut: Switch keeps no time a request was asked, so a settled one is placed
+ * by when it was answered (or expired); store an asked-at time if that misplaces one.
+ */
+export function placeRequests(
+  messages: readonly ChatMessage[],
+  agentId: string,
+  bound: ReadonlyMap<string, TurnActivity>,
+  anchorId: string,
+  turn: TurnActivity
+): Map<string, ChatApproval[]> {
+  const placed = new Map<string, ChatApproval[]>();
+  const start = messages.findIndex((each) => each.messageId === anchorId);
+  if (start === -1) return placed;
+  for (const request of turn.requests) {
+    const settledAt = request.answeredAt ?? (request.state === 'open' ? null : request.expiresAt);
+    const until = settledAt === null ? Infinity : Date.parse(settledAt);
+    let anchor = start;
+    for (let next = start + 1; next < messages.length; next++) {
+      const each = messages[next];
+      // The agent's next turn starts here; what follows is that turn's.
+      if (bound.has(each.messageId) && bound.get(each.messageId) !== turn) break;
+      if (Date.parse(each.sentAt) > until) break;
+      if (isAgentReply(each, agentId)) anchor = next;
+    }
+    const key = messages[anchor].messageId;
+    placed.set(key, [...(placed.get(key) ?? []), request]);
+  }
+  return placed;
+}
+
+/**
  * Where one agent's turns show, by the message each shows under, in message
  * order. A turn shows under the message that started it, unless that message
  * was sent while the agent's previous turn still ran: the turn then runs after
@@ -121,12 +180,7 @@ export function placeTurns(
 ): Map<string, TurnActivity[]> {
   const placed = new Map<string, TurnActivity[]>();
   let previous: number | null = null;
-  const shown = (each: ChatMessage) =>
-    each.sender.kind === 'agent' &&
-    each.sender.agentId === agentId &&
-    !isSessionStartingNotice(each) &&
-    !turnEndNotice(each) &&
-    !isControlAck(each);
+  const shown = (each: ChatMessage) => isAgentReply(each, agentId);
   messages.forEach((message, at) => {
     const turn = bound.get(message.messageId);
     if (!turn) return;
@@ -136,7 +190,7 @@ export function placeTurns(
       const reply = messages.findIndex((each, index) => index > after && shown(each));
       anchor = Math.max(at, reply === -1 ? previous : reply);
     }
-    const firstStep = turn.items[0] ? Date.parse(turn.items[0].createdAt) : null;
+    const firstStep = firstStepAt(turn);
     for (let next = anchor + 1; firstStep !== null && next < messages.length; next++) {
       const each = messages[next];
       if (bound.has(each.messageId) || Date.parse(each.sentAt) >= firstStep) break;
@@ -176,7 +230,7 @@ export function foldTurnEndNotices(
           !claimed.has(each.turnId) &&
           // A notice from before the turn started is about an earlier run of its
           // message (the one a retry ran again), not this one.
-          !(each.items[0] && Date.parse(each.items[0].createdAt) > Date.parse(message.sentAt))
+          !((firstStepAt(each) ?? -Infinity) > Date.parse(message.sentAt))
       );
     if (!turn) return;
     claimed.add(turn.turnId);

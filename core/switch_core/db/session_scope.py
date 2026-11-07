@@ -62,7 +62,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.tenant_context import tenant_scope
+from switch_core.tenant_context import no_tenant, organization_scope, tenant_scope
 
 
 @dataclass(frozen=True)
@@ -114,6 +114,21 @@ async def tenant_session(
             yield lent.session
         return
     with tenant_scope(tenant_id):
+        async with session_factory() as session:
+            yield session
+
+
+@asynccontextmanager
+async def organization_session(
+    session_factory: async_sessionmaker[AsyncSession], organization_id: str
+) -> AsyncIterator[AsyncSession]:
+    """Open a session bound to `organization_id`, and to no workspace.
+
+    For work on an organization itself: creating it, its members, its
+    settings. Any workspace bound around the block is unbound inside it, so
+    the session sees exactly this organization's rows and no workspace's.
+    """
+    with no_tenant(), organization_scope(organization_id):
         async with session_factory() as session:
             yield session
 

@@ -88,7 +88,9 @@ async def _write(session: AsyncSession, room_id: str, user: User) -> None:
 async def test_participants_read_a_private_room_and_change_nothing(
     session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def detail(_session: AsyncSession, room: Room, *_args: Any) -> str:
+    async def detail(
+        _session: AsyncSession, room: Room, *_args: Any, **_kwargs: Any
+    ) -> str:
         return room.id
 
     monkeypatch.setattr(rooms_module, "_build_room_detail", detail)

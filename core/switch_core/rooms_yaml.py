@@ -40,7 +40,7 @@ import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from switch_core.agent_runs import AgentOrigin, kickoff_fingerprint
-from switch_core.authz import Principal, can
+from switch_core.authz import Principal, can, require_group_filing
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
@@ -1153,7 +1153,12 @@ class RoomYamlService:
         any, posted as it is created) → links by name. A room that fails is
         reported in ``errors`` and the rest still go ahead; nothing is rolled
         back, so the caller sees exactly what exists.
+
+        Creating a group and filing rooms into it both need a workspace admin
+        (`require_group_filing`), so a non-admin is refused before anything
+        is made.
         """
+        require_group_filing(is_admin)
         async with self._session_factory() as session:
             group = await self._room_groups.create(
                 session,

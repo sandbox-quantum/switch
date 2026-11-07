@@ -27,6 +27,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.authz import Principal
 from switch_core.bridges.agent.auth import PUBLIC_PATH_PREFIXES
 from switch_core.bridges.collaboration.models import DirectoryUser
 from switch_core.db.models import Client, CollaborationBridge, User
@@ -34,6 +35,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.auth import get_current_user, require_tenant_admin
 from switch_core.gateway.collaborations import (
+    _claimants,
     _require_directory_account,
     claim_bridge_identity,
     release_bridge_identity,
@@ -82,12 +84,15 @@ WRITE_METHODS = {"POST", "PATCH", "PUT", "DELETE"}
 # scope to: the row it mutates is a link between a platform account and one
 # Switch user, not part of the bridge itself, and a user must be able to claim
 # their own without an admin. These routes carry a self-or-admin check inside
-# the handler instead — asserted by
-# `test_owner_scoped_identity_routes_check_self_or_admin` below, so the
-# exemption cannot hide an unauthorized route.
+# the handler instead — asserted by `TestIdentityRoutesAreSelfOrAdmin` below,
+# so the exemption cannot hide an unauthorized route. Confirming a link
+# (CHOO-3881) takes no user at all: it only ever acts for the caller.
 _OWNER_SCOPED_PATHS = {
     "/{bridge_id}/identities",
     "/{bridge_id}/identities/{external_user_row_id}",
+    "/{bridge_id}/identities/{external_user_row_id}/code",
+    "/{bridge_id}/identities/{external_user_row_id}/request",
+    "/{bridge_id}/identities/{external_user_row_id}/verify-session",
 }
 
 
@@ -131,6 +136,7 @@ class TestIdentityRoutesAreSelfOrAdmin:
                     external_user_id="U123",
                     username="them",
                     user_id="someone-else",
+                    expects_confirmation=True,
                 ),
                 session=object(),  # type: ignore[arg-type]
                 bridge_store=_StubGet(object()),  # type: ignore[arg-type]
@@ -361,3 +367,21 @@ async def test_set_default_unknown_bridge_is_404(
                 _admin(),
             )
         assert exc.value.status_code == 404
+
+
+class TestWhoMayUnlinkAClaim:
+    def test_each_claimant_says_whether_the_caller_may_drop_their_claim(self) -> None:
+        claims = [
+            SimpleNamespace(user_id="me", verified_at=None),
+            SimpleNamespace(user_id="them", verified_at=None),
+        ]
+        names = {"me": "Me", "them": "Them"}
+
+        def unlinkable(viewer: Principal) -> dict[str, bool]:
+            return {
+                c.user_id: c.can_unlink
+                for c in _claimants(claims, names, viewer)  # type: ignore[arg-type]
+            }
+
+        assert unlinkable(Principal("me", False)) == {"me": True, "them": False}
+        assert unlinkable(Principal("me", True)) == {"me": True, "them": True}

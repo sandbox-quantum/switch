@@ -53,6 +53,7 @@ from switch_core.session_activity.listener import (
 )
 from switch_core.signals import SignalBus
 from switch_core.transport.invites import InviteBus
+from switch_core.trust.client import NullTrustClient
 from tests.conftest import TEST_KEYRING
 from tests.routing import router_on
 from tests.switch_core.gateway.agent_route_harness import add_agent
@@ -75,6 +76,9 @@ class _FakeLifecycle:
     def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
         return []
 
+    def get(self, client_id: str) -> None:
+        return None
+
 
 class _FakeListener:
     """Records subscriptions; a test rings a room by hand, or deliberately not."""
@@ -82,7 +86,13 @@ class _FakeListener:
     def __init__(self) -> None:
         self.wakers: dict[str, set[Callable[[str], Awaitable[None]]]] = {}
 
-    def subscribe(self, room_id: str, waker: Callable[[str], Awaitable[None]]) -> None:
+    def subscribe(
+        self,
+        room_id: str,
+        waker: Callable[[str], Awaitable[None]],
+        *,
+        types: frozenset[str] | None = None,
+    ) -> None:
         self.wakers.setdefault(room_id, set()).add(waker)
 
     def unsubscribe(
@@ -250,6 +260,7 @@ async def _user(session: AsyncSession, name: str, role: str | None) -> User:
             tenant_id="00000000-0000-0000-0000-000000000000",
             user_id=user.id,
             role=role,
+            organization_role="org_admin" if role == "admin" else "member",
         )
     return user
 
@@ -301,7 +312,9 @@ def _chat_service(
         media_max_bytes=1024,
         agent_chats_enabled=True,
         group_chats_enabled=True,
+        buddy_slack_handoff_enabled=True,
         connections=connections,
+        trust_client=NullTrustClient(),
     )
     room_service.on_room_agents_changed(service.sync_room)
     return service, room_service

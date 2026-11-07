@@ -19,7 +19,6 @@ from switch_core.aliases import (
     check_alias_collisions,
     validate_alias_format,
 )
-from switch_core.authz import Principal, administers_tenant, require_manage
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
@@ -36,6 +35,7 @@ from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
     CollaborationBridge,
+    ExternalUser,
     Message,
     Room,
     User,
@@ -43,6 +43,11 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
+from switch_core.db.stores.external_user_store import (
+    CodeNotAccepted,
+    ExternalUserStore,
+    NoSuchLink,
+)
 from switch_core.db.stores.session_activity_store import (
     RETRYABLE_TURN_STATUSES,
     AgentSessionActivityStore,
@@ -50,10 +55,11 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
+from switch_core.platform_access import administers_on_record
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.clients.command_consumer import CommandConsumer
     from switch_core.clients.room_meta import RoomMeta
@@ -520,9 +526,14 @@ async def _manages_room(
         if room is not None and room.owner_id == user_id:
             return True
         user = await session.get(User, user_id)
-        role = await users.tenant_role(session, client.tenant_id, user_id)
-        if user is not None and administers_tenant(
-            is_operator=user.role == "admin", tenant_role=role
+        if user is not None and await administers_on_record(
+            session,
+            client.session_factory,
+            users,
+            user,
+            target_type="room",
+            target_id=room_id,
+            details={"event": "chat_command", "command": "retry"},
         ):
             return True
     return False
@@ -611,7 +622,6 @@ async def _decide_control_command(
     if level == "unsupported":
         return say(texts.unsupported)
 
-    deeplink: str | None = None
     role: str | None = None
     if level == "session_dependent":
         async with client.session_factory() as session:
@@ -642,18 +652,12 @@ async def _decide_control_command(
             return say(texts.no_live_session)
         if not caps.get(command):
             return say(texts.no_session)
-        deeplink = runtime.deeplink_url if runtime else None
 
     args = event.args
     if command in ("reset", "compact"):
         args = role or ""
 
-    # Mirror the runtime "working" surface: link back to the session in
-    # Switch Console when we know its deeplink.
-    body = (
-        f"{texts.ack} ([Open in Switch Console]({deeplink}))" if deeplink else texts.ack
-    )
-    decision = say(body)
+    decision = say(texts.ack)
     return ControlDecision(
         queued=CommandPayload(
             command=command,
@@ -1327,7 +1331,15 @@ async def _may_remove_agent(
     if principal.kind == "user":
         for user_id in principal.user_ids:
             user = await session.get(User, user_id)
-            if user is not None and await host._user_store.administers(session, user):
+            if user is not None and await administers_on_record(
+                session,
+                host.session_factory,
+                host._user_store,
+                user,
+                target_type="agent",
+                target_id=target.id,
+                details={"event": "chat_command", "command": "remove_agent"},
+            ):
                 return True
         return False
     if principal.kind == "agent":
@@ -1365,6 +1377,21 @@ class _Authority:
     refusal: str | None
 
 
+async def _sender_account(
+    host: CommandConsumer, session: AsyncSession, event: CommandEvent
+) -> ExternalUser | None:
+    """The chat account that sent this command, or None when it came from none.
+
+    A message written in Console, or by the platform on someone's behalf, is
+    no chat account's, so it proves nothing about one: only the platform
+    saying who posted a message does.
+    """
+    client = await host.client_store.get_by_transport_user_id(session, event.user_id)
+    if client is None:
+        return None
+    return await host._external_user_store.get_by_client_id(session, client.id)
+
+
 async def _manage_authority(
     host: CommandConsumer, session: AsyncSession, event: CommandEvent, agent: Agent
 ) -> _Authority:
@@ -1376,12 +1403,7 @@ async def _manage_authority(
     account nobody has linked cannot be told apart from anyone else, so it is
     refused with what to do about it.
     """
-    client = await host.client_store.get_by_transport_user_id(session, event.user_id)
-    external = (
-        await host._external_user_store.get_by_client_id(session, client.id)
-        if client is not None
-        else None
-    )
+    external = await _sender_account(host, session, event)
     if external is None:
         return _Authority(
             None,
@@ -1393,23 +1415,219 @@ async def _manage_authority(
             None,
             "This chat account isn't linked to a Switch user, so I can't tell "
             "whether you own this agent. Link it to your Switch user in Switch "
-            "Console (Messaging apps), then try again.",
+            "Console (Messaging apps) and confirm it with the code shown there, "
+            "then try again.",
         )
     for user_id in claimants:
         user = await host._user_store.get(session, user_id)
         if user is None:
             continue
-        try:
-            require_manage(
-                Principal(user.id, await host._user_store.administers(session, user)),
-                agent.owner_id,
-            )
+        if user.id == agent.owner_id or await administers_on_record(
+            session,
+            host.session_factory,
+            host._user_store,
+            user,
+            target_type="agent",
+            target_id=agent.id,
+            details={"event": "chat_command", "command": "manage_agent"},
+        ):
             return _Authority(user.id, None)
-        except PermissionError:
-            continue
     return _Authority(
         None, "Only the agent's owner or a workspace admin can rename or delete it."
     )
+
+
+async def _cmd_link_account(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    """Confirm a link to a Switch user with the code Console showed (CHOO-3881)."""
+    host = cast("CommandConsumer", client)
+    async with host.session_factory() as session:
+        account = await _sender_account(host, session, event)
+    reply = await link_account_reply(
+        host.session_factory,
+        host._external_user_store,
+        host._user_store,
+        account,
+        event.args or "",
+    )
+    await _reply(host, room, event, reply)
+
+
+async def link_account_reply(
+    session_factory: async_sessionmaker[AsyncSession],
+    external_user_store: ExternalUserStore,
+    user_store: UserStore,
+    account: ExternalUser | None,
+    args: str,
+) -> str:
+    """Redeem a `link-account` code for `account` and say what happened.
+
+    Only the Switch user was shown the code, and the platform says which
+    account posted it, so a match proves one person holds both. A code posted
+    from any other account matches nothing, which is why posting it in a busy
+    channel gives nothing away. The collaboration bridge calls this directly
+    for a channel that is not a Switch room, so linking never creates one.
+    """
+    code = args.strip()
+    if not code:
+        return (
+            "Usage: `!link-account CODE`, with the code Switch Console showed "
+            "you when you linked this account."
+        )
+    if account is None:
+        return (
+            "⚠️ Only a chat account can confirm a link to itself, by posting "
+            "the code from that account."
+        )
+    # The reply is written by the caller after this session has closed: a
+    # rejected code may have locked the request it was checked against, and
+    # nobody should wait on that while a reply is written.
+    async with session_factory() as session:
+        try:
+            request = await external_user_store.redeem_link_code(
+                session, account, code, user_store
+            )
+        except CodeNotAccepted:
+            return (
+                "⚠️ That code doesn't match a link waiting for this account, "
+                "or it has expired. Get a new code in Switch Console, and post "
+                "it from the account you're linking."
+            )
+        user_id = request.user_id
+        linked = await user_store.get(session, user_id)
+        bridge = await session.get(CollaborationBridge, account.bridge_id)
+        # Both are held by foreign keys from the rows just written.
+        if linked is None or bridge is None:
+            raise RuntimeError(
+                f"Confirmed a link for user {user_id} on bridge "
+                f"{account.bridge_id}, but could not read either back"
+            )
+        name, platform = linked.name, bridge.display_name
+        username = account.external_username
+        await record_audit_event(
+            session,
+            tenant_id=account.tenant_id,
+            actor_user_id=user_id,
+            action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
+            target_type="external_user",
+            target_id=account.id,
+            details={
+                "bridge_id": account.bridge_id,
+                "user_id": user_id,
+                "by": "code",
+            },
+        )
+        await session.commit()
+
+    # Names the Switch user, so whoever posted it sees who the account is now
+    # recognised as, and how to take that back if it is not them. "The way you
+    # ran this" because platforms differ in how a command reaches Switch: typed
+    # with `!`, as a slash command, or with the app mentioned.
+    return (
+        f"✅ Linked this {platform} account ({username}) to Switch user "
+        f"**{name}**. If that isn't you, run `unlink-account {name}` the way "
+        "you ran this command."
+    )
+
+
+async def _cmd_unlink_account(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    """Show which Switch users this chat account is linked to, or remove one.
+
+    The account's own say over its links, for someone who has no Switch login
+    to fix one with: a link confirmed by mistake, or one made before links
+    needed confirming. It only ever touches the account that sent it.
+    """
+    host = cast("CommandConsumer", client)
+    wanted = _strip_quotes((event.args or "").strip())
+    async with host.session_factory() as session:
+        reply = await _unlink_account(host, session, event, wanted)
+    # After the session has closed, so no lock is held while the reply is
+    # written.
+    await _reply(host, room, event, reply)
+
+
+async def _unlink_account(
+    host: CommandConsumer, session: AsyncSession, event: CommandEvent, wanted: str
+) -> str:
+    """`!unlink-account`'s work, returning what to reply."""
+    account = await _sender_account(host, session, event)
+    if account is None:
+        return "⚠️ Only a chat account can unlink itself, from that account."
+    claims = (await host._external_user_store.claims_for(session, [account.id])).get(
+        account.id, []
+    )
+    users = {
+        user.id: user
+        for user in await host._user_store.get_many(
+            session, [c.user_id for c in claims]
+        )
+    }
+    linked = sorted(
+        (
+            (users[c.user_id].name, users[c.user_id].email, c)
+            for c in claims
+            if c.user_id in users
+        ),
+        key=lambda entry: entry[0].casefold(),
+    )
+    listing = "\n".join(
+        f"- **{name}**"
+        + (
+            ""
+            if claim.verified_at is not None
+            else " (made before links needed confirming)"
+        )
+        for name, _email, claim in linked
+    )
+
+    if not wanted:
+        if not linked:
+            return "This account isn't linked to any Switch user."
+        return (
+            f"This account is linked to:\n{listing}\n\nRun "
+            "`!unlink-account NAME` to remove one."
+        )
+
+    needle = wanted.casefold()
+    matches = [
+        claim
+        for name, email, claim in linked
+        if needle in (name.casefold(), email.casefold())
+    ]
+    if not matches:
+        return f"⚠️ This account isn't linked to a Switch user called **{wanted}**." + (
+            f" It is linked to:\n{listing}" if linked else ""
+        )
+    if len(matches) > 1:
+        return (
+            f"⚠️ More than one Switch user linked to this account goes by "
+            f"**{wanted}**. Run `!unlink-account` with their email instead."
+        )
+    user_id = matches[0].user_id
+    name = users[user_id].name
+    try:
+        await host._external_user_store.release(session, account, user_id)
+    except NoSuchLink:
+        # Unlinked some other way while this ran: the outcome asked for.
+        return f"This account is no longer linked to Switch user **{name}**."
+    await record_audit_event(
+        session,
+        tenant_id=account.tenant_id,
+        actor_user_id=None,
+        action=AuditAction.BRIDGE_IDENTITY_RELEASED,
+        target_type="external_user",
+        target_id=account.id,
+        details={
+            "bridge_id": account.bridge_id,
+            "user_id": user_id,
+            "by": "chat_account",
+        },
+    )
+    await session.commit()
+    return f"Unlinked this account from Switch user **{name}**."
 
 
 async def _cmd_rename_agent(
@@ -1627,17 +1845,10 @@ def _format_status_lines(
     agents: list[Agent],
     statuses: dict[str, AgentStatus],
     runtime_states: dict[str, str],
-    deeplinks: dict[str, str],
 ) -> str:
     """Render the !status summary: one line per agent (sorted by the name it is
     shown under) with its presence emoji + label, runtime state (if any),
-    agent_type, and a Switch Console deeplink to its session
-    when one is known.
-
-    The deeplink is shown only for an agent whose session is LIVE in this room:
-    the stored link is per (agent, room) and survives a room switch, so once the
-    session moves away it would point at a session no longer here. Gating on
-    LIVE keeps the link from going stale when an agent hops rooms."""
+    and agent_type."""
     lines = ["**Agent status in this room:**"]
     for agent in sorted(agents, key=lambda a: (a.display_name or a.name).lower()):
         status = statuses.get(agent.id, AgentStatus.NO_SESSION)
@@ -1647,11 +1858,7 @@ def _format_status_lines(
         head = f"{emoji} **{name}** — {label}"
         if runtime is not None:
             head += f" · {runtime}"
-        parts = [head, agent.agent_type]
-        deeplink = deeplinks.get(agent.id)
-        if deeplink and status == AgentStatus.LIVE:
-            parts.append(f"[Open in Switch Console]({deeplink})")
-        lines.append("- " + " · ".join(parts))
+        lines.append(f"- {head} · {agent.agent_type}")
     return "\n".join(lines)
 
 
@@ -1685,15 +1892,12 @@ async def _cmd_status(
         )
         runtime_rows = await AgentRuntimeStateStore().get_by_room(session, meta.room_id)
         runtime_states = {row.agent_id: row.state for row in runtime_rows}
-        deeplinks = {
-            row.agent_id: row.deeplink_url for row in runtime_rows if row.deeplink_url
-        }
 
     await _reply(
         client,
         room,
         event,
-        _format_status_lines(agents, statuses, runtime_states, deeplinks),
+        _format_status_lines(agents, statuses, runtime_states),
     )
 
 
@@ -2129,6 +2333,38 @@ COMMANDS: list[Command] = [
         _cmd_remove_agent,
         args_spec=(
             CommandArg("agent", "The agent to remove from this room", required=True),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "link-account",
+        "Confirm a link between this chat account and your Switch user, with "
+        "the code Switch Console showed you. Usage: `!link-account CODE`.",
+        _cmd_link_account,
+        args_spec=(
+            # Free text so a bridge passes it through as typed: a declared
+            # name-style argument comes back with an `@` in front.
+            CommandArg(
+                "code",
+                "The code Switch Console showed you",
+                required=True,
+                free_text=True,
+            ),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "unlink-account",
+        "Show which Switch users this chat account is linked to, or remove "
+        "one. Usage: `!unlink-account`, or `!unlink-account NAME`.",
+        _cmd_unlink_account,
+        args_spec=(
+            CommandArg(
+                "user",
+                "The Switch user to unlink (leave empty to list them)",
+                required=False,
+                free_text=True,
+            ),
         ),
         admin_owned=True,
     ),
