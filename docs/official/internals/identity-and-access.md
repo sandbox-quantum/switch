@@ -139,6 +139,7 @@ Refusal takes a different form per action, by design.
 
 - **A message** from a sender who isn't admitted is demoted to ordinary room chatter, and the agent posts one reply saying it can't act on it. The refusal is visible in the room rather than silent.
 - **Commands** are gated the same way. Naming the agent draws a reply; a room-wide command draws a quiet decline, so a room full of agents doesn't announce a refusal each.
+- **Room invitations** (`!invite-agent`, `invite_agent_to_room`, API, or room creation) refuse someone the agent's policy does not permit, naming the agent and its owner. Existing room members are unaffected.
 - **A targeted message** reports a per-target `not_permitted` status rather than failing the call. Addressing several agents at once doesn't fail because one declined.
 - **Delegating a task** raises an error instead. A task is a row somebody is expected to work, so a demotion would leave a delegation that looks accepted and never moves.
 

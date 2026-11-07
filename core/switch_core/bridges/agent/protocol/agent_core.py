@@ -3301,6 +3301,7 @@ class AgentCore:
                 agent_names=[agent_name],
                 include_subagents_for=include_for,
                 added_by_kind="agent",
+                inviter_id=agent_id,
             )
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e

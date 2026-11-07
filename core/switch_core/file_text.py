@@ -28,7 +28,6 @@ import io
 import json
 import logging
 import posixpath
-import resource
 import sys
 import weakref
 import zipfile
@@ -38,6 +37,11 @@ from dataclasses import asdict, dataclass, field
 from typing import IO, Literal
 from urllib.parse import unquote
 from xml.parsers import expat
+
+try:
+    import resource
+except ImportError:
+    resource = None  # type: ignore[assignment]
 
 from pypdf import PageObject, PdfReader
 from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObject
