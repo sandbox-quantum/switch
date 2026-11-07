@@ -49,6 +49,7 @@ export interface SecretField {
 
 const GOOGLE = "google-workspace";
 const AIRTABLE = "airtable";
+const GITLAB = "gitlab";
 
 export function vendorName(app: Pick<ConnectorApp, "slug" | "kind" | "name">): string {
   if (app.kind === "github_app") return "GitHub";
@@ -350,6 +351,38 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === GITLAB)
+    return [
+      {
+        text: "In GitLab, add a new application under Edit profile, Applications, or under a group's Settings, Applications. Use an account or group your organization owns: whoever owns the application can delete it, and that stops every connection.",
+        copy: [],
+        link: {
+          label: "Open Applications",
+          href: "https://gitlab.com/-/user_settings/applications",
+        },
+        items: [],
+      },
+      {
+        text: "Name it as people should see it on GitLab's consent page, for example Switch.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      redirectStep("Set its Redirect URI to:", app.redirect_uris),
+      {
+        text: "Keep Confidential ticked: Switch's server keeps the secret.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      { text: "Under Scopes, tick exactly these:", copy: [], link: null, items: app.scopes },
+      {
+        text: "Save the application, and copy its Application ID and Secret.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === GOOGLE)
     return [
       {
@@ -451,6 +484,7 @@ const HELM_VALUES: Record<string, string> = {
   github: "switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath",
   [GOOGLE]: "switchCore.googleWorkspaceClientSecret",
   [AIRTABLE]: "switchCore.airtableClientSecret",
+  [GITLAB]: "switchCore.gitlabClientSecret",
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */
