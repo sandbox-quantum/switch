@@ -603,6 +603,41 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## Snowflake
+
+Listed as coming soon (`enabled: false`). Snowflake's MCP servers are objects
+inside each customer's account, at
+`https://<account>.snowflakecomputing.com/api/v2/databases/<db>/schemas/<schema>/mcp-servers/<name>`,
+and its OAuth endpoints are the account's own (`/oauth/authorize`,
+`/oauth/token-request`). The catalog names one fixed URL per entry, so it
+cannot point at either yet. The proposal, for review before any broker code:
+
+- **Connect parameters.** An entry may declare values the person gives when
+  they connect, each with a strict pattern: here the account URL
+  (`https://<account>.snowflakecomputing.com`, the account locator form or the
+  organisation form, nothing else) and the MCP server's
+  `<db>.<schema>.<name>`. The broker stores them with the connection, and the
+  MCP URL and OAuth endpoints are built from them; an HTTPS host outside
+  `snowflakecomputing.com` is refused. This is the one catalog change, and it
+  is shared with any vendor whose server lives in the customer's own account
+  (Zendesk's subdomain is the next).
+- **OAuth client.** Snowflake has no dynamic registration. An account admin
+  creates a `SECURITY INTEGRATION` of type `OAUTH` with `OAUTH_CLIENT =
+  CUSTOM`, PKCE required, and the Switch Console loopback redirect; that is a
+  client per account, so its ID and secret are given with the account URL
+  rather than saved once per server.
+- **Access.** The sign-in asks for `session:role:<role>` with a role the
+  admin grants read access to the MCP server's tools, and `refresh_token`.
+  Cortex Analyst and SQL tools can run what the role allows, so the level is
+  read only if the role is; the entry offers one level, labelled by what the
+  role may do, as agreed for vendors without read-only scopes.
+- **Token lifetime.** Snowflake's OAuth access tokens last 10 minutes and its
+  refresh tokens up to 90 days, set on the integration; to be measured against
+  a trial account and written in the entry.
+- **Identity.** The MCP server's own `tools/list` needs a valid token; the
+  person's login name comes from `SELECT CURRENT_USER()` through the SQL tool,
+  through `identity.mcp_tool`.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every
