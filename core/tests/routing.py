@@ -153,6 +153,7 @@ class Process:
         sender: Client,
         caption: str | None = None,
         group: dict[str, object] | None = None,
+        thread_root_id: str | None = None,
     ) -> str:
         """Write one file as `sender`, a part of a multi-file post when
         `group` says so, and return its event id."""
@@ -166,6 +167,7 @@ class Process:
             metered=False,
             msgtype="m.image",
             caption=caption,
+            thread_root_id=thread_root_id,
             group=group,
         )
         return result.event_id

@@ -22,12 +22,16 @@ import {
   usePackageRooms,
   useReferenceRooms,
 } from "../../data/hooks";
+import { privateRoomsLabel } from "./privateRooms";
 
 interface Props {
   open: boolean;
   kind: "reference" | "document" | "package";
   resourceId: string;
   resourceLabel: string;
+  // Rooms it is in that the viewer may not read: unnamed, but the delete
+  // still removes it from them.
+  hiddenRoomsCount: number;
   onClose: () => void;
   onDeleted: () => void;
 }
@@ -37,6 +41,7 @@ export default function DeleteResourceDialog({
   kind,
   resourceId,
   resourceLabel,
+  hiddenRoomsCount,
   onClose,
   onDeleted,
 }: Props) {
@@ -82,14 +87,21 @@ export default function DeleteResourceDialog({
         </DialogContentText>
         {loading ? (
           <CircularProgress size={20} />
-        ) : rooms && rooms.length > 0 ? (
+        ) : (rooms ?? []).length + hiddenRoomsCount > 0 ? (
           <Alert severity="warning">
-            This will detach from {rooms.length} room
-            {rooms.length === 1 ? "" : "s"}:
+            This will detach from {(rooms ?? []).length + hiddenRoomsCount} room
+            {(rooms ?? []).length + hiddenRoomsCount === 1 ? "" : "s"}:
             <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ mt: 1 }}>
-              {rooms.map((r) => (
+              {(rooms ?? []).map((r) => (
                 <Chip key={r.room_id} size="small" label={r.room_name} />
               ))}
+              {hiddenRoomsCount > 0 && (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={privateRoomsLabel(hiddenRoomsCount)}
+                />
+              )}
             </Stack>
           </Alert>
         ) : null}

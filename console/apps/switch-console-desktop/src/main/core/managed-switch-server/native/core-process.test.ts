@@ -72,7 +72,7 @@ it.skipIf(process.platform === 'win32')(
       );
       await startCore(
         layout,
-        { version: '0.30.0', sourceRoot: root, projectDir: root, python },
+        { version: '0.30.0', sourceRoot: root, projectDir: root, python, gatewayUiDir: null },
         {}
       );
       const healthy = await waitForCoreHealth(

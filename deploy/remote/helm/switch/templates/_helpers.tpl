@@ -841,6 +841,14 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: FEATURE_FLAGS_ENABLED
   value: {{ join "," . | quote }}
 {{- end }}
+{{- with .Values.switchCore.disabledServices }}
+- name: DISABLED_SERVICES
+  value: {{ toJson . | quote }}
+{{- end }}
+{{- with .Values.switchCore.serviceAccessProfiles }}
+- name: SERVICE_ACCESS_PROFILES
+  value: {{ toJson . | quote }}
+{{- end }}
 {{- if has "follow_the_conversation" .Values.switchCore.featureFlags.enabled }}
 - name: FOLLOW_THE_CONVERSATION_WINDOW_SECONDS
   value: {{ .Values.switchCore.followTheConversation.windowSeconds | quote }}
