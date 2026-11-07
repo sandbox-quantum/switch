@@ -1901,6 +1901,9 @@ export interface ReferenceDetail {
   // it, and handing it to someone else.
   can_edit: boolean;
   can_manage: boolean;
+  // Whether the viewer may open its page. A package's or a room's list names
+  // a private item to everyone who may read the package or room.
+  can_read: boolean;
 }
 
 export interface ReferenceCreateInput {
@@ -1948,6 +1951,8 @@ export interface DocumentSummary {
   can_manage: boolean;
   // Handing it to someone else: never for a document scoped to one room.
   can_transfer: boolean;
+  // As on `ReferenceDetail`.
+  can_read: boolean;
 }
 
 export interface DocumentDetail extends DocumentSummary {

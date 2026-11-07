@@ -176,10 +176,17 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
                   px: 1,
                   py: 0.5,
                   borderRadius: 1,
-                  cursor: "pointer",
-                  "&:hover": { backgroundColor: "action.hover" },
+                  ...(r.can_read && {
+                    cursor: "pointer",
+                    "&:hover": { backgroundColor: "action.hover" },
+                  }),
                 }}
-                onClick={() => navigate(`/resources/references/${r.id}`)}
+                // A private item is listed to whoever may read the package,
+                // but its own page would refuse them: no link.
+                onClick={
+                  r.can_read ? () => navigate(`/resources/references/${r.id}`) : undefined
+                }
+                data-testid={`package-reference-${r.id}`}
               >
                 <Chip
                   label={r.type_display_name ?? `${r.type} (unknown type)`}
@@ -240,10 +247,17 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
                   px: 1,
                   py: 0.5,
                   borderRadius: 1,
-                  cursor: "pointer",
-                  "&:hover": { backgroundColor: "action.hover" },
+                  ...(d.can_read && {
+                    cursor: "pointer",
+                    "&:hover": { backgroundColor: "action.hover" },
+                  }),
                 }}
-                onClick={() => navigate(`/resources/documents/${d.id}`)}
+                // A private item is listed to whoever may read the package,
+                // but its own page would refuse them: no link.
+                onClick={
+                  d.can_read ? () => navigate(`/resources/documents/${d.id}`) : undefined
+                }
+                data-testid={`package-document-${d.id}`}
               >
                 <Typography variant="body2" sx={{ flexGrow: 1 }}>
                   {d.name || "(unnamed)"}
