@@ -17,8 +17,10 @@ metadata (RFC 9728) names the authorization server, whose metadata
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -488,35 +490,204 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
-        response = await self._send(
-            self._http.build_request(
-                "GET",
-                self._identity.url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json",
-                },
+        if self._identity.mcp_tool is not None:
+            body = await self._mcp_identity(access_token)
+        else:
+            assert self._identity.url is not None
+            response = await self._send(
+                self._http.build_request(
+                    "GET",
+                    self._identity.url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                    },
+                )
             )
-        )
-        if response.status_code == 401:
-            raise ReauthorizationRequiredError(
-                f"{self._name} refused the new sign-in when asked whose it is."
-            )
-        if response.status_code != 200:
-            raise ServiceAdapterError(
-                f"{self._name} would not say whose sign-in this is "
-                f"(HTTP {response.status_code})."
-            )
-        body = self._json(response, "account")
+            if response.status_code == 401:
+                raise ReauthorizationRequiredError(
+                    f"{self._name} refused the new sign-in when asked whose it is."
+                )
+            if response.status_code != 200:
+                raise ServiceAdapterError(
+                    f"{self._name} would not say whose sign-in this is "
+                    f"(HTTP {response.status_code})."
+                )
+            body = self._json(response, "account")
         account_id = _path_value(body, self._identity.account_id)
         label = _path_value(body, self._identity.label)
         if type(account_id) is int:
             account_id = str(account_id)
         if not isinstance(account_id, str) or not account_id:
-            raise ServiceAdapterError(f"{self._name} did not name the account's id.")
+            raise ServiceAdapterError(
+                "identity_account: did not name the account's id."
+            )
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
         )
+
+    async def _mcp_identity(self, access_token: str) -> dict[str, Any]:
+        """Read one account using a bounded, authenticated MCP conversation."""
+        try:
+            async with asyncio.timeout(20):
+                return await self._read_mcp_identity(access_token)
+        except (httpx.HTTPError, TimeoutError):
+            raise ServiceAdapterError("identity_transport") from None
+
+    async def _read_mcp_identity(self, access_token: str) -> dict[str, Any]:
+        mcp_url = self._mcp_url
+        assert mcp_url is not None
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json, text/event-stream",
+        }
+        request_id = 0
+
+        async def rpc(
+            method: str, params: dict[str, Any], *, notification: bool = False
+        ) -> dict[str, Any]:
+            nonlocal request_id
+            request_id += 1
+            message: dict[str, Any] = {
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+            }
+            if not notification:
+                message["id"] = request_id
+            # Stream so an oversized or endless vendor response cannot be buffered.
+            async with self._http.stream(
+                "POST",
+                mcp_url,
+                json=message,
+                headers=headers,
+                follow_redirects=False,
+                timeout=10,
+            ) as response:
+                if response.status_code not in (200, 202):
+                    raise ServiceAdapterError("identity_transport")
+                session = response.headers.get("mcp-session-id")
+                if session is not None:
+                    if not re.fullmatch(r"[\x21-\x7e]{1,256}", session):
+                        raise ServiceAdapterError("identity_protocol")
+                    headers["Mcp-Session-Id"] = session
+                if notification:
+                    return {}
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    data.extend(chunk)
+                    if len(data) > MAX_METADATA_BYTES:
+                        raise ServiceAdapterError("identity_response_too_large")
+                try:
+                    if (
+                        response.headers.get("content-type", "").split(";")[0]
+                        == "text/event-stream"
+                    ):
+                        messages = []
+                        for event in (
+                            bytes(data).decode().replace("\r\n", "\n").split("\n\n")
+                        ):
+                            payload = "\n".join(
+                                line[5:].lstrip(" ")
+                                for line in event.splitlines()
+                                if line.startswith("data:")
+                            )
+                            if payload:
+                                messages.append(json.loads(payload))
+                        matching = [
+                            m
+                            for m in messages
+                            if isinstance(m, dict) and m.get("id") == request_id
+                        ]
+                        if len(matching) != 1:
+                            raise ValueError
+                        envelope = matching[0]
+                    else:
+                        envelope = json.loads(data)
+                    if (
+                        not isinstance(envelope, dict)
+                        or envelope.get("id") != request_id
+                        or envelope.get("jsonrpc") != "2.0"
+                        or "error" in envelope
+                        or not isinstance(envelope.get("result"), dict)
+                    ):
+                        raise ValueError
+                    result = envelope["result"]
+                    assert isinstance(result, dict)
+                    return result
+                except (ValueError, UnicodeError):
+                    raise ServiceAdapterError("identity_protocol") from None
+
+        initialized = await rpc(
+            "initialize",
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "switch", "version": "1.0.0"},
+            },
+        )
+        version = initialized.get("protocolVersion")
+        if version not in ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"):
+            raise ServiceAdapterError("identity_protocol")
+        headers["MCP-Protocol-Version"] = version
+        await rpc("notifications/initialized", {}, notification=True)
+        listed = await rpc("tools/list", {})
+        tools = listed.get("tools")
+        if not isinstance(tools, list) or listed.get("nextCursor") is not None:
+            raise ServiceAdapterError("identity_tool_unsafe")
+        matches = [
+            tool
+            for tool in tools
+            if isinstance(tool, dict) and tool.get("name") == self._identity.mcp_tool
+        ]
+        if len(matches) != 1:
+            raise ServiceAdapterError("identity_tool_unsafe")
+        tool = matches[0]
+        schema = tool.get("inputSchema")
+        annotations = tool.get("annotations")
+        if (
+            not isinstance(annotations, dict)
+            or annotations.get("readOnlyHint") is not True
+            or not isinstance(schema, dict)
+            or schema.get("type") != "object"
+            or schema.get("required", []) != []
+            or set(schema)
+            - {
+                "type",
+                "properties",
+                "required",
+                "additionalProperties",
+                "description",
+                "title",
+                "$schema",
+                "$defs",
+                "definitions",
+            }
+        ):
+            raise ServiceAdapterError("identity_tool_unsafe")
+        result = await rpc(
+            "tools/call", {"name": self._identity.mcp_tool, "arguments": {}}
+        )
+        if result.get("isError", False) is not False:
+            raise ServiceAdapterError("identity_result")
+        if "structuredContent" in result:
+            account = result["structuredContent"]
+        else:
+            content = result.get("content")
+            if (
+                not isinstance(content, list)
+                or len(content) != 1
+                or not isinstance(content[0], dict)
+                or content[0].get("type") != "text"
+            ):
+                raise ServiceAdapterError("identity_result")
+            try:
+                account = json.loads(content[0].get("text", ""))
+            except (ValueError, TypeError):
+                raise ServiceAdapterError("identity_result") from None
+        if not isinstance(account, dict):
+            raise ServiceAdapterError("identity_result")
+        return account
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 

@@ -184,9 +184,16 @@ class ConnectionIdentity(BaseModel):
     people recognise (an email, a login)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    mcp_tool: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,128}$")
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _source(self) -> "ConnectionIdentity":
+        if (self.url is None) == (self.mcp_tool is None):
+            raise ValueError("identity names exactly one of url or mcp_tool")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -519,7 +526,7 @@ class LevelAccess(BaseModel):
     def _one_kind(self) -> "LevelAccess":
         if (self.scopes is None) == (self.permissions is None):
             raise ValueError("an access level holds scopes or permissions, not both")
-        if not (self.scopes or self.permissions):
+        if self.permissions == {}:
             raise ValueError("an access level needs at least one scope or permission")
         return self
 
@@ -528,6 +535,17 @@ class ConnectionAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     read: LevelAccess
     write: LevelAccess | None = None
+    unscoped: bool = False
+
+    @model_validator(mode="after")
+    def _scopes(self) -> "ConnectionAccess":
+        levels = [level for level in (self.read, self.write) if level is not None]
+        if self.unscoped:
+            if self.write is None or any(level.scopes != [] for level in levels):
+                raise ValueError("unscoped access needs empty read and write scopes")
+        elif any(level.scopes == [] for level in levels):
+            raise ValueError("empty scopes require unscoped access")
+        return self
 
 
 class AccessProfile(BaseModel):
@@ -611,6 +629,8 @@ class ConnectionDefinition(BaseModel):
             self._check_api_key()
         if self.access_profiles:
             self._check_access_profiles()
+        if self.access is not None and self.access.unscoped and self.adapter != "oauth":
+            raise ValueError("only oauth supports unscoped access")
         if self.adapter != "api_key":
             if self.auth.api_key is not None:
                 raise ValueError("only the api_key adapter has key fields")
@@ -724,6 +744,12 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
+        if (
+            self.auth.identity is not None
+            and self.auth.identity.mcp_tool is not None
+            and self.mcp is None
+        ):
+            raise ValueError("mcp_tool identity needs an MCP server")
         oauth = self.auth.oauth
         # Discovery starts from an MCP server, so without one the catalog names
         # the endpoints, and the client is the operator's.

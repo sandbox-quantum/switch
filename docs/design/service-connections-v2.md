@@ -56,6 +56,19 @@ access:
 tools: { mode: pass_through } # the vendor's tool list as it is, until classified
 ```
 
+An OAuth identity can instead name `mcp_tool: user_info` in place of `url`.
+Switch initializes the configured first MCP server and checks that exactly one
+matching tool advertises `readOnlyHint: true` and accepts an empty argument
+object before calling it. Its result must be a single account object, either
+structured content or one JSON text block. Identity requests have time and
+response-size limits, refuse redirects, and report fixed failure codes rather
+than vendor diagnostics.
+
+For a vendor offering no OAuth scopes, `access.unscoped: true` explicitly permits
+empty `read.scopes` and `write.scopes`. Both levels are required and a connection
+is always recorded as write access. Vendors with scopes must keep the normal
+scoped levels.
+
 The loader stays strict and refuses an entry whose fields contradict its
 adapter: a GitHub entry with MCP servers, a pass-through GitHub token, an
 `oauth` entry without its client, identity or tools, a minted token that
