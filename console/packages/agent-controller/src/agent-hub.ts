@@ -326,12 +326,12 @@ export class AgentHub {
   }
 
   /**
-   * A room control (`!reset`, `!compact`, `!interrupt`), for whichever of the
-   * agent's sessions works in its room: the agent host decides which.
+   * Room-wide controls follow placement; cancellation follows the session
+   * that owns the queued turn, even after room placement changes.
    */
   sessionCommand(frame: AgentSessionCommandFrame): void {
     const { agent_id: agentId, command } = frame;
-    const origin = command.origin as { roomId?: unknown } | undefined;
+    const origin = command.origin as { roomId?: unknown; actorId?: unknown } | undefined;
     const roomId = frame.room_id ?? (typeof origin?.roomId === 'string' ? origin.roomId : null);
     const agent = this.agents.get(agentId);
     const host = agent ? this.running(agent) : null;
@@ -344,7 +344,31 @@ export class AgentHub {
       );
       return;
     }
-    const relayed = { ...command, sessionId: null, roomId } as unknown as SessionCommand;
+    const body = command.body as { type?: unknown; turnId?: unknown } | undefined;
+    const cancelling = body?.type === 'turn.cancel';
+    if (
+      cancelling &&
+      (typeof command.sessionId !== 'string' ||
+        !command.sessionId ||
+        command.sessionId === 'current' ||
+        origin?.roomId !== roomId ||
+        typeof origin.actorId !== 'string' ||
+        !origin.actorId ||
+        typeof body.turnId !== 'string' ||
+        !body.turnId)
+    ) {
+      this.deps.log.warn('Dropped a cancellation without its original session, room or sender', {
+        agentId,
+        roomId,
+        commandId: command.commandId,
+      });
+      return;
+    }
+    const relayed = {
+      ...command,
+      sessionId: cancelling ? command.sessionId : null,
+      roomId,
+    } as unknown as SessionCommand;
     void Promise.resolve(host.deps.onSessionCommand(relayed)).catch((error: unknown) =>
       this.deps.log.error('The agent host failed a room control', {
         agentId,

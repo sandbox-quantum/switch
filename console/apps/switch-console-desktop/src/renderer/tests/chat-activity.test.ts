@@ -174,6 +174,38 @@ describe('placeTurns', () => {
     expect(ids(placeTurns(replied, 'helper', bound))).toEqual({ q1: ['t1'], r1: ['t2'] });
   });
 
+  it('keeps a cancelled queued turn under its original message instead of another turn’s reply', () => {
+    const messages = [said('q1', null), said('q2', null), said('r1', 'helper')];
+    const bound = new Map([
+      ['q1', turn('t1', 'running')],
+      ['q2', turn('t2', 'cancelled')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], q2: ['t2'] });
+  });
+
+  it('skips the cancelled turn without losing the active turn’s reply for the next queued message', () => {
+    const messages = [said('q1', null), said('q2', null), said('q3', null), said('r1', 'helper')];
+    const bound = new Map([
+      ['q1', turn('t1', 'running')],
+      ['q2', turn('t2', 'cancelled')],
+      ['q3', turn('t3', 'queued')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({
+      q1: ['t1'],
+      q2: ['t2'],
+      r1: ['t3'],
+    });
+  });
+
+  it('does not wait for a reply from a cancelled turn when placing the next turn', () => {
+    const messages = [said('q1', null), said('q2', null), said('r2', 'helper')];
+    const bound = new Map([
+      ['q1', turn('t1', 'cancelled')],
+      ['q2', turn('t2', 'running')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], q2: ['t2'] });
+  });
+
   it('chains turns queued one after another under each reply in turn', () => {
     const messages = [
       said('q1', null),
@@ -469,6 +501,8 @@ describe('bindTurns', () => {
     const tool = row('t', 'tool', { status: 'in-progress' });
     expect(toolState(tool, 'running')).toBe('running');
     expect(toolState(tool, 'interrupted')).toBe('failed');
+    expect(toolState(tool, 'cancelled')).toBe('failed');
+    expect(isThinking(turnOf([], 'cancelled'))).toBe(false);
     expect(toolState({ ...tool, status: 'completed' }, 'running')).toBe('done');
   });
 

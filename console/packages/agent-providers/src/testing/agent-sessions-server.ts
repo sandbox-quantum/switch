@@ -24,6 +24,7 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
     outcomes,
     unavailable: false,
     refusesUsage: false,
+    cancelledStatus: null as number | null,
     startUnknown: false,
     startRefused: false,
   };
@@ -50,6 +51,8 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
     }
     if (path.endsWith('/activity')) {
       const body = calls.at(-1)!.body as Record<string, unknown>;
+      if (body.status === 'cancelled' && state.cancelledStatus !== null)
+        return Response.json({ detail: 'status not accepted' }, { status: state.cancelledStatus });
       if (state.refusesUsage && 'usage' in body)
         return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
       return Response.json({ recorded: true });

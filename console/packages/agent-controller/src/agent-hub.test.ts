@@ -336,6 +336,70 @@ describe('placements', () => {
 });
 
 describe('room controls and approvals', () => {
+  it('preserves the recorded session when relaying a queued turn cancellation', async () => {
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    const { stream, seen } = watcher();
+    stream.start();
+    hub.sessionCommand({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: {
+        commandId: 'cancel-1',
+        sessionId: 'original-session',
+        origin: { actorId: 'sender', roomId: 'room-a' },
+        body: { type: 'turn.cancel', turnId: 'queued-turn' },
+      },
+    });
+    await waitFor(() => seen.commands.length === 1, 'targeted cancellation');
+    expect(seen.commands[0]).toMatchObject({
+      sessionId: 'original-session',
+      roomId: 'room-a',
+      body: { type: 'turn.cancel', turnId: 'queued-turn' },
+    });
+  });
+
+  it.each([null, undefined, 42, ''])(
+    'does not reroute a cancellation with missing or invalid session %s',
+    async (sessionId) => {
+      hub.streamAttached();
+      hub.attach(AGENT, 0, ['room-a']);
+      const { stream, seen } = watcher();
+      stream.start();
+      hub.sessionCommand({
+        agent_id: AGENT,
+        room_id: 'room-a',
+        command: {
+          commandId: 'cancel-unbound',
+          sessionId,
+          origin: { actorId: 'sender', roomId: 'room-a' },
+          body: { type: 'turn.cancel', turnId: 'queued-turn' },
+        },
+      });
+      await delay(20);
+      expect(seen.commands).toEqual([]);
+    }
+  );
+
+  it('refuses to relay cancellation when the frame and command name different rooms', async () => {
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a', 'room-b']);
+    const { stream, seen } = watcher();
+    stream.start();
+    hub.sessionCommand({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: {
+        commandId: 'cancel-cross-room',
+        sessionId: 'original-session',
+        origin: { actorId: 'sender', roomId: 'room-b' },
+        body: { type: 'turn.cancel', turnId: 'queued-turn' },
+      },
+    });
+    await delay(20);
+    expect(seen.commands).toEqual([]);
+  });
+
   it('hands a room control to the agent host with its room, for it to pick the session', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a', 'room-b']);

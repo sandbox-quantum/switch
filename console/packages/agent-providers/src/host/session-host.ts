@@ -864,6 +864,26 @@ export class HostedSession {
     return result;
   }
 
+  /**
+   * Reconcile an existing room cancellation before resolving its `current`
+   * epoch again after restart. All fields other than that placeholder must
+   * match the original logical command, including its actor, room and target.
+   */
+  replayRoomCancellation(input: Command): Promise<Snapshot['commandStatuses'][number] | null> {
+    const command = commandSchema.parse(input);
+    if (command.body.type !== 'turn.cancel' || command.epoch !== 'current')
+      return Promise.resolve(null);
+    const result = this.serial.then(() => {
+      const recorded = this.commands.get(command.commandId);
+      if (!recorded) return null;
+      if (!isDeepStrictEqual(recorded, { ...command, epoch: recorded.epoch }))
+        throw new Error('IDEMPOTENCY_CONFLICT');
+      return this.status(command.commandId);
+    });
+    this.serial = result.catch(() => {});
+    return result;
+  }
+
   /** Resolves once every command and outcome queued before it has been taken or refused. */
   barrier(): Promise<void> {
     const result = this.serial.then(() => {});
@@ -936,6 +956,7 @@ export class HostedSession {
         throw new Error('Session is not ready.');
     } else if (
       body.type !== 'turn.interrupt' &&
+      body.type !== 'turn.cancel' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
       body.type !== 'session.compact' &&
@@ -1130,6 +1151,9 @@ export class HostedSession {
         } finally {
           this.resetting = false;
         }
+      } else if (body.type === 'turn.cancel') {
+        await this.cancelQueued(command, body.turnId);
+        return this.status(command.commandId);
       } else if (body.type === 'turn.interrupt') {
         if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
@@ -1209,6 +1233,44 @@ export class HostedSession {
     const status = this.snapshot().commandStatuses.find((value) => value.commandId === commandId);
     if (!status) throw new Error('NOT_FOUND: command not found.');
     return status;
+  }
+
+  /** The same synchronous queue-ownership boundary as runNext, before any I/O. */
+  private async cancelQueued(command: Command, turnId: string): Promise<void> {
+    const original = this.commands.get(turnId);
+    if (!original || original.body.type !== 'message.send')
+      throw new Error('NOT_FOUND: this session has no message with that turn id.');
+    if (
+      original.origin.actorId !== command.origin.actorId ||
+      original.origin.roomId !== command.origin.roomId
+    )
+      throw new Error('CANCEL_FORBIDDEN: only the original sender in the same room may cancel.');
+    if (this.activeTurn === turnId)
+      throw new Error(
+        'TURN_STARTED: the host has claimed this message. Use !interrupt to stop it.'
+      );
+    const index = this.queue.findIndex((queued) => queued.commandId === turnId);
+    if (index < 0) throw new Error('NOT_QUEUED: this message is no longer waiting for the agent.');
+    this.queue.splice(index, 1);
+    // The queue changed. A failure from here is uncertain, not a promise that
+    // a retry can withdraw it. Restart never requeues an accepted message.
+    this.dispatched.add(command.commandId);
+    await this.inbox.appendAll([
+      { type: 'dispatched', commandId: command.commandId },
+      { type: 'finished', commandId: turnId },
+    ]);
+    this.finished.add(turnId);
+    // Persist the terminal turn and its applied receipt in the same batch.
+    await this.publishBatch([
+      { type: 'turn.upsert', turnId, commandId: turnId, status: 'cancelled' },
+      {
+        type: 'command.status',
+        commandId: command.commandId,
+        status: 'applied',
+        code: null,
+        message: null,
+      },
+    ]);
   }
 
   private async runNext(): Promise<void> {

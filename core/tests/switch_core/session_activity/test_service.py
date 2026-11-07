@@ -812,3 +812,15 @@ async def test_a_room_control_takes_the_agents_addressing_policy(
             "guarded", room, PlatformPerson(stranger), doing="stop it"
         )
     assert error.value.code == "NOT_AUTHORIZED"
+
+
+async def test_cancelled_is_a_host_reported_terminal_status(service):
+    await service.report_item(AGENT, SESSION, **_turn("queued-cancel", 1, "queued"))
+    assert await service.report_item(
+        AGENT, SESSION, **_turn("queued-cancel", 2, "cancelled")
+    )
+    assert not await service.report_item(
+        AGENT, SESSION, **_turn("queued-cancel", 1, "queued")
+    )
+    [turn] = await service.turn_items(AGENT, SESSION, "queued-cancel")
+    assert turn.status == "cancelled" and turn.revision == 2

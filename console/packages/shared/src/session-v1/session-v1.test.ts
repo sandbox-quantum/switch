@@ -538,3 +538,39 @@ it.each(['gemini', 'antigravity', 'future-provider'])(
     expect(snapshotSchema.parse(snapshot).session.provider).toBe(provider);
   }
 );
+
+it('accepts a precise queued-turn cancellation and retains its terminal state', () => {
+  const command = {
+    contractVersion: 1,
+    commandId: 'cancel-message',
+    sessionId: 'session-demo',
+    epoch: 'epoch-demo',
+    origin: {
+      surface: 'discord',
+      actorId: 'sender',
+      roomId: 'room',
+      threadId: null,
+      messageId: 'cancel-request',
+    },
+    body: { type: 'turn.cancel', turnId: 'queued-message' },
+  };
+  expect(commandSchema.parse(command)).toEqual(command);
+  expect(commandSchema.safeParse({ ...command, body: { type: 'turn.cancel' } }).success).toBe(
+    false
+  );
+  expect(
+    commandSchema.safeParse({ ...command, body: { ...command.body, extra: true } }).success
+  ).toBe(false);
+  const replica = new SessionReplica(initial());
+  const cancelled = event(100, {
+    type: 'turn.upsert',
+    turnId: 'queued-message',
+    commandId: 'queued-message',
+    status: 'cancelled',
+  } as ServerEvent['body']);
+  replica.apply(cancelled);
+  expect(
+    snapshotSchema.parse(replica.snapshot()).turns.find((turn) => turn.turnId === 'queued-message')
+      ?.status
+  ).toBe('cancelled');
+});
