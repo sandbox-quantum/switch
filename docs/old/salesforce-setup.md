@@ -99,9 +99,11 @@ identified the connected account. A granted room agent completed
 removed, a fresh request reported the tool unavailable. These were read-side
 calls, not a record-write test. The connection remains honestly write-capable.
 
-Metadata-only inspection observed a two-hour issued access window. Natural
-expiry renewal and Disconnect are not yet verified. The timed grant-off video
-is still being recorded. No refresh-token value rotation is claimed.
+Metadata-only inspection observed a two-hour issued access window. After the
+original expiry, a fresh getUserInfo completed without another sign-in, and
+metadata showed an active connection with a later issued access expiry. This
+verifies renewal, not the number of refreshes or refresh-token value rotation.
+Disconnect and the timed grant-off video remain pending.
 
 The existing org has SObject Reads and Mutations active, Deletes and All
 inactive. Salesforce's Developer Edition announcement states Hosted MCP is

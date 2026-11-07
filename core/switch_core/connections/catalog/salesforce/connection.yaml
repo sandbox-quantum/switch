@@ -7,8 +7,9 @@ adapter: oauth
 auth:
   type: oauth
   # The External Client App must enable refresh token rotation (see setup).
-  # Confirmed enabled in the Developer Edition test app; a replacement token
-  # has not yet been measured through a live Switch refresh.
+  # Confirmed enabled in the Developer Edition test app. Live QA completed a
+  # fresh read after the original expiry and observed a later access expiry
+  # without another sign-in. This does not prove refresh-token value rotation.
   refresh: rotating
   oauth:
     # Salesforce offers no dynamic registration for its hosted MCP servers:

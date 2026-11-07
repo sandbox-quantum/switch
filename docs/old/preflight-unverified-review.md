@@ -3,7 +3,8 @@
 The inconclusive-save and exact localhost-callback fixes were installed as
 targeted updates on the existing local QA checkout. Real Salesforce OAuth,
 read-side room calls and later grant-off unavailability were observed.
-Natural-expiry renewal, timed grant-off video and Disconnect remain pending.
+Natural-expiry renewal is verified by a fresh completed read and later expiry
+without another sign-in. Timed grant-off video and Disconnect remain pending.
 This final review tree is not a separate live installation.
 
 Each static entry may opt in with `auth.oauth.inconclusive_probe`, a strict list
