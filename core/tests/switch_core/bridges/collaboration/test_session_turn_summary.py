@@ -143,13 +143,13 @@ def test_an_escape_that_expands_the_text_still_lands_inside_the_budget() -> None
     assert "&lt" not in said.replace("&lt;", "")
 
 
-def test_nothing_said_and_no_tool_calls_is_still_just_the_state() -> None:
-    """A brand new turn: nothing folded in yet at all."""
+def test_empty_queued_summary_names_the_turn_for_cancellation() -> None:
+    """A queued turn exposes how to withdraw it before any work starts."""
     turn = TurnUpsert.model_validate(
         {"type": "turn.upsert", "turnId": TURN, "status": "queued", "commandId": None}
     )
 
-    assert (
-        turn_summary([], turn, escape=_identity, limit=10_000)
-        == "Queued. Waiting for the agent to start…"
+    assert turn_summary([], turn, escape=_identity, limit=10_000) == (
+        "Queued. Waiting for the agent to start… "
+        f"To cancel, use !cancel @agent-name {TURN[:8]}."
     )
