@@ -20,7 +20,7 @@ gateway frontend.
 
 ```bash
 just init-env            # first-time setup — generate .env with random secrets
-uv sync                  # install Python dependencies (core/)
+uv sync --project core   # install Python dependencies (core/)
 just gateway-install     # install gateway frontend deps (first time only)
 ```
 
@@ -102,9 +102,9 @@ the Mattermost bridge then refuses to start with a message naming the variable:
 add the line from `.env.example`.
 
 `just migrate` runs `alembic upgrade head` against the Postgres started by
-`just up`. Run it once after the stack is up and again after pulling any
-change that adds a migration — `just run` does not apply migrations itself
-and will fail against a database that's behind.
+`just up`. `just run` applies migrations itself when it boots
+(`DB_MIGRATE_ON_BOOT`, on by default), so you need `just migrate` only to
+migrate without starting the server, or with `DB_MIGRATE_ON_BOOT=false`.
 
 `just run` starts switch-core (`python -m switch_core.main`) on
 `SERVER_PORT` (`8000` by default). This one process is both the Agent Bridge
