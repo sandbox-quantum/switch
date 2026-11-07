@@ -7,6 +7,7 @@ effects outside the database are the fakes `test_account_deletion.py` uses.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -81,7 +82,15 @@ def _app(
 
 
 def _client(app: FastAPI, user_id: str, email: str) -> httpx.AsyncClient:
-    token = create_jwt(user_id, email, "user", TEST_KEYRING, TENANT_ZERO_ID)
+    token = create_jwt(
+        user_id,
+        email,
+        "user",
+        TEST_KEYRING,
+        TENANT_ZERO_ID,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
