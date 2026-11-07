@@ -45,6 +45,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **The Trello connection.** A person connects Trello from Switch Console;
+  nothing needs configuring on the server. An agent they grant it to acts as
+  them in Trello, through Trello's MCP server. Trello grants reading and writing
+  each as a whole, so a write connection also covers organization write, the
+  Inbox and the Planner, and one where Trello grants only reading is a read
+  connection.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
