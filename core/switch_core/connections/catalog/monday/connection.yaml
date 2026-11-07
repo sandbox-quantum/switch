@@ -3,31 +3,30 @@ name: Monday.com
 category: Project management
 description: Read and update Monday.com boards, items and workspaces.
 enabled: false
-# Monday.com official remote MCP server at https://mcp.monday.com/mcp and OAuth provider
-# at https://auth.monday.com/oauth2/authorize.
+# Monday.com official remote MCP server at https://mcp.monday.com/mcp.
 #
-# Probe findings against live OAuth endpoints and developer documentation:
-# 1. Endpoint metadata (https://auth.monday.com/.well-known/oauth-authorization-server/mcp):
-#    - [DOCUMENTED] scopes_supported: ["me:read", "boards:read", "boards:write", "workspaces:read"]
-#    - [DOCUMENTED] grant_types_supported: ["authorization_code"] (no refresh_token grant)
-#    - [DOCUMENTED] token_endpoint_auth_methods_supported: ["client_secret_post", "none"] (with PKCE S256)
-#    - [DOCUMENTED] Loopback redirect: requires account-admin pre-approval of client and redirect URI
-# 2. Token lifetime probe:
-#    - [MEASURED] Monday's OAuth token endpoint (POST https://auth.monday.com/oauth2/token) returns
-#      perpetual access tokens with no expires_in field and no refresh_token. Probing token refresh
-#      returns an unsupported grant error.
-# 3. Identity probe:
-#    - [DOCUMENTED] Monday does not advertise an RFC 7662 userinfo or introspection endpoint.
-#    - [MEASURED] Identity resolution requires a GraphQL POST to https://api.monday.com/v2 with query:
-#      `{ me { id name email account { id } } }`.
-#    - [MEASURED] To prevent cross-account collisions when a user belongs to multiple Monday accounts,
-#      account_id must use the composite identifier [account.id, id] with label = email.
+# Metadata from https://auth.monday.com/.well-known/oauth-authorization-server/mcp:
+# - [DOCUMENTED] issuer: https://auth.monday.com/mcp
+# - [DOCUMENTED] authorization_endpoint: https://auth.monday.com/oauth2/authorize
+# - [DOCUMENTED] token_endpoint: https://auth.monday.com/oauth_ms/oauth/token
+# - [DOCUMENTED] registration_endpoint: https://auth.monday.com/oauth_ms/oauth/register (dynamic client registration)
+# - [DOCUMENTED] revocation_endpoint: https://auth.monday.com/oauth_ms/oauth/revoke
+# - [DOCUMENTED] grant_types_supported: ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"]
+# - [DOCUMENTED] code_challenge_methods_supported: ["S256"]
+# - [DOCUMENTED] token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"]
+# - [DOCUMENTED] scopes_supported: null (scopes not advertised in metadata; tools execute under authorizing user's permissions)
+# - [DOCUMENTED] Integration guide notes that additional dynamic clients and loopback redirect URIs require Monday account-admin pre-approval.
 #
-# Maintainer decision (@petr-sandbox on #835):
-# Because Monday.com's OAuth tokens do not expire and cannot be refreshed, handing an unexpiring
-# pass-through token to an agent violates Switch's security policy (docs/design/service-connections-v2.md,
-# "Tokens" and "Keys"; key_never_expires check in commit 26a2c0f1). Switch requires finite token lifetimes
-# and refresh capabilities for active entries. Therefore, Monday.com is cataloged with enabled: false
-# documenting these verified probe results until Monday adds token expiration/refresh support.
+# Identity & Token Lifetime Architecture:
+# 1. Identity: Monday does not provide a standard REST userinfo or introspection endpoint. Identity resolution
+#    requires a GraphQL POST to https://api.monday.com/v2 with query `{ me { id name email account { id } } }`.
+#    Per maintainer guidance (@petr-sandbox on #835), this fits the generic POST identity call approved on #839
+#    (`method: POST` with static body), mapping composite account_id: [account.id, id] and label: email.
+# 2. Token lifetime: Per maintainer guidance on #835, once token lifetime is measured against a live account,
+#    if tokens expire and refresh rotates, the entry can be enabled; if tokens never expire, the entry must remain
+#    disabled per Switch's credential lifetime policy (commit 26a2c0f1: "stop handing agents long-lived service credentials",
+#    key_never_expires check), matching the ClickUp #836 precedent.
+#
+# Kept enabled: false pending the shared POST identity feature (#839) and live token lifetime measurement.
 auth:
   type: oauth
