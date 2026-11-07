@@ -110,6 +110,14 @@ export const factoryDroidAcp: AcpProviderHooks = {
       if (!params || typeof params !== 'object' || Array.isArray(params))
         return { action: 'decline' };
       const request = params as AcpElicitationRequest;
+      // A session-bound elicitation must never be shown in another session.
+      // When the field is omitted, this connection still belongs to one
+      // session and askQuestions checks that its turn is active.
+      if (
+        !context.nativeSessionId ||
+        (request.sessionId !== undefined && request.sessionId !== context.nativeSessionId)
+      )
+        return { action: 'cancel' };
       const questions = droidQuestions(request);
       if (!questions.length) return { action: 'decline' };
       const result = await context.askQuestions(questions, (selected) =>

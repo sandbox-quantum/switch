@@ -468,3 +468,33 @@ it('cancels multiple pending forms on interrupt and outside a turn', async () =>
     expect(server.received.find((m) => m.id === id)?.result).toEqual({ action: 'cancel' });
   expect(events.filter((e) => e.type === 'user-input.resolved')).toHaveLength(2);
 });
+
+it('does not show an elicitation addressed to a different ACP session', async () => {
+  const { adapter, server, events } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask' });
+  server.send({
+    id: 330,
+    method: 'elicitation/create',
+    params: { ...droidForm, sessionId: 'other' },
+  });
+  await flush();
+  expect(server.received.find((m) => m.id === 330)?.result).toEqual({ action: 'cancel' });
+  expect(events.filter((e) => e.type === 'user-input.requested')).toHaveLength(0);
+});
+
+it('accepts an otherwise valid form with an omitted session field', async () => {
+  const { adapter, server, events } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask' });
+  const { sessionId, ...form } = droidForm;
+  expect(sessionId).toBe('native');
+  server.send({ id: 331, method: 'elicitation/create', params: form });
+  await flush();
+  const event = events.find((e) => e.type === 'user-input.requested');
+  if (!event || event.type !== 'user-input.requested') throw new Error('No question');
+  await adapter.respondToUserInput('s', event.requestId, { question_1: 'option_1' });
+  await flush();
+  expect(server.received.find((m) => m.id === 331)?.result).toEqual({
+    action: 'accept',
+    content: { question_1: 'option_1' },
+  });
+});
