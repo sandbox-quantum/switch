@@ -1,6 +1,7 @@
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { ControllerApiError } from './api';
 import { errorMessage } from './log';
+import { mark, PLAIN, paint, type Style, tally } from './output';
 import { PROVIDERS, type Provider } from './schemas';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
 import type { ServiceState } from './service';
@@ -9,7 +10,8 @@ import type { Identity } from './store';
 import { type ControllerRelease, isNewer } from './update';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail';
-export type Check = { name: string; status: CheckStatus; detail: string };
+/** One thing doctor looked at. `fix` is what to do about a warn or a fail, when there is one thing to do. */
+export type Check = { name: string; status: CheckStatus; detail: string; fix?: string };
 
 /** The oldest Node the controller runs on: it needs the built-in `node:sqlite`. */
 export const MIN_NODE: readonly [number, number] = [22, 13];
@@ -44,6 +46,7 @@ function nodeCheck(nodeVersion: string): Check {
     detail: ok
       ? nodeVersion
       : `${nodeVersion}; the controller needs ${MIN_NODE.join('.')} or later.`,
+    ...(ok ? {} : { fix: `Install Node ${MIN_NODE.join('.')} or later.` }),
   };
 }
 
@@ -53,7 +56,8 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
       {
         name: 'Enrollment',
         status: 'fail',
-        detail: `${inputs.dataDir} is not enrolled. Run: switch-agent-controller enroll --server <url> --code <code>, with a code from the Machines page.`,
+        detail: `${inputs.dataDir} is not enrolled.`,
+        fix: 'switch-agent-controller enroll --server <url> --code <code>, with a code from the Machines page.',
       },
     ];
   const { identity } = inputs;
@@ -62,8 +66,9 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
       name: 'Enrollment',
       status: inputs.revokedAt ? 'fail' : 'ok',
       detail: inputs.revokedAt
-        ? `Controller ${identity.controllerId} was revoked at ${inputs.revokedAt}; enroll this machine again.`
+        ? `Controller ${identity.controllerId} was revoked at ${inputs.revokedAt}.`
         : `Controller ${identity.controllerId} ("${identity.name}") on ${identity.server}`,
+      ...(inputs.revokedAt ? { fix: 'Enroll this machine again.' } : {}),
     },
   ];
   if (inputs.revokedAt) return checks;
@@ -82,7 +87,8 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
     checks.push({
       name: 'Credential',
       status: 'fail',
-      detail: `Not in ${inputs.secrets.description}; enroll this machine again.`,
+      detail: `Not in ${inputs.secrets.description}.`,
+      fix: 'Enroll this machine again.',
     });
     return checks;
   }
@@ -142,7 +148,8 @@ async function providerChecks(inputs: DoctorInputs, bundle: string | null): Prom
       name: 'Providers',
       status: 'fail',
       detail:
-        'No provider CLI is installed and signed in on PATH for this user, so no agent can run here. Install one (claude, codex, opencode, cursor or antigravity) and sign in, or set its API key in the --env-file the service runs with.',
+        'No provider CLI is installed and signed in on PATH for this user, so no agent can run here.',
+      fix: 'Install one (claude, codex, opencode, cursor or antigravity) and sign in, or set its API key in the --env-file the service runs with.',
     });
   return checks;
 }
@@ -154,9 +161,8 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
   checks.push({
     name: 'Platform',
     status: supported ? 'ok' : 'fail',
-    detail: supported
-      ? inputs.platform
-      : `${inputs.platform} is not supported; use Linux, macOS or Windows.`,
+    detail: supported ? inputs.platform : `${inputs.platform} is not supported.`,
+    ...(supported ? {} : { fix: 'Use Linux, macOS or Windows.' }),
   });
   checks.push(...(await serverChecks(inputs)));
   let bundle: string | null = null;
@@ -192,16 +198,17 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
           ? {
               name: 'Service',
               status: 'warn',
-              detail: unit
-                ? `${unit} is not running: sudo systemctl start ${unit}`
-                : 'Installed, but not running',
+              detail: unit ? `${unit} is not running` : 'Installed, but not running',
+              fix: unit
+                ? `sudo systemctl start ${unit}`
+                : 'Start it again: switch-agent-controller install-service',
             }
           : service === 'not-installed'
             ? {
                 name: 'Service',
                 status: 'warn',
-                detail:
-                  'Not installed; run: switch-agent-controller install-service (or keep `run` going yourself)',
+                detail: 'Not installed',
+                fix: 'switch-agent-controller install-service (or keep `run` going yourself)',
               }
             : { name: 'Service', status: 'warn', detail: `Cannot tell: ${service}` }
   );
@@ -218,7 +225,8 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
           ? {
               name: 'Version',
               status: 'warn',
-              detail: `${inputs.version}; ${latest.version} is available: switch-agent-controller update`,
+              detail: `${inputs.version}; ${latest.version} is available`,
+              fix: 'switch-agent-controller update',
             }
           : { name: 'Version', status: 'ok', detail: `${inputs.version}, the latest` }
     );
@@ -232,11 +240,23 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
   return checks;
 }
 
-const MARK: Record<CheckStatus, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL' };
-
-export function formatChecks(checks: Check[]): string {
+/**
+ * One line per check, marks and names in columns, each problem's fix on the
+ * line under it, and a closing count. Colour only when `style` says so.
+ */
+export function formatChecks(checks: Check[], style: Style = PLAIN): string {
   const width = Math.max(...checks.map((check) => check.name.length));
-  return checks
-    .map((check) => `${MARK[check.status]}  ${check.name.padEnd(width)}  ${check.detail}`)
-    .join('\n');
+  const lines: string[] = [];
+  for (const check of checks) {
+    lines.push(`${mark(style, check.status)}  ${check.name.padEnd(width)}  ${check.detail}`);
+    if (check.fix && check.status !== 'ok')
+      lines.push(`${' '.repeat(4 + 2 + width + 2)}${paint(style, 'dim', 'fix:')} ${check.fix}`);
+  }
+  lines.push('', tally(checks.map((check) => check.status)));
+  return lines.join('\n');
+}
+
+/** What `doctor --json` prints: the checks as they are, and whether any failed. */
+export function checksJson(checks: Check[]): string {
+  return JSON.stringify({ ok: !checks.some((check) => check.status === 'fail'), checks }, null, 2);
 }
