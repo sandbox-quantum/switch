@@ -23,7 +23,10 @@ from typing import Any
 import pytest
 
 from switch_core.sessions.contract import (
+    TURN_ENDED,
     Item,
+    TurnCancel,
+    TurnUpsert,
     event_bytes,
     parse_command,
     parse_host_event,
@@ -193,3 +196,28 @@ def test_host_publication_claims_are_rejected() -> None:
     payload["body"]["request"]["audience"] = {"kind": "room", "roomId": "room-demo"}
     with pytest.raises(ValueError):
         parse_host_event(payload)
+
+
+def test_carries_a_cancel_of_one_queued_turn_and_a_turn_that_ended_cancelled() -> None:
+    cancel = {
+        **EXAMPLES["platformAnswer"],
+        "body": {"type": "turn.cancel", "turnId": "turn-demo"},
+    }
+    assert isinstance(parse_command(cancel).body, TurnCancel)
+    with pytest.raises(ValueError):
+        parse_command(
+            {**cancel, "body": {**cancel["body"], "messageId": "message-demo"}}
+        )
+    ended = parse_host_event(
+        {
+            **EXAMPLES["hostRequest"],
+            "body": {
+                "type": "turn.upsert",
+                "turnId": "turn-demo",
+                "status": "cancelled",
+                "commandId": None,
+            },
+        }
+    )
+    assert isinstance(ended.body, TurnUpsert)
+    assert ended.body.status in TURN_ENDED

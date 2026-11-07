@@ -305,6 +305,15 @@ def test_at_prefix_is_optional_and_never_doubled() -> None:
     assert reassemble_args(spec, {"agent": " @worker ", "alias": "w "}) == expected
 
 
+def test_a_cancel_keeps_its_turn_id_bare() -> None:
+    """`!cancel` reads the one token without an `@` as the turn, so the id
+    must not come back as a mention the way a name option does."""
+    spec = COMMANDS_BY_NAME["cancel"].args_spec
+    assert reassemble_args(spec, {"target": "worker", "turn": "turn-1"}) == (
+        "@worker turn-1"
+    )
+
+
 _TWO_OPTIONAL = (
     CommandArg("agent", "An agent", required=False),
     CommandArg("role", "A role for that agent", required=False),
