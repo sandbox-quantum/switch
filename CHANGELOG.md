@@ -303,6 +303,12 @@ version of their own to them without also giving them a release of their own.
   of the rooms it is in they may not read. All are decided by the same
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
+- **OAuth catalog entries can opt into MCP identity and unscoped consent.**
+  Identity tools must be read-only, take no arguments and identify one account;
+  ambiguous results fail sign-in. `account_id` may list several paths, joined
+  into one id, so a person in two accounts is two connections. Vendors with
+  documented absence of scopes can explicitly omit scope and are always shown
+  as read and write.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -415,6 +421,22 @@ version of their own to them without also giving them a release of their own.
   and carries nothing else. Notices travel between replicas on the signal bus,
   so a change made through one pod reaches a Console connected to another
   (#717).
+- **Asana connector setup.** This entry is intended to let a person connect
+  Asana from Switch Console and grant an agent access to tasks and projects
+  in their workspaces through Asana's MCP server. Each server's
+  operator registers an Asana MCP app — Asana offers no dynamic
+  registration for the server, and a standard API app is a different app —
+  and saves it under Connector apps, or names it in
+  `ASANA_CLIENT_CONFIG_PATH` (Helm: `switchCore.asanaClientSecret`); see
+  `docs/old/asana-setup.md`. Without it, Asana is listed as not set up.
+  Like Airtable and Google Workspace, it needs `GATEWAY_PUBLIC_URL`:
+  Asana sends people back to the server's own callback. Asana offers no
+  read-only sign-in: the connection omits OAuth scope and can write within
+  the person's own Asana permissions. Identity is read using Asana's MCP
+  `get_user` tool. Disconnecting revokes the sign-in at Asana. On
+  2026-11-06, a V2 connection succeeded and `get_user` advertised a read-only
+  tool with no required arguments; `get_user({})` returned nonempty `data.gid`
+  and `data.email` strings. See `docs/old/asana-setup.md` for remaining limits.
 - **The Airtable connection.** A person connects Airtable from Switch Console,
   choosing at Airtable's consent screen which bases and workspaces to share,
   and a granted agent reads and updates records and comments in them, as that

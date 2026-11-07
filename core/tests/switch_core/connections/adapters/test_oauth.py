@@ -237,6 +237,9 @@ class TestRefresh:
         assert renewed.values["refresh_token"] != secret.values["refresh_token"]
         with pytest.raises(ReauthorizationRequiredError):
             await adapter.refresh(secret)
+        # A later renewal must use the replacement, not the spent token.
+        renewed_again = await adapter.refresh(renewed)
+        assert renewed_again.values["refresh_token"] != renewed.values["refresh_token"]
         assert vendor.token_requests[-1]["resource"] == MCP_URL
 
     async def test_sends_the_secret_as_basic_where_the_vendor_takes_only_that(
