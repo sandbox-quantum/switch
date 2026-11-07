@@ -230,7 +230,10 @@ class Actor[ConfigT: ClientConfig]:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        replaces_event_id: str | None = None,
     ) -> str | None:
+        """Post a text message, or with `replaces_event_id`, an edit of the
+        message it names: a row of its own carrying the new text."""
         try:
             result = await self._transport.send_message(
                 room_id,
@@ -241,6 +244,7 @@ class Actor[ConfigT: ClientConfig]:
                 mentions=mentions,
                 thread_root_id=thread_root_id,
                 extra_content=extra_content,
+                replaces_event_id=replaces_event_id,
             )
         except TransportError as exc:
             logger.error("Failed to send message to %s: %s", room_id, exc)

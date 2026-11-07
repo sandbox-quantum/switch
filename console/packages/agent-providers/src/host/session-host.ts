@@ -58,6 +58,8 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('model'), id: z.string(), options: z.record(z.string(), z.string()) }),
   /** The host posts this turn's reply to its room itself: decided once, before posting. */
   z.object({ type: z.literal('room-reply'), commandId: z.string() }),
+  /** The queued turn `commandId` runs on this text instead of the one it was accepted with. */
+  z.object({ type: z.literal('revised'), commandId: z.string(), text: z.string() }),
 ]);
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
@@ -112,6 +114,12 @@ export class HostedSession {
   private readonly usage = new Map<string, TokenUsage[]>();
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
+  /**
+   * The text a queued turn runs on, where it was revised after it was accepted
+   * (`message.revise`): the accepted command is kept as it was, so a repeat of
+   * it is still recognised as the same command.
+   */
+  private readonly revisions = new Map<string, string>();
   private readonly questions = new Map<string, PendingQuestion>();
   private readonly listeners = new Set<(event: ServerEvent) => void>();
   /** Recent reasoning, in memory only: never published, journaled or replayed. */
@@ -189,6 +197,7 @@ export class HostedSession {
       if (record.type === 'reset-completed') this.resetPending = false;
       if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
       if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
+      if (record.type === 'revised') this.revisions.set(record.commandId, record.text);
     }
     this.projector = new ChatProjector(config.session, config.redactions ?? null);
     this.unsubscribe = adapter.subscribe((event) => {
@@ -724,7 +733,28 @@ export class HostedSession {
     const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
     if (turn?.status !== 'error' && turn?.status !== 'interrupted')
       throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
-    return { ...command, origin: original.origin, body: original.body };
+    const text = this.revisions.get(original.commandId) ?? original.body.text;
+    return { ...command, origin: original.origin, body: { ...original.body, text } };
+  }
+
+  /**
+   * The queued turn `messageId` started, or why there is none to revise: the
+   * agent has started on it, so the turn keeps the text it started with, or
+   * this session never had a turn for it.
+   */
+  private queuedFor(messageId: string): Command {
+    const queued = this.queue.find(
+      (each) => each.body.type === 'message.send' && each.origin.messageId === messageId
+    );
+    if (queued) return queued;
+    const started = [...this.commands.values()].some(
+      (each) => each.body.type === 'message.send' && each.origin.messageId === messageId
+    );
+    throw new Error(
+      started
+        ? 'TURN_STARTED: the agent has already started on that message, so this turn keeps the text it started with.'
+        : 'NOT_FOUND: this session has no queued turn for that message.'
+    );
   }
 
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
@@ -765,6 +795,10 @@ export class HostedSession {
         );
       if (session.status !== 'ready' && session.status !== 'running')
         throw new Error('Session is not ready.');
+    } else if (body.type === 'message.revise') {
+      if (eventBytes(command) > 60 * 1024)
+        throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
+      this.queuedFor(body.messageId);
     } else if (
       body.type !== 'turn.interrupt' &&
       body.type !== 'session.stop' &&
@@ -851,6 +885,22 @@ export class HostedSession {
           },
         });
         this.queue.push(command);
+      } else if (body.type === 'message.revise') {
+        // Found again here, and recorded with no await in between: `runNext`
+        // takes a turn off the queue synchronously and reads its text in the
+        // same breath, so whichever of the two comes first decides, and the
+        // turn never runs on a text other than the one its message shows.
+        const queued = this.queuedFor(body.messageId);
+        this.revisions.set(queued.commandId, body.text);
+        await this.inbox.append({ type: 'revised', commandId: queued.commandId, text: body.text });
+        const shown = this.snapshot().items.find(
+          (item) => item.itemId === `user-${queued.commandId}`
+        );
+        if (shown)
+          await this.publish({
+            type: 'item.upsert',
+            item: { ...shown, revision: shown.revision + 1, text: body.text },
+          });
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -1012,11 +1062,16 @@ export class HostedSession {
             result: null,
           });
       }
+      const unknown = this.dispatched.has(command.commandId);
       await this.publish({
         type: 'command.status',
         commandId: command.commandId,
-        status: this.dispatched.has(command.commandId) ? 'unknown' : 'rejected',
-        code: this.dispatched.has(command.commandId) ? 'OUTCOME_UNKNOWN' : 'PROVIDER_ERROR',
+        status: unknown ? 'unknown' : 'rejected',
+        code: unknown
+          ? 'OUTCOME_UNKNOWN'
+          : body.type === 'message.revise'
+            ? 'COMMAND_REJECTED'
+            : 'PROVIDER_ERROR',
         message: String(error),
       });
     }
@@ -1047,6 +1102,9 @@ export class HostedSession {
     const command = this.queue.shift();
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
+    // Read as the turn leaves the queue: a revision accepted from here on is
+    // refused as too late, so this is the text the turn runs on.
+    const text = this.revisions.get(command.commandId) ?? command.body.text;
     try {
       const attachments = command.body.attachments.length
         ? await this.config.stageAttachments!(command.body.attachments)
@@ -1057,7 +1115,7 @@ export class HostedSession {
       await this.adapter.sendTurn({
         sessionId: this.config.session.sessionId,
         turnId: command.commandId,
-        text: command.body.text,
+        text,
         attachments,
       });
     } catch (error) {

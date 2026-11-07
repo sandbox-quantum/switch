@@ -7,7 +7,7 @@ import type {
 } from '@sandboxaq/switch-agent-runtime';
 import type { AgentStreamDeps } from '@switch-console/agent-providers';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AgentHub } from './agent-hub';
+import { AgentHub, isNotifiable } from './agent-hub';
 import { silentLogger } from './log';
 import type { AgentEventFrame } from './schemas';
 
@@ -382,5 +382,15 @@ describe('room controls and approvals', () => {
       answered_by: null,
       answered_at: null,
     });
+  });
+});
+
+describe('what is handed to the watcher', () => {
+  it('is an addressed message, or an edit of one, and nothing unaddressed', () => {
+    expect(isNotifiable('message', { addressed: true })).toBe(true);
+    expect(isNotifiable('message_edit', { addressed: true })).toBe(true);
+    expect(isNotifiable('message_edit', { addressed: false })).toBe(false);
+    expect(isNotifiable('message', { addressed: false })).toBe(false);
+    expect(isNotifiable('command', {})).toBe(false);
   });
 });

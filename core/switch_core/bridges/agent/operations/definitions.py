@@ -670,6 +670,10 @@ async def read_context(
     someone arriving in the room (body reads "<name> joined the room"). Joins
     are part of the timeline so the history explains who appeared and when.
 
+    A message its sender edited shows its latest text as `body`, with the
+    edit's time as `edited_at` (epoch milliseconds); the edits themselves are
+    not entries, so a message reads once however often it was corrected.
+
     **`truncated` matters.** It is True when older history exists that this
     call did not reach — you are looking at a partial conversation. Widen
     `limit`, or page backwards with `before`, before concluding you have the

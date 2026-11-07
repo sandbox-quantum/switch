@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { SharedRoomInbox } from './room-inbox';
+import { roomInputId, SharedRoomInbox } from './room-inbox';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -134,4 +134,36 @@ it('replays a release written before the delivery was acknowledged', async () =>
   expect(inbox.pending()).toEqual([
     { type: 'received', sequence: 4, roomId: 'room', messageId: 'message-1' },
   ]);
+});
+
+it('hands over an edit of an addressed message under the edit’s own id, and the rest under none', () => {
+  const edit = {
+    type: 'message_edit',
+    room_id: 'room',
+    payload: {
+      addressed: true,
+      sender: '@person:test',
+      sender_name: 'A Person',
+      message_id: 'edit-1',
+      replaces_message_id: 'message-1',
+      body: 'fixed',
+      timestamp: 2,
+    },
+  };
+  expect(roomInputId(edit)).toBe('edit-1');
+  expect(roomInputId({ ...edit, payload: { ...edit.payload, addressed: false } })).toBeNull();
+  expect(
+    roomInputId({
+      type: 'message',
+      room_id: 'room',
+      payload: {
+        addressed: true,
+        sender: '@person:test',
+        sender_name: 'A Person',
+        message_id: 'message-1',
+        body: 'hi',
+        timestamp: 1,
+      },
+    })
+  ).toBe('message-1');
 });

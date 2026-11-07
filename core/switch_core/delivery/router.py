@@ -72,6 +72,7 @@ from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
+from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
 from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
@@ -84,6 +85,7 @@ from switch_core.db.agent_event_notify_ddl import (
 from switch_core.db.models import (
     Agent,
     AgentConnectionRecord,
+    AgentEventRow,
     Client,
     ClientRoom,
     CollaborationBridge,
@@ -115,6 +117,7 @@ from switch_core.delivery.recipient import (
     file_index,
 )
 from switch_core.logging_context import log_context
+from switch_core.messages.row import replaces_of
 from switch_core.observability.catalogue import ROUTING_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL
@@ -158,6 +161,12 @@ GROUP_SWEEP_SECONDS = 5.0
 # The one custom event an agent can be part of. The rest (reports,
 # observations) are the platform's own bookkeeping and are nobody's own event.
 _COMMAND_EVENT = "com.switch.command"
+
+
+class EditRefused(ValueError):
+    """An edit row that cannot be written: it names no message of this room,
+    something that is not a message, another edit, or a message somebody else
+    sent. Raised before the row is numbered, so nothing is stored."""
 
 
 _INSTALLS = TemplateInstallStore()
@@ -1135,6 +1144,9 @@ class MessageRouter:
         recipients: list[AgentRecipient],
         event: InboundMessage,
     ) -> _Plan:
+        replaces = replaces_of(event.content)
+        if replaces is not None:
+            return await self._decide_edit(session, reads, recipients, event, replaces)
         deliveries = [
             (
                 recipient,
@@ -1154,6 +1166,69 @@ class MessageRouter:
             return await self._follow_the_conversation(
                 session, reads, recipients, event
             )
+        return _Plan(deliveries=deliveries)
+
+    async def _decide_edit(
+        self,
+        session: AsyncSession,
+        reads: RoomReads,
+        recipients: list[AgentRecipient],
+        event: InboundMessage,
+        replaces: str,
+    ) -> _Plan:
+        """The agents an edit reaches: those the message it replaces was
+        delivered to as their own event, and nobody else.
+
+        An edit is never addressed on its own text, so it cannot reach an
+        agent the message did not, whatever names the new text drops or adds;
+        everyone else reads the latest text from the room's history. What the
+        earlier delivery said about the message (addressed or not, which
+        thread) is said again about the edit, so a host can match the two.
+
+        An edit of a message that is not in this room, is not a message, is
+        itself an edit, or was sent by somebody else is refused rather than
+        written: a platform reports an edit under its post's author, so a
+        mismatch is a bridge relaying something it should not.
+        """
+        original = await session.scalar(
+            select(Message).where(
+                Message.room_id == reads.room_id,
+                Message.transport_event_id == replaces,
+            )
+        )
+        if original is None:
+            raise EditRefused(f"{replaces} is not a message in room {reads.room_id}")
+        if original.event_type != "m.room.message":
+            raise EditRefused(f"{replaces} is a {original.event_type}, not a message")
+        if original.replaces_event_id is not None:
+            raise EditRefused(
+                f"{replaces} is itself an edit; edit the message it replaces"
+            )
+        if original.sender_id != event.sender:
+            raise EditRefused(
+                f"{event.sender} did not send {replaces}; only its sender may edit it"
+            )
+        earlier: dict[str, MessagePayload] = {}
+        for agent_id, payload in (
+            await session.execute(
+                select(AgentEventRow.agent_id, AgentEventRow.payload).where(
+                    AgentEventRow.room_id == reads.room_id,
+                    AgentEventRow.message_key == replaces,
+                    AgentEventRow.type == "message",
+                )
+            )
+        ).all():
+            delivered = AgentEvent.model_validate(payload).payload
+            assert isinstance(delivered, MessagePayload)
+            earlier[agent_id] = delivered
+        deliveries = [
+            (
+                recipient,
+                recipient.decide_edit(event, replaces, earlier[recipient.agent.id]),
+            )
+            for recipient in recipients
+            if recipient.agent.id in earlier
+        ]
         return _Plan(deliveries=deliveries)
 
     async def _follow_the_conversation(

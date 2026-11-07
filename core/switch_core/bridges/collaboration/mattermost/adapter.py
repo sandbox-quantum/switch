@@ -540,6 +540,9 @@ class MattermostAdapter(PlatformAdapter):
 
         self._seen_post_ids: OrderedDict[str, None] = OrderedDict()
         self._seen_post_ids_max = 1000
+        # Edits, by post and `edit_at`: every bot's socket is sent the same
+        # `post_edited`, and a post can be edited more than once.
+        self._seen_edits: OrderedDict[str, None] = OrderedDict()
         self._seen_lock = threading.Lock()
 
         # (agent_name, post_id) currently carrying the working reaction. A
@@ -2763,6 +2766,10 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
+        if event_type == "post_edited":
+            await self._handle_post_edited(event, agent_name)
+            return
+
         if event_type != "posted":
             return
 
@@ -2876,6 +2883,98 @@ class MattermostAdapter(PlatformAdapter):
             )
             coro = self._on_message(inbound)
             self._dispatch(coro, loop)  # type: ignore[arg-type]
+
+    async def _handle_post_edited(self, event: dict[str, Any], agent_name: str) -> None:
+        """Relay a person's edit of their post as an edit of the message it was
+        relayed as.
+
+        Mattermost sends `post_edited` for more than edits: pinning a post,
+        the bridge redrawing one of its cards. Only a change that moved
+        `edit_at` is an edit of the text or files, and the bridge's own posts
+        are never relayed. The event names the post's author, not whoever
+        edited it, so an admin's edit of someone's post is relayed as that
+        person's. Unlike `posted`, the event carries no channel type, so it
+        is read from the channel. A post that is a command is not run again
+        by editing it.
+        """
+        data = event.get("data", {})
+        post_str = data.get("post")
+        if not post_str:
+            return
+        try:
+            post = json.loads(post_str)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if post.get("type", ""):
+            return
+        user_id = post.get("user_id", "")
+        if user_id in self._bridge_bot_ids or user_id == self._admin_user_id:
+            return
+        post_id = post.get("id", "")
+        edit_at = post.get("edit_at") or 0
+        if not post_id or not edit_at:
+            return
+        with self._seen_lock:
+            seen_key = f"{post_id}:{edit_at}"
+            if seen_key in self._seen_edits:
+                return
+            self._seen_edits[seen_key] = None
+            if len(self._seen_edits) > self._seen_post_ids_max:
+                self._seen_edits.popitem(last=False)
+
+        message = post.get("message", "")
+        if message.strip().startswith("!"):
+            logger.debug(
+                "Edited Mattermost post %s is a command; nothing runs", post_id
+            )
+            return
+        loop = self._main_loop
+        if loop is None or self._admin_driver is None:
+            raise RuntimeError("Cannot handle post_edited event: adapter not started")
+        if not self._on_message:
+            return
+        channel_id = post.get("channel_id", "")
+        ws_loop = asyncio.get_event_loop()
+        try:
+            user = await ws_loop.run_in_executor(
+                None, self._admin_driver.users.get_user, user_id
+            )
+            username: str = user.get("username", user_id)
+        except Exception:
+            logger.exception("Failed to resolve Mattermost user %s", user_id)
+            username = user_id
+        props = post.get("props") or {}
+        if str(props.get("from_webhook", "")).lower() == "true":
+            user_id = f"{_WEBHOOK_STAND_IN_PREFIX}{user_id}"
+            username = f"{username}'s webhook"
+        try:
+            channel = await ws_loop.run_in_executor(
+                None, self._admin_driver.channels.get_channel, channel_id
+            )
+            channel_type = self._to_channel_type(channel.get("type", ""))
+        except Exception:
+            logger.exception("Failed to resolve Mattermost channel %s", channel_id)
+            channel_type = self._to_channel_type("")
+        logger.debug(
+            "[MM-INBOUND] edit post_id=%s edit_at=%s channel=%s user=%s msg=%s",
+            post_id,
+            edit_at,
+            channel_id,
+            username,
+            message[:80],
+        )
+        inbound = InboundMessage(
+            channel_id=channel_id,
+            channel_type=channel_type,
+            sender_id=user_id,
+            sender_name=username,
+            content=message,
+            message_ref=post_id,
+            root_id=post.get("root_id", "") or None,
+            agent_name=agent_name,
+            edit_revision=str(edit_at),
+        )
+        self._dispatch(self._on_message(inbound), loop)  # type: ignore[arg-type]
 
     async def _fetch_attachments(
         self, file_ids: list[str], loop: asyncio.AbstractEventLoop

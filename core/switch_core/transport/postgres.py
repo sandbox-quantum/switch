@@ -1140,6 +1140,7 @@ class PostgresTransport:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        replaces_event_id: str | None = None,
     ) -> SendResult:
         content = message_content(
             body,
@@ -1148,6 +1149,7 @@ class PostgresTransport:
             mentions=mentions,
             thread_root_id=thread_root_id,
             extra_content=extra_content,
+            replaces_event_id=replaces_event_id,
         )
         return await self._send(
             room_id, "m.room.message", content, sender_name, metered=metered

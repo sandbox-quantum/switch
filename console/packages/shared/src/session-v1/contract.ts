@@ -149,6 +149,8 @@ export type CommandBody =
   | { type: 'session.compact' }
   /** Run again the turn a room message started, which ended without an answer; nothing is posted again. */
   | { type: 'message.retry'; messageId: Id }
+  /** Replace the text of the turn a message started, while it is still queued; a turn that started keeps its text. */
+  | { type: 'message.revise'; messageId: Id; text: string }
   | { type: 'session.model.set'; modelId: string; options: Record<string, string> };
 /** The server sets origin from a verified identity. Do not trust origin from a client. */
 export type Command = {

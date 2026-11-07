@@ -2712,6 +2712,14 @@ class Message(TenantScoped, Base):
             "thread_root_event_id",
             postgresql_where=text("thread_root_event_id IS NOT NULL"),
         ),
+        # The edits of a message, so a reader showing the message finds its
+        # latest text without walking the room.
+        Index(
+            "ix_messages_replaces",
+            "room_id",
+            "replaces_event_id",
+            postgresql_where=text("replaces_event_id IS NOT NULL"),
+        ),
         UniqueConstraint("id", "tenant_id", name="uq_messages_id_tenant"),
         # A sender's retry of the same part is the same row, never a second one.
         Index(
@@ -2768,6 +2776,10 @@ class Message(TenantScoped, Base):
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     formatted_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     thread_root_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The message this row is an edit of (its `m.replace` relation), else
+    # NULL. An edit is a row of its own carrying the new text; the original is
+    # never rewritten, and the latest edit is what a reader shows for it.
+    replaces_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     content: Mapped[dict] = mapped_column(JSONB, nullable=False)
     sent_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

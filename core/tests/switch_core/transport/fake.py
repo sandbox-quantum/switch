@@ -90,6 +90,7 @@ class FakeTransport:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        replaces_event_id: str | None = None,
     ) -> SendResult:
         if self._fail_send:
             raise TransportError(self._fail_send)
@@ -103,6 +104,7 @@ class FakeTransport:
                 "mentions": mentions,
                 "thread_root_id": thread_root_id,
                 "extra_content": extra_content,
+                "replaces_event_id": replaces_event_id,
             }
         )
         content: dict[str, object] = {
@@ -116,6 +118,11 @@ class FakeTransport:
             content["m.relates_to"] = {
                 "rel_type": "m.thread",
                 "event_id": thread_root_id,
+            }
+        if replaces_event_id is not None:
+            content["m.relates_to"] = {
+                "rel_type": "m.replace",
+                "event_id": replaces_event_id,
             }
         return SendResult(
             event_id=self._next_id(),

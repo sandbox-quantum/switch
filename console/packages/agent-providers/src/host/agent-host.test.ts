@@ -2704,3 +2704,45 @@ it('tells the room once a session keeps not taking a message, instead of startin
     vi.useRealTimers();
   }
 });
+
+it('starts no session for an edit of a message when none is attending the room', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-edit-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const { supervision } = sessionHosts();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!({
+      type: 'message_edit',
+      room_id: 'room',
+      sequence: 1,
+      payload: {
+        addressed: true,
+        sender: '@owner:example.test',
+        sender_name: 'Owner',
+        message_id: 'edit-1',
+        replaces_message_id: 'message-0',
+        body: 'Run the check again',
+        timestamp: 1,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(ensureSharedProcess).not.toHaveBeenCalled();
+    expect(await settled(root)).toBe(true);
+  } finally {
+    abort.abort();
+    await run;
+  }
+});

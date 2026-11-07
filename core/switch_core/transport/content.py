@@ -28,6 +28,13 @@ def thread_relation(thread_root_id: str) -> dict[str, object]:
     return {"rel_type": "m.thread", "event_id": thread_root_id}
 
 
+def replace_relation(replaces_event_id: str) -> dict[str, object]:
+    """An `m.replace` relation: this event's body is the new text of the
+    message it names. The original row stays as it was; readers show the
+    latest replacement in its place (`messages/row.py:replaces_of`)."""
+    return {"rel_type": "m.replace", "event_id": replaces_event_id}
+
+
 def message_content(
     body: str,
     *,
@@ -36,7 +43,13 @@ def message_content(
     mentions: list[str] | None = None,
     thread_root_id: str | None = None,
     extra_content: dict[str, object] | None = None,
+    replaces_event_id: str | None = None,
 ) -> dict[str, object]:
+    """The body of a text message, or with `replaces_event_id`, of an edit to
+    the message it names. An edit carries one relation only: the thread it is
+    in is the original's."""
+    if replaces_event_id is not None and thread_root_id is not None:
+        raise ValueError("an edit relates to the message it replaces, not to a thread")
     content: dict[str, object] = {
         "msgtype": "m.text",
         "body": body,
@@ -54,6 +67,8 @@ def message_content(
 
     if thread_root_id is not None:
         content["m.relates_to"] = thread_relation(thread_root_id)
+    if replaces_event_id is not None:
+        content["m.relates_to"] = replace_relation(replaces_event_id)
 
     return content
 

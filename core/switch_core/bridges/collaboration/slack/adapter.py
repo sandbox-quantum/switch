@@ -3459,7 +3459,9 @@ class SlackAdapter(PlatformAdapter):
     # Message subtypes we still treat as real posts. file_share carries uploaded
     # attachments; thread_broadcast is a thread reply also sent to the channel;
     # bot_message is a post from a third-party Slack app (e.g. Datadog alerts).
-    # Everything else (edits, deletes, channel-join system messages, …) is skipped.
+    # An edit (message_changed) is relayed as an edit of the post it changes,
+    # by `_handle_message_changed`. Everything else (deletes, channel-join
+    # system messages, …) is skipped.
     _ALLOWED_SUBTYPES = frozenset({"file_share", "thread_broadcast", "bot_message"})
 
     async def _handle_message_event(self, event: dict[str, object]) -> None:
@@ -3471,6 +3473,9 @@ class SlackAdapter(PlatformAdapter):
         ):
             return
         subtype = event.get("subtype")
+        if subtype == "message_changed":
+            await self._handle_message_changed(event)
+            return
         if subtype and subtype not in self._ALLOWED_SUBTYPES:
             return
 
@@ -3497,6 +3502,122 @@ class SlackAdapter(PlatformAdapter):
             # (`collaboration_core._post_source`).
             self._seen_ts.pop(message_ts, None)
             raise
+
+    async def _handle_message_changed(self, event: dict[str, object]) -> None:
+        """Relay a person's edit of their post as an edit of the message it was
+        relayed as.
+
+        Slack sends `message_changed` for more than edits: a link unfurling
+        onto a post, a thread's root gaining a reply count. Only a change
+        that `edited` stamps and that moved the text is one. The bridge's own
+        posts change all the time (its cards are redrawn in place) and are
+        never relayed; a third-party app's edit of its post is, like its
+        posts. Edits are keyed by the post and the edit's own stamp, so one
+        delivered again is dropped and a later edit of the same post is not.
+        A post that is a command is not run again by editing it.
+        """
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        if message.get("user") == self._bot_user_id or (
+            self._bot_id and message.get("bot_id") == self._bot_id
+        ):
+            return
+        edited = message.get("edited")
+        if not isinstance(edited, dict) or not edited.get("ts"):
+            return
+        previous = event.get("previous_message")
+        if isinstance(previous, dict) and previous.get("text") == message.get("text"):
+            return
+        channel_id = str(event.get("channel", ""))
+        message_ts = str(message.get("ts", ""))
+        if not channel_id or not message_ts:
+            logger.warning(
+                "Slack message_changed event missing channel or ts, skipping"
+            )
+            return
+        edit_revision = str(edited["ts"])
+        seen_key = f"{message_ts}:edit:{edit_revision}"
+        if seen_key in self._seen_ts:
+            return
+        self._seen_ts[seen_key] = None
+        if len(self._seen_ts) > self._seen_ts_max:
+            self._seen_ts.popitem(last=False)
+        try:
+            await self._deliver_message_changed(
+                event, message, channel_id, message_ts, edit_revision
+            )
+        except BaseException:
+            # As for a post: left unacknowledged, Slack sends it again.
+            self._seen_ts.pop(seen_key, None)
+            raise
+
+    async def _deliver_message_changed(
+        self,
+        event: dict[str, object],
+        message: dict[str, object],
+        channel_id: str,
+        message_ts: str,
+        edit_revision: str,
+    ) -> None:
+        if self._on_message is None:
+            return
+        text = str(message.get("text", ""))
+        if not text.strip():
+            text = self._extract_rich_text(message)
+        user_id = str(message.get("user", ""))
+        bot_id = str(message.get("bot_id", ""))
+        if not user_id and bot_id:
+            bot_profile = message.get("bot_profile") or {}
+            bot_name = (
+                (bot_profile.get("name") if isinstance(bot_profile, dict) else "")
+                or str(message.get("username", ""))
+                or bot_id
+            )
+            user_id = bot_id
+            user = SlackUser(name=bot_name, display_name=bot_name)
+        else:
+            user = await self._resolve_user_name(user_id)
+        if not user_id:
+            logger.warning(
+                "Slack message_changed names no sender for %s; skipping", message_ts
+            )
+            return
+        stripped = text.strip()
+        if user_id and not bot_id:
+            stripped = self._unwrap_code_span(stripped)
+        if stripped.startswith("!"):
+            logger.debug("Edited Slack post %s is a command; nothing runs", message_ts)
+            return
+        thread_ts = str(message.get("thread_ts", "")) or None
+        root_id = (
+            f"{channel_id}:{thread_ts}"
+            if thread_ts and thread_ts != message_ts
+            else None
+        )
+        # The event names the channel's type, as a post's does; a cached one
+        # stands in for an event that does not.
+        slack_channel_type = str(
+            event.get("channel_type", "")
+        ) or self._channel_type_cache.get(channel_id, "")
+        if slack_channel_type:
+            self._channel_type_cache[channel_id] = slack_channel_type
+        self_mention = bool(self._bot_user_id) and f"<@{self._bot_user_id}>" in text
+        await self._on_message(
+            InboundMessage(
+                channel_id=channel_id,
+                channel_type=self._to_channel_type(slack_channel_type),
+                sender_id=user_id,
+                sender_name=user.name,
+                content=text,
+                message_ref=f"{channel_id}:{message_ts}",
+                root_id=root_id,
+                channel_name=await self._resolve_channel_name(channel_id),
+                self_mention_token=self._bot_user_id if self_mention else None,
+                sender_is_app=bool(bot_id),
+                edit_revision=edit_revision,
+            )
+        )
 
     async def _deliver_message_event(
         self, event: dict[str, object], channel_id: str, message_ts: str

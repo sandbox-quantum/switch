@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     AttachmentRef,
+    MessageEditPayload,
     MessagePayload,
     RoomJoinPayload,
 )
@@ -87,6 +88,38 @@ def message_event(
             opening_message=opening_message,
             sender_role=sender_role,
             switch_notice=switch_notice,
+        ),
+    )
+
+
+def message_edit_event(
+    *,
+    room_id: str,
+    bridge_id: str | None,
+    channel_type: str | None,
+    event: InboundMessage,
+    replaces_message_id: str,
+    addressed: bool,
+    sender_name: str,
+    thread_id: str | None,
+) -> AgentEvent:
+    """Build the `message_edit` event for an edit row: the new text of
+    `replaces_message_id`, read where that message was (`thread_id` is the
+    original's)."""
+    return AgentEvent(
+        type="message_edit",
+        room_id=room_id,
+        bridge_id=bridge_id,
+        channel_type=channel_type,
+        payload=MessageEditPayload(
+            addressed=addressed,
+            sender=event.sender,
+            sender_name=sender_name,
+            message_id=event.event_id,
+            replaces_message_id=replaces_message_id,
+            body=event.body,
+            timestamp=event.timestamp,
+            thread_id=thread_id,
         ),
     )
 

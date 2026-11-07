@@ -390,6 +390,15 @@ class MessageRetry(_Model):
     message_id: Id
 
 
+class MessageRevise(_Model):
+    """Replace the text of the turn a message started, while it is still
+    queued. A turn the agent has started keeps the text it started with."""
+
+    type: Literal["message.revise"]
+    message_id: Id
+    text: str
+
+
 class SessionModelSet(_Model):
     type: Literal["session.model.set"]
     model_id: Id
@@ -404,6 +413,7 @@ CommandBody = Annotated[
     | SessionReset
     | SessionCompact
     | MessageRetry
+    | MessageRevise
     | SessionModelSet,
     Field(discriminator="type"),
 ]

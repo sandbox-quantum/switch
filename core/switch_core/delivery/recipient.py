@@ -39,6 +39,7 @@ from switch_core.bridges.agent.commands import (
 )
 from switch_core.bridges.agent.protocol.message_events import (
     attachment_ref,
+    message_edit_event,
     message_event,
     room_join_event,
 )
@@ -49,6 +50,7 @@ from switch_core.bridges.agent.protocol.presence import (
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     CommandPayload,
+    MessagePayload,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
@@ -652,6 +654,34 @@ class AgentRecipient:
             named=named,
             checks_membership=True,
         )
+
+    def decide_edit(
+        self, event: InboundMessage, replaces: str, earlier: MessagePayload
+    ) -> Delivery:
+        """An edit of a message the agent was delivered: one of its own events,
+        saying about the edit what `earlier`, the message's own delivery, said
+        about the message (addressed or not, which thread). Nothing is said in
+        the room: an edit asks nothing of the agent that the message did not,
+        and the agent's addressing policy was already applied to the message.
+        """
+        meta = self._meta
+        sender_name = event.sender_name or event.sender
+
+        def own_event(row: InboundEvent) -> OwnEvent:
+            assert isinstance(row, InboundMessage)
+            agent_event = message_edit_event(
+                room_id=meta.room_id,
+                bridge_id=meta.bridge_id,
+                channel_type=meta.channel_type,
+                event=row,
+                replaces_message_id=replaces,
+                addressed=earlier.addressed,
+                sender_name=sender_name,
+                thread_id=earlier.thread_id,
+            )
+            return OwnEvent(agent_event, room_seq=row.seq, message_key=row.event_id)
+
+        return Delivery(own_event=own_event, after=None)
 
     async def decide_follow_up(
         self,

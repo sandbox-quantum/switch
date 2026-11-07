@@ -2621,7 +2621,9 @@ class AgentCore:
         An <entry> is {"id", "kind", "sender", "sender_name", "body",
         "timestamp", "attachments"}, plus "sender_kind" ("platform" for a
         message the Switch app posted) and "on_behalf_of" (the person a
-        platform message spoke for) when they apply. `kind` is "message" for
+        platform message spoke for) when they apply. A message that was
+        edited carries its latest text as `body` and the edit's time as
+        `edited_at`; the edits themselves are not entries. `kind` is "message" for
         something someone said and "room_join" for an arrival. Top-level entries are roots with
         an empty replies list; replies are ordered oldest-first within a
         thread. A root that falls outside the fetched window but has a reply
@@ -2648,6 +2650,11 @@ class AgentCore:
             )
             truncated = len(rows) > limit
             rows = rows[:limit]
+            # An edit is not an entry of its own: the message it replaces
+            # shows the latest text. The latest edits of the page's messages
+            # are read below, wherever they fall; an edit here whose message
+            # is outside the page has nothing to show it on.
+            rows = [row for row in rows if row.replaces_event_id is None]
 
             # Replies whose root is older than the window. Reading them costs
             # one more query for the whole page rather than one per thread.
@@ -2664,6 +2671,9 @@ class AgentCore:
             attachments = await self.message_store.attachments_for(
                 session, [row.id for row in rows + roots]
             )
+            edits = await self.message_store.latest_replacements(
+                session, room_id, [row.transport_event_id for row in rows + roots]
+            )
 
         rows, attachments = _coalesce_attachment_groups(rows, attachments)
 
@@ -2673,6 +2683,12 @@ class AgentCore:
             )
             for row in rows + roots
         }
+        for event_id, edit in edits.items():
+            entry = entries.get(event_id)
+            if entry is None:
+                continue
+            entry["body"] = edit.body
+            entry["edited_at"] = _epoch_ms(edit.sent_at)
 
         groups: dict[str, dict[str, Any]] = {}
         oldest_ts: int | None = None

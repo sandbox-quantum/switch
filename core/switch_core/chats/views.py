@@ -124,6 +124,8 @@ class ChatMessage(CamelModel):
     seq: int
     room_id: str
     sent_at: str
+    # When the text shown was last edited; None for a message never edited.
+    edited_at: str | None
     sender: ChatSender
     source: str
     body: str
@@ -349,9 +351,17 @@ async def chat_messages(
 ) -> list[ChatMessage]:
     """`messages` as Switch Console renders them, in the order given.
 
-    Only conversation is shown: a row of any other event type is skipped.
+    Only conversation is shown: a row of any other event type is skipped, and
+    so is an edit, which shows as the latest text of the message it replaces.
     """
-    shown = [m for m in messages if m.event_type in SHOWN_EVENT_TYPES]
+    shown = [
+        m
+        for m in messages
+        if m.event_type in SHOWN_EVENT_TYPES and m.replaces_event_id is None
+    ]
+    edits = await _MESSAGE_STORE.latest_replacements(
+        session, room.id, [m.transport_event_id for m in shown]
+    )
     client_ids = {m.sender_client_id for m in shown if m.sender_client_id}
     clients = {
         client.id: client
@@ -402,7 +412,11 @@ async def chat_messages(
             kind, source = "human", bridge.type if bridge is not None else "switch"
         else:
             kind, source = "system", "switch"
-        format_ = message.content.get("format")
+        # What is shown is the latest edit's text, where there is one; the
+        # row keeps its place, sender and thread.
+        edit = edits.get(message.transport_event_id)
+        text_of = edit if edit is not None else message
+        format_ = text_of.content.get("format")
         thread = threads.get(message.transport_event_id)
         out.append(
             ChatMessage(
@@ -410,6 +424,7 @@ async def chat_messages(
                 seq=message.seq,
                 room_id=room.id,
                 sent_at=_iso(message.sent_at),
+                edited_at=_iso(edit.sent_at) if edit is not None else None,
                 sender=ChatSender(
                     client_id=message.sender_client_id or "",
                     name=message.sender_name
@@ -419,7 +434,7 @@ async def chat_messages(
                     user_id=client.user_id if client is not None else None,
                 ),
                 source=source,
-                body=message.body or _command_text(message),
+                body=text_of.body or _command_text(message),
                 format=format_ if isinstance(format_, str) else None,
                 thread_root_id=message.thread_root_event_id,
                 attachments=[
@@ -436,10 +451,10 @@ async def chat_messages(
                 named_agent_ids=named_agents(
                     names,
                     aliases,
-                    addressable_text(message.body or "", message.content),
+                    addressable_text(text_of.body or "", text_of.content),
                 ),
-                named_user_ids=_named_user_ids(message),
-                mentions=_mentions(message),
+                named_user_ids=_named_user_ids(text_of),
+                mentions=_mentions(text_of),
                 thread_reply_count=thread[0] if thread is not None else 0,
                 thread_last_reply_seq=thread[1] if thread is not None else None,
             )

@@ -193,3 +193,14 @@ def test_host_publication_claims_are_rejected() -> None:
     payload["body"]["request"]["audience"] = {"kind": "room", "roomId": "room-demo"}
     with pytest.raises(ValueError):
         parse_host_event(payload)
+
+
+def test_a_revision_names_the_message_and_carries_the_new_text() -> None:
+    command = parse_command(
+        {
+            **EXAMPLES["platformAnswer"],
+            "body": {"type": "message.revise", "messageId": "$m", "text": "the file"},
+        }
+    )
+    assert command.body.type == "message.revise"
+    assert (command.body.message_id, command.body.text) == ("$m", "the file")

@@ -1800,3 +1800,155 @@ describe('retrying a room message', () => {
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
 });
+
+describe('revising a queued room message', () => {
+  const roomMessage = (commandId: string): Command => ({
+    ...message(commandId),
+    origin: {
+      actorId: 'user',
+      surface: 'switch-web',
+      roomId: 'room',
+      threadId: null,
+      messageId: `message-${commandId}`,
+    },
+  });
+  const revise = (commandId: string, of: string, text: string): Command => ({
+    ...message(commandId),
+    origin: {
+      actorId: 'user',
+      surface: 'switch-web',
+      roomId: 'room',
+      threadId: null,
+      messageId: `message-${of}`,
+    },
+    body: { type: 'message.revise', messageId: `message-${of}`, text },
+  });
+  const userMessage = (host: HostedSession, turnId: string) =>
+    host.snapshot().items.find((item) => item.itemId === `user-${turnId}`)!;
+
+  it('gives a turn that has not started its new text, and shows the text on its message', async () => {
+    const { host, emit, adapter } = await start('codex');
+    await host.command(roomMessage('first'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    await host.command(roomMessage('second'));
+    expect(host.snapshot().turns[1]?.status).toBe('queued');
+
+    expect((await host.command(revise('fix', 'second', 'Hello again'))).status).toBe('applied');
+    expect(userMessage(host, 'second')).toMatchObject({ revision: 2, text: 'Hello again' });
+    // The same edit handed over again is the same command, answered the same.
+    expect((await host.command(revise('fix', 'second', 'Hello again'))).status).toBe('applied');
+    expect(userMessage(host, 'second').revision).toBe(2);
+
+    emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(adapter.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ turnId: 'second', text: 'Hello again' })
+    );
+  });
+
+  it('the latest of several revisions is the one that runs', async () => {
+    const { host, emit, adapter } = await start('codex');
+    await host.command(roomMessage('first'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    await host.command(roomMessage('second'));
+    await host.command(revise('fix-1', 'second', 'Hello again'));
+    await host.command(revise('fix-2', 'second', 'Hello once more'));
+    expect(userMessage(host, 'second')).toMatchObject({ revision: 3, text: 'Hello once more' });
+
+    emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    expect(adapter.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ turnId: 'second', text: 'Hello once more' })
+    );
+  });
+
+  it('leaves a turn the agent has started as it is, and says so', async () => {
+    const { host, adapter } = await start('codex');
+    await host.command(roomMessage('first'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+
+    await expect(host.command(revise('late', 'first', 'Not this'))).rejects.toThrow('TURN_STARTED');
+    expect(adapter.sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ turnId: 'first', text: 'Hello' })
+    );
+    expect(userMessage(host, 'first')).toMatchObject({ revision: 1, text: 'Hello' });
+  });
+
+  it('refuses to revise a message it has no turn for', async () => {
+    const { host } = await start('codex');
+    await expect(host.command(revise('nothing', 'unknown', 'Hello?'))).rejects.toThrow('NOT_FOUND');
+  });
+
+  it('runs a revised turn again on its revised text', async () => {
+    const { host, emit, adapter } = await start('codex');
+    await host.command(roomMessage('first'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    await host.command(roomMessage('second'));
+    await host.command(revise('fix', 'second', 'Hello again'));
+    emit({ type: 'turn.completed', turnId: 'first', outcome: 'completed', usage: [] });
+    await until(() => expect(host.snapshot().turns[1]?.status).toBe('running'));
+    emit({
+      type: 'turn.completed',
+      turnId: 'second',
+      outcome: 'error',
+      message: 'model',
+      usage: [],
+    });
+    await until(() => expect(host.snapshot().turns[1]?.status).toBe('error'));
+
+    const retry: Command = {
+      ...message('again'),
+      origin: {
+        actorId: 'user',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: null,
+        messageId: null,
+      },
+      body: { type: 'message.retry', messageId: 'message-second' },
+    };
+    expect((await host.command(retry)).status).toBe('applied');
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+    expect(adapter.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ turnId: 'again', text: 'Hello again' })
+    );
+  });
+
+  it('keeps the revision across a restart, for the retry that runs the turn', async () => {
+    const { host, root } = await start('codex');
+    await host.command(roomMessage('first'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    await host.command(roomMessage('second'));
+    await host.command(revise('fix', 'second', 'Hello again'));
+    await host.shutdown();
+
+    const next = setup('codex');
+    const recovered = await startHost(root, next.config, next.adapter);
+    hosts.push(recovered);
+    await until(() => expect(recovered.snapshot().session.status).toBe('ready'));
+    // Nothing is resent on recovery: the queued turn was interrupted, and its
+    // message still shows the text it was revised to.
+    expect(recovered.snapshot().turns[1]).toMatchObject({
+      turnId: 'second',
+      status: 'interrupted',
+    });
+    expect(userMessage(recovered, 'second')).toMatchObject({ revision: 2, text: 'Hello again' });
+    const retry: Command = {
+      ...message('again'),
+      epoch: recovered.snapshot().session.epoch,
+      origin: {
+        actorId: 'user',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: null,
+        messageId: null,
+      },
+      body: { type: 'message.retry', messageId: 'message-second' },
+    };
+    expect((await recovered.command(retry)).status).toBe('applied');
+    await until(() => expect(next.adapter.sendTurn).toHaveBeenCalledTimes(1));
+    expect(next.adapter.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ turnId: 'again', text: 'Hello again' })
+    );
+  });
+});

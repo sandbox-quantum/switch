@@ -18,8 +18,22 @@ def text_field(value: object) -> str | None:
 
 
 def thread_root_of(content: dict[str, object]) -> str | None:
+    return _related_event(content, "m.thread")
+
+
+def replaces_of(content: dict[str, object]) -> str | None:
+    """The message this content is an edit of, or None for a message of its own.
+
+    An edit is a row like any other, related to the message it replaces by an
+    `m.replace` relation and carrying the new text as its body. The original
+    row is never rewritten: the latest replacement is what a reader shows.
+    """
+    return _related_event(content, "m.replace")
+
+
+def _related_event(content: dict[str, object], rel_type: str) -> str | None:
     relation = content.get("m.relates_to")
-    if not isinstance(relation, dict) or relation.get("rel_type") != "m.thread":
+    if not isinstance(relation, dict) or relation.get("rel_type") != rel_type:
         return None
     return text_field(relation.get("event_id"))
 
@@ -88,6 +102,7 @@ def message_row(
         body=text_field(content.get("body")),
         formatted_body=text_field(content.get("formatted_body")),
         thread_root_event_id=thread_root_of(content),
+        replaces_event_id=replaces_of(content),
         content=content,
         client_txn_id=client_txn_id,
     )

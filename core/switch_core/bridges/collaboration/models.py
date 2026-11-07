@@ -137,6 +137,12 @@ class InboundMessage(BaseModel):
     # it today; a platform that cannot tell an app from a person leaves this
     # False and its cards accept the answer.
     sender_is_app: bool = False
+    # Set when the platform reported an edit of the post `message_ref` names
+    # rather than a new post: `content` is the post's new text, and this is
+    # the platform's id for that revision of it (Slack's `edited.ts`,
+    # Mattermost's `edit_at`), so an edit delivered twice is relayed once.
+    # Only Slack and Mattermost report edits today.
+    edit_revision: str | None = None
 
 
 class InboundCommand(BaseModel):

@@ -1233,3 +1233,150 @@ def test_backtick_wrapped_command_from_bot_is_not_run() -> None:
 
     # An agent posting a `!command` reference must never trigger it.
     assert commands == []
+
+
+# ── Edits ────────────────────────────────────────────────────────────────────
+#
+# Slack reports an edit as a `message_changed` whose `message` is the post as it
+# now reads and `previous_message` as it read before. It sends the same subtype
+# for a link unfurling onto a post and for a thread root gaining a reply count,
+# which `edited` does not stamp and which move no text.
+
+
+def _changed(
+    text: str,
+    *,
+    ts: str = "100.1",
+    edited_ts: str = "101.0",
+    previous: str = "look at teh file",
+    user: str = "U1",
+    thread_ts: str | None = None,
+    edited: bool = True,
+    bot_id: str | None = None,
+) -> dict[str, Any]:
+    message: dict[str, Any] = {"type": "message", "user": user, "text": text, "ts": ts}
+    if edited:
+        message["edited"] = {"user": user, "ts": edited_ts}
+    if thread_ts is not None:
+        message["thread_ts"] = thread_ts
+    if bot_id is not None:
+        message["bot_id"] = bot_id
+    return {
+        "type": "message",
+        "subtype": "message_changed",
+        "channel": "C123",
+        "channel_type": "channel",
+        "ts": edited_ts,
+        "message": message,
+        "previous_message": {
+            "type": "message",
+            "user": user,
+            "text": previous,
+            "ts": ts,
+        },
+    }
+
+
+def test_an_edit_is_relayed_as_an_edit_of_the_post() -> None:
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+
+    _run(adapter._handle_message_event(_changed("look at the file")))
+
+    [message] = captured
+    assert message.edit_revision == "101.0"
+    assert message.message_ref == "C123:100.1"
+    assert message.content == "look at the file"
+    assert message.root_id is None
+    assert message.sender_id == "U1"
+    assert message.channel_type == "channel_public"
+    assert message.channel_name == "general"
+
+
+def test_an_edit_in_a_thread_keeps_its_root() -> None:
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+
+    _run(adapter._handle_message_event(_changed("a fix", thread_ts="50.5")))
+
+    assert captured[0].root_id == "C123:50.5"
+    assert captured[0].message_ref == "C123:100.1"
+
+
+def test_the_bridges_own_card_redraws_are_not_relayed() -> None:
+    adapter = _adapter()
+    adapter._bot_user_id = "UBOT"
+    adapter._bot_id = "BBOT"
+    captured = _capture_messages(adapter)
+
+    _run(adapter._handle_message_event(_changed("Working…", user="UBOT")))
+    _run(adapter._handle_message_event(_changed("Working…", user="", bot_id="BBOT")))
+
+    assert captured == []
+
+
+def test_an_unfurl_is_not_an_edit() -> None:
+    """Slack attaches a link preview with a `message_changed` the author never made."""
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+
+    _run(adapter._handle_message_event(_changed("https://example.test", edited=False)))
+
+    assert captured == []
+
+
+def test_a_change_that_moved_no_text_is_not_an_edit() -> None:
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            _changed("look at teh file", previous="look at teh file")
+        )
+    )
+
+    assert captured == []
+
+
+def test_the_same_edit_delivered_twice_is_relayed_once_and_a_later_one_again() -> None:
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+
+    _run(adapter._handle_message_event(_changed("look at the file", edited_ts="101.0")))
+    _run(adapter._handle_message_event(_changed("look at the file", edited_ts="101.0")))
+    _run(
+        adapter._handle_message_event(_changed("look at the files", edited_ts="102.0"))
+    )
+
+    assert [m.edit_revision for m in captured] == ["101.0", "102.0"]
+
+
+def test_an_edit_does_not_collide_with_the_post_it_edits() -> None:
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "channel": "C123",
+                "ts": "100.1",
+                "user": "U1",
+                "text": "look at teh file",
+                "channel_type": "channel",
+            }
+        )
+    )
+    _run(adapter._handle_message_event(_changed("look at the file")))
+
+    assert [m.edit_revision for m in captured] == [None, "101.0"]
+
+
+def test_editing_a_post_into_a_command_runs_nothing() -> None:
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+    commands = _capture_commands(adapter)
+
+    _run(adapter._handle_message_event(_changed("!reset @helper")))
+
+    assert captured == []
+    assert commands == []

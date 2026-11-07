@@ -43,6 +43,13 @@ TURN_STATE = {
     "interrupted": "Turn interrupted.",
     "error": "Turn ended with an error.",
 }
+# A queued turn whose message was edited before the agent started: the host
+# replaced the queued text, and republished the user's message at a later
+# revision, which is how a reader can tell. Once the turn runs, it runs on the
+# latest text and the ordinary states apply.
+QUEUED_AFTER_EDIT = (
+    "Queued. The message was edited; the agent will start from the latest text…"
+)
 
 
 def turn_state(
@@ -82,6 +89,10 @@ def turn_state(
     reported wherever the turn is.
     """
     state = TURN_STATE[turn.status]
+    if turn.status == "queued" and any(
+        item.kind == "user-message" and item.revision > 1 for item in items
+    ):
+        state = QUEUED_AFTER_EDIT
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
             return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"

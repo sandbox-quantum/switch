@@ -41,6 +41,24 @@ export interface MessagePayload {
   sender_role?: 'owner' | 'admin' | 'member' | null;
 }
 
+/**
+ * Someone edited a message the agent was delivered: its new text. Sent to the
+ * agents the message reached, and to nobody else, with `addressed` as the
+ * message's own delivery had it, so a host can match the two.
+ */
+export interface MessageEditPayload {
+  addressed: boolean;
+  sender: string;
+  sender_name: string;
+  /** This edit's own id; `replaces_message_id` is the message it is the new text of. */
+  message_id: string;
+  replaces_message_id: string;
+  body: string;
+  timestamp: number;
+  /** The original's thread, so the edit is read where the message was. */
+  thread_id?: string | null;
+}
+
 export interface CommandPayload {
   command: string;
   // Command arguments. For `reset`/`compact` this carries the role name the
@@ -64,7 +82,7 @@ export interface RoomJoinPayload {
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  payload: MessagePayload | CommandPayload | RoomJoinPayload;
+  payload: MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload;
   /**
    * The event's number in the agent's own events (`s`). It is present on the push
    * transport and absent on the legacy poll. It is also absent on a message

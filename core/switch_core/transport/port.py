@@ -110,6 +110,7 @@ class MessageTransport(Protocol):
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        replaces_event_id: str | None = None,
     ) -> SendResult:
         """Post a text message. Raises `TransportError` if it is not accepted.
 
@@ -118,6 +119,9 @@ class MessageTransport(Protocol):
         command replies, automatic refusals — which the participant never chose
         to say. It is an argument rather than something read from the content,
         because a sender controls the content.
+
+        With `replaces_event_id` the message is an edit of the one it names:
+        a row of its own carrying the new text, never a change to the original.
         """
         ...
 

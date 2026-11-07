@@ -42,6 +42,25 @@ export const roomMessageSchema = z.object({
 });
 export type RoomMessage = z.infer<typeof roomMessageSchema>;
 
+/**
+ * An edit of a room message the agent was sent: the message's new text. Switch
+ * delivers it to the agents the message reached, saying of it what the
+ * message's own delivery said, so an edit is never a message of its own here.
+ */
+export const roomMessageEditSchema = z.object({
+  type: z.literal('message_edit'),
+  payload: z.object({
+    sender: z.string().min(1),
+    sender_name: z.string(),
+    /** The edit's own id; `replaces_message_id` is the message it is the new text of. */
+    message_id: z.string().min(1),
+    replaces_message_id: z.string().min(1),
+    body: z.string(),
+    thread_id: z.string().nullish(),
+  }),
+});
+export type RoomMessageEdit = z.infer<typeof roomMessageEditSchema>;
+
 /** Where a room attachment's bytes are fetched from, by the id the command names it by. */
 export type RoomAttachmentSource = { roomId: string; mxc: string };
 
@@ -53,6 +72,11 @@ function uuidFrom(text: string): string {
 /** The command id a room message runs under: the same however often it is handed over. */
 export function roomCommandId(agentId: string, roomId: string, messageId: string): string {
   return uuidFrom(`switch-room:${agentId}:${roomId}:${messageId}`);
+}
+
+/** The command id an edit of a room message is applied under: one per edit, the same however often it is handed over. */
+export function roomEditCommandId(agentId: string, roomId: string, editId: string): string {
+  return uuidFrom(`switch-room-edit:${agentId}:${roomId}:${editId}`);
 }
 
 /** The fresh start a room message triggers on a conversation that cannot continue: once per message. */
@@ -215,5 +239,52 @@ export function roomCommand(input: {
       messageId: payload.message_id,
     },
     body: { type: 'message.send', text, attachments, delivery: 'queue' },
+  };
+}
+
+const FENCED_MESSAGE = /BEGIN SWITCH MESSAGE ([0-9a-f]{16})\n([\s\S]*?)\nEND SWITCH MESSAGE \1\n/;
+
+/**
+ * The prompt `roomCommand` built, with the sender's message replaced by `body`
+ * and everything around it (what Switch said before it, the attachment notes,
+ * the reminders) as it was. The fence gets a fresh nonce: the sender saw
+ * neither. Null when `text` holds no fenced message to replace.
+ */
+export function revisedRoomPrompt(text: string, body: string): string | null {
+  const match = FENCED_MESSAGE.exec(text);
+  if (!match) return null;
+  const marker = randomBytes(8).toString('hex');
+  return (
+    text.slice(0, match.index) +
+    `BEGIN SWITCH MESSAGE ${marker}\n${body}\nEND SWITCH MESSAGE ${marker}\n` +
+    text.slice(match.index + match[0].length)
+  );
+}
+
+/** The command that gives the queued turn of the edited message its new text. */
+export function reviseCommand(input: {
+  agentId: string;
+  sessionId: string;
+  epoch: string;
+  roomId: string;
+  edit: RoomMessageEdit;
+  surface: Surface;
+  /** The whole revised prompt, from `revisedRoomPrompt`. */
+  text: string;
+}): Command {
+  const { payload } = input.edit;
+  return {
+    contractVersion: 1,
+    commandId: roomEditCommandId(input.agentId, input.roomId, payload.message_id),
+    sessionId: input.sessionId,
+    epoch: input.epoch,
+    origin: {
+      surface: input.surface,
+      actorId: payload.sender,
+      roomId: input.roomId,
+      threadId: payload.thread_id ?? null,
+      messageId: payload.replaces_message_id,
+    },
+    body: { type: 'message.revise', messageId: payload.replaces_message_id, text: input.text },
   };
 }

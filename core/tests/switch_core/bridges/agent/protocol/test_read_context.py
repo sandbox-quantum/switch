@@ -73,6 +73,7 @@ async def _write(
     msgtype: str | None = "m.text",
     attachments: list[MessageAttachment] | None = None,
     content: dict[str, object] | None = None,
+    replaces: str | None = None,
 ) -> Message:
     message = Message(
         room_id=room_id,
@@ -85,6 +86,7 @@ async def _write(
         body=body,
         formatted_body=None,
         thread_root_event_id=thread_root,
+        replaces_event_id=replaces,
         content=content if content is not None else ({"body": body} if body else {}),
         sent_at=_at(at),
     )
@@ -659,3 +661,121 @@ class TestLimits:
         )
 
         assert len(result["threads"]) == 1
+
+
+class TestEdits:
+    """An edit is not an entry: the message it replaces shows the latest text."""
+
+    async def test_an_edited_message_shows_its_latest_text(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            await _write(session, room_id, client_id, "$m", body="look at teh file")
+            await _write(
+                session,
+                room_id,
+                client_id,
+                "$e",
+                body="look at the file",
+                at=5,
+                replaces="$m",
+            )
+            await session.commit()
+
+        result = await _service(session_factory).read_context("agent-1", room_id)
+
+        [thread] = result["threads"]
+        assert thread["root"]["id"] == "$m"
+        assert thread["root"]["body"] == "look at the file"
+        assert thread["root"]["timestamp"] == _ms(0)
+        assert thread["root"]["edited_at"] == _ms(5)
+        assert thread["replies"] == []
+
+    async def test_the_newest_of_several_edits_wins(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            await _write(session, room_id, client_id, "$m", body="one")
+            await _write(
+                session, room_id, client_id, "$e1", body="two", at=1, replaces="$m"
+            )
+            await _write(
+                session, room_id, client_id, "$e2", body="three", at=2, replaces="$m"
+            )
+            await _write(session, room_id, client_id, "$n", body="as sent", at=3)
+            await session.commit()
+
+        result = await _service(session_factory).read_context("agent-1", room_id)
+
+        roots = {thread["root"]["id"]: thread["root"] for thread in result["threads"]}
+        assert set(roots) == {"$m", "$n"}
+        assert roots["$m"]["body"] == "three"
+        assert roots["$m"]["edited_at"] == _ms(2)
+        assert "edited_at" not in roots["$n"]
+
+    async def test_an_edit_whose_message_is_outside_the_page_is_not_an_entry(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            await _write(session, room_id, client_id, "$m", body="one")
+            await _write(
+                session, room_id, client_id, "$e", body="two", at=1, replaces="$m"
+            )
+            await _write(session, room_id, client_id, "$n", body="newest", at=2)
+            await session.commit()
+
+        result = await _service(session_factory).read_context(
+            "agent-1", room_id, limit=2
+        )
+
+        assert [thread["root"]["id"] for thread in result["threads"]] == ["$n"]
+        assert result["truncated"] is True
+
+    async def test_an_edit_made_after_the_window_still_shows(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            await _write(session, room_id, client_id, "$m", body="one")
+            await _write(
+                session, room_id, client_id, "$e", body="two", at=50, replaces="$m"
+            )
+            await session.commit()
+
+        result = await _service(session_factory).read_context(
+            "agent-1", room_id, before_ms=_ms(10)
+        )
+
+        [thread] = result["threads"]
+        assert thread["root"]["body"] == "two"
+
+    async def test_an_edited_reply_stays_in_its_thread(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, client_id = await _make_room(session)
+            await _write(session, room_id, client_id, "$root", body="a thread")
+            await _write(
+                session,
+                room_id,
+                client_id,
+                "$r",
+                body="teh reply",
+                at=1,
+                thread_root="$root",
+            )
+            await _write(
+                session, room_id, client_id, "$e", body="the reply", at=2, replaces="$r"
+            )
+            await session.commit()
+
+        result = await _service(session_factory).read_context("agent-1", room_id)
+
+        [thread] = result["threads"]
+        assert thread["root"]["id"] == "$root"
+        [reply] = thread["replies"]
+        assert reply["id"] == "$r"
+        assert reply["body"] == "the reply"

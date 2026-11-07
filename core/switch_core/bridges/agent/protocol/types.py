@@ -196,6 +196,7 @@ class RoomDetailDescriptor(BaseModel):
 
 EventType = Literal[
     "message",
+    "message_edit",
     "command",
     "room_join",
 ]
@@ -245,6 +246,28 @@ class MessagePayload(BaseModel):
     switch_notice: str | None = None
 
 
+class MessageEditPayload(BaseModel):
+    """Someone edited a message the agent was delivered: its new text.
+
+    Delivered to the agents that received the original, and to nobody else:
+    an edit never addresses anyone the message did not. `addressed` is what
+    the original's delivery said, so a host can tell an edit of a message it
+    was handed from one of the room's chatter.
+    """
+
+    addressed: bool
+    sender: str
+    sender_name: str
+    # This edit's own id; `replaces_message_id` is the message it is the new
+    # text of, as its `message` event named it.
+    message_id: str
+    replaces_message_id: str
+    body: str
+    timestamp: int
+    # The original's thread, so the edit is read where the message was.
+    thread_id: str | None = None
+
+
 class CommandPayload(BaseModel):
     command: str
     args: str = ""
@@ -269,10 +292,11 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
-Payload = MessagePayload | CommandPayload | RoomJoinPayload
+Payload = MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
+    "message_edit": MessageEditPayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
 }

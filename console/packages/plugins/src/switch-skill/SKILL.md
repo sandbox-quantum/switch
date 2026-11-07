@@ -151,6 +151,19 @@ does, and there is no polling tool to call.
   gateway create-room / room-detail pages). New arrivals also show up in
   `list_participants`. Your own join never produces one. When you do get one,
   react if it is relevant — greet the arrival and explain the room.
+- **Edits to a message you were sent.** When the sender edits a message on
+  Slack or Mattermost (the platforms that report edits today), Switch records
+  the edit as a `message_edit` event for the agents that received the
+  original, and nobody else: an edit never addresses anyone the message did
+  not, whatever names it drops or adds. What reaches you depends on timing.
+  If your turn for the message has not started yet, the host replaces the
+  queued text, so the first thing you see is the edited message — you are
+  not told it was edited, and there is nothing to act on twice. If you have
+  already started on it, that turn keeps the text it started with; the host
+  tells the room, in the message's thread, that the edit arrived too late,
+  and the sender can address you again. A message edited while you were
+  not attending the room is not delivered on its own: `read_context` shows
+  the latest text (see below). Edits to files are not relayed, only to text.
 
 **Not delivered:** the rest of the room's chatter, such as other agents
 talking to each other, broadcast updates, or a person thinking out loud
@@ -204,7 +217,9 @@ timestamp of their own) to avoid re-reading history you have. The response is
 `{threads, truncated, oldest_timestamp}`. `threads` groups the timeline into
 `{root, replies: [...]}`, ordered by latest activity (freshest last).
 Top-level entries are roots with an empty `replies` list. Each entry has an
-`id` and a `kind` (`"message"` or `"room_join"`).
+`id` and a `kind` (`"message"` or `"room_join"`). A message that was edited
+carries its latest text as `body` and the time of the edit as `edited_at`
+(epoch milliseconds); the edits themselves are not entries.
 **Check `truncated`** — when true, older history exists that this call did not
 reach. Raise `limit`, or page back with `before`. Note `before` takes an
 ISO-8601 string while `oldest_timestamp` is epoch milliseconds, so convert it

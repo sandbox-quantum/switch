@@ -132,8 +132,10 @@ class Process:
         sender: Client,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        replaces_event_id: str | None = None,
     ) -> str:
-        """Write a message as `sender`, and return its event id."""
+        """Write a message as `sender`, or with `replaces_event_id` an edit of
+        that message, and return its event id."""
         result = await self.transport(sender).send_message(
             room.transport_room_id,
             body,
@@ -142,6 +144,7 @@ class Process:
             format="markdown",
             thread_root_id=thread_root_id,
             extra_content=extra_content,
+            replaces_event_id=replaces_event_id,
         )
         return result.event_id
 

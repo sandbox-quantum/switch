@@ -47,6 +47,8 @@ export interface MattermostPost {
   message: string;
   create_at: number;
   update_at: number;
+  /** When the text or files last changed; 0 for a post never edited. */
+  edit_at: number;
   root_id: string;
   type: string;
   props?: Record<string, unknown>;
@@ -273,6 +275,11 @@ export class MattermostClient {
       message: params.message,
       root_id: params.rootId ?? '',
     });
+  }
+
+  /** `PUT /api/v4/posts/{id}/patch` — change a post's text, as its author editing it does. */
+  async edit(postId: string, message: string): Promise<MattermostPost> {
+    return this.request<MattermostPost>('PUT', `/posts/${postId}/patch`, { message });
   }
 
   /**

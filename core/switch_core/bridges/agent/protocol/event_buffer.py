@@ -80,6 +80,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.message_events import (
     attachment_ref,
+    message_edit_event,
     message_event,
     room_join_event,
 )
@@ -114,6 +115,7 @@ from switch_core.db.session_scope import (
     shared_tenant_session,
     tenant_session,
 )
+from switch_core.messages.row import replaces_of
 from switch_core.observability.catalogue import (
     AGENT_BUFFER_SCAN_DURATION,
     AGENT_BUFFER_SCANNED,
@@ -255,7 +257,7 @@ def is_notifiable(event: AgentEvent) -> bool:
     every room wants only these, while a session in a single room wants
     everything.
     """
-    if event.type == "message":
+    if event.type in ("message", "message_edit"):
         return getattr(event.payload, "addressed", False)
     if event.type == "room_join":
         return getattr(event.payload, "listening", False)
@@ -1545,6 +1547,26 @@ class EventBuffer:
                 if row.event_type == "m.room.member" and row.sender_id != my_sender
             },
         )
+        # An edit is read where the message it replaces was, so its thread is
+        # the original's. One read for the page's edits.
+        replaced = {
+            row.replaces_event_id for row in rows if row.replaces_event_id is not None
+        }
+        originals: dict[str, Message] = (
+            {
+                original.transport_event_id: original
+                for original in (
+                    await session.scalars(
+                        select(Message).where(
+                            Message.room_id == room.id,
+                            Message.transport_event_id.in_(replaced),
+                        )
+                    )
+                ).all()
+            }
+            if replaced
+            else {}
+        )
 
         events: list[BufferedEvent] = []
         through = 0
@@ -1599,6 +1621,27 @@ class EventBuffer:
                     body=inbound.body,
                     thread_id=inbound.thread_root_id,
                     attachments=[attachment_ref(inbound)],
+                )
+            elif isinstance(inbound, InboundMessage) and (
+                (replaces := replaces_of(inbound.content)) is not None
+            ):
+                # Conversation reads it as an edit, with the thread the
+                # original was read in. An edit of a message not in this room
+                # is read against nothing, so it is not read at all.
+                original = originals.get(replaces)
+                if original is None:
+                    continue
+                event = message_edit_event(
+                    room_id=room.id,
+                    bridge_id=room.bridge_id,
+                    channel_type=room.channel_type,
+                    event=inbound,
+                    replaces_message_id=replaces,
+                    addressed=False,
+                    sender_name=inbound.sender_name or inbound.sender,
+                    thread_id=None
+                    if platform_replies_in_channel(original.content or {})
+                    else original.thread_root_event_id,
                 )
             elif isinstance(inbound, InboundMessage):
                 event = message_event(

@@ -118,3 +118,32 @@ def test_a_warning_too_long_for_the_message_is_cut() -> None:
     assert len(lines) == 1
     assert len(lines[0]) <= 10
     assert lines[0].startswith("⚠️")
+
+
+# ── A queued turn whose message was edited ────────────────────────────────────
+
+
+def _prompt(revision: int) -> Item:
+    return _item(kind="user-message", status="completed", title="", revision=revision)
+
+
+def test_a_queued_turn_says_when_its_message_was_edited() -> None:
+    """The host republished the prompt at a later revision: the agent will
+    start from the latest text, and the reader is told so."""
+    lines = _status([_prompt(2)], "queued", tool_detail=True)
+
+    assert lines == [
+        "**Queued. The message was edited; the agent will start from the latest text…**"
+    ]
+
+
+def test_a_queued_turn_whose_message_stands_as_sent_says_nothing_of_edits() -> None:
+    lines = _status([_prompt(1)], "queued", tool_detail=True)
+
+    assert lines == ["**Queued. Waiting for the agent to start…**"]
+
+
+def test_once_the_turn_runs_the_edit_is_old_news() -> None:
+    lines = _status([_prompt(2)], "running", tool_detail=True)
+
+    assert lines == ["**Working…**"]

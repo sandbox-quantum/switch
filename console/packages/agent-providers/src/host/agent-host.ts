@@ -423,6 +423,15 @@ export async function stopRedefinedSessions(
  * assignment and the routing that follows it are on disk before the stream is
  * allowed past the event.
  */
+/** Whether a handoff carries an edit of a room message rather than a message. */
+function isEdit(event: Handoff): boolean {
+  return (
+    typeof event.event === 'object' &&
+    event.event !== null &&
+    (event.event as { type?: unknown }).type === 'message_edit'
+  );
+}
+
 export class AgentHostAssignments {
   private constructor(private readonly journal: Journal<WatchRecord>) {}
 
@@ -1222,6 +1231,16 @@ export async function runAgentHost(
         console.warn(
           `Session ${placed} ${owner ? 'was stopped' : 'is not one of this agent’s sessions here'}, so room ${event.roomId} has no session attending it now.`
         );
+      }
+      // An edit changes a message a session was handed; with no session
+      // attending the room there is no queued turn to change, and a session
+      // started for it would read the edited message from the room anyway.
+      if (isEdit(event)) {
+        console.warn(
+          `Room ${event.roomId}: a message was edited, but no session of this agent is attending the room; the edit is not applied to any turn.`
+        );
+        if (waiting) await assignments.released(event, 'no session attends the room');
+        return true;
       }
       if (!spawning) return false;
       const config = await assignments.assign(

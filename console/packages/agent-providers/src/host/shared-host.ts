@@ -13,6 +13,7 @@ import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
 import {
   followupCommandId,
+  editTooLate,
   retryRefusal,
   roomControlFollowup,
   roomControlRefusal,
@@ -20,9 +21,14 @@ import {
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
+  reviseCommand,
+  revisedRoomPrompt,
   roomCommand,
+  roomCommandId,
   roomFreshStartCommandId,
+  roomMessageEditSchema,
   roomMessageSchema,
+  type RoomMessageEdit,
   type RoomAttachmentSource,
 } from './room-prompt';
 import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
@@ -803,9 +809,74 @@ export async function runSharedHost(
       }
       return status ?? 'The host did not record the command.';
     };
+    /**
+     * An edit of a room message this session was sent: the queued turn the
+     * message started runs on the new text. A turn the agent has started
+     * keeps its own, and the room is told so, where the message was, since
+     * the sender would otherwise expect the agent to act on the change.
+     * An edit of a message this session never had a turn for (handed to
+     * another session, or admitted before this host existed) is nothing to
+     * revise.
+     */
+    const admitRoomEdit = async (
+      inbox: SharedRoomInbox,
+      event: { roomId: string; messageId: string; sequence: number },
+      edit: RoomMessageEdit
+    ): Promise<void> => {
+      const { payload } = edit;
+      const turnId = roomCommandId(agentId, event.roomId, payload.replaces_message_id);
+      const shown = host!.snapshot().items.find((item) => item.itemId === `user-${turnId}`);
+      const text = shown ? revisedRoomPrompt(shown.text, payload.body) : null;
+      if (text === null) {
+        console.warn(
+          `Room ${event.roomId}: message ${payload.replaces_message_id} was edited, but this session has no turn for it; the edit is not applied.`
+        );
+        await inbox.acknowledge(event);
+        return;
+      }
+      const command = reviseCommand({
+        agentId,
+        sessionId: options.session.sessionId,
+        epoch: host!.snapshot().session.epoch,
+        roomId: event.roomId,
+        edit,
+        surface: 'switch-web',
+        text,
+      });
+      const repeated = host!
+        .snapshot()
+        .commandStatuses.some((entry) => entry.commandId === command.commandId);
+      const outcome = await run(command, null);
+      if (
+        typeof outcome !== 'string' &&
+        outcome.status === 'rejected' &&
+        outcome.message?.includes('TURN_STARTED') &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection
+      )
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: event.roomId,
+            threadId: payload.thread_id ?? payload.replaces_message_id,
+            body: editTooLate(),
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `Could not tell room ${event.roomId} that an edit of ${payload.replaces_message_id} came too late: ${String(error)}`
+            )
+          );
+      await inbox.acknowledge(event);
+    };
     /** Turn each room message handed over into the command it amounts to, in order. */
     const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
       for (const event of inbox.pending()) {
+        const edit = roomMessageEditSchema.safeParse(event.event);
+        if (edit.success) {
+          await admitRoomEdit(inbox, event, edit.data);
+          continue;
+        }
         const message = roomMessageSchema.safeParse(event.event);
         if (!message.success) {
           await host!.notice(

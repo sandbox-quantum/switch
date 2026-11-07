@@ -6,7 +6,9 @@ import { z } from 'zod';
 import { Journal } from './journal';
 
 export function roomInputId(event: AgentBridgeEvent): string | null {
-  if (event.type === 'message')
+  // An edit is handed over under its own id, so it is not a repeat of the
+  // message it edits; which message that is, its payload says.
+  if (event.type === 'message' || event.type === 'message_edit')
     return 'addressed' in event.payload &&
       event.payload.addressed === true &&
       'message_id' in event.payload

@@ -53,6 +53,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     RoomStore,
@@ -146,6 +147,9 @@ _UNPOSTED_CLAIM_LAPSES_AFTER = timedelta(
 # another process has just written, before giving up on telling whose it is.
 # That process writes the `ExternalUser` right after the client.
 _HUMAN_ACTOR_MINTING_SECONDS = 2.0
+
+# Stateless: every call takes its session.
+_MESSAGE_STORE = MessageStore()
 
 
 def _is_thread_reply(content: Mapping[str, object]) -> bool:
@@ -1086,6 +1090,9 @@ class CollaborationCore:
             msg.sender_name,
             msg.content[:80],
         )
+        if msg.edit_revision is not None:
+            await self._handle_inbound_edit(msg)
+            return
         if await self._is_registered_agent(msg.sender_name):
             # A bridged Switch agent's own message echoed back from the platform.
             # The agent posts natively in the Switch room (that is where agents
@@ -1323,6 +1330,178 @@ class CollaborationCore:
                 transport_event_id=first_event_id,
                 external_post_id=msg.message_ref,
             )
+
+    async def _handle_inbound_edit(self, msg: InboundMessage) -> None:
+        """Relay an edit of a platform post as an edit of the room message the
+        post was relayed as: a row of its own carrying the new text, which the
+        router hands to the agents the message reached and nobody else.
+
+        The platform reports an edit under the post's author, so the row is
+        written as that person's human actor, and only when the room message
+        is theirs. An edit of a post that never reached the room (sent before
+        the bridge joined, blocked, typed as a command) has nothing to be an
+        edit of, and one that leaves the text as it stands says nothing new;
+        neither is written. Files are not relayed with an edit: only the text
+        changes. A command is not run again by editing it, and a message is
+        not turned into one.
+        """
+        assert msg.edit_revision is not None
+        if await self._is_registered_agent(msg.sender_name):
+            return
+        room_ids = self._channel_to_room.get(msg.channel_id)
+        if room_ids is None:
+            logger.warning(
+                "[BRIDGE-IN] edit of %s in channel %s, which maps to no room; ignored",
+                msg.message_ref,
+                msg.channel_id,
+            )
+            return
+        room_id, transport_room_id = room_ids
+        original_id = await self._event_for_external_post(msg.message_ref)
+        if original_id is None:
+            logger.info(
+                "[BRIDGE-IN] edit of post %s, which was never relayed into room %s; ignored",
+                msg.message_ref,
+                room_id,
+            )
+            return
+        async with self._session_factory() as session:
+            original = await _MESSAGE_STORE.get_by_transport_event_id(
+                session, original_id
+            )
+            latest = await _MESSAGE_STORE.latest_replacements(
+                session, room_id, [original_id]
+            )
+        if original is None or original.room_id != room_id:
+            logger.warning(
+                "[BRIDGE-IN] post %s maps to %s, which is not a message of room %s; "
+                "edit ignored",
+                msg.message_ref,
+                original_id,
+                room_id,
+            )
+            return
+        if original.event_type != "m.room.message":
+            logger.info(
+                "[BRIDGE-IN] post %s is a command; editing it runs nothing",
+                msg.message_ref,
+            )
+            return
+        if msg.content.strip().startswith("!"):
+            logger.info(
+                "[BRIDGE-IN] edit of %s would turn a message into a command; ignored",
+                msg.message_ref,
+            )
+            return
+        human_actor = await self._ensure_human_in_room(
+            external_user_id=msg.sender_id,
+            external_username=msg.sender_name,
+            room_id=room_id,
+            transport_room_id=transport_room_id,
+        )
+        if human_actor is None:
+            return
+        if original.sender_id != human_actor.transport_user_id:
+            logger.warning(
+                "[BRIDGE-IN] %s edited post %s, whose room message %s was sent by %s; "
+                "not relayed",
+                msg.sender_name,
+                msg.message_ref,
+                original_id,
+                original.sender_id,
+            )
+            return
+
+        content = self._adapter.translate_inbound(msg.content)
+        mention_target: str | None = None
+        if msg.self_mention_token is not None:
+            mention_target = await self._resolve_self_mention_target(msg, room_id)
+        if mention_target is not None and (
+            mention_regex(mention_target).search(strip_emphasis(content)) is None
+        ):
+            content = f"@{mention_target} {content}"
+        current = latest.get(original_id, original)
+        if content == (current.body or ""):
+            logger.debug(
+                "[BRIDGE-IN] edit of %s leaves its text as it stands; nothing to relay",
+                msg.message_ref,
+            )
+            return
+
+        check = await check_message(
+            self._trust_client, role="user", content=content, room_id=room_id
+        )
+        if check.blocked or (
+            check.outcome == "redacted" and check.redacted_content is None
+        ):
+            logger.warning(
+                "[BRIDGE-IN] edit from %s not relayed — Switch Trust outcome=%s "
+                "(policy=%s) — room %s",
+                msg.sender_name,
+                check.outcome,
+                check.policy_id,
+                transport_room_id,
+            )
+            await self._post_trust_notice(
+                msg,
+                "🚫 Your edit was blocked by Switch Trust and was not delivered "
+                "to the room. Agents still see the message as it was.",
+                AdminMessageType.TRUST_BLOCKED,
+            )
+            return
+        if check.redacted_content is not None:
+            content = check.redacted_content
+        annotation = trust_annotation(check)
+        if annotation is not None:
+            content = f"{content}\n\n{annotation}"
+        # Numbered from the post and this revision of it: the same edit
+        # delivered again writes nothing new, and a later edit is a new row.
+        # Not metered: the message was counted when it was sent, and a
+        # correction to it is not another.
+        with writes_derived_from(
+            human_actor.client_id,
+            _post_source(
+                self._bridge_id,
+                msg.channel_id,
+                f"{msg.message_ref}\x1fedit\x1f{msg.edit_revision}",
+            ),
+        ):
+            event_id = await human_actor.send_message(
+                transport_room_id,
+                content,
+                format="markdown",
+                metered=False,
+                replaces_event_id=original_id,
+            )
+        if event_id is None:
+            logger.error(
+                "[BRIDGE-IN] failed to relay edit of %s from %s into room %s — "
+                "agents keep the message as it was",
+                msg.message_ref,
+                msg.sender_name,
+                transport_room_id,
+            )
+            return
+        logger.info(
+            "[BRIDGE-IN] relayed edit of %s as %s replacing %s in room %s",
+            msg.message_ref,
+            event_id,
+            original_id,
+            room_id,
+        )
+        if check.redacted_content is not None:
+            redaction_notice = trust_redaction_notice(check)
+            if redaction_notice is not None:
+                await self._post_trust_notice(
+                    msg, redaction_notice, AdminMessageType.TRUST_REDACTED
+                )
+        if annotation is not None:
+            notice_type = (
+                AdminMessageType.TRUST_ALERTED
+                if check.outcome == "alerted"
+                else AdminMessageType.TRUST_ERRORED
+            )
+            await self._post_trust_notice(msg, annotation, notice_type)
 
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType

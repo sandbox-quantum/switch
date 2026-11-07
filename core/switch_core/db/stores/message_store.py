@@ -348,17 +348,41 @@ class MessageStore:
         self, session: AsyncSession, room_id: str, *, limit: int
     ) -> list[Message]:
         """The room's newest top-level messages, newest first. Replies inside
-        threads are left out."""
+        threads are left out, and so are edits: an edit is the new text of a
+        message already in the list, not a message of its own."""
         result = await session.execute(
             select(Message)
             .where(
                 Message.room_id == room_id,
                 Message.thread_root_event_id.is_(None),
+                Message.replaces_event_id.is_(None),
             )
             .order_by(Message.seq.desc())
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def latest_replacements(
+        self, session: AsyncSession, room_id: str, event_ids: Collection[str]
+    ) -> dict[str, Message]:
+        """The newest edit of each of `event_ids` that has one, keyed by the
+        message it replaces. One query for a whole page of messages, scoped to
+        the room so an edit from elsewhere cannot be read through it."""
+        if not event_ids:
+            return {}
+        result = await session.execute(
+            select(Message)
+            .where(
+                Message.room_id == room_id,
+                Message.replaces_event_id.in_(list(event_ids)),
+            )
+            .order_by(Message.seq)
+        )
+        latest: dict[str, Message] = {}
+        for edit in result.scalars().all():
+            assert edit.replaces_event_id is not None
+            latest[edit.replaces_event_id] = edit
+        return latest
 
     async def list_by_transport_event_ids(
         self, session: AsyncSession, room_id: str, event_ids: Collection[str]

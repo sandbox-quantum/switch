@@ -1540,3 +1540,102 @@ it('tells the room once when every post of a turn was refused, and not when one 
     expect(await host.stop()).toBeNull();
   }
 }, 20000);
+
+const roomEdit = (sequence: number, of: number, body: string) => ({
+  sequence,
+  roomId: 'room',
+  messageId: `edit-${sequence}`,
+  event: {
+    type: 'message_edit',
+    payload: {
+      addressed: true,
+      sender: '@person:test',
+      sender_name: 'A  Person',
+      message_id: `edit-${sequence}`,
+      replaces_message_id: `message-${of}`,
+      body,
+      timestamp: sequence,
+      thread_id: null,
+    },
+  },
+});
+
+it('gives a room message edited before its turn started the new text', async () => {
+  const host = await start({ rooms: true });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'first') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'look at teh file') });
+    await host.parent.ask({ type: 'room', handoff: roomEdit(3, 2, 'look at the file') });
+    // Handed over is not yet admitted: the first turn ends only once the
+    // second is queued and its message shows the edit.
+    const revised = async () => {
+      const snapshot = await host.parent.ask({ type: 'snapshot' });
+      const { items } = snapshot.value as { items: { kind: string; revision: number }[] };
+      return items.filter((item) => item.kind === 'user-message').map((item) => item.revision);
+    };
+    await poll(async () => expect(await revised()).toEqual([1, 2]));
+    expect(host.turns).toHaveLength(1);
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[0]!.turnId,
+      outcome: 'completed',
+      usage: [],
+    });
+    await until(() => expect(host.turns).toHaveLength(2));
+    const [, second] = host.turns;
+    expect(second!.text).toContain('(message_id message-2, thread_id none)');
+    expect(second!.text).toContain('look at the file');
+    expect(second!.text).not.toContain('teh');
+    expect(second!.text).toContain('(2 unaddressed room messages arrived');
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('tells the room, where the message was, when an edit comes after the agent started', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type === 'room-reply'
+    );
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'work on it') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'room', handoff: roomEdit(2, 1, 'work on it, faster') });
+    await until(() => expect(asks()).toHaveLength(1));
+    expect(asks()[0]!.ask).toEqual({
+      type: 'room-reply',
+      roomId: 'room',
+      threadId: 'message-1',
+      body: "I'd already started on that message when it was edited, so this turn keeps the text it started with. Send a new message if the change matters.",
+    });
+    expect(host.turns[0]!.text).toContain('work on it\n');
+    expect(host.turns[0]!.text).not.toContain('faster');
+    // The same edit handed over again: not told twice.
+    await host.parent.ask({ type: 'room', handoff: roomEdit(2, 1, 'work on it, faster') });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks()).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('applies nothing for an edit of a message it never had a turn for', async () => {
+  const host = await start({ rooms: true });
+  const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomEdit(1, 9, 'never sent here') });
+    await until(() =>
+      expect(warned.mock.calls.some((call) => String(call[0]).includes('has no turn for it'))).toBe(
+        true
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(host.turns).toHaveLength(0);
+  } finally {
+    warned.mockRestore();
+    expect(await host.stop()).toBeNull();
+  }
+});
