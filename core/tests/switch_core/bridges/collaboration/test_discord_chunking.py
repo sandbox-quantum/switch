@@ -120,3 +120,9 @@ def test_help_shaped_output_over_the_cap_splits() -> None:
     assert len(chunks) >= 2
     assert all(len(c) <= MAX_MESSAGE for c in chunks)
     assert _rejoin(chunks) == body
+
+
+@pytest.mark.parametrize("limit", [0, 1, 8])
+def test_a_limit_too_small_to_split_to_is_refused(limit: int) -> None:
+    with pytest.raises(ValueError, match=f"limit of {limit}"):
+        chunk_message("ab" * 10, limit)

@@ -942,13 +942,19 @@ class PlatformAdapter(ABC):
         )
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls, connection_config: dict[str, object], outbound_policy: OutboundPolicy
+    ) -> None:
         """Prove the credentials work, before the bridge is persisted.
 
         Raise :class:`BridgeCredentialError` with a message fit for an operator
         to read. Adapters start in a background task whose exceptions are logged
         and swallowed, so without this a wrong password looks like success and
         surfaces hours later as an unrelated-looking failure.
+
+        A request to a URL the config names should go through
+        `outbound_policy`, so a name that resolves somewhere else after the URL
+        was checked does not take the credentials with it.
 
         The default accepts anything: an adapter that cannot check cheaply
         should not pretend to.

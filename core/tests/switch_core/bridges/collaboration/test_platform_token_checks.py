@@ -34,7 +34,7 @@ from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.outbound import OutboundURLRefused
+from switch_core.outbound import OutboundPolicy, OutboundURLRefused
 from tests.ownership import SoleOwner
 
 TELEGRAM_SECRET = "placeholder-secret-part-of-the-token"
@@ -83,7 +83,9 @@ class TestTelegram:
         with pytest.raises(
             BridgeCredentialError, match="rejected the bot token"
         ) as caught:
-            await TelegramAdapter.verify_credentials(dict(TELEGRAM))
+            await TelegramAdapter.verify_credentials(
+                dict(TELEGRAM), OutboundPolicy.parse("")
+            )
 
         assert TELEGRAM_SECRET not in "".join(traceback.format_exception(caught.value))
 
@@ -92,7 +94,9 @@ class TestTelegram:
     ) -> None:
         asked = _telegram_answers(monkeypatch, 200)
 
-        await TelegramAdapter.verify_credentials(dict(TELEGRAM))
+        await TelegramAdapter.verify_credentials(
+            dict(TELEGRAM), OutboundPolicy.parse("")
+        )
 
         assert [url.rsplit("/", 1)[-1] for url in asked] == ["getMe"]
 
@@ -101,7 +105,9 @@ class TestTelegram:
     ) -> None:
         asked = _telegram_answers(monkeypatch, 401)
 
-        await TelegramAdapter.verify_credentials({"event_delivery": "shared"})
+        await TelegramAdapter.verify_credentials(
+            {"event_delivery": "shared"}, OutboundPolicy.parse("")
+        )
 
         assert asked == []
 
@@ -111,20 +117,25 @@ class TestDiscord:
         refused = AsyncMock(side_effect=discord.LoginFailure("Improper token"))
         with patch.object(discord.Client, "login", refused):
             with pytest.raises(BridgeCredentialError, match="rejected the bot token"):
-                await DiscordAdapter.verify_credentials(dict(DISCORD))
+                await DiscordAdapter.verify_credentials(
+                    dict(DISCORD), OutboundPolicy.parse("")
+                )
 
         refused.assert_awaited_once_with(DISCORD["bot_token"])
 
     async def test_a_token_discord_knows_is_accepted(self) -> None:
         with patch.object(discord.Client, "login", AsyncMock()) as login:
-            await DiscordAdapter.verify_credentials(dict(DISCORD))
+            await DiscordAdapter.verify_credentials(
+                dict(DISCORD), OutboundPolicy.parse("")
+            )
 
         login.assert_awaited_once_with(DISCORD["bot_token"])
 
     async def test_a_bridge_on_the_shared_connection_asks_nothing(self) -> None:
         with patch.object(discord.Client, "login", AsyncMock()) as login:
             await DiscordAdapter.verify_credentials(
-                {"guild_id": "111", "event_delivery": "shared"}
+                {"guild_id": "111", "event_delivery": "shared"},
+                OutboundPolicy.parse(""),
             )
 
         login.assert_not_awaited()
@@ -154,19 +165,25 @@ class TestMattermost:
         driver = _Driver(login=NoAccessTokenProvided("Invalid credentials"), team=None)
         with _mattermost_driver(driver):
             with pytest.raises(BridgeCredentialError, match="refused the sign-in"):
-                await MattermostAdapter.verify_credentials(dict(MATTERMOST))
+                await MattermostAdapter.verify_credentials(
+                    dict(MATTERMOST), OutboundPolicy.parse("")
+                )
 
     async def test_a_team_it_cannot_find_is_a_credential_error(self) -> None:
         driver = _Driver(login=None, team=ResourceNotFound("not found"))
         with _mattermost_driver(driver):
             with pytest.raises(BridgeCredentialError, match="no team named 'eng'"):
-                await MattermostAdapter.verify_credentials(dict(MATTERMOST))
+                await MattermostAdapter.verify_credentials(
+                    dict(MATTERMOST), OutboundPolicy.parse("")
+                )
         assert driver.logged_out
 
     async def test_a_working_sign_in_is_accepted_and_signed_out(self) -> None:
         driver = _Driver(login=None, team=None)
         with _mattermost_driver(driver):
-            await MattermostAdapter.verify_credentials(dict(MATTERMOST))
+            await MattermostAdapter.verify_credentials(
+                dict(MATTERMOST), OutboundPolicy.parse("")
+            )
 
         driver.teams.get_team_by_name.assert_called_once_with("eng")
         assert driver.logged_out

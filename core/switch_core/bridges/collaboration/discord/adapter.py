@@ -84,6 +84,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
+from switch_core.outbound import OutboundPolicy
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -537,7 +538,9 @@ class DiscordAdapter(PlatformAdapter):
         return None
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls, connection_config: dict[str, object], outbound_policy: OutboundPolicy
+    ) -> None:
         """Log in with the bot token, which fetches the bot's own user.
 
         A bridge on the distributed app holds no token of its own; the

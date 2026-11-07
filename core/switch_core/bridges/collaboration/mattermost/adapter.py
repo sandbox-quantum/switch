@@ -91,7 +91,7 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     turn_status,
 )
-from switch_core.outbound import guarded_async_client
+from switch_core.outbound import OutboundPolicy, guarded_async_client
 from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
@@ -369,11 +369,13 @@ class MattermostAdapter(PlatformAdapter):
     keeps_quiet_unless_listening: ClassVar[bool] = True
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls, connection_config: dict[str, object], outbound_policy: OutboundPolicy
+    ) -> None:
         """Sign in as the admin user and find the team, as `start` will.
 
-        `url` has been through the outbound policy before this is called, so
-        the credentials are only sent where Switch may connect.
+        `url` has been through the outbound policy before this is called, but
+        the driver makes its own connections, outside `outbound_policy`.
         """
         config = MattermostConnectionConfig.model_validate(connection_config)
         driver = cls(config=config)._create_driver(
