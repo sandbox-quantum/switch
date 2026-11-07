@@ -52,6 +52,7 @@ export function buildDescriptorFromProvider(
     commands: binaryNames.length > 0 ? binaryNames : [metadata.id],
     skipVersionProbe: hostDep.skipVersionProbe,
     versionArgs: hostDep.versionArgs,
+    unsupportedFrom: hostDep.unsupportedFrom,
     docUrl: metadata.websiteUrl,
     resolveStatus: behavior.hostDependency?.resolveStatus
       ? behavior.hostDependency.resolveStatus.bind(behavior.hostDependency)

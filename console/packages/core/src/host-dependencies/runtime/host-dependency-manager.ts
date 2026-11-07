@@ -138,7 +138,7 @@ function dependencyStateFromProbeResult(
   // An installed-but-too-old binary must report as not-ready. Downgrade to
   // `error` while keeping the detected version visible, so the UI shows e.g.
   // "Node.js 12.22.9" with a clear "needs ≥ 18" message rather than a green tick.
-  let belowMinError: string | undefined;
+  let versionError: string | undefined;
   if (
     status === 'available' &&
     descriptor.minVersion &&
@@ -146,7 +146,17 @@ function dependencyStateFromProbeResult(
     compareVersions(version, descriptor.minVersion) < 0
   ) {
     status = 'error';
-    belowMinError = `${descriptor.name} ${version} is too old — needs ${descriptor.minVersion} or newer.`;
+    versionError = `${descriptor.name} ${version} is too old — needs ${descriptor.minVersion} or newer.`;
+  }
+
+  if (
+    status === 'available' &&
+    descriptor.unsupportedFrom &&
+    version &&
+    compareVersions(version, descriptor.unsupportedFrom.version) >= 0
+  ) {
+    status = 'error';
+    versionError = descriptor.unsupportedFrom.message;
   }
 
   return {
@@ -157,9 +167,7 @@ function dependencyStateFromProbeResult(
     path: resolvedPath,
     checkedAt: Date.now(),
     error:
-      status === 'error'
-        ? (belowMinError ?? (probe?.stderr?.trim() || 'Unknown error'))
-        : undefined,
+      status === 'error' ? (versionError ?? (probe?.stderr?.trim() || 'Unknown error')) : undefined,
   };
 }
 

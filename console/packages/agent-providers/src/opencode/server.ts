@@ -6,6 +6,7 @@ import { ProviderUnavailableError } from '../adapter';
 import { spawnProvider, stopProvider } from '../provider-process';
 import type { OpencodeConfigFile } from './config';
 import { prepareOpencodeHome } from './home';
+import { assertSupportedOpencode } from './version';
 
 const READY_PREFIX = 'opencode server listening';
 
@@ -57,6 +58,7 @@ async function findFreePort(): Promise<number> {
 }
 
 export async function startOpencodeServer(input: StartServerInput): Promise<OpencodeServerHandle> {
+  await assertSupportedOpencode(input);
   const password = randomBytes(24).toString('base64url');
   const port = await findFreePort();
   const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);

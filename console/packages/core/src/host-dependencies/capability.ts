@@ -88,6 +88,11 @@ export const hostDependencyDescriptorSchema = z.object({
   installCommands: z.partialRecord(z.enum(PLATFORMS), z.array(installOptionSchema)),
   /** Optional link to installation documentation, shown in the dependency detail view. */
   installDocs: z.string().optional(),
+  /**
+   * First version Switch Console cannot drive (dotted, e.g. '2.0.0'). A probed version at or
+   * above it resolves to `error` with `message`, rather than passing as available.
+   */
+  unsupportedFrom: z.object({ version: z.string(), message: z.string() }).optional(),
   updates: updatesDescriptorSchema,
   /** Uninstall strategy. When absent, uninstall is not supported. */
   uninstall: uninstallStrategySchema.optional(),
