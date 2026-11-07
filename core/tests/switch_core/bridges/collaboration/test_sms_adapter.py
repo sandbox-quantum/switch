@@ -77,6 +77,12 @@ class Twilio:
                 form = dict(parse_qsl(request.content.decode(), keep_blank_values=True))
                 self.sms_url = form["SmsUrl"]
             return httpx.Response(200, json={"sid": "PN1", "sms_url": self.sms_url})
+        if "/Media/" in path:
+            if path.endswith("/ME404"):
+                return httpx.Response(404, json={"message": "gone"})
+            return httpx.Response(
+                200, content=b"\x89PNG fake", headers={"content-type": "image/png"}
+            )
         if path.endswith("/Messages.json"):
             n = sum(1 for r in self.requests if r.url.path.endswith("/Messages.json"))
             return httpx.Response(201, json={"sid": f"SM{n}"})
@@ -307,16 +313,58 @@ class TestInbound:
         )
         assert heard.messages == []
 
-    async def test_mms_pictures_are_disclosed_as_not_relayed(
+    async def test_mms_pictures_are_downloaded_as_the_account(
         self, twilio: Twilio
     ) -> None:
         adapter, heard = await _started(twilio)
+        media = (
+            f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/MM1/Media/ME1"
+        )
         await adapter.dispatch_event(
-            envelope_type="message", payload=_sms(body="look", NumMedia="2")
+            envelope_type="message",
+            payload=_sms(
+                body="look",
+                NumMedia="1",
+                MediaUrl0=media,
+                MediaContentType0="image/png",
+            ),
         )
         [message] = heard.messages
-        assert len(message.attachment_failures) == 2
-        assert "text only" in message.attachment_failures[0].reason
+        [picture] = message.attachments
+        assert (picture.filename, picture.mimetype, picture.data) == (
+            "picture-1.png",
+            "image/png",
+            b"\x89PNG fake",
+        )
+        [fetch] = [r for r in twilio.requests if "/Media/" in r.url.path]
+        assert fetch.headers["authorization"].startswith("Basic ")
+
+    async def test_mms_failures_are_reported_and_foreign_urls_never_fetched(
+        self, twilio: Twilio
+    ) -> None:
+        adapter, heard = await _started(twilio)
+        adapter.set_max_attachment_bytes(4)
+        own = f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/MM1/Media"
+        await adapter.dispatch_event(
+            envelope_type="message",
+            payload=_sms(
+                body="look",
+                NumMedia="3",
+                MediaUrl0=f"{own}/ME1",
+                MediaContentType0="image/png",
+                MediaUrl1=f"{own}/ME404",
+                MediaContentType1="image/jpeg",
+                MediaUrl2="https://attacker.example/steal",
+                MediaContentType2="image/gif",
+            ),
+        )
+        [message] = heard.messages
+        assert message.attachments == []
+        reasons = {f.filename: f.reason for f in message.attachment_failures}
+        assert "larger" in reasons["picture-1.png"]
+        assert "Could not download" in reasons["picture-2.jpg"]
+        assert "no address" in reasons["picture-3.gif"]
+        assert not [r for r in twilio.requests if r.url.host == "attacker.example"]
 
     async def test_a_new_conversation_starts_with_the_default_agent(
         self, twilio: Twilio

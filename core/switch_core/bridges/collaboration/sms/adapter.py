@@ -24,10 +24,11 @@ import hashlib
 import hmac
 import logging
 import math
+import mimetypes
 import re
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, ClassVar
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 from pydantic import Field, field_validator
@@ -40,6 +41,7 @@ from switch_core.bridges.collaboration.install import (
     WebhookRequest,
 )
 from switch_core.bridges.collaboration.models import (
+    Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
@@ -473,13 +475,7 @@ class SmsAdapter(PlatformAdapter):
 
         if self._on_message is None:
             return None
-        failures = [
-            AttachmentFailure(
-                filename=f"picture {index + 1}",
-                reason="Pictures sent by MMS are not relayed: SMS carries text only.",
-            )
-            for index in range(_media_count(payload))
-        ]
+        attachments, failures = await self._fetch_media(payload)
         await self._on_message(
             InboundMessage(
                 channel_id=sender,
@@ -488,10 +484,65 @@ class SmsAdapter(PlatformAdapter):
                 sender_name=sender,
                 content=content,
                 message_ref=sid,
+                attachments=attachments,
                 attachment_failures=failures,
             )
         )
         return None
+
+    async def _fetch_media(
+        self, payload: dict[str, Any]
+    ) -> tuple[list[Attachment], list[AttachmentFailure]]:
+        """The files of an MMS, downloaded from Twilio as the account.
+
+        Twilio names each file by a `MediaUrl<n>` under this account's own API
+        path; any other address is refused rather than fetched, so a payload
+        cannot point Switch at a host of its choosing.
+        """
+        fetched: list[Attachment] = []
+        failures: list[AttachmentFailure] = []
+        own_prefix = f"/2010-04-01/Accounts/{self.config.account_sid}/"
+        for index in range(_media_count(payload)):
+            url = str(payload.get(f"MediaUrl{index}") or "")
+            mimetype = str(
+                payload.get(f"MediaContentType{index}") or "application/octet-stream"
+            )
+            name = f"picture-{index + 1}{mimetypes.guess_extension(mimetype) or ''}"
+            parts = urlsplit(url)
+            if (
+                parts.scheme != "https"
+                or parts.hostname != "api.twilio.com"
+                or not parts.path.startswith(own_prefix)
+            ):
+                failures.append(
+                    AttachmentFailure(
+                        filename=name, reason="Twilio gave no address for it."
+                    )
+                )
+                continue
+            try:
+                async with self._client(self.config) as client:
+                    response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                failures.append(
+                    AttachmentFailure(
+                        filename=name,
+                        reason=f"Could not download it from Twilio: {exc}",
+                    )
+                )
+                continue
+            if len(response.content) > self._max_attachment_bytes:
+                failures.append(
+                    AttachmentFailure(
+                        filename=name, reason="It is larger than Switch accepts."
+                    )
+                )
+                continue
+            fetched.append(
+                Attachment(filename=name, mimetype=mimetype, data=response.content)
+            )
+        return fetched, failures
 
     # ── Outbound ────────────────────────────────────────────────────────────
 

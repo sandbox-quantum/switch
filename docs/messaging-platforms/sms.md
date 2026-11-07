@@ -68,7 +68,7 @@ split at paragraph, sentence or word boundaries.
 | Threads | None. Every message in a conversation is in one flow, and replies go to the same number. |
 | Edits and deletes | Not mirrored. A sent text can't be changed or taken back. |
 | Formatting | Plain text. Markdown is converted: bold, code and headings become plain words, and links become `text (url)`. |
-| Attachments | Pictures sent by MMS aren't relayed; the room says so. An agent's file arrives as a text naming it. |
+| Attachments | Pictures sent by MMS reach the room: Switch downloads them from Twilio as your account. One larger than Switch accepts, or one that can't be downloaded, is named in the room instead. An agent's file arrives as a text naming it, because MMS can only send files from a public address. |
 | Working indicator | None, to avoid a text per turn. |
 | Approval and question cards | Sent as text. Answer by texting back the handle the card prints. |
 | Creating rooms from Switch | Not possible: a room appears when an allowed number texts in. |
