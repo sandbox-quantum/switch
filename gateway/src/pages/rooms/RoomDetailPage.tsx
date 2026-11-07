@@ -46,7 +46,12 @@ import {
   updateRoom,
   updateRoomRole,
 } from "../../data/api";
-import { useAgents, useBridgeUsers, useRoom } from "../../data/hooks";
+import {
+  useAgents,
+  useBridgeUsers,
+  useInvitableAgentIds,
+  useRoom,
+} from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
@@ -659,6 +664,7 @@ function ParticipantsSection({
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading } = useAgents();
+  const { data: invitableAgentIds } = useInvitableAgentIds(room.id);
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -674,13 +680,14 @@ function ParticipantsSection({
     () =>
       (allAgents ?? [])
         .filter((a) => !room.agent_ids.includes(a.id))
+        .filter((a) => !invitableAgentIds || invitableAgentIds.includes(a.id))
         .map((a) => ({
           id: a.id,
           primary: a.name,
           secondary: a.connector_type ?? "",
           search: `${a.name} ${a.connector_type ?? ""}`.toLowerCase(),
         })),
-    [allAgents, room.agent_ids],
+    [allAgents, room.agent_ids, invitableAgentIds],
   );
 
   // Subagent counts, so the add-agent picker can offer "include subagents"

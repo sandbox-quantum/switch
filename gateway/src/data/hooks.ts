@@ -4,6 +4,7 @@ import {
   type ConnectorAppScope,
   type ConnectorApps,
   fetchConnectorApps,
+  fetchInvitableAgentIds,
   type AgentDetail,
   type AgentSummary,
   type Budget,
@@ -127,6 +128,15 @@ export function useRoom(roomId: string | undefined): UseQueryResult<RoomDetail> 
     () => (roomId ? fetchRoom(roomId) : Promise.resolve(null)),
     [roomId],
   );
+  return useQuery(fetcher);
+}
+
+/**
+ * The agents this person could bring into a room, so pickers offer only what
+ * will work. `null` until known, and the server still decides either way.
+ */
+export function useInvitableAgentIds(roomId?: string): UseQueryResult<string[]> {
+  const fetcher = useCallback(() => fetchInvitableAgentIds(roomId), [roomId]);
   return useQuery(fetcher);
 }
 

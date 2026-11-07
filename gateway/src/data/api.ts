@@ -471,6 +471,16 @@ export async function updateRoomObserve(
   });
 }
 
+export async function fetchInvitableAgentIds(
+  roomId?: string,
+): Promise<string[] | null> {
+  const q = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
+  const result = await fetchJson<{ agent_ids: string[] }>(
+    `/rooms/invitable-agents${q}`,
+  );
+  return result?.agent_ids ?? null;
+}
+
 export async function addRoomAgents(
   roomId: string,
   agentIds: string[],

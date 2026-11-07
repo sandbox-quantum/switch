@@ -29,7 +29,7 @@ import { useNavigate } from "react-router";
 import { type RoomRoleSpec, createRoom } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
-import { useAgents, useBridges, useBridgeUsers, useRoomGroups } from "../../data/hooks";
+import { useAgents, useInvitableAgentIds, useBridges, useBridgeUsers, useRoomGroups } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
 import { flattenTree } from "./groupTree";
 import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
@@ -39,6 +39,7 @@ type ChannelSource = "existing" | "new";
 export default function RoomCreateFormBody() {
   const navigate = useNavigate();
   const { data: agents } = useAgents();
+  const { data: invitableAgentIds } = useInvitableAgentIds();
   const { data: bridges } = useBridges();
   const { data: groups } = useRoomGroups();
   // Only a workspace admin may put a room in a group.
@@ -116,7 +117,13 @@ export default function RoomCreateFormBody() {
     [],
   );
 
-  const eligibleAgents = useMemo(() => agents ?? [], [agents]);
+  const eligibleAgents = useMemo(
+    () =>
+      (agents ?? []).filter(
+        (a) => !invitableAgentIds || invitableAgentIds.includes(a.id),
+      ),
+    [agents, invitableAgentIds],
+  );
 
   const agentNameById = useMemo(() => {
     const m = new Map<string, string>();
