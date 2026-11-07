@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RoomResource } from '@shared/core/switch-servers/switch-servers';
-import { attachableResources, resourcesByOrigin } from './room-resources';
+import { attachableResources, opensInResources, resourcesByOrigin } from './room-resources';
 
 const resource = (overrides: Partial<RoomResource>): RoomResource => ({
   id: 'r',
@@ -12,6 +12,8 @@ const resource = (overrides: Partial<RoomResource>): RoomResource => ({
   roomScoped: false,
   createdByAgentName: null,
   packageIds: [],
+  ownerId: 'owner',
+  readVisibility: 'public',
   ...overrides,
 });
 
@@ -35,5 +37,31 @@ describe('a room’s resources', () => {
     expect(attachableResources(library, attached, '').map((r) => r.id)).toEqual(['a', 'b']);
     expect(attachableResources(library, attached, 'github').map((r) => r.id)).toEqual(['b']);
     expect(attachableResources(library, attached, ' DESIGN ').map((r) => r.id)).toEqual(['a']);
+  });
+});
+
+describe('opening an attached item in Resources', () => {
+  const viewer = { id: 'me', isAdmin: false };
+
+  it('opens one everyone may read, or the viewer owns, or for an admin', () => {
+    expect(opensInResources(resource({}), viewer)).toBe(true);
+    expect(opensInResources(resource({ readVisibility: 'private', ownerId: 'me' }), viewer)).toBe(
+      true
+    );
+    expect(
+      opensInResources(resource({ readVisibility: 'private' }), { id: 'me', isAdmin: true })
+    ).toBe(true);
+  });
+
+  it('does not open someone else’s private item, or a document written in the room', () => {
+    expect(opensInResources(resource({ readVisibility: 'private' }), viewer)).toBe(false);
+    expect(opensInResources(resource({ roomScoped: true }), viewer)).toBe(false);
+  });
+
+  it('takes the server’s word where it gives one', () => {
+    expect(opensInResources(resource({ canRead: false }), viewer)).toBe(false);
+    expect(opensInResources(resource({ canRead: true, readVisibility: 'private' }), viewer)).toBe(
+      true
+    );
   });
 });
