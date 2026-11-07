@@ -52,6 +52,12 @@ export type {
 } from './acp/hooks';
 export { antigravityAcp, createAntigravityAdapter } from './antigravity/antigravity-adapter';
 export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
+export {
+  createGrokBuildAdapter,
+  grokBuildAcp,
+  grokBuildSessionMode,
+  GROK_BUILD_LOGIN,
+} from './grok-build/grok-build-acp';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';
