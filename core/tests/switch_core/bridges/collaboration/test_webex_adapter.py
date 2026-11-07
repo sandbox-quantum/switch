@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -98,7 +99,9 @@ def api(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             if request.method == "GET":
                 return httpx.Response(200, json={"items": state["hooks"]})
             body = json.loads(request.content)
-            state["hooks"].append({**body, "id": f"hook-{len(state['hooks'])}"})
+            state["hooks"].append(
+                {**body, "status": "active", "id": f"hook-{len(state['hooks'])}"}
+            )
             return httpx.Response(200, json=state["hooks"][-1])
         if path.startswith("/v1/webhooks/"):
             return httpx.Response(204)
@@ -127,8 +130,13 @@ def config() -> WebexConnectionConfig:
     )
 
 
-async def start(api: dict[str, Any], *, listening: bool = True) -> WebexAdapter:
-    adapter = WebexAdapter(config=config())
+async def start(
+    api: dict[str, Any],
+    *,
+    listening: bool = True,
+    connection: WebexConnectionConfig | None = None,
+) -> WebexAdapter:
+    adapter = WebexAdapter(config=connection or config())
     adapter.set_webhook_url(
         "https://switch.example/messaging/bridges/connection/events"
     )
@@ -208,9 +216,9 @@ async def test_only_owner_registers_and_restart_reuses_hooks(
     assert len([r for r in api["calls"] if r.url.path == "/v1/webhooks"]) == 4
     await owner.stop()
     assert not any(r.method == "DELETE" for r in api["calls"])
-    successor = await start(api)
+    successor = await start(api, connection=owner.config)
     assert len(api["hooks"]) == len(SUBSCRIPTIONS)
-    assert len([r for r in api["calls"] if r.method == "PUT"]) == len(SUBSCRIPTIONS)
+    assert not [r for r in api["calls"] if r.method == "PUT"]
     await other.stop()
     await successor.stop()
 
@@ -709,3 +717,74 @@ def test_only_explicit_room_wide_send_can_page_everyone() -> None:
     adapter = WebexAdapter(config=config())
     assert "<@all>" not in adapter.translate_outbound("<@all> body")
     assert adapter.render_room_wide_mention("@everyone body").startswith("<@all> ")
+
+
+@pytest.mark.parametrize(
+    "path,method",
+    [("/v1/people/me", "GET"), ("/v1/webhooks", "GET"), ("/v1/webhooks", "POST")],
+)
+async def test_start_waits_for_webex_rate_limit_then_recovers(
+    api, monkeypatch, path, method
+) -> None:
+    waits = AsyncMock()
+    monkeypatch.setattr(module.asyncio, "sleep", waits)
+    refused = False
+
+    def respond(request):
+        nonlocal refused
+        if request.url.path == path and request.method == method and not refused:
+            refused = True
+            return httpx.Response(429, headers={"retry-after": "23"})
+        return None
+
+    api["respond"] = respond
+    adapter = await start(api)
+    waits.assert_awaited_once_with(23.0)
+    assert len(api["hooks"]) == len(SUBSCRIPTIONS)
+    await adapter.stop()
+
+
+async def test_origin_update_retries_rate_limit_without_creating_duplicate_hooks(
+    api, monkeypatch
+) -> None:
+    adapter = await start(api)
+    waits = AsyncMock()
+    monkeypatch.setattr(module.asyncio, "sleep", waits)
+    adapter.set_webhook_url(
+        "https://new-switch.example/messaging/bridges/connection/events"
+    )
+    refused = False
+
+    def respond(request):
+        nonlocal refused
+        if request.method == "PUT" and not refused:
+            refused = True
+            return httpx.Response(429, headers={"retry-after": "19"})
+        return None
+
+    api["respond"] = respond
+    await adapter._subscribe()
+    waits.assert_awaited_once_with(19.0)
+    assert len(api["hooks"]) == len(SUBSCRIPTIONS)
+    successful_updates = [r for r in api["calls"] if r.method == "PUT"][1:]
+    assert len(successful_updates) == len(SUBSCRIPTIONS)
+    assert all(
+        json.loads(r.content)["targetUrl"].startswith("https://new-switch.example/")
+        for r in successful_updates
+    )
+    await adapter.stop()
+
+
+async def test_rate_limit_wait_is_cancelled_when_start_is_stopped(
+    api, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        module.asyncio, "sleep", AsyncMock(side_effect=asyncio.CancelledError)
+    )
+    api["respond"] = lambda _: httpx.Response(429, headers={"retry-after": "60"})
+    adapter = WebexAdapter(config=config())
+    adapter.set_webhook_url("https://switch.example/events")
+    adapter.set_outbound_policy(module.OutboundPolicy.parse(""))
+    with pytest.raises(asyncio.CancelledError):
+        await adapter.start(*(AsyncMock() for _ in range(5)))
+    assert adapter._http is None

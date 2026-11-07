@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 
 import httpx
 from pydantic import Field, field_validator
@@ -54,6 +56,9 @@ from switch_core.bridges.collaboration.webex.client import (
 )
 from switch_core.bridges.collaboration.webex.formatting import from_html
 from switch_core.outbound import OutboundPolicy, guarded_async_client
+
+logger = logging.getLogger(__name__)
+_ConfigurationResult = TypeVar("_ConfigurationResult")
 
 # Markdown is limited in bytes, not Python characters; leave room for attribution.
 MESSAGE_BYTES = 7000
@@ -205,7 +210,7 @@ class WebexAdapter(PlatformAdapter):
         self._http = guarded_async_client(self.outbound_policy, timeout=30)
         self._api = WebexClient(self._http, self.config.bot_token)
         try:
-            identity = await self._client().me()
+            identity = await self._retry_configuration(self._client().me)
             self._bot_id = str(identity["id"])
             self._bot_name = str(identity.get("displayName", ""))
             if self._listening:
@@ -220,9 +225,24 @@ class WebexAdapter(PlatformAdapter):
         key = hashlib.sha256(path.encode()).hexdigest()[:24]
         return f"Switch {key} {resource} {event}"
 
+    async def _retry_configuration(
+        self, operation: Callable[[], Awaitable[_ConfigurationResult]]
+    ) -> _ConfigurationResult:
+        while True:
+            try:
+                return await operation()
+            except WebexError as error:
+                if error.status != 429:
+                    raise
+                logger.warning(
+                    "Webex rate-limited connection setup; retrying after %.1f seconds.",
+                    error.retry_after,
+                )
+                await asyncio.sleep(error.retry_after)
+
     async def _subscribe(self) -> None:
         api = self._client()
-        existing = await api.items("webhooks")
+        existing = await self._retry_configuration(lambda: api.items("webhooks"))
         for resource, event in SUBSCRIPTIONS:
             name = self._subscription_name(resource, event)
             matches = [hook for hook in existing if hook.get("name") == name]
@@ -234,22 +254,38 @@ class WebexAdapter(PlatformAdapter):
                 "secret": self.config.webhook_secret,
             }
             if matches:
-                await api.request(
-                    "PUT",
-                    resource_path("webhooks", str(matches[0]["id"])),
-                    json={
-                        "name": name,
-                        "targetUrl": self.webhook_url,
-                        "secret": self.config.webhook_secret,
-                        "status": "active",
-                    },
-                )
+                hook = matches[0]
+                if not (
+                    hook.get("targetUrl") == self.webhook_url
+                    and hook.get("status") == "active"
+                    and hook.get("resource") == resource
+                    and hook.get("event") == event
+                    and hook.get("secret", self.config.webhook_secret)
+                    == self.config.webhook_secret
+                ):
+                    await self._retry_configuration(
+                        lambda: api.request(
+                            "PUT",
+                            resource_path("webhooks", str(hook["id"])),
+                            json={
+                                "name": name,
+                                "targetUrl": self.webhook_url,
+                                "secret": self.config.webhook_secret,
+                                "status": "active",
+                            },
+                        )
+                    )
                 for duplicate in matches[1:]:
-                    await api.request(
-                        "DELETE", resource_path("webhooks", str(duplicate["id"]))
+                    await self._retry_configuration(
+                        lambda: api.request(
+                            "DELETE",
+                            resource_path("webhooks", str(duplicate["id"])),
+                        )
                     )
             else:
-                await api.request("POST", "webhooks", json=body)
+                await self._retry_configuration(
+                    lambda: api.request("POST", "webhooks", json=body)
+                )
 
     async def stop(self) -> None:
         if self._http:

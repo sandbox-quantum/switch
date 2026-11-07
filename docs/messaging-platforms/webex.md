@@ -35,6 +35,9 @@ policies may restrict adding bots or members. To rotate a token, regenerate it
 on the same bot and edit the connection. To use another bot, create a new
 connection. Disconnecting removes only this connection's webhook registrations;
 restarting Core retains and refreshes them, including a changed tunnel origin.
+Unchanged active hooks are reused without a write. If Webex rate-limits setup,
+Core logs the wait and retries after its `Retry-After` delay. Leave Core running
+rather than repeatedly reconnecting; the bridge serves events once setup finishes.
 
 ## Messages, files and controls
 
