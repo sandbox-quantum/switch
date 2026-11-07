@@ -1,15 +1,15 @@
 """OAuth sign-ins keep the connection's selected server and identity."""
 
+import json
+
+import httpx
 import pytest
 import yaml
-from fastmcp import FastMCP
-from fastmcp.tools.tool import ToolResult
 
 from switch_core.connections.adapters import (
     ConnectionSecret,
     ReauthorizationRequiredError,
     ServiceAdapterError,
-    oauth,
 )
 from switch_core.connections.adapters.oauth import (
     OAuthAdapter,
@@ -55,7 +55,7 @@ async def test_a_bound_adapter_discovers_through_its_tenants_server():
         bound = adapter.for_fields({"tenant": "team-a"})
         assert bound._client is adapter._client
         assert bound._http is adapter._http
-        assert (await bound.endpoints()).resource == MCP_URL
+        assert (await bound.endpoints()).resource == MCP_URL + "/team-a"
     assert "https://mcp.example.test/v1/mcp/team-a" in vendor.paths
     assert vendor.mcp_urls == ["https://mcp.example.test/v1/mcp/team-a"]
 
@@ -96,35 +96,58 @@ async def test_refresh_without_fields_asks_to_reconnect(operation):
     assert vendor.paths == []
 
 
-async def test_the_account_takes_the_tenant_from_the_field_not_the_vendor(monkeypatch):
-    server = FastMCP("field-identity-test")
-
-    @server.tool(annotations={"readOnlyHint": True})
-    def get_user() -> ToolResult:
-        return ToolResult(
-            content=[],
-            structured_content={"login": "ada", "connection": {"tenant": "evil"}},
-        )
-
+async def test_the_account_takes_the_tenant_from_the_field_not_the_vendor():
     calls = []
 
-    def transport(url, *, headers, httpx_client_factory):
-        calls.append(url)
-        return server
+    def respond(request):
+        calls.append(str(request.url))
+        assert request.headers["authorization"] == "Bearer example-bearer-value"
+        message = json.loads(request.content)
+        method = message["method"]
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        result = {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "serverInfo": {"name": "field-test", "version": "1"},
+        }
+        if method == "tools/list":
+            result = {
+                "tools": [
+                    {
+                        "name": "get_user",
+                        "annotations": {"readOnlyHint": True},
+                        "inputSchema": {"type": "object", "properties": {}},
+                    }
+                ]
+            }
+        elif method == "tools/call":
+            result = {
+                "structuredContent": {
+                    "login": "ada",
+                    "connection": {"tenant": "evil"},
+                }
+            }
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": result,
+            },
+        )
 
-    monkeypatch.setattr(oauth, "StreamableHttpTransport", transport)
     entry = yaml.safe_load(FIELDS_ENTRY)
     entry["auth"]["identity"] = {
         "mcp_tool": "get_user",
         "account_id": ["connection.tenant", "login"],
         "label": "login",
     }
-    vendor = FakeOAuthServer()
-    async with vendor.client() as http:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
         adapter = _adapter(http, yaml.safe_dump(entry)).for_fields({"tenant": "team-a"})
         identity = await adapter.identify("example-bearer-value")
     assert identity.account_id == "team-a:ada"
-    assert calls == ["https://mcp.example.test/v1/mcp/team-a"]
+    assert calls == ["https://mcp.example.test/v1/mcp/team-a"] * 4
 
 
 async def test_an_entry_without_fields_only_accepts_empty_values():
