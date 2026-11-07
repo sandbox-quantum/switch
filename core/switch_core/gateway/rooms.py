@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
@@ -44,6 +45,7 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.dependencies import (
     current_telemetry,
+    get_agent_store,
     get_bridge_store,
     get_collab_lifecycle,
     get_config,
@@ -78,6 +80,7 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
+from switch_core.invites import Inviter, InviteRefused
 from switch_core.room_service import (
     FIXED_MEMBERSHIP,
     MembershipFixed,
@@ -339,6 +342,10 @@ def _validate_create(req: RoomCreateRequest) -> None:
                 )
 
 
+class InvitableAgents(BaseModel):
+    agent_ids: list[str]
+
+
 @router.get("")
 async def list_rooms(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -434,6 +441,36 @@ async def list_rooms(
     return summaries
 
 
+@router.get("/invitable-agents")
+async def invitable_agents(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    room_id: Annotated[str | None, Query()] = None,
+) -> InvitableAgents:
+    """The agents this person could bring into a room, so a picker offers only
+    what will work and nobody has to hit a refusal to find out. Without `room_id`,
+    for a room not made yet."""
+    group_id = None
+    if room_id is not None:
+        room = await _require_room_released(
+            session, room_store, room_id, Principal(user.id, is_admin), "read"
+        )
+        group_id = room.group_id
+    agent_ids = [agent.id for agent in await agent_store.get_all(session)]
+    await session.commit()
+    refused = await room_service.refused_agents(
+        Inviter.person(user.id), agent_ids, room_id=room_id or "", group_id=group_id
+    )
+    refused_ids = {agent.id for agent in refused}
+    return InvitableAgents(
+        agent_ids=[agent_id for agent_id in agent_ids if agent_id not in refused_ids]
+    )
+
+
 @router.post("", status_code=201)
 async def create_room(
     req: RoomCreateRequest,
@@ -472,7 +509,11 @@ async def create_room(
         roles=([RoleSpec(**r.model_dump()) for r in req.roles] if req.roles else None),
     )
     try:
-        result = await room_service.create_room(config)
+        result = await room_service.create_room(
+            config, invited_by=Inviter.person(user.id)
+        )
+    except InviteRefused as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except BridgeOperationError as e:
@@ -1226,7 +1267,10 @@ async def post_room_agents(
             agent_ids=req.agent_ids,
             include_subagents_for=req.include_subagents_for,
             join_event_listeners=req.join_event_listeners,
+            invited_by=Inviter.person(user.id),
         )
+    except InviteRefused as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await session.commit()

@@ -3488,6 +3488,7 @@ class SlackAdapter(PlatformAdapter):
                 external_user_id=user_id,
                 external_username=user.name,
                 channel_name=channel_name,
+                added_by_external_user_id=event.get("inviter") or None,
             )
         )
 

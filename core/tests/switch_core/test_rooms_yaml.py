@@ -54,6 +54,7 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.invites import Inviter
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
     ExistingPackageById,
@@ -104,7 +105,10 @@ class FakeRoomService:
         self.bridge_user_lookups.append((bridge_id, names))
         return {n: self.bridge_users[n] for n in names if n in self.bridge_users}
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: object = None
+    ) -> RoomCreateResult:
+        self.invited_by = invited_by
         async with self._sf() as session:
             agent_ids: list[str] = []
             if config.agent_names:
@@ -390,6 +394,7 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
     result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
     assert result.room_name == "Pilot"
+    assert env["rooms"].invited_by == Inviter.person(env["user_id"])
     assert len(result.created_reference_ids) == 1
     assert len(result.created_document_ids) == 1
     assert result.role_names == ["manager"]

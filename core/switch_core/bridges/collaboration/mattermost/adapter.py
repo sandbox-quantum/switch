@@ -2530,6 +2530,8 @@ class MattermostAdapter(PlatformAdapter):
                         channel_type=self._to_channel_type(mm_type),
                         agent_name=agent_name,
                         channel_name=str(channel.get("display_name", "")) or None,
+                        # A scan of where the bot already is: nobody to name.
+                        added_by_external_user_id=None,
                     )
                 )
             except Exception:
@@ -3017,6 +3019,9 @@ class MattermostAdapter(PlatformAdapter):
                     channel_type=channel_type,
                     agent_name=agent_name,
                     channel_name=channel_name,
+                    # Mattermost's `user_added` event names who joined, not who
+                    # added them.
+                    added_by_external_user_id=None,
                 )
             )
             self._dispatch(coro, loop)  # type: ignore[arg-type]
@@ -3044,6 +3049,7 @@ class MattermostAdapter(PlatformAdapter):
                 external_user_id=user_id,
                 external_username=username,
                 channel_name=channel_name,
+                added_by_external_user_id=None,
             )
         )
         self._dispatch(coro, loop)  # type: ignore[arg-type]

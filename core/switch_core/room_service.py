@@ -35,18 +35,23 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.clients.admin_messages import admin_extra_content
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.db.models import Room, RoomGroup, RoomRole
+from switch_core.db.models import Agent, Room, RoomGroup, RoomRole
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
-from switch_core.db.stores.room_role_store import validate_role_name
+from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.room_role_store import RoomRoleStore, validate_role_name
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     NAME_SOURCE_KEY,
     RoomStore,
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.delivery.addressing import AddressingResolver
+from switch_core.invites import InviteGate, Inviter, InviteRefused
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -242,6 +247,21 @@ class RoomService:
         self._telemetry = telemetry
         # The shared delivery read; told when a room goes.
         self._room_cache = room_cache
+        self._deliver_to_owner: Callable[[Agent, str], Awaitable[None]] | None = None
+        external_user_store = ExternalUserStore()
+        self._invites = InviteGate(
+            resolver=AddressingResolver(
+                room_store=room_store,
+                room_role_store=RoomRoleStore(),
+                client_store=ClientStore(),
+                agent_store=agent_store,
+                external_user_store=external_user_store,
+                # Only role mentions consult liveness; a permission check never does.
+                live_connection_ids=set,
+            ),
+            agent_store=agent_store,
+            external_user_store=external_user_store,
+        )
 
     def on_room_changed(self, listener: Callable[[str, str, list[str]], None]) -> None:
         """Call `listener(tenant_id, room_id, [])` once a room is created,
@@ -579,7 +599,69 @@ class RoomService:
             [(external_channel_id, channel_type)]
         )
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def refused_agents(
+        self,
+        inviter: Inviter,
+        agent_ids: Collection[str],
+        *,
+        room_id: str,
+        group_id: str | None,
+    ) -> list[Agent]:
+        """The agents whose owners' choices keep this inviter from adding them.
+
+        A question, for callers that want to act before anyone hits a refusal.
+        `room_id` is "" for a room not made yet.
+        """
+        if not agent_ids or not inviter.is_judged:
+            return []
+        async with self._session_factory() as session:
+            agents = await self._agent_store.get_many(session, agent_ids)
+            return await self._invites.refused(
+                session, inviter, agents, room_id=room_id, group_id=group_id
+            )
+
+    def on_tell_owner(self, deliver: Callable[[Agent, str], Awaitable[None]]) -> None:
+        """How a message reaches an agent's owner outside any room they share."""
+        self._deliver_to_owner = deliver
+
+    async def tell_owner(self, agent: Agent, body: str) -> None:
+        if self._deliver_to_owner is None:
+            raise RuntimeError("Nothing is wired to deliver a message to an owner")
+        await self._deliver_to_owner(agent, body)
+
+    async def post_notice(self, room: Room, body: str) -> None:
+        """Switch itself saying something in a room."""
+        admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
+        if not admins:
+            raise RuntimeError(f"Nobody can post in room {room.id}: no admin client")
+        event_id = await admins[0].send_message(
+            room.transport_room_id,
+            body,
+            metered=False,
+            extra_content=admin_extra_content(None),
+        )
+        if event_id is None:
+            raise RuntimeError(f"The notice could not be posted in room {room.id}")
+
+    async def _require_can_invite(
+        self,
+        inviter: Inviter,
+        agent_ids: Collection[str],
+        *,
+        room_id: str,
+        group_id: str | None,
+    ) -> None:
+        refused = await self.refused_agents(
+            inviter, agent_ids, room_id=room_id, group_id=group_id
+        )
+        if refused:
+            raise InviteRefused(refused, inviter)
+
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: Inviter
+    ) -> RoomCreateResult:
+        """`invited_by` is who is bringing `config`'s agents into the room, and
+        must be someone each agent takes instructions from."""
         await self._validate_attachments(config)
         # Before anything is provisioned: a name refused after the channel and
         # the room exist would leave both behind. Alias collisions need the
@@ -597,6 +679,9 @@ class RoomService:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
+        await self._require_can_invite(
+            invited_by, agent_ids, room_id="", group_id=config.group_id
+        )
         join_event_listeners = await self._resolve_join_event_listeners(config)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
@@ -1055,11 +1140,17 @@ class RoomService:
         agent_names: list[str] | None = None,
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
-        added_by_kind: Literal["user", "agent", "system"] = "user",
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
+        *,
+        invited_by: Inviter,
     ) -> None:
-        """`with_agents` runs in the transaction that records the agents, so
-        what it writes commits with them or not at all."""
+        """`invited_by` is who is bringing the agents in. Only agents new to the
+        room are judged: tightening a policy never ejects an agent from a room it
+        is already in. Subagents are judged with their parent, and one refusal
+        adds nobody.
+
+        `with_agents` runs in the transaction that records the agents, so what it
+        writes commits with them or not at all."""
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -1093,6 +1184,11 @@ class RoomService:
                 agent_ids,
             )
             return
+
+        with tenant_scope(room.tenant_id):
+            await self._require_can_invite(
+                invited_by, new_agent_ids, room_id=room.id, group_id=room.group_id
+            )
 
         agent_clients = self._resolve_agent_clients(new_agent_ids)
 
@@ -1138,7 +1234,7 @@ class RoomService:
             {
                 # Added, not requested.
                 "agent_count": len(new_agent_ids),
-                "added_by_kind": added_by_kind,
+                "added_by_kind": invited_by.telemetry_kind,
             },
         )
 

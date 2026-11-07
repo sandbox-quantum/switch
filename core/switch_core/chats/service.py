@@ -94,6 +94,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import MENTIONS_KEY, AddressingResolver
+from switch_core.invites import Inviter
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
@@ -1127,9 +1128,33 @@ class ChatService:
             room.id,
             agent_ids=[agent_id],
             with_agents=lambda session: self._group_if_several_agents(session, room),
+            invited_by=Inviter.person(actor.id),
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
             return await self._room(session, tenant_id, room_id)
+
+    async def tell_owner(self, agent: Agent, body: str) -> None:
+        """Reach an agent's owner in a private chat of their own, for when no room
+        they share with the news would. Found again by its request id, so an owner
+        has one place to look however many notices there are."""
+        assert agent.owner_id is not None
+        async with tenant_session(self.session_factory, agent.tenant_id) as session:
+            owner = await self._user_store.get(session, agent.owner_id)
+        if owner is None:
+            raise ChatError(404, "USER_NOT_FOUND", "This agent's owner is gone.")
+        room = await self.create_chat(
+            agent.tenant_id,
+            owner,
+            agent_ids=[],
+            member_user_ids=[],
+            name="Switch notices",
+            request_id=OWNER_NOTICES_REQUEST_ID,
+            greeting=None,
+            kind="group",
+            bridge_id=None,
+            resume_only=False,
+        )
+        await self._room_service.post_notice(room, body)
 
     async def _locked_room(self, session: AsyncSession, room_id: str) -> Room:
         """The room row, locked against another membership change until this
@@ -1558,7 +1583,8 @@ class ChatService:
                                     if greeting is not None
                                     else None
                                 ),
-                            )
+                            ),
+                            invited_by=Inviter.person(user.id),
                         )
                     except ValueError as exc:
                         raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
@@ -2344,6 +2370,9 @@ class ChatService:
         if not prefix:
             return body
         return f"{prefix} {body}" if body else prefix
+
+
+OWNER_NOTICES_REQUEST_ID = "switch-owner-notices"
 
 
 def _may_use(agent: Agent, user: User, *, room_id: str, group_id: str | None) -> bool:

@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
+from switch_core.invites import Inviter
 from tests.benchmarks.client import AgentConnection
 from tests.benchmarks.server import BenchServer
 from tests.benchmarks.trace import (
@@ -46,7 +47,9 @@ async def test_harness_serves_and_instruments_one_message(
     await bench.start_clients(timeout=30.0)
 
     room_id = await bench.create_room(
-        "bench-smoke-room", [target.agent_id, poster.agent_id]
+        "bench-smoke-room",
+        [target.agent_id, poster.agent_id],
+        invited_by=Inviter.switch("test setup"),
     )
     connection_id = str(uuid.uuid4())
     session_id = str(uuid.uuid4())
