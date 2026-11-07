@@ -39,6 +39,16 @@ export interface RoomSummary {
   archived: boolean;
 }
 
+/** A room schedule as the gateway returns it. */
+export interface RoomSchedule {
+  id: string;
+  agentIds: string[];
+  text: string;
+  paused: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+}
+
 export interface RoomDetail extends RoomSummary {
   externalChannelId: string | null;
   matrixRoomId: string | null;
@@ -931,6 +941,62 @@ export class SwitchClient {
     };
   }
 
+  /** `POST /gateway/rooms/{room}/schedules`: post `text` to `agentIds` once, at `runAt`. */
+  async scheduleOnce(
+    roomId: string,
+    agentIds: string[],
+    text: string,
+    runAt: Date,
+  ): Promise<RoomSchedule> {
+    return toRoomSchedule(
+      await this.gateway<RawRoomSchedule>("POST", `/rooms/${roomId}/schedules`, {
+        agent_ids: agentIds,
+        text,
+        cron: null,
+        run_at: runAt.toISOString(),
+        timezone: "UTC",
+      }),
+    );
+  }
+
+  async listSchedules(roomId: string): Promise<RoomSchedule[]> {
+    const rows = await this.gateway<RawRoomSchedule[]>("GET", `/rooms/${roomId}/schedules`);
+    return rows.map(toRoomSchedule);
+  }
+
+  /** `PUT /gateway/rooms/{room}/schedules/{schedule}`: replace what it says and when, as a daily rule. */
+  async scheduleDaily(
+    roomId: string,
+    scheduleId: string,
+    agentIds: string[],
+    text: string,
+    cron: string,
+  ): Promise<RoomSchedule> {
+    return toRoomSchedule(
+      await this.gateway<RawRoomSchedule>("PUT", `/rooms/${roomId}/schedules/${scheduleId}`, {
+        agent_ids: agentIds,
+        text,
+        cron,
+        run_at: null,
+        timezone: "UTC",
+      }),
+    );
+  }
+
+  async pauseSchedule(roomId: string, scheduleId: string, paused: boolean): Promise<RoomSchedule> {
+    return toRoomSchedule(
+      await this.gateway<RawRoomSchedule>(
+        "PUT",
+        `/rooms/${roomId}/schedules/${scheduleId}/paused`,
+        { paused },
+      ),
+    );
+  }
+
+  async deleteSchedule(roomId: string, scheduleId: string): Promise<void> {
+    await this.gateway<void>("DELETE", `/rooms/${roomId}/schedules/${scheduleId}`);
+  }
+
   /**
    * `POST /gateway/collaborations/{bridge}/identities` on the default bridge
    * of `bridgeType` — start linking a chat account to the signed-in Switch
@@ -1671,6 +1737,26 @@ export class SwitchClient {
       body: {},
     });
   }
+}
+
+interface RawRoomSchedule {
+  id: string;
+  agent_ids: string[];
+  text: string;
+  paused: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+}
+
+function toRoomSchedule(raw: RawRoomSchedule): RoomSchedule {
+  return {
+    id: raw.id,
+    agentIds: raw.agent_ids,
+    text: raw.text,
+    paused: raw.paused,
+    nextRunAt: raw.next_run_at,
+    lastRunAt: raw.last_run_at,
+  };
 }
 
 interface RawRoom {

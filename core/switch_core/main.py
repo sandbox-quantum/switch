@@ -227,6 +227,7 @@ from switch_core.retention.audit_history import check_purge_privilege
 from switch_core.retention.erasure import ErasureService, erasure_loop
 from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
+from switch_core.room_schedules import own_room_schedules
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
@@ -1061,6 +1062,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Clients registered or deleted in another process are started or stopped
     # here too (`clients/client_signals.py`).
     ClientSignals(lifecycle=client_lifecycle, bus=signal_bus)
+    # Room schedules post from whichever process owns them (`room_schedules.py`).
+    own_room_schedules(ownership, session_factory, client_lifecycle)
     # Every process runs each tenant's admin actor, so the process that wrote
     # a message posts the heads-up it owes (`clients/mention_warnings.py`).
     router.use_admin(

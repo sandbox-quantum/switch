@@ -565,6 +565,22 @@ version of their own to them without also giving them a release of their own.
   Workspace token. With Helm, set `switchCore.serviceAccessProfiles` (and
   `switchCore.disabledServices` for `DISABLED_SERVICES`). Without the setting
   nothing changes.
+- **Rooms have schedules.** A schedule posts a message in a room, addressed to
+  some of its agents, once or on a cron rule read in a timezone, on behalf of
+  whoever last set what it says. It fires whether or not anyone has Switch
+  Console open, and each run is posted once however many server processes are
+  running; a run missed while the server was down is sent once, late, saying
+  when it was for. A schedule whose agents have all left the room is paused
+  and the room told. Managed under `/rooms/{room_id}/schedules`, with read
+  access to see them and the right to manage the room (its owner or a
+  workspace admin) to change them, asked again at each run. Deleting an
+  account deletes the schedules it wrote. See `docs/room-schedules.md` (#771).
+- **Agents can schedule messages too.** `list_room_schedules`,
+  `create_room_schedule`, `update_room_schedule`, `pause_room_schedule` and
+  `delete_room_schedule`. One an agent sets up is posted as that agent; the
+  agent has to be in the room and its owner allowed to manage it, and it
+  changes only the schedules it set up. If it leaves the room they are paused
+  and the room told (#771).
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -2985,6 +3001,9 @@ version of their own to them without also giving them a release of their own.
   connection's menu on the server page. The connection restarts with it and
   keeps its rooms. Offered on connections to your own bot, not on ones that
   came from installing Switch's app.
+- **Room settings list a room's schedules.** Add, edit, pause, resume and
+  delete them, with the next run shown, using the cron picker for repeating
+  ones (#771).
 - **Airtable's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks
