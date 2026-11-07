@@ -64,7 +64,7 @@ export function RoomChannelField({
               })
             }
             className={cn(
-              'space-y-0.5 rounded-md border p-2.5 text-left',
+              'flex flex-col justify-start gap-0.5 rounded-md border p-2.5 text-left',
               choice === card.value
                 ? 'border-primary bg-background-tertiary-2'
                 : 'border-border hover:bg-background-tertiary-2'
