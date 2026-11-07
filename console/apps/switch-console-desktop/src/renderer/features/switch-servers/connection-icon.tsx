@@ -27,6 +27,7 @@ const svgBySlug = new Map(
 // read on both themes, and need no entry.
 const MARK_COLOR: Record<string, string> = {
   github: 'text-foreground',
+  clickup: 'text-foreground',
   notion: 'text-foreground',
   vercel: 'text-foreground',
   linear: 'text-[#5E6AD2]',
