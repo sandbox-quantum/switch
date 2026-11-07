@@ -87,7 +87,6 @@ class RocketChatAdapter(PlatformAdapter):
         self._running = False
         self._http_client: httpx.AsyncClient | None = None
         self._poll_task: asyncio.Task[None] | None = None
-        self._last_sync_timestamp: str | None = None
 
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
@@ -181,19 +180,21 @@ class RocketChatAdapter(PlatformAdapter):
             self._poll_task = None
 
     async def _poll_loop(self) -> None:
-        """Poll syncMessages periodically when holding the lease."""
+        """Poll syncMessages periodically using server-side subscription checkpoints."""
         client = self._http_client or httpx.AsyncClient(timeout=30.0)
         while self._running and self._listening:
             try:
-                # We query rooms the bot is member of via /api/v1/rooms.get
-                url = f"{self._base_api}/rooms.get"
+                # Query user subscriptions to read server-side checkpoints (ls)
+                url = f"{self._base_api}/subscriptions.get"
                 res = await client.get(url, headers=self._headers, timeout=20.0)
                 if res.status_code == 200:
-                    rooms = res.json().get("update", [])
-                    for r in rooms:
-                        rid = r.get("_id")
-                        if rid:
-                            await self._sync_room_messages(client, rid)
+                    subscriptions = res.json().get("update", [])
+                    for sub in subscriptions:
+                        rid = sub.get("rid")
+                        if not rid or sub.get("archived"):
+                            continue
+                        last_read = sub.get("ls")
+                        await self._sync_room_messages(client, str(rid), last_read)
                 await asyncio.sleep(5.0)
             except asyncio.CancelledError:
                 break
@@ -201,10 +202,12 @@ class RocketChatAdapter(PlatformAdapter):
                 logger.debug("Rocket.Chat poll transient error: %s", exc)
                 await asyncio.sleep(5.0)
 
-    async def _sync_room_messages(self, client: httpx.AsyncClient, rid: str) -> None:
+    async def _sync_room_messages(
+        self, client: httpx.AsyncClient, rid: str, last_read: str | None
+    ) -> None:
         params: dict[str, str] = {"roomId": rid}
-        if self._last_sync_timestamp:
-            params["lastUpdate"] = self._last_sync_timestamp
+        if last_read:
+            params["lastUpdate"] = last_read
         url = f"{self._base_api}/chat.syncMessages"
         try:
             res = await client.get(
@@ -212,10 +215,26 @@ class RocketChatAdapter(PlatformAdapter):
             )
             if res.status_code == 200:
                 data = res.json()
-                for msg in data.get("result", {}).get("updated", []):
+                messages = data.get("result", {}).get("updated", [])
+                relayed = False
+                for msg in messages:
                     await self._process_message(msg)
+                    relayed = True
+                # Move checkpoint forward on server so handoffs lose and repeat nothing
+                if relayed:
+                    await self._mark_read(client, rid)
         except Exception as exc:
             logger.debug("Error syncing room %s: %s", rid, exc)
+
+    async def _mark_read(self, client: httpx.AsyncClient, rid: str) -> None:
+        """Mark room read on Rocket.Chat to update server-side last read (ls)."""
+        url = f"{self._base_api}/subscriptions.read"
+        try:
+            await client.post(
+                url, json={"rid": rid}, headers=self._headers, timeout=10.0
+            )
+        except Exception as exc:
+            logger.debug("Error marking room %s read: %s", rid, exc)
 
     async def _process_message(self, msg: dict[str, Any]) -> None:
         sender_id = msg.get("u", {}).get("_id", "")

@@ -246,3 +246,57 @@ async def test_send_message_dispatches_http_post() -> None:
     assert payload["roomId"] == "general-room"
     assert payload["tmid"] == "thread-root-1122"
     assert "Rocket.Chat message sent." in payload["text"]
+
+
+# ── Server-Side Checkpoint & Sync ─────────────────────────────────────────────
+
+
+async def test_sync_room_messages_uses_ls_and_marks_read() -> None:
+    adapter = RocketChatAdapter(config=_make_config())
+    received: list[InboundMessage] = []
+
+    async def on_message(msg: InboundMessage) -> None:
+        received.append(msg)
+
+    await adapter.start(
+        on_message=on_message,
+        on_command=MagicMock(),
+        on_agent_joined=MagicMock(),
+        on_user_joined=MagicMock(),
+        on_app_joined=MagicMock(),
+    )
+
+    sync_resp = MagicMock()
+    sync_resp.status_code = 200
+    sync_resp.json.return_value = {
+        "result": {
+            "updated": [
+                {
+                    "_id": "msg-sync-1",
+                    "rid": "room-abc",
+                    "msg": "Hello synced",
+                    "u": {"_id": "other-user", "username": "bob"},
+                }
+            ]
+        }
+    }
+
+    mock_client = MagicMock()
+    mock_client.get = AsyncMock(return_value=sync_resp)
+    mock_client.post = AsyncMock(return_value=MagicMock(status_code=200))
+
+    await adapter._sync_room_messages(mock_client, "room-abc", "2026-11-06T10:00:00Z")
+
+    assert len(received) == 1
+    assert received[0].message_ref == "msg-sync-1"
+
+    # Verify lastUpdate was sent in sync query
+    mock_client.get.assert_called_once()
+    assert (
+        mock_client.get.call_args[1]["params"]["lastUpdate"] == "2026-11-06T10:00:00Z"
+    )
+
+    # Verify room was marked read on server to advance checkpoint
+    mock_client.post.assert_called_once()
+    assert "/subscriptions.read" in mock_client.post.call_args[0][0]
+    assert mock_client.post.call_args[1]["json"]["rid"] == "room-abc"
