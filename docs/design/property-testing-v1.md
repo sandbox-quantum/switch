@@ -94,7 +94,7 @@ One entry per property:
 ```
 
 - `formality: formal` means a Quint model states the property; the entry
-  names it as `spec: specs/bus.qnt::NoSilentLoss`. `semi-formal` means the
+  names it as `spec: delivery.qnt::NoSilentLoss`. `semi-formal` means the
   statement is precise enough to check mechanically (quantifiers, temporal
   words used carefully) but no model exists. `informal` is a statement worth
   writing down that no checker can yet test; it is how a property enters the
@@ -114,7 +114,7 @@ The gate finds checkers statically, so it can run in PR CI in seconds:
 
 | Level | Checker | Tag |
 | --- | --- | --- |
-| model | Quint invariant or temporal property | `/// @property delivery.no-silent-loss` above the definition |
+| model | Quint invariant or temporal property | `/// @property delivery.no-silent-loss` directly above the definition |
 | code | Hypothesis state machine, Schemathesis check | `@pytest.mark.property("delivery.no-silent-loss")` on the test |
 | system | History check | `@checks("delivery.no-silent-loss")` on the function |
 | ui | Bombadil export | `/** @property ui.no-server-errors */` above the export |

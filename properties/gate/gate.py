@@ -2,37 +2,42 @@
 """The property catalog's gate: reads the catalog and the checkers' tags, runs nothing.
 
 The catalog (`properties/catalog/*.yaml`) lists what Switch promises. Each
-checker names the property it checks with a tag in its own source, and this
-script holds the two to account:
+checker names the property it checks with a tag on the definition that checks
+it, and this script holds the two to account:
 
 * every entry is well formed and its id is unique;
-* a tag names a property that exists, at a level that property lists;
+* a tag names a property that exists, at a level that property lists, and
+  sits on a definition: a tag in a comment, a docstring or above nothing is
+  an error, and a skipped or expected-to-fail test does not count as a checker;
 * a `checked` property has a checker at every level it lists, and no gaps;
 * a gap is never listed for a level that has a checker, so a stale excuse
   cannot outlive the checker that replaced it;
-* a `checked` formal property's `spec` names a definition that exists in its
-  model (a proposed one may name a model not yet written).
+* a formal property's `spec` names a definition that exists once its model
+  does, and a `checked` one has its model tag on exactly that definition.
 
-Tags, by level:
+Tags, by level (`<id>` is the property's id):
 
-    model  `/// @property <id>` above a Quint definition
+    model  `/// @property <id>` directly above a Quint definition
     code   `@pytest.mark.property("<id>")` on a test
     system `@checks("<id>")` on a history check
-    ui     `@property <id>` in the doc comment above a Bombadil export
+    ui     `@property <id>` in the doc comment directly above a Bombadil export
 
-Usage:
-    uv run --project core python properties/gate/gate.py check
-    uv run --project core python properties/gate/gate.py table
+It needs only PyYAML and Pydantic:
+
+    uv run --no-project --with 'pyyaml>=6,<7' --with 'pydantic>=2,<3' \\
+        python properties/gate/gate.py check
+    just properties
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import sys
 from collections import defaultdict
-from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Self
 
@@ -44,38 +49,31 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 Level = Literal["model", "code", "system", "ui"]
 LEVELS: tuple[Level, ...] = ("model", "code", "system", "ui")
 
-ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*(-[a-z0-9]+)*)+$")
-
-# Where each level's checkers live, as globs from the repository root, and the
-# tag that names a property there.
-CHECKER_SOURCES: dict[Level, tuple[tuple[str, re.Pattern[str]], ...]] = {
-    "model": (
-        (
-            "properties/specs/**/*.qnt",
-            re.compile(r"^\s*///\s*@property\s+(?P<id>\S+)", re.MULTILINE),
-        ),
-    ),
-    "code": (
-        (
-            "core/tests/switch_core/properties/**/*.py",
-            re.compile(r"@pytest\.mark\.property\(\s*[\"'](?P<id>[^\"']+)[\"']"),
-        ),
-    ),
-    "system": (
-        (
-            "properties/history/**/*.py",
-            re.compile(r"@checks\(\s*[\"'](?P<id>[^\"']+)[\"']"),
-        ),
-    ),
-    "ui": (
-        (
-            "console/tooling-e2e/src/explore/spec/*.ts",
-            re.compile(r"^\s*\*\s*@property\s+(?P<id>\S+)", re.MULTILINE),
-        ),
-    ),
-}
-
+ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*\.[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 SPEC_PATTERN = re.compile(r"^(?P<path>[^:]+\.qnt)::(?P<name>\w+)$")
+
+SPECS_DIR = "properties/specs"
+MODEL_GLOB = f"{SPECS_DIR}/**/*.qnt"
+CODE_GLOB = "core/tests/switch_core/properties/**/*.py"
+SYSTEM_GLOB = "properties/history/**/*.py"
+UI_GLOB = "console/tooling-e2e/src/explore/spec/*.ts"
+
+BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+QUINT_DEFINITION = r"(?:pure[ \t]+)?(?:val|def|temporal|action|run)[ \t]+(?P<name>\w+)"
+QUINT_TAG = re.compile(
+    r"^[ \t]*///[ \t]*@property[ \t]+(?P<id>\S+)[ \t]*\n"
+    r"(?:[ \t]*///[^\n]*\n)*"
+    rf"(?:[ \t]*{QUINT_DEFINITION})?",
+    re.MULTILINE,
+)
+QUINT_NAME = re.compile(rf"^[ \t]*{QUINT_DEFINITION}", re.MULTILINE)
+TS_DOC_COMMENT = re.compile(
+    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*(?:export\s+(?:const|function)\s+(?P<name>\w+))?",
+    re.DOTALL,
+)
+TS_TAG = re.compile(r"^\s*\*\s*@property\s+(?P<id>\S+)", re.MULTILINE)
+
+NOT_RUN = {"pytest.mark.skip", "pytest.mark.skipif", "pytest.mark.xfail"}
 
 
 class Property(BaseModel):
@@ -123,6 +121,13 @@ class Catalog(BaseModel):
     properties: list[Property]
 
 
+@dataclass(frozen=True)
+class Tag:
+    level: Level
+    file: str
+    target: str
+
+
 def load_catalog(root: Path) -> tuple[list[Property], list[str]]:
     """The catalog's properties, and every problem found reading it."""
     properties: list[Property] = []
@@ -133,7 +138,7 @@ def load_catalog(root: Path) -> tuple[list[Property], list[str]]:
     for path in files:
         label = path.relative_to(root).as_posix()
         try:
-            raw = yaml.safe_load(path.read_text())
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
             catalog = Catalog.model_validate(raw)
         except (yaml.YAMLError, ValidationError) as error:
             problems.append(f"{label}: {error}")
@@ -147,59 +152,136 @@ def load_catalog(root: Path) -> tuple[list[Property], list[str]]:
     return properties, problems
 
 
-def find_tags(root: Path) -> dict[str, dict[Level, list[str]]]:
-    """Each tagged property id, with the files that check it at each level."""
-    found: dict[str, dict[Level, list[str]]] = defaultdict(lambda: defaultdict(list))
-    for level, sources in CHECKER_SOURCES.items():
-        for glob, pattern in sources:
-            for path in sorted(root.glob(glob)):
-                label = path.relative_to(root).as_posix()
-                for match in pattern.finditer(path.read_text()):
-                    found[match["id"]][level].append(label)
-    return found
+def _dotted(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return f"{_dotted(node.value)}.{node.attr}"
+    return ""
 
 
-def _spec_definitions(root: Path, spec: str) -> Iterator[str]:
-    match = SPEC_PATTERN.match(spec)
+def _decorator_name(node: ast.expr) -> str:
+    return _dotted(node.func if isinstance(node, ast.Call) else node)
+
+
+def _python_tags(
+    tree: ast.AST, label: str, level: Level, decorator: str
+) -> tuple[list[tuple[str, Tag]], list[str]]:
+    tags: list[tuple[str, Tag]] = []
+    problems: list[str] = []
+
+    def visit(node: ast.AST, not_run: bool) -> None:
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            not_run = not_run or any(
+                _decorator_name(d) in NOT_RUN for d in node.decorator_list
+            )
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                for d in node.decorator_list:
+                    if _decorator_name(d) != decorator:
+                        continue
+                    first = d.args[0] if isinstance(d, ast.Call) and d.args else None
+                    if not (
+                        isinstance(first, ast.Constant) and isinstance(first.value, str)
+                    ):
+                        problems.append(
+                            f"{label}:{d.lineno}: `{decorator}` on {node.name} "
+                            "takes the property id as a string literal"
+                        )
+                    elif not not_run:
+                        tags.append((first.value, Tag(level, label, node.name)))
+        for child in ast.iter_child_nodes(node):
+            visit(child, not_run)
+
+    visit(tree, False)
+    return tags, problems
+
+
+def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
+    """Each tagged property id with its tags, and every problem found reading them."""
+    found: dict[str, list[Tag]] = defaultdict(list)
+    problems: list[str] = []
+
+    for path in sorted(root.glob(MODEL_GLOB)):
+        label = path.relative_to(root).as_posix()
+        text = BLOCK_COMMENT.sub("", path.read_text(encoding="utf-8"))
+        for match in QUINT_TAG.finditer(text):
+            if match["name"] is None:
+                problems.append(
+                    f"{label}: tag for {match['id']} is not above a definition"
+                )
+            else:
+                found[match["id"]].append(Tag("model", label, match["name"]))
+
+    for glob, level, decorator in (
+        (CODE_GLOB, "code", "pytest.mark.property"),
+        (SYSTEM_GLOB, "system", "checks"),
+    ):
+        for path in sorted(root.glob(glob)):
+            label = path.relative_to(root).as_posix()
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=label)
+            except SyntaxError as error:
+                problems.append(f"{label}: cannot be read for tags: {error}")
+                continue
+            tags, tag_problems = _python_tags(tree, label, level, decorator)
+            problems.extend(tag_problems)
+            for tagged, tag in tags:
+                found[tagged].append(tag)
+
+    for path in sorted(root.glob(UI_GLOB)):
+        label = path.relative_to(root).as_posix()
+        for comment in TS_DOC_COMMENT.finditer(path.read_text(encoding="utf-8")):
+            for tag in TS_TAG.finditer(comment["body"]):
+                if comment["name"] is None:
+                    problems.append(
+                        f"{label}: tag for {tag['id']} is not above an export"
+                    )
+                else:
+                    found[tag["id"]].append(Tag("ui", label, comment["name"]))
+    return found, problems
+
+
+def _spec_problems(root: Path, prop: Property, tags: list[Tag]) -> list[str]:
+    assert prop.spec is not None
+    match = SPEC_PATTERN.match(prop.spec)
     assert match is not None
-    path = root / "properties" / "specs" / match["path"]
+    label = f"{SPECS_DIR}/{match['path']}"
+    path = root / label
     if not path.is_file():
-        yield f"{spec}: properties/specs/{match['path']} does not exist"
-        return
-    defined = re.search(
-        rf"^\s*(?:pure\s+)?(?:val|def|temporal|action|run)\s+{match['name']}\b",
-        path.read_text(),
-        re.MULTILINE,
-    )
-    if defined is None:
-        yield f"{spec}: {match['name']} is not defined in {match['path']}"
+        if prop.status == "checked":
+            return [f"{prop.id}: checked, but {label} does not exist"]
+        return []
+    text = BLOCK_COMMENT.sub("", path.read_text(encoding="utf-8"))
+    if match["name"] not in {m["name"] for m in QUINT_NAME.finditer(text)}:
+        return [f"{prop.id}: {match['name']} is not defined in {label}"]
+    if prop.status == "checked" and Tag("model", label, match["name"]) not in tags:
+        return [
+            f"{prop.id}: checked, but {match['name']} in {label} carries no tag for it"
+        ]
+    return []
 
 
 def check(root: Path) -> list[str]:
     """Every way the catalog and the checkers disagree; empty when they agree."""
     properties, problems = load_catalog(root)
     by_id = {prop.id: prop for prop in properties}
-    tags = find_tags(root)
+    tags, tag_problems = find_tags(root)
+    problems.extend(tag_problems)
 
-    for tagged, levels in sorted(tags.items()):
+    for tagged, found in sorted(tags.items()):
         prop = by_id.get(tagged)
-        for level, files in levels.items():
-            where = ", ".join(files)
+        for tag in found:
+            where = f"{tag.level} ({tag.file}: {tag.target})"
             if prop is None:
-                problems.append(
-                    f"{tagged}: tagged at {level} in {where}, but not in the catalog"
-                )
+                problems.append(f"{tagged}: tagged at {where}, but not in the catalog")
             elif prop.status == "retired":
-                problems.append(
-                    f"{tagged}: retired, but still checked at {level} in {where}"
-                )
-            elif level not in prop.levels:
-                problems.append(
-                    f"{tagged}: checked at {level} in {where}, which it does not list"
-                )
+                problems.append(f"{tagged}: retired, but still checked at {where}")
+            elif tag.level not in prop.levels:
+                problems.append(f"{tagged}: checked at {where}, which it does not list")
 
     for prop in properties:
-        checked_at = tags.get(prop.id, {})
+        found = tags.get(prop.id, [])
+        checked_at = {tag.level for tag in found}
         for level in prop.levels:
             if level in checked_at and level in prop.gaps:
                 problems.append(
@@ -207,31 +289,32 @@ def check(root: Path) -> list[str]:
                 )
             if prop.status == "checked" and level not in checked_at:
                 problems.append(f"{prop.id}: checked, but nothing checks it at {level}")
-        if prop.spec is not None and prop.status == "checked":
-            problems.extend(_spec_definitions(root, prop.spec))
+        if prop.spec is not None:
+            problems.extend(_spec_problems(root, prop, found))
     return problems
 
 
 def table(root: Path) -> str:
-    """Property by level: `✔` a checker exists, `gap` an excuse is listed, `·` neither, blank not needed."""
+    """Property by level: `yes` a checker exists, `gap` an excuse is listed, `-` neither, blank not needed."""
     properties, _ = load_catalog(root)
-    tags = find_tags(root)
+    tags, _ = find_tags(root)
     width = max((len(prop.id) for prop in properties), default=0)
     lines = [
         f"{'property':<{width}}  {'status':<8}  "
         + "  ".join(f"{level:<6}" for level in LEVELS)
     ]
     for prop in properties:
+        checked_at = {tag.level for tag in tags.get(prop.id, [])}
         cells = []
         for level in LEVELS:
             if level not in prop.levels:
                 cells.append("")
-            elif level in tags.get(prop.id, {}):
-                cells.append("✔")
+            elif level in checked_at:
+                cells.append("yes")
             elif level in prop.gaps:
                 cells.append("gap")
             else:
-                cells.append("·")
+                cells.append("-")
         lines.append(
             f"{prop.id:<{width}}  {prop.status:<8}  "
             + "  ".join(f"{cell:<6}" for cell in cells)

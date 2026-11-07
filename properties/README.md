@@ -33,11 +33,13 @@ A `formal` property also has `spec: <file>.qnt::<Definition>`, a definition in
 
 ## Adding a checker
 
-Tag it with the property's id, and the gate finds it:
+Tag the definition that checks it with the property's id, and the gate finds it.
+A tag in a comment or docstring, above nothing, or on a skipped or `xfail` test
+is not a checker, and the gate says so:
 
 | Level | Where | Tag |
 | --- | --- | --- |
-| model | `specs/*.qnt` | `/// @property <id>` above the definition |
+| model | `specs/*.qnt` | `/// @property <id>` directly above the definition |
 | code | `core/tests/switch_core/properties/` | `@pytest.mark.property("<id>")` on the test |
 | system | `history/*.py` | `@checks("<id>")` on the check |
 | ui | `console/tooling-e2e/src/explore/spec/*.ts` | `@property <id>` in the doc comment above the export |
