@@ -28,6 +28,8 @@ export interface AcpLaunch {
    * prompt, say).
    */
   rejectOutputLine?: (line: string) => string | undefined;
+  /** The process saves and exits once its input closes; stopping it sends no SIGTERM first. */
+  exitsOnClosedInput?: boolean;
 }
 
 export interface AcpLaunchInput {

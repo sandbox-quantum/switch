@@ -274,6 +274,80 @@ it('approves without asking in full access, approves only edits in auto-accept-e
   }
 });
 
+it.each([
+  ['the recorded edit is auto-accepted', 'auto-accept-edits', 'edit', undefined, null],
+  ['with no recorded call it asks', 'auto-accept-edits', undefined, undefined, 'tool_approval'],
+  [
+    "the request's own kind wins",
+    'auto-accept-edits',
+    'edit',
+    'execute',
+    'command_execution_approval',
+  ],
+  [
+    'the recorded command types the card',
+    'approval-required',
+    'execute',
+    undefined,
+    'command_execution_approval',
+  ],
+] as const)(
+  'falls back to the tool call kind for a kindless permission request: %s',
+  async (_name, runtimeMode, recordedKind, requestKind, requestType) => {
+    const { adapter, events, server } = await start(dummy, { runtimeMode });
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    if (recordedKind)
+      server.notify('session/update', {
+        sessionId: 'native',
+        update: { sessionUpdate: 'tool_call', toolCallId: 'x', title: 'Tool', kind: recordedKind },
+      });
+    server.send({
+      id: 52,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: 'x', title: 'Tool', ...(requestKind ? { kind: requestKind } : {}) },
+        options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+    await flush();
+    const opened = events.filter((e) => e.type === 'request.opened');
+    expect(opened.map((e) => e.requestType)).toEqual(requestType ? [requestType] : []);
+    if (!requestType)
+      expect(server.received.find((m) => m.id === 52)?.result).toEqual({
+        outcome: { outcome: 'selected', optionId: 'once' },
+      });
+  }
+);
+
+it("shows the permission request's own text as the approval detail", async () => {
+  const { adapter, events, server } = await start();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send({
+    id: 53,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: {
+        toolCallId: 'x',
+        title: 'Bash',
+        content: [
+          {
+            type: 'content',
+            content: { type: 'text', text: 'Requesting approval to Running: ls' },
+          },
+        ],
+      },
+      options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+    },
+  });
+  await flush();
+  expect(events.find((e) => e.type === 'request.opened')).toMatchObject({
+    title: 'Bash',
+    detail: 'Requesting approval to Running: ls',
+  });
+});
+
 it('lets vendor extensions ask questions and add items, and cancels them outside a turn', async () => {
   const hooks: AcpProviderHooks = {
     ...dummy,

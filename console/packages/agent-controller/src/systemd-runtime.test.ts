@@ -120,6 +120,8 @@ beforeEach(() => {
   env = {
     ANTHROPIC_API_KEY: 'sk-placeholder',
     CLAUDE_CONFIG_DIR: '/home/controller/.claude',
+    KIMI_CODE_HOME: '/home/controller/.kimi-code',
+    KIMI_MODEL_NAME: 'placeholder-model',
     UNRELATED: 'kept out',
   };
   runtime = makeRuntime();
@@ -154,7 +156,7 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     expect(statSync(join(root, 'watcher', 'config.json')).mode & 0o777).toBe(0o640);
     // Only provider settings, and none naming a path in the controller's home.
     expect(readFileSync(join(config.dataDir, 'units', '01', 'environment'), 'utf8')).toBe(
-      "ANTHROPIC_API_KEY='sk-placeholder'\n"
+      "ANTHROPIC_API_KEY='sk-placeholder'\nKIMI_MODEL_NAME='placeholder-model'\n"
     );
   });
 

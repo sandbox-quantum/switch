@@ -25,6 +25,11 @@ export interface StdioJsonRpcClientOptions {
   /** Called once when the process goes away, whether or not it was asked to. */
   onExit: (reason: string) => void;
   rejectOutputLine?: (line: string) => string | undefined;
+  /**
+   * The process saves and exits by itself once its input closes, and a SIGTERM would end it
+   * before it has saved. Stopping it then only closes its input; the kill still follows.
+   */
+  exitsOnClosedInput?: boolean;
 }
 
 export class JsonRpcError extends Error {
@@ -74,10 +79,12 @@ export class StdioJsonRpcClient {
   private nextId = 0;
   private exited = false;
   private processExited = false;
+  private readonly exitsOnClosedInput: boolean;
 
   constructor(options: StdioJsonRpcClientOptions) {
     this.logger = options.logger;
     this.onExit = options.onExit;
+    this.exitsOnClosedInput = options.exitsOnClosedInput === true;
     this.child = spawnProvider(options.command, options.args, {
       cwd: options.cwd,
       env: options.env,
@@ -215,7 +222,7 @@ export class StdioJsonRpcClient {
       this.child.stdin?.end();
       // On Windows any kill is immediate: the closed stdin is the request to
       // stop, and the kill above is what follows it.
-      if (process.platform !== 'win32') this.child.kill('SIGTERM');
+      if (process.platform !== 'win32' && !this.exitsOnClosedInput) this.child.kill('SIGTERM');
     });
   }
 

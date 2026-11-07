@@ -531,6 +531,19 @@ export class AcpAdapter implements ProviderAdapter {
     const vendor = this.hooks.permission?.(context, request);
     if (vendor) return await vendor;
     const { toolCall } = request;
+    // Some agents (Kimi Code) leave the kind off the request; the tool call they announced has it.
+    const recorded = state.items.get(toolCall.toolCallId)?.type;
+    const kind =
+      toolCall.kind ??
+      (recorded === 'command_execution'
+        ? 'execute'
+        : recorded === 'file_change'
+          ? 'edit'
+          : undefined);
+    const detail = (toolCall.content ?? [])
+      .map((part) => (part.type === 'content' ? (part.content?.text ?? '') : ''))
+      .filter(Boolean)
+      .join('\n');
     const once = request.options.find((option) => option.kind === 'allow_once');
     const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
     // In auto mode whatever automatic review the agent has ran before it
@@ -539,7 +552,7 @@ export class AcpAdapter implements ProviderAdapter {
       once &&
       ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
         state.runtimeMode === 'full-access' ||
-        (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
+        (state.runtimeMode === 'auto-accept-edits' && kind === 'edit'))
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
@@ -570,12 +583,13 @@ export class AcpAdapter implements ProviderAdapter {
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
-        : toolCall.kind === 'execute'
+        : kind === 'execute'
           ? 'command_execution_approval'
-          : toolCall.kind === 'edit'
+          : kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
       title: toolCall.title ?? `${this.hooks.label} needs permission`,
+      ...(detail ? { detail } : {}),
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
