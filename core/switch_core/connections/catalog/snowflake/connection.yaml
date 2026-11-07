@@ -1,0 +1,10 @@
+# Coming soon. Snowflake's MCP servers live at a URL of each account's
+# own, which the catalog's fixed URLs cannot name yet; the proposal is
+# in docs/design/service-connections-v2.md, Snowflake.
+slug: snowflake
+name: Snowflake
+category: Data warehouse
+description: Query your Snowflake data with SQL and Cortex agents, as you.
+enabled: false
+auth:
+  type: oauth
