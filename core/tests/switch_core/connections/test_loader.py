@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "supabase",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "supabase",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["supabase"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1036,6 +1039,51 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     assert definition.token is not None
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_supabase_entry_loads_and_enforces_read_only_defaults():
+    definition = CATALOG["supabase"].definition
+    assert definition.adapter == "api_key"
+    assert definition.name == "Supabase"
+    assert definition.slug == "supabase"
+    assert definition.enabled is True
+    assert definition.description == (
+        "Connect Supabase projects to query databases, read schemas, and manage table records."
+    )
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("project_url", True),
+        ("api_key", True),
+    ]
+    assert sign_in.identity.method == "GET"
+    assert sign_in.identity.url == "https://api.supabase.com/v1/projects"
+    assert sign_in.identity.headers == {
+        "Authorization": "Bearer {api_key}",
+        "apikey": "{api_key}",
+    }
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.name == "supabase"
+    assert server.url == "https://mcp.supabase.com/mcp"
+    assert server.headers == {
+        "Authorization": "Bearer {api_key}",
+        "apikey": "{api_key}",
+    }
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+    assert definition.tools is not None
+    assert definition.tools.mode == "pass_through"
+    # Enforces read-only defaults: no access blocks and no level tools
+    assert definition.access is None
+    assert definition.level_tools("read") == []
+    assert definition.level_tools("write") == []
+    # Enforces read-only practices and user confirmation for mutations in skill
+    skill_content = CATALOG["supabase"].skill_files["SKILL.md"]
+    assert "read-before-write" in skill_content.lower()
+    assert "inspect" in skill_content.lower()
+    assert "confirmation" in skill_content.lower()
 
 
 def test_loads_an_api_key_entry(catalog_copy):
