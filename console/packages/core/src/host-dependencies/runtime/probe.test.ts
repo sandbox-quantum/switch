@@ -50,6 +50,21 @@ describe('resolveCommandPath with login-shell banner noise', () => {
       'C:\\tools\\node\\node.exe'
     );
   });
+
+  it('resolves an absolute command path on Windows using dir:pattern syntax', async () => {
+    let invokedArgs: string[] = [];
+    const ctx = makeCtx(async (_cmd, args) => {
+      invokedArgs = args;
+      return {
+        stdout: 'C:\\Users\\user\\.local\\bin\\droid.exe\r\n',
+        stderr: '',
+      };
+    });
+    await expect(
+      resolveCommandPath('C:\\Users\\user\\.local\\bin\\droid.exe', ctx, 'windows')
+    ).resolves.toBe('C:\\Users\\user\\.local\\bin\\droid.exe');
+    expect(invokedArgs).toEqual(['C:\\Users\\user\\.local\\bin:droid.exe']);
+  });
 });
 
 describe('resolveAllCommandPaths with login-shell banner noise', () => {
