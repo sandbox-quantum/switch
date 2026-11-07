@@ -53,6 +53,7 @@ class _RoomService:
         ("discord", "deleted"),
         ("telegram", "left"),
         ("teams", "kept"),
+        ("lark", "deleted"),
     ],
 )
 def test_room_detail_names_the_platforms_outcome(
