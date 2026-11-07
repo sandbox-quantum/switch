@@ -22,7 +22,7 @@ describe('history report', () => {
   });
 
   it('fails when the command cannot run, rather than passing', async () => {
-    await expect(new HistoryCheck('/nonexistent/check').verify()).rejects.toThrow(
+    await expect(new HistoryCheck('/nonexistent/check').verify('e2e-x')).rejects.toThrow(
       /could not run/
     );
   });

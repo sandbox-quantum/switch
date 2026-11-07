@@ -52,19 +52,17 @@ export class HistoryCheck {
     return command === undefined || command === '' ? null : new HistoryCheck(command);
   }
 
-  async verify(): Promise<void> {
+  /** Check the rooms and agents whose names start with `tag`; throws on a violation. */
+  async verify(tag: string): Promise<void> {
     let stdout: string;
     try {
-      ({ stdout } = await run(this.command, ['--json']));
+      ({ stdout } = await run(this.command, ['--json', '--tag', tag]));
     } catch (error) {
-      // A violation exits 1 with its report on stdout; anything else is the check failing to run.
-      const failed = error as { code?: number; stdout?: string; stderr?: string };
-      if (failed.code !== 1 || !failed.stdout) {
-        throw new Error(`the history check could not run: ${failed.stderr ?? String(error)}`);
-      }
-      stdout = failed.stdout;
+      const failed = error as { stderr?: string };
+      throw new Error(`the history check could not run: ${failed.stderr ?? String(error)}`);
     }
-    const report = parseHistoryReport(stdout);
+    // The report is the last line; anything a wrapper printed before it is not part of it.
+    const report = parseHistoryReport(stdout.trim().split('\n').at(-1) ?? '');
     this.checks += 1;
     this.mostEvents = Math.max(this.mostEvents, report.events);
     if (report.violations.length > 0) {
