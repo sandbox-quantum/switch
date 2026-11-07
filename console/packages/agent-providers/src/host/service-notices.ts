@@ -72,6 +72,7 @@ export function serviceName(service: string): string {
     datadog: 'Datadog',
     github: 'GitHub',
     'google-workspace': 'Google Workspace',
+    intercom: 'Intercom',
   };
   return names[service] ?? service;
 }

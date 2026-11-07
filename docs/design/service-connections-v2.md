@@ -603,6 +603,32 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## Intercom
+
+Built from a live sign-in run against a US-hosted Intercom test workspace:
+
+- **Official remote MCP server.** Reached at `https://mcp.intercom.com/mcp` as
+  the `intercom` MCP server via Streamable HTTP. US-hosted workspaces only;
+  Intercom MCP does not support EU or AU workspaces.
+- **Dynamic client registration.** Intercom offers RFC 7591 dynamic registration
+  at `https://mcp.intercom.com/register`. Core registers its public client on
+  first connect and stores it in `service_oauth_clients`.
+- **Console loopback redirect.** Intercom connects through Switch Console in
+  loopback mode on fixed ports (39231–39235) with PKCE S256.
+- **Tokens and refresh.** Access tokens live 1 hour (3,600 s, measured). Refresh
+  tokens rotate single-use on each refresh (`refresh: rotating`). Revocation is
+  discovered at `https://mcp.intercom.com/token`.
+- **Tool surface.** The MCP server exposes 20 tools for search, retrieval,
+  internal notes, Help Center articles, and Operator proposals, but no
+  customer-facing reply tool. Offered as a read/search-only v1 using
+  `tools: { mode: pass_through }`.
+- **Identity limitation.** Intercom MCP tokens are audience-restricted to the
+  MCP resource and rejected (HTTP 401) by the REST endpoint
+  `https://api.intercom.io/me`.
+
+To connect: Settings, Connections in Switch Console, then Intercom. To roll
+back, add `intercom` to `DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every
