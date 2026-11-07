@@ -271,6 +271,14 @@ async def test_a_queued_turn_says_pressing_stop_leaves_it_queued() -> None:
     assert INTERRUPT_QUEUED_NOTE in _posted(adapter)["text"]
 
 
+async def test_a_queued_turn_names_its_cancel_command_as_html_code() -> None:
+    adapter = _stopper()
+
+    await _post(adapter, _activity("queued", cancel_command="!cancel @worker turn-2"))
+
+    assert "<code>!cancel @worker turn-2</code>" in _posted(adapter)["text"]
+
+
 async def test_a_running_turn_says_no_such_thing() -> None:
     """There is no queued message to reassure anyone about."""
     adapter = _stopper()

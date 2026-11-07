@@ -6,7 +6,11 @@ import pytest
 from sqlalchemy import select, update
 
 from switch_core.addressing import owner_only_policy
-from switch_core.db.models import ApprovalRequest, TenantUsage
+from switch_core.db.models import (
+    AgentSessionActivityItem,
+    ApprovalRequest,
+    TenantUsage,
+)
 from switch_core.session_activity.service import (
     ApprovalOption,
     PlatformPerson,
@@ -202,6 +206,23 @@ async def test_a_turns_tokens_are_counted_once_when_it_first_ends(
         ("output_tokens", "big", 1),
         ("output_tokens", "small", 1),
     ]
+
+
+async def test_a_queued_turn_the_session_cancelled_is_kept_as_cancelled(
+    service, session_factory
+):
+    await service.report_item(AGENT, SESSION, **_turn("turn-1", 1, "queued"))
+    await service.report_item(AGENT, SESSION, **_turn("turn-1", 2, "cancelled"))
+    async with session_factory() as db:
+        statuses = list(
+            await db.scalars(
+                select(AgentSessionActivityItem.status).where(
+                    AgentSessionActivityItem.turn_id == "turn-1",
+                    AgentSessionActivityItem.kind == "turn",
+                )
+            )
+        )
+    assert statuses == ["cancelled"]
 
 
 async def test_usage_on_a_turn_that_has_not_ended_is_refused(service):

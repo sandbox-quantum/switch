@@ -131,7 +131,7 @@ export const sessionSchema = z.object({
 const turn = z.strictObject({
   type: z.literal('turn.upsert'),
   turnId: id,
-  status: z.enum(['queued', 'running', 'completed', 'interrupted', 'error']),
+  status: z.enum(['queued', 'running', 'completed', 'interrupted', 'cancelled', 'error']),
   commandId: id.nullable(),
 });
 const settlement = z.strictObject({
@@ -241,6 +241,7 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
       answer: result,
     }),
     z.strictObject({ type: z.literal('turn.interrupt'), turnId: id }),
+    z.strictObject({ type: z.literal('turn.cancel'), turnId: id }),
     z.strictObject({ type: z.literal('session.stop') }),
     z.strictObject({ type: z.literal('session.reset') }),
     z.strictObject({ type: z.literal('session.compact') }),

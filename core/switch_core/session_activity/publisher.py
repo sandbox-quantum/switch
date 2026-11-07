@@ -87,6 +87,7 @@ from switch_core.db.stores.session_activity_post_store import (
     TurnStatusPostStore,
 )
 from switch_core.db.stores.session_activity_store import (
+    SHORT_TURN_ID,
     TURN_ITEM_ID,
     AgentSessionActivityStore,
     ApprovalRequestStore,
@@ -1118,6 +1119,11 @@ class AgentSessionActivityPublisher:
             view.turn,
             elapsed,
             interrupt_turn_id=interrupt_turn_id,
+            cancel_command=(
+                f"!cancel @{target.agent_name} {view.turn.turn_id[:SHORT_TURN_ID]}"
+                if view.turn.status == "queued"
+                else None
+            ),
         )
         state = status_state(
             view,

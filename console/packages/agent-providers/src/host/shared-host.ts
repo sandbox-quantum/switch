@@ -15,6 +15,7 @@ import {
   followupCommandId,
   retryRefusal,
   roomControlFollowup,
+  roomCancelRefusal,
   roomControlRefusal,
 } from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
@@ -485,6 +486,17 @@ export async function runSharedHost(
       await send({ kind: 'activity', row });
       return true;
     };
+    // A server that predates cancelling refuses a turn reported cancelled. It
+    // goes again as interrupted, so that server still shows the turn as over.
+    const sentAsInterrupted = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (item.kind !== 'activity' || error.status !== 422) return false;
+      if (item.row.kind !== 'turn' || item.row.status !== 'cancelled') return false;
+      console.warn(
+        `Switch refused turn ${item.row.turn_id} as cancelled, so it is reported as interrupted: ${error.message}`
+      );
+      await send({ kind: 'activity', row: { ...item.row, status: 'interrupted' } });
+      return true;
+    };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
@@ -505,6 +517,7 @@ export async function runSharedHost(
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
             if (await sentWithoutUsage(item, error)) continue;
+            if (await sentAsInterrupted(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -722,6 +735,26 @@ export async function runSharedHost(
         return { note: roomInstructionsUnreadNote(roomId, reason), instructions: null };
       }
     };
+    /** Where and how a room hears that the session refused a control it asked for, if it does. */
+    const roomRefusal = (
+      command: Command,
+      owed: Followup | null,
+      reason: string | null
+    ): { roomId: string; threadId: string | null; body: string } | null => {
+      if (owed)
+        return {
+          roomId: owed.roomId,
+          threadId: owed.threadId,
+          body: roomControlRefusal(owed.action, reason),
+        };
+      if (command.body.type === 'turn.cancel' && command.origin.roomId)
+        return {
+          roomId: command.origin.roomId,
+          threadId: command.origin.threadId,
+          body: roomCancelRefusal(reason),
+        };
+      return null;
+    };
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
@@ -760,23 +793,16 @@ export async function runSharedHost(
         .commandStatuses.find((entry) => entry.commandId === command.commandId);
       if (owed && status?.status === 'applied') await sendFollowup(owed);
       // Switch already told the room the control is under way; a refusal is answered there too.
-      if (
-        owed &&
-        status?.status === 'rejected' &&
-        !repeated &&
-        parentChannel &&
-        options.roomConnection
-      )
+      const refusal =
+        status?.status === 'rejected' && !repeated
+          ? roomRefusal(command, owed, status.message)
+          : null;
+      if (refusal && parentChannel && options.roomConnection)
         void parentChannel
-          .ask({
-            type: 'room-reply',
-            roomId: owed.roomId,
-            threadId: owed.threadId,
-            body: roomControlRefusal(owed.action, status.message),
-          })
+          .ask({ type: 'room-reply', ...refusal })
           .catch((error: unknown) =>
             console.warn(
-              `Could not tell room ${owed.roomId} that its ${owed.action} was refused: ${String(error)}`
+              `Could not tell room ${refusal.roomId} that its ${command.body.type} was refused: ${String(error)}`
             )
           );
       // A retry asked for from a room that cannot run is answered there, where it was asked.

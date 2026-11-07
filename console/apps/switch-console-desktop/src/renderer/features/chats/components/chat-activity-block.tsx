@@ -6,7 +6,13 @@ import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import type { ChatActivityItem, ChatApproval } from '@shared/core/chats/activity';
 import { reasoningLabel } from '@shared/core/sessions/reasoning';
-import { isThinking, toolState, type TurnActivity, turnTools } from '../activity-join';
+import {
+  endedUnanswered,
+  isThinking,
+  toolState,
+  type TurnActivity,
+  turnTools,
+} from '../activity-join';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import { Reasoning } from '../ui/reasoning';
 import { FailedIcon, ThinkingIcon, ToolKindIcon, WorkLogDetails, WorkLogRow } from '../ui/work-log';
@@ -136,8 +142,7 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     reasoningLabel(reasoning, running && reasoning !== null) !== null ||
     work.length > 0 ||
     isThinking(turn) ||
-    turn.status === 'interrupted' ||
-    turn.status === 'error' ||
+    endedUnanswered(turn.status) ||
     turn.requests.length > 0 ||
     turnWarnings(turn).length > 0
   );
@@ -225,6 +230,15 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           {turn.status === 'error' && turn.messageId && (
             <RetryTurn activity={activity} turn={turn} />
           )}
+        </div>
+      )}
+      {turn.status === 'cancelled' && (
+        <div role="status">
+          <WorkLogRow
+            icon={<FailedIcon />}
+            label="Cancelled before the agent started."
+            tone="passive"
+          />
         </div>
       )}
       {requests.length > 0 && <ChatRequests activity={activity} requests={requests} />}
