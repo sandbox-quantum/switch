@@ -34,6 +34,8 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /** Session-owned MCP servers whose tools require no approval. Absent during sign-in checks. */
+  autoApprovedMcpNames?: readonly string[];
 }
 
 /**

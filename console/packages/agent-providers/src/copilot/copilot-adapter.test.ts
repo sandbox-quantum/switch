@@ -1,8 +1,8 @@
 import type * as fs from 'node:fs/promises';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AcpSignInInput } from '../acp/hooks';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
@@ -13,6 +13,11 @@ vi.mock('node:fs/promises', async (original) => ({
   realpath: async (path: string) => path,
 }));
 const servers: FakeAppServer[] = [];
+const homes: string[] = [];
+afterEach(() => vi.unstubAllEnvs());
+afterAll(async () => {
+  await Promise.all(homes.map((home) => rm(home, { recursive: true, force: true })));
+});
 vi.mock('node:child_process', () => ({
   spawn: () => {
     const server = new FakeAppServer();
@@ -65,6 +70,28 @@ it('sends no authenticate when a token signs the CLI in', async () => {
   expect(session.nativeSessionId).toBe('native');
 });
 
+it('pre-approves only session-owned MCP servers with unambiguous Copilot permission names', async () => {
+  const launch = await copilotAcp.launch({
+    binaryPath: 'copilot',
+    cwd: '/work',
+    env: {},
+    autoApprovedMcpNames: ['switch'],
+  });
+  expect(launch.args).toEqual(['--acp', '--stdio', '--allow-tool=switch']);
+  const probe = await copilotAcp.launch({ binaryPath: 'copilot', cwd: '/work', env: {} });
+  expect(probe.args).toEqual(['--acp', '--stdio']);
+  for (const name of ['shell', 'write', 'read', 'memory', 'url', '*', 'switch(shell)']) {
+    expect(() =>
+      copilotAcp.launch({
+        binaryPath: 'copilot',
+        cwd: '/work',
+        env: {},
+        autoApprovedMcpNames: [name],
+      })
+    ).toThrow('cannot safely pre-approve');
+  }
+});
+
 it('does not restart OAuth when the CLI has a saved login', async () => {
   const home = await copilotHome('{"loggedInUsers":[{"login":"octo"}]}');
   const { server } = await setup({ COPILOT_HOME: home });
@@ -80,11 +107,41 @@ it('resumes the exact native session', async () => {
   });
 });
 
+it('keeps Copilot task calls typed as subagents when completion omits the input', async () => {
+  const { adapter, server, events } = await setup({ GH_TOKEN: 'token' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 'turn', text: 'Delegate a README read' });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'child',
+      title: 'Read README via subagent',
+      kind: 'other',
+      status: 'pending',
+      rawInput: { agent_type: 'task', prompt: 'Read README.md' },
+    },
+  });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: { sessionUpdate: 'tool_call_update', toolCallId: 'child', status: 'completed' },
+  });
+  await flush();
+  expect(events.filter((event) => event.type === 'item.started')).toContainEqual(
+    expect.objectContaining({ item: expect.objectContaining({ id: 'child', type: 'subagent' }) })
+  );
+  expect(events.filter((event) => event.type === 'item.completed')).toContainEqual(
+    expect.objectContaining({
+      item: expect.objectContaining({ id: 'child', type: 'subagent', status: 'completed' }),
+    })
+  );
+  await adapter.stopAll();
+});
+
 it('recognises token and bring-your-own-key sign-ins in the environment', () => {
   expect(copilotEnvSignIn({ COPILOT_GITHUB_TOKEN: 'x' })).toBe(true);
   expect(copilotEnvSignIn({ GITHUB_TOKEN: 'x' })).toBe(true);
-  expect(copilotEnvSignIn({ COPILOT_PROVIDERS_CONFIG: '{}' })).toBe(true);
-  expect(copilotEnvSignIn({ COPILOT_PROVIDERS_CONFIG: '{"providers": [],}' })).toBe(true);
+  expect(copilotEnvSignIn({ COPILOT_PROVIDERS_CONFIG: '{}' })).toBe(false);
+  expect(copilotEnvSignIn({ COPILOT_PROVIDERS_CONFIG: '{"providers": [],}' })).toBe(false);
   expect(copilotEnvSignIn({ COPILOT_PROVIDERS_CONFIG: '{not-json' })).toBe(false);
   expect(copilotEnvSignIn({ COPILOT_PROVIDER_TYPE: 'openai' })).toBe(false);
   expect(
@@ -95,6 +152,7 @@ it('recognises token and bring-your-own-key sign-ins in the environment', () => 
     })
   ).toBe(true);
   expect(copilotEnvSignIn({ COPILOT_PROVIDER_BASE_URL: ' ' })).toBe(false);
+  expect(copilotEnvSignIn({ COPILOT_PROVIDER_BASE_URL: 'http://127.0.0.1:11434/v1' })).toBe(true);
   expect(copilotEnvSignIn({})).toBe(false);
 });
 
@@ -104,7 +162,9 @@ it('passes inline BYOK variables to the child CLI', async () => {
   vi.stubEnv('COPILOT_PROVIDER_API_KEY', 'key');
   vi.stubEnv('COPILOT_PROVIDER_BEARER_TOKEN', 'bearer');
   vi.stubEnv('COPILOT_PROVIDER_API_KEY_COMMAND', 'print-key');
-  const env = await executionEnvironment(process.cwd(), {}, undefined, copilotAcp.inheritEnv ?? []);
+  const env = await executionEnvironment(process.cwd(), {}, undefined, [
+    ...(copilotAcp.inheritEnv ?? []),
+  ]);
   expect(env).toMatchObject({
     COPILOT_PROVIDER_TYPE: 'openai',
     COPILOT_PROVIDER_BASE_URL: 'https://api.example.test',
@@ -116,6 +176,7 @@ it('passes inline BYOK variables to the child CLI', async () => {
 
 async function copilotHome(config: string | null): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), 'copilot-home-'));
+  homes.push(home);
   if (config !== null) {
     await mkdir(home, { recursive: true });
     await writeFile(join(home, 'config.json'), config);
@@ -132,6 +193,29 @@ it('reads the saved login out of the commented config file', async () => {
   expect(await copilotSignedIn({ COPILOT_HOME: empty })).toBe(false);
   expect(await copilotSignedIn({ COPILOT_HOME: await copilotHome(null) })).toBe(false);
   expect(await copilotSignedIn({ COPILOT_HOME: await copilotHome('not json') })).toBe(false);
+});
+
+it('recognizes the default and overridden BYOK provider files without a saved login', async () => {
+  const home = await copilotHome('{}');
+  const config = JSON.stringify({
+    providers: [{ name: 'local', baseUrl: 'http://127.0.0.1:11434/v1' }],
+    models: [{ id: 'qwen3:8b', provider: 'local' }],
+  });
+  await writeFile(join(home, 'providers.json'), config);
+  expect(await copilotSignedIn({ COPILOT_HOME: home })).toBe(true);
+  const override = join(home, 'custom-providers.json');
+  await writeFile(override, config);
+  await writeFile(join(home, 'providers.json'), '{}');
+  expect(await copilotSignedIn({ COPILOT_HOME: home })).toBe(false);
+  expect(await copilotSignedIn({ COPILOT_HOME: home, COPILOT_PROVIDERS_CONFIG: override })).toBe(
+    true
+  );
+  for (const invalid of ['{}', '{"providers":[]}', 'not json', '{"providers":[{}]}']) {
+    await writeFile(override, invalid);
+    expect(await copilotSignedIn({ COPILOT_HOME: home, COPILOT_PROVIDERS_CONFIG: override })).toBe(
+      false
+    );
+  }
 });
 
 function signInInput(
