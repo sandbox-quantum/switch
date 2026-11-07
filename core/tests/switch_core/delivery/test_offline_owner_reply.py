@@ -201,6 +201,7 @@ class TestUnavailableReplyRouting:
             "opencode": "opencode auth login",
             "antigravity": "agy acp --login",
             "cursor": "agent login",
+            "cline": "cline auth",
         }
         for agent_type, command in sign_in.items():
             agent = _agent(
