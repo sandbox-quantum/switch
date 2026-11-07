@@ -225,6 +225,9 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   message-retention window, the orphaned-file sweep, the leftover records
   pruned after a grace period, how erasing a person works, and a GDPR design
   note for what is not built (export, audit-log horizon)
+- `docs/design/property-testing-v1.md` — the plan for property-based testing:
+  the catalog of properties in `properties/`, the model, code, system and UI
+  checkers that hold Switch to them, and the first slice
 - `docs/old/rds-migration.md` — moving a deployment's Postgres to RDS: the
   proposal and the cutover runbook
 

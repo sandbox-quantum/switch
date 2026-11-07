@@ -1,0 +1,24 @@
+properties:
+  - id: lease.fenced-takeover
+    title: A holder that was taken over is refused
+    statement: >
+      A lease's token strictly increases per key, and once a key is taken
+      over every write by an earlier holder is refused.
+    kind: safety
+    formality: semi-formal
+    levels: [model, code]
+    owner: platform
+    status: proposed
+    notes: >
+      Two processes can both believe they hold a key for a while; the
+      property is about what the stale one can still do.
+  - id: lease.eventual-owner
+    title: Abandoned work is picked up
+    statement: >
+      Work whose holder stopped, or stopped renewing, is eventually held by a
+      live process.
+    kind: liveness
+    formality: semi-formal
+    levels: [model, system]
+    owner: platform
+    status: proposed
