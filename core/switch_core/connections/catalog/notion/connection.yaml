@@ -6,41 +6,34 @@ enabled: true
 adapter: oauth
 auth:
   type: oauth
-  # [MEASURED] Each token refresh returns a single-use rotating refresh token.
+  # [DOCUMENTED] Advertises refresh_token in grant_types_supported at https://mcp.notion.com/.well-known/oauth-authorization-server.
   refresh: rotating
   oauth:
-    # [MEASURED] RFC 7591 dynamic client registration verified via POST https://mcp.notion.com/register (201 Created).
-    # Discovered via RFC 9728 and RFC 8414 metadata from https://mcp.notion.com/mcp.
+    # [DOCUMENTED] registration_endpoint (https://mcp.notion.com/register) advertised in RFC 8414 metadata at https://mcp.notion.com/.well-known/oauth-authorization-server.
     registration: dynamic
-    # [MEASURED] Loopback redirect on 127.0.0.1 (ports 39231-39235) accepted with PKCE S256.
-    # Notion consent prompt asks user to confirm trusting the local redirect address.
+    # [DOCUMENTED] RFC 8252 loopback redirection on 127.0.0.1 for native/public desktop clients.
     redirect: [loopback]
-    # [DOCUMENTED] revocation_endpoint is advertised in metadata at the token endpoint.
-    # [MEASURED] Revoking the refresh token invalidates the access token immediately.
+    # [DOCUMENTED] revocation_endpoint (https://mcp.notion.com/oauth/revoke) advertised at https://mcp.notion.com/.well-known/oauth-authorization-server.
     revocation_discovered: true
   identity:
-    # [DOCUMENTED] RFC 7662 token introspection (POST https://mcp.notion.com/introspect).
-    # Notion MCP tokens are rejected by REST /v1/users/me (HTTP 401) and /userinfo (HTTP 403).
-    # Introspection response provides 'active: true', 'workspace_id', and 'user_id'.
+    # [DOCUMENTED] RFC 7662 token introspection (POST https://mcp.notion.com/introspect) advertised as introspection_endpoint.
+    # Notion MCP tokens are not accepted by REST /v1/users/me (HTTP 401) or /userinfo (HTTP 403).
     introspection: true
-    # [MEASURED] Dotted paths for workspace and user; combined to produce a stable unique account id.
+    # [DOCUMENTED] Composite identifier combining workspace_id and user_id per maintainer ruling on issue #819.
     account_id: [workspace_id, user_id]
-    # [MEASURED] Stable workspace identifier shown as the connection label in Switch Console.
+    # [DOCUMENTED] Introspection response returns: active, aud, client_id, exp, iat, iss, scope, sub, token_type, user_id, workspace_id.
+    # It contains no human-readable user name, email, or workspace name, so the connection is labelled with workspace_id.
     label: workspace_id
-# [MEASURED] Access token lifetime is 28,800 seconds (8 hours). Passes through to agent session.
+# [DOCUMENTED] Access token lifetime of 28,800 seconds (8 hours) documented in Notion MCP developer guides (https://developers.notion.com/guides/mcp/build-mcp-client).
 token: { kind: pass_through, max_lifetime: 28800 }
 mcp:
   servers:
-    # [MEASURED] Official remote MCP server endpoint.
+    # [DOCUMENTED] Official remote MCP server endpoint.
     - { name: notion, url: "https://mcp.notion.com/mcp" }
 access:
-  # [DOCUMENTED] Notion advertises a single OAuth scope: 'default'.
-  # Consent screen authorizes access to the entire workspace rather than granular scopes.
-  # Therefore, both read and write levels request 'default', with write access permitted.
-  # The skill enforces read-before-write and user confirmation guards before mutations.
-  read:
-    scopes:
-      - default
+  # [DOCUMENTED] Notion advertises only 'default' and 'ema_issuer:manage' scopes (https://mcp.notion.com/.well-known/oauth-authorization-server).
+  # Notion's consent authorizes entire workspace access, so there is no distinct read-only level.
+  # Following maintainer ruling on issue #819, the entry exposes only the write level rather than a synthetic read level.
   write:
     scopes:
       - default

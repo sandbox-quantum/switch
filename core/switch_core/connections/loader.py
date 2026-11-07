@@ -551,8 +551,14 @@ class LevelAccess(BaseModel):
 
 class ConnectionAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    read: LevelAccess
+    read: LevelAccess | None = None
     write: LevelAccess | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_level(self) -> "ConnectionAccess":
+        if self.read is None and self.write is None:
+            raise ValueError("an access block needs at least one level")
+        return self
 
 
 class AccessProfile(BaseModel):

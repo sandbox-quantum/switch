@@ -95,7 +95,10 @@ def every_scope(definition: ConnectionDefinition) -> list[str]:
     """Every scope the entry's levels name, in order, each once."""
     access = definition.access
     assert access is not None
-    levels = [access.read, *([access.write] if access.write is not None else [])]
+    levels = [
+        *([access.read] if access.read is not None else []),
+        *([access.write] if access.write is not None else []),
+    ]
     return list(
         dict.fromkeys(scope for level in levels for scope in level.scopes or [])
     )

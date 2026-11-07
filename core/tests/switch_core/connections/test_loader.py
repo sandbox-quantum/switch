@@ -72,7 +72,7 @@ def test_the_shipped_notion_entry_signs_in_as_the_spike_found_it_must():
         ("notion", "https://mcp.notion.com/mcp")
     ]
     assert definition.access is not None and definition.access.write is not None
-    assert definition.access.read.scopes == ["default"]
+    assert definition.access.read is None
     assert definition.access.write.scopes == ["default"]
     assert definition.auth.identity is not None
     assert definition.auth.identity.introspection is True
