@@ -3,19 +3,19 @@
 
 ``_resolve_acting_identity`` used to compute ``owner_is_admin`` from
 ``owner.role == "admin"`` alone — the same global bit every other admin check
-in the codebase used before this split. Once a person can hold ``owner`` in
+in the codebase used before this split. Once a person can hold ``admin`` in
 one tenant and merely ``member`` (or nothing) in another, that global read is
 wrong for an agent the same way it was wrong for a human acting directly: an
 agent must not administer a tenant its owner does not administer, and must
 administer one its owner does, purely because of the owner's role in *that*
 tenant rather than any global bit.
 
-``test_agent_administers_the_tenant_its_owner_owns`` is the one that actually
+``test_agent_administers_the_tenant_its_owner_administers`` is the one that actually
 distinguishes old from new: the owner here holds no global admin bit at all,
 so the pre-split code (`owner.role == "admin"`) denies it regardless of the
 `tenant_members` row, and only reading that row grants it. The other two
 tests hold under both the old and new code — they pin down that the fix does
-not *overreach* (a workspace owner's agent must not gain cross-tenant power,
+not *overreach* (a workspace admin's agent must not gain cross-tenant power,
 and a global operator's agent must not lose its bypass) rather than proving a
 new grant.
 """
@@ -159,16 +159,16 @@ async def _private_room(
 
 
 class TestAgentInheritsOwnerTenantScopedAdmin:
-    async def test_agent_administers_the_tenant_its_owner_owns(
+    async def test_agent_administers_the_tenant_its_owner_administers(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """The owner holds no global admin bit — only `owner` in the bound
+        """The owner holds no global admin bit — only `admin` in the bound
         tenant. Only reading `tenant_members` (not `users.role`) can grant
         this, so this is the one test that fails against the pre-split code.
         """
         svc = _service(session_factory)
-        owner = await _make_user(session_factory, "workspace-owner")
-        await _membership(session_factory, TENANT_ZERO_ID, owner, "owner")
+        owner = await _make_user(session_factory, "workspace-admin")
+        await _membership(session_factory, TENANT_ZERO_ID, owner, "admin")
         someone_else = await _make_user(session_factory, "tenant-zero-room-owner")
         agent_id = await _register(svc, "owner-agent", owner)
         room_id = await _private_room(session_factory, TENANT_ZERO_ID, someone_else)
@@ -180,12 +180,12 @@ class TestAgentInheritsOwnerTenantScopedAdmin:
     async def test_agent_cannot_administer_a_tenant_where_owner_is_only_a_member(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Same owner, same agent: `owner` in tenant zero grants nothing in
+        """Same owner, same agent: `admin` in tenant zero grants nothing in
         tenant B, where that owner only holds `member`."""
         svc = _service(session_factory)
         await _make_tenant(session_factory, TENANT_B)
         owner = await _make_user(session_factory, "cross-tenant-owner")
-        await _membership(session_factory, TENANT_ZERO_ID, owner, "owner")
+        await _membership(session_factory, TENANT_ZERO_ID, owner, "admin")
         await _membership(session_factory, TENANT_B, owner, "member")
         someone_else = await _make_user(session_factory, "tenant-b-room-owner")
         agent_id = await _register(svc, "cross-tenant-agent", owner)

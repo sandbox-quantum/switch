@@ -69,6 +69,7 @@ def media_content(
     caption: str | None = None,
     thread_root_id: str | None = None,
     group: dict[str, object] | None = None,
+    extra_content: dict[str, object] | None = None,
 ) -> dict[str, object]:
     # When a caption is given it becomes the event body, with the real filename
     # carried separately per the rich-media-caption convention.
@@ -79,6 +80,10 @@ def media_content(
         "info": {"mimetype": mimetype, "size": size},
         "sender_name": sender_name,
     }
+    # The same caller-supplied markers a text message can carry, so a file
+    # says who posted it as faithfully as the text beside it does.
+    if extra_content:
+        content.update(extra_content)
     if caption:
         content["filename"] = filename
     if group is not None:
