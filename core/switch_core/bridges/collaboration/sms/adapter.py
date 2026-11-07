@@ -66,7 +66,7 @@ _NUMBER_SEPARATORS = re.compile(r"[,;\n]+")
 
 
 def _http_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=TWILIO_API, timeout=httpx.Timeout(15.0))
+    return httpx.AsyncClient(timeout=httpx.Timeout(15.0))
 
 
 def _now() -> float:
@@ -207,7 +207,7 @@ class SmsAdapter(PlatformAdapter):
         """Fetch the account, then confirm the account owns the phone number."""
         config = SmsConnectionConfig.model_validate(connection_config)
         auth = (config.account_sid, config.auth_token)
-        base = f"/{_API_VERSION}/Accounts/{config.account_sid}"
+        base = f"{TWILIO_API}/{_API_VERSION}/Accounts/{config.account_sid}"
         try:
             async with _http_client() as client:
                 account = await client.get(f"{base}.json", auth=auth)
@@ -432,7 +432,7 @@ class SmsAdapter(PlatformAdapter):
         self, client: httpx.AsyncClient, number: str, part: str
     ) -> str | None:
         response = await client.post(
-            f"/{_API_VERSION}/Accounts/{self._config.account_sid}/Messages.json",
+            f"{TWILIO_API}/{_API_VERSION}/Accounts/{self._config.account_sid}/Messages.json",
             data={"To": number, "From": self._config.phone_number, "Body": part},
             auth=(self._config.account_sid, self._config.auth_token),
         )

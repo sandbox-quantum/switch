@@ -141,7 +141,7 @@ class TestPlanReply:
         assert plan.parts == ["a" * 160]
 
     def test_nothing_is_lost_below_the_cap(self) -> None:
-        words = [f"w{i}" for i in range(80)]
+        words = [f"w{i}" for i in range(300)]
         plan = plan_reply(" ".join(words), max_segments=20)
         rebuilt = " ".join(_body(p) for p in plan.parts).split()
         assert rebuilt == words
