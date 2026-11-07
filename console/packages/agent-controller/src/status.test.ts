@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import {
   generateSealingKeyPair,
+  providerRuntimeIds,
   providerUnsupportedReason,
   sealProviderLogin,
 } from '@switch-console/agent-providers';
@@ -310,21 +311,23 @@ describe('ProviderStatuses', () => {
       log: silentLogger,
       onChange: () => changes++,
     });
+    // Every provider is probed but cursor, which is not installed.
+    const providers = providerRuntimeIds().length;
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(providers - 1);
+    expect(changes).toBe(providers);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
+    expect(runtime.probes).toBe(providers - 1);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(8);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(2 * (providers - 1));
+    expect(changes).toBe(providers);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(6);
+    expect(changes).toBe(providers + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -429,7 +432,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(3);
+    expect(runtime.probes).toBe(providerRuntimeIds().length - 2);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 
