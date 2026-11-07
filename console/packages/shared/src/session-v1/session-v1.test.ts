@@ -564,3 +564,16 @@ it('keeps only the newest child revision through snapshot and event replay', () 
     new SessionReplica(snapshot).snapshot().items.find((item) => item.itemId === 'child')
   ).toMatchObject({ kind: 'tool-activity', subagent: true, status: 'completed', revision: 3 });
 });
+
+it('carries a cancel of one queued turn, and a turn that ended cancelled', () => {
+  const cancel = { ...examples.platformAnswer, body: { type: 'turn.cancel', turnId: 'turn-demo' } };
+  expect(commandSchema.parse(cancel).body).toEqual({ type: 'turn.cancel', turnId: 'turn-demo' });
+  expect(() =>
+    commandSchema.parse({ ...cancel, body: { ...cancel.body, messageId: 'message-demo' } })
+  ).toThrow();
+  const ended = {
+    ...examples.hostRequest,
+    body: { type: 'turn.upsert', turnId: 'turn-demo', status: 'cancelled', commandId: null },
+  };
+  expect(parseHostEvent(ended).body).toEqual(ended.body);
+});

@@ -179,6 +179,9 @@ class TurnActivity:
     # yet redrawn still names A after B has started, so a press on it is refused
     # for naming an ended turn rather than silently stopping B.
     interrupt_turn_id: str | None = None
+    # What a reader sends to withdraw this turn while it waits in the queue,
+    # `!cancel @agent <turn-id>`. None once it has started or ended.
+    cancel_command: str | None = None
 
 
 @dataclass(frozen=True)

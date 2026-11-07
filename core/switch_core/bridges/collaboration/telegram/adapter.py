@@ -83,6 +83,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     Control,
     Drawn,
     Markup,
+    cancel_note,
     offered_controls,
     position_action,
 )
@@ -425,14 +426,19 @@ class _TelegramMarkup(Markup):
         return f"<b>{text}</b>"
 
     def literal(self, escape: Callable[[str], str]) -> Callable[[str], str]:
-        """The ordinary escape: `<code>` is still HTML inside.
+        """HTML escaping and nothing more: `<code>` is still HTML inside.
 
         Telegram's span reads its content, so an `&` or a `<` in a command
         needs defusing exactly as it would in the body. The Markdown default
         passes text through untouched, which here would break the message
         rather than merely litter it.
+
+        The body's escape does more than that, and the rest is wrong here: it
+        puts a zero-width space after an `@` so the name is not linked, but a
+        code entity holds no other entity, so nothing would be linked, and the
+        space would travel with a command the reader copies.
         """
-        return escape
+        return lambda text: html.escape(text, quote=False)
 
     def code(self, text: str) -> str:
         return f"<code>{text}</code>"
@@ -1713,6 +1719,8 @@ class TelegramAdapter(PlatformAdapter):
             lines = []
             if stopping and content.turn.status == "queued":
                 lines.append(INTERRUPT_QUEUED_NOTE)
+            if content.cancel_command is not None:
+                lines.append(cancel_note(content.cancel_command, markup, escape))
             if content.notify_unreachable:
                 lines.append(self.unnotified_notice())
             tail = "".join(f"\n{line}" for line in lines)

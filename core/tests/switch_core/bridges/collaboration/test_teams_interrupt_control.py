@@ -259,6 +259,14 @@ async def test_a_queued_turn_says_it_stays_queued() -> None:
     assert INTERRUPT_QUEUED_NOTE in _card_text(_posted(connector))
 
 
+async def test_a_queued_turn_names_the_command_that_cancels_it() -> None:
+    adapter, connector, _ = _handled()
+
+    await _post(adapter, _activity("queued", cancel_command="!cancel @worker turn-2"))
+
+    assert "!cancel @worker turn-2" in _card_text(_posted(connector))
+
+
 async def test_a_running_turn_does_not_say_it_stays_queued() -> None:
     adapter, connector, _ = _handled()
 

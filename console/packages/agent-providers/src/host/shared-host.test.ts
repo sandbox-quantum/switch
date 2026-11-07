@@ -1221,6 +1221,95 @@ it('tells the room at once when it refuses a compaction asked for there mid-turn
   }
 }, 20000);
 
+it('tells the room when a message it asked to cancel had already started', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+    );
+  try {
+    expect(
+      await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'work on it') })
+    ).toMatchObject({ ok: true });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const cancel: Command = {
+      ...relayed('current', 'room-cancel', {
+        type: 'turn.cancel',
+        turnId: host.turns[0]!.turnId,
+      }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({ type: 'command', command: cancel, requesterName: null });
+    expect(answer).toMatchObject({ ok: true, value: { status: 'rejected' } });
+    await until(() => expect(asks()).toHaveLength(1));
+    expect(asks()[0]!.ask).toEqual({
+      type: 'room-reply',
+      roomId: 'room',
+      threadId: 'thread',
+      body: "I'd already started on that message, so it can't be cancelled. Use `!interrupt` to stop it.",
+    });
+    await host.parent.ask({ type: 'command', command: cancel, requesterName: null });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks()).toHaveLength(1);
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+it('reports a cancelled turn as interrupted to a server that predates cancelling', async () => {
+  const host = await start({ rooms: true });
+  const turnRows = (turnId: string) =>
+    host.switchCore.calls
+      .filter((c) => c.path.endsWith('/activity'))
+      .map((c) => c.body as { kind: string; turn_id: string; status: string })
+      .filter((row) => row.kind === 'turn' && row.turn_id === turnId);
+  try {
+    host.switchCore.state.refusesCancelled = true;
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'first') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'second') });
+    const waiting = await until(() => {
+      const queued = host.switchCore.calls
+        .filter((c) => c.path.endsWith('/activity'))
+        .map((c) => c.body as { kind: string; turn_id: string; status: string })
+        .find(
+          (row) =>
+            row.kind === 'turn' && row.status === 'queued' && row.turn_id !== host.turns[0]!.turnId
+        );
+      expect(queued).toBeDefined();
+      return queued!.turn_id;
+    });
+    const cancel: Command = {
+      ...relayed('current', 'room-cancel', { type: 'turn.cancel', turnId: waiting }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    expect(
+      await host.parent.ask({ type: 'command', command: cancel, requesterName: null })
+    ).toMatchObject({ ok: true });
+    await until(() =>
+      expect(turnRows(waiting).map((row) => row.status)).toEqual(
+        expect.arrayContaining(['cancelled', 'interrupted'])
+      )
+    );
+    expect(turnRows(waiting).at(-1)!.status).toBe('interrupted');
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
 it('keeps running through a reset whose provider reports the old conversation stopped', async () => {
   const host = await start({ resettable: true, stopReports: true });
   try {

@@ -370,6 +370,64 @@ it('stops active and queued turns without dispatching the queue during cleanup',
   expect(adapter.sendTurn).toHaveBeenCalledOnce();
 });
 
+function cancel(commandId: string, turnId: string): Command {
+  return { ...message(commandId), body: { type: 'turn.cancel', turnId } };
+}
+
+it('cancels a queued turn so the provider never receives it, and runs the rest in order', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('active'));
+  await host.command(message('second'));
+  await host.command(message('third'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+
+  expect((await host.command(cancel('cancel', 'second'))).status).toBe('applied');
+  emit({ type: 'turn.completed', turnId: 'active', outcome: 'completed', usage: [] });
+
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(adapter.sendTurn).mock.calls.map(([input]) => input.turnId)).toEqual([
+    'active',
+    'third',
+  ]);
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'second')?.status).toBe('cancelled');
+});
+
+it('refuses to cancel a turn the agent has started, or one it does not know', async () => {
+  const { host, adapter } = await start('claude');
+  await host.command(message('active'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+
+  const started = await host.command(cancel('cancel-started', 'active'));
+  expect(started.status).toBe('rejected');
+  expect(started.message).toContain('TURN_STARTED');
+  const unknown = await host.command(cancel('cancel-unknown', 'missing'));
+  expect(unknown.status).toBe('rejected');
+  expect(unknown.message).toContain('NOT_FOUND');
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'active')?.status).toBe('running');
+});
+
+it('keeps a cancelled turn cancelled across restart, without a restart notice for it', async () => {
+  const { root, host, adapter } = await start('claude');
+  await host.command(message('active'));
+  await host.command(message('queued'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await host.command(cancel('cancel', 'queued'));
+  await host.shutdown();
+
+  const fixture = setup('claude');
+  const recovered = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(recovered);
+  expect(recovered.snapshot().turns.map((turn) => [turn.turnId, turn.status])).toEqual([
+    ['active', 'interrupted'],
+    ['queued', 'cancelled'],
+  ]);
+  const restartNotices = recovered
+    .snapshot()
+    .notices.filter((notice) => notice.code === 'TURN_INTERRUPTED');
+  expect(restartNotices).toHaveLength(1);
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
+});
+
 it('knows what a turn spent from the moment it reads as ended, and after a restart', async () => {
   const { host, emit, root } = await start('claude');
   const spent = [

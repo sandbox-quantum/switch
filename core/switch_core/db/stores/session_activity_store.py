@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 TURN_ITEM_ID = "turn"
 # The ends a turn can be run again from: it failed, or it was stopped.
 RETRYABLE_TURN_STATUSES = frozenset({"error", "interrupted"})
+# How much of a turn's id a queued card shows in the `!cancel` it offers.
+SHORT_TURN_ID = 8
 
 
 class ApprovalRequestStore:
@@ -387,6 +389,40 @@ class AgentSessionActivityStore:
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def turn_in_room(
+        self, session: AsyncSession, agent_id: str, room_id: str, turn_id: str
+    ) -> AgentSessionActivityItem | None:
+        """The row of one of the agent's turns, if that turn was asked in `room_id`."""
+        result = await session.execute(
+            select(AgentSessionActivityItem).where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.turn_id == turn_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def queued_in_room_starting(
+        self, session: AsyncSession, agent_id: str, room_id: str, prefix: str
+    ) -> list[AgentSessionActivityItem]:
+        """The agent's turns still queued in `room_id` whose id starts with
+        `prefix`, in any case: a phone keyboard capitalises the first letter."""
+        result = await session.execute(
+            select(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                AgentSessionActivityItem.status == "queued",
+                func.lower(AgentSessionActivityItem.turn_id).startswith(
+                    prefix.lower(), autoescape=True
+                ),
+            )
+            .order_by(AgentSessionActivityItem.turn_id)
+        )
+        return list(result.scalars())
 
     async def for_room(
         self, session: AsyncSession, room_id: str, since: datetime

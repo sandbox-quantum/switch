@@ -43,6 +43,7 @@ TURN_STATE = {
     "running": "Working…",
     "completed": "Turn complete.",
     "interrupted": "Turn interrupted.",
+    "cancelled": "Cancelled before the agent started.",
     "error": "Turn ended with an error.",
 }
 
@@ -280,6 +281,19 @@ INTERRUPT_LABEL = "Stop current work"
 INTERRUPT_QUEUED_NOTE = (
     "Stops what the agent is working on now. This message stays queued."
 )
+
+
+# Said under a queued turn, before the `!cancel` command that withdraws it.
+CANCEL_PROMPT = "To cancel it before the agent starts, send"
+
+
+def cancel_note(command: str, markup: Markup, escape: Callable[[str], str]) -> str:
+    """The line under a queued turn saying how to withdraw it before it starts.
+
+    The command goes in a code span so a reader can copy it whole, and so the
+    agent's `@name` in it is not taken for a mention of the agent.
+    """
+    return f"{CANCEL_PROMPT} {markup.code(markup.literal(escape)(command))}"
 
 
 @dataclass(frozen=True)

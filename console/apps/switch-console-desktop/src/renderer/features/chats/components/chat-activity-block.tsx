@@ -7,6 +7,7 @@ import { cn } from '@renderer/utils/utils';
 import type { ChatActivityItem, ChatApproval } from '@shared/core/chats/activity';
 import { reasoningLabel } from '@shared/core/sessions/reasoning';
 import {
+  endedUnanswered,
   isThinking,
   subagentStatus,
   toolState,
@@ -144,8 +145,7 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     work.length > 0 ||
     turnSubagents(turn).length > 0 ||
     isThinking(turn) ||
-    turn.status === 'interrupted' ||
-    turn.status === 'error' ||
+    endedUnanswered(turn.status) ||
     turn.requests.length > 0 ||
     turnWarnings(turn).length > 0
   );
@@ -249,6 +249,15 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           {turn.status === 'error' && turn.messageId && (
             <RetryTurn activity={activity} turn={turn} />
           )}
+        </div>
+      )}
+      {turn.status === 'cancelled' && (
+        <div role="status">
+          <WorkLogRow
+            icon={<FailedIcon />}
+            label="Cancelled before the agent started."
+            tone="passive"
+          />
         </div>
       )}
       {requests.length > 0 && <ChatRequests activity={activity} requests={requests} />}

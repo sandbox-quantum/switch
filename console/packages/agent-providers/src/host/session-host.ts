@@ -960,6 +960,7 @@ export class HostedSession {
         throw new Error('Session is not ready.');
     } else if (
       body.type !== 'turn.interrupt' &&
+      body.type !== 'turn.cancel' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
       body.type !== 'session.compact' &&
@@ -1159,6 +1160,25 @@ export class HostedSession {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
         await this.adapter.interruptTurn(session.sessionId);
+      } else if (body.type === 'turn.cancel') {
+        // Found and removed without an await between, so `runNext` either
+        // claims the turn first and this refuses, or never sees it.
+        const index = this.queue.findIndex((queued) => queued.commandId === body.turnId);
+        if (index < 0)
+          throw new Error(
+            body.turnId === this.activeTurn
+              ? 'TURN_STARTED: the agent has already started on this message.'
+              : 'NOT_FOUND: no queued message has this id.'
+          );
+        this.queue.splice(index, 1);
+        await this.inbox.append({ type: 'finished', commandId: body.turnId });
+        this.finished.add(body.turnId);
+        await this.publish({
+          type: 'turn.upsert',
+          turnId: body.turnId,
+          commandId: body.turnId,
+          status: 'cancelled',
+        });
       } else if (body.type === 'session.stop') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);

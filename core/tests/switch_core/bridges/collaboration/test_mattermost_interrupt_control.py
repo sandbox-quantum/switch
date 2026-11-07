@@ -193,6 +193,25 @@ async def test_the_line_goes_with_the_control_it_explains() -> None:
     assert INTERRUPT_QUEUED_NOTE not in _posts(adapter).created[0]["message"]
 
 
+async def test_a_queued_turns_message_says_how_to_cancel_it() -> None:
+    adapter, _ = _stopper()
+    queued = _activity("queued", cancel_command="!cancel @worker turn-next")
+
+    await adapter.post_rich(CHANNEL, "worker", queued, "root-1")
+
+    assert "`!cancel @worker turn-next`" in _posts(adapter).created[0]["message"]
+
+
+async def test_the_cancel_line_needs_no_control_to_explain() -> None:
+    """It is typed, not pressed, so it stays where no button can be drawn."""
+    adapter, _ = _stopper(callback_base_url=None)
+    queued = _activity("queued", cancel_command="!cancel @worker turn-next")
+
+    await adapter.post_rich(CHANNEL, "worker", queued, "root-1")
+
+    assert "`!cancel @worker turn-next`" in _posts(adapter).created[0]["message"]
+
+
 # ── Taking it off again ──────────────────────────────────────────────────────
 
 

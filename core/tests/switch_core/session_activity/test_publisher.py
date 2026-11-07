@@ -873,6 +873,21 @@ async def test_a_queued_turns_stop_control_follows_the_running_turn(
     await platform.wait_until(lambda: queued_names()[-1] == "turn-2")
 
 
+async def test_a_queued_turn_offers_the_start_of_its_id_to_cancel_with(
+    service, publisher, platform, bridged
+):
+    await _turn(service, bridged.room_id, "running", 1, turn_id="turn-1")
+    queued = "3f9c1a7e-0000-4000-8000-000000000002"
+    await _turn(service, bridged.room_id, "queued", 1, turn_id=queued)
+    await platform.wait_until(
+        lambda: any(d.content.turn.turn_id == queued for d in _turns(platform))
+    )
+
+    [card] = [d for d in _turns(platform) if d.content.turn.turn_id == queued][-1:]
+    command = card.content.cancel_command
+    assert command is not None and command.endswith(" 3f9c1a7e")
+
+
 async def test_a_press_on_a_turns_message_finds_its_turn(
     service, publisher, platform, bridged
 ):

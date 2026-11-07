@@ -48,6 +48,7 @@ from switch_core.db.stores.external_user_store import (
     ExternalUserStore,
     NoSuchLink,
 )
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import auto_route_fallback_in
 from switch_core.db.stores.session_activity_store import (
     RETRYABLE_TURN_STATUSES,
@@ -173,13 +174,18 @@ async def _check_control_target(
     """
     tokens = _mention_tokens(event.args)
     if not tokens:
+        everyone = f"{event.command}-all-agents"
         await _reply(
             host,
             room,
             event,
             f"`!{event.command}` needs a target — e.g. `!{event.command} @agent-name` "
-            f"or `!{event.command} @role`. To act on every agent in the room, use "
-            f"`!{event.command}-all-agents`.",
+            f"or `!{event.command} @role`."
+            + (
+                f" To act on every agent in the room, use `!{everyone}`."
+                if everyone in COMMANDS_BY_NAME
+                else ""
+            ),
         )
         return
 
@@ -327,6 +333,62 @@ def room_control_frame(
         body = _CONTROL_BODIES.get(action)
     if body is None:
         raise ValueError(f"{action} is not a room control")
+    frame = _room_frame(
+        agent_id=agent_id,
+        session_id=session_id,
+        room_id=room_id,
+        action=action,
+        body=body,
+        actor_id=actor_id,
+        message_id=message_id,
+        thread_id=thread_id,
+        surface=surface,
+        requester_name=requester_name,
+    )
+    frame["direct"] = direct
+    return frame
+
+
+def cancel_control_frame(
+    *,
+    agent_id: str,
+    session_id: str | None,
+    room_id: str,
+    turn_id: str,
+    actor_id: str,
+    message_id: str,
+    thread_id: str | None,
+    surface: str,
+    requester_name: str,
+) -> dict[str, object]:
+    """The frame `!cancel` is relayed as: drop one turn still in the queue."""
+    return _room_frame(
+        agent_id=agent_id,
+        session_id=session_id,
+        room_id=room_id,
+        action="cancel",
+        body={"type": "turn.cancel", "turnId": turn_id},
+        actor_id=actor_id,
+        message_id=message_id,
+        thread_id=thread_id,
+        surface=surface,
+        requester_name=requester_name,
+    )
+
+
+def _room_frame(
+    *,
+    agent_id: str,
+    session_id: str | None,
+    room_id: str,
+    action: str,
+    body: dict[str, str],
+    actor_id: str,
+    message_id: str,
+    thread_id: str | None,
+    surface: str,
+    requester_name: str,
+) -> dict[str, object]:
     frame = _control_frame(
         command_id=str(
             uuid.uuid5(
@@ -343,7 +405,6 @@ def room_control_frame(
         body=body,
     )
     frame["requesterName"] = requester_name
-    frame["direct"] = direct
     return frame
 
 
@@ -625,19 +686,7 @@ async def _decide_control_command(
             direct=meta.channel_type == "direct",
             target_message_id=target,
         )
-
-        async def relay() -> None:
-            if client._connections.relay_session_command(agent.id, frame):
-                await _reply(client, room, event, texts.ack)
-                return
-            await _reply(
-                client,
-                room,
-                event,
-                f"Could not send {command}: the agent's controller is not connected to Switch.",
-            )
-
-        return ControlDecision(queued=None, answer=relay)
+        return _relayed(client, room, event, agent.id, command, frame, texts.ack)
     profile = agent.integration_profile or {}
     level = (profile.get("command_capabilities") or {}).get(command, "unsupported")
 
@@ -690,6 +739,32 @@ async def _decide_control_command(
         ),
         answer=decision.answer,
     )
+
+
+def _relayed(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    agent_id: str,
+    command: str,
+    frame: dict[str, object],
+    ack: str,
+) -> ControlDecision:
+    """Relay `frame` to the agent's session once the command has committed,
+    and say in the room whether it got there."""
+
+    async def relay() -> None:
+        if client._connections.relay_session_command(agent_id, frame):
+            await _reply(client, room, event, ack)
+            return
+        await _reply(
+            client,
+            room,
+            event,
+            f"Could not send {command}: the agent's controller is not connected to Switch.",
+        )
+
+    return ControlDecision(queued=None, answer=relay)
 
 
 async def _dispatch_control_command(
@@ -822,6 +897,121 @@ async def _decide_interrupt(
     client: AgentRecipient, room: RoomRef, event: CommandEvent
 ) -> ControlDecision:
     return await _decide_control_command(client, room, event, "interrupt", _INTERRUPT)
+
+
+_CANCEL_USAGE = (
+    "Usage: `!cancel @agent-name <turn-id>`. A queued message's activity card "
+    "shows the command to copy."
+)
+
+
+def _may_cancel(*, asker: str | None, requester: str) -> bool:
+    """Whether `requester` may cancel a turn that `asker` asked for.
+
+    Only the person who sent the message may withdraw it. `asker` is None
+    when the message that asked can no longer be read, which grants nothing.
+    """
+    return asker is not None and asker == requester
+
+
+async def _decide_cancel(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    """Ask this agent's session to drop a message still waiting in its queue.
+
+    Who asked for a turn is known here and not to the session, so every
+    refusal that depends on it is decided here. Whether the turn is still
+    queued is the session's to decide, since only it knows the moment a turn
+    starts: one that starts in between is refused there, and the session
+    answers in the room.
+    """
+
+    def say(body: str) -> ControlDecision:
+        async def answer() -> None:
+            await _reply(client, room, event, body)
+
+        return ControlDecision(queued=None, answer=answer)
+
+    turn_ids = [token for token in event.args.split() if not token.startswith("@")]
+    if len(turn_ids) != 1:
+        return say(_CANCEL_USAGE)
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        return ControlDecision(queued=None, answer=None)
+    wanted = turn_ids[0]
+    activity = AgentSessionActivityStore()
+    async with client.session_factory() as session:
+        agent = await client._fresh_agent(session)
+        turn = await activity.turn_in_room(session, agent.id, meta.room_id, wanted)
+        if turn is None:
+            # The card offers the start of the id. Only a waiting turn is
+            # found by it, so a short id never names one already under way.
+            matches = await activity.queued_in_room_starting(
+                session, agent.id, meta.room_id, wanted
+            )
+            if not matches:
+                return say("I have no message with that id waiting in this room.")
+            if len(matches) > 1:
+                ids = ", ".join(f"`{match.turn_id}`" for match in matches)
+                return say(
+                    f"More than one message waiting here starts with `{wanted}`: "
+                    f"{ids}. Send more of the id."
+                )
+            turn = matches[0]
+        asked = (
+            await MessageStore().get_by_transport_event_id(session, turn.message_id)
+            if turn.message_id is not None
+            else None
+        )
+    if not _may_cancel(
+        asker=asked.sender_id if asked is not None else None,
+        requester=event.user_id,
+    ):
+        return say("Only the person who sent that message can cancel it.")
+    if turn.status == "running":
+        return say(
+            "I've already started on that message. "
+            f"Use `!interrupt @{agent.name}` to stop it."
+        )
+    if turn.status != "queued":
+        return say("That message isn't waiting any more.")
+    controller_backed = client._connections.controllers.is_bound(agent.id)
+    placed = client._connections.live_session_in_room(agent.id, meta.room_id)
+    if placed is None and not controller_backed:
+        return say(
+            "My session isn't connected to Switch right now, so I can't cancel that message."
+        )
+    if not event.message_id:
+        return say("Could not send cancel: the room command has no stable message ID.")
+    frame = cancel_control_frame(
+        agent_id=agent.id,
+        session_id=placed,
+        room_id=meta.room_id,
+        turn_id=turn.turn_id,
+        actor_id=event.user_id,
+        message_id=event.message_id,
+        thread_id=event.thread_id,
+        surface=await _room_surface(client, meta.room_id),
+        requester_name=event.user_name,
+    )
+    return _relayed(
+        client,
+        room,
+        event,
+        agent.id,
+        "cancel",
+        frame,
+        "Asked my session to cancel that queued message. "
+        "Its card reads Cancelled once it is.",
+    )
+
+
+async def _cmd_cancel(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    decision = await _decide_cancel(client, room, event)
+    if decision.answer is not None:
+        await decision.answer()
 
 
 async def _cmd_list_room_agents(
@@ -2420,6 +2610,25 @@ COMMANDS: list[Command] = [
         ),
         addressed=_addressed_by_required_first_mention,
         hidden=True,
+    ),
+    Command(
+        "cancel",
+        "Cancel a message a targeted agent hasn't started on yet. "
+        "Usage: `!cancel @agent-name <turn-id>`; the message's activity card shows "
+        "the command. Use `!interrupt` for work already under way.",
+        _cmd_cancel,
+        decide=_decide_cancel,
+        args_spec=(
+            CommandArg("target", "Agent name or alias", required=True),
+            CommandArg(
+                "turn",
+                "The id on the queued message's card",
+                required=True,
+                free_text=True,
+            ),
+        ),
+        addressed=_addressed_by_required_first_mention,
+        admin_check=_check_control_target,
     ),
     Command(
         "interrupt-all-agents",

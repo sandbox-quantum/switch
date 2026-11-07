@@ -866,6 +866,17 @@ version of their own to them without also giving them a release of their own.
   agent has to be in the room and its owner allowed to manage it, and it
   changes only the schedules it set up. If it leaves the room they are paused
   and the room told (#771).
+- **A queued message can be cancelled before the agent starts on it.**
+  `!cancel @agent <turn-id>` (`/cancel` on Discord) takes one message out of a
+  busy agent's queue, and the agent never receives it. The queued message's
+  activity card shows the command to copy, with the first 8 characters of the
+  turn's id; a start of an id, in any case, is matched only against that
+  agent's queued messages in the room, and one that matches several is refused
+  naming them. Only the person who sent it may cancel it; one the agent has
+  already started on is refused with a pointer to `!interrupt`. The card then
+  reads "Cancelled before the agent started." On Slack the command is shown
+  whether or not the session can be interrupted. On Telegram and Teams a copied
+  command keeps its `@`, so it names the agent (#800).
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -3385,6 +3396,13 @@ version of their own to them without also giving them a release of their own.
 - **Room settings list a room's schedules.** Add, edit, pause, resume and
   delete them, with the next run shown, using the cron picker for repeating
   ones (#771).
+- **The session host cancels a queued turn.** A `turn.cancel` command removes
+  a turn from the queue before it starts and reports it `cancelled`; one that
+  has started is refused, and the refusal is answered in the room. The cancel
+  is journaled, so a restart keeps it cancelled (#800).
+- **A cancelled message reads as cancelled in a room's chat.** Its work log
+  says "Cancelled before the agent started.", and the message after it no
+  longer waits under a reply that will never come (#800).
 - **Airtable's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks

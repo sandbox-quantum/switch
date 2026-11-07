@@ -538,3 +538,250 @@ async def test_a_controller_backed_agent_is_relayed_a_retry_of_the_message(
     assert agent_id == "agent-1"
     assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
     assert reply.bodies[-1] == "Trying that message again."
+
+
+# ── !cancel ──────────────────────────────────────────────────────────────────
+
+
+def _cancel_event(args: str, *, user_id: str = "@asker:server") -> CommandEvent:
+    return CommandEvent(
+        command="cancel",
+        args=args,
+        user_id=user_id,
+        user_name="louisa",
+        message_id="$cancel-command",
+        thread_id="$asked",
+    )
+
+
+def _cancel_client(
+    monkeypatch: pytest.MonkeyPatch,
+    reply: _Reply,
+    *,
+    turn_status: str | None,
+    asker: str | None = "@asker:server",
+    relayed: list[Any] | None = None,
+    queued: tuple[str, ...] = (),
+) -> SimpleNamespace:
+    """An agent owned by `owner-user` with one turn, `turn-1`, in the room,
+    and the ids of `queued` waiting beside it."""
+
+    def row(turn_id: str, status: str) -> SimpleNamespace:
+        return SimpleNamespace(turn_id=turn_id, status=status, message_id="$asked")
+
+    class _Activity:
+        async def turn_in_room(
+            self, _s: Any, _agent: str, _room: str, turn_id: str
+        ) -> Any:
+            if turn_id == "turn-1" and turn_status is not None:
+                return row(turn_id, turn_status)
+            return row(turn_id, "queued") if turn_id in queued else None
+
+        async def queued_in_room_starting(
+            self, _s: Any, _agent: str, _room: str, prefix: str
+        ) -> list[Any]:
+            return [
+                row(turn_id, "queued")
+                for turn_id in queued
+                if turn_id.startswith(prefix)
+            ]
+
+    class _Messages:
+        async def get_by_transport_event_id(self, _s: Any, _event_id: str) -> Any:
+            return None if asker is None else SimpleNamespace(sender_id=asker)
+
+    async def _surface(*_a: Any) -> str:
+        return "slack"
+
+    monkeypatch.setattr(commands, "_reply", reply)
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+    monkeypatch.setattr(commands, "AgentSessionActivityStore", _Activity)
+    monkeypatch.setattr(commands, "MessageStore", _Messages)
+    client = _client(
+        reply,
+        command_level="unsupported",
+        enqueue=[],
+        placed="session-1",
+        relayed=relayed,
+    )
+    client.agent.owner_id = "owner-user"
+    return client
+
+
+@pytest.mark.parametrize(
+    ("asker", "requester", "allowed"),
+    [
+        ("@a:s", "@a:s", True),
+        ("@a:s", "@b:s", False),
+        (None, "@a:s", False),
+    ],
+)
+def test_only_the_person_who_sent_a_message_may_cancel_it(
+    asker: str | None, requester: str, allowed: bool
+) -> None:
+    assert commands._may_cancel(asker=asker, requester=requester) is allowed
+
+
+@pytest.mark.asyncio
+async def test_the_asker_cancels_a_queued_message_through_its_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    relayed: list[Any] = []
+    client = _cancel_client(monkeypatch, reply, turn_status="queued", relayed=relayed)
+
+    await commands._cmd_cancel(
+        client, SimpleNamespace(room_id="!m:server"), _cancel_event("@cc turn-1"), False
+    )
+
+    [frame] = relayed
+    assert frame["sessionId"] == "session-1"
+    assert frame["body"] == {"type": "turn.cancel", "turnId": "turn-1"}
+    assert frame["origin"]["actorId"] == "@asker:server"
+    assert frame["origin"]["roomId"] == "room-1"
+    assert reply.bodies == [
+        "Asked my session to cancel that queued message. "
+        "Its card reads Cancelled once it is."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_agents_owner_may_not_cancel_someone_elses_queued_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    relayed: list[Any] = []
+    client = _cancel_client(monkeypatch, reply, turn_status="queued", relayed=relayed)
+
+    await commands._cmd_cancel(
+        client,
+        SimpleNamespace(room_id="!m:server"),
+        _cancel_event("@cc turn-1", user_id="@owner:server"),
+        False,
+    )
+
+    assert relayed == []
+    assert reply.bodies == ["Only the person who sent that message can cancel it."]
+
+
+@pytest.mark.asyncio
+async def test_the_start_of_a_queued_turns_id_cancels_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    relayed: list[Any] = []
+    client = _cancel_client(
+        monkeypatch,
+        reply,
+        turn_status=None,
+        relayed=relayed,
+        queued=("3f9c1a7e-0000-4000-8000-000000000001",),
+    )
+
+    await commands._cmd_cancel(
+        client,
+        SimpleNamespace(room_id="!m:server"),
+        _cancel_event("@cc 3f9c1a7e"),
+        False,
+    )
+
+    [frame] = relayed
+    assert frame["body"] == {
+        "type": "turn.cancel",
+        "turnId": "3f9c1a7e-0000-4000-8000-000000000001",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_short_id_that_two_queued_turns_start_with_is_refused_naming_both(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    relayed: list[Any] = []
+    first, second = "3f9c1a7e-aaaa", "3f9c1a7e-bbbb"
+    client = _cancel_client(
+        monkeypatch, reply, turn_status=None, relayed=relayed, queued=(first, second)
+    )
+
+    await commands._cmd_cancel(
+        client,
+        SimpleNamespace(room_id="!m:server"),
+        _cancel_event("@cc 3f9c1a7e"),
+        False,
+    )
+
+    assert relayed == []
+    [body] = reply.bodies
+    assert "More than one message" in body and first in body and second in body
+
+
+@pytest.mark.parametrize(
+    ("turn_status", "asker", "requester", "said"),
+    [
+        (None, "@asker:server", "@asker:server", "no message with that id"),
+        ("running", "@asker:server", "@asker:server", "`!interrupt @cc`"),
+        ("completed", "@asker:server", "@asker:server", "isn't waiting any more"),
+        ("cancelled", "@asker:server", "@asker:server", "isn't waiting any more"),
+        ("queued", "@asker:server", "@stranger:server", "Only the person who sent"),
+        # Refused for who is asking before anything is said about the turn.
+        ("running", "@asker:server", "@stranger:server", "Only the person who sent"),
+        ("queued", None, "@asker:server", "Only the person who sent"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_cancel_that_cannot_apply_is_refused_and_nothing_is_relayed(
+    monkeypatch: pytest.MonkeyPatch,
+    turn_status: str | None,
+    asker: str | None,
+    requester: str,
+    said: str,
+) -> None:
+    reply = _Reply()
+    relayed: list[Any] = []
+    client = _cancel_client(
+        monkeypatch, reply, turn_status=turn_status, asker=asker, relayed=relayed
+    )
+
+    await commands._cmd_cancel(
+        client,
+        SimpleNamespace(room_id="!m:server"),
+        _cancel_event("@cc turn-1", user_id=requester),
+        False,
+    )
+
+    assert relayed == []
+    [body] = reply.bodies
+    assert said in body
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_without_a_turn_id_says_how_to_use_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    relayed: list[Any] = []
+    client = _cancel_client(monkeypatch, reply, turn_status="queued", relayed=relayed)
+
+    await commands._cmd_cancel(
+        client, SimpleNamespace(room_id="!m:server"), _cancel_event("@cc"), False
+    )
+
+    assert relayed == []
+    assert reply.bodies == [commands._CANCEL_USAGE]
+
+
+@pytest.mark.asyncio
+async def test_admin_check_offers_no_all_agents_form_a_command_lacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+    host = _admin_host(agent_names=["worker"], aliases={}, role_names=[])
+
+    await _check_control_target(
+        host, SimpleNamespace(room_id="!m"), _cancel_event(""), _meta()
+    )
+
+    [body] = reply.bodies
+    assert "needs a target" in body
+    assert "all-agents" not in body

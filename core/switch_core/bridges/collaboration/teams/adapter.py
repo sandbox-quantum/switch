@@ -54,6 +54,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_QUEUED_NOTE,
     Drawn,
     Markup,
+    cancel_note,
     offered_controls,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
@@ -371,8 +372,13 @@ class _TeamsMarkup(Markup):
         A handle becomes emphasis and a command stays plain, so both land in
         prose that a TextBlock parses as Markdown. The Markdown default exists
         for content nothing will read; this content is read.
+
+        Except the zero-width space the escape puts after an `@`: a literal is
+        there to be copied, and the space would go with it into a command
+        that then names nobody. Nothing is linked without it, since a Teams
+        mention is an entity the message carries, never text.
         """
-        return escape
+        return lambda text: escape(text).replace("@" + _ZERO_WIDTH_SPACE, "@")
 
     def code(self, text: str) -> str:
         return f"**{text}**"
@@ -2208,6 +2214,8 @@ class TeamsAdapter(PlatformAdapter):
             lines = []
             if stopping and content.turn.status == "queued":
                 lines.append(INTERRUPT_QUEUED_NOTE)
+            if content.cancel_command is not None:
+                lines.append(cancel_note(content.cancel_command, markup, escape))
             if notice:
                 lines.append(notice)
             tail = "".join(f"\n{line}" for line in lines)
