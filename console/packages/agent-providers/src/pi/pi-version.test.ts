@@ -1,9 +1,28 @@
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as ProviderProcess from '../provider-process';
+
+/** How execFile answers in place of the real one, when set (PV-1). */
+const execFault = vi.hoisted(() => ({ answer: undefined as undefined | (() => Promise<never>) }));
+vi.mock('../provider-process', async (importOriginal) => {
+  const real = await importOriginal<typeof ProviderProcess>();
+  return {
+    ...real,
+    execProvider: (...args: Parameters<typeof real.execProvider>) =>
+      execFault.answer ? execFault.answer() : real.execProvider(...args),
+  };
+});
+import { piArgs } from './pi-args';
 import { piAgentDir } from './pi-paths';
-import { assertPiVersion, parsePiVersion, PI_VERSION, PiVersionError } from './pi-version';
+import {
+  assertPiVersion,
+  parsePiVersion,
+  PI_VERSION,
+  PI_VERSION_ARGS,
+  PiVersionError,
+} from './pi-version';
 
 let dir: string;
 
@@ -122,11 +141,55 @@ describe('assertPiVersion, out of time', () => {
   });
 });
 
+// PV-1: execFile's own `timeout` runs out at the moment `execWithin`'s timer does, and kills Pi
+// with SIGKILL; on a busy machine its failure may be seen before that timer
+// (`RUN/st5r8_codex_recheck_brief.md:27`). Each answer here is the error execFile gives then.
+describe('assertPiVersion, out of time as execFile says it (PV-1)', () => {
+  afterEach(() => {
+    execFault.answer = undefined;
+  });
+
+  const failing = (fields: Record<string, unknown>) => () =>
+    Promise.reject(Object.assign(new Error('Command failed: pi --version --offline'), fields));
+
+  it.each([
+    [
+      'killed for its time (code null)',
+      { killed: true, signal: 'SIGKILL', code: null },
+      'OUT_OF_TIME',
+    ],
+    ['killed for its time (no code)', { killed: true, signal: 'SIGKILL' }, 'OUT_OF_TIME'],
+    ['killed by someone else', { killed: false, signal: 'SIGKILL', code: null }, 'SIGKILL'],
+    ['ended by another signal', { killed: false, signal: 'SIGTERM', code: null }, 'SIGTERM'],
+    [
+      'killed for printing too much',
+      { killed: true, signal: 'SIGKILL', code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' },
+      'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+    ],
+  ])('says why, %s', async (_, fields, reason) => {
+    execFault.answer = failing(fields);
+    const error = (await assertPiVersion('/fake/pi', { timeoutMs: 60_000 }).catch(
+      (caught: unknown) => caught
+    )) as PiVersionError;
+    expect(error).toBeInstanceOf(PiVersionError);
+    expect(error.found).toBeNull();
+    expect(error.reason).toBe(reason);
+    expect(error.message).toContain(`(${reason})`);
+  });
+});
+
 describe('parsePiVersion', () => {
   it('reads the first line only, and only a version', () => {
     expect(parsePiVersion('1.4.0\n')).toBe('1.4.0');
     expect(parsePiVersion('  1.4.0  \nwarning\n')).toBe('1.4.0');
     expect(parsePiVersion('pi 1.4.0')).toBeNull();
     expect(parsePiVersion('')).toBeNull();
+  });
+});
+
+describe('PI_VERSION_ARGS', () => {
+  it('comes from pi-args.ts, as every argument of a Pi Switch starts', () => {
+    expect(PI_VERSION_ARGS).toEqual(piArgs({ kind: 'version' }));
+    expect(PI_VERSION_ARGS).toContain('--offline');
   });
 });

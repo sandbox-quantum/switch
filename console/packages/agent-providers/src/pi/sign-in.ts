@@ -10,8 +10,11 @@ import {
   type SignInCheckInput,
 } from '../readiness';
 import { execWithin, OUT_OF_TIME } from './exec-within';
-import { PI_AGENT_DIR_ENV, piAgentDir } from './pi-paths';
-import { assertPiVersion, PiVersionError } from './pi-version';
+import { piArgs } from './pi-args';
+import { PiLaunchError, preparePiLaunch } from './pi-launch';
+import { piAgentDir } from './pi-paths';
+import { parseAsPi, PiProfileError } from './pi-profile';
+import { PiVersionError } from './pi-version';
 
 /**
  * What a person runs on the execution machine to sign Pi in: Pi's own
@@ -211,7 +214,7 @@ export function piProfileRefused(reason: string): ProviderReadiness {
 
 /** Each `pi auth check` asked for one provider: offline, never refreshing a login, never printing one. */
 export function piAuthCheckArgs(provider: string): string[] {
-  return ['auth', 'check', '--provider', provider, '--json', '--no-refresh', '--offline'];
+  return piArgs({ kind: 'readiness', provider });
 }
 
 const CHECK_TIMEOUT_MS = 15_000;
@@ -258,7 +261,8 @@ async function fromProfile(agentDir: string): Promise<string[]> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
-  const parsed = JSON.parse(text) as unknown;
+  // Read as Pi reads it, as the profile's check did (`pi-profile.ts` `parseAsPi`).
+  const parsed = parseAsPi(text);
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? Object.keys(parsed) : [];
 }
 
@@ -275,16 +279,17 @@ async function fromProfile(agentDir: string): Promise<string[]> {
  * signals only a process that has not exited.
  */
 async function askPi(
-  input: SignInCheckInput,
+  binaryPath: string,
   env: Record<string, string>,
+  cwd: string,
   provider: string,
   budget: AbortSignal
 ): Promise<ProviderAnswer> {
   let output: string;
   let exit: unknown = 0;
   try {
-    const done = await execWithin(input.binaryPath, piAuthCheckArgs(provider), {
-      cwd: input.cwd,
+    const done = await execWithin(binaryPath, piAuthCheckArgs(provider), {
+      cwd,
       env,
       timeout: CHECK_TIMEOUT_MS,
       budget,
@@ -337,10 +342,19 @@ export async function checkPiSignIn(
   input: SignInCheckInput,
   options: { modelProvider?: string; budgetMs?: number } = {}
 ): Promise<ProviderReadiness> {
+  // The same check of the executable, the profile, the version and the
+  // environment as every Pi Switch starts (ER-03, ER-09; `pi-launch.ts`).
+  let launch: Awaited<ReturnType<typeof preparePiLaunch>>;
   try {
-    await assertPiVersion(input.binaryPath, { env: input.env });
+    launch = await preparePiLaunch({
+      kind: 'readiness',
+      binaryPath: input.binaryPath,
+      env: input.env,
+      cwd: input.cwd,
+    });
   } catch (error) {
-    if (error instanceof PiVersionError)
+    if (error instanceof PiProfileError) return piProfileRefused(error.message);
+    if (error instanceof PiVersionError || error instanceof PiLaunchError)
       return loginWontHelp(readiness('unconfigured', error.message));
     throw error;
   }
@@ -361,7 +375,7 @@ export async function checkPiSignIn(
     return onlyEnv
       ? loginWontHelp(readiness('unconfigured', PI_ENV_ONLY))
       : readiness('unconfigured', `Pi has no provider key or login. ${PI_SIGN_IN}`);
-  const env = { ...input.env, [PI_AGENT_DIR_ENV]: agentDir };
+  const env = launch.env;
   const budgetMs = options.budgetMs ?? PI_CHECK_BUDGET_MS;
   // One timer for the whole budget both ends the check it cuts short and tells
   // the loop it is spent. A clock read beside it could yet show a millisecond
@@ -373,7 +387,7 @@ export async function checkPiSignIn(
   try {
     for (const provider of providers) {
       if (budget.signal.aborted) break;
-      answers.set(provider, await askPi(input, env, provider, budget.signal));
+      answers.set(provider, await askPi(launch.command, env, input.cwd, provider, budget.signal));
     }
   } finally {
     clearTimeout(budgetTimer);

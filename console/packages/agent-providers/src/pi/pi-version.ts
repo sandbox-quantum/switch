@@ -1,5 +1,6 @@
 import { tmpdir } from 'node:os';
 import { execWithin, OUT_OF_TIME } from './exec-within';
+import { piArgs } from './pi-args';
 import { PI_AGENT_DIR_ENV, piAgentDir } from './pi-paths';
 
 /** The one Pi release Switch is built and tested against. */
@@ -7,8 +8,8 @@ export const PI_VERSION = '1.4.0';
 
 export const PI_PACKAGE = '@earendil-works/pi-coding-agent';
 
-/** What Pi is asked to print its version with: offline, so it reaches no server. */
-export const PI_VERSION_ARGS: readonly string[] = ['--version', '--offline'];
+/** What Pi is asked to print its version with: offline, so it reaches no server (`pi-args.ts`). */
+export const PI_VERSION_ARGS: readonly string[] = piArgs({ kind: 'version' });
 
 const VERSION_TIMEOUT_MS = 15_000;
 
@@ -34,9 +35,18 @@ export class PiVersionError extends Error {
   }
 }
 
-/** How asking failed, as `PiVersionError.reason` says it. */
+/**
+ * How asking failed, as `PiVersionError.reason` says it. A process Node itself
+ * killed with SIGKILL (`killed`, no error code) was killed for its time:
+ * `execWithin` kills only so, by its own timer or by execFile's `timeout`,
+ * which runs out at the same moment and, on a busy machine, may be the one
+ * seen first (PV-1). That is `OUT_OF_TIME`, as when its own timer is seen
+ * first; a SIGKILL from anyone else is not `killed`.
+ */
 function failureReason(error: unknown): string {
-  const failed = (error ?? {}) as { code?: unknown; signal?: unknown };
+  const failed = (error ?? {}) as { code?: unknown; signal?: unknown; killed?: unknown };
+  if (failed.killed === true && failed.signal === 'SIGKILL' && typeof failed.code !== 'string')
+    return 'OUT_OF_TIME';
   if (typeof failed.code === 'string' && failed.code) return failed.code;
   if (typeof failed.signal === 'string' && failed.signal) return failed.signal;
   if (typeof failed.code === 'number') return `exit ${failed.code}`;
