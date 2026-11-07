@@ -154,6 +154,12 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="goose",
+        label="Goose",
+        sign_in_command="goose configure",
+        connector_type="Goose CLI",
+    ),
 )
 
 
