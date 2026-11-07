@@ -177,7 +177,7 @@ special inside a chain:
 ```yaml
 bridge:
   type: bridge
-  default: [Slack, Mattermost, $first]   # Slack if set up, else Mattermost, else the default app
+  default: [Slack, Discord, $first]   # Slack if set up, else Discord, else the default app
 ```
 
 A chain with no hit leaves the input empty. With `required: true` that
@@ -677,7 +677,7 @@ Switch, under `official:` ids (`official:switch-expert`), first in every
 listing, to people and agents alike. Their source is in the repository
 (`core/switch_core/official_templates/`, the Switch expert copied from
 `switch-expert/`); where a template has a version for servers without agent
-management, the `agent_management` feature flag picks which one is served.
+management, Switch Console serves it to those older servers.
 Nobody can change or delete an official template: save a copy under another
 name to change it.
 

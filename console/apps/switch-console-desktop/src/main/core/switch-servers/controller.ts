@@ -37,7 +37,6 @@ import {
 import {
   normaliseServerUrl,
   type AddServerParams,
-  type BundledChatSignIn,
   type ClearTrustSettingsResult,
   type CreatedRegistrationKey,
   type FetchTrustSettingsResult,
@@ -66,7 +65,6 @@ import {
   type SignupError,
   signup,
 } from './auth';
-import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import {
   getConnectionCatalog,
   getGitHubConnection,
@@ -771,14 +769,4 @@ export const switchServersController = createRPCController({
       throw cause;
     }
   },
-
-  /**
-   * The bundled chat's address and sign-in for a managed server (CHOO-1787).
-   *
-   * The password crosses IPC only when the renderer asks — the card fetches on
-   * expand, not on render — so it is not sitting in every server page's memory.
-   * Do not log the result.
-   */
-  getBundledChatSignIn: async (serverId: string): Promise<BundledChatSignIn> =>
-    bundledChatSignInFor(await getServer(serverId)),
 });

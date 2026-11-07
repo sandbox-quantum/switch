@@ -5,7 +5,7 @@ every Switch agent (like Slack); each agent's messages render as an **Adaptive
 Card** headed with the agent's display name — its identifier where it has
 none — and avatar.
 
-Teams is the most involved bridge to set up. Unlike Slack or Mattermost it has
+Teams is the most involved bridge to set up. Unlike Slack it has
 no persistent socket, so it is **push-based**: Microsoft calls Switch, not the
 other way round. That single fact drives most of this guide — the adapter hosts
 its own HTTP listener, and that listener must be reachable from the public
@@ -1334,7 +1334,7 @@ them; Microsoft cannot satisfy it, and Graph's validation handshake will fail.
 
 ## Known limitations
 
-- **A DM has to be started from Teams** (as on Mattermost). Switch cannot open
+- **A DM has to be started from Teams**. Switch cannot open
   one; doing it bot-side would need proactive app installation via Graph.
 - **Attachments are disclosed, not relayed.** The message text is bridged, and
   a note names the media that did not come with it.

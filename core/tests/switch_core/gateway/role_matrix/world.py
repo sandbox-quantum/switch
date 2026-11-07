@@ -664,7 +664,7 @@ class World:
             session.add(client)
             await session.flush()
             bridge = CollaborationBridge(
-                type="mattermost",
+                type="slack",
                 display_name=self.name("bridge"),
                 client_id=client.id,
                 status="active",

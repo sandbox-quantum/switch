@@ -46,13 +46,6 @@ def test_platforms_that_cannot_open_the_scheme_get_an_https_link(
     assert adapter.translate_outbound(BODY) == expected
 
 
-def test_mattermost_allowing_the_scheme_gets_the_link_unchanged() -> None:
-    adapter = _adapter("mattermost", GATEWAY)
-
-    assert adapter.renders_custom_url_schemes
-    assert adapter.translate_outbound(BODY) == BODY
-
-
 @pytest.mark.parametrize("platform", ["slack", "discord", "telegram", "teams"])
 def test_without_a_public_address_the_page_is_named_in_words(platform: str) -> None:
     adapter = _adapter(platform, None)

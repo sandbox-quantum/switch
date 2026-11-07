@@ -14,7 +14,7 @@ Every other outbound body has these words defused, so an agent typing
 `@channel` into an ordinary message cannot page anyone.
 
 `channel`, `here` and `all` are reserved alongside `everyone` because they are
-the platforms' own words for it: Mattermost passes a person's `@channel`
+the platforms' own words for it: a platform may pass a person's `@channel`
 through as text, so an agent named `channel` would be addressed every time
 somebody paged the room.
 """
@@ -39,7 +39,7 @@ ROOM_WIDE_MENTION_MARKER = "com.switch.room_wide_mention"
 _WORD = rf"(?:{'|'.join(sorted(RESERVED_MENTION_NAMES))})[._-]*(?!{NAME_CHAR})"
 
 # A reserved word after `@`, allowing the trailing `.`, `-` or `_` a platform
-# strips before matching (Mattermost pages the channel for `@channel.`), but
+# strips before matching (`@channel.` still pages the channel), but
 # not a longer handle that merely starts with one (`@allison`, `@all-hands`).
 _ANY_AT = re.compile(rf"@(?={_WORD})", re.IGNORECASE)
 

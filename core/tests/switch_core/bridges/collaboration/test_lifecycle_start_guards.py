@@ -41,7 +41,7 @@ async def test_a_refused_bridge_runs_nothing(
 ) -> None:
     tenant, bridge_id = await _bridge(session_factory)
     service = _service(session_factory)
-    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+    service.register_adapter("slack", _StubAdapter, _StubConfig)
     asked: list[dict[str, object]] = []
     handed: list[PlatformAdapter] = []
 
@@ -59,7 +59,7 @@ async def test_a_refused_bridge_runs_nothing(
         {
             "bridge_id": bridge_id,
             "tenant_id": tenant,
-            "bridge_type": "mattermost",
+            "bridge_type": "slack",
             "connection_config": {},
         }
     ]
@@ -72,7 +72,7 @@ async def test_a_bridge_every_guard_allows_starts(
 ) -> None:
     _, bridge_id = await _bridge(session_factory)
     service = _service(session_factory)
-    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+    service.register_adapter("slack", _StubAdapter, _StubConfig)
 
     async def allow(**_: object) -> None: ...
 
@@ -118,7 +118,7 @@ async def test_is_connected_is_false_until_the_bridge_finishes_starting(
     is not."""
     _, bridge_id = await _bridge(session_factory)
     service = _service(session_factory)
-    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+    service.register_adapter("slack", _StubAdapter, _StubConfig)
 
     assert service.is_connected(bridge_id) is False
 

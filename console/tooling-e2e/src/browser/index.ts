@@ -58,9 +58,7 @@ const roomFromList: BrowserScenario = {
 /**
  * A room made in the gateway's own form exists in the backend as asked: an
  * internal room (no bridge, so no platform channel is made on a shared
- * deployment) with the agent picked in the form as its member. Made from the
- * gateway rather than by adding a bot on the platform, which is the path
- * where the first bot added to a new channel creates no room.
+ * deployment) with the agent picked in the form as its member.
  */
 const createRoom: BrowserScenario = {
   header: browserHeader('gateway-create-room', ['POST /gateway/rooms']),

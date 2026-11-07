@@ -18,7 +18,7 @@ status message to sit beside: the tool log travels in the message itself, in a
 block the reader's own client opens, so the stop control is the only button a
 status has ever carried.
 
-Removing it is free here, as on Discord and unlike Mattermost: an edit carries
+Removing it is free here, as on Discord: an edit carries
 the whole keyboard, so a redraw with nothing to stop is a message with no
 buttons, and a queued turn that starts re-points the control without anything
 having to remember what the message last carried.

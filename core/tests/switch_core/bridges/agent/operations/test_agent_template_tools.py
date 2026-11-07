@@ -620,9 +620,7 @@ async def test_the_saver_check_holds_when_the_mark_is_cleared_after_reading(tool
         description="",
         yaml=ROOM_TEMPLATE,
     )
-    templates = AgentTemplates(
-        TemplateStore(), max_bytes=64 * 1024, agent_management=False, switch_buddy=False
-    )
+    templates = AgentTemplates(TemplateStore(), max_bytes=64 * 1024, switch_buddy=False)
     async with tools["session_factory"]() as session:
         agent = await session.get(Agent, tools["agent_id"])
         owner = await session.get(User, tools["user_id"])
@@ -727,15 +725,13 @@ async def test_the_guide_describes_the_language_and_the_example_in_it_is_valid(t
 
     assert "## Params" in result["guide"]
     assert result["schema"]
-    # The guide's own example is a document the server accepts. This test
-    # server has no messaging app, which `users:` needs, so that line goes.
+    # The guide's own example is a document the server accepts.
     example = (
         result["guide"]
         .split("## Example\n\n", 1)[1]
         .split("\n## ", 1)[0]
         .replace("[reviewer]", '["claude-code.alice"]')
         .replace("@reviewer", "@claude-code.alice")
-        .replace('    users: ["{$creator}"]\n', "")
     )
     created = await _as(
         tools["agent_id"],
@@ -865,9 +861,8 @@ async def test_an_official_template_is_read_and_never_changed(tools, caplog):
     detail = await _as(
         tools["agent_id"], get_template, template_id="official:switch-expert"
     )
-    # Without agent management, the document Switch Console runs the agent of.
     assert detail["saved_by"] == "Switch"
-    assert detail["content"].startswith("version: 1")
+    assert detail["content"].startswith("version: 2")
     assert "Switch expert" in detail["name"]
 
     with pytest.raises(AgentRefused, match="comes with Switch"):

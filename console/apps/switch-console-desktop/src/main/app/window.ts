@@ -2,8 +2,7 @@ import { join } from 'node:path';
 import { app, BrowserWindow, dialog } from 'electron';
 import appIcon from '@/assets/images/switch-console/icon-dock.png?asset';
 import { events } from '@main/lib/events';
-import { log } from '@main/lib/logger';
-import { registerExternalLinkHandlers, registerGuestLinkHandlers } from '@main/utils/externalLinks';
+import { registerExternalLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { appCommandNavigateChannel } from '@shared/events/appEvents';
 import { APP_ORIGIN } from './protocol';
@@ -26,10 +25,6 @@ export function createMainWindow(): BrowserWindow {
       sandbox: false,
       // import.meta.dirname resolves to out/main/ at runtime; preload is at out/preload/index.mjs
       preload: join(import.meta.dirname, '../preload/index.mjs'),
-      // Enables the embedded room view's <webview> (CHOO-1674). Guests are
-      // constrained in the will-attach-webview handler below, which is what
-      // actually keeps this from widening the app's attack surface.
-      webviewTag: true,
     },
     ...(process.platform === 'darwin'
       ? {
@@ -62,8 +57,6 @@ export function createMainWindow(): BrowserWindow {
 
   // Route external links to the user’s default browser
   registerExternalLinkHandlers(mainWindow, import.meta.env.DEV);
-
-  constrainEmbeddedWebviews(mainWindow);
 
   // Show when ready
   mainWindow.once('ready-to-show', () => {
@@ -107,41 +100,6 @@ export function createMainWindow(): BrowserWindow {
   });
 
   return mainWindow;
-}
-
-/**
- * Strip privileges from any `<webview>` the renderer attaches.
- *
- * `webviewTag: true` lets renderer markup ask for a guest with whatever
- * webPreferences it likes, so the renderer is no longer the only thing that has
- * to be trusted — the embedded page is too. Rather than trusting the tag's
- * attributes, we overwrite the dangerous ones here, and allow only the guest
- * preload the app ships. Anything else is dropped.
- */
-function constrainEmbeddedWebviews(window: BrowserWindow): void {
-  const guestPreload = join(import.meta.dirname, '../preload/mattermost-guest.mjs');
-
-  window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
-    // Never honour a preload named in markup — pin it to the one we ship.
-    webPreferences.preload = guestPreload;
-    webPreferences.nodeIntegration = false;
-    webPreferences.contextIsolation = true;
-
-    // Only ever embed real web content. A file:// or custom-scheme guest would
-    // be running local content with a preload attached, which is not something
-    // this feature needs.
-    const protocol = params.src ? new URL(params.src).protocol : null;
-    if (protocol !== 'http:' && protocol !== 'https:') {
-      log.warn('Blocked webview attach for non-http source', { src: params.src });
-      event.preventDefault();
-    }
-  });
-
-  // A guest inherits none of the window's link handling, so wire it up as each
-  // one attaches — otherwise every link in a message is silently inert.
-  window.webContents.on('did-attach-webview', (_event, guest) => {
-    registerGuestLinkHandlers(guest);
-  });
 }
 
 export function getMainWindow(): BrowserWindow | null {

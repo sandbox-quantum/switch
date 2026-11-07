@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Awaitable, Callable
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -47,13 +46,11 @@ from switch_core.gateway.collaborations import (
     list_unconfirmed_identity_links,
     release_bridge_identity,
     require_identity_confirmation,
-    verify_identity_with_session,
 )
 from switch_core.gateway.schemas import (
     ClaimIdentityRequest,
     RequireConfirmationRequest,
     UnconfirmedLinkRef,
-    VerifyIdentitySessionRequest,
 )
 
 _STORE = ExternalUserStore()
@@ -62,30 +59,15 @@ _NOBODY = "U-nobody"
 
 
 class _Adapter:
-    def __init__(
-        self,
-        session_owner: str | Exception,
-        meanwhile: Callable[[], Awaitable[None]] | None = None,
-    ) -> None:
-        self._session_owner = session_owner
-        self._meanwhile = meanwhile
-
     async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
         if external_user_id == _NOBODY:
             raise LookupError("No such account")
         return "Many people post as it." if external_user_id == _STAND_IN else None
 
-    async def account_id_for_session(self, _token: str) -> str:
-        if self._meanwhile is not None:
-            await self._meanwhile()
-        if isinstance(self._session_owner, Exception):
-            raise self._session_owner
-        return self._session_owner
-
 
 class _Lifecycle:
-    def __init__(self, adapter: _Adapter | None = None) -> None:
-        self._adapter = adapter or _Adapter("U-ada")
+    def __init__(self) -> None:
+        self._adapter = _Adapter()
 
     def link_code_instructions(
         self, bridge_type: str, _connection_config: object, code: str
@@ -203,21 +185,6 @@ async def _issue(world: _World, caller: User) -> object:
             _STORE,
             _Lifecycle(),  # type: ignore[arg-type]
             caller,
-        )
-
-
-async def _verify(world: _World, caller: User, adapter: _Adapter | None) -> object:
-    async with world.session_factory() as session:
-        return await verify_identity_with_session(
-            world.bridge_id,
-            world.account.id,
-            VerifyIdentitySessionRequest(token="session-token"),
-            session,
-            _STORE,
-            UserStore(),
-            _Lifecycle(adapter),  # type: ignore[arg-type]
-            caller,
-            False,
         )
 
 
@@ -578,111 +545,6 @@ class TestIssuingACode:
             await _issue(world, world.ada)
 
         assert refused.value.status_code == 409
-
-
-class TestVerifyingWithASession:
-    async def test_the_accounts_own_session_confirms_the_link(
-        self, world: _World
-    ) -> None:
-        await _claim(world, world.ada)
-
-        summary = await _verify(world, world.ada, _Adapter("U-ada"))
-
-        assert [
-            (c.user_id, c.verified)
-            for c in summary.claimed_by  # type: ignore[attr-defined]
-        ] == [(world.ada.id, True)]
-
-    async def test_another_accounts_session_confirms_nothing(
-        self, world: _World
-    ) -> None:
-        await _claim(world, world.ada)
-
-        with pytest.raises(HTTPException) as refused:
-            await _verify(world, world.ada, _Adapter("U-someone-else"))
-
-        assert refused.value.status_code == 403
-        assert await _claim_of(world, world.ada) is None
-
-    async def test_a_rejected_session_confirms_nothing(self, world: _World) -> None:
-        await _claim(world, world.ada)
-
-        with pytest.raises(HTTPException) as refused:
-            await _verify(world, world.ada, _Adapter(PermissionError("not accepted")))
-
-        assert refused.value.status_code == 403
-        assert await _claim_of(world, world.ada) is None
-
-    async def test_a_platform_without_session_checks_says_so(
-        self, world: _World
-    ) -> None:
-        await _claim(world, world.ada)
-
-        with pytest.raises(HTTPException) as refused:
-            await _verify(world, world.ada, _Adapter(NotImplementedError("no")))
-
-        assert refused.value.status_code == 501
-
-    async def test_a_link_cancelled_during_the_check_is_not_confirmed(
-        self, world: _World
-    ) -> None:
-        await _claim(world, world.ada)
-
-        async def cancel() -> None:
-            async with world.session_factory() as session:
-                await _STORE.release(session, world.account, world.ada.id)
-                await session.commit()
-
-        with pytest.raises(HTTPException) as refused:
-            await _verify(world, world.ada, _Adapter("U-ada", meanwhile=cancel))
-
-        assert refused.value.status_code == 409
-        assert await _claim_of(world, world.ada) is None
-
-    async def test_a_bots_own_session_cannot_confirm_a_link_to_it(
-        self, world: _World
-    ) -> None:
-        # A session proves who holds the account, not that one person does:
-        # a bot's token would otherwise confirm a link to the bot.
-        async with world.session_factory() as session:
-            stand_in = await _STORE.get_by_external_id(
-                session, world.bridge_id, _STAND_IN
-            )
-            assert stand_in is not None
-            await _STORE.request_link(
-                session, stand_in, world.ada.id, requested_by_user_id=world.bob.id
-            )
-            await session.commit()
-
-        async with world.session_factory() as session:
-            with pytest.raises(HTTPException) as refused:
-                await verify_identity_with_session(
-                    world.bridge_id,
-                    stand_in.id,
-                    VerifyIdentitySessionRequest(token="bot-token"),
-                    session,
-                    _STORE,
-                    UserStore(),
-                    _Lifecycle(_Adapter(_STAND_IN)),  # type: ignore[arg-type]
-                    world.ada,
-                    False,
-                )
-
-        assert refused.value.status_code == 409
-        async with world.session_factory() as session:
-            assert await _STORE.claimant_ids(session, stand_in.id) == []
-            # It could never be confirmed, so it does not wait.
-            assert (
-                await _STORE.get_link_request(session, stand_in.id, world.ada.id)
-                is None
-            )
-
-    async def test_there_must_be_a_link_waiting(self, world: _World) -> None:
-        with pytest.raises(HTTPException) as refused:
-            await _verify(world, world.ada, _Adapter("U-ada"))
-
-        assert refused.value.status_code == 404
-        assert await _claim_of(world, world.ada) is None
 
 
 class TestCancelling:

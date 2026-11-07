@@ -92,7 +92,6 @@ _OWNER_SCOPED_PATHS = {
     "/{bridge_id}/identities/{external_user_row_id}",
     "/{bridge_id}/identities/{external_user_row_id}/code",
     "/{bridge_id}/identities/{external_user_row_id}/request",
-    "/{bridge_id}/identities/{external_user_row_id}/verify-session",
 }
 
 
@@ -139,7 +138,7 @@ class TestIdentityRoutesAreSelfOrAdmin:
                     expects_confirmation=True,
                 ),
                 session=object(),  # type: ignore[arg-type]
-                bridge_store=_StubGet(object()),  # type: ignore[arg-type]
+                bridge_store=_StubGet(SimpleNamespace(status="active")),  # type: ignore[arg-type]
                 external_user_store=_StubGet(None),  # type: ignore[arg-type]
                 user_store=_StubGet(None),  # type: ignore[arg-type]
                 collab_lifecycle=object(),  # type: ignore[arg-type]
@@ -286,7 +285,7 @@ async def _make_bridge(session: AsyncSession, *, is_default: bool = False) -> st
     session.add(client)
     await session.flush()
     bridge = CollaborationBridge(
-        type="mattermost",
+        type="slack",
         display_name="MM",
         client_id=client.id,
         status="active",

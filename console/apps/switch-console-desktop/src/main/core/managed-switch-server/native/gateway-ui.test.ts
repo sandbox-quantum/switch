@@ -49,7 +49,7 @@ function settingsWith(gatewayUiDir: string | null): Record<string, string> {
   return buildNativeCoreSettings({
     apiPort: 51001,
     postgresPort: 51002,
-    callbackPort: 51003,
+    fromCheckout: false,
     secrets: generateSecrets(),
     telemetryEnabled: false,
     telemetryEnvironment: 'local',

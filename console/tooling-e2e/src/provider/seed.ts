@@ -1,6 +1,6 @@
 /**
  * Phase one of a provider-session run: register the throwaway agent, create its
- * room and channel, write its credentials into the working directory, and
+ * room, write its credentials into the working directory, and
  * record all of it in `SWITCH_E2E_MANIFEST`.
  *
  * It exists because the order is forced. Switch Console can only start a session
@@ -41,8 +41,6 @@ export async function seed(log: (message: string) => void = console.log): Promis
     [
       `type     ${env.provider.agentType} (question mode: ${env.provider.questionMode})`,
       `agent    ${harness.agent.name} (${harness.agent.id})`,
-      `bot      @${harness.bot.username} (${harness.bot.id})`,
-      `channel  ${harness.channel.name} (${harness.channel.id})`,
       `room     ${harness.room.name} (${harness.room.id})`,
       `manifest ${env.provider.manifestPath}`,
     ].join('\n')

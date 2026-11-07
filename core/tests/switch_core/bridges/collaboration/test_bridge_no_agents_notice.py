@@ -121,7 +121,7 @@ async def test_notice_carries_this_bridge_s_own_slash_syntax() -> None:
 
 
 async def test_notice_omits_the_slash_form_where_there_is_none() -> None:
-    # Mattermost and Teams register no slash commands, so advertising one
+    # Teams registers no slash commands, so advertising one
     # would point the user at something that does not exist.
     bridge = _fake_bridge(agent_ids=[], slash_hint=None)
 

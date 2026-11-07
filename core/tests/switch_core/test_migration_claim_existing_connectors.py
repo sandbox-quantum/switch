@@ -60,7 +60,7 @@ async def test_every_existing_connector_is_claimed_once(migration_url: str) -> N
                         (id, type, display_name, client_id, status, tenant_id)
                     VALUES
                         ('slack-a', 'slack', 'Slack', 'client-a', 'active', 'tenant-a'),
-                        ('mm-a', 'mattermost', 'Mattermost', 'client-a', 'active', 'tenant-a'),
+                        ('discord-a', 'discord', 'Discord', 'client-a', 'active', 'tenant-a'),
                         ('teams-b', 'teams', 'Teams', 'client-b', 'active', 'tenant-b')
                     """
                 )
@@ -91,7 +91,7 @@ async def test_every_existing_connector_is_claimed_once(migration_url: str) -> N
         await engine.dispose()
 
     assert claims == [
-        "connector_added:mm-a",
+        "connector_added:discord-a",
         "connector_added:slack-a",
         "connector_added:teams-b",
         "first_connector_added",

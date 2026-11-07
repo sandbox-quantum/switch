@@ -63,7 +63,6 @@ export async function pickRemoteFreePorts(ctx: IExecutionContext): Promise<Local
   return {
     gateway: await findFreePort(taken),
     api: await findFreePort(taken),
-    mattermost: await findFreePort(taken),
     postgres: await findFreePort(taken),
   };
 }

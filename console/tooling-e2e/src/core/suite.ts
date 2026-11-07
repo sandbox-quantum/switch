@@ -1,4 +1,4 @@
-import { MattermostClient } from '../clients/mattermost-client.ts';
+import { ConsoleChatClient } from '../clients/console-chat-client.ts';
 import { SwitchClient } from '../clients/switch-client.ts';
 import {
   laneFrom,
@@ -16,7 +16,8 @@ import { IssuedSecrets } from './secrets.ts';
 export interface LaneTarget {
   env: HarnessEnv;
   switchClient: SwitchClient;
-  mattermost: MattermostClient | null;
+  /** The human side: the in-Console chat, as the gateway admin. */
+  chat: ConsoleChatClient;
 }
 
 export type LaneResolution = { target: LaneTarget; skip: null } | { target: null; skip: string };
@@ -68,19 +69,7 @@ export async function resolveLane(lane: Lane): Promise<LaneResolution> {
     return unable(`Switch server at ${env.switch.apiUrl} is not ready: ${message(error)}`);
   }
 
-  let mattermost: MattermostClient | null = null;
-  if (env.mattermost) {
-    mattermost = new MattermostClient(env.mattermost, env.environment);
-    try {
-      await mattermost.me();
-    } catch (error) {
-      return unable(
-        `Mattermost at ${env.mattermost.url} is unreachable or MATTERMOST_TOKEN is invalid: ${message(error)}`
-      );
-    }
-  }
-
-  return { target: { env, switchClient, mattermost }, skip: null };
+  return { target: { env, switchClient, chat: new ConsoleChatClient(switchClient) }, skip: null };
 }
 
 export function message(error: unknown): string {

@@ -122,7 +122,7 @@ let root: Root | null = null;
 beforeEach(() => {
   rpcMock.workspaces.listBridges.mockResolvedValue([
     bridge('b1', 'slack', 'Acme Slack'),
-    bridge('b2', 'mattermost', 'switch-dev'),
+    bridge('b2', 'discord', 'switch-dev'),
   ]);
   rpcMock.workspaces.createRoom.mockResolvedValue({ kind: 'created', room: { id: 'r1' } });
   rpcMock.chats.create.mockResolvedValue({ roomId: 'r2' });

@@ -7,7 +7,7 @@ looped over every running bridge on the instance —
 dict:
 
 - Registering an agent under tenant A called `create_agent_identity` on
-  tenant B's bridges too — creating a Mattermost bot, Slack user group, or
+  tenant B's bridges too — creating a Discord bot, Slack user group, or
   Discord role for tenant A's agent on a platform tenant B owns, leaking the
   agent's name and description across the tenant boundary.
 - Deleting an agent under tenant A called `remove_agent_identity` on tenant

@@ -137,7 +137,7 @@ class TestDeleteAgentWhenAPlatformFails:
         failing = _Adapter(error="Slack is down")
         working = _Adapter()
         svc.collab_lifecycle = _Bridges(  # type: ignore[assignment]
-            [_Bridge("slack", failing), _Bridge("mattermost", working)]
+            [_Bridge("slack", failing), _Bridge("discord", working)]
         )
         owner = await make_owner(session_factory)
         agent_id = await register(svc, "notes-taker", owner)

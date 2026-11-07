@@ -26,10 +26,6 @@ export const localSwitchServerController = createRPCController({
   setCheckoutBuild: (enabled: boolean): Promise<void> =>
     localServerService.setCheckoutBuild(enabled),
 
-  /** Turn Mattermost on or off for a server that runs without Docker; applies
-   * at the next start. */
-  setMattermost: (enabled: boolean): Promise<void> => localServerService.setMattermost(enabled),
-
   /** When the running stack started, or null when it is not running. */
   startedAt: (): Promise<string | null> => localServerService.startedAt(),
 

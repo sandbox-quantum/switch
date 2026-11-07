@@ -1,9 +1,5 @@
 import { promises as fs } from 'node:fs';
-import type {
-  MattermostChannel,
-  MattermostClient,
-  MattermostUser,
-} from '../clients/mattermost-client.ts';
+import type { ChatUser, ConsoleChatClient } from '../clients/console-chat-client.ts';
 import {
   managementErrorCode,
   sleep,
@@ -16,7 +12,6 @@ import {
 import type { HarnessAgentType, HarnessEnv } from '../core/env.ts';
 import { RunContext } from '../core/run.ts';
 import { message, type LaneTarget } from '../core/suite.ts';
-import { waitForBridgeReady } from '../fixtures/fixtures.ts';
 import {
   removeAgentCredentials,
   removeClaudeAgentDefinition,
@@ -25,14 +20,14 @@ import {
 } from './console-credentials.ts';
 
 /**
- * Everything a scenario needs: the two clients, the throwaway agent, the
- * Mattermost channel it was invited into, and the Switch room the bridge created
- * for that channel.
+ * Everything a scenario needs: the two clients, the throwaway agent, and the
+ * in-Console group chat (a Switch room with no bridge) it is in.
  */
 export interface Harness {
   env: HarnessEnv;
   switch: SwitchClient;
-  mattermost: MattermostClient;
+  /** The human side: the in-Console chat, as the gateway admin. */
+  chat: ConsoleChatClient;
   agent: AgentRef;
   /**
    * The agent's own API key, for a Console session to run as. Null for an agent
@@ -41,17 +36,14 @@ export interface Harness {
   agentApiKey: string | null;
   /**
    * A silent second agent in the room, registered with the deployment key and
-   * run by nobody. The bridge-readiness probe reads the room through it,
-   * because an agent run by a controller cannot use its own key: the server
-   * refuses it while the controller acts for the agent.
+   * run by nobody. Scenarios read the room's history through it, because an
+   * agent run by a controller cannot use its own key: the server refuses it
+   * while the controller acts for the agent.
    */
   witness: RegisteredAgent;
-  /** The agent's Mattermost bot account — `username === agent.name`. */
-  bot: MattermostUser;
-  channel: MattermostChannel;
   room: RoomDetail;
-  /** The human user the harness posts as. */
-  human: MattermostUser;
+  /** The human user the harness posts as: the gateway admin. */
+  human: ChatUser;
   runId: string;
   /** Where the agent's credentials were written, when `SWITCH_E2E_AGENT_DIR` is set. */
   credentialsPath?: string;
@@ -59,8 +51,8 @@ export interface Harness {
 
 /**
  * The agent-name role per agent type. The full name is
- * `e2e-<runId><scope>-<role>` and becomes a Mattermost bot username, which caps
- * at 22 characters — so a role can be at most ten.
+ * `e2e-<runId><scope>-<role>`, which caps at 22 characters (see
+ * `isValidArtifactName`) — so a role can be at most ten.
  */
 const ROLE_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   opencode: 'opencode',
@@ -187,35 +179,21 @@ class SetupUndo {
 }
 
 /**
- * Register a throwaway agent, create a room on the Mattermost bridge for it,
- * and wait for the bridge to carry a message.
- *
- * Order matters and is not interchangeable: the bot account only exists once the
- * agent is registered (registration is what calls `create_agent_identity` on
- * every collaboration bridge), and the room is created with that bot in it.
+ * Register a throwaway agent and open an in-Console group chat with it, as
+ * Switch Console does.
  *
  * Unlike the fast lane's fixtures this setup outlives a single test: the
- * provider scenarios share one agent and one channel, and the agent may have
+ * provider scenarios share one agent and one room, and the agent may have
  * been registered by an earlier process (see {@link HarnessManifest}).
  */
 export async function setupHarness(target: LaneTarget): Promise<Harness> {
   const { env } = target;
-  const mattermost = target.mattermost;
-  if (!mattermost || !env.mattermost) {
-    throw new Error(
-      'The provider lane needs Mattermost (MATTERMOST_URL, MATTERMOST_TOKEN, MATTERMOST_TEAM).'
-    );
-  }
   const reused = await readManifest(env.provider.manifestPath);
-  if (reused) return reuseHarness(target, mattermost, reused);
-
-  // Resolved even though the room-create path does not need it: it fails fast
-  // and clearly when MATTERMOST_TEAM names a team that does not exist.
-  await mattermost.findTeam(env.mattermost.team);
+  if (reused) return reuseHarness(target, reused);
 
   const undo = new SetupUndo();
   try {
-    const harness = await buildHarness(target, mattermost, undo);
+    const harness = await buildHarness(target, undo);
     await writeManifest(env.provider.manifestPath, harness);
     return harness;
   } catch (error) {
@@ -224,18 +202,13 @@ export async function setupHarness(target: LaneTarget): Promise<Harness> {
   }
 }
 
-async function buildHarness(
-  target: LaneTarget,
-  mattermost: MattermostClient,
-  undo: SetupUndo
-): Promise<Harness> {
-  const { env, switchClient } = target;
+async function buildHarness(target: LaneTarget, undo: SetupUndo): Promise<Harness> {
+  const { env, switchClient, chat } = target;
   const run = new RunContext();
   const runId = run.runId;
   const names = run.scope();
   const agentName = names.name(ROLE_BY_AGENT_TYPE[env.provider.agentType]);
-  const human = await mattermost.me();
-  const bridgeId = await switchClient.defaultBridgeId('mattermost');
+  const human = await chat.me();
   const controllerId = env.provider.controllerId;
   const deleteByName = (name: string) => () => switchClient.deleteAgentByName(name);
 
@@ -253,55 +226,33 @@ async function buildHarness(
   // with its own key, which the server refuses while the controller acts for it.
   undo.add(`agent ${agent.name} (${agent.id})`, deleteByName(agent.name));
 
-  // Owner-only by default, and the human the harness posts as is an unclaimed
-  // Mattermost identity, so its messages would be refused rather than delivered.
+  // Owner-only by default, and the agent has no owner the harness posts as; a
+  // chat can only be opened with an agent the person may address.
   await switchClient.openAddressing(agent.id);
 
   const witness = await switchClient.registerKnownAgent({
     agentType: 'opencode',
     name: names.name('witness'),
-    description: `Switch end-to-end harness bridge witness (run ${runId}). Safe to delete.`,
+    description: `Switch end-to-end harness witness (run ${runId}). Safe to delete.`,
     options: { auto_session: false },
   });
   undo.add(`agent ${witness.name} (${witness.id})`, deleteByName(witness.name));
+  await switchClient.openAddressing(witness.id);
 
-  // Registration is what mints the bots; wait for them so the room has them
-  // as members and a later `@name` mention has something to resolve to.
-  const bot = await mattermost.waitForBotUser(agent.name, 60_000);
-  await mattermost.waitForBotUser(witness.name, 60_000);
-
-  const room = await switchClient.createRoom({
+  const roomId = await chat.createGroupChat({
     name: names.name('room'),
-    description: `Switch end-to-end harness (run ${runId}). Safe to delete.`,
-    bridgeId,
-    agentNames: [agent.name, witness.name],
-    userNames: [human.username],
+    agentIds: [agent.id, witness.id],
   });
-  const channelId = room.externalChannelId;
-  undo.add(`room ${room.name} (${room.id})`, async () => {
-    await switchClient.deleteRoom(room.id);
-    if (channelId === null) return;
-    const left = await mattermost.getChannel(channelId);
-    if (!left.delete_at) await mattermost.archiveChannel(channelId);
-  });
+  undo.add(`room ${roomId}`, () => switchClient.deleteRoom(roomId));
+  const room = await switchClient.getRoom(roomId);
 
-  if (channelId === null) {
-    throw new Error(
-      `Switch room ${room.id} was created without a Mattermost channel — ` +
-        `the collaboration bridge did not provision one.`
-    );
-  }
-
-  const channel = await mattermost.getChannel(channelId);
   const harness: Harness = {
     env,
     switch: switchClient,
-    mattermost,
+    chat,
     agent,
     agentApiKey,
     witness,
-    bot,
-    channel,
     room,
     human,
     runId,
@@ -337,7 +288,6 @@ async function buildHarness(
     }
   }
 
-  await waitForBridgeReady({ switchClient, mattermost, agent: witness, room, channel, runId });
   return harness;
 }
 
@@ -357,7 +307,6 @@ export interface HarnessManifest {
   agentApiKey: string | null;
   witness: RegisteredAgent;
   roomId: string;
-  channelId: string;
 }
 
 async function writeManifest(path: string | null, harness: Harness): Promise<void> {
@@ -368,7 +317,6 @@ async function writeManifest(path: string | null, harness: Harness): Promise<voi
     agentApiKey: harness.agentApiKey,
     witness: harness.witness,
     roomId: harness.room.id,
-    channelId: harness.channel.id,
   };
   await fs.writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
@@ -412,44 +360,23 @@ function manifestProblems(manifest: Partial<HarnessManifest>): string[] {
   }
   if (!isAgent(manifest.witness, true)) problems.push('no witness');
   if (typeof manifest.roomId !== 'string') problems.push('no roomId');
-  if (typeof manifest.channelId !== 'string') problems.push('no channelId');
   return problems;
 }
 
-/**
- * Rebuild a harness around an agent and room a previous process created. The
- * bridge-readiness probe still runs: this process has proved nothing about the
- * bot's websocket, and reusing an agent is not evidence its socket is up now.
- */
-async function reuseHarness(
-  target: LaneTarget,
-  mattermost: MattermostClient,
-  manifest: HarnessManifest
-): Promise<Harness> {
-  const { env, switchClient } = target;
-  const harness: Harness = {
+/** Rebuild a harness around an agent and room a previous process created. */
+async function reuseHarness(target: LaneTarget, manifest: HarnessManifest): Promise<Harness> {
+  const { env, switchClient, chat } = target;
+  return {
     env,
     switch: switchClient,
-    mattermost,
+    chat,
     agent: manifest.agent,
     agentApiKey: manifest.agentApiKey,
     witness: manifest.witness,
-    bot: await mattermost.waitForBotUser(manifest.agent.name, 30_000),
-    channel: await mattermost.getChannel(manifest.channelId),
     room: await switchClient.getRoom(manifest.roomId),
-    human: await mattermost.me(),
+    human: await chat.me(),
     runId: manifest.runId,
   };
-
-  await waitForBridgeReady({
-    switchClient,
-    mattermost,
-    agent: harness.witness,
-    room: harness.room,
-    channel: harness.channel,
-    runId: harness.runId,
-  });
-  return harness;
 }
 
 /** Statuses that mean a session is attending — or is about to be spawned for — the room. */
@@ -486,7 +413,7 @@ export async function waitForSession(harness: Harness, deadlineMs = 120_000): Pr
 }
 
 /**
- * Delete the agent and archive the channel. Never throws: teardown failures are
+ * Delete the agent and its room. Never throws: teardown failures are
  * reported (so a leak is visible and can be cleaned up by hand) but must not
  * mask the result of the run.
  */
@@ -498,7 +425,7 @@ export async function teardownHarness(
   if (harness.env.keepArtifacts) {
     log(
       `SWITCH_E2E_KEEP=1 — leaving agent '${harness.agent.name}' (${harness.agent.id}) and ` +
-        `channel '${harness.channel.name}' (${harness.channel.id}) in place.`
+        `room '${harness.room.name}' (${harness.room.id}) in place.`
     );
     return;
   }
@@ -510,7 +437,7 @@ export async function teardownHarness(
       log(`teardown: failed to remove ${label} — delete it by hand: ${message(error)}`);
     }
   };
-  const { env, agent, witness, room, channel } = harness;
+  const { env, agent, witness, room } = harness;
 
   // Before anything is deleted: a manifest that outlives its agent sends the
   // next run at a room that is gone.
@@ -529,13 +456,7 @@ export async function teardownHarness(
     );
   }
 
-  // Deleting the room usually archives its channel; the archive is the safety
-  // net when it does not.
-  await attempt(`room ${room.name} (${room.id}) and channel ${channel.id}`, async () => {
-    await harness.switch.deleteRoom(room.id);
-    const left = await harness.mattermost.getChannel(channel.id);
-    if (!left.delete_at) await harness.mattermost.archiveChannel(channel.id);
-  });
+  await attempt(`room ${room.name} (${room.id})`, () => harness.switch.deleteRoom(room.id));
 
   // By name, as the admin: an agent run by a controller cannot delete itself
   // with its own key, which the server refuses while the controller acts for it.

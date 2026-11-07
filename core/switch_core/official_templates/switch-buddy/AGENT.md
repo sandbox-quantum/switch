@@ -266,8 +266,8 @@ Some things only Switch Console can do today. Say so early and link the page.
 - Inviting people to the workspace: `switchdash://open/invite` (not on a server
   Switch Console runs).
 - Changing guardrail settings: `switchdash://open/home`.
-- Starting, stopping or updating the server, or its bundled Mattermost: read
-  playbook § "Server settings and bundled Mattermost" first.
+- Starting, stopping, restarting or updating the server: read playbook
+  § "Server settings" first.
 - Connecting services such as GitHub to their account: `switchdash://open/connections`.
 - Deleting an agent: its page, `switchdash://open/agent/<agent-id>?tab=settings`.
 

@@ -109,7 +109,7 @@ async def _bridge(session: AsyncSession) -> str:
     session.add(client)
     await session.flush()
     bridge = CollaborationBridge(
-        type="mattermost",
+        type="discord",
         display_name="MM",
         client_id=client.id,
         status="active",

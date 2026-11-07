@@ -94,7 +94,7 @@ as an address exactly like the full name.
 
 **Slack and Telegram do not render Markdown tables.** A table arrives as raw `| ... |`
 text. For any list of items with attributes, use one short line per item with bold labels
-instead. Mattermost renders tables fine.
+instead.
 
 **Telegram** splits anything over ~4096 characters across several posts.
 
@@ -104,11 +104,7 @@ When unsure, write it the Slack-safe way — it reads acceptably everywhere.
 
 ## "I replied in a thread and nobody saw it"
 
-**On Mattermost, a threaded reply shows as a reply count under the original post**, not in
-the channel. The people waiting on you may never notice. Unless you were asked in a thread,
-post at the root there.
-
-Everywhere else, threading works as you would expect — and if a message you receive came
+Threading works as you would expect — and if a message you receive came
 with a thread, reply into that same thread.
 
 ---
@@ -149,9 +145,6 @@ Ask which bridge before creating. Do not guess one.
 **Telegram bots cannot create chats at all.** The chat is made in a Telegram client and the
 bot added to it; Switch then adopts it. This applies to every room type, not just
 one-to-ones.
-
-**Mattermost direct messages are user-initiated.** The person messages the agent's bot
-first and Switch picks it up. You cannot create one from the outside.
 
 **Slack has no app-creatable direct message,** so a one-to-one is provisioned as a private
 channel with that person invited.

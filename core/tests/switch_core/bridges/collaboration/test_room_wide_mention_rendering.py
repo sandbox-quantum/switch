@@ -18,10 +18,6 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
-from switch_core.bridges.collaboration.mattermost.adapter import (
-    MattermostAdapter,
-    MattermostConnectionConfig,
-)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -51,14 +47,6 @@ def _slack() -> SlackAdapter:
     )
 
 
-def _mattermost() -> MattermostAdapter:
-    return MattermostAdapter(
-        config=MattermostConnectionConfig(
-            url="http://mm", admin_user="admin", admin_password="pw", team_name="team"
-        )
-    )
-
-
 def _discord() -> DiscordAdapter:
     return DiscordAdapter(config=DiscordConnectionConfig(bot_token="t", guild_id="900"))
 
@@ -84,7 +72,6 @@ def _telegram() -> TelegramAdapter:
 
 ADAPTERS = {
     "slack": _slack,
-    "mattermost": _mattermost,
     "discord": _discord,
     "teams": _teams,
     "telegram": _telegram,
@@ -98,7 +85,6 @@ ADAPTERS = {
     ("platform", "expected"),
     [
         ("slack", "<!channel> deploy at five"),
-        ("mattermost", "@channel deploy at five"),
         ("discord", "@everyone deploy at five"),
         # No channel-wide mention a bot can send: the token stays legible and
         # inert, and the agent is told `unsupported`.
@@ -119,7 +105,6 @@ def test_a_marked_message_opens_with_the_platforms_own_mention(
     ("platform", "notifies"),
     [
         ("slack", True),
-        ("mattermost", True),
         ("discord", True),
         ("teams", False),
         ("telegram", True),
@@ -132,8 +117,8 @@ def test_what_each_platform_reports_back(platform: str, notifies: bool) -> None:
 def test_the_rest_of_a_marked_message_is_still_defused() -> None:
     # One page per message: an `@here` the agent wrote into the body of a
     # room-wide mention is not a second one.
-    rendered = _mattermost().render_room_wide_mention("@everyone ping @here too")
-    assert rendered == f"@channel ping @{ZWSP}here too"
+    rendered = _slack().render_room_wide_mention("@everyone ping @here too")
+    assert rendered == f"<!channel> ping @{ZWSP}here too"
 
 
 def test_a_person_called_everyone_is_not_who_a_room_wide_mention_names() -> None:
@@ -183,25 +168,6 @@ def test_code_keeps_its_text_exactly(platform: str) -> None:
     # copied out of a message must not carry a zero-width space with it.
     rendered = ADAPTERS[platform]().translate_outbound("run `npm i @here/sdk`")
     assert ZWSP not in rendered
-
-
-@pytest.mark.parametrize(
-    "body",
-    [
-        "[docs](https://x.com),@channel",
-        "\\`@channel\\`",
-        "x ~~~ @channel ~~~",
-        "run `npm i @here/sdk`",
-    ],
-)
-def test_mattermost_defuses_the_words_even_in_code_and_links(body: str) -> None:
-    # On Mattermost the text is the only guard, and telling code from prose
-    # the way its Markdown does is a near miss away from paging the room. An
-    # invisible character in a pasted command is the cheaper failure.
-    rendered = _mattermost().translate_outbound(body)
-    assert f"@{ZWSP}" in rendered
-    for word in ("channel", "here"):
-        assert f"@{word}" not in rendered
 
 
 @pytest.mark.parametrize(

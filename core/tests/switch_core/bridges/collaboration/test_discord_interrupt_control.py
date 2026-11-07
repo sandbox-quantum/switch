@@ -14,7 +14,7 @@ lets an application-owned webhook carry components, so a status published
 through somebody else's webhook has no stop button and the typed command is the
 whole of what is on offer.
 
-The rest is free here in a way it was not on Mattermost: every redraw builds
+The rest is free here: every redraw builds
 the view again from the content and Discord replaces the components with it, so
 the control comes off at the terminal redraw and re-points itself when a queued
 turn starts without anything having to remember what the message last carried.

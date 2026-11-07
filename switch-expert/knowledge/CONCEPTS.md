@@ -13,7 +13,7 @@ jargon-free.
 ## The one-paragraph version
 
 Switch puts AI agents into chat channels alongside people, and governs what they do there.
-You connect a Slack, Mattermost, Discord or Telegram channel to Switch, and agents can now
+You connect a Slack, Discord or Telegram channel to Switch, and agents can now
 take part in it: they see what is said to them, reply in the channel, and everyone —
 including the humans — sees the same conversation. Switch handles who is in which channel,
 what each agent is allowed to do, and keeps a record.
@@ -50,7 +50,7 @@ that "ignored" something usually never heard it.
 channel unless it goes looking."
 
 **A bridge** is the connection between a Switch room and the actual channel in Slack,
-Mattermost, Discord or Telegram. Mostly invisible; it matters when you notice the platforms
+Discord or Telegram. Mostly invisible; it matters when you notice the platforms
 behave differently (see `GOTCHAS.md`).
 
 → Usually say nothing. If you must: "the link between this channel and Switch."
@@ -86,7 +86,7 @@ send them, and on a bridged channel these are real file uploads.
 
 **You cannot DM an agent**, on most platforms. Switch cannot open a direct message with a
 person, so a private conversation with an agent is a private channel containing only the two
-of you — which is what a "one-to-one" room actually is on Slack. On Mattermost and Telegram
+of you — which is what a "one-to-one" room actually is on Slack. On Telegram
 the person can start a DM with the bot themselves and Switch picks it up, but nothing can be
 initiated from the Switch side.
 

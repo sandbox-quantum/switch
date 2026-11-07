@@ -1,5 +1,5 @@
 """The gateway's side of `preconfigured`: the setup step sets it when it
-registers the bundled Mattermost, marks a bridge it registered before the flag
+registers a bundled connector, marks a bridge it registered before the flag
 existed, and reads it back to know whether it still has to."""
 
 from __future__ import annotations
@@ -47,9 +47,9 @@ class _Lifecycle(_NoRunningBridges):
 
 def _request(**overrides: Any) -> BridgeCreateRequest:
     body: dict[str, Any] = {
-        "bridge_type": "mattermost",
-        "display_name": "Mattermost",
-        "connection_config": {"url": "http://mattermost.invalid"},
+        "bridge_type": "slack",
+        "display_name": "Slack",
+        "connection_config": {"url": "http://slack.invalid"},
     }
     body.update(overrides)
     return BridgeCreateRequest(**body)

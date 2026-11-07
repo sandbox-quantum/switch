@@ -26,8 +26,7 @@ just gateway-install     # install gateway frontend deps (first time only)
 
 `just init-env` copies `.env.example` to `.env` and fills every secret field
 that ships blank — `DB_PASSWORD`, `DB_OWNER_PASSWORD`,
-`AGENT_REGISTRATION_TOKEN`, `GATEWAY_ADMIN_PASSWORD`,
-`MATTERMOST_ADMIN_PASSWORD`, `MATTERMOST_USER_PASSWORD` — with a freshly
+`AGENT_REGISTRATION_TOKEN`, `GATEWAY_ADMIN_PASSWORD` — with a freshly
 generated `openssl rand -hex 24` value, sets `SECRET_KEYS` to one generated
 key (`local:<64 hex characters>`), then prints the gateway admin login
 it just set. The fields ship blank on purpose: it means no default
@@ -86,19 +85,15 @@ just run     # run switch-core (:8000)
 just gateway-dev   # run the gateway frontend, in a separate terminal (:5173)
 ```
 
-**`just up` starts the supporting services only**: PostgreSQL, Mattermost
-(seeded as the local collaboration bridge), and a one-shot `setup` container
-that provisions the Mattermost team/bot/admin accounts named by the
-`MATTERMOST_*` variables. It does **not** start switch-core and does **not**
+**`just up` starts the supporting services only**: PostgreSQL. It does **not** start switch-core and does **not**
 start the gateway frontend — you run both of those yourself, in their own
 terminals, so each gets hot-reload while you work. `just down` stops the
 stack; `just reset` also wipes its volumes (Postgres data included).
 
-switch-core refuses to connect to a private address at a URL a bridge config
-names, unless `OUTBOUND_ALLOWED_PRIVATE_HOSTS` lists it. The `.env.example`
-default, `localhost`, covers the local Mattermost. An `.env` from before that
-setting existed lacks it, and
-the Mattermost bridge then refuses to start with a message naming the variable:
+switch-core refuses to connect to a private address at a URL a tenant or agent
+supplies (an agent icon), unless `OUTBOUND_ALLOWED_PRIVATE_HOSTS` lists it. The
+`.env.example` default, `localhost`, covers a server on your machine. An `.env`
+from before that setting existed lacks it:
 add the line from `.env.example`.
 
 `just migrate` runs `alembic upgrade head` against the Postgres started by
@@ -146,8 +141,6 @@ any CORS configuration: as far as the browser can tell, it never left
 | --- | --- | --- |
 | `http://localhost:5173` | The operator dashboard (Vite dev server). Open this in a browser. | `just gateway-dev` |
 | `http://localhost:8000` | switch-core: the Agent Bridge API, the MCP server, and the gateway management API under `/gateway/*`. Also the dashboard when `GATEWAY_UI_DIR` points at a build; otherwise JSON, not a UI. | `just run` |
-| `http://localhost:8081` | switch-core's collaboration callback listener — where Mattermost delivers a button press. Bound only once a bridge asks to be called back, so it is often not there at all. | `just run` |
-| `http://localhost:8065` | Mattermost, seeded as the local collaboration bridge. | `just up` |
 | `http://localhost:5432` | PostgreSQL. | `just up` |
 
 `FRONTEND_BASE_URL` in `.env` (default `http://localhost:5173`) tells
