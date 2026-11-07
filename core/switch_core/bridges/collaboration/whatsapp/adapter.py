@@ -262,7 +262,7 @@ class WhatsAppAdapter(PlatformAdapter):
         self._http = httpx.AsyncClient(timeout=30)
         self._client = WhatsAppGraphClient(
             http=self._http,
-            access_token=config.access_token,
+            token=config.access_token,
             app_secret=config.app_secret,
             phone_number_id=config.phone_number_id,
         )
@@ -290,7 +290,7 @@ class WhatsAppAdapter(PlatformAdapter):
         async with httpx.AsyncClient(timeout=30) as http:
             client = WhatsAppGraphClient(
                 http=http,
-                access_token=config.access_token,
+                token=config.access_token,
                 app_secret=config.app_secret,
                 phone_number_id=config.phone_number_id,
             )

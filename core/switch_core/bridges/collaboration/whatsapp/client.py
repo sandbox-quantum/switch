@@ -100,15 +100,15 @@ class WhatsAppGraphClient:
         self,
         *,
         http: httpx.AsyncClient,
-        access_token: str,
+        token: str,
         app_secret: str,
         phone_number_id: str,
     ) -> None:
         self._http = http
-        self._access_token = access_token
+        self._access_token = token
         self._app_secret = app_secret
         self._phone_number_id = phone_number_id
-        self._proof = {"appsecret_proof": appsecret_proof(app_secret, access_token)}
+        self._proof = {"appsecret_proof": appsecret_proof(app_secret, token)}
 
     @property
     def _auth(self) -> dict[str, str]:
