@@ -18,7 +18,6 @@ PLACEHOLDERS = {
     "microsoft-365",
     "new-relic",
     "notion",
-    "linear",
     "salesforce",
     "box",
     "canva",
@@ -26,13 +25,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_linear():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "linear",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "linear",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["linear"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -312,6 +314,50 @@ def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
     with pytest.raises(CatalogError, match=message):
         with_access_profiles(CATALOG, chosen)
 
+def test_the_shipped_linear_entry_signs_in_through_linears_mcp_server():
+    definition = CATALOG["linear"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Linear's MCP server offers dynamic registration: nothing to set up.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        24 * 3600,
+    )
+    # The read-write server; a read-only sign-in is narrowed by its scope.
+    assert definition.mcp is not None
+    assert [(s.name, s.url, s.headers) for s in definition.mcp.servers] == [
+        ("linear", "https://mcp.linear.app/mcp", None)
+    ]
+    # The token reaches the vendor only through the session host's MCP
+    # server, never a command-line tool's environment.
+    assert definition.cli is None
+    access = definition.access
+    assert access is not None and access.write is not None
+    # A read-only connection asks for read alone, which Linear enforces.
+    assert access.read.scopes == ["read"]
+    assert access.write.scopes == ["read", "write"]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.url) == (
+        "POST",
+        "https://api.linear.app/graphql",
+    )
+    assert identity.body == {"query": "{ viewer { id email name } }"}
+    assert (identity.account_id, identity.label) == (
+        "data.viewer.id",
+        "data.viewer.email",
+    )
+
 
 @pytest.fixture
 def catalog_copy(tmp_path):
@@ -547,6 +593,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -619,6 +666,24 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     assert oauth.revocation_url == "https://auth.example.test/revoke"
 
 
+def test_loads_an_identity_call_that_posts_a_static_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    method: GET\n    url: https://api.example.test/me\n",
+            "    method: POST\n    url: https://api.example.test/graphql\n"
+            "    body: { query: '{ me { id email } }' }\n",
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.url) == (
+        "POST",
+        "https://api.example.test/graphql",
+    )
+    assert identity.body == {"query": "{ me { id email } }"}
+
+
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
@@ -629,10 +694,18 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
+        ),
+        ("    method: GET\n", "", "method"),
+        ("    method: GET\n", "    method: PUT\n", "method"),
+        ("    method: GET\n", "    method: POST\n", "sends a body"),
+        (
+            "    method: GET\n",
+            "    method: GET\n    body: { query: '{ me { id } }' }\n",
+            "sends a body",
         ),
         (
             "mcp:\n  servers:\n"

@@ -1,7 +1,45 @@
 slug: linear
 name: Linear
 category: Project management
-description: Read and update Linear issues and projects.
-enabled: false
+description: Read and update Linear issues and projects, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Linear's OAuth apps get a new refresh token on each refresh. Not yet
+  # measured for the MCP server's own sign-ins; rotating is safe either way.
+  refresh: rotating
+  oauth:
+    # The MCP server's authorization server advertises a registration
+    # endpoint, and Linear documents dynamic registration, so Core registers
+    # its own client and nothing is set up on the server.
+    registration: dynamic
+    # Back to Switch Console on fixed ports, which works whether or not
+    # Linear matches a loopback redirect's port.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Advertised in the authorization server's metadata.
+    revocation_discovered: true
+  # Linear's GraphQL viewer. Not yet tried with a token from the MCP server's
+  # sign-in, which api.linear.app may refuse: every connect would then fail.
+  identity:
+    method: POST
+    url: https://api.linear.app/graphql
+    body: { query: "{ viewer { id email name } }" }
+    account_id: data.viewer.id
+    label: data.viewer.email
+# Linear documents 24 hours for its OAuth apps' access tokens. Not yet
+# measured for the MCP server's; a longer one is held back, never handed out.
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    - { name: linear, url: "https://mcp.linear.app/mcp" }
+access:
+  # The server offers read and write. Linear gives a client that asks only
+  # for read a read-only sign-in, whose token cannot reach write APIs. No
+  # other scope is asked for.
+  read:
+    scopes: [read]
+  write:
+    scopes: [read, write]
+tools: { mode: pass_through }
