@@ -744,6 +744,18 @@ async def test_people_are_found_by_address_and_bots_are_not(webex: FakeWebex) ->
     assert await adapter.search_directory_users("switch@webex.bot") == []
 
 
+async def test_someone_found_by_address_can_be_linked_by_the_handle_given(
+    webex: FakeWebex,
+) -> None:
+    # Linking an account checks it again by searching for the handle the first
+    # search gave, and a free organisation answers no search by name. So the
+    # handle has to lead back to the same person.
+    adapter, _ = await _started(webex)
+    [found] = await adapter.search_directory_users("ada@example.com")
+    [again] = await adapter.search_directory_users(found.username)
+    assert again.external_user_id == ADA
+
+
 async def test_a_failed_search_is_an_error_not_an_empty_result(
     webex: FakeWebex,
 ) -> None:
