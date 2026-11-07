@@ -22,6 +22,7 @@ CODEX = known_agents()["codex"]
 OPENCODE = known_agents()["opencode"]
 ANTIGRAVITY = known_agents()["antigravity"]
 CURSOR = known_agents()["cursor"]
+JUNIE = known_agents()["junie"]
 
 
 def _agent(metadata: dict | None) -> SimpleNamespace:
@@ -287,6 +288,22 @@ class TestCursorKnownAgent:
             assert profile.pre_invocation_mediation == []
 
 
+class TestJunieKnownAgent:
+    def test_registry_and_profile(self) -> None:
+        assert isinstance(JUNIE, GenericKnownAgent)
+        for auto_session, expected in [
+            (False, "session_addressable"),
+            (True, "auto_session"),
+        ]:
+            profile = JUNIE.build_profile(
+                GenericAgentOptions(auto_session=auto_session)
+            )
+            assert profile.connection_model == expected
+            assert profile.message_exchange
+            assert profile.command_capabilities.interrupt == "session_dependent"
+            assert profile.pre_invocation_mediation == []
+
+
 class TestBlankOptionsAreNormalised:
     @pytest.mark.parametrize(
         ("options_cls", "field"),
@@ -372,6 +389,7 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ["shell", "read_file", "write", "str_replace", "grep", "glob"],
             [],
         ),
+        ("junie", "Junie CLI", [], []),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(
