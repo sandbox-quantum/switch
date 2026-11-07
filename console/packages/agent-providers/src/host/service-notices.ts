@@ -68,10 +68,12 @@ export const CONNECTOR_APPROVAL_NOTICE =
 /** How a notice names a catalog service; the slug for one it does not know. */
 export function serviceName(service: string): string {
   const names: Record<string, string> = {
+    airtable: 'Airtable',
     atlassian: 'Atlassian',
     datadog: 'Datadog',
     github: 'GitHub',
     'google-workspace': 'Google Workspace',
+    trello: 'Trello',
   };
   return names[service] ?? service;
 }
