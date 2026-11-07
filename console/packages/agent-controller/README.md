@@ -88,9 +88,9 @@ switch-agent-controller enroll \
 
 switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
-switch-agent-controller status [--data-dir <dir>]
+switch-agent-controller status [--data-dir <dir>] [--json]
 switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
-switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
+switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>] [--json]
 switch-agent-controller update [--check]
 ```
 
@@ -150,6 +150,37 @@ failure within ten minutes is recorded, and the agent stays down until a new
 revision or an explicit restart. The other agents are not affected. An agent host left
 running as a separate process by an earlier version of the controller is stopped
 before this one starts its own.
+
+### Reading command output
+
+The `status`, `doctor`, `enroll`, `update`, `install-service` and `uninstall-service`
+reports use named sections, aligned fields and explicit `[OK]`, `[WARN]`,
+`[ERROR]` and `[INFO]` labels. Colour is enabled only when the output stream is a terminal;
+setting `NO_COLOR` (including an empty value) or `TERM=dumb` disables it. Redirected
+and piped output is plain text. Names and diagnostic text cannot inject terminal
+control sequences into the human output.
+Suggested commands quote custom data-directory paths for a POSIX shell on macOS
+and Linux, or PowerShell on Windows.
+
+For scripts, use `status --json` or `doctor --json` rather than parsing the human
+layout. Each writes one JSON document to stdout, including on command errors;
+diagnostics may still appear on stderr. Reports identify their `command` and
+`schemaVersion` (`1`). JSON is never coloured. `--version` still writes only the
+version and a newline, and command exit codes are unchanged.
+
+```bash
+switch-agent-controller status --data-dir /path/to/controller --json > status.json
+switch-agent-controller doctor --data-dir /path/to/controller --json > doctor.json
+```
+
+`status` reports the saved identity, assignment revision and local observations
+for each agent. It does not establish that the controller is connected to Switch
+or that events are flowing. Credential presence is reported without the credential
+value; agent instructions, provider configuration and supplied logins are omitted.
+`doctor` reports each check's name, status and diagnostic detail. It still performs
+the same checks, including server and provider checks, and exits `1` when any check
+fails. A readable JSON report does not imply that those checks passed. When acting
+on diagnostic suggestions, retain your `--data-dir` and `--env-file` options.
 
 ### As a service
 
