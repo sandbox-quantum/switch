@@ -561,6 +561,23 @@ tools: { mode: pass_through }
 """
 
 
+FIELDS_ENTRY = (
+    OAUTH_ENTRY.replace(
+        "  oauth:\n",
+        "  oauth:\n"
+        "    fields:\n"
+        "      - name: tenant\n"
+        "        label: Example team\n"
+        "        help: Your team's name, such as team-a.\n"
+        "        pattern: '^[a-z0-9-]{1,30}$'\n",
+    )
+    .replace("account_id: account.id", "account_id: [connection.tenant, account.id]")
+    .replace(
+        "https://mcp.example.test/v1/mcp", "https://mcp.example.test/v1/mcp/{tenant}"
+    )
+)
+
+
 def _write_example(root, text: str = OAUTH_ENTRY) -> None:
     directory = root / "example"
     directory.mkdir(exist_ok=True)
