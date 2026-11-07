@@ -45,6 +45,7 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- OpenHands CLI provider definitions, known-agent registration and room provider metadata.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
@@ -2746,6 +2747,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- OpenHands CLI agents in Console and the headless controller, with saved-model
+  discovery and validation, ACP approvals, queued input, interruption, resume and
+  an MCP compatibility bridge. OpenHands runs the model configured on its execution machine.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

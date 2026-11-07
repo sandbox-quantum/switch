@@ -398,7 +398,20 @@ describe('the providers a server machine offers', () => {
     const el = await render(
       <MachineProviderPicker
         serverId="server-1"
-        machine={{ ...BOX, acceptsLogins: true }}
+        machine={{
+          ...BOX,
+          acceptsLogins: true,
+          providers: [
+            ...BOX.providers,
+            {
+              provider: 'openhands',
+              ready: false,
+              problem: 'not logged in',
+              detail: null,
+              loginHelps: true,
+            },
+          ],
+        }}
         value="claude"
         onChange={vi.fn()}
         defaultAgent="claude"
@@ -406,7 +419,7 @@ describe('the providers a server machine offers', () => {
     );
     expect(el.textContent).toMatch(/Give build-box a login for/);
     const offered = [...el.querySelectorAll('button')].filter((button) =>
-      ['Codex', 'Cursor', 'OpenCode'].includes(button.textContent ?? '')
+      ['Codex', 'Cursor', 'OpenCode', 'OpenHands'].includes(button.textContent ?? '')
     );
     // Not OpenCode: it is not installed there, and no login would change that.
     expect(offered.map((button) => button.textContent)).toEqual(['Codex', 'Cursor']);

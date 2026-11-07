@@ -29,6 +29,8 @@ const VERTEX_DEFAULT_REGION = 'global';
 /** The ways a machine can be given each provider's login. */
 export function loginKindsFor(provider: AgentProviderId): { value: LoginKind; label: string }[] {
   switch (provider) {
+    case 'openhands':
+      return [];
     case 'claude':
       return [
         { value: 'setup-token', label: 'Setup token' },
