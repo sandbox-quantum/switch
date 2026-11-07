@@ -209,15 +209,11 @@ contracts:
     # heartbeat interval and the client answers `pong` with its cursor. The
     # token is checked once, when the socket opens. A hosted worker opens it
     # with the headers and under the rules revision 7 set for the stream. It
-    # is meant to replace the Server-Sent Events stream and
-    # `POST /connection/beat`, which would make it
-    # the first revision that is not additive, but that removal is deferred:
-    # the stream and the beat are kept beside the socket for a compatibility
-    # window, so `accepts` stays at 1 on both sides. switch-core serves either
-    # transport, and agent-runtime prefers the socket and falls back to the
-    # stream and its beat against a server with no socket. Both go, and
-    # `accepts` rises to 8, once `switch.agents.connected{transport:sse}` stays
-    # at zero.
+    # replaces the Server-Sent Events stream and `POST /connection/beat`, which
+    # were kept beside the socket for a compatibility window and are now gone:
+    # `accepts` rises to 8 on both sides, the lowest revision with the socket,
+    # and a client still asking for the stream is refused with 410 and told to
+    # update.
     #
     # Revision 9 makes the resume point a position: one number per source, the
     # agent's own events (`s`) and each room's conversation (`r:<room>`), so a
@@ -229,10 +225,10 @@ contracts:
     # integer fields stay, so a client that knows only them is served as
     # before: a stream that reads only the agent's own events is one number
     # already, and one that reads the conversation too is handed tickets that
-    # stand for its position. Additive, so `accepts` stays at 1.
+    # stand for its position. Additive, so `accepts` stays at 8.
     artifacts:
-      switch-core: { speaks: 9, accepts: 1 }
-      agent-runtime: { speaks: 9, accepts: 1 }
+      switch-core: { speaks: 9, accepts: 8 }
+      agent-runtime: { speaks: 9, accepts: 8 }
 
   gateway-api:
     description: >-

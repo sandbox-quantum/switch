@@ -328,43 +328,25 @@ async def run_agent(name: str, agent: dict) -> None:
     connection_id = str(uuid.uuid4())
     headers = {"Authorization": f"Bearer {agent['api_key']}"}
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as http:
-
-        async def beat() -> None:
-            while True:
-                await asyncio.sleep(2)
-                try:
-                    async with http.post(
-                        f"{SWITCH}/agents/{agent['id']}/connection/beat",
-                        headers=headers,
-                        json={"connection_id": connection_id},
-                    ) as r:
-                        await r.read()
-                except aiohttp.ClientError:
-                    pass
-
+        # The connection is one WebSocket: events come down as JSON frames,
+        # and the server's `ping` is answered with a `pong` to stay alive.
         url = (
-            f"{SWITCH}/agents/{agent['id']}/events?connection_id={connection_id}"
+            f"{SWITCH.replace('http', 'ws', 1)}/agents/{agent['id']}/connection/ws"
+            f"?connection_id={connection_id}"
             "&scope=all&filter=all&start_from=head&client=ftc-e2e"
         )
-        async with http.get(
-            url, headers={**headers, "Accept": "text/event-stream"}
-        ) as stream:
-            if stream.status != 200:
-                raise RuntimeError(
-                    f"{name} stream: {stream.status} {await stream.text()}"
-                )
-            beater = asyncio.create_task(beat())
+        async with http.ws_connect(url, headers=headers) as socket:
             print(f"{name} connected", flush=True)
-            data_lines: list[str] = []
-            async for raw in stream.content:
-                line = raw.decode().rstrip("\n")
-                if line.startswith("data:"):
-                    data_lines.append(line[5:].strip())
+            async for raw in socket:
+                if raw.type != aiohttp.WSMsgType.TEXT:
                     continue
-                if line or not data_lines:
+                frame = json.loads(raw.data)
+                if frame.get("event") == "refused":
+                    raise RuntimeError(f"{name} socket refused: {frame.get('data')}")
+                if frame.get("event") == "ping":
+                    await socket.send_json({"type": "pong", "cursor": 0})
                     continue
-                event = json.loads("\n".join(data_lines))
-                data_lines = []
+                event = frame.get("data") or {}
                 if event.get("type") != "message":
                     continue
                 p = event["payload"]
@@ -382,7 +364,6 @@ async def run_agent(name: str, agent: dict) -> None:
                     f.write(json.dumps(record) + "\n")
                 if p.get("addressed") and p.get("sender_name") not in AGENTS:
                     asyncio.create_task(reply(http, name, agent, connection_id, event))
-            beater.cancel()
 
 
 def why(message_id: str, name: str) -> str:
