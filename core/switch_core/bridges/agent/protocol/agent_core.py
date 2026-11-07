@@ -133,6 +133,7 @@ from switch_core.events import (
 from switch_core.events import (
     ToolCallReport as RoomToolCallReport,
 )
+from switch_core.invites import AgentInviter
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
 from switch_core.room_service import require_membership_changeable_from_outside
@@ -3204,7 +3205,12 @@ class AgentCore:
                 acting_is_admin=owner_is_admin,
             )
             try:
-                result = await self.room_service.create_room(config)
+                # The room is the calling agent's doing, so every agent it
+                # seats is judged as invited by that agent — its own
+                # seat included, which the gate always allows.
+                result = await self.room_service.create_room(
+                    config, invited_by=AgentInviter(agent.id)
+                )
             except ValueError as e:
                 raise ValueError(f"Failed to create room: {str(e)}") from e
             except PermissionError as e:
@@ -3296,11 +3302,16 @@ class AgentCore:
                     )
                 include_for = [target.id]
         try:
+            # Judged as the inviting agent: the invited agent's
+            # addressing policy decides whether it takes instructions from
+            # this agent's owner — an `InviteRefused` (a PermissionError)
+            # reaches the caller with its reason, like the roster check
+            # above.
             await self.room_service.add_agents_to_room(
                 room_id,
                 agent_names=[agent_name],
                 include_subagents_for=include_for,
-                added_by_kind="agent",
+                invited_by=AgentInviter(agent_id),
             )
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e

@@ -23,9 +23,9 @@ def _make_bridge(**overrides: Any) -> CollaborationCore:
         id="room-uuid", tenant_id="tenant-1", transport_room_id="!m:switch.local"
     )
 
-    async def create_room(config: Any) -> SimpleNamespace:
+    async def create_room(config: Any, *, invited_by: Any = None) -> SimpleNamespace:
         created_configs.append(config)
-        return SimpleNamespace(room=room)
+        return SimpleNamespace(room=room, invite_unverified=[])
 
     class _Adapter:
         async def admin_message(self, *a: Any, **k: Any) -> str:
@@ -129,7 +129,7 @@ async def test_integrity_error_falls_back_to_existing_room() -> None:
         # committed by the racing winner only by the time the except runs.
         return ("winner-room", "!winner:switch.local") if calls["adopt"] > 1 else None
 
-    async def create_room(config: Any) -> SimpleNamespace:
+    async def create_room(config: Any, *, invited_by: Any = None) -> SimpleNamespace:
         raise IntegrityError("INSERT INTO rooms", {}, Exception("duplicate key"))
 
     bridge = _make_bridge(

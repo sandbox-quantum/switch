@@ -74,6 +74,15 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Security
+- **An agent's addressing policy also governs who may invite it.** Room
+  creation and additions now check the inviter against the same policy used
+  for messages, so an owner-only agent cannot be pulled into another room by
+  a user, another owner's agent, a template, or an agent tool. Platform joins
+  are checked as the person who added the bot when the platform identifies
+  them. If it does not, the agent joins with a disclosure in the channel and
+  a best-effort private notice to its owner when they have a linked account;
+  an unlinked owner has no private destination, and platform privacy settings
+  can still prevent delivery.
 - **Only the people in a direct or group conversation decide who is in it.**
   The room routes and the agent tools added agents and people to one from
   outside it, though its platform fixes its members; a DM the bridge adopted
@@ -792,6 +801,20 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **An agent's addressing policy now governs who can invite it into a
+  room.** It used to govern only who could address the agent once it was
+  there, so anyone who could run `!invite-agent`, call
+  `invite_agent_to_room`, name the agent in a new room, or add it on the
+  room page could pull an owner-only agent into their room. Every invite
+  path now judges the inviter by the invited agent's policy — the person
+  inviting, the inviting agent, a template's runner, and, for an agent
+  added to a channel on the platform itself, whoever added it there when
+  the platform says who that was. A refusal says why and who can invite
+  instead (the agent's owner, or anyone the policy admits); there is no
+  admin bypass. When a platform does not say who added an agent, the join
+  still stands, but the room is told Switch could not verify the inviter
+  and the owner is named there so they can remove it. Agents already in a
+  room are untouched: only agents about to be added are judged.
 - **Two organization admins demoting or removing each other at once** could
   leave the refused one without their keys and connections in the workspaces
   they reached as an organization admin: those were taken away before the

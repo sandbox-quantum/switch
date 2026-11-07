@@ -53,7 +53,9 @@ class FakeRoomService:
         self._sf = session_factory
         self._agents = agent_store
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: object = None
+    ) -> RoomCreateResult:
         async with self._sf() as session:
             agent_ids: list[str] = []
             if config.agent_names:

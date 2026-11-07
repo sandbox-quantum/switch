@@ -94,6 +94,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import MENTIONS_KEY, AddressingResolver
+from switch_core.invites import InviteRefused, UserInviter
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
@@ -1123,11 +1124,20 @@ class ChatService:
             )
             if agent_id in await self._room_store.get_agent_ids(session, room.id):
                 return room
-        await self._room_service.add_agents_to_room(
-            room.id,
-            agent_ids=[agent_id],
-            with_agents=lambda session: self._group_if_several_agents(session, room),
-        )
+        # The same check as above, in the funnel itself: the
+        # pre-check answers first in practice, and the gate is the backstop
+        # that cannot be bypassed by another caller of the funnel.
+        try:
+            await self._room_service.add_agents_to_room(
+                room.id,
+                agent_ids=[agent_id],
+                invited_by=UserInviter(actor.id),
+                with_agents=lambda session: self._group_if_several_agents(
+                    session, room
+                ),
+            )
+        except InviteRefused as refused:
+            raise ChatError(403, "AGENT_NOT_ALLOWED", str(refused)) from refused
         async with tenant_session(self.session_factory, tenant_id) as session:
             return await self._room(session, tenant_id, room_id)
 
@@ -1558,8 +1568,16 @@ class ChatService:
                                     if greeting is not None
                                     else None
                                 ),
-                            )
+                            ),
+                            invited_by=UserInviter(user.id),
                         )
+                    except InviteRefused as refused:
+                        # The creator may not use one of the agents
+                        # (`_require_may_use_agent` above answers first in
+                        # practice; the gate is the backstop).
+                        raise ChatError(
+                            403, "AGENT_NOT_ALLOWED", str(refused)
+                        ) from refused
                     except ValueError as exc:
                         raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
                     room = created.room
