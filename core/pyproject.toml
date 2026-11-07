@@ -79,6 +79,7 @@ dev = [
     "pytest-xdist>=3.6",
     "pytest-split>=0.10",
     "pytest-timeout>=2.3",
+    "hypothesis>=6.170.15",
 ]
 
 [tool.ruff]

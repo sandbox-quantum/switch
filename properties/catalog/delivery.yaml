@@ -13,7 +13,6 @@ properties:
     owner: platform
     status: proposed
     gaps:
-      code: the Hypothesis state machine is the next step of the first slice
       system: the history checker is a later step of the first slice
   - id: delivery.own-seq-contiguous
     title: An agent's own-event numbers never repeat and never skip
@@ -30,7 +29,6 @@ properties:
       Numbers come from `agent_event_heads`, not the highest stored row,
       because retention deletes old rows.
     gaps:
-      code: the Hypothesis state machine is the next step of the first slice
       system: the history checker is a later step of the first slice
   - id: delivery.addressed-exactly-once
     title: An addressed message reaches its agent exactly once
@@ -44,7 +42,6 @@ properties:
     owner: platform
     status: proposed
     gaps:
-      code: the Hypothesis state machine is the next step of the first slice
       system: the history checker is a later step of the first slice
   - id: delivery.no-silent-loss
     title: A resuming agent misses nothing without being told
@@ -63,7 +60,6 @@ properties:
       numbers from a new boot (`agent_event_heads.first_seq`); both must
       surface as a gap, never as silence.
     gaps:
-      code: the Hypothesis state machine is the next step of the first slice
       system: the history checker is a later step of the first slice
   - id: delivery.unaddressed-silent
     title: An unaddressed message notifies no one
@@ -97,5 +93,4 @@ properties:
       `EventBuffer.forget_room` locks the agent's head row before deleting, and
       `store` reads membership after taking that lock.
     gaps:
-      code: the Hypothesis state machine is the next step of the first slice
       system: the history checker is a later step of the first slice
