@@ -3,6 +3,7 @@ import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
 import type { RuntimeMode } from '../adapter';
 import { execProvider } from '../provider-process';
 import { commandOutput, readiness, signInWith, type ProviderReadiness } from '../readiness';
+import { isDroidSubagent } from './factory-droid-subagent';
 
 /** Droid has no login subcommand: run bare, it starts its sign-in when it holds none. */
 export const DROID_LOGIN = 'droid';
@@ -100,6 +101,7 @@ export const factoryDroidAcp: AcpProviderHooks = {
     return parseDroidDoctor(output, Boolean(env.FACTORY_API_KEY?.trim()));
   },
   sessionMode: (runtimeMode) => DROID_MODES[runtimeMode],
+  itemType: (toolCall) => (isDroidSubagent(toolCall) ? 'subagent' : undefined),
   // Droid 1.5.0 names an MCP tool's server in `_meta.factory`.
   mcpServerOf: (toolCall) => {
     const factory = toolCall._meta?.factory as { source?: unknown; server?: unknown } | undefined;
