@@ -11,6 +11,7 @@ from switch_core.bridges.collaboration.webex.cards import (
     request_card,
 )
 from switch_core.bridges.collaboration.webex.client import (
+    ServiceCatalog,
     WebexId,
     decode_id,
     is_webex_url,
@@ -147,7 +148,7 @@ def test_a_request_card_has_a_button_per_option_carrying_only_token_and_number()
     actions = card["actions"]
     assert [a["title"] for a in actions] == ["1. Allow", "2. Deny"]
     assert all(a["type"] == "Action.Submit" for a in actions)
-    assert actions[1]["data"] == {"switch": "answer", "token": "tok-1", "position": 2}
+    assert actions[1]["data"] == {"switch": "answer", "token": "tok-1", "position": "2"}
     assert card_attachment(card)["contentType"] == CARD_CONTENT_TYPE
     # The list stays one block, so it renders as one list.
     texts = [b["text"] for b in card["body"][1:]]
@@ -174,3 +175,29 @@ def test_a_press_is_read_strictly() -> None:
     assert read_press({"switch": "answer", "token": "t", "position": 0}) is None
     assert read_press({"switch": "answer", "token": "t", "position": True}) is None
     assert read_press("nope") is None
+
+
+def test_the_catalog_names_the_regional_device_service_and_each_hosts_cluster() -> None:
+    # Trimmed from the catalog Webex returned for a bot in a European org.
+    catalog = ServiceCatalog.read(
+        {
+            "serviceLinks": {"wdm": "https://wdm-k.wbx2.com/wdm/api/v1"},
+            "hostCatalog": {
+                "conv-k.wbx2.com": [{"id": "urn:TEAM:eu-central-1_k:identityLookup"}],
+                "conv-a.wbx2.com": [{"id": "urn:TEAM:us-east-2_a:identityLookup"}],
+                "odd.example": [{"id": "not-a-urn"}],
+            },
+        }
+    )
+    assert catalog.wdm_url == "https://wdm-k.wbx2.com/wdm/api/v1"
+    url = "https://conv-k.wbx2.com/conversation/api/v1/conversations/172e31a0"
+    assert catalog.cluster_for(url) == "urn:TEAM:eu-central-1_k"
+    # Ids in the US clusters are written `us`, as Webex's own SDK writes them.
+    assert catalog.cluster_for("https://conv-a.wbx2.com/x") == "us"
+    assert catalog.cluster_for("https://odd.example/x") is None
+    assert catalog.cluster_for(None) is None
+
+
+def test_a_catalog_naming_a_device_service_off_webex_is_not_trusted() -> None:
+    catalog = ServiceCatalog.read({"serviceLinks": {"wdm": "https://evil.example/wdm"}})
+    assert catalog.wdm_url is None

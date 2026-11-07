@@ -131,7 +131,13 @@ def request_card(
             {
                 "type": "Action.Submit",
                 "title": _title(control),
-                "data": {_KIND: _ANSWER, "token": token, "position": control.position},
+                # Strings only: Webex takes a press's inputs as a flat map of
+                # strings and refuses one carrying a number.
+                "data": {
+                    _KIND: _ANSWER,
+                    "token": token,
+                    "position": str(control.position),
+                },
             }
             for control in controls
         ]
