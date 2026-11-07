@@ -1036,6 +1036,34 @@ class TestPassThrough:
                 await pt.broker.grants_for(session, agent, Principal.agent_key()) == []
             )
 
+    async def test_an_agent_without_an_owner_does_not_look_up_tenant_fields(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        pt = await _pass_through(
+            session_factory,
+            tmp_path / "c",
+            expires_in=3000,
+            entry=FIELDS_ENTRY,
+            secret={"sign_in_fields": {"tenant": "team-a"}},
+            account_id="team-a:acct-1",
+        )
+
+        async def reject_ownerless_lookup(session, user_id, service):
+            assert user_id is not None
+            return await original_get_connection(session, user_id, service)
+
+        original_get_connection = pt.broker._store.get_connection
+        monkeypatch.setattr(pt.broker._store, "get_connection", reject_ownerless_lookup)
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            agent.owner_id = None
+            with session.no_autoflush:
+                assert (
+                    await pt.broker.grants_for(session, agent, Principal.agent_key())
+                    == []
+                )
+
     async def test_the_grant_names_the_vendors_mcp_servers_and_skill(
         self, session_factory, tmp_path
     ) -> None:

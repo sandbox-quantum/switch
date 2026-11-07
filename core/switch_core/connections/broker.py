@@ -1357,6 +1357,8 @@ class ServiceBroker:
                 and entry.definition.auth.oauth is not None
                 and entry.definition.auth.oauth.fields
             ):
+                if agent.owner_id is None:
+                    continue
                 connection = await self._store.get_connection(
                     session, agent.owner_id, grant.service
                 )
