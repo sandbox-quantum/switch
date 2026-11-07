@@ -51,6 +51,9 @@ from switch_core.connections.loader import (
 
 MAX_METADATA_BYTES = 64 * 1024
 SIGN_IN_FIELDS = "sign_in_fields"
+MAX_IDENTITY_BYTES = 256 * 1024
+MAX_IDENTITY_PAGES = 10
+MAX_IDENTITY_TOOLS = 1000
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
@@ -582,11 +585,12 @@ class OAuthAdapter:
             "Accept": "application/json, text/event-stream",
         }
         request_id = 0
+        received_bytes = 0
 
         async def rpc(
             method: str, params: dict[str, Any], *, notification: bool = False
         ) -> dict[str, Any]:
-            nonlocal request_id
+            nonlocal request_id, received_bytes
             request_id += 1
             message: dict[str, Any] = {
                 "jsonrpc": "2.0",
@@ -613,37 +617,8 @@ class OAuthAdapter:
                     headers["Mcp-Session-Id"] = session
                 if notification:
                     return {}
-                data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    data.extend(chunk)
-                    if len(data) > MAX_METADATA_BYTES:
-                        raise ServiceAdapterError("identity_response_too_large")
-                try:
-                    if (
-                        response.headers.get("content-type", "").split(";")[0]
-                        == "text/event-stream"
-                    ):
-                        messages = []
-                        for event in (
-                            bytes(data).decode().replace("\r\n", "\n").split("\n\n")
-                        ):
-                            payload = "\n".join(
-                                line[5:].lstrip(" ")
-                                for line in event.splitlines()
-                                if line.startswith("data:")
-                            )
-                            if payload:
-                                messages.append(json.loads(payload))
-                        matching = [
-                            m
-                            for m in messages
-                            if isinstance(m, dict) and m.get("id") == request_id
-                        ]
-                        if len(matching) != 1:
-                            raise ValueError
-                        envelope = matching[0]
-                    else:
-                        envelope = json.loads(data)
+
+                def result_of(envelope: Any) -> dict[str, Any]:
                     if (
                         not isinstance(envelope, dict)
                         or envelope.get("id") != request_id
@@ -655,6 +630,49 @@ class OAuthAdapter:
                     result = envelope["result"]
                     assert isinstance(result, dict)
                     return result
+
+                is_sse = (
+                    response.headers.get("content-type", "").split(";")[0]
+                    == "text/event-stream"
+                )
+                data = bytearray()
+                event_lines: list[bytes] = []
+                response_bytes = 0
+                try:
+                    async for chunk in response.aiter_bytes():
+                        response_bytes += len(chunk)
+                        received_bytes += len(chunk)
+                        if (
+                            response_bytes > MAX_METADATA_BYTES
+                            or received_bytes > MAX_IDENTITY_BYTES
+                        ):
+                            raise ServiceAdapterError("identity_response_too_large")
+                        data.extend(chunk)
+                        if is_sse:
+                            # Keep partial lines (including a split CRLF) until the
+                            # next chunk. A blank line completes one SSE event.
+                            while match := re.search(rb"\r\n|\r(?!$)|\n", data):
+                                line = bytes(data[: match.start()])
+                                del data[: match.end()]
+                                if line:
+                                    if line.startswith(b"data:"):
+                                        value = line[5:]
+                                        event_lines.append(
+                                            value[1:]
+                                            if value.startswith(b" ")
+                                            else value
+                                        )
+                                elif event_lines:
+                                    envelope = json.loads(b"\n".join(event_lines))
+                                    event_lines.clear()
+                                    if (
+                                        isinstance(envelope, dict)
+                                        and envelope.get("id") == request_id
+                                    ):
+                                        return result_of(envelope)
+                    if is_sse:
+                        raise ValueError
+                    return result_of(json.loads(data))
                 except (ValueError, UnicodeError):
                     raise ServiceAdapterError("identity_protocol") from None
 
@@ -671,15 +689,32 @@ class OAuthAdapter:
             raise ServiceAdapterError("identity_protocol")
         headers["MCP-Protocol-Version"] = version
         await rpc("notifications/initialized", {}, notification=True)
-        listed = await rpc("tools/list", {})
-        tools = listed.get("tools")
-        if not isinstance(tools, list) or listed.get("nextCursor") is not None:
+        matches: list[dict[str, Any]] = []
+        cursors: set[str] = set()
+        params: dict[str, Any] = {}
+        tool_count = 0
+        for _ in range(MAX_IDENTITY_PAGES):
+            listed = await rpc("tools/list", params)
+            tools = listed.get("tools")
+            if not isinstance(tools, list) or any(
+                not isinstance(tool, dict) for tool in tools
+            ):
+                raise ServiceAdapterError("identity_tool_unsafe")
+            tool_count += len(tools)
+            if tool_count > MAX_IDENTITY_TOOLS:
+                raise ServiceAdapterError("identity_tool_unsafe")
+            matches.extend(
+                tool for tool in tools if tool.get("name") == self._identity.mcp_tool
+            )
+            cursor = listed.get("nextCursor")
+            if cursor is None:
+                break
+            if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                raise ServiceAdapterError("identity_tool_unsafe")
+            cursors.add(cursor)
+            params = {"cursor": cursor}
+        else:
             raise ServiceAdapterError("identity_tool_unsafe")
-        matches = [
-            tool
-            for tool in tools
-            if isinstance(tool, dict) and tool.get("name") == self._identity.mcp_tool
-        ]
         if len(matches) != 1:
             raise ServiceAdapterError("identity_tool_unsafe")
         tool = matches[0]

@@ -221,3 +221,161 @@ async def test_schema_composition_cannot_hide_required_arguments():
     with pytest.raises(ServiceAdapterError, match="identity_tool_unsafe"):
         await adapter(handler).identify("secret")
     assert not any(call["method"] == "tools/call" for call in calls)
+
+
+class OpenEventStream(httpx.AsyncByteStream):
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+        raise httpx.ReadTimeout("vendor kept stream open")
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize("split", [False, True])
+async def test_sse_returns_before_stream_end_after_notifications(split):
+    handler, _ = server(sse=True)
+    streams = []
+
+    def handle(request):
+        response = handler(request)
+        if response.status_code == 202:
+            return response
+        event = (
+            b'data: {"jsonrpc":"2.0","method":"notifications/progress"}\r\n\r\n'
+            + response.content.replace(b"\n", b"\r\n")
+        )
+        chunks = [event[i : i + 1] for i in range(len(event))] if split else [event]
+        stream = OpenEventStream(chunks)
+        streams.append(stream)
+        return httpx.Response(
+            200, stream=stream, headers={"content-type": "text/event-stream"}
+        )
+
+    assert (await adapter(handle).identify("secret")).account_id == "ada"
+    assert len(streams) == 3
+    assert all(stream.closed for stream in streams)
+
+
+SAFE_TOOL = {
+    "name": "user_info",
+    "annotations": {"readOnlyHint": True},
+    "inputSchema": {"type": "object"},
+}
+
+
+def paginated_server(pages):
+    fallback, calls = server()
+    seen = []
+
+    def handle(request):
+        message = json.loads(request.content)
+        if message["method"] != "tools/list":
+            return fallback(request)
+        seen.append(message["params"])
+        index = len(seen) - 1
+        page = pages[index] if index < len(pages) else pages[-1]
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": message["id"], "result": page}
+        )
+
+    return handle, calls, seen
+
+
+async def test_identity_tool_can_be_on_later_page():
+    handler, calls, seen = paginated_server(
+        [{"tools": [], "nextCursor": "page-2"}, {"tools": [SAFE_TOOL]}]
+    )
+    assert (await adapter(handler).identify("secret")).account_id == "ada"
+    assert seen == [{}, {"cursor": "page-2"}]
+    assert calls[-1]["method"] == "tools/call"
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        [{"tools": [SAFE_TOOL], "nextCursor": "next"}, {"tools": [SAFE_TOOL]}],
+        [{"tools": [], "nextCursor": "loop"}],
+    ],
+)
+async def test_duplicate_tools_or_cursor_cycles_never_call_identity(pages):
+    handler, calls, seen = paginated_server(pages)
+    with pytest.raises(ServiceAdapterError, match="identity_tool_unsafe"):
+        await adapter(handler).identify("secret")
+    assert not any(call["method"] == "tools/call" for call in calls)
+    assert len(seen) == 2
+
+
+@pytest.mark.parametrize(
+    "limit, pages",
+    [
+        (
+            "MAX_IDENTITY_PAGES",
+            [
+                {"tools": [], "nextCursor": "a"},
+                {"tools": [], "nextCursor": "b"},
+                {"tools": [SAFE_TOOL]},
+            ],
+        ),
+        (
+            "MAX_IDENTITY_TOOLS",
+            [
+                {"tools": [{"name": "other"}, SAFE_TOOL], "nextCursor": "a"},
+                {"tools": [{"name": "third"}]},
+            ],
+        ),
+        (
+            "MAX_IDENTITY_BYTES",
+            [
+                {"tools": [], "padding": "x" * 400, "nextCursor": "next"},
+                {"tools": [SAFE_TOOL], "padding": "x" * 400},
+            ],
+        ),
+    ],
+)
+async def test_paginated_discovery_has_global_limits(monkeypatch, limit, pages):
+    import switch_core.connections.adapters.oauth as oauth
+
+    monkeypatch.setattr(
+        oauth, limit, 1000 if limit == "MAX_IDENTITY_BYTES" else 2, raising=False
+    )
+    handler, calls, seen = paginated_server(pages)
+    with pytest.raises(
+        ServiceAdapterError, match="identity_(tool_unsafe|response_too_large)"
+    ):
+        await adapter(handler).identify("secret")
+    assert not any(call["method"] == "tools/call" for call in calls)
+    assert len(seen) == 2
+
+
+async def test_total_deadline_stops_an_open_identity_stream(monkeypatch):
+    import asyncio
+
+    import switch_core.connections.adapters.oauth as oauth
+
+    original_timeout = asyncio.timeout
+
+    def short_timeout(seconds):
+        assert seconds == 20
+        return original_timeout(0.01)
+
+    monkeypatch.setattr(oauth.asyncio, "timeout", short_timeout)
+
+    class WaitingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n'
+            await asyncio.Event().wait()
+
+    with pytest.raises(ServiceAdapterError, match="identity_transport"):
+        await adapter(
+            lambda request: httpx.Response(
+                200,
+                stream=WaitingStream(),
+                headers={"content-type": "text/event-stream"},
+            )
+        ).identify("secret")
