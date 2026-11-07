@@ -2218,6 +2218,7 @@ describe('an edit to a message still in the queue', () => {
         payload: {
           sender: SENDER,
           sender_name: 'alice',
+          sender_role: null,
           message_id: messageId,
           body,
           thread_id: 'thread-1',
