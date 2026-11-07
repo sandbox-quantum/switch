@@ -14,7 +14,6 @@ from switch_core.connections.loader import (
 PLACEHOLDERS = {
     "asana",
     "gitlab",
-    "bitbucket",
     "microsoft-365",
     "new-relic",
     "notion",
@@ -26,17 +25,19 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_bitbucket_datadog_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "bitbucket",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "bitbucket",
         "datadog",
         "github",
         "google-workspace",
@@ -45,6 +46,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["bitbucket"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -176,6 +178,56 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_bitbucket_entry_uses_its_own_server_and_bitbucket_scopes():
+    definition = CATALOG["bitbucket"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("bitbucket", "https://mcp.atlassian.com/v2/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    identity = ["read:me", "read:account", "email", "offline_access"]
+    assert definition.access.read.scopes == [
+        *identity,
+        "read:bitbucket:agent-interface",
+    ]
+    assert definition.access.write.scopes == [
+        *identity,
+        "read:bitbucket:agent-interface",
+        "write:bitbucket:agent-interface",
+    ]
+    every = set(definition.access.write.scopes)
+    assert not any(
+        ":jira:" in scope
+        or ":confluence:" in scope
+        or ":rovo" in scope
+        or ":twg" in scope
+        for scope in every
+    )
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == ("https://api.atlassian.com/me", "account_id", "email")
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
