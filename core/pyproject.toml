@@ -46,6 +46,7 @@ dependencies = [
     "uvloop>=0.21,<1 ; sys_platform != 'win32'",
     "cronsim>=2.6,<3",
     "tzdata>=2025.2",
+    "antithesis>=0.4,<1",
 ]
 
 # Repo coordinates point at the public switch repo — see RELEASING.md.

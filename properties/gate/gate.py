@@ -22,6 +22,12 @@ Tags, by level (`<id>` is the property's id):
     system `@checks("<id>")` on a history check
     ui     `@property <id>` in the doc comment directly above a Bombadil export
 
+An assertion in the server (`always`, `sometimes`, `reachable`, ... from
+`antithesis.assertions`) whose message starts with a property id, alone or
+before `: `, is evidence at the `system` level: the run's assertion log is read
+after the fast lane (`properties/history/assertions.py`). A message that does
+not start with an id is not about a catalog property and is left alone.
+
 It needs only PyYAML and Pydantic:
 
     uv run --no-project --with 'pyyaml>=6,<7' --with 'pydantic>=2,<3' \\
@@ -57,6 +63,13 @@ MODEL_GLOB = f"{SPECS_DIR}/**/*.qnt"
 CODE_GLOB = "core/tests/switch_core/properties/**/*.py"
 SYSTEM_GLOB = "properties/history/**/*.py"
 UI_GLOB = "console/tooling-e2e/src/explore/spec/*.ts"
+ASSERT_GLOB = "core/switch_core/**/*.py"
+ASSERT_FUNCTIONS = frozenset(
+    {"always", "always_or_unreachable", "sometimes", "reachable", "unreachable"}
+)
+ASSERT_MESSAGE = re.compile(
+    r"^(?P<id>[a-z][a-z0-9]*\.[a-z][a-z0-9]*(-[a-z0-9]+)*)(: |$)"
+)
 
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 QUINT_DEFINITION = r"(?:pure[ \t]+)?(?:val|def|temporal|action|run)[ \t]+(?P<name>\w+)"
@@ -196,6 +209,45 @@ def _python_tags(
     return tags, problems
 
 
+def _assertion_tags(tree: ast.AST, label: str) -> list[tuple[str, Tag]]:
+    """Assertions from the Antithesis SDK whose message names a property."""
+    imported = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        and node.module.split(".")[0] == "antithesis"
+        for alias in node.names
+    } & ASSERT_FUNCTIONS
+    tags: list[tuple[str, Tag]] = []
+
+    def visit(node: ast.AST, owner: str) -> None:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            owner = node.name
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in imported
+        ):
+            message = None
+            if len(node.args) > 1:
+                message = node.args[1]
+            else:
+                message = next(
+                    (kw.value for kw in node.keywords if kw.arg == "message"), None
+                )
+            if isinstance(message, ast.Constant) and isinstance(message.value, str):
+                match = ASSERT_MESSAGE.match(message.value)
+                if match:
+                    tags.append((match["id"], Tag("system", label, owner)))
+        for child in ast.iter_child_nodes(node):
+            visit(child, owner)
+
+    if imported:
+        visit(tree, "<module>")
+    return tags
+
+
 def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
     """Each tagged property id with its tags, and every problem found reading them."""
     found: dict[str, list[Tag]] = defaultdict(list)
@@ -227,6 +279,16 @@ def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
             problems.extend(tag_problems)
             for tagged, tag in tags:
                 found[tagged].append(tag)
+
+    for path in sorted(root.glob(ASSERT_GLOB)):
+        label = path.relative_to(root).as_posix()
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=label)
+        except SyntaxError as error:
+            problems.append(f"{label}: cannot be read for assertions: {error}")
+            continue
+        for tagged, tag in _assertion_tags(tree, label):
+            found[tagged].append(tag)
 
     for path in sorted(root.glob(UI_GLOB)):
         label = path.relative_to(root).as_posix()

@@ -230,8 +230,15 @@ Switch matches that API:
 Where an assertion states a catalog property, its message is the property id,
 so the gate can find it.
 
-The first slice confirms the Python SDK's local mode and its behaviour when
-unset before anything depends on it.
+The Python SDK (`antithesis` 0.4) was confirmed before anything depended on
+it: it has no dependencies of its own, imports in about 25 ms, does nothing when
+the variable is unset, never raises on a false `always`, and in local mode logs
+the first call per id and outcome, not every call. So a `sometimes` shows in the
+log only once it has been true, and one that is never called is absent, which is
+why the history checker is given the ids it must see rather than reading them
+from the log. The message is `<property id>: <what holds>`, not the bare id,
+because Antithesis keys an assertion by its message and two assertions of one
+property would collide.
 
 ## Tying models to code: trace validation
 
@@ -327,10 +334,15 @@ platform is in place before it is widened.
    same properties. It cannot show `bus.room-seq-dense` (retention and erasing
    a person leave holes) or `delivery.decided-at-write` (it needs the room's
    state when the row was written); those wait for the assertion log.
-5. **Assertions.** The Antithesis Python SDK's local mode confirmed (or the
-   shim written), and the first assertions in the router and event buffer:
-   `always` for own-event numbering, `sometimes` for a resume below a drop
-   mark.
+5. **Assertions.** The Antithesis Python SDK (local mode confirmed), and the
+   first assertions in the event buffer: `always` that a stored event takes the
+   number after its agent's head, and that retention kept nothing at or below
+   what it recorded deleting; `sometimes` a reader resumes from below a drop
+   mark, and an event is not stored for an agent that left. The fast lane
+   writes the log and `properties/history/assertions.py` fails it on a false
+   `always`, a reached `unreachable`, or a required id never satisfied. The
+   fast lane reaches none of the `sometimes` yet, so it requires none; the
+   state machine and the explore lane are where they should be reached.
 6. **Explore lane** on the nightly schedule, with its properties in the
    catalog.
 

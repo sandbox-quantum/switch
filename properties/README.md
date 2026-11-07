@@ -61,3 +61,16 @@ empty history passes anything.
 
 Run by hand against a stack (`just e2e-fast --keep`, then the `DB_*` variables
 from its env file): `properties/history/check.sh`.
+
+## Assertions in the server
+
+The server states some properties as Antithesis assertions (`always`,
+`sometimes`, `reachable`, `unreachable` from `antithesis.assertions`), with a
+message `<property id>: <what holds>`. The gate counts one as evidence at the
+`system` level. Outside Antithesis the SDK does nothing unless
+`ANTITHESIS_SDK_LOCAL_OUTPUT` names a file, which the fast lane sets for the
+server it starts; `history/assertions.py` reads that file afterwards. The SDK
+logs the first call per id and outcome, so a `sometimes` appears only once it
+has been true, and `--require <message>` names the ones a run must have
+satisfied. An assertion never raises: a violation is evidence for a checker, not
+an error path in the service.

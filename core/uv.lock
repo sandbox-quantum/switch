@@ -177,6 +177,15 @@ wheels = [
 ]
 
 [[package]]
+name = "antithesis"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c8/b2/96f2fb4fad95858d1080af5d7b9bbb072e0420b33cd9bdab14f62a3c4685/antithesis-0.4.0.tar.gz", hash = "sha256:34a967cca62d8666748d9aab45097c28cec6bbc6a3b4ae663681f3d9300d3715", size = 53680, upload-time = "2026-09-29T15:35:18.219Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9d/7f/45fe532ac4cb372026acc4b8d8f0807b6c5791ff05c5d1adb988f0bdcc73/antithesis-0.4.0-py3-none-any.whl", hash = "sha256:5f1cf8b51a589cba8baec52de36e174a32d02e2ead124b6012a64e83fb642a9c", size = 43936, upload-time = "2026-09-29T15:35:17.193Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2491,6 +2500,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "alembic" },
+    { name = "antithesis" },
     { name = "asyncpg" },
     { name = "authlib" },
     { name = "bcrypt" },
@@ -2536,6 +2546,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3,<4" },
     { name = "alembic", specifier = ">=1.15,<2" },
+    { name = "antithesis", specifier = ">=0.4,<1" },
     { name = "asyncpg", specifier = ">=0.29,<1" },
     { name = "authlib", specifier = ">=1.3,<2" },
     { name = "bcrypt", specifier = ">=4.0,<5" },

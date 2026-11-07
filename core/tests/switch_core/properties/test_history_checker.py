@@ -4,6 +4,7 @@ code produced passes them, and each fails on a history with its bug planted."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -119,3 +120,66 @@ def test_a_tag_reads_only_the_agents_and_rooms_named_so(run: Delivery) -> None:
     scoped, nothing, everything = run.run(go())
     assert (scoped, nothing) == (3, 0)
     assert everything == 5
+
+
+_ASSERTIONS_PATH = (
+    Path(__file__).parents[4] / "properties" / "history" / "assertions.py"
+)
+_ASSERTIONS_SPEC = importlib.util.spec_from_file_location(
+    "history_assertions", _ASSERTIONS_PATH
+)
+assert _ASSERTIONS_SPEC is not None and _ASSERTIONS_SPEC.loader is not None
+history_assertions = importlib.util.module_from_spec(_ASSERTIONS_SPEC)
+sys.modules["history_assertions"] = history_assertions
+_ASSERTIONS_SPEC.loader.exec_module(history_assertions)
+
+
+def _record(kind: str, message: str, condition: bool, hit: bool = True) -> str:
+    return json.dumps(
+        {
+            "antithesis_assert": {
+                "display_type": kind,
+                "message": message,
+                "condition": condition,
+                "hit": hit,
+                "details": {},
+            }
+        }
+    )
+
+
+def test_the_assertion_log_fails_on_a_false_always_a_reached_unreachable_and_a_missing_sometimes() -> (
+    None
+):
+    log = "\n".join(
+        [
+            '{"antithesis_sdk": {}}',
+            _record("Always", "a: held", True),
+            _record("Always", "a: broke", False),
+            _record("AlwaysOrUnreachable", "b: broke", False),
+            _record("Unreachable", "c: reached", False),
+            _record("Sometimes", "d: false then true", False),
+            _record("Sometimes", "d: false then true", True),
+            _record("Sometimes", "e: only false", False),
+        ]
+    )
+    found = history_assertions.problems(
+        history_assertions.read(log),
+        ["d: false then true", "e: only false", "f: never called"],
+    )
+    assert [line.split(":")[0] for line in found] == [
+        "always",
+        "always",
+        "unreachable",
+        "never satisfied",
+        "never satisfied",
+    ]
+    assert "a: broke" in found[0] and "b: broke" in found[1]
+    assert "e: only false" in found[3] and "f: never called" in found[4]
+
+
+def test_a_clean_assertion_log_passes_and_a_line_that_is_not_json_is_an_error() -> None:
+    clean = "\n".join([_record("Always", "a", True), _record("Sometimes", "b", True)])
+    assert history_assertions.problems(history_assertions.read(clean), ["b"]) == []
+    with pytest.raises(ValueError, match="line 2"):
+        history_assertions.read(_record("Always", "a", True) + "\nnot json")
