@@ -15,6 +15,7 @@ import {
   POSTGRES_VERSION,
   postgresArchive,
 } from './toolchain-pins';
+import { assertVcRuntime, isDllNotFound } from './vc-runtime';
 
 const execFileAsync = promisify(execFile);
 
@@ -120,6 +121,7 @@ export async function probeBinDir(binDir: string): Promise<number | null> {
     log.warn('local-switch-server: found a PostgreSQL install that does not run', {
       binDir,
       error: String(error),
+      dllNotFound: isDllNotFound(error),
     });
     return null;
   }
@@ -272,6 +274,7 @@ async function downloadPostgres(
   const root = path.join(layout.toolchain, `postgres-${POSTGRES_VERSION}`);
   const binDir = path.join(root, 'bin');
   if ((await probeBinDir(binDir)) !== POSTGRES_MAJOR) {
+    await assertVcRuntime(binDir);
     onMessage(`Downloading PostgreSQL ${POSTGRES_MAJOR}…`);
     await installPinnedArchive(archive, layout.downloads, root);
     await hydrateSymlinks(root);
@@ -322,6 +325,10 @@ export async function resolvePostgres(
     (candidate) => required === null || candidate.major === required
   );
   const bundled = await bundledPostgres(bundle);
+  if (installed.length === 0 && bundled === null && bundle?.postgresBinDir != null) {
+    // Downloading the same build instead would fail the same way.
+    await assertVcRuntime(bundle.postgresBinDir);
+  }
   let chosen: PostgresBinaries;
   if (installed.length > 0) {
     chosen = installed[0];
