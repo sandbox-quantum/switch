@@ -155,8 +155,18 @@ export interface AcpProviderHooks {
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
-  /** The MCP server a tool call belongs to, when the agent says so. */
-  mcpServerOf?(toolCall: AcpToolCall): string | undefined;
+  /**
+   * The MCP server a tool call belongs to, when the agent says so. `servers`
+   * names the session's registered servers. A permission request is asked
+   * about with its own call first, then with the latest announcement or
+   * update of that call this answered for, and the request's call is
+   * `request` both times: an agent may name the server only across the two.
+   */
+  mcpServerOf?(
+    toolCall: AcpToolCall,
+    servers: ReadonlySet<string>,
+    request?: AcpToolCall
+  ): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**

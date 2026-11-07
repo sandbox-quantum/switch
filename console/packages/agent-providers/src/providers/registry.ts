@@ -6,6 +6,7 @@ import { createClaudeAdapter } from '../claude/claude-adapter';
 import { checkClaudeSignIn, CLAUDE_LOGIN } from '../claude/sign-in';
 import { createCodexAdapter } from '../codex/codex-adapter';
 import { checkCodexSignIn, CODEX_LOGIN } from '../codex/sign-in';
+import { copilotAcp } from '../copilot/copilot-acp';
 import { cursorAcp } from '../cursor/cursor-adapter';
 import { createOpencodeAdapter } from '../opencode/opencode-adapter';
 import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
@@ -105,6 +106,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
     checkSignIn: checkOpencodeSignIn,
   },
   acpProviderRuntime(antigravityAcp),
+  acpProviderRuntime(copilotAcp),
   acpProviderRuntime(cursorAcp),
 ];
 
