@@ -1,0 +1,50 @@
+slug: monday
+name: monday.com
+category: Project management
+description: Read and update monday.com boards and items, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Monday's OAuth server advertises refresh-token support. Whether refresh
+  # tokens rotate and the access-token lifetime still need credential-backed
+  # validation against a disposable account.
+  refresh: reusable
+  oauth:
+    # The hosted MCP server supports dynamic registration. Monday account
+    # admins must approve the registered client and its redirect URIs.
+    registration: dynamic
+    redirect: [loopback, core]
+    # monday.com checks the callback port exactly instead of applying the
+    # native-app any-port loopback rule. Keep the registered ports stable; the
+    # Console listens on the first free one from this list.
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    revocation_discovered: true
+  identity:
+    # Monday's identity endpoint is GraphQL, so this is a fixed JSON POST
+    # rather than the default JSON GET used by most OAuth vendors.
+    method: POST
+    url: https://api.monday.com/v2
+    body:
+      query: "{ me { id email } }"
+    account_id: data.me.id
+    label: data.me.email
+# Monday's MCP OAuth token currently lives longer than the one-hour hand-off
+# window. The broker still limits an issued token's `use_until` to one hour;
+# this bound only prevents rejecting the owner's longer-lived token outright.
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    - { name: monday, url: "https://mcp.monday.com/mcp" }
+access:
+  # Keep the first consent to current-user identity and board/item reads.
+  read:
+    scopes:
+      - me:read
+      - boards:read
+  write:
+    scopes:
+      - me:read
+      - boards:read
+      - boards:write
+tools: { mode: pass_through }
