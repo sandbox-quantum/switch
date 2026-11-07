@@ -8,6 +8,7 @@ every owner check trusts.
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -216,12 +217,19 @@ async def _verify(world: _World, caller: User, adapter: _Adapter | None) -> obje
             UserStore(),
             _Lifecycle(adapter),  # type: ignore[arg-type]
             caller,
+            False,
         )
 
 
 async def _claim_of(world: _World, user: User) -> ExternalUserClaim | None:
     async with world.session_factory() as session:
         return await _STORE.get_claim(session, world.account.id, user.id)
+
+
+def _code_in(text: str) -> str:
+    found = re.search(r"!link-account (\w{4}-\w{4})", text)
+    assert found is not None, text
+    return found.group(1)
 
 
 class TestClaimWaitsForTheAccount:
@@ -269,13 +277,104 @@ class TestClaimWaitsForTheAccount:
 
         assert refused.value.status_code == 404
 
-    async def test_a_console_from_before_confirmation_is_told_to_update(
+    async def test_a_stand_in_account_cannot_be_linked(self, world: _World) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await _claim(world, world.ada, external_user_id=_STAND_IN)
+
+        assert refused.value.status_code == 409
+        assert "Many people post as it." in refused.value.detail
+
+
+class TestAConsoleFromBeforeConfirmation:
+    """A Console from before confirmation leaves `expects_confirmation` out and
+    ignores a claim's code, but shows a 409's detail in its link dialog."""
+
+    async def test_it_is_shown_the_code_as_the_next_step(self, world: _World) -> None:
+        with pytest.raises(HTTPException) as answered:
+            await _claim(world, world.ada, expects_confirmation=False)
+
+        assert answered.value.status_code == 409
+        detail = answered.value.detail
+        assert f"On slack, post !link-account {_code_in(detail)}." in detail
+        assert "`" not in detail
+        assert "30 minutes" in detail
+        assert await _claim_of(world, world.ada) is None
+
+    async def test_the_code_it_was_shown_confirms_the_link(self, world: _World) -> None:
+        with pytest.raises(HTTPException) as answered:
+            await _claim(world, world.ada, expects_confirmation=False)
+
+        async with world.session_factory() as session:
+            confirmed = await _STORE.redeem_link_code(
+                session, world.account, _code_in(answered.value.detail), UserStore()
+            )
+            await session.commit()
+        assert confirmed is not None
+        assert confirmed.user_id == world.ada.id
+        claim = await _claim_of(world, world.ada)
+        assert claim is not None and claim.verified_at is not None
+
+    async def test_an_account_already_confirmed_is_claimed_normally(
         self, world: _World
     ) -> None:
-        # It would otherwise drop the code and report a link that counts for
-        # nothing as made.
+        summary = await _claim(world, world.ada)
+        async with world.session_factory() as session:
+            assert await _STORE.redeem_link_code(
+                session,
+                world.account,
+                summary.link_request.code.code,  # type: ignore[attr-defined]
+                UserStore(),
+            )
+            await session.commit()
+
+        again = await _claim(world, world.ada, expects_confirmation=False)
+
+        assert again.link_request is None  # type: ignore[attr-defined]
+        assert [
+            (c.user_id, c.verified)
+            for c in again.claimed_by  # type: ignore[attr-defined]
+        ] == [(world.ada.id, True)]
+
+    async def test_an_admin_relinking_someone_already_confirmed_is_answered(
+        self, world: _World
+    ) -> None:
+        summary = await _claim(world, world.ada)
+        async with world.session_factory() as session:
+            assert await _STORE.redeem_link_code(
+                session,
+                world.account,
+                summary.link_request.code.code,  # type: ignore[attr-defined]
+                UserStore(),
+            )
+            await session.commit()
+
+        again = await _claim(
+            world,
+            world.bob,
+            for_user=world.ada,
+            is_admin=True,
+            expects_confirmation=False,
+        )
+
+        assert again.link_request is None  # type: ignore[attr-defined]
+        assert [
+            (c.user_id, c.verified)
+            for c in again.claimed_by  # type: ignore[attr-defined]
+        ] == [(world.ada.id, True)]
+
+    async def test_an_admin_linking_someone_else_is_told_to_update(
+        self, world: _World
+    ) -> None:
+        # The code belongs to the person being linked, and this response would
+        # show it to the admin instead.
         with pytest.raises(HTTPException) as refused:
-            await _claim(world, world.ada, expects_confirmation=False)
+            await _claim(
+                world,
+                world.bob,
+                for_user=world.ada,
+                is_admin=True,
+                expects_confirmation=False,
+            )
 
         assert refused.value.status_code == 409
         assert "Update Switch Console" in refused.value.detail
@@ -285,12 +384,26 @@ class TestClaimWaitsForTheAccount:
                 is None
             )
 
-    async def test_a_stand_in_account_cannot_be_linked(self, world: _World) -> None:
+    async def test_an_admin_linking_an_unseen_account_provisions_nothing(
+        self, world: _World
+    ) -> None:
         with pytest.raises(HTTPException) as refused:
-            await _claim(world, world.ada, external_user_id=_STAND_IN)
+            await _claim(
+                world,
+                world.bob,
+                external_user_id="U-unseen",
+                for_user=world.ada,
+                is_admin=True,
+                expects_confirmation=False,
+            )
 
         assert refused.value.status_code == 409
-        assert "Many people post as it." in refused.value.detail
+        assert "Update Switch Console" in refused.value.detail
+        async with world.session_factory() as session:
+            provisioned = await session.scalar(
+                select(ExternalUser).where(ExternalUser.external_user_id == "U-unseen")
+            )
+        assert provisioned is None
 
 
 class TestIssuingACode:
@@ -552,6 +665,7 @@ class TestVerifyingWithASession:
                     UserStore(),
                     _Lifecycle(_Adapter(_STAND_IN)),  # type: ignore[arg-type]
                     world.ada,
+                    False,
                 )
 
         assert refused.value.status_code == 409

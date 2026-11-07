@@ -454,7 +454,11 @@ async def connection_status(
         status = 422 if error.code == CONNECTOR_REVOKED else error.status_code
         raise HTTPException(status, error.message) from None
     if token is None:
-        return {"status": "not_connected", "install_url": github.install_url}
+        return {
+            "status": "not_connected",
+            "install_url": github.install_url,
+            "can_revoke": False,
+        }
     try:
         reach = await github.repositories(token)
     except GitHubAuthorizationError as error:
@@ -473,6 +477,8 @@ async def connection_status(
         # this sign-in: connecting again and authorizing them shows those.
         "sso_hidden_organizations": reach.sso_hidden,
         "install_url": github.install_url,
+        # The caller's own connection, theirs to disconnect.
+        "can_revoke": True,
     }
 
 

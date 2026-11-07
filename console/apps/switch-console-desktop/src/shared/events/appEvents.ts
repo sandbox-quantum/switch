@@ -13,6 +13,8 @@ export const menuOpenSettingsChannel = defineEvent<void>('menu:open-settings');
 export const menuCheckForUpdatesChannel = defineEvent<void>('menu:check-for-updates');
 export const menuUndoChannel = defineEvent<void>('menu:undo');
 export const menuRedoChannel = defineEvent<void>('menu:redo');
+/** Edit > Select All in the main window; the renderer selects inside the focused field only. */
+export const menuSelectAllChannel = defineEvent<void>('menu:select-all');
 export const menuQuitRequestedChannel = defineEvent<void>('menu:quit-requested');
 
 export const externalLinkOpenRequestedChannel = defineEvent<{ url: string }>(

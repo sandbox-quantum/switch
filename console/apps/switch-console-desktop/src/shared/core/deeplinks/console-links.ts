@@ -26,6 +26,11 @@ type PageSpec = {
   id?: 'agent' | 'room' | 'template';
   /** The values `tab` may take, when the page has tabs. */
   tabs?: readonly string[];
+  /**
+   * Tabs the page had before, still accepted: an older server's switch-buddy
+   * may write them, and the page sends each where it went.
+   */
+  formerTabs?: readonly string[];
 };
 
 export const CONSOLE_PAGES = {
@@ -54,12 +59,23 @@ export const CONSOLE_PAGES = {
   invite: { description: 'Invite people to the workspace.' },
   admin: {
     description:
-      "Admin, for the workspace's admins: which connectors the workspace offers, and the apps they sign in through.",
-    tabs: ['connectors', 'apps'],
+      "Admin, for the workspace's admins and the server's operator: what the web gateway does not have yet.",
+    tabs: ['messaging-apps', 'connectors', 'switch-trust', 'apps'],
   },
   settings: {
     description: "Switch Console's settings.",
-    tabs: ['general', 'clis-models', 'remote-hosts', 'managed-agents', 'interface'],
+    tabs: [
+      'preferences',
+      'messaging-apps',
+      'clis-models',
+      'api-keys',
+      'devices',
+      'remote-hosts',
+      'managed-agents',
+      'status',
+      'account',
+    ],
+    formerTabs: ['general', 'interface'],
   },
 } as const satisfies Record<string, PageSpec>;
 
@@ -109,7 +125,7 @@ export function parseConsoleLink(raw: string): ConsoleLinkResult {
     return { ok: false, reason: `This link to a ${spec.id} does not say which one.` };
   }
   const tab = url.searchParams.get('tab');
-  if (tab !== null && !(spec.tabs ?? []).includes(tab)) {
+  if (tab !== null && ![...(spec.tabs ?? []), ...(spec.formerTabs ?? [])].includes(tab)) {
     return { ok: false, reason: `That page has no "${tab}" tab.` };
   }
   return { ok: true, link: { page, id, tab, server: url.searchParams.get('server') } };

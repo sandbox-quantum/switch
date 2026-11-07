@@ -9,7 +9,7 @@ import type { AcpPermissionRequest, AcpSessionResult } from '../acp/protocol';
 import type { ProviderSessionStartInput } from '../adapter';
 import { EventRecorder } from '../testing/event-recorder';
 import { noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
-import { checkCopilotSignIn, createCopilotAdapter } from './copilot-adapter';
+import { checkCopilotSignIn, copilotAcp, createCopilotAdapter } from './copilot-adapter';
 import { copilotEchoFixture } from './http-echo-fixture';
 
 // Real Copilot process and tools, deterministic local inference. This suite
@@ -285,7 +285,7 @@ describe.skipIf(!available)('Copilot CLI with mocked BYOK inference', () => {
       permissions.push(request as AcpPermissionRequest);
       return { outcome: { outcome: 'cancelled' } };
     });
-    const handshake = await acpInitialize(client);
+    const handshake = await acpInitialize(client, copilotAcp);
     const session = await client.request<AcpSessionResult>('session/new', { cwd, mcpServers: [] });
     await client.request('session/prompt', {
       sessionId: session.sessionId,

@@ -18,7 +18,11 @@ document assumes its vocabulary and does not repeat it.
 
 - `tenants` — `id`, `slug`, `name`, `created_at`. Nothing else.
 - `tenant_members` — `(tenant_id, user_id)` as the primary key, plus `role`
-  (`owner` / `admin` / `member`) and `created_at`.
+  (`admin` / `member`) and `created_at`. This phase built it with a third
+  role, `owner`, which differed from `admin` only in who could grant or remove
+  ownership. It has since merged into `admin`: every `owner` row became an
+  `admin` one, and a client that still asks for `owner` gets `admin`. Where
+  this page describes owners below, it records how the phase was built.
 - One tenant exists in every deployment: tenant zero, seeded by migration with
   slug `default`. Sign-in binds it explicitly rather than by fallback.
 - `sole_tenant_id()` raises unless the caller has exactly one membership, and
@@ -186,12 +190,12 @@ this phase must prove it has removed.
 
 - `GET /tenants` — the caller's workspaces: id, slug, name, their role. §7 is
   about how this reads across the boundary.
-- `POST /tenants` — create one; the creator becomes `owner` (meaningful only
+- `POST /tenants` — create one; the creator becomes `admin` (meaningful only
   once §2 lands). Slug derived from the name; a taken slug is a 409. Bounded —
   see below.
 - `POST /tenants/{id}/switch` — verify membership, re-mint the cookie.
 - `POST /tenants/{id}/invitations`, `GET`, `DELETE …/{token_id}` — mint, list,
-  revoke. `owner` and `admin` only.
+  revoke. Admins only.
 - `POST /invitations/accept` — accept. The token goes in the body, not the
   path: a URL segment ends up in proxy logs, browser history and `Referer`,
   and this one is a bearer credential.
@@ -206,9 +210,9 @@ unbounded self-service creation buys steady-state work in the deployment, not
 storage. `GATEWAY_MAX_WORKSPACES_PER_USER` is both the
 cap and the gate: at the limit `POST /tenants` is a 403, and `0` closes the
 route outright. It counts workspaces a person has *created*
-(`users.workspaces_created`), not ones they own: ownership can be handed to a
-second account, so a count of ownership could be reset by creating, handing
-over and stepping down. Being invited into someone else's workspace spends
+(`users.workspaces_created`), not ones they administer: a workspace can be
+handed to another admin, so a count of those could be reset by creating,
+handing over and stepping down. Being invited into someone else's workspace spends
 nothing. The check, the creation and the count run under a lock on the
 person's `users` row, so concurrent requests cannot all pass a check that only
 one of them should.
@@ -216,17 +220,17 @@ Deployment operators are exempt, on the same grounds as every other operator
 bypass — this bounds self-service, and an operator provisioning workspaces for
 other people is not that.
 
-**A workspace must always have an owner.** Removing or demoting the last one
-is refused; deletion of a workspace is not in this phase, so there is no
-legitimate path to an ownerless one.
+**A workspace must always have an admin.** Removing or demoting the last one
+is refused, and so is deleting the account of the last admin of a workspace
+other people are in. The check locks the workspace's admin rows before it
+counts them, so two admins demoting each other at once cannot both pass it.
 
-**Who owns a workspace is decided by its owners, not by its admins.** Granting
-`owner`, changing an owner's role, removing an owner, and minting an `owner`
-invitation are all owner-only, over and above the `owner`/`admin` gate on the
-route. The last-owner rule above cannot substitute for this, because it cannot
-see a sequence: an admin who promotes themselves first leaves two owners
-standing at every subsequent step, so each individual request passes while the
-three together take the workspace.
+This phase first built a separate `owner` role on top: granting `owner`,
+changing an owner's role and removing an owner were owner-only, because an
+admin who promoted themselves first could take the workspace one
+safe-looking request at a time. That distinction was dropped when `owner`
+merged into `admin`: every admin now manages every member, other admins
+included, and the last-admin rule is what keeps a workspace runnable.
 
 **Invitations are a table, and a link that grants membership is a credential.**
 `id`, `tenant_id`, `role`, `email` (null for a link), `expires_at`,
@@ -309,8 +313,8 @@ session is different in kind, not in degree.
 
 ## 8. Becoming an administrator
 
-**A workspace someone creates.** Solved by §5 plus §2: the creator is `owner`,
-and once §2 lands that means something.
+**A workspace someone creates.** Solved by §5 plus §2: the creator is its
+admin, and once §2 lands that means something.
 
 **A deployment that already exists** — `CHOO-2726`. This is less broken than
 previously reported, and the earlier account of it was wrong: identity linking
@@ -389,6 +393,6 @@ many a deployment ends up carrying.
 - An invitation can be minted, accepted once, and revoked before use.
 - A domain cannot be claimed by two tenants, nor by an account that cannot
   prove it uses it.
-- The last owner of a workspace cannot be removed or demoted.
+- The last admin of a workspace cannot be removed or demoted.
 - A person at the workspace limit is refused a new one and nothing is
   provisioned for them, and a limit of zero closes the route.
