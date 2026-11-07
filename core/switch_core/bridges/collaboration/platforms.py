@@ -15,6 +15,10 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.irc.adapter import (
+    IrcAdapter,
+    IrcConnectionConfig,
+)
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
@@ -53,6 +57,7 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("teams", TeamsAdapter, TeamsConnectionConfig),
     PlatformRegistration("discord", DiscordAdapter, DiscordConnectionConfig),
     PlatformRegistration("telegram", TelegramAdapter, TelegramConnectionConfig),
+    PlatformRegistration("irc", IrcAdapter, IrcConnectionConfig),
 )
 
 
