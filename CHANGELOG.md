@@ -45,6 +45,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Bitbucket connector for Bitbucket Cloud.** Agents can connect to Bitbucket
+  Cloud via Atlassian's OAuth authorization server and remote MCP gateway
+  (`https://mcp.atlassian.com/v2/mcp`). Dynamic client registration with loopback
+  redirects, least-privilege Bitbucket Cloud scopes (`read:bitbucket:agent-interface`,
+  `write:bitbucket:agent-interface`), pass-through tools, and operational skill
+  instructions.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
