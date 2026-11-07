@@ -57,6 +57,7 @@ const {
   deepseekHarnessAcp,
   dotenvHasKey,
   dshHome,
+  dshItemType,
 } = await import('./deepseek-harness-acp');
 
 beforeEach(() => {
@@ -246,6 +247,13 @@ it('parses only a non-empty key under refs', () => {
   expect(dotenvHasKey("DEEPSEEK_API_KEY=''\n")).toBe(false);
   expect(dotenvHasKey('# DEEPSEEK_API_KEY=sk-x\n')).toBe(false);
   expect(dotenvHasKey('DEEPSEEK_API_KEY = sk-x\n')).toBe(true);
+});
+
+it('types tool items by the tool name, dsh-acp reporting every kind as other', () => {
+  expect(dshItemType({ title: 'bash' })).toBe('command_execution');
+  expect(dshItemType({ title: 'write' })).toBe('file_change');
+  expect(dshItemType({ title: 'edit' })).toBe('file_change');
+  expect(dshItemType({ title: 'read' })).toBeUndefined();
 });
 
 it('resolves the dsh home as dsh does', () => {

@@ -84,6 +84,27 @@ export async function checkDshSignIn({
 }
 
 /**
+ * dsh-acp reports every tool call with kind `other` and the tool's name as
+ * its title, so the item type comes from the name: its shell tools ran a
+ * command, its file tools changed a file.
+ */
+export function dshItemType(toolCall: {
+  title?: string | null;
+}): 'command_execution' | 'file_change' | undefined {
+  switch (toolCall.title) {
+    case 'bash':
+    case 'pwsh':
+      return 'command_execution';
+    case 'write':
+    case 'edit':
+    case 'str_replace_editor':
+      return 'file_change';
+    default:
+      return undefined;
+  }
+}
+
+/**
  * DeepSeek Harness's automation-only ACP server, `dsh --profile acp`
  * (`@deepseek-ai/dsh-acp`). It advertises sessions, `session/resume`,
  * `session/close`, HTTP MCP and a `model` config option; it has no modes,
@@ -110,6 +131,7 @@ export const deepseekHarnessAcp: AcpProviderHooks = {
   // its `authenticate` succeeds without checking anything, so the check reads
   // where dsh itself finds its key.
   checkSignIn: checkDshSignIn,
+  itemType: dshItemType,
 };
 
 export function createDeepseekHarnessAdapter(options: AcpAdapterOptions = {}): AcpAdapter {
