@@ -21,7 +21,7 @@ const MAX_LABEL = 200;
 export type ActivityRow = {
   turn_id: string;
   item_id: string;
-  kind: 'turn' | 'user-message' | 'assistant-message' | 'tool-activity' | 'notice';
+  kind: 'turn' | 'user-message' | 'assistant-message' | 'tool-activity' | 'subagent' | 'notice';
   revision: number;
   status: string;
   title: string;
@@ -74,6 +74,16 @@ export type Report =
 type Placement = Pick<ActivityRow, 'room_id' | 'thread_id' | 'message_id'>;
 
 const ENDED = new Set(['completed', 'interrupted', 'error']);
+
+/**
+ * The row of a subagent step, for a server that predates `subagent` and
+ * refuses it: reported as `tool-activity` without its native child id, which
+ * the server already knows how to draw. Null for any other report.
+ */
+export function asToolActivity(report: Report): Report | null {
+  if (report.kind !== 'activity' || report.row.kind !== 'subagent') return null;
+  return { kind: 'activity', row: { ...report.row, kind: 'tool-activity', text: '' } };
+}
 
 const cursorSchema = z.strictObject({ through: z.number().int().nonnegative() });
 

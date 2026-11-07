@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Item, Origin, ServerEvent } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it } from 'vitest';
-import { ActivityReporter, type Report } from './activity-reporter';
+import { ActivityReporter, asToolActivity, type Report } from './activity-reporter';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -352,4 +352,26 @@ it('remembers how far it reported across a restart', async () => {
   const again = await ActivityReporter.load(root);
   expect(again.fresh).toBe(false);
   expect(again.cursor).toBe(7);
+});
+
+it('offers an older server a subagent step as tool-activity, and no other report', async () => {
+  const lines = await reporter();
+  const [subagent] = lines.reports(
+    event(
+      2,
+      item({
+        kind: 'subagent',
+        title: 'Explore: map auth flow',
+        text: 'child-1',
+      })
+    ),
+    originOf,
+    noUsage
+  );
+  expect(asToolActivity(subagent!)).toEqual({
+    kind: 'activity',
+    row: { ...rows([subagent!])[0], kind: 'tool-activity', text: '' },
+  });
+  for (const body of [turn('running'), item({})])
+    expect(asToolActivity(lines.reports(event(3, body), originOf, noUsage)[0]!)).toBeNull();
 });

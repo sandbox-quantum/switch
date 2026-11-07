@@ -79,6 +79,10 @@ describe('session-v1 wire contract', () => {
 
   it('validates the agreed examples and renders settlement after submitting', () => {
     commandSchema.parse(examples.platformAnswer);
+    expect(commandSchema.parse(examples.subagentInterrupt).body).toMatchObject({
+      type: 'turn.interrupt',
+      childId: 'agent-demo',
+    });
     parseHostEvent(examples.hostRequest);
     const replica = new SessionReplica(examples.initialSnapshot);
     for (const update of examples.answerLifecycle) replica.apply(update);

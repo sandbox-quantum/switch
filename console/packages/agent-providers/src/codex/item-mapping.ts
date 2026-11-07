@@ -99,6 +99,7 @@ export function mapCodexItem(raw: CodexThreadItem, lifecycle: ItemLifecycle): Pr
         title: item.tool,
         toolName: item.tool,
         text: item.prompt ?? undefined,
+        nativeChildId: item.receiverThreadIds[0],
         payload: { senderThreadId: item.senderThreadId, receiverThreadIds: item.receiverThreadIds },
       };
     case 'subAgentActivity':
@@ -108,6 +109,7 @@ export function mapCodexItem(raw: CodexThreadItem, lifecycle: ItemLifecycle): Pr
         status: lifecycleStatus,
         title: item.agentPath,
         toolName: item.agentPath,
+        nativeChildId: item.agentThreadId,
         payload: { kind: item.kind, agentThreadId: item.agentThreadId },
       };
     case 'webSearch':

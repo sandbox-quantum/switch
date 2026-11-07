@@ -642,6 +642,17 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
   }
 
+  async stopSubagent(sessionId: string, childId: string): Promise<void> {
+    const session = this.requireSession(sessionId);
+    try {
+      await session.query.stopTask(childId);
+    } catch (cause) {
+      throw new ProviderSessionError(PROVIDER, sessionId, 'Failed to stop the subagent.', {
+        cause,
+      });
+    }
+  }
+
   async respondToRequest(
     sessionId: string,
     requestId: string,
@@ -890,8 +901,9 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (message.type !== 'system') return;
     switch (message.subtype) {
       case 'task_started':
-        if (isSubagentTask(message))
-          tasks.set(message.task_id, { backgrounded: message.is_backgrounded !== false });
+        if (!isSubagentTask(message)) return;
+        tasks.set(message.task_id, { backgrounded: message.is_backgrounded !== false });
+        this.nameSubagent(session, message.tool_use_id, message.task_id);
         return;
       case 'task_updated': {
         const task = tasks.get(message.task_id);
@@ -917,6 +929,15 @@ export class ClaudeAdapter implements ProviderAdapter {
       default:
         return;
     }
+  }
+
+  /** The CLI names a subagent's task only after its tool call has started; stopping it takes that name. */
+  private nameSubagent(session: SessionState, toolUseId: string | undefined, taskId: string): void {
+    const turnId = session.turn?.turnId;
+    const item = toolUseId === undefined ? undefined : session.toolItems.get(toolUseId);
+    if (turnId === undefined || item?.type !== 'subagent') return;
+    item.nativeChildId = taskId;
+    this.emit(session, { type: 'item.updated', turnId, item });
   }
 
   private handleStreamEvent(

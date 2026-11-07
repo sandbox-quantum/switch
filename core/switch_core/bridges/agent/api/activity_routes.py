@@ -80,7 +80,12 @@ class ActivityReport(BaseModel):
     turn_id: _Id
     item_id: _Id
     kind: Literal[
-        "turn", "user-message", "assistant-message", "tool-activity", "notice"
+        "turn",
+        "user-message",
+        "assistant-message",
+        "tool-activity",
+        "subagent",
+        "notice",
     ]
     revision: int = Field(ge=0)
     status: str = Field(min_length=1, max_length=40)

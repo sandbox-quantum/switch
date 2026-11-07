@@ -1005,6 +1005,45 @@ it('reports what an ended turn spent on its row, and the row alone to a server t
   }
 }, 20000);
 
+it('reports a subagent step as tool-activity to a server that predates subagent', async () => {
+  const host = await start({ rooms: true });
+  const steps = () =>
+    host.switchCore.calls.filter(
+      (c) =>
+        c.path.endsWith('/activity') &&
+        ['subagent', 'tool-activity'].includes((c.body as { kind: string }).kind)
+    );
+  try {
+    host.switchCore.state.refusesSubagent = true;
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Explore') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    host.emit({
+      type: 'item.started',
+      turnId: host.turns[0]!.turnId,
+      item: {
+        id: 'sub-1',
+        type: 'subagent',
+        title: 'Explore: map auth flow',
+        status: 'in_progress',
+        nativeChildId: 'child-1',
+      },
+    });
+    await until(() => expect(steps()).toHaveLength(2));
+    expect(steps()[0]!.body).toMatchObject({
+      kind: 'subagent',
+      title: 'Explore: map auth flow',
+      text: 'child-1',
+    });
+    expect(steps()[1]!.body).toMatchObject({
+      kind: 'tool-activity',
+      title: 'Explore: map auth flow',
+      text: '',
+    });
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
 it('tells the session to rejoin its room once a reset asked for there has applied', async () => {
   const host = await start({ resettable: true });
   try {
