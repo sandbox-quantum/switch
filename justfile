@@ -192,6 +192,12 @@ migration msg:
 test *args:
     uv run --project core pytest -c core/pyproject.toml core/tests/ {{ args }}
 
+# ── Property catalog ───────────────────────────────────────────────────────────
+# `just properties` checks the catalog in properties/catalog against the checkers'
+# tags (nothing runs); `just properties table` prints each property by level.
+properties command="check":
+    uv run --project core python properties/gate/gate.py {{ command }}
+
 # ── End-to-end proof for "follow the conversation" ─────────────────────────────
 # Plays every journey as two people in a fresh local Mattermost against
 # switch-core from this checkout, then writes a report with the server's log

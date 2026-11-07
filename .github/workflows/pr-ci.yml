@@ -72,6 +72,7 @@ jobs:
       console: ${{ steps.filter.outputs.console }}
       gateway: ${{ steps.filter.outputs.gateway }}
       artifacts: ${{ steps.filter.outputs.artifacts }}
+      properties: ${{ steps.filter.outputs.properties }}
       migrations: ${{ steps.filter.outputs.migrations }}
       chart: ${{ steps.filter.outputs.chart }}
       decision: ${{ steps.filter.outputs.decision }}
@@ -152,6 +153,13 @@ jobs:
             # actually find a new head — not on every backend-touching push.
             migrations:
               - 'core/switch_core/migrations/versions/**'
+            # The property catalog and every checker that names a property in
+            # it, wherever the checker lives.
+            properties:
+              - *shared
+              - 'properties/**'
+              - 'core/tests/switch_core/properties/**'
+              - 'console/tooling-e2e/src/explore/spec/**'
             # The published Helm charts (switch, and the hosted controller's)
             # and what the release does to them before publishing (pins the
             # image digests into values.yaml).
@@ -461,6 +469,39 @@ jobs:
 
       - name: Registry, generated modules and declared versions agree
         run: uv run --project core python scripts/gen_artifacts.py --check
+
+  properties:
+    name: Property catalog
+    # Reads the catalog and the checkers' tags and runs nothing, so it needs
+    # only Python and is its own small job. The checkers themselves run where
+    # their code does: the Quint models and the history checker, and the
+    # Hypothesis tests in the backend tests.
+    needs: changes
+    if: ${{ needs.changes.outputs.properties == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --project core
+
+      - name: The catalog and its checkers agree
+        run: uv run --project core python properties/gate/gate.py check
+
+      - name: Property coverage
+        run: |
+          {
+            echo '```'
+            uv run --project core python properties/gate/gate.py table
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
 
   chart:
     name: Helm chart

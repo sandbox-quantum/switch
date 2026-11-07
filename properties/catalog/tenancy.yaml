@@ -1,0 +1,11 @@
+properties:
+  - id: tenancy.no-cross-tenant-ids
+    title: No response names another tenant's objects
+    statement: >
+      No response to a principal in one tenant contains an id from another
+      tenant.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
+    status: proposed
