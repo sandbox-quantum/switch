@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import hashlib
 import json
 import re
 import time
+from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
@@ -39,9 +42,16 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.loader import AccessLevel, ConnectionDefinition
+from switch_core.connections.loader import (
+    CONNECTION_PATH_PREFIX,
+    AccessLevel,
+    ConnectionDefinition,
+    render_mcp_url,
+    sign_in_field_values,
+)
 
 MAX_METADATA_BYTES = 64 * 1024
+SIGN_IN_FIELDS = "sign_in_fields"
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
@@ -179,6 +189,7 @@ class OAuthAdapter:
             or (definition.mcp is None and definition.cli is None)
         ):
             raise ValueError(f"{definition.slug} is not a complete oauth entry.")
+        self._fields: dict[str, str] = {}
         self._definition = definition
         self._oauth = oauth
         self._identity = identity
@@ -188,6 +199,21 @@ class OAuthAdapter:
         self._client = client
         self._http = http
         self._endpoints: AuthorizationEndpoints | None = None
+
+    def for_fields(self, values: Mapping[str, object]) -> OAuthAdapter:
+        try:
+            fields = sign_in_field_values(self._oauth.fields, values)
+            if not self._oauth.fields:
+                return self
+            assert self._definition.mcp is not None
+            mcp_url = render_mcp_url(self._definition.mcp.servers[0].url, fields)
+        except ValueError as error:
+            raise ServiceAdapterError(str(error)) from None
+        bound = copy.copy(self)
+        bound._fields = fields
+        bound._mcp_url = mcp_url
+        bound._endpoints = None
+        return bound
 
     @property
     def _name(self) -> str:
@@ -238,6 +264,10 @@ class OAuthAdapter:
 
     async def endpoints(self) -> AuthorizationEndpoints:
         """The vendor's OAuth endpoints: the catalog's, or discovered once."""
+        if self._oauth.fields and not self._fields:
+            raise ServiceAdapterError(
+                f"Switch needs {self._name}'s sign-in fields before it can reach it."
+            )
         if self._endpoints is not None:
             return self._endpoints
         if self._oauth.authorization_url is not None and self._oauth.token_url:
@@ -481,6 +511,8 @@ class OAuthAdapter:
             }
         )
         values = self._credentials(answer.body, {})
+        if self._oauth.fields:
+            values[SIGN_IN_FIELDS] = dict(self._fields)
         granted = values.get("scope")
         return SignIn(
             ConnectionSecret(values),
@@ -516,7 +548,9 @@ class OAuthAdapter:
             body = self._json(response, "account")
         paths = self._identity.account_id
         values = [
-            _path_value(body, path)
+            self._fields.get(path.removeprefix(CONNECTION_PATH_PREFIX))
+            if path.startswith(CONNECTION_PATH_PREFIX)
+            else _path_value(body, path)
             for path in (paths if isinstance(paths, list) else [paths])
         ]
         if any(type(value) not in (str, int) or value == "" for value in values):
@@ -699,6 +733,13 @@ class OAuthAdapter:
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
+        if self._oauth.fields and not self._fields:
+            values = secret.values.get(SIGN_IN_FIELDS) or {}
+            if not values:
+                raise ReauthorizationRequiredError(
+                    f"Connect {self._name} again: this connection does not record its sign-in fields."
+                )
+            return await self.for_fields(values).refresh(secret)
         refresh_token = secret.values.get("refresh_token")
         if not isinstance(refresh_token, str) or not refresh_token:
             raise ReauthorizationRequiredError(
@@ -734,6 +775,13 @@ class OAuthAdapter:
         )
 
     async def revoke_connection(self, secret: ConnectionSecret) -> None:
+        if self._oauth.fields and not self._fields:
+            values = secret.values.get(SIGN_IN_FIELDS) or {}
+            if not values:
+                raise ReauthorizationRequiredError(
+                    f"Connect {self._name} again: this connection does not record its sign-in fields."
+                )
+            return await self.for_fields(values).revoke_connection(secret)
         if self._oauth.revocation_url is None and not self._oauth.revocation_discovered:
             raise ConnectionNotRevocable(
                 f"Switch has stopped using the {self._name} sign-in but cannot "
