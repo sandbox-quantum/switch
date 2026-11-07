@@ -1,15 +1,15 @@
 import { resolve } from 'node:path';
-import { runOpenHandsMcpBridge } from '../openhands/mcp-bridge';
+import { runMcpBridge } from './mcp-bridge';
 import { startHostServer } from './server';
 
 const root = process.argv[2];
-if (root === '--openhands-mcp-bridge') {
-  await runOpenHandsMcpBridge();
+if (root === '--mcp-bridge') {
+  await runMcpBridge(process.argv[3]);
 } else {
   if (!root) throw new Error('SDK host requires its private state directory.');
   const host = await startHostServer(resolve(root), {
     command: process.execPath,
-    args: [process.argv[1]!, '--openhands-mcp-bridge'],
+    args: [process.argv[1]!, '--mcp-bridge'],
   });
   let stopping = false;
   const stop = () => {

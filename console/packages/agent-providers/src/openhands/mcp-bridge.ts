@@ -45,6 +45,9 @@ function containsReference(value: unknown, depth = 0): boolean {
   return Object.values(value).some((item) => containsReference(item, depth + 1));
 }
 
+// A branch without `kind` or references needs no translation. References in
+// a root branch may introduce `kind` at the tool's top level; without fully
+// resolving them we cannot safely decide whether the argument needs renaming.
 function hasBranchKind(schema: JsonObject, depth = 0): boolean {
   if (depth > 32) return true;
   for (const key of ['allOf', 'anyOf', 'oneOf', 'not', 'if', 'then', 'else'] as const) {

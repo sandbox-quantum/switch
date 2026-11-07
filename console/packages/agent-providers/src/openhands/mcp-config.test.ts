@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import { OPENHANDS_MCP_SPEC } from './mcp-bridge';
 import { prepareOpenHandsMcpServers } from './mcp-config';
 
-const bridge = { command: '/host/node', args: ['/host/sidecar.mjs', '--openhands-mcp-bridge'] };
+const bridge = { command: '/host/node', args: ['/host/sidecar.mjs', '--mcp-bridge'] };
 
 it('passes HTTP headers privately to the bridge without changing the server name', () => {
   const result = prepareOpenHandsMcpServers(
@@ -20,7 +20,7 @@ it('passes HTTP headers privately to the bridge without changing the server name
   expect(spec.transport).toBe('stdio');
   if (spec.transport !== 'stdio') throw new Error('expected stdio');
   expect(spec.command).toBe(bridge.command);
-  expect(spec.args).toEqual(bridge.args);
+  expect(spec.args).toEqual([...bridge.args, 'openhands']);
   expect(JSON.stringify(spec.args)).not.toContain('secret');
   expect(JSON.parse(spec.env![OPENHANDS_MCP_SPEC])).toEqual({
     transport: 'http',

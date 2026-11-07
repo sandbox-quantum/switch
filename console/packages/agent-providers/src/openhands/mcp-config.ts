@@ -40,7 +40,7 @@ export function prepareOpenHandsMcpServers(
         {
           transport: 'stdio' as const,
           command: bridge.command,
-          args: bridge.args,
+          args: [...bridge.args, 'openhands'],
           env: { ELECTRON_RUN_AS_NODE: '1', [OPENHANDS_MCP_SPEC]: configuration },
         },
       ];

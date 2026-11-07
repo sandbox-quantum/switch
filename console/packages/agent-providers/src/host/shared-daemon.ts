@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { runOpenHandsMcpBridge } from '../openhands/mcp-bridge';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
 import {
@@ -15,6 +14,7 @@ import { dirMode } from './host-permissions';
 import { materializeHostedProvider } from './hosted-provider';
 import { openHubStream } from './hub-stream';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import { runMcpBridge } from './mcp-bridge';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
@@ -253,7 +253,7 @@ async function main(): Promise<void> {
           config.execution?.binaryPath,
           config.execution?.skill ?? '',
           grantedSkills(services.grants),
-          { command: process.execPath, args: [process.argv[1]!, '--openhands-mcp-bridge'] }
+          { command: process.execPath, args: [process.argv[1]!, '--mcp-bridge'] }
         ),
         services,
         servicesChange,
@@ -317,7 +317,7 @@ function isCliConversationMode(value: string): value is CliConversationMode {
   return (CLI_CONVERSATION_MODES as readonly string[]).includes(value);
 }
 
-if (root === '--openhands-mcp-bridge') await runOpenHandsMcpBridge();
+if (root === '--mcp-bridge') await runMcpBridge(process.argv[3]);
 else if (root === '--git-credential' || root === '--github-cli') await helper();
 else
   try {

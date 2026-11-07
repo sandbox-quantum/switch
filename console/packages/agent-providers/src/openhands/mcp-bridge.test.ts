@@ -213,6 +213,40 @@ describe('OpenHands MCP bridge', () => {
     await bridge.close();
   });
 
+  it('passes through a root anyOf without kind alongside a safely translated tool', async () => {
+    const { inbound, outbound, bridge } = await fixture();
+    const ordinaryTool = {
+      name: 'ordinary',
+      inputSchema: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+        anyOf: [{ required: ['query'] }, { properties: { other: { type: 'string' } } }],
+      },
+    };
+    inbound.receive(req(1, 'tools/list'));
+    outbound.receive(
+      res(1, {
+        tools: [
+          ordinaryTool,
+          { name: 'kind_tool', inputSchema: { type: 'object', properties: { kind: {} } } },
+        ],
+      })
+    );
+    expect(inbound.sent.at(-1)).toMatchObject({
+      id: 1,
+      result: {
+        tools: [
+          ordinaryTool,
+          {
+            name: 'kind_tool',
+            inputSchema: { type: 'object', properties: { switch_mcp_kind: {} } },
+          },
+        ],
+      },
+    });
+    await bridge.close();
+  });
+
   it.each([
     { dependentRequired: { kind: ['other'] } },
     { dependencies: { kind: ['other'] } },
@@ -252,6 +286,7 @@ describe('OpenHands MCP bridge', () => {
     { oneOf: [{ properties: { kind: { type: 'string' } } }] },
     { allOf: [{ not: { properties: { kind: { type: 'string' } } } }] },
     { $ref: '#/$defs/tool' },
+    { anyOf: [{ $ref: '#/$defs/tool' }] },
   ])('fails closed when kind may be defined in a root branch or reference: %o', async (schema) => {
     const { inbound, outbound, bridge } = await fixture();
     inbound.receive(req(1, 'tools/list'));

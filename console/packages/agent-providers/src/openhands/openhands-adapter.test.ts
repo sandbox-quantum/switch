@@ -108,7 +108,7 @@ it('starts a session without authenticating, and sets its confirmation mode', as
 
 it('passes MCP servers through the host bridge without putting credentials in arguments', async () => {
   const adapter = createOpenHandsAdapter({
-    mcpBridge: { command: '/host/node', args: ['/host/sidecar.mjs', '--openhands-mcp-bridge'] },
+    mcpBridge: { command: '/host/node', args: ['/host/sidecar.mjs', '--mcp-bridge'] },
   });
   await adapter.startSession({
     sessionId: 's',
@@ -132,6 +132,7 @@ it('passes MCP servers through the host bridge without putting credentials in ar
   }>;
   expect(mapped).toHaveLength(1);
   expect(mapped[0].name).toBe('switch');
+  expect(mapped[0].args).toEqual(['/host/sidecar.mjs', '--mcp-bridge', 'openhands']);
   expect(JSON.stringify(mapped[0].args)).not.toContain('secret');
   const config = mapped[0].env.find((entry) => entry.name === 'SWITCH_OPENHANDS_MCP_SPEC');
   expect(JSON.parse(config!.value).headers.authorization).toBe('secret');
