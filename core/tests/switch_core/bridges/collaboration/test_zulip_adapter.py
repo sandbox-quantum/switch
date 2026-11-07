@@ -94,6 +94,21 @@ class Zulip:
         self.events: list[list[dict[str, Any]]] = []
         self.errors: dict[str, tuple[int, dict[str, Any]]] = {}
         self.next_id = 1000
+        self.members = [
+            {
+                "user_id": ALICE,
+                "full_name": "Alice Smith",
+                "is_bot": False,
+                "is_active": True,
+            },
+            {
+                "user_id": BOB,
+                "full_name": "Bob Alison",
+                "is_bot": False,
+                "is_active": False,
+            },
+            {"user_id": BOT, "full_name": "Ali Bot", "is_bot": True, "is_active": True},
+        ]
         self.uploads = {"/user_uploads/temporary/abc": b"file bytes"}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -156,6 +171,8 @@ class Zulip:
                     },
                 )
             return httpx.Response(200, json={**ok, "stream": stream})
+        if key == "GET /api/v1/users":
+            return httpx.Response(200, json={**ok, "members": self.members})
         if key == "GET /api/v1/get_stream_id":
             return httpx.Response(200, json={**ok, "stream_id": 77})
         if key == "POST /api/v1/user_uploads":
@@ -226,7 +243,8 @@ def test_zulip_is_registered() -> None:
     assert keys["zulip"].config is ZulipConnectionConfig
     assert ZulipAdapter.display_name == "Zulip"
     assert ZulipAdapter.keeps_quiet_unless_listening is True
-    assert ZulipAdapter.supports_directory_search is False
+    assert ZulipAdapter.supports_directory_search is True
+    assert ZulipAdapter.supports_queue_reaction is True
     assert ZulipAdapter.supports_activity_reactions is True
 
 
@@ -602,6 +620,33 @@ async def test_working_reaction_is_idempotent(zulip: Zulip) -> None:
         await adapter.mark_activity(
             f"stream:{STREAM}", "500", agent_name="claude", mark="working", on=False
         )
+
+
+async def test_queued_reaction_is_an_hourglass(zulip: Zulip) -> None:
+    adapter, _ = await _started()
+    await adapter.mark_activity(
+        f"stream:{STREAM}", "500", agent_name="claude", mark="queued", on=True
+    )
+    await adapter.mark_activity(
+        f"stream:{STREAM}", "500", agent_name="claude", mark="queued", on=False
+    )
+    assert zulip.calls("POST", "/messages/500/reactions") == [
+        {"emoji_name": "hourglass"}
+    ]
+    assert zulip.calls("DELETE", "/messages/500/reactions") == [
+        {"emoji_name": "hourglass"}
+    ]
+
+
+async def test_directory_search_finds_active_people_only(zulip: Zulip) -> None:
+    adapter, _ = await _started()
+    [alice] = await adapter.search_directory_users(" ALI ")
+    assert (alice.external_user_id, alice.username, alice.display_name) == (
+        str(ALICE),
+        "AliceSmith",
+        "Alice Smith",
+    )
+    assert await adapter.search_directory_users("  ") == []
 
 
 async def test_typing_in_a_topic_and_a_direct_message(zulip: Zulip) -> None:

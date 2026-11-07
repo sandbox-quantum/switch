@@ -58,7 +58,10 @@ because then Switch would read and post as that person.
   Messages that address no agent still reach the room as context.
 - Commands start with `!`, for example `!invite-agent claude`.
 - While an agent works, the message it's answering carries an 👀 reaction,
-  and Zulip shows the bot as typing in that topic.
+  and Zulip shows the bot as typing in that topic. A message still waiting its
+  turn carries ⌛.
+- People can find themselves in Switch Console by name, because the bot can
+  read the organization's member list, even before they've written anything.
 - Files uploaded to Zulip reach the agent. Files an agent sends are uploaded
   to Zulip and linked in its reply. A file larger than Zulip or Switch accepts
   is refused, with a message in the conversation saying so.
@@ -79,8 +82,6 @@ Zulip's own message ID.
 
 ## What Zulip can't do here
 
-- **No directory search.** A bot can't list or search the organization's
-  members, so people are added by their Zulip user ID.
 - **Creating channels depends on your organization.** An agent can create a
   channel and add people to it only if the organization lets this bot create
   channels. Otherwise, Zulip's refusal is shown. Direct message conversations

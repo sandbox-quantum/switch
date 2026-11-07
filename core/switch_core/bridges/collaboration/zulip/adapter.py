@@ -50,6 +50,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelType,
+    DirectoryUser,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -73,8 +74,10 @@ TOPIC_PREFIX = "topic:"
 #: Zulip refuses a message longer than this.
 MAX_MESSAGE = 10_000
 
-#: The reaction an agent's work is shown with.
+#: The reactions an agent's work is shown with: being worked on, and waiting
+#: its turn.
 WORKING_EMOJI = "eyes"
+QUEUED_EMOJI = "hourglass"
 
 #: How many message topics to remember before starting over.
 _TOPIC_CACHE = 5000
@@ -241,10 +244,11 @@ def topic_of(thread_root_id: str | None) -> str | None:
 class ZulipAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Zulip"
 
-    # One shared bot, which Zulip lets add a reaction and type in a topic.
+    # One shared bot, which Zulip lets add several reactions and type in a topic.
     supports_activity_reactions: ClassVar[bool] = True
-    # A bot can list and search people only through admin-level endpoints.
-    supports_directory_search: ClassVar[bool] = False
+    supports_queue_reaction: ClassVar[bool] = True
+    # A bot can read the organization's member list.
+    supports_directory_search: ClassVar[bool] = True
     renders_custom_url_schemes: ClassVar[bool] = False
     # Only the process holding the bridge reads the event queue.
     keeps_quiet_unless_listening: ClassVar[bool] = True
@@ -727,20 +731,20 @@ class ZulipAdapter(PlatformAdapter):
         on: bool,
         force: bool = False,
     ) -> None:
-        """Put 👀 on the message being worked on, or take it off.
+        """Put 👀 (working) or ⌛ (queued) on a message, or take it off.
 
-        One mark between every agent, since they share the bot. Zulip answers
-        adding a reaction that is already there, or removing one that is not,
-        with an error; both mean the message already shows what was asked.
+        One mark of each between every agent, since they share the bot. Zulip
+        answers adding a reaction that is already there, or removing one that
+        is not, with an error; both mean the message already shows what was
+        asked.
         """
-        if mark != "working":
-            return
+        emoji = WORKING_EMOJI if mark == "working" else QUEUED_EMOJI
         try:
             await self._call_with(
                 self.config,
                 "POST" if on else "DELETE",
                 f"/messages/{int(message_ref)}/reactions",
-                {"emoji_name": WORKING_EMOJI},
+                {"emoji_name": emoji},
             )
         except ZulipApiError as exc:
             if exc.code not in ("REACTION_ALREADY_EXISTS", "REACTION_DOES_NOT_EXIST"):
@@ -865,6 +869,30 @@ class ZulipAdapter(PlatformAdapter):
 
     async def remove_agent_identity(self, agent: AgentIdentity) -> None:
         return None
+
+    async def search_directory_users(self, query: str) -> list[DirectoryUser]:
+        """The organization's people whose name contains `query`, ignoring case.
+
+        Zulip has no name search for a bot, so this filters the member list.
+        A person is named the way their messages are: by Zulip user id, and
+        by their full name without spaces.
+        """
+        term = query.strip().casefold()
+        if not term:
+            return []
+        answer = await self._call("GET", "/users")
+        found = [
+            DirectoryUser(
+                external_user_id=str(member["user_id"]),
+                username=handle_of(str(member["full_name"])),
+                display_name=str(member["full_name"]),
+            )
+            for member in answer.get("members", [])
+            if not member.get("is_bot")
+            and member.get("is_active", True)
+            and term in str(member["full_name"]).casefold()
+        ]
+        return sorted(found, key=lambda user: user.display_name.casefold())
 
     async def get_channel_agent_names(self, channel_id: str) -> list[str]:
         return [self.config.default_agent] if self.config.default_agent else []
