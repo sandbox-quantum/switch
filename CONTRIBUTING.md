@@ -3,6 +3,9 @@
 Thanks for your interest in contributing! This guide covers what you need to
 get a change merged.
 
+New to the project? Start with the [Contributor Quickstart](docs/contributing/quickstart.md)
+for a step-by-step guide to setting up Switch locally.
+
 Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md). To
 report a security vulnerability, follow [SECURITY.md](SECURITY.md) rather than
 opening an issue.
