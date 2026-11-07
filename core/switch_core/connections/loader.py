@@ -178,15 +178,30 @@ class OAuthClient(BaseModel):
         return self
 
 
+IdentityPath = Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
+
+
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Read identity through a bearer-authenticated GET, or RFC 7662
+    introspection using the OAuth client's authentication. Composite ids are
+    percent-encoded components joined with colons.
+    `label` names a display field, falling back to the id when absent."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
-    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    method: Literal["GET", "introspection"] = "GET"
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    account_id: (
+        IdentityPath | Annotated[list[IdentityPath], Field(min_length=1, max_length=8)]
+    )
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _identity_source(self) -> "ConnectionIdentity":
+        if self.method == "GET" and self.url is None:
+            raise ValueError("GET identity needs a url")
+        if self.method == "introspection" and self.url is not None:
+            raise ValueError("introspection uses the discovered endpoint, not a url")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"

@@ -111,6 +111,19 @@ def vendor() -> FakeOAuthServer:
 
 
 class TestDiscovery:
+    @pytest.mark.parametrize("account_id", ["acct-1", 123, " "])
+    async def test_get_identity_ignores_unrelated_introspection_metadata(
+        self, vendor, account_id
+    ):
+        vendor.metadata["introspection_endpoint"] = "http://example.invalid/unused"
+        vendor.account["id"] = account_id
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token)
+        assert identity.account_id == str(account_id)
+        assert identity.label == "ada@example.test"
+        assert vendor.paths[-1] == IDENTITY_URL
+
     async def test_finds_the_endpoints_from_the_mcp_servers_metadata(
         self, vendor
     ) -> None:
