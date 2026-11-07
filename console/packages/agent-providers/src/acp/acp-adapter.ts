@@ -93,8 +93,16 @@ export async function checkAcpSignIn(
     if (!client) throw new Error(`${hooks.label} was asked ${method} before its handshake.`);
     return await client.request<T>(method, params);
   };
+  const connection = () => {
+    if (!client)
+      throw new Error(
+        `${hooks.label}'s sign-in check asked for the agent's connection before its handshake opened one.`
+      );
+    return client;
+  };
   try {
-    if (hooks.checkSignIn) return await hooks.checkSignIn({ ...input, handshake, request });
+    if (hooks.checkSignIn)
+      return await hooks.checkSignIn({ ...input, handshake, request, connection });
     await handshake();
     return readiness(
       'unknown',
@@ -310,6 +318,9 @@ export class AcpAdapter implements ProviderAdapter {
       const mode = hooks.sessionMode?.(input.runtimeMode, result.modes);
       if (mode)
         await client.request('session/set_mode', { sessionId: state.nativeId, modeId: mode });
+      const configured = hooks.sessionConfigOptions?.(input.runtimeMode, state.configOptions) ?? {};
+      for (const [configId, value] of Object.entries(configured))
+        await this.setConfigOption(state, configId, value);
       if (input.model) await this.setModel(state.id, input.model);
       const nativeSessionId = `${prefix?.prefix ?? ''}${state.nativeId}`;
       this.emit(state, { type: 'session.started', nativeSessionId });
@@ -363,7 +374,9 @@ export class AcpAdapter implements ProviderAdapter {
     void this.run(state, input).then(
       (reason) => {
         if (state.turn !== input.turnId) return;
-        const interrupted = state.interrupted || reason === 'cancelled';
+        // `cancelled` is the answer to our own `session/cancel`; an agent that
+        // cancels unasked (Junie, when every model refuses it) has failed.
+        const interrupted = state.interrupted;
         this.complete(
           state,
           interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
@@ -371,7 +384,9 @@ export class AcpAdapter implements ProviderAdapter {
             ? 'Interrupted.'
             : reason === 'end_turn'
               ? undefined
-              : `${this.hooks.label} stopped: ${reason}`
+              : reason === 'cancelled'
+                ? `${this.hooks.label} cancelled the turn itself, without being interrupted.`
+                : `${this.hooks.label} stopped: ${reason}`
         );
       },
       (error: unknown) => {
@@ -451,9 +466,27 @@ export class AcpAdapter implements ProviderAdapter {
     }
     if (!state.models.some((choice) => choice.id === model.id))
       throw new ProviderSessionError(this.provider, id, `Unavailable model: ${model.id}`);
+    await this.requestConfigOption(state, 'model', model.id);
+  }
+
+  /** Sets a session config option to a value it offers, as a provider's hooks ask for the runtime mode. */
+  private async setConfigOption(state: State, configId: string, value: string): Promise<void> {
+    const option = state.configOptions.find((candidate) => candidate.id === configId);
+    if (!option) throw new Error(`${this.hooks.label} offers no '${configId}' session option.`);
+    const offered = (option.options ?? []).flatMap((choice) =>
+      'value' in choice ? [choice.value] : choice.options.map((nested) => nested.value)
+    );
+    if (option.type === 'select' && !offered.includes(value))
+      throw new Error(
+        `${this.hooks.label} does not offer '${value}' for its '${configId}' option; it offers ${offered.join(', ')}.`
+      );
+    await this.requestConfigOption(state, configId, value);
+  }
+
+  private async requestConfigOption(state: State, configId: string, value: string): Promise<void> {
     const result = await state.client.request<{ configOptions?: AcpConfigOption[] }>(
       'session/set_config_option',
-      { sessionId: state.nativeId, configId: 'model', value: model.id }
+      { sessionId: state.nativeId, configId, value }
     );
     if (result.configOptions) this.applyConfigOptions(state, result.configOptions);
   }
@@ -585,7 +618,9 @@ export class AcpAdapter implements ProviderAdapter {
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
+    const persistent = this.hooks.persistentPermissionKinds ?? [];
     for (const option of request.options) {
+      if (persistent.includes(option.kind)) continue;
       const decision =
         option.kind === 'allow_once'
           ? 'accept'

@@ -99,6 +99,7 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'qwen',
       'droid',
       'cline',
+      'junie',
       'none',
     ]),
   }),

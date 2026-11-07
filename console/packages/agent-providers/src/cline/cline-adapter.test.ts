@@ -370,8 +370,9 @@ it('checks the sign-in from the saved file or an API key, without starting Cline
   const path = join(dir, 'providers.json');
   const handshake = vi.fn();
   const request = vi.fn();
+  const connection = vi.fn();
   const check = (env: Record<string, string>) =>
-    clineAcp.checkSignIn!({ binaryPath: 'cline', cwd: dir, env, handshake, request });
+    clineAcp.checkSignIn!({ binaryPath: 'cline', cwd: dir, env, handshake, request, connection });
   await expect(check({ CLINE_PROVIDER_SETTINGS_PATH: path })).resolves.toMatchObject({
     status: 'unauthenticated',
   });

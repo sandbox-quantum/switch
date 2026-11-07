@@ -111,7 +111,7 @@ describe('sessionLaunchConfig', () => {
     });
   });
 
-  it.each(['cursor', 'antigravity', 'pi', 'droid'])(
+  it.each(['cursor', 'antigravity', 'pi', 'droid', 'junie'])(
     'runs %s on its model with the instructions',
     (provider) => {
       const launch = sessionLaunchConfig({
