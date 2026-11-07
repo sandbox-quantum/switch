@@ -45,6 +45,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Incident response agent pair template.** Added
+  `examples/agent-templates/incident-pair.template.yaml` providing a dedicated forensics
+  and hotfix agent pair with human deployment gating.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
