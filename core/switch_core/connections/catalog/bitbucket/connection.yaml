@@ -1,7 +1,57 @@
 slug: bitbucket
 name: Bitbucket
 category: Source control
-description: Work with Bitbucket repositories and pull requests.
-enabled: false
+description: Read and update Bitbucket Cloud repositories and pull requests, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # Atlassian's MCP server offers dynamic client registration only: Core
+    # registers its own client on first connect.
+    registration: dynamic
+    # Sign-ins return to Switch Console on a fixed loopback port registered
+    # with the client; Atlassian matches the loopback port exactly.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.atlassian.com/me
+    account_id: account_id
+    label: email
+# Atlassian's MCP access tokens live 8 hours, and Atlassian offers no way to
+# ask for a shorter one or to revoke one alone, so an agent's copy may outlive
+# its grant by up to that long. Agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  # Bitbucket Cloud shares Atlassian's remote MCP server but uses its own
+  # bitbucket server name so sessions can grant Bitbucket independently of Jira
+  # and Confluence. The Bitbucket workspace must be linked to an Atlassian
+  # organization.
+  servers:
+    - { name: bitbucket, url: "https://mcp.atlassian.com/v2/mcp" }
+access:
+  # Requests Bitbucket Cloud scopes only (plus the Atlassian identity and
+  # offline_access scopes required for consent and refresh), never Jira,
+  # Confluence, Rovo search (search:rovo) or Teamwork Graph (read:all:twg).
+  # A read-only sign-in still lists executeWrite and executeDestructive on the
+  # MCP server, but discover returns no write operations and Atlassian reports
+  # the resource as read-only.
+  read:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+  write:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+      - write:bitbucket:agent-interface
+tools: { mode: pass_through }

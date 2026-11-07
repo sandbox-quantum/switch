@@ -479,6 +479,30 @@ To connect: Settings, Connections in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
+## Bitbucket
+
+Bitbucket Cloud is served by Atlassian's remote MCP server
+(`https://mcp.atlassian.com/v2/mcp`), as its own `bitbucket` catalog entry so
+source-control access can be connected and granted separately from Jira and
+Confluence:
+
+- Dynamic client registration (`registration: dynamic`) and loopback redirects
+  on ports `39231`–`39235`, matching Atlassian's authorization server.
+- The session MCP server is named `bitbucket`, avoiding a name collision with
+  `atlassian` when an agent is granted both.
+- Requests Bitbucket Cloud scopes only (`read:bitbucket:agent-interface`, and
+  `write:bitbucket:agent-interface` for write access) alongside Atlassian's
+  identity and refresh scopes (`read:me`, `read:account`, `email`,
+  `offline_access`). No Jira, Confluence, Rovo search or Teamwork Graph scopes
+  are requested.
+- The Bitbucket workspace must be linked to an Atlassian organization.
+- Tools pass through (`tools: { mode: pass_through }`), with an 8-hour
+  pass-through token cap (`max_lifetime: 28800`) and rotating refresh tokens.
+
+To connect: Settings, Connections in Switch Console, then Bitbucket. Nothing
+needs configuring on the server. To roll back, add `bitbucket` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Airtable
 
 Built from sign-in runs against free Airtable accounts; the operator's setup
