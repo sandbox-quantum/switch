@@ -213,6 +213,16 @@ class TestSignIn:
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
 
+    async def test_reads_the_accounts_id_and_label_over_post(self, vendor) -> None:
+        post_entry = STATIC.replace(
+            "  identity:\n",
+            "  identity:\n    method: POST\n    body: { query: me }\n",
+        )
+        adapter, _ = _adapter(vendor, text=post_entry)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}
         adapter, _ = _adapter(vendor)
