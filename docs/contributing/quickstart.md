@@ -109,3 +109,69 @@ just gateway-dev
 Expect Vite at **http://localhost:5173**; sign in with the gateway admin login
 from `.env`. Leave this terminal running. Console and agents connect to
 **http://localhost:8000**, not the dashboard's `:5173`.
+
+## 3. Build Console and join this server
+
+Use a third, interactive desktop terminal. On Windows, first clone into a
+new directory from **PowerShell**, keeping LF endings:
+
+```powershell
+git clone -c core.autocrlf=false https://github.com/sandbox-quantum/switch.git switch-console-dev
+cd switch-console-dev
+git rev-parse HEAD
+```
+
+Compare that SHA with the WSL clone's SHA; if different, check out the WSL
+SHA here before building. Linux/macOS readers use their existing clone.
+From that clone's root (PowerShell on Windows, bash elsewhere):
+
+```text
+cd console
+pnpm install --frozen-lockfile
+pnpm run dev
+```
+
+`pnpm run dev` builds shared packages and the desktop sidecar, then starts
+watches and Electron; no separate build command is needed. Expect the first
+launch to take longer. See [Console development notes](../../console/AGENTS.md)
+for individual build commands. Keep this terminal and Console open.
+
+On first run choose **Join an existing server** → **Continue**. In an already
+configured app, use the server picker → **Add a Switch server** →
+**Connect to an existing server**. Enter a name and **Server address**
+`http://localhost:8000`, then **Add server** and sign in with the gateway admin
+login. **On this computer** on the first-run screen installs another server;
+it does not connect to the Core process above.
+
+## 4. Register an agent, then add it to a room
+
+1. Open **Settings → Agent providers**. Confirm your CLI is installed and
+   authenticated on Console's machine, with model access/quota. If installed
+   after Console started, fully quit and reopen Console. An installed CLI is
+   a provider, not yet a registered room participant.
+2. Open **Your Agents** and select the dashed plus card. Choose **This
+   computer** as **Run location**, your **Agent provider**, and a working
+   directory on that computer (the Console checkout on Windows). If offered,
+   select **Run managed agents on this computer** and wait for the controller.
+   Give it a unique lowercase **Name**, for example `quickstart.yourname`,
+   and a **Description**, then **Add agent**. It must appear in Your Agents.
+3. Check **Home → Messaging apps** for your linked Mattermost account. Setup
+   links the gateway admin to `MATTERMOST_USER`. If missing, use **Link**,
+   select your account with **This is me**, then post the displayed confirmation
+   code from that account as instructed. Wait until the link is confirmed:
+   the default agent policy accepts instructions only from its owner.
+4. Open **Your Rooms → + New Room**. Choose Mattermost as the messaging app,
+   name the room `quickstart-yourname`, select your registered agent under
+   **Participants**, then **Create room**.
+5. Sign in at **http://localhost:8065** as `.env`'s **MATTERMOST_USER** with
+   **MATTERMOST_USER_PASSWORD**, rather than the bridge's administrative user.
+   Open the new channel and select the agent's actual mention from autocomplete:
+
+   ```text
+   @quickstart.yourname Read console/.nvmrc in your working directory and tell me its value. Do not modify files.
+   ```
+
+Expect the agent to start a session if necessary and reply **24.14.0** in the
+room. A startup notification alone is not the provider's answer: check its
+Console session for the matching prompt and file read. This proves more than
+an HTTP health check. Approve any legitimate read request in the session.
