@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import pytest
 from slack_sdk.errors import SlackApiError
 
+from switch_core.bridges.collaboration.collaboration_core import _no_agents_notice
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -711,6 +713,19 @@ def test_admin_message_posts_as_app_in_thread() -> None:
     assert "icon_url" not in call
 
 
+def test_admin_message_renders_markdown_as_mrkdwn() -> None:
+    adapter = _adapter()
+    fake = _FakeWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    _run(adapter.admin_message("C123", _no_agents_notice(None)))
+
+    text = fake.calls[0]["text"]
+    assert "**" not in text
+    assert "*To add an agent*" in text
+    assert "`!invite-agent @agent-name`" in text
+
+
 # ── Outbound mention resolution ──────────────────────────────────────────────
 
 
@@ -732,13 +747,18 @@ def test_outbound_unknown_mention_left_as_plain_text() -> None:
 class _FakeDMWebClient:
     """Records conversations_create / conversations_invite kwargs."""
 
-    def __init__(self, invite_error: str | None = None) -> None:
+    def __init__(
+        self, invite_error: str | None = None, taken: frozenset[str] = frozenset()
+    ) -> None:
         self.creates: list[dict[str, Any]] = []
         self.invites: list[dict[str, Any]] = []
         self._invite_error = invite_error
+        self._taken = taken
 
     async def conversations_create(self, **kwargs: Any) -> dict[str, Any]:
         self.creates.append(kwargs)
+        if kwargs["name"] in self._taken:
+            raise SlackApiError("name_taken", response={"error": "name_taken"})
         return {"channel": {"id": "C-DM"}}
 
     async def conversations_invite(self, **kwargs: Any) -> dict[str, Any]:
@@ -757,7 +777,7 @@ def test_create_dm_channel_makes_private_channel_and_invites_user() -> None:
 
     channel_id = _run(
         adapter.create_dm_channel(
-            agent_name="agent.bot",
+            agent_name="Order Planner",
             user_name="doe.jane",
             user_external_id="U123",
         )
@@ -765,11 +785,26 @@ def test_create_dm_channel_makes_private_channel_and_invites_user() -> None:
 
     assert channel_id == "C-DM"
     assert len(fake.creates) == 1
-    # A private channel, named dm-<user>-<agent> with non-slug chars dashed.
+    # A private channel, named <agent>-<user> with non-slug runs dashed.
     assert fake.creates[0]["is_private"] is True
-    assert fake.creates[0]["name"] == "dm-doe-jane-agent-bot"
+    assert fake.creates[0]["name"] == "order-planner-doe-jane"
     # The single user is invited to the freshly created channel.
     assert fake.invites == [{"channel": "C-DM", "users": "U123"}]
+
+
+def test_create_dm_channel_suffixes_a_taken_name() -> None:
+    adapter = _adapter()
+    fake = _FakeDMWebClient(taken=frozenset({"buddy-raul"}))
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    _run(
+        adapter.create_dm_channel(
+            agent_name="buddy", user_name="raul", user_external_id="U1"
+        )
+    )
+
+    assert [create["name"] for create in fake.creates][0] == "buddy-raul"
+    assert re.fullmatch(r"buddy-raul-[0-9a-f]{8}", fake.creates[1]["name"])
 
 
 def test_create_dm_channel_tolerates_already_in_channel() -> None:

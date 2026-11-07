@@ -8,6 +8,7 @@ function fakeFs(seed: Record<string, string> = {}): PluginFs {
     read: async (p) => files.get(p) ?? null,
     write: async (p, c) => void files.set(p, c),
     delete: async (p) => void files.delete(p),
+    protectSecret: async (p) => files.has(p),
     exists: async (p) => files.has(p),
     list: async () => [...files.keys()],
   };
@@ -39,8 +40,17 @@ const h = vi.hoisted(() => {
     discardControllerState: vi.fn(async () => {}),
     deleteRow: vi.fn(async () => {}),
     stopRemoteWatcher: vi.fn(async () => {}),
+    deleteLocationIfUnused: vi.fn(async () => {}),
+    releaseHostIfUnused: vi.fn(async () => {}),
   };
 });
+
+vi.mock('@main/core/locations/store', () => ({
+  deleteLocationIfUnused: h.deleteLocationIfUnused,
+}));
+vi.mock('@main/core/remote-hosts/production-host-reachability', () => ({
+  releaseHostIfUnused: h.releaseHostIfUnused,
+}));
 
 // Console runs every agent here; none was moved to a managed machine.
 vi.mock('@main/core/agent-migration/managed-agents-store', () => ({
@@ -59,7 +69,7 @@ vi.mock('./agent-workdir-fs', () => ({
   resolveWorkdirFsFor: vi.fn(async () => ({ fs: h.state.fs, close: vi.fn() })),
 }));
 vi.mock('./agent-location', () => ({
-  getAgentLocation: vi.fn(async () => ({ sshHost: h.state.sshHost, dir: '/repo' })),
+  getAgentLocation: vi.fn(async () => ({ id: 'loc', sshHost: h.state.sshHost, dir: '/repo' })),
 }));
 vi.mock('./getAgentById', () => ({ getAgentById: vi.fn(async () => h.state.agent) }));
 vi.mock('./remove-switch-settings', () => ({
@@ -137,6 +147,37 @@ describe('deleteAgent', () => {
     h.state.agent = { id: 'agent-1', name: 'cc-hoot', providerId: 'claude', locationId: 'loc' };
     h.state.sessionRows = [];
     h.state.sshHost = null;
+  });
+
+  it('releases the location and its host once the agent row is gone', async () => {
+    h.state.sshHost = 'example-host';
+    h.deleteRow.mockImplementationOnce(async () => {
+      expect(h.deleteLocationIfUnused).not.toHaveBeenCalled();
+    });
+
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: false,
+      trigger: 'user',
+    });
+
+    expect(h.deleteLocationIfUnused).toHaveBeenCalledWith('loc');
+    expect(h.releaseHostIfUnused).toHaveBeenCalledWith('example-host');
+  });
+
+  it('does not report the delete as failed when releasing the location fails', async () => {
+    h.deleteLocationIfUnused.mockRejectedValueOnce(new Error('db busy'));
+
+    await deleteAgent('agent-1', {
+      deleteInSwitch: false,
+      removeProvisionedFiles: false,
+      trigger: 'user',
+    });
+
+    expect(h.trackEvent).toHaveBeenCalledWith(
+      'agent_removed',
+      expect.objectContaining({ outcome: 'success' })
+    );
   });
 
   it('removes the per-agent credentials for a provider with no repo-agent definitions', async () => {

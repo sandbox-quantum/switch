@@ -12,6 +12,7 @@ import {
 import { wireExternalLinkRequests } from '@renderer/lib/external-link-requests';
 import { rpc } from '@renderer/lib/ipc';
 import { wireMouseNavigation } from '@renderer/lib/layout/mouse-navigation';
+import { wireSelectAll } from '@renderer/lib/select-all';
 import { viewStateCache } from '@renderer/lib/stores/view-state-cache';
 import { log } from '@renderer/utils/logger';
 import { initSoundPlayer } from '@renderer/utils/soundPlayer';
@@ -51,6 +52,7 @@ async function bootstrap() {
   setupAppCommandProvider();
   setupViewCommandProvider(views as unknown as ViewCommandProviders);
   wireMouseNavigation();
+  wireSelectAll();
   if (sidebarResult) {
     appState.sidebar.restoreSnapshot(sidebarResult as Partial<SidebarSnapshot>);
   } else {

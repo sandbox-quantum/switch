@@ -1,6 +1,6 @@
 import { Lock, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { SERVER_TOO_OLD_FOR_ACTIVITY } from '@shared/core/chats/activity';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
@@ -72,9 +72,12 @@ const Notice = ({ icon, title, body }: { icon: React.ReactNode; title: string; b
 export const ChatPanel = observer(function ChatPanel({
   serverId,
   roomId,
+  afterMessages,
 }: {
   serverId: string;
   roomId: string;
+  /** Drawn under the conversation, as switch-buddy's setup cards. */
+  afterMessages?: ReactNode;
 }) {
   const timeline = chatsStore.timelines.get(serverId, roomId);
   const chat = chatsStore.chat(roomId);
@@ -180,6 +183,7 @@ export const ChatPanel = observer(function ChatPanel({
                 onReply={setReplyTo}
               />
             )}
+            {timeline.loaded && afterMessages}
             {timeline.loaded && timeline.messages.length === 0 && timeline.pending.length === 0 && (
               <p className="mt-10 text-center text-sm text-foreground-muted">
                 No messages yet. Say what you need below.

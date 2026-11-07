@@ -24,6 +24,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.clients.admin_messages import SENDER_IS_APP_MARKER
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Client,
@@ -166,9 +167,13 @@ class _FakeListener:
 
     def __init__(self) -> None:
         self.wakers: dict[str, set] = {}
+        self.types: dict[str, frozenset[str] | None] = {}
 
-    def subscribe(self, room_id: str, waker) -> None:
+    def subscribe(
+        self, room_id: str, waker, *, types: frozenset[str] | None = None
+    ) -> None:
         self.wakers.setdefault(room_id, set()).add(waker)
+        self.types[room_id] = types
 
     def unsubscribe(self, room_id: str, waker) -> None:
         self.wakers.get(room_id, set()).discard(waker)
@@ -406,10 +411,51 @@ class TestTheParticipantMessageObserver:
                 room_id=room_id,
                 sender_client_id=client_id,
                 sender_role="human",
+                sender_is_app=False,
                 has_attachment=False,
                 in_thread=False,
             )
         ]
+
+    async def test_an_app_post_and_its_files_say_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The bridge's mark rides on the message and on a file sent alone, so
+        an integration's post is told from a person's whichever it is."""
+        async with session_factory() as session:
+            room_id, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        recorder = _Recorder()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            actor_role="human",
+            message_observer=recorder,
+        )
+        marker = {SENDER_IS_APP_MARKER: True}
+
+        await transport.send_message(
+            transport_room_id,
+            "deploy finished",
+            sender_name="ci",
+            metered=True,
+            extra_content=marker,
+        )
+        await transport.send_media(
+            transport_room_id,
+            "switch-media://log",
+            "build.log",
+            "text/plain",
+            3,
+            sender_name="ci",
+            metered=True,
+            msgtype="m.file",
+            extra_content=marker,
+        )
+
+        assert [m.sender_is_app for m in recorder.seen] == [True, True]
+        assert [m.has_attachment for m in recorder.seen] == [False, True]
 
     async def test_a_reply_in_a_thread_says_so(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -901,6 +947,113 @@ class TestReceiving:
         # The room a handler is given is the transport-side id it knows, not
         # the internal one the listener announces.
         assert event.room_id == room
+
+    async def test_a_row_nobody_announced_is_found_by_the_recheck(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The process that writes a row announces it after its commit, and
+        one that died between the two announced nothing: the reader asks
+        which of its rooms moved past where it read."""
+        monkeypatch.setattr(postgres_module, "RECHECK_SECONDS", 0.05)
+        transport, _, received, room, _ = await self._receiving(session_factory)
+
+        sent = await transport.send_message(
+            room, "never announced", sender_name="agent one", metered=True
+        )
+        async with asyncio.timeout(10):
+            while not received.events:
+                await asyncio.sleep(0.01)
+
+        assert [event.event_id for event in received.events] == [sent.event_id]  # type: ignore[attr-defined]
+
+    async def test_a_reader_of_some_types_is_rechecked_for_those_only(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Switch's own reader's cursor moves only with command rows, so the
+        rows of every other type past it must not wake it at every check."""
+        monkeypatch.setattr(postgres_module, "RECHECK_SECONDS", 0.02)
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            await session.commit()
+        received = _Received()
+        reader = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            listener=_FakeListener(),
+        )
+        reader.register_handlers(received.handlers())
+        await reader.join_room(room)
+        task = asyncio.create_task(
+            reader.receive_forever(
+                FromHead(MessageStore()),
+                row_types=frozenset({"com.switch.command"}),
+            )
+        )
+        self._tasks.append((task, reader))
+        await _watched_room(reader)
+        woken: list[str] = []
+        mark = reader._mark_pending
+
+        def counting(room_id: str) -> None:
+            woken.append(room_id)
+            mark(room_id)
+
+        reader._mark_pending = counting  # type: ignore[method-assign]
+
+        await reader.send_message(room, "chat", sender_name="a", metered=True)
+        await asyncio.sleep(0.2)
+        assert woken == []
+
+        sent = await reader.send_event(
+            room,
+            "com.switch.command",
+            {"command": "help", "args": "", "user_id": user_id, "user_name": "a"},
+        )
+        async with asyncio.timeout(10):
+            while not received.events:
+                await asyncio.sleep(0.01)
+
+        assert [event.event_id for event in received.events] == [sent.event_id]  # type: ignore[attr-defined]
+
+    async def test_a_reader_of_some_types_is_handed_only_those(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Switch's own reader acts on command rows only, and was handed every
+        row of every room to find them."""
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            await session.commit()
+        listener = _FakeListener()
+        received = _Received()
+        reader = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        reader.register_handlers(received.handlers())
+        await reader.join_room(room)
+        commands = frozenset({"com.switch.command"})
+        task = asyncio.create_task(
+            reader.receive_forever(FromHead(MessageStore()), row_types=commands)
+        )
+        self._tasks.append((task, reader))
+        switch_room_id = await _watched_room(reader)
+        assert listener.types[switch_room_id] == commands
+
+        await reader.send_message(room, "before", sender_name="a", metered=True)
+        sent = await reader.send_event(
+            room,
+            "com.switch.command",
+            {"command": "help", "args": "", "user_id": user_id, "user_name": "a"},
+        )
+        await reader.send_message(room, "after", sender_name="a", metered=True)
+        await listener.announce(switch_room_id)
+
+        assert [event.event_id for event in received.events] == [sent.event_id]  # type: ignore[attr-defined]
+        assert isinstance(received.events[0], InboundCustomEvent)
 
     async def test_the_cursor_starts_at_the_head_and_does_not_repeat(
         self, session_factory: async_sessionmaker[AsyncSession]

@@ -12,6 +12,7 @@ import {
 import { DEFAULT_TIMING } from './controller';
 import { silentLogger } from './log';
 import type { AgentCursor, ControllerConnection } from './schemas';
+import { SocketCallLost, SocketCalls } from './socket-calls';
 import { type ControllerFrame, type ControllerStreamOptions, runControllerStream } from './stream';
 import { FakeCore } from './testing/fake-core';
 
@@ -138,6 +139,54 @@ function run(
 }
 
 describe('runControllerStream', () => {
+  it('takes calls on a socket that offers them, answers each as it arrives, and fails them when it closes', async () => {
+    const scripted = new ScriptedClient();
+    const offering = {
+      event: 'connection_state',
+      data: { connection_id: 'connection-1', calls: { max_in_flight: 2 } },
+    };
+    scripted.sockets = () => scriptedSocket([offering], 'open');
+    const calls = new SocketCalls();
+    const stop = new AbortController();
+    const { frames, states, ending } = run(scripted, stop.signal, { calls });
+    await waitFor(() => states.includes('connected'), 'the socket to attach');
+
+    const call = {
+      agentId: 'agent-1',
+      roomId: 'room-a',
+      operation: 'post_message',
+      args: { body: 'hi' },
+      requestId: null,
+    };
+    const answered = calls.call(call)!;
+    const socket = scripted.opened[0]!;
+    expect(socket.sent).toContainEqual(expect.objectContaining({ type: 'call', id: 1 }));
+    socket.deliver({ event: 'call.result', data: { id: 1, status: 200, body: { result: 'ok' } } });
+    expect(await answered).toEqual({ status: 200, body: { result: 'ok' } });
+
+    const unanswered = calls.call(call)!;
+    socket.end(1011);
+    await expect(unanswered).rejects.toBeInstanceOf(SocketCallLost);
+    stop.abort();
+    expect(await ending).toBe('stopped');
+    expect(frames.map((frame) => frame.type)).not.toContain('call.result');
+  });
+
+  it('takes no calls on a socket from a server that does not offer them', async () => {
+    const scripted = new ScriptedClient();
+    scripted.sockets = () => scriptedSocket([state], 'open');
+    const calls = new SocketCalls();
+    const stop = new AbortController();
+    const { states, ending } = run(scripted, stop.signal, { calls });
+    await waitFor(() => states.includes('connected'), 'the socket to attach');
+
+    expect(
+      calls.call({ agentId: 'agent-1', roomId: null, operation: 'x', args: {}, requestId: null })
+    ).toBeNull();
+    stop.abort();
+    expect(await ending).toBe('stopped');
+  });
+
   it('opens with the cursors, attaches, and hands over typed frames in order, skipping bad ones', async () => {
     const scripted = new ScriptedClient();
     scripted.sockets = () =>
@@ -476,17 +525,20 @@ describe('runControllerStream', () => {
     const stop = new AbortController();
     const { frames, ending } = run(scripted, stop.signal);
     await waitFor(
-      () => frames.length === fixtureFrames.length || frames.at(-1)?.type === 'credential.revoked',
+      () =>
+        frames.length === fixtureFrames.length - 1 || frames.at(-1)?.type === 'credential.revoked',
       'every fixture frame'
     );
     stop.abort();
     await ending;
+    // An answer to a call goes to the calls waiting on it, not to `onFrame`.
+    const streamed = fixtureFrames.filter((frame) => frame.event !== 'call.result');
     expect(frames.map((frame) => frame.type)).toEqual(
-      fixtureFrames
+      streamed
         .map((frame) => frame.event)
         .slice(
           0,
-          fixtureFrames.findIndex((frame) => frame.event === 'credential.revoked') + 1 || undefined
+          streamed.findIndex((frame) => frame.event === 'credential.revoked') + 1 || undefined
         )
     );
   });
