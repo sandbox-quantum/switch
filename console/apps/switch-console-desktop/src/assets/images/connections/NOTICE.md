@@ -58,3 +58,12 @@ written out as the equivalent `fill` attributes and its ids removed.
   Fetched 2026-09-29. Vendor permission has not been verified; trademark of its
   owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
+
+- **ClickUp** (`clickup.svg`): official monochrome symbol from
+  https://clickup.com/assets/brand/v4/Logomark-dark.svg, linked from
+  https://clickup.com/brand, fetched 2026-11-08. Drawing paths and viewBox are
+  unchanged; fixed dimensions removed and monochrome fill uses `currentColor`
+  for the supplied black/white variants. Terms:
+  https://clickup.com/brand/trademark-guidelines (not a CC0 asset).
+  ClickUp is a trademark and service mark of Mango Technologies, Inc. DBA
+  ClickUp, registered in the U.S. and in other countries. No endorsement implied.
