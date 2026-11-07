@@ -42,12 +42,10 @@ def test_the_shared_discord_connection_takes_only_the_slash_command() -> None:
     assert f"`!link-account {_CODE}`" in own
 
 
-def test_teams_uses_the_same_command_as_everywhere_else() -> None:
-    # A bare `link-account` after an @mention is read as a message, not the
-    # command; the `!` form reaches Switch with or without a mention.
+def test_teams_mentions_the_app() -> None:
     text = TeamsAdapter.link_code_instructions(_CODE, {})
-    assert f"`!link-account {_CODE}`" in text
-    assert "@mention" not in text
+    assert "@mention the Switch app" in text
+    assert f"`link-account {_CODE}`" in text
 
 
 def test_telegram_uses_its_command_spelling() -> None:
