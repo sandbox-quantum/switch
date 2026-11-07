@@ -14,7 +14,6 @@ from switch_core.connections.loader import (
 PLACEHOLDERS = {
     "asana",
     "gitlab",
-    "bitbucket",
     "microsoft-365",
     "new-relic",
     "notion",
@@ -26,17 +25,19 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_bitbucket():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "bitbucket",
     }
-    assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
+    assert sorted([slug for slug, entry in CATALOG.items() if entry.definition.enabled]) == [
         "airtable",
         "atlassian",
+        "bitbucket",
         "datadog",
         "github",
         "google-workspace",
@@ -46,6 +47,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["bitbucket"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
