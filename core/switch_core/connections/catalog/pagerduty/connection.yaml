@@ -1,0 +1,43 @@
+slug: pagerduty
+name: PagerDuty
+category: Observability
+description: Investigate incidents, services and on-call schedules, and make requested changes with your PagerDuty user permissions.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: api_key
+        label: User API token
+        secret: true
+        help: User Settings, API Access. User token only; requires Advanced Permissions. Switch cannot revoke it on disconnect; revoke it in PagerDuty.
+      - name: region
+        label: Service region
+        secret: false
+        help: Choose pagerduty.com for global/US accounts, or eu.pagerduty.com for EU accounts.
+        choices:
+          - pagerduty.com
+          - eu.pagerduty.com
+    # The documented current-user operation accepts user-level credentials,
+    # not account-level tokens. Its response wraps the identity in "user".
+    identity:
+      method: GET
+      url: "https://api.{region}/users/me"
+      headers: { Authorization: "Token token={api_key}" }
+      account_id: user.id
+      label: user.email
+    help_url: https://docs.pagerduty.com/ai-automation/advance/pagerduty-mcp-server
+# User API tokens do not expire or refresh; Switch cannot revoke them at
+# PagerDuty. The existing broker blocks connecting/granting non-expiring
+# keys (key_never_expires). Do not substitute a fictitious lifetime.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    # Official hosted MCP; no local server or OAuth client registration.
+    # https://docs.pagerduty.com/ai-automation/advance/pagerduty-mcp-server
+    - name: pagerduty
+      url: "https://mcp.{region}/mcp"
+      headers: { Authorization: "Token token={api_key}" }
+tools: { mode: pass_through }

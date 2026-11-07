@@ -26,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_supported_connections():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "pagerduty",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "pagerduty",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["pagerduty"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1033,6 +1036,36 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     }
     assert sign_in.identity.headers == {"DD-API-KEY": "{api_key}"}
     # A key never expires, so it is never handed to an agent.
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_pagerduty_entry_requires_a_user_and_fixed_regional_hosts():
+    definition = CATALOG["pagerduty"].definition
+    assert definition.enabled is True
+    assert definition.adapter == definition.auth.type == "api_key"
+    assert definition.auth.refresh == "none"
+    assert definition.access is None
+    assert definition.tools.mode == "pass_through"
+    assert definition.cli is None
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("api_key", True),
+        ("region", False),
+    ]
+    assert sign_in.fields[1].choices == ["pagerduty.com", "eu.pagerduty.com"]
+    assert sign_in.identity.method == "GET"
+    assert sign_in.identity.url == "https://api.{region}/users/me"
+    assert sign_in.identity.headers == {"Authorization": "Token token={api_key}"}
+    assert sign_in.identity.account_id == "user.id"
+    assert sign_in.identity.label == "user.email"
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.name == "pagerduty"
+    assert server.url == "https://mcp.{region}/mcp"
+    assert server.headers == {"Authorization": "Token token={api_key}"}
     assert definition.token is not None
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False

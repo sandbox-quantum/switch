@@ -245,6 +245,7 @@ class TestResults:
             "datadog",
             "github",
             "google-workspace",
+            "pagerduty",
         }
         assert services["datadog"] == {
             "slug": "datadog",
