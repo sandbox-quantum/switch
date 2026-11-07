@@ -1347,8 +1347,8 @@ export class SwitchClient {
   /**
    * Register a "known agent" (`POST /agents/register-known`, registration-token
    * auth). `agentType` is one of the gateway's known types — `claude-code`,
-   * `codex`, `opencode`, `cursor` or `antigravity` — and `options` is that
-   * type's option schema, which for OpenCode is `{ auto_session, repo_dir }`.
+   * `codex`, `opencode`, `cursor`, `antigravity` or `deepseek-harness` — and
+   * `options` is that type's option schema, which for OpenCode is `{ auto_session, repo_dir }`.
    *
    * Registration is also what mints the agent's Mattermost bot account: the
    * protocol service calls `create_agent_identity` on every collaboration
@@ -1357,7 +1357,13 @@ export class SwitchClient {
    * be added to a channel.
    */
   async registerKnownAgent(params: {
-    agentType: "opencode" | "codex" | "claude-code" | "antigravity" | "cursor";
+    agentType:
+      | "opencode"
+      | "codex"
+      | "claude-code"
+      | "antigravity"
+      | "cursor"
+      | "deepseek-harness";
     name: string;
     description: string;
     options?: Record<string, unknown>;

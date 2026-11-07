@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity and Cursor. Local sessions and sessions reached through SSH run
+Antigravity, Cursor and DeepSeek Harness. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -250,6 +250,7 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity ad
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
 | Antigravity (`agy acp`) | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
+| DeepSeek Harness | Yes | ACP `model` option (its `[provider, model]` routes) | Unavailable | Staged file references |
 
 Controls depend on the connected provider's reported support. OpenCode models
 that report no image input are labelled in the selector and reject images before
@@ -299,6 +300,20 @@ Switch Console used to install keeps using it, with its own `antigravity-acp
 --login`, until `agy` is installed. Conversations saved by that runtime, or by
 the older CLI runtime, cannot be resumed by `agy`; reset the conversation to
 start fresh while preserving its transcript.
+DeepSeek Harness runs `dsh --profile acp` (`npm install -g @deepseek-ai/dsh`)
+with the DeepSeek API key it finds on the execution host: saved under Models in
+`dsh web`, or `DEEPSEEK_API_KEY`. Outside full access every tool asks first except
+those that only read or search files: commands, edits, workflows, web fetches
+and MCP calls among them, through a small dsh plugin Switch mounts with
+`--patch`, and the runtime mode decides each request. dsh refuses to start if
+that plugin does not load, and Switch starts it gated only on a dsh version the
+plugin was verified with. A subagent there cannot run what asks, since dsh
+refuses a subagent's approvals. Background commands are off, as an interrupt
+does not stop them. Sessions run in dsh's `workspace-write` sandbox: on Linux it
+needs bubblewrap or Landlock, and without either every command asks to run
+unconfined. A user's own `$DSH_HOME/cordis.patch.yml` outranks Switch's settings
+and can change the sandbox or approval policy, as Codex's `config.toml` can. It
+is not offered on Windows until verified there.
 Other capability limits remain explicit
 in the session contract. Terminal sessions (tmux/PTY) were removed; SDK adapters
 are the only session runtime. Lifecycle scripts use noninteractive commands.
@@ -381,7 +396,8 @@ resumes or attaches, including ones started automatically:
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
-  uses Smart Auto, and Antigravity approves edits and asks before commands.
+  uses Smart Auto, Antigravity approves edits and asks before commands, and DeepSeek
+  Harness, with no reviewer of its own, asks before every tool except those that only read or search files.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
 
