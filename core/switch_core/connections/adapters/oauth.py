@@ -19,13 +19,20 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
+import logging
 import re
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -40,6 +47,10 @@ from switch_core.connections.adapters import (
 from switch_core.connections.loader import AccessLevel, ConnectionDefinition
 
 MAX_METADATA_BYTES = 64 * 1024
+MAX_IDENTITY_BYTES = 64 * 1024
+MCP_IDENTITY_TIMEOUT = 10.0
+_IN_MCP_IDENTITY: ContextVar[bool] = ContextVar("in_mcp_identity", default=False)
+_MCP_LOG_SOURCES = ("mcp", "fastmcp", "httpx", "httpcore")
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
@@ -157,6 +168,116 @@ def _path_value(document: Any, path: str) -> Any:
             return None
         value = value.get(part)
     return value
+
+
+def _path_entry(document: Any, path: str) -> tuple[bool, Any]:
+    """Distinguish an omitted token-response path from an explicit null."""
+    value = document
+    for part in path.split("."):
+        if not isinstance(value, dict):
+            return True, None
+        if part not in value:
+            return False, None
+        value = value[part]
+    return True, value
+
+
+def _grant_context_id(value: Any) -> str | None:
+    if isinstance(value, dict):
+        value = value.get("gid")
+    if type(value) not in (str, int):
+        return None
+    context_id = str(value).strip()
+    return context_id or None
+
+
+def _identity_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+    **_kwargs: Any,
+) -> httpx.AsyncClient:
+    # The MCP SDK otherwise follows redirects. A bearer token must stay on
+    # the exact HTTPS server named by the catalog.
+    return httpx.AsyncClient(
+        headers=headers,
+        auth=auth,
+        follow_redirects=False,
+        timeout=httpx.Timeout(MCP_IDENTITY_TIMEOUT),
+    )
+
+
+async def _ignore_mcp_log(*_args: Any, **_kwargs: Any) -> None:
+    """Vendor diagnostics from the identity call are not Core logs."""
+
+
+class _IdentityLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (
+            _IN_MCP_IDENTITY.get()
+            and any(
+                record.name == source or record.name.startswith(f"{source}.")
+                for source in _MCP_LOG_SOURCES
+            )
+        )
+
+
+@contextmanager
+def _suppress_mcp_identity_diagnostics() -> Iterator[None]:
+    """Drop SDK diagnostics for this call without muting other Core tasks."""
+    log_filter = _IdentityLogFilter()
+    loggers = [
+        logger
+        for name, logger in logging.root.manager.loggerDict.items()
+        if isinstance(logger, logging.Logger)
+        and any(
+            name == source or name.startswith(f"{source}.")
+            for source in _MCP_LOG_SOURCES
+        )
+    ]
+    handlers = set(logging.getLogger().handlers)
+    for logger in loggers:
+        logger.addFilter(log_filter)
+        handlers.update(logger.handlers)
+    for handler in handlers:
+        handler.addFilter(log_filter)
+    token = _IN_MCP_IDENTITY.set(True)
+    try:
+        yield
+    finally:
+        _IN_MCP_IDENTITY.reset(token)
+        for logger in loggers:
+            logger.removeFilter(log_filter)
+        for handler in handlers:
+            handler.removeFilter(log_filter)
+
+
+def _identity_document(result: Any) -> dict[str, Any] | None:
+    try:
+        if len(result.model_dump_json().encode()) > MAX_IDENTITY_BYTES:
+            return None
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if result.isError:
+        return None
+    body = result.structuredContent
+    if body is None:
+        texts = [
+            item.text
+            for item in result.content
+            if getattr(item, "type", None) == "text" and isinstance(item.text, str)
+        ]
+        if len(texts) != 1:
+            return None
+        try:
+            body = json.loads(texts[0])
+        except ValueError:
+            return None
+    if not isinstance(body, dict):
+        return None
+    if len(json.dumps(body, ensure_ascii=False).encode()) > MAX_IDENTITY_BYTES:
+        return None
+    return body
 
 
 class OAuthAdapter:
@@ -433,6 +554,29 @@ class OAuthAdapter:
         scope = body.get("scope")
         if isinstance(scope, str):
             values["scope"] = scope
+        if self._oauth.grant_context_path is not None:
+            present, context = _path_entry(body, self._oauth.grant_context_path)
+            context_id = _grant_context_id(context) if present else None
+            if previous:
+                stored = previous.get("grant_context")
+                previous_id = (
+                    stored
+                    if isinstance(stored, str) and stored and stored == stored.strip()
+                    else None
+                )
+                if previous_id is None or (present and context_id != previous_id):
+                    raise ReauthorizationRequiredError(
+                        f"{self._name}'s authorized workspace could not be verified. "
+                        "Reconnect it and grant agents access again."
+                    )
+                values["grant_context"] = previous_id
+            else:
+                if context_id is None:
+                    raise ServiceAdapterError(
+                        f"{self._name} did not name an authorized workspace in its "
+                        "token response."
+                    )
+                values["grant_context"] = context_id
         return values
 
     # ── Signing in ───────────────────────────────────────────────────────────
@@ -452,11 +596,12 @@ class OAuthAdapter:
             "response_type": "code",
             "client_id": client.client_id,
             "redirect_uri": redirect_uri,
-            "scope": " ".join(scopes),
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        if not (self._definition.access and self._definition.access.unscoped):
+            query["scope"] = " ".join(scopes)
         for key, value in self._oauth.authorization_params.items():
             query[key] = value
         if self._oauth.prompt is not None:
@@ -488,6 +633,9 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
+        if self._identity.mcp_tool is not None:
+            return await self._identify_mcp(access_token)
+        assert self._identity.url is not None
         response = await self._send(
             self._http.build_request(
                 "GET",
@@ -517,6 +665,61 @@ class OAuthAdapter:
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
         )
+
+    async def _identify_mcp(self, access_token: str) -> Identity:
+        """Ask a verified read-only MCP tool for exactly one account."""
+        tool_name = self._identity.mcp_tool
+        mcp_url = self._mcp_url
+        error = ServiceAdapterError(
+            f"{self._name} could not identify the account through MCP."
+        )
+        if tool_name is None or mcp_url is None:
+            raise error
+        try:
+            with _suppress_mcp_identity_diagnostics():
+                transport = StreamableHttpTransport(
+                    mcp_url,
+                    auth=access_token,
+                    httpx_client_factory=_identity_http_client,
+                )
+                async with Client(
+                    transport,
+                    timeout=MCP_IDENTITY_TIMEOUT,
+                    init_timeout=MCP_IDENTITY_TIMEOUT,
+                    log_handler=_ignore_mcp_log,
+                ) as client:
+                    tools = await client.list_tools(max_pages=3)
+                    if len(tools) > 128:
+                        raise error
+                    matches = [tool for tool in tools if tool.name == tool_name]
+                    if len(matches) != 1:
+                        raise error
+                    tool = matches[0]
+                    schema = tool.inputSchema
+                    if (
+                        tool.annotations is None
+                        or tool.annotations.readOnlyHint is not True
+                        or not isinstance(schema, dict)
+                        or schema.get("type") != "object"
+                        or schema.get("required") not in (None, [])
+                        or any(
+                            key in schema for key in ("oneOf", "anyOf", "allOf", "not")
+                        )
+                    ):
+                        raise error
+                    result = await client.call_tool_mcp(tool_name, {})
+        except Exception:
+            raise error from None
+        body = _identity_document(result)
+        if body is None:
+            raise error
+        account_id = _path_value(body, self._identity.account_id)
+        label = _path_value(body, self._identity.label)
+        if type(account_id) not in (str, int) or not str(account_id).strip():
+            raise error
+        if not isinstance(label, str) or not label.strip():
+            raise error
+        return Identity(str(account_id), label)
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 

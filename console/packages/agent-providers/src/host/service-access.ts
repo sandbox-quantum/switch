@@ -82,6 +82,8 @@ export const serviceGrantSchema = z.object({
   resources: z.record(z.string(), z.unknown()),
   /** Moves on every change to the grant. Absent from a Switch from before it. */
   revision: z.number().int().optional(),
+  /** Stable for this grant's lifetime; a regrant gets a new ID. */
+  grant_id: z.string().optional(),
   skill: z.object({ name: z.string().regex(SLUG), content: z.string() }).nullable(),
   /**
    * The vendor's MCP servers a session calls for this service, each under its
@@ -209,13 +211,15 @@ export type ServiceTokenAnswer = z.infer<typeof serviceTokenAnswerSchema>;
  * must be asked again (at most an hour after the issue, so its checks run
  * at least hourly whatever the vendor's lifetime). `grantRevision` is the
  * grant's revision it was issued under, or null from a Switch from before it,
- * whose tokens are kept until `useUntil`.
+ * whose tokens are kept until `useUntil`. `grantId` distinguishes a deleted
+ * and recreated grant that starts at the same revision.
  */
 export type IssuedServiceToken = {
   token: string;
   expiresAt: number;
   useUntil: number;
   grantRevision: number | null;
+  grantId?: string | null;
 };
 export type ServiceRefusal = { code: string; message: string; retryable: boolean };
 
@@ -226,6 +230,7 @@ const issuedSchema = z.object({
   expires_in: z.number().int().nonnegative().optional(),
   use_until: z.string().optional(),
   grant_revision: z.number().int().optional(),
+  grant_id: z.string().optional(),
 });
 const refusalSchema = z.object({
   error: z.object({ code: z.string(), message: z.string(), retryable: z.boolean() }),
@@ -291,6 +296,7 @@ export async function issueServiceToken(
     expiresAt: localExpiry,
     useUntil: localExpiry - (expiresAt - useUntil),
     grantRevision: issued.data.grant_revision ?? null,
+    grantId: issued.data.grant_id ?? null,
   };
 }
 

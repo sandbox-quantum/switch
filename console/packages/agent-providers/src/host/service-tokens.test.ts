@@ -241,6 +241,57 @@ describe('AgentServiceTokens', () => {
   });
 
   describe('a running grant change', () => {
+    it('asks again when a removed grant is recreated at the same revision', async () => {
+      const t = tokens([]);
+      t.issue
+        .mockResolvedValueOnce({
+          token: 'synthetic-revoked',
+          expiresAt: t.at() + HOUR,
+          useUntil: t.at() + HOUR,
+          grantRevision: 1,
+          grantId: 'original-grant',
+        })
+        .mockResolvedValueOnce({
+          token: 'synthetic-reconnected',
+          expiresAt: t.at() + HOUR,
+          useUntil: t.at() + HOUR,
+          grantRevision: 1,
+          grantId: 'new-grant',
+        });
+      t.readGrants.mockResolvedValue([{ ...grant('asana', 1), grant_id: 'new-grant' }]);
+
+      expect(await t.service.answer('asana', null)).toMatchObject({ token: 'synthetic-revoked' });
+      t.advance(GRANT_CHECK_MS);
+      expect(await t.service.answer('asana', null)).toMatchObject({
+        token: 'synthetic-reconnected',
+      });
+      expect(t.issue).toHaveBeenCalledTimes(2);
+    });
+
+    it('asks again when a newer grants response adds an identity to an older token', async () => {
+      const t = tokens([]);
+      t.issue
+        .mockResolvedValueOnce({
+          token: 'synthetic-old-core',
+          expiresAt: t.at() + HOUR,
+          useUntil: t.at() + HOUR,
+          grantRevision: 1,
+        })
+        .mockResolvedValueOnce({
+          token: 'synthetic-new-core',
+          expiresAt: t.at() + HOUR,
+          useUntil: t.at() + HOUR,
+          grantRevision: 1,
+          grantId: 'current-grant',
+        });
+      t.readGrants.mockResolvedValue([{ ...grant('asana', 1), grant_id: 'current-grant' }]);
+
+      expect(await t.service.answer('asana', null)).toMatchObject({ token: 'synthetic-old-core' });
+      t.advance(GRANT_CHECK_MS);
+      expect(await t.service.answer('asana', null)).toMatchObject({ token: 'synthetic-new-core' });
+      expect(t.issue).toHaveBeenCalledTimes(2);
+    });
+
     it('drops a token whose grant has moved on, at the next ask past half a minute', async () => {
       const t = tokens([]);
       t.issue
@@ -274,8 +325,9 @@ describe('AgentServiceTokens', () => {
         expiresAt: t.at() + HOUR,
         useUntil: t.at() + HOUR,
         grantRevision: 3,
+        grantId: 'standing-grant',
       });
-      t.readGrants.mockResolvedValue([grant('github', 3)]);
+      t.readGrants.mockResolvedValue([{ ...grant('github', 3), grant_id: 'standing-grant' }]);
       await t.service.answer('github', null);
       t.advance(GRANT_CHECK_MS);
       const answers = await Promise.all([
@@ -287,6 +339,24 @@ describe('AgentServiceTokens', () => {
         expect.objectContaining({ token: 'synthetic-one' }),
       ]);
       expect(t.readGrants).toHaveBeenCalledTimes(1);
+      expect(t.issue).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a token by revision when neither older response has a grant identity', async () => {
+      const t = tokens([]);
+      t.issue.mockResolvedValueOnce({
+        token: 'synthetic-older-core',
+        expiresAt: t.at() + HOUR,
+        useUntil: t.at() + HOUR,
+        grantRevision: 1,
+      });
+      t.readGrants.mockResolvedValue([grant('github', 1)]);
+
+      await t.service.answer('github', null);
+      t.advance(GRANT_CHECK_MS);
+      expect(await t.service.answer('github', null)).toMatchObject({
+        token: 'synthetic-older-core',
+      });
       expect(t.issue).toHaveBeenCalledTimes(1);
     });
 

@@ -337,6 +337,7 @@ class ServiceToken:
     # The grant's revision it was issued under: an agent host holding the
     # token compares it with the grants answer, and asks again once it moves.
     grant_revision: int
+    grant_id: str
 
 
 # A pasted key reaches whatever its vendor let it.
@@ -443,11 +444,19 @@ def _require_owners_controller(principal: Principal, owner_id: str | None) -> No
 class _GrantTerms:
     name: str
     adapter: ServiceAdapter
+    connection_revision: int
     access: AccessLevel
     reach: dict[str, Any]
     tool_mode: Literal["allow", "deny"]
     tools: list[str]
     passes_through: bool
+
+
+@dataclass(frozen=True)
+class _AccessSnapshot:
+    access: AccessToken
+    revision_before: int
+    revision_after: int
 
 
 @dataclass(frozen=True)
@@ -517,7 +526,7 @@ class ServiceBroker:
         self._public_url = public_url
         # The access token being fetched for each connection, by (tenant,
         # owner, service), for callers that ask while it is.
-        self._fetching: dict[tuple[str, str, str], asyncio.Task[AccessToken]] = {}
+        self._fetching: dict[tuple[str, str, str], asyncio.Task[_AccessSnapshot]] = {}
 
     def _entry(self, service: str) -> Connection:
         entry = self._catalog.get(service)
@@ -956,6 +965,7 @@ class ServiceBroker:
             min(issued.expires_at, now + USE_WITHIN),
             issued.resources,
             decision.grant_revision,
+            decision.grant_id,
         )
 
     def _token_policy(self, service: str) -> TokenPolicy:
@@ -1123,6 +1133,11 @@ class ServiceBroker:
         connection queued on that lock while one refresh takes its time, and
         give up at the lock's timeout.
         """
+        return (await self._access_token_snapshot(owner_id, service, adapter)).access
+
+    async def _access_token_snapshot(
+        self, owner_id: str, service: str, adapter: ServiceAdapter
+    ) -> _AccessSnapshot:
         key = (require_tenant_id(), owner_id, service)
         fetching = self._fetching.get(key)
         if fetching is None:
@@ -1132,7 +1147,7 @@ class ServiceBroker:
         return await asyncio.shield(fetching)
 
     def _fetched(
-        self, key: tuple[str, str, str], done: asyncio.Task[AccessToken]
+        self, key: tuple[str, str, str], done: asyncio.Task[_AccessSnapshot]
     ) -> None:
         if self._fetching.get(key) is done:
             del self._fetching[key]
@@ -1145,7 +1160,7 @@ class ServiceBroker:
 
     async def _fresh_access_token(
         self, tenant_id: str, owner_id: str, service: str, adapter: ServiceAdapter
-    ) -> AccessToken:
+    ) -> _AccessSnapshot:
         definition = self._entry(service).definition
         name = definition.name
         refresh = definition.auth.refresh
@@ -1188,6 +1203,7 @@ class ServiceBroker:
                     ),
                 )
             secret = self._secret(connection)
+            revision_before = connection.secret_revision
             token = secret.access_token
             fresh = secret.expires_at > time.time() + before.total_seconds()
             if refresh == "none" or (token is not None and fresh):
@@ -1199,7 +1215,11 @@ class ServiceBroker:
                         retryable=False,
                     )
                 await session.commit()
-                return AccessToken(token, _expiry(secret))
+                return _AccessSnapshot(
+                    AccessToken(token, _expiry(secret)),
+                    revision_before,
+                    revision_before,
+                )
             try:
                 renewed = await adapter.refresh(secret)
             except ReauthorizationRequiredError as error:
@@ -1220,15 +1240,20 @@ class ServiceBroker:
                     f"{name} returned no access token on refresh.",
                     retryable=False,
                 )
-            await self._store.replace_secret(
+            renewed_revision = await self._store.replace_secret(
                 session,
                 owner_id,
                 service,
-                revision=connection.secret_revision,
+                revision=revision_before,
                 encrypted_secret=self._keyring.encrypt(json.dumps(renewed.values)),
             )
             await session.commit()
-            return AccessToken(token, _expiry(renewed))
+            logger.info("Renewed access token for %s connection", service)
+            return _AccessSnapshot(
+                AccessToken(token, _expiry(renewed)),
+                revision_before,
+                renewed_revision,
+            )
 
     def _revoked(self, service: str, error: Exception) -> ServiceError:
         name = self._entry(service).definition.name
@@ -1361,6 +1386,7 @@ class ServiceBroker:
                     "tools": list(grant.tools),
                     "resources": dict(grant.resources),
                     "revision": grant.revision,
+                    "grant_id": grant.id,
                     "skill": (
                         None
                         if skill is None
@@ -1605,6 +1631,7 @@ class ServiceBroker:
         return _GrantTerms(
             name=name,
             adapter=adapter,
+            connection_revision=connection.secret_revision,
             access=level_name,
             reach=reach,
             tool_mode=mode,
@@ -1714,12 +1741,19 @@ class ServiceBroker:
         )
         await session.commit()
 
-        owner_token = await self._access_token(actor_id, service, adapter)
+        owner_snapshot = await self._access_token_snapshot(actor_id, service, adapter)
+        if owner_snapshot.revision_before != terms.connection_revision:
+            raise ServiceError(
+                409,
+                CONNECTOR_REVOKED,
+                f"Your {name} connection changed. Please retry.",
+                retryable=True,
+            )
         request = IssueRequest(
             service=service, access=level_name, reach=reach, resources=resources
         )
         try:
-            checked = await adapter.check_grant(owner_token.token, request)
+            checked = await adapter.check_grant(owner_snapshot.access.token, request)
         except ReauthorizationRequiredError as error:
             raise await self._needs_reauthorization(actor_id, service, error) from None
         except ServiceUnavailableError as error:
@@ -1734,7 +1768,11 @@ class ServiceBroker:
         except ServiceConnectionBusy as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         connection = await self._store.get_connection(session, actor_id, service)
-        if connection is None or connection.status != "active":
+        if (
+            connection is None
+            or connection.status != "active"
+            or connection.secret_revision != owner_snapshot.revision_after
+        ):
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
@@ -1807,9 +1845,10 @@ class ServiceBroker:
         `oauth_client_id` is the vendor client the sign-in went through, None
         for a key.
 
-        Re-linking keeps the grants (a different account then fails them with
-        `grant_account_changed`) and revokes what was issued on the old
-        sign-in, and the old sign-in itself when it is not the new one.
+        Re-linking keeps grants unless an authorization context changes; a
+        different account fails the old grants with `grant_account_changed`.
+        It revokes what was issued on the old sign-in, and the old sign-in
+        itself when it is not the new one.
         Commits `session`; returns a warning naming what could not be revoked.
         """
         entry = self._entry(service)
@@ -1855,11 +1894,26 @@ class ServiceBroker:
         previous = await self._store.get_connection(session, user_id, service)
         replaced = None if previous is None else self._signed_in(previous)
         replaced_account = "" if previous is None else previous.account_id
+        oauth = entry.definition.auth.oauth
+        context_changed = (
+            previous is not None
+            and oauth is not None
+            and oauth.grant_context_path is not None
+            and self._secret(previous).values.get("grant_context")
+            != secret.values.get("grant_context")
+        )
         issued_on_it = (
             ServiceTokenIssuance.owner_id == user_id,
             ServiceTokenIssuance.service == service,
         )
         await self._store.queue_revocation(session, *issued_on_it)
+        grants_cleared = (
+            await self._store.delete_grants_for_connection(session, user_id, service)
+            if context_changed
+            else 0
+        )
+        if previous is not None and not context_changed:
+            await self._store.bump_grants_for_connection(session, user_id, service)
         await self._store.save_connection(
             session,
             user_id=user_id,
@@ -1878,11 +1932,19 @@ class ServiceBroker:
             action=AuditAction.SERVICE_CONNECTED,
             target_type="user",
             target_id=user_id,
-            details={"service": service, "relinked": previous is not None},
+            details={
+                "service": service,
+                "relinked": previous is not None,
+                "grants_cleared": grants_cleared,
+            },
         )
         await session.commit()
 
-        warnings = []
+        warnings = (
+            [f"Your {name} workspace changed. Grant {name} to your agents again."]
+            if context_changed and grants_cleared
+            else []
+        )
         if (
             replaced is not None
             and replaced.secret.access_token != secret.access_token

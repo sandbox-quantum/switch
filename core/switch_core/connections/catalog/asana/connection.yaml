@@ -1,7 +1,53 @@
 slug: asana
 name: Asana
 category: Project management
-description: Read and update Asana tasks and projects.
-enabled: false
+description: Read and update Asana tasks and projects, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Measured 2026-11-07: a refresh returns no replacement refresh token;
+  # the existing one works again. Access tokens last 3600 seconds.
+  refresh: reusable
+  oauth:
+    # V2 has no dynamic registration. An operator registers an Asana MCP app;
+    # an API app cannot sign in to this MCP server.
+    registration: static
+    client_settings: ASANA
+    # Measured 2026-11-07: Asana matches the loopback port exactly.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Measured 2026-11-07: made-up codes return invalid_grant regardless of
+    # the client, so only a real sign-in can check these settings.
+    client_check: none
+    unchecked: >-
+      Switch can't check the client ID, the secret, the redirect URLs, that the
+      app's type is Asana MCP, or that its distribution allows your workspace.
+      Have someone in each workspace connect once to confirm.
+    revocation_discovered: true
+    # Measured 2026-11-07: revoking one sign-in ends every sign-in that person
+    # made through this app, so replacing a connection must not revoke the old one.
+    revocation_ends_grant: true
+    # The token response binds this sign-in to one workspace. Agent grants
+    # must be renewed if the person reconnects to a different workspace.
+    grant_context_path: data.authorized_workspace
+  # MCP-issued tokens get 401 from REST /users/me. Measured 2026-11-07:
+  # get_me is read-only, takes no arguments, and identifies one account.
+  identity:
+    mcp_tool: get_me
+    account_id: data.gid
+    label: data.email
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: asana, url: "https://mcp.asana.com/v2/mcp" }
+access:
+  # Measured 2026-11-07: https://mcp.asana.com/.well-known/oauth-protected-resource/v2
+  # advertises scopes_supported: ["default"]; sign-in without scope grants
+  # "default identity". https://developers.asana.com/docs/integrating-with-asanas-mcp-server
+  # says MCP apps don't require specific scopes; sending scope may cause
+  # "Invalid scope(s) requested". Consent therefore always gives write access.
+  unscoped: true
+  read: { scopes: [] }
+  write: { scopes: [] }
+tools: { mode: pass_through }
