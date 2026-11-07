@@ -734,6 +734,10 @@ export async function runController(
   }, timing.resyncMs);
   let lastPeriodic = deps.now();
   const poll = setInterval(() => {
+    if (!providers.memoryRetryPending())
+      void providers
+        .retryMemoryDeferred()
+        .catch((error: unknown) => failed('Checking providers', error));
     if (deps.now() - lastPeriodic >= reportWithinS * 1000) {
       lastPeriodic = deps.now();
       reporter?.request();
