@@ -38,7 +38,7 @@ export type Item = {
   itemId: Id;
   turnId: Id;
   revision: number;
-  kind: 'user-message' | 'assistant-message' | 'tool-activity';
+  kind: 'user-message' | 'assistant-message' | 'tool-activity' | 'subagent';
   status: 'in-progress' | 'completed' | 'failed' | 'declined';
   title: string;
   text: string;
@@ -143,7 +143,8 @@ export type CommandBody =
       expectedRevision: number;
       answer: { kind: 'approval'; optionId: Id } | { kind: 'questions'; answers: Answer[] };
     }
-  | { type: 'turn.interrupt'; turnId: Id }
+  /** `childId` stops one running subagent instead of the turn; absent from a bridge built before it. */
+  | { type: 'turn.interrupt'; turnId: Id; childId?: Id | null }
   | { type: 'session.stop' }
   | { type: 'session.reset' }
   | { type: 'session.compact' }

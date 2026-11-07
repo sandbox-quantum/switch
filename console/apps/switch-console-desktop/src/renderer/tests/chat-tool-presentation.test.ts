@@ -31,6 +31,11 @@ function detail(extra: Partial<ToolDetail>): ToolDetail {
 }
 
 describe('presentTool', () => {
+  it('draws a subagent row as an agent even without host details', () => {
+    const shown = presentTool({ ...item('Audit parser', 'in-progress'), kind: 'subagent' }, null);
+    expect(shown.kind).toBe('agent');
+  });
+
   it('shows a command with its output and a failing exit code', () => {
     const shown = presentTool(
       item('ls -la'),
