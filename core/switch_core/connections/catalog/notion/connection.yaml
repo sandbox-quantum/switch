@@ -1,7 +1,47 @@
 slug: notion
 name: Notion
 category: Knowledge base
-description: Read and write Notion pages and databases.
-enabled: false
+description: Search, read and edit Notion pages, databases and comments, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # [MEASURED] Each token refresh returns a single-use rotating refresh token.
+  refresh: rotating
+  oauth:
+    # [MEASURED] RFC 7591 dynamic client registration verified via POST https://mcp.notion.com/register (201 Created).
+    # Discovered via RFC 9728 and RFC 8414 metadata from https://mcp.notion.com/mcp.
+    registration: dynamic
+    # [MEASURED] Loopback redirect on 127.0.0.1 (ports 39231-39235) accepted with PKCE S256.
+    # Notion consent prompt asks user to confirm trusting the local redirect address.
+    redirect: [loopback]
+    # [DOCUMENTED] revocation_endpoint is advertised in metadata at the token endpoint.
+    # [MEASURED] Revoking the refresh token invalidates the access token immediately.
+    revocation_discovered: true
+  identity:
+    # [DOCUMENTED] RFC 7662 token introspection (POST https://mcp.notion.com/introspect).
+    # Notion MCP tokens are rejected by REST /v1/users/me (HTTP 401) and /userinfo (HTTP 403).
+    # Introspection response provides 'active: true', 'workspace_id', and 'user_id'.
+    introspection: true
+    # [MEASURED] Dotted paths for workspace and user; combined to produce a stable unique account id.
+    account_id: [workspace_id, user_id]
+    # [MEASURED] Stable workspace identifier shown as the connection label in Switch Console.
+    label: workspace_id
+# [MEASURED] Access token lifetime is 28,800 seconds (8 hours). Passes through to agent session.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    # [MEASURED] Official remote MCP server endpoint.
+    - { name: notion, url: "https://mcp.notion.com/mcp" }
+access:
+  # [DOCUMENTED] Notion advertises a single OAuth scope: 'default'.
+  # Consent screen authorizes access to the entire workspace rather than granular scopes.
+  # Therefore, both read and write levels request 'default', with write access permitted.
+  # The skill enforces read-before-write and user confirmation guards before mutations.
+  read:
+    scopes:
+      - default
+  write:
+    scopes:
+      - default
+tools: { mode: pass_through }

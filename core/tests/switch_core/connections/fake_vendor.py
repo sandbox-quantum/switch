@@ -360,6 +360,7 @@ class FakeOAuthServer:
             "token_endpoint": f"{ISSUER}/token",
             "registration_endpoint": f"{ISSUER}/register",
             "revocation_endpoint": f"{ISSUER}/revoke",
+            "introspection_endpoint": f"{ISSUER}/introspect",
             "response_types_supported": ["code"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": [
@@ -368,6 +369,10 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        self.introspect_claims: dict[str, Any] = {
+            "workspace_id": "ws-1",
+            "user_id": "usr-1",
+        }
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -441,6 +446,17 @@ class FakeOAuthServer:
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
+        if where == f"{ISSUER}/introspect" and request.method == "POST":
+            form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+            token = form.get("token", "")
+            active = token in self.live_access
+            return _json(
+                200,
+                {
+                    "active": active,
+                    **(self.introspect_claims if active else {}),
+                },
+            )
         if where == IDENTITY_URL and request.method == "GET":
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
