@@ -251,6 +251,7 @@ describe('cline provider hooks and adapter', () => {
         cwd: tempHome,
         env: { HOME: tempHome },
         handshake,
+        request: vi.fn(),
       });
       expect(noFile?.status).toBe('unauthenticated');
       expect(noFile?.message).toContain('cline auth');
@@ -263,6 +264,7 @@ describe('cline provider hooks and adapter', () => {
         cwd: tempHome,
         env: { HOME: tempHome },
         handshake,
+        request: vi.fn(),
       });
       expect(emptyFile?.status).toBe('unauthenticated');
       expect(emptyFile?.message).toContain('cline auth');
@@ -274,6 +276,7 @@ describe('cline provider hooks and adapter', () => {
         cwd: tempHome,
         env: { HOME: tempHome },
         handshake,
+        request: vi.fn(),
       });
       expect(nonEmptyFile?.status).toBe('authenticated');
 
@@ -283,6 +286,7 @@ describe('cline provider hooks and adapter', () => {
         cwd: tempHome,
         env: {},
         handshake,
+        request: vi.fn(),
       });
       expect(noHome?.status).toBe('unauthenticated');
       expect(noHome?.message).toContain('cline auth');
@@ -296,7 +300,7 @@ describe('cline provider hooks and adapter', () => {
 
   it('returns act for all runtime modes, leaves authMethodId undefined, and sets loginCommand to cline auth', () => {
     for (const mode of ['approval-required', 'auto-accept-edits', 'auto', 'full-access'] as const) {
-      expect(clineAcp.sessionMode?.(mode)).toBe('act');
+      expect(clineAcp.sessionMode?.(mode, undefined)).toBe('act');
     }
     expect(clineAcp.authMethodId).toBeUndefined();
     expect(clineAcp.loginCommand).toBe('cline auth');

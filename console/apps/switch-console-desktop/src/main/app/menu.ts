@@ -13,6 +13,7 @@ import {
   SWITCH_CONSOLE_ISSUES_NEW_URL,
   SWITCH_CONSOLE_RELEASES_URL,
 } from '@shared/urls';
+import { selectAll } from './select-all';
 import { getMainWindow } from './window';
 
 function copyVersionInfo(): void {
@@ -125,7 +126,7 @@ export function setupApplicationMenu(): void {
         { role: 'paste' as const },
         ...(isMac ? [{ role: 'pasteAndMatchStyle' as const }] : []),
         { role: 'delete' as const },
-        { role: 'selectAll' as const },
+        { label: 'Select All', accelerator: 'CmdOrCtrl+A', click: selectAll },
       ],
     },
     // View menu

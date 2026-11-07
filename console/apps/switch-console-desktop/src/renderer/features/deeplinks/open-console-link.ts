@@ -173,7 +173,7 @@ function openAdmin(serverId: string, tab: string | null): void {
     }
     appState.navigation.navigate('server', { serverId });
     toast.error('Admin is for workspace admins', {
-      description: 'Ask an owner or admin of this workspace to change these.',
+      description: 'Ask an admin of this workspace to change these.',
     });
     return;
   }

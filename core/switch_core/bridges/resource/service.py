@@ -13,6 +13,7 @@ from switch_core.authz import (
     can,
     can_manage,
     require,
+    require_visibility_change,
     validate_visibility_pair,
 )
 from switch_core.bridges.resource.events import ResourceLoadEntry
@@ -361,10 +362,17 @@ class ResourceService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> ReferenceType:
-        reference_type = await self._reference_types.get(session, type_)
+        reference_type = await self._reference_types.get_for_update(session, type_)
         if reference_type is None:
             raise ValueError(f"Reference type not found: {type_}")
         require(Principal(user_id, is_admin), "write", reference_type)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            reference_type,
+            read_visibility,
+            write_visibility,
+            "reference type",
+        )
         validate_visibility_pair(
             read_visibility
             if read_visibility is not None
@@ -617,10 +625,17 @@ class ResourceService:
         write_visibility: str | None = None,
         value: dict[str, Any] | None = None,
     ) -> Reference:
-        ref = await self._references.get(session, reference_id)
+        ref = await self._references.get_for_update(session, reference_id)
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "write", ref)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            ref,
+            read_visibility,
+            write_visibility,
+            "reference",
+        )
         # Validate the *resulting* visibility pair (partial updates must not
         # leave a writable-but-unreadable resource).
         validate_visibility_pair(
@@ -675,12 +690,12 @@ class ResourceService:
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "read", ref)
-        await self._references.attach_to_room(session, room_id, reference_id)
-        emit_safely(
-            self._telemetry,
-            "reference_attached_to_room",
-            {"reference_type": _reference_type(ref.type)},
-        )
+        if await self._references.attach_to_room(session, room_id, reference_id):
+            emit_safely(
+                self._telemetry,
+                "reference_attached_to_room",
+                {"reference_type": _reference_type(ref.type)},
+            )
 
     async def detach_reference_from_room(
         self, session: AsyncSession, room_id: str, reference_id: str
@@ -916,10 +931,17 @@ class ResourceService:
         write_visibility: str | None = None,
         content: str | None = None,
     ) -> Document:
-        doc = await self._documents.get(session, document_id)
+        doc = await self._documents.get_for_update(session, document_id)
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
         require(Principal(user_id, is_admin), "write", doc)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            doc,
+            read_visibility,
+            write_visibility,
+            "document",
+        )
         validate_visibility_pair(
             read_visibility if read_visibility is not None else doc.read_visibility,
             write_visibility if write_visibility is not None else doc.write_visibility,
@@ -968,14 +990,15 @@ class ResourceService:
         doc = await self._documents.get(session, document_id)
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
+        # First, so whoever may not read it is not told what it is.
+        require(Principal(user_id, is_admin), "read", doc)
         if doc.room_id is not None:
             raise ValueError(
                 f"Document {document_id} is room-scoped and cannot be attached "
                 "to another room"
             )
-        require(Principal(user_id, is_admin), "read", doc)
-        await self._documents.attach_to_room(session, room_id, document_id)
-        emit_safely(self._telemetry, "document_attached_to_room", {})
+        if await self._documents.attach_to_room(session, room_id, document_id):
+            emit_safely(self._telemetry, "document_attached_to_room", {})
 
     async def detach_document_from_room(
         self, session: AsyncSession, room_id: str, document_id: str
@@ -1294,10 +1317,17 @@ class ResourceService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> Package:
-        pkg = await self._packages.get(session, package_id)
+        pkg = await self._packages.get_for_update(session, package_id)
         if pkg is None:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "write", pkg)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            pkg,
+            read_visibility,
+            write_visibility,
+            "package",
+        )
         validate_visibility_pair(
             read_visibility if read_visibility is not None else pkg.read_visibility,
             write_visibility if write_visibility is not None else pkg.write_visibility,
@@ -1342,7 +1372,8 @@ class ResourceService:
         if pkg is None:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "read", pkg)
-        await self._packages.attach_to_room(session, room_id, package_id)
+        if not await self._packages.attach_to_room(session, room_id, package_id):
+            return
         # What the package brought with it, which is the whole point of
         # attaching one rather than its parts.
         emit_safely(
@@ -1438,6 +1469,9 @@ class ResourceService:
         ref = await self._references.get(session, reference_id)
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
+        # So did whoever adds it: a package lists its references to everyone
+        # who may read it, so adding one is showing it to them.
+        require(Principal(user_id, is_admin), "read", ref)
         # The package owner must be able to read the reference being added.
         if not can(Principal(pkg.owner_id, False), "read", ref):
             raise PermissionError(
@@ -1481,6 +1515,9 @@ class ResourceService:
         doc = await self._documents.get(session, document_id)
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
+        # As for a reference: adding it shows it to every reader of the package.
+        # First, so whoever may not read it is not told what it is.
+        require(Principal(user_id, is_admin), "read", doc)
         if doc.room_id is not None:
             raise ValueError(
                 f"Document {document_id} is room-scoped and cannot be added to a package"

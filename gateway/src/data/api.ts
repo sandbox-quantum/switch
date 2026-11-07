@@ -63,6 +63,9 @@ export interface AgentSummary {
   parent_agent_id: string | null;
   known_agent_type: string | null;
   known_agent_options: Record<string, unknown> | null;
+  // Whether the caller may rename the agent and edit its options and who may
+  // address it, as the server decides it: its owner or a workspace admin.
+  can_manage: boolean;
 }
 
 export interface AgentToolSummary {
@@ -761,6 +764,8 @@ export interface ApiKeyDetail {
   type: string;
   key_prefix: string;
   created_at: string;
+  /** `null` for a key that never expires. */
+  expires_at: string | null;
 }
 
 export interface CreateApiKeyResult {
@@ -768,18 +773,25 @@ export interface CreateApiKeyResult {
   label: string;
   key: string;
   created_at: string;
+  expires_at: string | null;
 }
+
+/** Days until a new key stops working, or `"never"`. The server allows 1–365. */
+export type ApiKeyLifetime = number | "never";
 
 export async function fetchApiKeys(): Promise<ApiKeyDetail[] | null> {
   return fetchJson<ApiKeyDetail[]>("/api-keys");
 }
 
-export async function createApiKey(label: string): Promise<CreateApiKeyResult> {
+export async function createApiKey(
+  label: string,
+  expiresInDays: ApiKeyLifetime,
+): Promise<CreateApiKeyResult> {
   const res = await fetch(`${BASE}/api-keys`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ label }),
+    body: JSON.stringify({ label, expires_in_days: expiresInDays }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
@@ -1121,6 +1133,12 @@ export async function logout(): Promise<void> {
   });
 }
 
+// Ends every session the account holds, this one included: a copied cookie or
+// a browser left signed in elsewhere stops working at once.
+export async function signOutEverywhere(): Promise<void> {
+  await jsonRequest("/auth/sessions/revoke", "POST");
+}
+
 export async function fetchMe(): Promise<UserInfo | null> {
   return fetchJson<UserInfo>("/auth/me");
 }
@@ -1136,7 +1154,7 @@ export interface AuthConfig {
 
 // ── Session and workspaces ──────────────────────────────────────────────────
 
-export type TenantRole = "owner" | "admin" | "member";
+export type TenantRole = "admin" | "member";
 
 export type OrganizationRole = "org_admin" | "member";
 
@@ -1207,10 +1225,52 @@ export interface Member {
   // An organization admin with no membership of their own here, listed
   // because the organization makes them an admin of every workspace.
   via_organization: boolean;
+  // What you may do with this member, as the server decides it: change their
+  // role or remove them (an admin, never on your own row or an organization
+  // admin's), and hand them something you own.
+  can_change_role: boolean;
+  can_remove: boolean;
+  can_receive_transfer: boolean;
 }
 
 export async function fetchMembers(tenantId: string): Promise<Member[]> {
   return jsonRequest<Member[]>(`/tenants/${encodeURIComponent(tenantId)}/members`, "GET");
+}
+
+// Owner only, and only once the workspace is empty: the server refuses
+// otherwise, listing what is left.
+export async function deleteWorkspace(tenantId: string, name: string): Promise<void> {
+  await jsonRequest(`/tenants/${encodeURIComponent(tenantId)}`, "DELETE", { name });
+}
+
+export type OwnershipKind =
+  | "agent"
+  | "room"
+  | "package"
+  | "reference"
+  | "reference_type"
+  | "document"
+  | "template";
+
+export interface OwnershipTransferResult {
+  kind: OwnershipKind;
+  id: string;
+  owner_id: string;
+  // An agent's API key is re-issued to its new owner, who has to reconnect it.
+  agent_key_reissued: boolean;
+}
+
+// The current owner or a workspace admin, to a current member of the workspace.
+export async function transferOwnership(
+  kind: OwnershipKind,
+  id: string,
+  newOwnerId: string,
+): Promise<OwnershipTransferResult> {
+  return jsonRequest<OwnershipTransferResult>("/ownership/transfer", "POST", {
+    kind,
+    id,
+    new_owner_id: newOwnerId,
+  });
 }
 
 export async function updateMemberRole(
@@ -1242,6 +1302,12 @@ export interface OrganizationMember {
    * taking away what they held in workspaces they were in only as an
    * organization admin. */
   warning: string | null;
+  /** What you may do with them, as the server decides it: never on your own
+   * row; making them Org Admin not where the members come from account
+   * settings Switch cannot change; removing them as an Org Admin only. */
+  can_change_role: boolean;
+  can_grant_org_admin: boolean;
+  can_remove: boolean;
 }
 
 export interface OrganizationAuditEvent {
@@ -1371,7 +1437,7 @@ export async function removeOrganizationMember(
 // Mirrors `OrganizationIssueKind` in core/switch_core/db/audit.py, by hand.
 export type OrganizationIssueKind =
   | "no_org_admin"
-  | "workspace_without_owner"
+  | "workspace_without_admin"
   | "agents_without_acting_owner"
   | "directory_organization_deleted";
 
@@ -1434,6 +1500,110 @@ export interface CreateInvitationInput {
   email: string | null;
   expires_in_hours: number;
   uses_remaining: number;
+}
+
+// ── Data retention ─────────────────────────────────────────────────────────
+
+export const MAX_MESSAGE_RETENTION_DAYS = 3650;
+
+export interface RetentionPolicy {
+  // Null means messages are kept forever.
+  message_retention_days: number | null;
+  updated_at: string | null;
+  updated_by_user_id: string | null;
+}
+
+export interface RetentionPreview {
+  message_retention_days: number;
+  messages_to_delete: number;
+}
+
+export async function fetchRetentionPolicy(tenantId: string): Promise<RetentionPolicy> {
+  return jsonRequest<RetentionPolicy>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention`,
+    "GET",
+  );
+}
+
+export async function previewRetentionPolicy(
+  tenantId: string,
+  days: number,
+): Promise<RetentionPreview> {
+  return jsonRequest<RetentionPreview>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention/preview?days=${days}`,
+    "GET",
+  );
+}
+
+export async function setRetentionPolicy(
+  tenantId: string,
+  days: number,
+): Promise<RetentionPolicy> {
+  return jsonRequest<RetentionPolicy>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention`,
+    "PUT",
+    { message_retention_days: days },
+  );
+}
+
+export async function clearRetentionPolicy(tenantId: string): Promise<RetentionPolicy> {
+  return jsonRequest<RetentionPolicy>(
+    `/tenants/${encodeURIComponent(tenantId)}/retention`,
+    "DELETE",
+  );
+}
+
+// ── Erasing a person ───────────────────────────────────────────────────────
+
+export interface PersonClaimant {
+  user_id: string;
+  name: string;
+}
+
+/** `identity`: someone on a connected app, `id` is their platform identity.
+ * `former`: someone on an app since disconnected, `id` is the sender id their
+ * messages carry, and `bridge_name` is null. `member`: someone taking part
+ * from Switch Console, `id` is their member client, `platform` is `switch` and
+ * `bridge_name` is null; a deleted account's is named "Former member". */
+export interface Person {
+  id: string;
+  kind: "identity" | "former" | "member";
+  username: string;
+  platform: string;
+  bridge_name: string | null;
+  message_count: number;
+  claimed_by: PersonClaimant[];
+}
+
+export type ErasureState = "queued" | "running" | "done" | "failed";
+
+export interface Erasure {
+  id: string;
+  state: ErasureState;
+  identities: number;
+  identities_erased: number;
+  messages_deleted: number;
+  files_deleted: number;
+  error: string | null;
+  requested_by_user_id: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export async function fetchPeople(tenantId: string): Promise<Person[]> {
+  return jsonRequest<Person[]>(`/tenants/${encodeURIComponent(tenantId)}/people`, "GET");
+}
+
+export async function fetchErasures(tenantId: string): Promise<Erasure[]> {
+  return jsonRequest<Erasure[]>(`/tenants/${encodeURIComponent(tenantId)}/erasures`, "GET");
+}
+
+export async function erasePeople(tenantId: string, people: Person[]): Promise<Erasure> {
+  return jsonRequest<Erasure>(`/tenants/${encodeURIComponent(tenantId)}/erasures`, "POST", {
+    external_user_ids: people.filter((p) => p.kind === "identity").map((p) => p.id),
+    former_sender_ids: people.filter((p) => p.kind === "former").map((p) => p.id),
+    member_client_ids: people.filter((p) => p.kind === "member").map((p) => p.id),
+  });
 }
 
 export async function fetchInvitations(tenantId: string): Promise<Invitation[]> {
@@ -1530,6 +1700,13 @@ export async function createUser(
   role: UserRole,
 ): Promise<UserInfo> {
   return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
+}
+
+// Deployment operator only. Deletes the whole account, as the person
+// deleting it themselves would; the server refuses its own administrator
+// account and the caller's own.
+export async function deleteUser(userId: string): Promise<void> {
+  await jsonRequest(`/users/${encodeURIComponent(userId)}`, "DELETE");
 }
 
 // ── Resources (References & Documents) ─────────────────────────────────────
@@ -1994,6 +2171,9 @@ export interface PackageDetail {
   // Counted only for whoever may manage the resource; zero for anyone else.
   hidden_rooms_count: number;
   created_at: string;
+  // Whether the caller may open the package. Only a room's package list
+  // includes packages the caller cannot read.
+  can_read: boolean;
 }
 
 export interface PackageCreateInput {
@@ -2286,8 +2466,8 @@ export interface CurrentTenant {
   slug: string;
   name: string;
   role: string;
-  // Whether the caller may manage the workspace: an owner or admin
-  // membership, or the operator bit.
+  // Whether the caller may manage the workspace: an admin membership,
+  // `org_admin` of its organization, or the operator bit.
   administers: boolean;
 }
 

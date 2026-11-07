@@ -187,7 +187,7 @@ class TestChangingMembers:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id, organization_id = await _linked(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
         workos = _WorkOS({f"user_{bob}": ("om_bob", "viewer")})
         workos.signs_in_as = f"user_{ada}"
@@ -216,7 +216,7 @@ class TestChangingMembers:
         change that then waits on a sign-in."""
         ada, cy = _name("ada"), _name("cy")
         tenant_id, organization_id = await _linked(
-            session_factory, {ada: ("owner", "org_admin"), cy: ("admin", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin"), cy: ("admin", "org_admin")}
         )
         workos = _WorkOS({f"user_{cy}": ("om_cy", "org_admin")})
 
@@ -235,7 +235,7 @@ class TestChangingMembers:
     ) -> None:
         ada, dee = _name("ada"), _name("dee")
         tenant_id, organization_id = await _linked(
-            session_factory, {ada: ("owner", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin")}
         )
         async with session_factory() as session:
             session.add(
@@ -269,7 +269,7 @@ class TestChangingMembers:
         tenant_id, organization_id = await _linked(
             session_factory,
             {
-                ada: ("owner", "org_admin"),
+                ada: ("admin", "org_admin"),
                 cy: ("admin", "org_admin"),
                 eli: ("admin", "org_admin"),
                 fay: ("admin", "org_admin"),
@@ -301,7 +301,7 @@ class TestChangingMembers:
     ) -> None:
         ada = _name("ada")
         tenant_id, organization_id = await _linked(
-            session_factory, {ada: ("owner", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin")}
         )
         workos = _WorkOS({f"user_{ada}": ("om_ada", "org_admin")})
 
@@ -319,7 +319,7 @@ class TestChangingMembers:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id, _ = await _linked(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
         workos = _WorkOS({f"user_{bob}": ("om_bob", "viewer")})
 
@@ -334,7 +334,7 @@ class TestChangingMembers:
     ) -> None:
         ada, cy = _name("ada"), _name("cy")
         tenant_id, organization_id = await _linked(
-            session_factory, {ada: ("owner", "org_admin"), cy: ("admin", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin"), cy: ("admin", "org_admin")}
         )
         workos = _WorkOS({f"user_{cy}": ("om_cy", "org_admin")})
         workos.signs_in_as = f"user_{ada}"
@@ -360,7 +360,7 @@ class TestOperatorRestoring:
     ) -> None:
         bob = _name("bob")
         tenant_id, organization_id = await _linked(
-            session_factory, {bob: ("owner", "member")}
+            session_factory, {bob: ("admin", "member")}
         )
         operator_id = await _operator(session_factory)
         workos = _WorkOS({f"user_{bob}": ("om_bob", "viewer")})
@@ -381,7 +381,7 @@ class TestOperatorRestoring:
     ) -> None:
         bob = _name("bob")
         tenant_id, organization_id = await _linked(
-            session_factory, {bob: ("owner", "member")}
+            session_factory, {bob: ("admin", "member")}
         )
         operator_id = await _operator(session_factory)
         workos = _WorkOS({f"user_{bob}": ("om_bob", "org_admin")})
@@ -404,7 +404,7 @@ class TestSigningIn:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id, _ = await _linked(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
         workos = _WorkOS({f"user_{bob}": ("om_bob", "viewer")})
         workos.signs_in_as = f"user_{bob}"
@@ -423,7 +423,7 @@ class TestSigningIn:
         self, session_factory
     ) -> None:
         ada = _name("ada")
-        tenant_id, _ = await _linked(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id, _ = await _linked(session_factory, {ada: ("admin", "org_admin")})
         workos = _WorkOS({})
         workos.signs_in_as = f"user_{ada}"
         workos.organization = "org_SOMEWHERE_ELSE"
@@ -437,7 +437,7 @@ class TestSigningIn:
         self, session_factory
     ) -> None:
         ada = _name("ada")
-        tenant_id, _ = await _linked(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id, _ = await _linked(session_factory, {ada: ("admin", "org_admin")})
 
         async with _client(
             _with(session_factory, _WorkOS({})), ada, tenant_id
@@ -453,10 +453,10 @@ class TestSigningIn:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id, _ = await _linked(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
         eve = _name("eve")
-        unlinked = await _workspace(session_factory, {eve: ("owner", "org_admin")})
+        unlinked = await _workspace(session_factory, {eve: ("admin", "org_admin")})
         app = _with(session_factory, _WorkOS({}))
 
         async with _client(app, bob, tenant_id) as client:
@@ -486,7 +486,7 @@ class TestSigningIn:
         self, session_factory
     ) -> None:
         ada = _name("ada")
-        tenant_id, _ = await _linked(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id, _ = await _linked(session_factory, {ada: ("admin", "org_admin")})
         app = _with(session_factory, _WorkOS({}))
         app.state.workos_sign_in = None
 

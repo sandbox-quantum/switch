@@ -179,7 +179,7 @@ export { codexSourceHome, prepareCodexSessionHome, withManagedCodexSandbox } fro
 export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 
-export { providerReadinessSchema } from './readiness';
+export { loginCommandOf, providerReadinessSchema } from './readiness';
 export {
   cliConversationListSchema,
   deletedCliConversationCopiesSchema,

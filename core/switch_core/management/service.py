@@ -300,7 +300,11 @@ class ManagementService:
             "The enrollment code is invalid, already used, or expired.",
         )
         key = await self.api_keys.get_by_hash(session, tokens.hash_secret(code))
-        if key is None or key.type != CONTROLLER_ENROLLMENT_KEY_TYPE:
+        if (
+            key is None
+            or key.type != CONTROLLER_ENROLLMENT_KEY_TYPE
+            or key.expired(self.now())
+        ):
             raise invalid
         consumed = await self.controllers.consume_enrollment_code(
             session, tenant_id, key.id, self.now()
@@ -395,7 +399,7 @@ class ManagementService:
             401, reason_codes.INVALID_CREDENTIAL, "The credential is not valid."
         )
         key = await self.api_keys.get_by_hash(session, tokens.hash_secret(credential))
-        if key is None or key.type != CONTROLLER_KEY_TYPE:
+        if key is None or key.type != CONTROLLER_KEY_TYPE or key.expired(self.now()):
             raise invalid
         controller = await self.controllers.get_by_api_key(session, tenant_id, key.id)
         if controller is None or controller.id != controller_id:

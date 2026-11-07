@@ -1,5 +1,5 @@
 import { providerRuntime } from '../providers/registry';
-import { readiness, signInWith, type ProviderReadiness } from '../readiness';
+import { loginCommandOf, readiness, signInWith, type ProviderReadiness } from '../readiness';
 import { JsonRpcError } from '../transport/stdio-json-rpc';
 
 export { providerReadinessSchema, type ProviderReadiness } from '../readiness';
@@ -16,18 +16,22 @@ export async function checkProviderReadiness(input: {
   env: Record<string, string>;
 }): Promise<ProviderReadiness> {
   const runtime = providerRuntime(input.provider);
-  try {
-    return await runtime.checkSignIn(input);
-  } catch (error) {
-    if (
-      error instanceof JsonRpcError &&
-      error.code === -32000 &&
-      /auth|log.?in|sign.?in|API key is missing|no API key/i.test(error.message)
-    )
-      return readiness('unauthenticated', signInWith(runtime.loginCommand));
-    return readiness(
-      'unknown',
-      'Could not verify authentication. Check the connection and provider setup, then retry.'
-    );
-  }
+  const loginCommand = loginCommandOf(runtime, input.binaryPath);
+  const result = await (async () => {
+    try {
+      return await runtime.checkSignIn(input);
+    } catch (error) {
+      if (
+        error instanceof JsonRpcError &&
+        error.code === -32000 &&
+        /auth|log.?in|sign.?in|API key is missing|no API key/i.test(error.message)
+      )
+        return readiness('unauthenticated', signInWith(loginCommand));
+      return readiness(
+        'unknown',
+        'Could not verify authentication. Check the connection and provider setup, then retry.'
+      );
+    }
+  })();
+  return loginCommand === runtime.loginCommand ? result : { ...result, loginCommand };
 }

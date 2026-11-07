@@ -3,11 +3,16 @@ import React from 'react';
 import { MigrationSettingsPage } from '@renderer/features/agent-migration/migration-settings-page';
 import { DevicesSettingsPage } from '@renderer/features/machines/devices-settings-page';
 import { RemoteHostsSettingsPage } from '@renderer/features/remote-hosts/views/remote-hosts-view';
+import { startManagedServer } from '@renderer/features/switch-servers/managed-server-actions';
 import { openServerPage } from '@renderer/features/switch-servers/open-server-page';
-import { servesWebGateway } from '@renderer/features/switch-servers/server-gateway';
+import {
+  servesWebGateway,
+  webGatewayNeedsRestart,
+} from '@renderer/features/switch-servers/server-gateway';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarSections } from '@renderer/lib/components/page-layout';
 import { useAnyServerFeatureFlag } from '@renderer/lib/hooks/useFeatureFlags';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { dashboardOrigin } from '@shared/core/switch-servers/switch-servers';
 import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
@@ -79,9 +84,13 @@ export const SettingsPage = observer(function SettingsPage({
   // nothing to move to managed and nothing managed to look after.
   const agentManagement = useAnyServerFeatureFlag('agent_management');
   const { server, user } = settingsServer();
+  const showConfirm = useShowModal('confirmActionModal');
   // Workspace settings are the gateway's, open to every member there. A
-  // Switch this Console runs without Docker serves no gateway.
-  const workspaceSettings = server !== null && user !== null && servesWebGateway(server);
+  // Switch this Console runs without Docker serves it once started with its
+  // pages; one an older Console started is offered the restart that does.
+  const restartForGateway = server !== null && webGatewayNeedsRestart(server);
+  const workspaceSettings =
+    server !== null && user !== null && (servesWebGateway(server) || restartForGateway);
   const sections = settingsSections({
     hasServer: server !== null,
     agentManagement,
@@ -93,7 +102,18 @@ export const SettingsPage = observer(function SettingsPage({
     if (id === 'docs') {
       void openExternalUrl(SWITCH_CONSOLE_DOCS_URL, 'Could not open the documentation');
     } else if (id === 'workspace-settings') {
-      if (server) void openServerPage(server.id, `${dashboardOrigin(server)}/workspace`);
+      if (!server) return;
+      if (restartForGateway) {
+        showConfirm({
+          title: 'Restart the local server?',
+          description:
+            'Workspace settings are in the web gateway, which this server turns on when it restarts. Running agents reconnect once it is back.',
+          confirmLabel: 'Restart',
+          onSuccess: () => startManagedServer(server),
+        });
+      } else {
+        void openServerPage(server.id, `${dashboardOrigin(server)}/workspace`);
+      }
     } else {
       onTabChange(id);
     }

@@ -277,6 +277,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/tenants/{tenant_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/tenants/{tenant_id}/budgets/{budget_id}",
       "auth": "session",
       "flags": []
@@ -297,7 +302,17 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/tenants/{tenant_id}/retention",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/trust-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/users/{user_id}",
       "auth": "session",
       "flags": []
     },
@@ -909,6 +924,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/tenants/{tenant_id}/erasures",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/tenants/{tenant_id}/invitations",
       "auth": "session",
       "flags": []
@@ -920,6 +940,21 @@
     },
     {
       "route": "GET /gateway/tenants/{tenant_id}/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/people",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/retention",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/retention/preview",
       "auth": "session",
       "flags": []
     },
@@ -1076,6 +1111,11 @@
     },
     {
       "route": "POST /gateway/auth/refresh",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/sessions/revoke",
       "auth": "session",
       "flags": []
     },
@@ -1280,6 +1320,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/ownership/transfer",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/packages",
       "auth": "session",
       "flags": []
@@ -1444,6 +1489,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/tenants/{tenant_id}/erasures",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/tenants/{tenant_id}/invitations",
       "auth": "session",
       "flags": []
@@ -1460,6 +1510,11 @@
     },
     {
       "route": "POST /gateway/users",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/users/{user_id}/sessions/revoke",
       "auth": "session",
       "flags": []
     },
@@ -1581,6 +1636,11 @@
     },
     {
       "route": "PUT /gateway/tenants/{tenant_id}/budgets/{budget_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/tenants/{tenant_id}/retention",
       "auth": "session",
       "flags": []
     },

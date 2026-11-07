@@ -26,6 +26,7 @@ from switch_core.db.models import (
     Organization,
     OrganizationAuditEvent,
     OrganizationMember,
+    Package,
     Tenant,
     TenantMember,
     User,
@@ -105,7 +106,7 @@ class _World:
         owner: async_sessionmaker[AsyncSession],
         *,
         bea_role: str = "org_admin",
-        ada_owns_joined: bool = False,
+        ada_administers_joined: bool = False,
     ) -> _World:
         world = cls(_id("org"), _id("joined"), _id("reached"))
         async with owner() as session:
@@ -155,13 +156,13 @@ class _World:
                 TenantMember(
                     tenant_id=world.joined,
                     user_id=world.ada,
-                    role="owner" if ada_owns_joined else "member",
+                    role="admin" if ada_administers_joined else "member",
                 )
             )
-            if not ada_owns_joined:
+            if not ada_administers_joined:
                 session.add(
                     TenantMember(
-                        tenant_id=world.joined, user_id=world.bea, role="owner"
+                        tenant_id=world.joined, user_id=world.bea, role="admin"
                     )
                 )
             for tenant_id in (world.joined, world.reached):
@@ -305,6 +306,51 @@ class TestTakingAway:
         [(action, _)] = await _organization_events(owner, world.organization_id)
         assert action == OrganizationAuditAction.MEMBER_DEMOTED_FROM_DIRECTORY
 
+    async def test_what_only_org_admin_reached_passes_to_an_admin_there(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """Ending access that came only from being `org_admin` leaves what Ada
+        owns in that workspace with someone who can still reach it, as a
+        removal does."""
+        owner = rls_harness.owner
+        world = await _World.make(owner)
+        cleo = _id("cleo")
+        async with owner() as session:
+            session.add(
+                User(id=cleo, name=cleo, email=f"{cleo}@example.invalid", role="user")
+            )
+            await session.flush()
+            session.add(
+                TenantMember(tenant_id=world.reached, user_id=cleo, role="admin")
+            )
+            package = Package(
+                tenant_id=world.reached,
+                owner_id=world.ada,
+                name="kit",
+                description="",
+                instructions="",
+                read_visibility="private",
+                write_visibility="private",
+            )
+            session.add(package)
+            await session.commit()
+            package_id = package.id
+
+        await _apply(rls_harness, world, "member")
+
+        async with owner() as session:
+            moved = await session.get(Package, package_id)
+            assert moved is not None and moved.owner_id == cleo
+            ended = await session.scalar(
+                select(AuditEvent).where(
+                    AuditEvent.tenant_id == world.reached,
+                    AuditEvent.action == AuditAction.ORGANIZATION_ADMIN_ACCESS_ENDED,
+                )
+            )
+            assert ended is not None and ended.details is not None
+            assert ended.details["handed_over_to"] == cleo
+            assert ended.details["handed_over"] == {"package": 1}
+
     async def test_nothing_is_applied_once_the_organization_follows_another(
         self, rls_harness: RLSHarness
     ) -> None:
@@ -373,11 +419,11 @@ class TestConflicts:
             },
         ) in await _organization_events(owner, world.organization_id)
 
-    async def test_a_workspace_left_with_no_owner_is_recorded(
+    async def test_a_workspace_left_with_no_admin_is_recorded(
         self, rls_harness: RLSHarness
     ) -> None:
         owner = rls_harness.owner
-        world = await _World.make(owner, ada_owns_joined=True)
+        world = await _World.make(owner, ada_administers_joined=True)
 
         await _apply(rls_harness, world, None)
 
@@ -387,7 +433,7 @@ class TestConflicts:
             OrganizationAuditAction.DIRECTORY_CONFLICT,
             {
                 "source": "directory_event",
-                "kind": "workspace_left_without_owner",
+                "kind": "workspace_left_without_admin",
                 "workspace": world.joined,
             },
         ) in await _organization_events(owner, world.organization_id)
@@ -426,10 +472,10 @@ class TestARetryAfterAFailure:
     async def test_finds_the_workspaces_left_and_their_conflicts_recorded(
         self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ada is the only owner of `joined` and owns an agent there; a second
+        """Ada is the only admin of `joined` and owns an agent there; a second
         workspace she is in has a busy connection the first time."""
         owner = rls_harness.owner
-        world = await _World.make(owner, ada_owns_joined=True)
+        world = await _World.make(owner, ada_administers_joined=True)
         await _agent(owner, world.joined, world.ada)
         busy = _id("busy")
         async with owner() as session:
@@ -468,6 +514,6 @@ class TestARetryAfterAFailure:
         ]
         assert sorted(conflicts) == [
             "agents_left_with_owner",
-            "workspace_left_without_owner",
+            "workspace_left_without_admin",
         ]
         assert await _role(owner, world.organization_id, world.ada) is None

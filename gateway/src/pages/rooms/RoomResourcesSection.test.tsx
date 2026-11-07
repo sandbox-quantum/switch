@@ -4,8 +4,9 @@ import * as api from "../../data/api";
 import * as hooks from "../../data/hooks";
 import RoomResourcesSection from "./RoomResourcesSection";
 
+const navigate = vi.hoisted(() => vi.fn());
 vi.mock("react-router", () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => navigate,
 }));
 
 vi.mock("../../data/hooks", () => ({
@@ -113,6 +114,25 @@ describe("RoomResourcesSection", () => {
     await screen.findByText("Playbook");
     expect(hooks.useReferences).toHaveBeenCalled();
     expect(hooks.useDocuments).not.toHaveBeenCalled();
+  });
+
+  it("opens an attached package only for a viewer who may read it", () => {
+    // A private package its owner attached is listed to every reader of the
+    // room, but the server says only some of them may open it.
+    vi.mocked(hooks.useRoomPackages).mockReturnValue(
+      returns([
+        { id: "p1", name: "Starter kit", description: "", can_read: true },
+        { id: "p2", name: "Secret kit", description: "", can_read: false },
+      ]) as never,
+    );
+    render(<RoomResourcesSection roomId="r1" canWrite={false} canUnlink={false} />);
+
+    fireEvent.click(screen.getByTestId("room-package-p1"));
+    expect(navigate).toHaveBeenLastCalledWith("/resources/packages/p1");
+    navigate.mockClear();
+    fireEvent.click(screen.getByTestId("room-package-p2"));
+    expect(navigate).not.toHaveBeenCalled();
+    screen.getByText("Secret kit");
   });
 
   it("asks before deleting a room document, which cannot be undone", async () => {

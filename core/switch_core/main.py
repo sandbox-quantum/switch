@@ -114,6 +114,7 @@ from switch_core.db import encrypted_json
 from switch_core.db.boot_lock import boot_lock
 from switch_core.db.connection_budget import check_connection_budget
 from switch_core.db.engine import (
+    app_connect_args,
     create_engine_from_config,
     create_session_factory,
     create_unpooled_engine,
@@ -210,6 +211,9 @@ from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
+from switch_core.retention.audit_history import check_purge_privilege
+from switch_core.retention.erasure import ErasureService, erasure_loop
+from switch_core.retention.service import retention_loop
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
@@ -563,6 +567,23 @@ async def _close_by(
         )
 
 
+async def _stop_tasks(*tasks: asyncio.Task[None]) -> None:
+    """Cancel `tasks` and wait until each has stopped, so nothing they were in
+    the middle of still runs against what is closed next. A task that had
+    already failed is logged, not raised: shutdown goes on."""
+    for task in tasks:
+        task.cancel()
+    for task, outcome in zip(
+        tasks, await asyncio.gather(*tasks, return_exceptions=True), strict=True
+    ):
+        if isinstance(outcome, Exception):
+            logger.error(
+                "Background task %s had failed before shutdown",
+                task.get_name(),
+                exc_info=outcome,
+            )
+
+
 async def _snapshot_loop(reporter: SnapshotReporter) -> None:
     # `no_tenant` for the reason every other long-lived task does it: the
     # snapshot binds each tenant in turn as it counts, and must not inherit
@@ -667,6 +688,28 @@ async def _check_tenant_isolation(config: SwitchConfig, engine: AsyncEngine) -> 
     return True
 
 
+async def _audit_history_sessions(
+    config: SwitchConfig,
+    engine: AsyncEngine,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> tuple[AsyncEngine | None, async_sessionmaker[AsyncSession]]:
+    """The sessions the retention pass purges deleted workspaces' audit history
+    on: the schema owner's, where configured, since the runtime role may not
+    delete audit rows; the runtime ones otherwise. Says at startup, as an
+    error, when the chosen role cannot (`retention/audit_history.py`).
+
+    Returns the owner's engine, for the caller to dispose of, or None."""
+    owner_url = config.owner_database_url
+    if owner_url is None:
+        await check_purge_privilege(engine, owner=False)
+        return None, session_factory
+    owner_engine = create_async_engine(
+        owner_url, poolclass=NullPool, connect_args=app_connect_args(config)
+    )
+    await check_purge_privilege(owner_engine, owner=True)
+    return owner_engine, create_session_factory(owner_engine)
+
+
 async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Database ─────────────────────────────────────────────────────────────
     # The migration and the runtime role's grant re-issue already ran, under
@@ -689,6 +732,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     instrument_queries(engine)
     pool_watermark = install_pool_watermark(engine)
     install_hold_timer(engine)
+    history_engine, history_sessions = await _audit_history_sessions(
+        config, engine, session_factory
+    )
 
     # Its connection is held rather than borrowed, so it builds its own outside
     # the pool. Nothing subscribes yet; it starts with the server so that the
@@ -1129,6 +1175,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
+    connections.set_ended_elsewhere_listener(protocol.api_key_cache.invalidate_agent)
 
     # ── Messaging app installs ──────────────────────────────────────────────
     # Registration is the feature flag. An installer exists for a platform when
@@ -1233,6 +1280,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         group_chats_enabled=config.group_chats_enabled,
         buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
+        trust_client=trust_client,
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
@@ -1240,6 +1288,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
+    protocol.set_member_adder(chat_service.add_member, chat_service.require_can_join)
     chat_service.on_agent_room_changed(room_changes.rooms_changed)
     room_service.on_room_changed(chat_service.room_changed)
 
@@ -1518,6 +1567,15 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 if management is not None
                 else None
             )
+            data_retention_task = asyncio.create_task(
+                retention_loop(session_factory, history_sessions)
+            )
+            erasure_task = asyncio.create_task(
+                erasure_loop(
+                    session_factory,
+                    ErasureService(session_factory, client_lifecycle, collab_lifecycle),
+                )
+            )
             # Only when telemetry is on: the chart tells a customer that off
             # means nothing is collected, and the fan-out is not free.
             snapshot_task = (
@@ -1539,6 +1597,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 router.close()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
+                await _stop_tasks(data_retention_task, erasure_task)
+                if history_engine is not None:
+                    await history_engine.dispose()
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 shared_connections_task.cancel()

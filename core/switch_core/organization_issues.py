@@ -8,7 +8,7 @@ once someone fixes it rather than once someone dismisses it:
 
 - `no_org_admin`: nobody administers the organization (only the platform
   operator, who may make someone its admin, can then read this).
-- `workspace_without_owner`: a workspace with no `owner`.
+- `workspace_without_admin`: a workspace with no `admin`.
 - `agents_without_acting_owner`: agents whose owner is neither a member of
   their workspace, nor the organization's `org_admin`, nor the platform
   operator, so nobody can act for them as their owner.
@@ -95,12 +95,12 @@ async def workspace_issues(
             workspace = await tenant_db.get(Tenant, tenant_id)
             if workspace is None or workspace.organization_id != organization_id:
                 continue
-            without_owner = await user_store.count_owners(tenant_db) == 0
+            without_admin = await user_store.count_admins(tenant_db) == 0
             stranded = await _stranded_agents(tenant_db, tenant_id, admins)
-        if without_owner:
+        if without_admin:
             found.append(
                 OrganizationIssue(
-                    OrganizationIssueKind.WORKSPACE_WITHOUT_OWNER,
+                    OrganizationIssueKind.WORKSPACE_WITHOUT_ADMIN,
                     tenant_id,
                     workspace.name,
                     [],

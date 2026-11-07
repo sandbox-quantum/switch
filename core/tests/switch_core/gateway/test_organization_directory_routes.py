@@ -260,7 +260,7 @@ class TestJoining:
         self, session_factory, directory: _Directory
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
         token = await _invitation(session_factory, tenant_id, ada)
         bob = await _outsider(session_factory)
 
@@ -276,7 +276,7 @@ class TestJoining:
         self, session_factory, unavailable: _Directory, directory: _Directory
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
         token = await _invitation(session_factory, tenant_id, ada)
         bob = await _outsider(session_factory)
 
@@ -297,7 +297,7 @@ class TestJoining:
         self, session_factory, directory: _Directory, unavailable: _Directory
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
         async with tenant_session(session_factory, tenant_id) as session:
             await JoinDomainStore().add(
                 session, domain="example.invalid", created_by=ada
@@ -322,7 +322,7 @@ class TestJoining:
         nothing there: the directory is not asked, and can't demote them."""
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "org_admin")}
         )
         async with tenant_session(session_factory, tenant_id) as session:
             await JoinDomainStore().add(
@@ -345,7 +345,7 @@ class TestChangingRoles:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
 
         async with _client(_with(session_factory, directory), ada, tenant_id) as client:
@@ -370,7 +370,7 @@ class TestChangingRoles:
         is asked, and a directory that then fails doesn't give it back."""
         ada, bob = _name("ada"), _name("bob")
         first = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "org_admin")}
         )
         second = await _second_workspace(session_factory, first)
         key = await _personal_key(session_factory, second, bob)
@@ -396,7 +396,7 @@ class TestChangingRoles:
         asked, so the directory is never asked to demote both."""
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("owner", "org_admin")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("admin", "org_admin")}
         )
         app = _with(session_factory, directory)
 
@@ -421,7 +421,7 @@ class TestChangingRoles:
         self, session_factory, directory: _Directory
     ) -> None:
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
 
         async with _client(_with(session_factory, directory), ada, tenant_id) as client:
             response = await client.patch(
@@ -436,7 +436,7 @@ class TestRemoving:
     async def _bob_in_no_workspace(self, session_factory) -> tuple[str, str, str]:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
         async with tenant_session(session_factory, tenant_id) as session:
             await session.delete(await session.get(TenantMember, (tenant_id, bob)))
@@ -474,7 +474,7 @@ class TestRemoving:
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
-            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
         )
 
         async with _client(_with(session_factory, directory), ada, tenant_id) as client:
@@ -490,10 +490,35 @@ class TestTheCurrentOrganization:
     ) -> None:
         """So the dashboard can say where people are added and made Org Admin."""
         ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
 
         async with _client(_with(session_factory, directory), ada, tenant_id) as client:
             response = await client.get("/organizations/current")
 
         assert response.status_code == 200, response.text
         assert response.json()["members_from_directory"] is True
+
+
+class _OneWayDirectory(_Directory):
+    """Keeps the organization's members, and takes no change made from Switch:
+    a linked organization with no WorkOS members service."""
+
+    def sends_changes_for(self, organization: Organization) -> bool:
+        return False
+
+
+async def test_nobody_is_offered_org_admin_where_the_directory_takes_no_changes(
+    session_factory,
+) -> None:
+    ada, bob = _name("ada"), _name("bob")
+    tenant_id = await _workspace(
+        session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
+    )
+    directory = _OneWayDirectory(None)
+
+    async with _client(_with(session_factory, directory), ada, tenant_id) as client:
+        response = await client.get("/organizations/current/members")
+
+    assert response.status_code == 200, response.text
+    [row] = [row for row in response.json() if row["user_id"] == bob]
+    assert (row["can_change_role"], row["can_grant_org_admin"]) == (True, False)

@@ -71,7 +71,7 @@ import { administersWorkspaceInScope } from './workspace-admin';
 
 /**
  * The messaging apps bridged to a server, which account in each one is the
- * signed-in user, and — for a workspace owner or admin — the way to connect another
+ * signed-in user, and — for a workspace admin — the way to connect another
  * (CHOO-1784, CHOO-2137).
  *
  * One row per app: its name with the account you have claimed on it underneath,
@@ -378,12 +378,12 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       ) : bridges.length === 0 && !bridgesQuery.isLoading ? (
         <p className="mt-3 text-xs text-foreground-muted">
           {chatsWithoutApp
-            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : administers ? 'Connect one from Admin to also reach your agents from Slack, Discord and others.' : 'An owner or admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
+            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : administers ? 'Connect one from Admin to also reach your agents from Slack, Discord and others.' : 'An admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
             : isAdmin
               ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
               : administers
                 ? 'No messaging app is connected. Connect one from Admin.'
-                : 'No messaging app is connected. An owner or admin of this workspace can connect one.'}
+                : 'No messaging app is connected. An admin of this workspace can connect one.'}
         </p>
       ) : (
         <div className="mt-2 flex flex-col">
@@ -672,7 +672,7 @@ export function MessagingAppRow({
   const channelsLockedReason = !bridge.channelCreationSupported
     ? `${platform} cannot create channels from Switch. Make the chat in the app and add the bot to it.`
     : !isAdmin
-      ? 'Only an owner or admin of this workspace can change this.'
+      ? 'Only an admin of this workspace can change this.'
       : null;
 
   return (
@@ -1008,7 +1008,7 @@ function messageForUpdate(result: { kind: string; message?: string }): string {
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'This requires an owner or admin of this workspace.';
+      return 'This requires an admin of this workspace.';
     default:
       return result.message ?? 'The server rejected the change.';
   }

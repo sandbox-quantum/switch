@@ -9,11 +9,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.accounts.transfer import kind_refusal
 from switch_core.agent_templates import plan_template
 from switch_core.authz import (
     Action,
     Principal,
     can,
+    can_manage,
     can_unlink_from_room,
 )
 from switch_core.bridges.agent.operations.agent_management import management_port
@@ -37,6 +39,7 @@ from switch_core.gateway.auth import (
     authorize_room,
     get_current_user,
     get_tenant_is_admin,
+    require_group_filing_or_403,
     takes_part_in_room,
 )
 from switch_core.gateway.dependencies import (
@@ -75,7 +78,14 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
-from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
+from switch_core.room_service import (
+    FIXED_MEMBERSHIP,
+    MembershipFixed,
+    RoleSpec,
+    RoomCreateConfig,
+    RoomService,
+    require_membership_changeable_from_outside,
+)
 from switch_core.rooms_yaml import (
     GroupProvisionResult,
     GroupSpec,
@@ -100,6 +110,15 @@ from switch_core.template_v2 import is_v2_text
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _refuse_fixed_membership(room: Room) -> None:
+    """409 for a direct or group conversation, whose agents and people these
+    routes don't change (`require_membership_changeable_from_outside`)."""
+    try:
+        require_membership_changeable_from_outside(room)
+    except MembershipFixed as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 async def _require_room_released(
@@ -196,6 +215,7 @@ async def _build_room_detail(
 
     roles = await _list_room_role_details(session, room.id, protocol)
     join_event_listeners = await room_store.get_join_event_listeners(session, room.id)
+    owner = await session.get(User, room.owner_id) if room.owner_id else None
     takes_part = await takes_part_in_room(session, room_store, room.id, principal.id)
     # Not held across the deeplink, which can ask the platform on a cache miss.
     await session.commit()
@@ -216,6 +236,8 @@ async def _build_room_detail(
         external_channel_url=external_channel_url,
         group_id=room.group_id,
         group_name=group_name,
+        owner_id=room.owner_id,
+        owner_name=owner.name if owner else None,
         read_visibility=room.read_visibility,
         write_visibility=room.write_visibility,
         created_at=str(room.created_at),
@@ -242,7 +264,22 @@ async def _build_room_detail(
         can_write=can(principal, "write", room),
         can_manage=can(principal, "delete", room),
         can_unlink=can_unlink_from_room(principal, takes_part=takes_part),
+        can_transfer=_can_transfer(principal, room),
+        can_change_members=_can_change_members(principal, room),
     )
+
+
+def _can_change_members(principal: Principal, room: Room) -> bool:
+    """Whether `principal` may add and remove the room's agents and people
+    through these routes: write access, unless it is a direct or group
+    conversation (`_refuse_fixed_membership`)."""
+    return can(principal, "write", room) and room.channel_type not in FIXED_MEMBERSHIP
+
+
+def _can_transfer(principal: Principal, room: Room) -> bool:
+    """Whether `principal` may hand `room` to another member, as
+    `POST /ownership/transfer` decides it."""
+    return can_manage(principal, room.owner_id) and kind_refusal(room) is None
 
 
 async def _list_room_role_details(
@@ -389,6 +426,8 @@ async def list_rooms(
                 can_unlink=can_unlink_from_room(
                     principal, takes_part=room.id in involved
                 ),
+                can_transfer=_can_transfer(principal, room),
+                can_change_members=_can_change_members(principal, room),
             )
         )
 
@@ -408,6 +447,8 @@ async def create_room(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     _validate_create(req)
+    if req.group_id is not None:
+        require_group_filing_or_403(is_admin)
     config = RoomCreateConfig(
         name=req.name,
         description=req.description,
@@ -424,6 +465,8 @@ async def create_room(
         group_id=req.group_id,
         created_by=user.id,
         owner_id=user.id,
+        acting_user_id=user.id,
+        acting_is_admin=is_admin,
         read_visibility=req.read_visibility,
         write_visibility=req.write_visibility,
         roles=([RoleSpec(**r.model_dump()) for r in req.roles] if req.roles else None),
@@ -1060,11 +1103,18 @@ async def put_room_group(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    """Assign the room to a group, or make it standalone (`group_id=null`)."""
+    """Assign the room to a group, or make it standalone (`group_id=null`).
+
+    Taking a room out of its group, or leaving it where it is, needs write
+    access to it; putting it in another one also needs a workspace admin."""
     principal = Principal(user.id, is_admin)
     await authorize_room(session, room_store, room_id, principal, "write")
     try:
-        await room_store.set_group(session, room_id, req.group_id)
+        await room_store.set_group(
+            session, room_id, req.group_id, acting_is_admin=is_admin
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         # Missing room → 404; missing group → 400.
         detail = str(e)
@@ -1167,7 +1217,9 @@ async def post_room_agents(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     principal = Principal(user.id, is_admin)
-    await _require_room_released(session, room_store, room_id, principal, "write")
+    _refuse_fixed_membership(
+        await _require_room_released(session, room_store, room_id, principal, "write")
+    )
     try:
         await room_service.add_agents_to_room(
             room_id,
@@ -1242,7 +1294,9 @@ async def delete_room_agent(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     principal = Principal(user.id, is_admin)
-    await _require_room_released(session, room_store, room_id, principal, "write")
+    _refuse_fixed_membership(
+        await _require_room_released(session, room_store, room_id, principal, "write")
+    )
     try:
         await room_service.remove_agents_from_room(room_id, [agent_id])
     except ValueError as e:
@@ -1276,7 +1330,9 @@ async def post_room_users(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     principal = Principal(user.id, is_admin)
-    await _require_room_released(session, room_store, room_id, principal, "write")
+    _refuse_fixed_membership(
+        await _require_room_released(session, room_store, room_id, principal, "write")
+    )
     try:
         await room_service.add_users_to_room(room_id, req.user_names)
     except ValueError as e:
