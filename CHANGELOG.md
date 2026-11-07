@@ -63,7 +63,9 @@ version of their own to them without also giving them a release of their own.
   Hoot's pill; errors and delete buttons use Hoot's softer red; captions,
   section labels and tooltips are 13px; the backdrop behind a dialog is
   Hoot's warm black; and table headers show the cream band they were always
-  meant to. Warnings stay amber, so they remain easy to tell from errors.
+  meant to. Warnings stay amber, so they remain easy to tell from errors,
+  and a warning chip ("machine offline", "Archived") is now readable: dark
+  text on its amber wash, where the text used to be amber too.
 - **Disabled controls in the operator dashboard look disabled.** A disabled
   field, its label, and a disabled checkbox or switch looked almost the same
   as enabled ones; they are now greyed out, so an action you may not take
