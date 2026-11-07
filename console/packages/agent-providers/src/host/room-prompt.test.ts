@@ -6,7 +6,7 @@ describe('a room command', () => {
     type: 'message',
     payload: { sender: '@owner:example.test', sender_name: 'Owner', message_id: '$m', body: 'hi' },
   };
-  const command = (message: unknown, firstOfConversation = false) =>
+  const command = (message: unknown, firstOfConversation = false, provider = 'claude') =>
     roomCommand({
       agentId: 'agent',
       sessionId: 'session',
@@ -14,6 +14,7 @@ describe('a room command', () => {
       roomId: '!room:example.test',
       message: roomMessageSchema.parse(message),
       surface: 'switch-web',
+      provider,
       attachments: [],
       preface: null,
       firstOfConversation,
@@ -30,6 +31,18 @@ describe('a room command', () => {
 
   it('reminds the agent to reply with post_message, every time', () => {
     expect(text(event).endsWith(REPLY_REMINDER)).toBe(true);
+  });
+
+  it('gives Droid exact Switch tool names on every room message without changing other providers', () => {
+    for (const first of [true, false]) {
+      const body = command(event, first, 'factory-droid').body;
+      if (body.type !== 'message.send') throw new Error('not a message');
+      expect(body.text).toContain('ToolSearch with select:switch___post_message');
+      expect(body.text).toContain('Reply in the room with switch___post_message');
+      expect(body.text).toContain('switch___send_targeted_message');
+      expect(body.text).not.toContain('with post_message;');
+      expect(text(event, first).endsWith(REPLY_REMINDER)).toBe(true);
+    }
   });
 
   it('tells the first message of a conversation what the chat opened with', () => {

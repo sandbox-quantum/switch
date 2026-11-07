@@ -132,6 +132,7 @@ type Harness = {
 async function start(
   opts: {
     rooms?: boolean;
+    provider?: Session['provider'];
     ask?: 'approval' | 'questions';
     parkAfterMs?: number;
     /** The provider reports work, such as subagents, still running outside any turn. */
@@ -180,16 +181,17 @@ async function start(
   const turns: Harness['turns'] = [];
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
   let live = false;
+  const provider = opts.provider ?? 'claude';
   const emit = (event: Record<string, unknown>) =>
     listener({
       ...event,
       sessionId: 'session',
-      provider: 'claude',
+      provider,
       eventId: randomUUID(),
       createdAt: new Date().toISOString(),
     } as ProviderRuntimeEvent);
   const adapter: ProviderAdapter = {
-    provider: 'claude',
+    provider,
     capabilities: {
       resume: true,
       steering: false,
@@ -206,7 +208,7 @@ async function start(
         );
       live = true;
       emit({ type: 'session.state.changed', status: 'ready' });
-      return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
+      return { provider, sessionId: 'session', nativeSessionId: 'native' };
     }),
     sendTurn: vi.fn(async ({ turnId, text, attachments }) => {
       turns.push({ turnId, text, attachments: attachments ?? [] });
@@ -298,6 +300,7 @@ async function start(
   switchCore.state.startRefused = opts.startRefused ?? false;
   switchCore.state.unavailable = opts.unavailable ?? false;
   const session = structuredClone(SESSION);
+  if (opts.provider) session.provider = opts.provider;
   if (opts.rooms) session.capabilities.attachmentMimeTypes = ['text/plain'];
   if (opts.resettable) session.capabilities.reset = true;
   const channel = connectParent(parent.port);
@@ -467,6 +470,21 @@ it('turns a room message it was handed into a fenced prompt, once', async () => 
     expect(turn!.text).toContain('(2 unaddressed room messages arrived');
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('passes Droid room messages with its exact Switch tool discovery name', async () => {
+  const host = await start({ rooms: true, provider: 'factory-droid' });
+  try {
+    expect(await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Hello') })).toMatchObject(
+      {
+        ok: true,
+      }
+    );
+    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.turns[0]!.text).toContain('ToolSearch with select:switch___post_message');
   } finally {
     expect(await host.stop()).toBeNull();
   }

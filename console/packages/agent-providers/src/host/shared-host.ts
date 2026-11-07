@@ -845,6 +845,7 @@ export async function runSharedHost(
           roomId: event.roomId,
           message: message.data,
           surface: 'switch-web',
+          provider: options.session.provider,
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
