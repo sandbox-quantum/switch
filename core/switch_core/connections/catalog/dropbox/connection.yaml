@@ -1,0 +1,81 @@
+slug: dropbox
+name: Dropbox
+category: File storage
+description: Read and update files and folders in a Dropbox account, as its owner, through Dropbox's hosted MCP server.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Dropbox refresh tokens are reused until the person or Dropbox revokes
+  # them; they do not rotate on use. Not measured; confirm at manual QA.
+  refresh: reusable
+  oauth:
+    # Dropbox's dynamic client registration is limited to a named set of
+    # clients (Claude, ChatGPT, Cursor): every other client registers its
+    # own app in the App Console and stores its client. Setup:
+    # docs/old/dropbox-setup.md.
+    registration: static
+    client_settings: DROPBOX
+    public_client: true
+    # Dropbox registers callback URLs one by one and matches them exactly,
+    # port included, so Console's ports are pinned, as Salesforce's. The
+    # loopback listener is the one plain-HTTP redirect Dropbox accepts.
+    redirect: [loopback, core]
+    loopback_ports: [39251, 39252, 39253, 39254, 39255]
+    authorization_url: https://www.dropbox.com/oauth2/authorize
+    token_url: https://api.dropboxapi.com/oauth2/token
+    # A refresh token is issued only for offline access.
+    authorization_params: { token_access_type: offline }
+    # Dropbox tokenRevoke authenticates with the access token and revokes
+    # that token's refresh-token family, not every grant for this client/account.
+    # https://opensource.dropbox.com/SwiftyDropbox/api-docs/latest/Classes/AuthRoutes.html
+    # https://community.dropbox.com/en/discussion/772526/dropbox-api-for-deleting-the-integration-app-connected-via-oauth2-flow
+    # Real-account disconnect/reconnect still needs measurement.
+    revocation_url: https://api.dropboxapi.com/2/auth/token/revoke
+    revocation_auth: bearer_access_token
+    revocation_ends_grant: false
+  identity:
+    # Dropbox's get_current_account is a parameterless POST whose body is a
+    # JSON null; there is no GET equivalent. account_id is the account's
+    # stable, unique id. The server's WhoAmI tool is an identity source
+    # too, once the shared identity.mcp_tool feature lands.
+    method: POST
+    url: https://api.dropboxapi.com/2/users/get_current_account
+    account_id: account_id
+    label: email
+# Dropbox documents its access tokens as short-lived (about four hours);
+# not measured. An agent's copy may outlive its grant by that long; agents
+# still ask again hourly.
+token: { kind: pass_through, max_lifetime: 14400 }
+mcp:
+  # One hosted server for every account; the account comes from the token.
+  # Dropbox describes the server as both open beta and generally available:
+  # beta terms apply.
+  servers:
+    - { name: dropbox, url: "https://mcp.dropbox.com/mcp" }
+access:
+  # Dropbox documents granular OAuth scopes, so the read/write split is
+  # scope-enforced. account_info.read is for the identity call and WhoAmI.
+  read:
+    scopes:
+      - account_info.read
+      - files.metadata.read
+      - files.content.read
+      - sharing.read
+      - file_requests.read
+  write:
+    scopes:
+      - account_info.read
+      - files.metadata.read
+      - files.content.read
+      - sharing.read
+      - file_requests.read
+      - files.content.write
+      - sharing.write
+      - file_requests.write
+tools: { mode: pass_through }
+# The server offers its whole tool list and every call goes out with the
+# grant's token: the read/write boundary is the token's scopes, which
+# Dropbox enforces - a read grant's write calls fail at Dropbox, not in
+# Switch. The write scopes carry delete (files.content.write), and the
+# skill says to confirm before changing anything.
