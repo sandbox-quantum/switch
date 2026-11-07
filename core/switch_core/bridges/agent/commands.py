@@ -1317,10 +1317,13 @@ async def _may_change_membership(
     command: Literal["invite_agent", "remove_agent"],
 ) -> bool:
     """Whether the command's sender may bring `target` into the room, or take
-    it out: the rule `switch_core.agent_invites` describes.
+    it out.
 
-    Anyone the agent would take instructions from in this room may; so may a
-    workspace admin, and an agent that manages agents for the target's owner.
+    Anyone the agent would take instructions from in this room may, and so
+    may an agent that manages agents for the target's owner: the rule
+    `switch_core.agent_invites` describes. A workspace admin may also take an
+    agent out, to tidy a room, but not bring one in: inviting a private agent
+    into a room is the exposure that rule exists to stop.
     """
     resolver = AddressingResolver(
         room_store=host._room_store,
@@ -1339,6 +1342,8 @@ async def _may_change_membership(
     if principal is None:
         return False
     if principal.kind == "user":
+        if command == "invite_agent":
+            return False
         for user_id in principal.user_ids:
             user = await session.get(User, user_id)
             if user is not None and await administers_on_record(

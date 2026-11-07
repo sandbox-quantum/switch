@@ -30,14 +30,9 @@ def _inviter(
     return SimpleNamespace(id=agent_id, owner_id=owner_id, can_manage_agents=manages)
 
 
-def _person(agent: SimpleNamespace, user_id: str, *, is_admin: bool = False) -> bool:
+def _person(agent: SimpleNamespace, user_id: str) -> bool:
     return person_may_invite(
-        agent,
-        room_id="room-1",
-        group_id=None,
-        user_id=user_id,
-        external_user_ids=[],
-        is_admin=is_admin,
+        agent, room_id="room-1", group_id=None, user_id=user_id, external_user_ids=[]
     )
 
 
@@ -53,13 +48,18 @@ class TestPersonMayInvite:
     def test_anyone_may_invite_an_open_agent(self) -> None:
         assert _person(_agent(None), "bob")
 
-    def test_a_workspace_admin_may(self) -> None:
-        assert _person(_agent(_OWNER_ONLY), "root", is_admin=True)
+    def test_an_ownerless_restricted_agent_admits_nobody(self) -> None:
+        assert not _person(_agent(_OWNER_ONLY, owner_id=None), "alice")
 
-    def test_an_ownerless_restricted_agent_admits_nobody_but_admins(self) -> None:
-        agent = _agent(_OWNER_ONLY, owner_id=None)
-        assert not _person(agent, "alice")
-        assert _person(agent, "root", is_admin=True)
+    def test_a_person_the_policy_names_by_account_may(self) -> None:
+        policy = {"rules": [{"users": ["mm-bob"], "agents": []}]}
+        assert person_may_invite(
+            _agent(policy),
+            room_id="room-1",
+            group_id=None,
+            user_id="bob",
+            external_user_ids=["mm-bob"],
+        )
 
     def test_a_rule_naming_other_rooms_does_not_admit_this_one(self) -> None:
         policy = {"rules": [{"rooms": ["room-2"], "users": "*", "agents": []}]}

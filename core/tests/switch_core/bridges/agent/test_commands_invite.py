@@ -308,10 +308,12 @@ class TestInviteRespectsAddressing:
         assert added == []
         assert "You can't invite" in posted[0]
 
-    async def test_a_workspace_admin_may_invite(
+    async def test_a_workspace_admin_is_held_to_the_policy_too(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        client, _posted, added = _build_client(
+        # Unlike `!remove-agent`: pulling a private agent into a room is what
+        # the rule stops, whoever does it.
+        client, posted, added = _build_client(
             registry={"alice-agent": _OWNED},
             room_agent_ids=[],
             monkeypatch=monkeypatch,
@@ -320,7 +322,8 @@ class TestInviteRespectsAddressing:
             admins=frozenset({"user-carol"}),
         )
         await _cmd_invite(client, _Room(room_id="!m:x"), _event("@alice-agent"), False)
-        assert added == [("room-1", ["alice-agent"])]
+        assert added == []
+        assert "You can't invite" in posted[0]
 
     async def test_the_owners_managing_agent_may_invite(
         self, monkeypatch: pytest.MonkeyPatch

@@ -129,7 +129,6 @@ async def _refuse_uninvited_agents(
     protocol: AgentCore,
     room: Room,
     user: User,
-    is_admin: bool,
     agent_ids: list[str],
 ) -> None:
     """403 when `user` may not bring one of `agent_ids` into `room`: someone
@@ -153,7 +152,6 @@ async def _refuse_uninvited_agents(
             group_id=room.group_id,
             user_id=user.id,
             external_user_ids=[],
-            is_admin=is_admin,
         ):
             raise HTTPException(
                 status_code=403,
@@ -1265,7 +1263,7 @@ async def post_room_agents(
     )
     _refuse_fixed_membership(target_room)
     await _refuse_uninvited_agents(
-        session, room_store, protocol, target_room, user, is_admin, req.agent_ids
+        session, room_store, protocol, target_room, user, req.agent_ids
     )
     try:
         await room_service.add_agents_to_room(

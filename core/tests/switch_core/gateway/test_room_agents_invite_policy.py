@@ -1,6 +1,5 @@
 """The gateway's room page adds an agent only for someone it would take
-instructions from in that room, or a workspace admin
-(`switch_core.agent_invites`). Exercised against real Postgres with real
+instructions from in that room (`switch_core.agent_invites`). Exercised against real Postgres with real
 stores, through the check `POST /gateway/rooms/{room_id}/agents` runs."""
 
 from __future__ import annotations
@@ -28,8 +27,6 @@ async def _check(
     room_id: str,
     user_id: str,
     agent_ids: list[str],
-    *,
-    is_admin: bool = False,
 ) -> None:
     protocol = _service(session_factory)
     async with session_factory() as session:
@@ -37,7 +34,7 @@ async def _check(
         user = await session.get(User, user_id)
         assert room is not None and user is not None
         await _refuse_uninvited_agents(
-            session, RoomStore(), protocol, room, user, is_admin, agent_ids
+            session, RoomStore(), protocol, room, user, agent_ids
         )
 
 
@@ -83,9 +80,11 @@ class TestRoomPageInvite:
 
         await _check(session_factory, room_id, bob, [target])
 
-    async def test_a_workspace_admin_may_invite(
+    async def test_a_workspace_admin_is_held_to_the_policy_too(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """Pulling a private agent into a room is what the rule stops, whoever
+        does it; the owner can widen the policy."""
         svc = _service(session_factory)
         alice = await _make_user(session_factory, "alice")
         root = await _make_user(session_factory, "root", role="admin")
@@ -93,7 +92,9 @@ class TestRoomPageInvite:
         await _set(session_factory, target, addressing="owner_only")
         room_id = await _room_with(session_factory, [])
 
-        await _check(session_factory, room_id, root, [target], is_admin=True)
+        with pytest.raises(HTTPException) as refused:
+            await _check(session_factory, room_id, root, [target])
+        assert refused.value.status_code == 403
 
     async def test_an_agent_already_in_the_room_is_not_an_invite(
         self, session_factory: async_sessionmaker[AsyncSession]

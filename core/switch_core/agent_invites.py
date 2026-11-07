@@ -7,14 +7,17 @@ replying that it can't act, and its presence tells that room where it is used.
 So every invite path asks the same question, here: would the policy let the
 inviter address this agent in the room it is being invited into?
 
-The rule is the one `!remove-agent` already applies, so the people who may
-take an agent out of a room are the people who may put it in:
+Who may invite:
 
   - anyone the agent's policy admits in that room (its owner, under the
     default policy);
   - an agent that manages agents (`can_manage_agents`) for the same owner,
-    which is that owner acting through a program;
-  - a workspace admin, who answers for every agent in the workspace.
+    which is that owner acting through a program.
+
+A workspace admin is not let in for being one: an admin may take an agent out
+of a room to tidy it, but pulling a private agent into a room is the exposure
+this rule stops, so an admin invites only as the policy allows. The owner can
+always widen the policy.
 
 The callers resolve the inviter (a chat account, an agent, or a Switch user)
 and pass what they found; this module stays free of I/O, like
@@ -57,17 +60,13 @@ def person_may_invite(
     group_id: str | None,
     user_id: str,
     external_user_ids: list[str],
-    is_admin: bool,
 ) -> bool:
-    """Whether the Switch user `user_id` may invite `agent` into `room_id`.
-
-    True for a workspace admin, otherwise exactly what the policy would say to
-    that person addressing the agent in the room themselves
-    (`allows_on_behalf_of`). `external_user_ids` are the chat accounts they
-    have claimed; pass [] where none are consulted, as Switch Console does.
+    """Whether the Switch user `user_id` may invite `agent` into `room_id`:
+    exactly what the policy would say to that person addressing the agent in
+    the room themselves (`allows_on_behalf_of`). `external_user_ids` are the
+    chat accounts they have claimed; pass [] where none are consulted, as
+    Switch Console does.
     """
-    if is_admin:
-        return True
     return allows_on_behalf_of(
         parse_policy(agent.addressing_policy),
         room_id=room_id,
