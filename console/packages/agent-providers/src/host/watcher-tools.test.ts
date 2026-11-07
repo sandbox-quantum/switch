@@ -243,8 +243,10 @@ it('reads the instructions of the room a session attends, without moving it', as
     structuredContent: { instructions: '## Room-specific instructions\n\nSign every reply.' },
   });
 
+  // A server that predates tool detail does not say, which means no.
   await expect(answer(session, { type: 'room-instructions', roomId: 'room' })).resolves.toEqual({
     instructions: 'Sign every reply.',
+    toolDetail: false,
   });
   expect(calls.connect.mock.calls).toEqual([
     ['session', 'connect_to_room', { room_id: 'room', include_general_instructions: false }],
@@ -252,10 +254,11 @@ it('reads the instructions of the room a session attends, without moving it', as
 
   calls.connect.mockResolvedValue({
     content: [{ type: 'text', text: '{}' }],
-    structuredContent: { instructions: '' },
+    structuredContent: { instructions: '', tool_detail: true },
   });
   await expect(answer(session, { type: 'room-instructions', roomId: 'room' })).resolves.toEqual({
     instructions: '',
+    toolDetail: true,
   });
 
   calls.connect.mockResolvedValue({

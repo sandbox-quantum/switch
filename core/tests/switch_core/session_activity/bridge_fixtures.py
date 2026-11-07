@@ -73,6 +73,7 @@ class RecordingPlatform:
     platform_name: str = "Test"
     draws_session_activity: bool = True
     separate_attention_slot: bool = True
+    shows_tool_detail: bool = True
     notifies_only_by_mention: bool = False
     redraws_for_elapsed_time: bool = False
     # What `activity_closes_in` answers for every message posted.

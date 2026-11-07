@@ -1,9 +1,9 @@
+import { redactSecrets } from '@switch-console/shared/secret-redaction';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearDiagnosticSections,
   getDiagnosticLogAttachment,
   redactDiagnosticLog,
-  redactSecrets,
   registerDiagnosticSection,
 } from './file-logger';
 

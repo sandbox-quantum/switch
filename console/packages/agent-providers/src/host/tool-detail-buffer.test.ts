@@ -58,6 +58,7 @@ it('keeps a Claude call’s input from its start and its output from its result'
           toolName: 'Bash',
           input: { command: 'ls -la' },
           output: 'total 0',
+          outputCut: null,
           truncated: false,
           exitCode: null,
         },
@@ -125,6 +126,7 @@ it('clips long input strings and long output, keeping the output’s head and ta
   expect(tool!.truncated).toBe(true);
   expect((tool!.input as { content: string }).content).toHaveLength(TOOL_INPUT_STRING_LIMIT + 1);
   expect(tool!.output).toBe(`${'h'.repeat(TOOL_OUTPUT_HEAD)}\n…\n${'t'.repeat(TOOL_OUTPUT_TAIL)}`);
+  expect(tool!.outputCut).toBe(TOOL_OUTPUT_HEAD);
 });
 
 it('drops everything on a new epoch and the oldest turns past its limit', () => {

@@ -1,10 +1,10 @@
+import { redactSecrets } from '@switch-console/shared/secret-redaction';
 import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agents-store';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
 import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { events } from '@main/lib/events';
-import { redactSecrets } from '@main/lib/file-logger';
 import { log } from '@main/lib/logger';
 import { roomHealthChangedChannel } from '@shared/core/switch-rooms/switchRoomEvents';
 import { ConnectionHealthMonitor } from './connection-health-monitor';
