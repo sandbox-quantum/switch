@@ -11,6 +11,8 @@ import { organizationMembers } from "./organization-members.ts";
 import { organizations } from "./organizations.ts";
 import { roomCapture } from "./room-capture.ts";
 import { roomGroupPaths } from "./room-groups.ts";
+import { roomSchedules } from "./room-schedules.ts";
+import { roomScheduleTools } from "./room-schedule-tools.ts";
 import type { FastScenario } from "./scenario.ts";
 
 /** Every fast-lane scenario. A scenario not listed here does not run. */
@@ -31,4 +33,6 @@ export const FAST_SCENARIOS: readonly FastScenario[] = [
   retentionWindow,
   memberErasure,
   endSessions,
+  roomSchedules,
+  roomScheduleTools,
 ];
