@@ -22,12 +22,21 @@ import {
   type PiBridgeToolDefinition,
   type PiMcpServerConfig,
 } from './bridge';
+import { killPiBashGroups } from './pi-adapter';
 import {
   PI_BASH_MARKER_ENV,
+  piBashArgsFingerprint,
+  piBashProcessView,
+  piBashPsArgsDigest,
+  piProcSource,
   piProcessGroupMembers,
   readPiBashRegistry,
+  readPiProcStat,
+  readPiPsCommand,
   signalPiBashGroup,
+  verifyPiBashGroup,
 } from './pi-bash';
+import { piConversationStore } from './pi-conversation';
 
 const NONCE = 'nonce_0123456789abcdef';
 const SECRET = 'sk-test-SECRET-value-7f3a';
@@ -246,11 +255,20 @@ function baseConfig(extra: Record<string, unknown> = {}) {
 
 async function startBridge(
   config: unknown = baseConfig(),
-  { sdk = stubSdk as PiBridgeSdk | undefined, env = true } = {}
+  {
+    sdk = stubSdk as PiBridgeSdk | undefined,
+    env = true,
+    host = {} as { procRoot?: string; ps?: string },
+  } = {}
 ) {
   const pi = new FakePiApi();
   if (env) process.env[PI_BRIDGE_CONFIG_ENV] = writeConfig(config);
-  await piBridge(pi.api, { importPi: sdk ? async () => sdk : undefined });
+  // R7-C: the rule of where processes are read, as the generated module passes it.
+  await piBridge(pi.api, {
+    importPi: sdk ? async () => sdk : undefined,
+    procSource: piProcSource,
+    ...host,
+  });
   return pi;
 }
 
@@ -1591,6 +1609,324 @@ describe('own bash and the process registry (ER-06)', () => {
     expect(piProcessGroupMembers(group?.pgid ?? -1)).toEqual([]);
   });
 
+  // D-15: where procfs gives no start time (macOS; here a hidden procfs), the bridge records the
+  // shell's `lstart`, and `pi-bash.ts` verifies and stops the group through `ps`.
+  const hiddenProc = () => ({ procRoot: path.join(dir, 'no-proc'), ps: 'ps' });
+
+  // R11-D: the starts come from `ps` after the spawn, in their own record.
+  const lstartRecord = () => registryEvents().find((line) => line.event === 'lstart');
+
+  // `sleep 30; true`: bash runs `sleep` as a child and stays the leader (with `sleep 30` alone
+  // it would `exec` it, see the next test).
+  it('records lstart without procfs; pi-bash verifies and stops the group through ps', async () => {
+    const command = 'sleep 30; true';
+    const pi = await startBridge(baseConfig(), { host: hiddenProc() });
+    const execute = await approvedBash(pi, 'ps-1', command);
+    const running = execute('ps-1', { command }, undefined, undefined, undefined);
+    await waitUntil(() => lstartRecord() !== undefined);
+    const spawn = registryEvents().find((line) => line.event === 'spawn');
+    // D-18: the shell's label is a word of its command line after the command (`$1`; `$0` is the
+    // shell's path, as before), in the intent and the spawn.
+    const label = String(spawn?.label);
+    expect(label).toMatch(/^[0-9a-f]{32}$/);
+    expect(registryEvents().find((line) => line.event === 'intent')).toMatchObject({ label });
+    expect(spawn).toMatchObject({
+      starttime: null,
+      ppid: process.pid,
+      args: piBashArgsFingerprint(['/bin/bash', '-c', command, '/bin/bash', label]),
+    });
+    expect(spawn).not.toHaveProperty('lstart');
+    expect(lstartRecord()).toMatchObject({
+      lstart: expect.stringMatching(/\d{4}$/),
+      plstart: expect.stringMatching(/\d{4}$/),
+      cmd: piBashPsArgsDigest(readPiPsCommand(Number(spawn?.pid)).args),
+    });
+    const [group] = readPiBashRegistry(registry).groups;
+    if (!group) throw new Error('no group');
+    expect(signalPiBashGroup(group, 'SIGKILL', hiddenProc())).toMatchObject({
+      sent: true,
+      verification: { ok: true, reason: 'leader_verified', members: 2 },
+    });
+    await expect(running).resolves.toEqual({ output: '', exitCode: 137 });
+    await waitUntil(() => piProcessGroupMembers(group.pgid).length === 0);
+    expect(verifyPiBashGroup(group, hiddenProc())).toMatchObject({ reason: 'group_empty' });
+  });
+
+  // R11-A: the cost of parity. `bash -c 'sleep 30'` runs `exec sleep 30`; procfs still finds the
+  // marker, `ps` sees another command line and cannot tell this `exec` from one that dropped the
+  // marker, so it refuses. The bridge's own abort still stops the group.
+  it('refuses through ps a shell that ran exec; the bridge itself still stops it', async () => {
+    const pi = await startBridge(baseConfig(), { host: hiddenProc() });
+    const execute = await approvedBash(pi, 'ps-5', 'sleep 30');
+    const controller = new AbortController();
+    const running = execute(
+      'ps-5',
+      { command: 'sleep 30' },
+      controller.signal,
+      undefined,
+      undefined
+    );
+    await waitUntil(() => lstartRecord() !== undefined);
+    const [group] = readPiBashRegistry(registry).groups;
+    if (!group) throw new Error('no group');
+    await waitUntil(() => {
+      const verification = verifyPiBashGroup(group, hiddenProc());
+      return !verification.ok && verification.reason === 'leader_command_mismatch';
+    });
+    // The same shell as procfs sees it (this host has procfs): verified, the marker is there.
+    const starttime = readPiProcStat(group.pid)?.starttime ?? null;
+    expect(verifyPiBashGroup({ ...group, starttime })).toMatchObject({
+      ok: true,
+      reason: 'leader_verified',
+    });
+    const kill = vi.fn();
+    expect(signalPiBashGroup(group, 'SIGKILL', { ...hiddenProc(), kill })).toMatchObject({
+      sent: false,
+      verification: { ok: false, reason: 'leader_command_mismatch' },
+    });
+    expect(kill).not.toHaveBeenCalled();
+    controller.abort();
+    await expect(running).rejects.toThrow('aborted');
+    expect(readPiBashRegistry(registry).groups[0]).toMatchObject({ killedByBridge: true });
+  });
+
+  it('records no lstart when ps fails; the group is then not verified', async () => {
+    const pi = await startBridge(baseConfig(), {
+      host: { procRoot: path.join(dir, 'no-proc'), ps: path.join(dir, 'no-ps') },
+    });
+    const execute = await approvedBash(pi, 'ps-2', 'sleep 30');
+    const controller = new AbortController();
+    const running = execute(
+      'ps-2',
+      { command: 'sleep 30' },
+      controller.signal,
+      undefined,
+      undefined
+    );
+    await waitUntil(() => readPiBashRegistry(registry).groups.length === 1);
+    expect(registryEvents().find((line) => line.event === 'spawn')).toMatchObject({
+      starttime: null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(lstartRecord()).toBeUndefined();
+    const [group] = readPiBashRegistry(registry).groups;
+    if (!group) throw new Error('no group');
+    expect(group).not.toHaveProperty('lstart');
+    const kill = vi.fn();
+    expect(signalPiBashGroup(group, 'SIGKILL', { ...hiddenProc(), kill })).toMatchObject({
+      sent: false,
+      verification: { ok: false, reason: 'starttime_unknown' },
+    });
+    expect(kill).not.toHaveBeenCalled();
+    controller.abort();
+    await expect(running).rejects.toThrow('aborted');
+  });
+
+  /**
+   * A fake `ps` for the bridge's read of the starts (`-p <shell>,<own>`): `rows` is shell code
+   * that prints what it wants, with `$shell` and `$own` set; it touches `done` when it has printed.
+   * D-18: the bridge's second read, of the shell's command line (`-o pid=,ppid=,lstart=,args=`,
+   * `$3`), gets `args` (shell code; by default the shell's real command line after the fake start
+   * `D` the rows print, so a read that is the shell's carries its label).
+   */
+  function startsPs(
+    rows: string,
+    before = '',
+    args = `echo "$shell $own ${D} $(ps -ww -o args= -p "$shell")"`
+  ) {
+    const ps = path.join(dir, `starts-ps-${Math.random().toString(36).slice(2)}`);
+    const done = `${ps}.done`;
+    fs.writeFileSync(
+      ps,
+      `#!/bin/sh\n${before}\nshell=\${5%%,*}\nown=$PPID\ncase "$3" in *args*) ${args}; exit 0;; esac\nown=\${5#*,}\n${rows}\ntouch '${done}'\n`,
+      { mode: 0o700 }
+    );
+    return { ps, done };
+  }
+  const D = 'Wed Nov  4 09:10:58 2026';
+  const P = 'Wed Nov  4 09:00:00 2026';
+
+  it.each([
+    [
+      'two padded rows, collapsed',
+      `echo "  $shell  $own  $shell  ${D}  "; echo "  $own 1 $own ${P}"`,
+      { lstart: 'Wed Nov 4 09:10:58 2026', plstart: 'Wed Nov 4 09:00:00 2026' },
+    ],
+    ['only the shell, not trusted', `echo "$shell $own $shell ${D}"`, null],
+    [
+      'a third row, not trusted',
+      `echo "$shell $own $shell ${D}"; echo "$own 1 $own ${P}"; echo "7 1 7 ${P}"`,
+      null,
+    ],
+    [
+      'a shell that is not this process child, not trusted',
+      `echo "$shell 1 $shell ${D}"; echo "$own 1 $own ${P}"`,
+      null,
+    ],
+    [
+      'a shell outside its group, not trusted',
+      `echo "$shell $own 7 ${D}"; echo "$own 1 $own ${P}"`,
+      null,
+    ],
+    // A09 (R11-B): a non-date is no start.
+    [
+      'unavailable, not trusted',
+      `echo "$shell $own $shell unavailable"; echo "$own 1 $own ${P}"`,
+      null,
+    ],
+    [
+      'a cut-off date, not trusted',
+      `echo "$shell $own $shell Wed Nov  4"; echo "$own 1 $own ${P}"`,
+      null,
+    ],
+    ['nothing, not trusted', ':', null],
+    [
+      'a failed ps, not trusted',
+      `echo "$shell $own $shell ${D}"; echo "$own 1 $own ${P}"; touch "$0.done"; exit 1`,
+      null,
+    ],
+  ])('records the starts from what ps prints: %s', async (_name, rows, expected) => {
+    const { ps, done } = startsPs(rows);
+    const pi = await startBridge(baseConfig(), {
+      host: { procRoot: path.join(dir, 'no-proc'), ps },
+    });
+    const execute = await approvedBash(pi, 'ps-4', 'sleep 30; true');
+    const controller = new AbortController();
+    const running = execute(
+      'ps-4',
+      { command: 'sleep 30; true' },
+      controller.signal,
+      undefined,
+      undefined
+    );
+    await waitUntil(() => fs.existsSync(done));
+    if (expected) await waitUntil(() => lstartRecord() !== undefined);
+    else await new Promise((resolve) => setTimeout(resolve, 100));
+    if (expected) expect(lstartRecord()).toMatchObject(expected);
+    else expect(lstartRecord()).toBeUndefined();
+    controller.abort();
+    await expect(running).rejects.toThrow('aborted');
+  });
+
+  // R11-A: a start read after the shell was reaped could be another process's.
+  it('records no starts once the shell is reaped', async () => {
+    // This `ps` prints whole rows only once the shell is gone (reaped: `kill -0` fails). The
+    // background `sleep` keeps the pipes open, so the call lasts until they fall idle after
+    // `exit` (100 ms), while `ps` prints.
+    const { ps, done } = startsPs(
+      `echo "$shell $own $shell ${D}"; echo "$own 1 $own ${P}"`,
+      'shell=${5%%,*}; while kill -0 "$shell" 2>/dev/null; do sleep 0.01; done'
+    );
+    const pi = await startBridge(baseConfig(), {
+      host: { procRoot: path.join(dir, 'no-proc'), ps },
+    });
+    const command = 'sleep 1 & exit 0';
+    const execute = await approvedBash(pi, 'ps-6', command);
+    await execute('ps-6', { command }, undefined, undefined, undefined);
+    expect(fs.existsSync(done)).toBe(true);
+    expect(lstartRecord()).toBeUndefined();
+  });
+
+  // R11-D: `ps` ends with the call; it does not outlive it.
+  it('ends its ps when the call ends', async () => {
+    const pidFile = path.join(dir, 'ps.pid');
+    const ps = path.join(dir, 'slow-ps');
+    fs.writeFileSync(ps, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 30\n`, { mode: 0o700 });
+    const pi = await startBridge(baseConfig(), {
+      host: { procRoot: path.join(dir, 'no-proc'), ps },
+    });
+    const execute = await approvedBash(pi, 'ps-7', 'sleep 0.2');
+    await execute('ps-7', { command: 'sleep 0.2' }, undefined, undefined, undefined);
+    await waitUntil(() => fs.existsSync(pidFile));
+    const psPid = Number(fs.readFileSync(pidFile, 'utf8'));
+    await waitUntil(() => {
+      try {
+        process.kill(psPid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+  });
+
+  // R11-D (A08): a slow `ps` does not hold the call's deadline.
+  it('keeps the deadline while ps is slow', async () => {
+    const ps = path.join(dir, 'slow-ps');
+    fs.writeFileSync(ps, `#!/bin/sh\nsleep 0.6\nexec ps "$@"\n`, { mode: 0o700 });
+    const pi = await startBridge(baseConfig(), {
+      host: { procRoot: path.join(dir, 'no-proc'), ps },
+    });
+    const effect = path.join(dir, 'after-deadline');
+    const command = `sleep 0.2; touch '${effect}'`;
+    const execute = await approvedBash(pi, 'ps-8', command, { timeout: 0.05 });
+    await expect(
+      execute('ps-8', { command, timeout: 0.05 }, undefined, undefined, undefined)
+    ).rejects.toThrow('timeout:0.05');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(fs.existsSync(effect)).toBe(false);
+  });
+
+  // C17: the same deadline, with procfs.
+  it('keeps the deadline with procfs', async () => {
+    const pi = await startBridge();
+    const effect = path.join(dir, 'after-deadline');
+    const command = `sleep 0.2; touch '${effect}'`;
+    const execute = await approvedBash(pi, 'ps-9', command, { timeout: 0.05 });
+    await expect(
+      execute('ps-9', { command, timeout: 0.05 }, undefined, undefined, undefined)
+    ).rejects.toThrow('timeout:0.05');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(fs.existsSync(effect)).toBe(false);
+  });
+
+  it('runs no ps where procfs gives the start time', async () => {
+    const pi = await startBridge(baseConfig(), { host: { ps: path.join(dir, 'no-ps') } });
+    const execute = await approvedBash(pi, 'ps-3', 'true');
+    await execute('ps-3', { command: 'true' }, undefined, undefined, undefined);
+    const spawn = registryEvents().find((line) => line.event === 'spawn');
+    expect(typeof spawn?.starttime).toBe('string');
+    expect(spawn).not.toHaveProperty('lstart');
+  });
+
+  // C14: `procRoot` and `ps` come only from the host the generated module passes, which names
+  // neither (its source, `piBridge(pi, { importPi: async () => piSdk, isProxy })`, is checked
+  // literally in 'the generated module is valid…'); the config does not reach them.
+  it('takes no procRoot or ps from the config', async () => {
+    const touched = path.join(dir, 'override-reached');
+    const ps = path.join(dir, 'override-ps');
+    fs.writeFileSync(ps, `#!/bin/sh\ntouch '${touched}'\n`, { mode: 0o700 });
+    const pi = await startBridge(baseConfig({ procRoot: path.join(dir, 'no-proc'), ps }));
+    const execute = await approvedBash(pi, 'ps-12', 'sleep 0.2');
+    await execute('ps-12', { command: 'sleep 0.2' }, undefined, undefined, undefined);
+    expect(fs.existsSync(touched)).toBe(false);
+    expect(readPiBashRegistry(registry).groups[0]?.starttime).not.toBeNull();
+  });
+
+  // R11-C (A07): a procfs with processes but no `self` is procfs for the bridge as for pi-bash;
+  // both read the same source, so the bridge runs no `ps`.
+  it('chooses the source by the rule pi-bash checks with', async () => {
+    const touched = path.join(dir, 'ps-ran');
+    const ps = path.join(dir, 'touch-ps');
+    fs.writeFileSync(ps, `#!/bin/sh\ntouch '${touched}'\nexit 1\n`, { mode: 0o700 });
+    const partial = path.join(dir, 'partial-proc');
+    fs.mkdirSync(path.join(partial, '4242'), { recursive: true });
+    const host = { procRoot: partial, ps };
+    expect(piBashProcessView(host)).toBe('procfs');
+    const pi = await startBridge(baseConfig(), { host });
+    const execute = await approvedBash(pi, 'ps-10', 'sleep 0.2');
+    await execute('ps-10', { command: 'sleep 0.2' }, undefined, undefined, undefined);
+    expect(fs.existsSync(touched)).toBe(false);
+    // An empty mount point is no procfs, for both.
+    const empty = path.join(dir, 'empty-proc');
+    fs.mkdirSync(empty);
+    expect(piBashProcessView({ procRoot: empty, ps })).toBe('ps');
+    fs.rmSync(registry, { force: true });
+    const second = await startBridge(baseConfig(), { host: { procRoot: empty, ps } });
+    const run = await approvedBash(second, 'ps-11', 'sleep 0.2');
+    await run('ps-11', { command: 'sleep 0.2' }, undefined, undefined, undefined);
+    expect(fs.existsSync(touched)).toBe(true);
+  });
+
   it('keeps the shell exit code and reports a signal as 128 + number', async () => {
     const pi = await startBridge();
     let execute = await approvedBash(pi, 'c1', 'exit 3');
@@ -1790,11 +2126,23 @@ describe('own bash: cancellation and signals (X2-02, X2-03)', () => {
         bridgeKillFailed: true,
         shellExited: false,
       });
-      // A late `exit` changes nothing in the registry: the bridge wrote no fictitious one.
+      // A late `exit` is recorded as it came (D-18, R12-D: the shell's `exit` is written when it
+      // is reaped, whenever that is, since its PID is free from then on), and nothing else: no
+      // other `kill`, no signal, the failed kill stays (the group's members are still unknown).
       child.emit('exit', null, 'SIGKILL');
       child.emit('close', null, 'SIGKILL');
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(registryEvents().map((entry) => entry.event)).toEqual(['intent', 'spawn', 'kill']);
+      expect(registryEvents().map((entry) => entry.event)).toEqual([
+        'intent',
+        'spawn',
+        'kill',
+        'exit',
+      ]);
+      expect(registryEvents()[3]).toMatchObject({ code: null, signal: 'SIGKILL', pid: FAKE_PID });
+      expect(readPiBashRegistry(registry).groups[0]).toMatchObject({
+        bridgeKillFailed: true,
+        shellExited: true,
+      });
       expect(kill.mock.calls).toEqual([[-FAKE_PID, 'SIGKILL']]);
     }
   );
@@ -2914,6 +3262,477 @@ function freeIdentifiers(source: string): string[] {
   return [...free].sort();
 }
 
+// Joint round 3 of stages 2 and 5 (`p1_joint_fix3_brief.md`, D-18 A): the shell's label in its
+// command line, the `exit` written as the shell is reaped, the range of every id the bridge reads
+// from `ps` (R12-C), and the attacks of round 12 (Codex `r12.attack.test.ts` A01, A02, A05, C12,
+// P01–P06; Sonnet S2-NN on real shells). Every process here is a decoy the test started.
+describe('joint round 3: the label of each shell (D-18; R12-A, R12-C, R12-D)', () => {
+  const hidden = () => ({ procRoot: path.join(dir, 'no-proc'), ps: 'ps' });
+  const lstartOf = () => registryEvents().find((line) => line.event === 'lstart');
+  const groupOf = (toolCallId: string) => {
+    const found = readPiBashRegistry(registry).groups.find((g) => g.toolCallId === toolCallId);
+    if (!found) throw new Error(`no group ${toolCallId}`);
+    return found;
+  };
+  const alive = (pid: number) => {
+    const stat = readPiProcStat(pid);
+    return stat !== undefined && stat.state !== 'Z' && stat.state !== 'X';
+  };
+  async function running(command: string, toolCallId = 'lbl', host = hidden(), extra = {}) {
+    const pi = await startBridge(baseConfig(), { host });
+    const execute = await approvedBash(pi, toolCallId, command, extra);
+    const controller = new AbortController();
+    const outcome = execute(
+      toolCallId,
+      { command, ...extra },
+      controller.signal,
+      undefined,
+      undefined
+    ).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error: String(error) })
+    );
+    return { pi, controller, outcome };
+  }
+
+  it('puts a label of its own after the command ($1, $0 as before) and in the registry first', async () => {
+    const command = 'echo "$0|$#|$1"';
+    const pi = await startBridge(baseConfig(), { host: hidden() });
+    const execute = await approvedBash(pi, 'lbl-0', command);
+    const result = (await execute('lbl-0', { command }, undefined, undefined, undefined)) as {
+      output: string;
+    };
+    const [intent, spawn] = registryEvents();
+    expect(intent).toMatchObject({
+      event: 'intent',
+      label: expect.stringMatching(/^[0-9a-f]{32}$/),
+    });
+    expect(spawn).toMatchObject({ event: 'spawn', label: intent?.label });
+    // The command runs as it did; `$0` is the shell, the label is a positional parameter.
+    expect(result.output).toBe(`/bin/bash|1|${String(intent?.label)}\n`);
+    // A new label for every shell.
+    const again = await approvedBash(pi, 'lbl-1', command);
+    await again('lbl-1', { command }, undefined, undefined, undefined);
+    const labels = registryEvents()
+      .filter((line) => line.event === 'intent')
+      .map((line) => line.label);
+    expect(new Set(labels).size).toBe(2);
+  });
+
+  // Codex A01, A02 (R12-A): the approved shell replaces itself (`exec`) without the marker. Any
+  // change of its command line, the label dropped or only ` #` appended, is refused on the `ps`
+  // path as procfs refuses it. The known limit: an `exec` that keeps the exact command line,
+  // label included, is taken for the shell on the `ps` path (it is the approved command's own
+  // process), while procfs refuses it (no marker).
+  it.each([
+    ['A01: the same -c string, the label dropped', '', '', 'leader_command_mismatch'],
+    ['A02: ` #` appended, the label dropped', ' #', '', 'leader_command_mismatch'],
+    ['` #` appended, the label kept', ' #', ' "$0" "$1"', 'leader_command_mismatch'],
+    ['known limit: the exact command line kept', '', ' "$0" "$1"', 'leader_verified'],
+  ])('%s', async (_name, suffix, keep, reason) => {
+    const gate = path.join(dir, 'go');
+    const ready = path.join(dir, 'ready');
+    const command = `if [ -n "\${${PI_BASH_MARKER_ENV}-}" ]; then while [ ! -f '${gate}' ]; do sleep 0.01; done; exec env -u ${PI_BASH_MARKER_ENV} /bin/bash -c "$BASH_EXECUTION_STRING${suffix}"${keep}; fi; touch '${ready}'; sleep 30; true`;
+    const { controller, outcome } = await running(command);
+    await waitUntil(() => lstartOf()?.cmd !== undefined);
+    const group = groupOf('lbl');
+    const procfs = { ...group, starttime: readPiProcStat(group.pid)?.starttime ?? null };
+    expect(verifyPiBashGroup(procfs)).toMatchObject({ ok: true });
+    expect(verifyPiBashGroup(group, hidden())).toMatchObject({
+      ok: true,
+      reason: 'leader_verified',
+    });
+    fs.writeFileSync(gate, 'go');
+    await waitUntil(() => fs.existsSync(ready));
+    expect(verifyPiBashGroup(procfs)).toMatchObject({ ok: false, reason: 'leader_without_marker' });
+    const kill = vi.fn();
+    const result = signalPiBashGroup(group, 'SIGKILL', { ...hidden(), kill });
+    expect(result.verification.reason).toBe(reason);
+    expect(result.sent).toBe(reason === 'leader_verified');
+    controller.abort();
+    expect(await outcome).toMatchObject({ error: expect.stringContaining('aborted') });
+  });
+
+  // R12-D (Sonnet S2-NN on real shells): two shells of one bridge, the same command, the same
+  // parent. Had B the PID of A in the same second, A's record would name B; B's label is its own.
+  it('tells two shells of one bridge with the same command apart by their labels', async () => {
+    const command = 'sleep 30; true';
+    const pi = await startBridge(baseConfig(), { host: hidden() });
+    const controller = new AbortController();
+    const calls = ['a', 'b'].map(async (id) => {
+      const execute = await approvedBash(pi, id, command);
+      return execute(id, { command }, controller.signal, undefined, undefined).catch(String);
+    });
+    await waitUntil(
+      () => registryEvents().filter((line) => line.event === 'lstart' && line.cmd).length === 2
+    );
+    const a = groupOf('a');
+    const b = groupOf('b');
+    expect(a.label).not.toBe(b.label);
+    expect(a.args).not.toBe(b.args);
+    // A's record, as if B had got A's PID in the same second (the rest of A's record unchanged).
+    const reused = { ...a, pid: b.pid, pgid: b.pgid, lstart: b.lstart };
+    const kill = vi.fn();
+    expect(signalPiBashGroup(reused, 'SIGKILL', { ...hidden(), kill })).toMatchObject({
+      sent: false,
+      verification: { ok: false, reason: 'leader_command_mismatch' },
+    });
+    expect(kill).not.toHaveBeenCalled();
+    expect(verifyPiBashGroup(b, hidden())).toMatchObject({ ok: true, reason: 'leader_verified' });
+    controller.abort();
+    await Promise.all(calls);
+  });
+
+  it('labels a shell that reads its command from stdin (-s), and verifies it through ps', async () => {
+    const sdk: PiBridgeSdk = {
+      ...stubSdk,
+      getShellConfig: () => ({ shell: '/bin/bash', args: ['-s'], commandTransport: 'stdin' }),
+    };
+    const pi = await startBridge(baseConfig(), { sdk, host: hidden() });
+    const execute = await approvedBash(pi, 'stdin-1', 'sleep 30; true');
+    const controller = new AbortController();
+    const call = execute(
+      'stdin-1',
+      { command: 'sleep 30; true' },
+      controller.signal,
+      undefined,
+      undefined
+    ).catch(String);
+    await waitUntil(() => lstartOf()?.cmd !== undefined);
+    const group = groupOf('stdin-1');
+    expect(group.args).toBe(piBashArgsFingerprint(['/bin/bash', '-s', String(group.label)]));
+    expect(readPiPsCommand(group.pid).args).toBe(`/bin/bash -s ${String(group.label)}`);
+    expect(verifyPiBashGroup(group, hidden())).toMatchObject({
+      ok: true,
+      reason: 'leader_verified',
+    });
+    controller.abort();
+    expect(await call).toContain('aborted');
+  });
+
+  it('gives no label to a shell whose arguments are not -c or -s last: ps never verifies it', async () => {
+    const sdk: PiBridgeSdk = {
+      ...stubSdk,
+      getShellConfig: () => ({ shell: '/bin/bash', args: ['--norc'], commandTransport: 'stdin' }),
+    };
+    const pi = await startBridge(baseConfig(), { sdk, host: hidden() });
+    const execute = await approvedBash(pi, 'nolabel', 'sleep 30; true');
+    const controller = new AbortController();
+    const call = execute(
+      'nolabel',
+      { command: 'sleep 30; true' },
+      controller.signal,
+      undefined,
+      undefined
+    ).catch(String);
+    await waitUntil(() => lstartOf() !== undefined);
+    expect(registryEvents()[0]).not.toHaveProperty('label');
+    expect(lstartOf()).not.toHaveProperty('cmd');
+    const kill = vi.fn();
+    expect(signalPiBashGroup(groupOf('nolabel'), 'SIGKILL', { ...hidden(), kill })).toMatchObject({
+      sent: false,
+      verification: { reason: 'leader_command_mismatch' },
+    });
+    controller.abort();
+    expect(await call).toContain('aborted');
+  });
+
+  // R12-C (Codex A05) and the read of the command line: only rows in range, of the shell with its
+  // label, are recorded; the starts alone are recorded when only the command line read fails.
+  const D = 'Wed Nov  4 09:10:58 2026';
+  const P = 'Wed Nov  4 09:00:00 2026';
+  /**
+   * A fake `ps` as `startsPs` above: `rows` for the read of the starts (`$shell`, `$own` set),
+   * `args` for the read of the command line; by default the shell's real command line after `D`.
+   */
+  const fake = (
+    rows: string,
+    args = `echo "$shell $own ${D} $(ps -ww -o args= -p "$shell")"`
+  ): { ps: string; done: string } => {
+    const ps = path.join(dir, `r3-ps-${Math.random().toString(36).slice(2)}`);
+    const done = `${ps}.done`;
+    fs.writeFileSync(
+      ps,
+      `#!/bin/sh\nshell=\${5%%,*}\nown=$PPID\ncase "$3" in *args*) ${args}; exit 0;; esac\nown=\${5#*,}\n${rows}\ntouch '${done}'\n`,
+      { mode: 0o700 }
+    );
+    return { ps, done };
+  };
+  it.each([
+    [
+      'A05: a parent beyond pid_t',
+      `echo "$shell $own $shell ${D}"; echo "$own 9999999999 $own ${P}"`,
+    ],
+    ['a group beyond pid_t', `echo "$shell $own $shell ${D}"; echo "$own 1 9999999999 ${P}"`],
+    ['a shell group beyond pid_t', `echo "$shell $own 9999999999 ${D}"; echo "$own 1 $own ${P}"`],
+    ['a pid beyond pid_t', `echo "$shell $own $shell ${D}"; echo "9999999999 1 1 ${P}"`],
+    ['a signed id', `echo "$shell $own $shell ${D}"; echo "+$own 1 $own ${P}"`],
+  ])('R12-C: records nothing from a row out of range: %s', async (_name, rows) => {
+    const { ps, done } = fake(rows);
+    const { controller, outcome } = await running('sleep 30; true', 'r12c', {
+      procRoot: path.join(dir, 'no-proc'),
+      ps,
+    });
+    await waitUntil(() => fs.existsSync(done));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(lstartOf()).toBeUndefined();
+    controller.abort();
+    await outcome;
+  });
+
+  it.each([
+    ['without the label', `echo "$shell $own ${D} /bin/bash -c sleep 30; true"`],
+    ['of another parent', `echo "$shell 1 ${D} $(ps -ww -o args= -p "$shell")"`],
+    ['with another start', `echo "$shell $own ${P} $(ps -ww -o args= -p "$shell")"`],
+    ['that fails', 'exit 1'],
+    ['out of range', `echo "$shell 9999999999 ${D} $(ps -ww -o args= -p "$shell")"`],
+  ])('records the starts without the command line when its read is %s', async (_name, args) => {
+    const rows = `echo "$shell $own $shell ${D}"; echo "$own 1 $own ${P}"`;
+    const { ps } = fake(rows, args);
+    const { controller, outcome } = await running('sleep 30; true', 'cmd', {
+      procRoot: path.join(dir, 'no-proc'),
+      ps,
+    });
+    await waitUntil(() => lstartOf() !== undefined);
+    expect(lstartOf()).toMatchObject({ lstart: 'Wed Nov 4 09:10:58 2026' });
+    expect(lstartOf()).not.toHaveProperty('cmd');
+    controller.abort();
+    await outcome;
+  });
+
+  // D-18 point 2 (R12-D): `exit` is in the registry when the shell is reaped, before anything of
+  // the call's end runs (here: synchronously within the `exit` event).
+  it('writes exit in the handler of the shell’s exit, before the call ends', async () => {
+    const childProcess = process.getBuiltinModule('node:child_process');
+    const ops = await bridgeOperations();
+    const child = fakeChild(4_194_302);
+    vi.spyOn(childProcess, 'spawn').mockReturnValue(child as never);
+    try {
+      const call = ops.exec('true', dir, { onData: () => {} });
+      await waitUntil(() => registryEvents().some((entry) => entry.event === 'spawn'));
+      child.exitCode = 0;
+      child.emit('exit', 0, null);
+      // No `await` in between: written by the handler itself.
+      expect(registryEvents().map((entry) => entry.event)).toEqual(['intent', 'spawn', 'exit']);
+      expect(registryEvents()[2]).toMatchObject({ code: 0, signal: null, pid: 4_194_302 });
+      child.stdout.end();
+      child.stderr.end();
+      child.emit('close', 0, null);
+      await expect(call).resolves.toEqual({ exitCode: 0 });
+      expect(registryEvents().filter((entry) => entry.event === 'exit')).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  // Codex P01–P06: ordinary commands on the `ps` path, then the bridge's own abort.
+  it.each([
+    ['P01', 'sleep 30', 'leader_command_mismatch'],
+    ['P02', 'true; sleep 30', 'leader_command_mismatch'],
+    ['P03', 'sleep 30; true', 'leader_verified'],
+    ['P04', 'sleep 30 | cat', 'leader_verified'],
+    ['P05', 'sleep 30 & wait', 'leader_verified'],
+  ])('%s: %s through ps, then the abort stops it', async (_id, command, reason) => {
+    const { controller, outcome } = await running(command, 'p');
+    await waitUntil(() => lstartOf() !== undefined);
+    const group = groupOf('p');
+    const procfs = { ...group, starttime: readPiProcStat(group.pid)?.starttime ?? null };
+    expect(verifyPiBashGroup(procfs).ok).toBe(true);
+    await waitUntil(() => verifyPiBashGroup(group, hidden()).reason === reason);
+    controller.abort();
+    expect(await outcome).toMatchObject({ error: expect.stringContaining('aborted') });
+    await waitUntil(() => !alive(group.pid));
+    expect(verifyPiBashGroup(groupOf('p'), hidden()).reason).toBe('group_empty');
+  });
+
+  it('P06: a job the shell left in its group stays unverifiable through ps', async () => {
+    const command = 'sleep 30 & exit 0';
+    const pi = await startBridge(baseConfig(), { host: hidden() });
+    const execute = await approvedBash(pi, 'p6', command);
+    await execute('p6', { command }, undefined, undefined, undefined);
+    const group = groupOf('p6');
+    try {
+      expect(group.shellExited).toBe(true);
+      expect(verifyPiBashGroup(group).ok).toBe(true);
+      expect(verifyPiBashGroup(group, hidden())).toMatchObject({ reason: 'members_unverifiable' });
+    } finally {
+      // The test's own decoy (the `ps` path leaves it, and the cleanup after each test reads procfs
+      // with the start time this record does not have).
+      process.kill(-group.pgid, 'SIGKILL');
+    }
+  });
+
+  // Codex C12: a `ps` that does not end never outlives the call, whatever ends it.
+  it.each(['abort', 'timeout', 'normal'] as const)(
+    'C12 (%s): a slow ps ends with the call and records nothing',
+    async (mode) => {
+      const pidFile = path.join(dir, 'ps.pid');
+      const ps = path.join(dir, 'slow-ps');
+      fs.writeFileSync(ps, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 30\n`, { mode: 0o700 });
+      const begin = Date.now();
+      const { controller, outcome } = await running(
+        mode === 'normal' ? 'sleep 0.15' : 'sleep 30',
+        'c12',
+        { procRoot: path.join(dir, 'no-proc'), ps },
+        mode === 'timeout' ? { timeout: 0.15 } : {}
+      );
+      await waitUntil(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8') !== '');
+      const psPid = Number(fs.readFileSync(pidFile, 'utf8'));
+      if (mode === 'abort') controller.abort();
+      await outcome;
+      await waitUntil(() => !alive(psPid));
+      expect(Date.now() - begin).toBeLessThan(2000);
+      expect(lstartOf()).toBeUndefined();
+    }
+  );
+});
+
+// R7-C (brief 2.2): the decisions of every place that reads processes, for one table of roots:
+// the bridge (where it records a shell's start), the checks of `./pi-bash.ts`, the adapter and the
+// conversation store. Each is seen from outside where it can be: a `ps` first on PATH (or the one
+// given) notes when it runs; the bridge's decision is the one its rule answered it (a spy on the
+// rule it is given), and its `ps` running or not. Every place must decide as `piProcSource` does.
+describe('joint round 3: one decision of where processes are read, in every place (R7-C)', () => {
+  const realPs = spawnSyncText('/bin/sh', ['-c', 'command -v ps']).trim();
+  let bin: string;
+  let ran: string;
+  beforeEach(() => {
+    bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    ran = path.join(dir, 'ps-ran');
+    fs.writeFileSync(path.join(bin, 'ps'), `#!/bin/sh\ntouch '${ran}'\nexec '${realPs}' "$@"\n`, {
+      mode: 0o700,
+    });
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+  /** What a place did: ran `ps`, refused (no source), or read procfs. */
+  const observed = (ranPs: boolean, none: boolean) => (ranPs ? 'ps' : none ? 'none' : 'procfs');
+  const fresh = () => fs.rmSync(ran, { force: true });
+
+  const roots: Array<[string, () => string]> = [
+    ['absent', () => path.join(dir, 'no-proc')],
+    [
+      'empty',
+      () => {
+        const root = path.join(dir, 'empty-root');
+        fs.mkdirSync(root);
+        return root;
+      },
+    ],
+    [
+      'only self',
+      () => {
+        const root = path.join(dir, 'self-root');
+        fs.mkdirSync(root);
+        fs.symlinkSync('/proc/self', path.join(root, 'self'));
+        return root;
+      },
+    ],
+    [
+      'no self, with a pid',
+      () => {
+        const root = path.join(dir, 'pid-root');
+        fs.mkdirSync(root);
+        fs.symlinkSync(`/proc/${process.pid}`, path.join(root, String(process.pid)));
+        return root;
+      },
+    ],
+    ['the system root', () => '/proc'],
+  ];
+  const cases = roots.flatMap(([name, make]) =>
+    [false, true].map(
+      (psGiven) => [`${name}, ${psGiven ? 'ps given' : 'no ps'}`, make, psGiven] as const
+    )
+  );
+
+  it.each(cases)('%s', async (_name, make, psGiven) => {
+    const root = make();
+    const options = { procRoot: root, ...(psGiven ? { ps: path.join(bin, 'ps') } : {}) };
+    const expected = piProcSource(root, psGiven, (r) => fs.readdirSync(r)).source;
+    // A shell that is gone, recorded with its label (the adapter and the checks look for it).
+    const gone = spawnSyncPid('/bin/true');
+    const record = {
+      v: 1,
+      instance: 'cmp',
+      toolCallId: 'gone',
+      run: 1,
+      marker: 'cmp:gone',
+      label: 'a'.repeat(32),
+    };
+    const reg = path.join(dir, 'cmp.jsonl');
+    fs.writeFileSync(
+      reg,
+      `${JSON.stringify({ ...record, event: 'intent' })}\n${JSON.stringify({ ...record, event: 'spawn', pid: gone, pgid: gone, starttime: null, label: record.label })}\n`
+    );
+    const decisions: Record<string, string> = {};
+
+    // The checks of `./pi-bash.ts`.
+    fresh();
+    const [group] = readPiBashRegistry(reg).groups;
+    if (!group) throw new Error('no group');
+    const verification = verifyPiBashGroup(group, options);
+    decisions.checks = observed(
+      fs.existsSync(ran),
+      !verification.ok &&
+        verification.reason === 'inspection_failed' &&
+        verification.error === 'no_source'
+    );
+
+    // The adapter.
+    fresh();
+    const cleanup = await killPiBashGroups(reg, () => true, { ...options, timeoutMs: 0 });
+    decisions.adapter = observed(
+      fs.existsSync(ran),
+      cleanup.unconfirmed.some((line) => /process table could not be read/.test(line))
+    );
+
+    // The store.
+    fresh();
+    let none = false;
+    try {
+      piConversationStore({ ...options, procSource: piProcSource }).processStart(process.pid);
+    } catch (error) {
+      none = /no source/.test(String(error));
+    }
+    decisions.store = observed(fs.existsSync(ran), none);
+
+    // The bridge: the decision its rule gave it, and whether it ran `ps` for the shell's start.
+    fresh();
+    const answers: string[] = [];
+    const spy = (...args: Parameters<typeof piProcSource>) => {
+      const answer = piProcSource(...args);
+      answers.push(answer.source);
+      return answer;
+    };
+    const pi = await startBridge(baseConfig(), {
+      host: { ...options, procSource: spy } as { procRoot?: string; ps?: string },
+    });
+    const execute = await approvedBash(pi, 'cmp-shell', 'sleep 0.3; true');
+    await execute('cmp-shell', { command: 'sleep 0.3; true' }, undefined, undefined, undefined);
+    expect(answers).toHaveLength(1);
+    decisions.bridge = answers[0] as string;
+    expect(fs.existsSync(ran)).toBe(answers[0] === 'ps');
+
+    expect(decisions).toEqual({
+      checks: expected,
+      adapter: expected,
+      store: expected,
+      bridge: expected,
+    });
+  });
+});
+
+function spawnSyncText(command: string, args: string[]): string {
+  return execFileSync(command, args, { encoding: 'utf8' });
+}
+function spawnSyncPid(command: string): number {
+  const child = process.getBuiltinModule('node:child_process').spawnSync(command);
+  return child.pid as number;
+}
+
 /** Globals the bridge may read: JavaScript built-ins and `process`. */
 const BRIDGE_GLOBALS = [
   'Array',
@@ -2960,6 +3779,12 @@ describe('self-contained source (SC2, E11-06)', () => {
     expect(free.filter((name) => !BRIDGE_GLOBALS.includes(name))).toEqual([]);
   });
 
+  // R7-C: the rule of where processes are read travels in the generated module as its own source.
+  it('the rule of where processes are read reads nothing from outside its body but built-ins', () => {
+    const free = freeIdentifiers(piProcSource.toString());
+    expect(free.filter((name) => !BRIDGE_GLOBALS.includes(name))).toEqual([]);
+  });
+
   it('the generated module is valid and imports only the Pi SDK and node:util, statically', () => {
     const source = bridgeSource();
     expect(() => parseAst(source)).not.toThrow();
@@ -2967,7 +3792,11 @@ describe('self-contained source (SC2, E11-06)', () => {
     expect(source).toContain("import * as piSdk from '@earendil-works/pi-coding-agent';");
     // `isProxy` is taken when the module loads, before any later extension runs (R2-B).
     expect(source).toContain("import { types as nodeUtilTypes } from 'node:util';");
-    expect(source).toContain('piBridge(pi, { importPi: async () => piSdk, isProxy });');
+    expect(source).toContain(
+      'piBridge(pi, { importPi: async () => piSdk, isProxy, procSource: piProcSource });'
+    );
+    // R7-C: the very function `pi-bash.ts` decides with, not a copy of it.
+    expect(source).toContain(`const piProcSource = ${piProcSource.toString()};`);
     expect(source).not.toMatch(/__vite|__vi_/);
     expect(source.match(/\bimport\b/g)).toHaveLength(2);
   });

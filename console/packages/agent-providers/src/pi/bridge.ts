@@ -50,6 +50,7 @@
  */
 
 import type { ChildProcess } from 'node:child_process';
+import { piProcSource } from './pi-bash';
 
 /** Version of the config file the adapter writes and the bridge reads. */
 export const PI_BRIDGE_PROTOCOL_VERSION = 1;
@@ -225,6 +226,20 @@ export interface PiBridgeHost {
   importPi?: () => Promise<PiBridgeSdk>;
   /** `types.isProxy` of `node:util`, imported statically by the generated module. */
   isProxy?: (value: unknown) => boolean;
+  /** Root of procfs for the shells' start times; `/proc` by default (tests hide it, D-15). */
+  procRoot?: string;
+  /** `ps` command for the shells' start times where there is no procfs; `ps` by default. */
+  ps?: string;
+  /**
+   * R7-C: the one rule of where processes are read, `piProcSource` of `./pi-bash.ts` (the generated
+   * module defines it from that very function's source and passes it). Without it the bridge
+   * records no start time: a group it cannot record is never verified, so nothing is sent to it.
+   */
+  procSource?: (
+    root: string,
+    psGiven: boolean,
+    list: (root: string) => string[]
+  ) => { source: 'procfs' | 'ps' | 'none' };
 }
 
 /**
@@ -682,13 +697,185 @@ export async function piBridge(pi: PiBridgeApi, host: PiBridgeHost = {}): Promis
       fs.closeSync(fd);
     }
   };
+  const procRoot = host.procRoot ?? '/proc';
+  const psCommand = host.ps ?? 'ps';
+  const procSource = host.procSource;
+  /**
+   * Where the shell's start is read (R11-C, R7-C): `piProcSource` of `./pi-bash.ts`, the rule the
+   * check uses, passed in by the generated module (the bridge cannot import it, see the module
+   * comment), so the record and the check read the same source. `none` (no rule, or no source the
+   * rule trusts): no start is recorded, and the group is never verified.
+   */
+  const processView = (): 'procfs' | 'ps' | 'none' => {
+    if (typeof procSource !== 'function') return 'none';
+    try {
+      return procSource(procRoot, host.ps !== undefined, (root) => fs.readdirSync(root)).source;
+    } catch {
+      return 'none';
+    }
+  };
   const startTime = (pid: number) => {
     try {
-      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const stat = fs.readFileSync(`${procRoot}/${pid}/stat`, 'utf8');
       return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] ?? null;
     } catch {
       return null;
     }
+  };
+  /**
+   * `piBashArgsFingerprint` of `./pi-bash.ts` (R11-A): SHA-256 of the ASCII letters and digits of
+   * the command line the shell is spawned with.
+   */
+  const argsFingerprint = (argv: readonly string[]) =>
+    crypto
+      .createHash('sha256')
+      .update(argv.join(' ').replace(/[^A-Za-z0-9]/g, ''))
+      .digest('hex');
+  // `lstart` as `ps` prints it with `LC_ALL=C`, collapsed (R11-B): anything else is no start.
+  const LSTART =
+    /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ([1-9]|[12]\d|3[01]) ([01]\d|2[0-3]):[0-5]\d:[0-5]\d \d{4}$/;
+  /** R12-C: a decimal id in `min…max` (`pid_t`: 2147483647), as `ps` prints it; else `undefined`. */
+  const boundedId = (text: string, min: number): number | undefined => {
+    if (!/^\d{1,10}$/.test(text)) return undefined;
+    const value = Number(text);
+    return value >= min && value <= 2_147_483_647 ? value : undefined;
+  };
+  /**
+   * D-18: `piBashPsArgsDigest` of `./pi-bash.ts`: SHA-256 (hex) of a command line exactly as
+   * `ps -o args=` printed it.
+   */
+  const psArgsDigest = (args: string) =>
+    crypto.createHash('sha256').update(args, 'utf8').digest('hex');
+  /** Runs `ps` with `args` like `./pi-bash.ts` does; `done` gets its output, or null when it failed. */
+  const runPsAsync = (args: string[], done: (stdout: string | null) => void): (() => void) => {
+    let ps: ChildProcess;
+    try {
+      ps = childProcess.spawn(psCommand, args, {
+        env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LC_ALL: 'C', TZ: 'UTC' },
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      done(null);
+      return () => {};
+    }
+    let settled = false;
+    const settle = (stdout: string | null) => {
+      if (settled) return;
+      settled = true;
+      done(stdout);
+    };
+    const stop = () => {
+      if (ps.exitCode === null && ps.signalCode === null) ps.kill('SIGKILL');
+    };
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let broken = false;
+    ps.once('error', () => settle(null));
+    ps.stdout?.on('error', () => {
+      broken = true;
+    });
+    ps.stdout?.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      chunks.push(chunk);
+      if (size > 65_536) {
+        broken = true;
+        stop();
+      }
+    });
+    ps.once('close', (code) => {
+      // Decoded whole, as `./pi-bash.ts` decodes `spawnSync`'s output (`utf8`).
+      settle(broken || code !== 0 ? null : Buffer.concat(chunks).toString('utf8'));
+    });
+    return stop;
+  };
+  /**
+   * The rows of `ps -o pid=,ppid=,pgid=,lstart=` for the shell and this process, when they are
+   * exactly those two, whole, in range (R12-C: every number an id that fits `pid_t`, before the row
+   * is used) and in `ps`'s format (R11-B), the shell leading its own group as this process's child.
+   */
+  const parseStarts = (pid: number, text: string) => {
+    const rows = new Map<number, { ppid: number; pgid: number; lstart: string }>();
+    for (const line of text.split('\n')) {
+      if (line.trim() === '') continue;
+      const row = /^\s*(\S+)\s+(\S+)\s+(\S+)\s+(\S.*)$/.exec(line);
+      if (!row) return undefined;
+      const seen = boundedId(row[1] as string, 1);
+      const ppid = boundedId(row[2] as string, 0);
+      const pgid = boundedId(row[3] as string, 0);
+      const lstart = (row[4] as string).trim().replace(/\s+/g, ' ');
+      if (seen === undefined || ppid === undefined || pgid === undefined) return undefined;
+      if (!LSTART.test(lstart) || rows.has(seen)) return undefined;
+      rows.set(seen, { ppid, pgid, lstart });
+    }
+    const shellRow = rows.get(pid);
+    const ownRow = rows.get(process.pid);
+    if (rows.size !== 2 || !shellRow || !ownRow) return undefined;
+    if (shellRow.ppid !== process.pid || shellRow.pgid !== pid) return undefined;
+    return { lstart: shellRow.lstart, plstart: ownRow.lstart };
+  };
+  /**
+   * D-18: the digest of the shell's command line as `ps -o pid=,ppid=,lstart=,args= -p <shell>`
+   * prints it, read the way `readPiPsCommand` of `./pi-bash.ts` reads it, when that is the shell
+   * (PID, this process as its parent, its start) and carries its label as a word; else
+   * `undefined` (the `ps` path then refuses the leader).
+   */
+  const argsOf = (pid: number, lstart: string, label: string | undefined, text: string) => {
+    if (label === undefined) return undefined;
+    const [first = '', ...rest] = text.replace(/\n$/, '').split('\n');
+    const row = /^\s*(\S+)\s+(\S+)\s+(\S+\s+\S+\s+\S+\s+\S+\s+\S+)(?:\s(.*))?$/.exec(first);
+    if (!row) return undefined;
+    const seen = boundedId(row[1] as string, 1);
+    const ppid = boundedId(row[2] as string, 0);
+    const start = (row[3] as string).trim().replace(/\s+/g, ' ');
+    if (seen !== pid || ppid !== process.pid || !LSTART.test(start) || start !== lstart) {
+      return undefined;
+    }
+    const args = [row[4] ?? '', ...rest].join('\n');
+    return args.split(/\s+/).includes(label) ? psArgsDigest(args) : undefined;
+  };
+  /**
+   * Without procfs (macOS, D-15): the starts of the shell and of this process (its parent) as
+   * `ps -o lstart=` prints them, with the environment `./pi-bash.ts` reads them with (`LC_ALL=C`,
+   * `TZ=UTC`, `-ww`), whitespace collapsed; then (D-18) the shell's command line. Asynchronous
+   * (R11-D): the call's timeout and abort hold meanwhile, and the returned function ends `ps` (the
+   * call ended; both reads have 5 s at most). `found` gets the starts only when `ps` succeeded and
+   * printed exactly the two rows (`parseStarts`), and the digest of the command line (`argsOf`) only
+   * when that read too showed the shell with its label; otherwise nothing, or the starts alone, is
+   * recorded: the group's leader cannot be verified, and nothing is sent to it.
+   */
+  const readStarts = (
+    pid: number,
+    label: string | undefined,
+    found: (lstart: string, plstart: string, cmd: string | undefined) => void
+  ) => {
+    let ended = false;
+    let stop = () => {};
+    const end = () => {
+      ended = true;
+      clearTimeout(limit);
+      stop();
+    };
+    const limit = setTimeout(end, 5_000);
+    stop = runPsAsync(
+      ['-ww', '-o', 'pid=,ppid=,pgid=,lstart=', '-p', `${pid},${process.pid}`],
+      (text) => {
+        const starts = ended || text === null ? undefined : parseStarts(pid, text);
+        if (!starts) {
+          clearTimeout(limit);
+          return;
+        }
+        stop = runPsAsync(['-ww', '-o', 'pid=,ppid=,lstart=,args=', '-p', String(pid)], (args) => {
+          clearTimeout(limit);
+          if (ended) return;
+          found(
+            starts.lstart,
+            starts.plstart,
+            args === null ? undefined : argsOf(pid, starts.lstart, label, args)
+          );
+        });
+      }
+    );
+    return end;
   };
   /**
    * Sends SIGKILL to the shell's group, and only the group: never the bare PID, which another
@@ -794,18 +981,36 @@ export async function piBridge(pi: PiBridgeApi, host: PiBridgeHost = {}): Promis
       const marker = `${instance}:${toolCallId}`;
       const childEnv: NodeJS.ProcessEnv = { ...(env ?? process.env), [MARKER_ENV]: marker };
       delete childEnv[CONFIG_ENV];
-      record({ event: 'intent', toolCallId, run: callRun, marker });
-      const child = childProcess.spawn(
-        shell.shell,
-        viaStdin ? shell.args : [...shell.args, command],
-        {
-          cwd,
-          detached: true,
-          env: childEnv,
-          stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
-          windowsHide: true,
-        }
-      );
+      // D-18: a label of this shell's own (128 random bits, hex) in its command line, where `ps`
+      // shows it for as long as the shell runs; the environment, which carries the marker, is
+      // not shown by `ps`. It is a positional parameter the command does not run: with `-c`
+      // after the command, as `$1`, with `$0` the shell's path as before (so messages read as
+      // before); with `-s` (command on stdin) as `$1`. A shell started another way gets none (its
+      // arguments may not be positional parameters): the `ps` path then never verifies it.
+      const last = shell.args[shell.args.length - 1];
+      const label =
+        last === (viaStdin ? '-s' : '-c') ? crypto.randomBytes(16).toString('hex') : undefined;
+      const labelArgs = label === undefined ? [] : viaStdin ? [label] : [shell.shell, label];
+      // The label is in the registry before the shell, so before anything of the command runs.
+      record({
+        event: 'intent',
+        toolCallId,
+        run: callRun,
+        marker,
+        ...(label === undefined ? {} : { label }),
+      });
+      const argv = viaStdin
+        ? [...shell.args, ...labelArgs]
+        : [...shell.args, command, ...labelArgs];
+      // R11-C: one choice of source per shell, by the rule the check uses.
+      const view = processView();
+      const child = childProcess.spawn(shell.shell, argv, {
+        cwd,
+        detached: true,
+        env: childEnv,
+        stdio: [viaStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
       const pid = child.pid;
       if (pid !== undefined) {
         try {
@@ -816,7 +1021,12 @@ export async function piBridge(pi: PiBridgeApi, host: PiBridgeHost = {}): Promis
             marker,
             pid,
             pgid: pid,
-            starttime: startTime(pid),
+            // Without procfs the start follows in an `lstart` record (`readStarts` below).
+            starttime: view === 'procfs' ? startTime(pid) : null,
+            // R11-A: the shell's parent (this process) and its command line, for the `ps` path.
+            ppid: process.pid,
+            args: argsFingerprint([shell.shell, ...argv]),
+            ...(label === undefined ? {} : { label }),
           });
         } catch {
           // The shell is running but the adapter cannot see its group (R4-A). The bridge sends
@@ -835,8 +1045,21 @@ export async function piBridge(pi: PiBridgeApi, host: PiBridgeHost = {}): Promis
               : `switch: process registry unavailable after the shell started, the command may have run; ${group}`
           );
         }
+        // R12-D (D-18): `exit` is recorded as the shell is reaped, in the handler of its `exit`,
+        // synchronously, before anything of the call's end awaits: from here its PID may be another
+        // process's, and the checks honour `exit` (`./pi-bash.ts`). A failed record leaves the
+        // group as running; the label still tells it from any other shell.
+        child.once('exit', (code, signalCode) => {
+          try {
+            record({ event: 'exit', toolCallId, pid, code, signal: signalCode });
+          } catch {
+            // the group stays in the registry as running; the adapter checks it
+          }
+        });
       }
       let timer: ReturnType<typeof setTimeout> | undefined;
+      // Ends the `ps` of `readStarts`, if one runs (D-15).
+      let stopStarts = () => {};
       // Once the shell has exited its PID may be reused, so the bridge sends it nothing more. The
       // call's deadline still holds: an abort or a timeout after `exit` ends the wait for the pipes
       // at once (a process left in the group may keep them open), and so does `exit` after an abort
@@ -965,6 +1188,27 @@ export async function piBridge(pi: PiBridgeApi, host: PiBridgeHost = {}): Promis
           if (signal.aborted) onAbort();
           else signal.addEventListener('abort', onAbort, { once: true });
         }
+        // D-15: without procfs the starts come from `ps`, read while the call's deadline and abort
+        // hold (R11-D). Recorded only while the shell is not reaped: until its parent (this
+        // process) reaps it, no other process can have its PID, and libuv reaps a child only after
+        // the processes that ended with it, so the row `ps` printed was the shell's (R11-A).
+        if (view === 'ps' && pid !== undefined && trigger === undefined) {
+          stopStarts = readStarts(pid, label, (lstart, plstart, cmd) => {
+            if (child.exitCode !== null || child.signalCode !== null) return;
+            try {
+              record({
+                event: 'lstart',
+                toolCallId,
+                pid,
+                lstart,
+                plstart,
+                ...(cmd === undefined ? {} : { cmd }),
+              });
+            } catch {
+              // No start recorded: the group cannot be verified without procfs, nothing is sent.
+            }
+          });
+        }
         const exitCode = await waiting;
         if (trigger !== undefined && killed !== undefined) {
           if (killed.error !== undefined && killed.error !== 'ESRCH') {
@@ -976,13 +1220,7 @@ export async function piBridge(pi: PiBridgeApi, host: PiBridgeHost = {}): Promis
             throw new Error(`switch: ${trigger.text}; ${groupAfterKill(killed.error)}`);
           }
         }
-        if (pid !== undefined) {
-          try {
-            record({ event: 'exit', toolCallId, pid, code: exitCode, signal: child.signalCode });
-          } catch {
-            // the group stays in the registry as running; the adapter checks it
-          }
-        }
+        // The shell's `exit` was recorded when it was reaped (above, R12-D).
         if (trigger?.why === 'abort') throw new Error('aborted');
         if (trigger?.why === 'timeout') throw new Error(`timeout:${timeout}`);
         if (trigger !== undefined) throw new Error(`switch: ${trigger.text}`);
@@ -999,6 +1237,7 @@ export async function piBridge(pi: PiBridgeApi, host: PiBridgeHost = {}): Promis
         if (timer) clearTimeout(timer);
         if (confirmTimer) clearTimeout(confirmTimer);
         signal?.removeEventListener('abort', onAbort);
+        stopStarts();
       }
     },
   });
@@ -1048,7 +1287,9 @@ export async function piBridge(pi: PiBridgeApi, host: PiBridgeHost = {}): Promis
  * `import()` of it from an extension fails with "Cannot find package" (stage 2 probe, phase b). So
  * the generated module imports it statically and hands it to `piBridge`. If the import fails, Pi
  * does not load the bridge at all, the handshake never appears and the adapter sends no prompt.
- * `isProxy` comes the same way, taken when the module loads.
+ * `isProxy` comes the same way, taken when the module loads. R7-C: `procSource`, the rule of where
+ * processes are read, is `piProcSource` of `./pi-bash.ts`, defined from that function's own source
+ * (it is self-contained like the bridge), so the bridge decides as the checks do.
  *
  * The adapter must load this module first: `-e <bridge> -e builtin:mcp` (decision D-4 A; this
  * replaces the order of ER-04). With `-ne`, and with no other extension (D-7 A): the bridge cannot
@@ -1060,9 +1301,10 @@ export function bridgeSource(): string {
     "import * as piSdk from '@earendil-works/pi-coding-agent';",
     "import { types as nodeUtilTypes } from 'node:util';",
     'const isProxy = nodeUtilTypes.isProxy;',
+    `const piProcSource = ${piProcSource.toString()};`,
     `const piBridge = ${piBridge.toString()};`,
     'export default function switchPiBridge(pi) {',
-    '  return piBridge(pi, { importPi: async () => piSdk, isProxy });',
+    '  return piBridge(pi, { importPi: async () => piSdk, isProxy, procSource: piProcSource });',
     '}',
     '',
   ].join('\n');
