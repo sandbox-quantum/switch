@@ -253,6 +253,7 @@ it('types tool items by the tool name, dsh-acp reporting every kind as other', (
   expect(dshItemType({ title: 'bash' })).toBe('command_execution');
   expect(dshItemType({ title: 'write' })).toBe('file_change');
   expect(dshItemType({ title: 'edit' })).toBe('file_change');
+  expect(dshItemType({ title: 'subagent' })).toBe('subagent');
   expect(dshItemType({ title: 'read' })).toBeUndefined();
 });
 

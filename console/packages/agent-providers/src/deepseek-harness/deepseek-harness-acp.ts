@@ -86,11 +86,11 @@ export async function checkDshSignIn({
 /**
  * dsh-acp reports every tool call with kind `other` and the tool's name as
  * its title, so the item type comes from the name: its shell tools ran a
- * command, its file tools changed a file.
+ * command, its file tools changed a file, its subagent tools delegated.
  */
 export function dshItemType(toolCall: {
   title?: string | null;
-}): 'command_execution' | 'file_change' | undefined {
+}): 'command_execution' | 'file_change' | 'subagent' | undefined {
   switch (toolCall.title) {
     case 'bash':
     case 'pwsh':
@@ -99,6 +99,9 @@ export function dshItemType(toolCall: {
     case 'edit':
     case 'str_replace_editor':
       return 'file_change';
+    case 'subagent':
+    case 'subagent_fork':
+      return 'subagent';
     default:
       return undefined;
   }
