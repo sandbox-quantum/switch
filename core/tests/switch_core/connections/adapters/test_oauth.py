@@ -227,6 +227,20 @@ class TestSignIn:
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
             await adapter.identify(secret.access_token or "")
 
+    async def test_identifies_via_post_request(self, vendor) -> None:
+        post_def = (
+            STATIC.replace(
+                "    method: GET\n",
+                '    method: POST\n    body:\n      query: "query { viewer { id email } }"\n',
+            )
+            .replace("account_id: account.id", "account_id: data.viewer.id")
+            .replace("label: account.email", "label: data.viewer.email")
+        )
+        adapter, _ = _adapter(vendor, text=post_def)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+
 
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:

@@ -2,6 +2,35 @@ slug: linear
 name: Linear
 category: Project management
 description: Read and update Linear issues and projects.
-enabled: false
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # Linear offers dynamic client registration (RFC 7591) at https://mcp.linear.app/register.
+    registration: dynamic
+    # Linear supports loopback redirects (Switch Console) and core callback (Web).
+    redirect: [loopback, core]
+    revocation_discovered: true
+  identity:
+    method: POST
+    url: https://api.linear.app/graphql
+    body:
+      query: "query { viewer { id email name } }"
+    account_id: data.viewer.id
+    label: data.viewer.email
+# Linear's MCP access tokens live 24 hours (86,400 seconds).
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    - { name: linear, url: "https://mcp.linear.app/mcp" }
+access:
+  read:
+    scopes:
+      - read
+  write:
+    scopes:
+      - read
+      - write
+tools: { mode: pass_through }
