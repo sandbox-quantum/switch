@@ -387,26 +387,46 @@ def test_the_table_is_ascii(gate: ModuleType) -> None:
 
 
 ASSERTION = """
-from antithesis.assertions import always, sometimes as maybe
+import antithesis.assertions
+import antithesis.assertions as sdk
+from antithesis import assertions as module
+from antithesis.assertions import always, sometimes as maybe, unreachable
 
 
 def store():
     always(True, "area.thing: it holds", {})
-    maybe(False, message="area.thing")
+    maybe(False, "area.thing: it was reached", {})
+    sdk.always(True, "area.other: via an alias", {})
+    module.unreachable(message="area.third: via a module", details={})
+    antithesis.assertions.always_greater_than(2, 1, "area.fourth: dotted", {})
     always(True, "not a property: free text", {})
 """
 
 
-def test_an_assertion_naming_a_property_is_a_system_tag(
+def test_an_assertion_that_states_a_property_is_a_system_tag(
     gate: ModuleType, tmp_path: Path
 ) -> None:
     catalog(tmp_path, entry(levels="[system]"))
     write(tmp_path, "core/switch_core/x.py", ASSERTION)
     tags, problems = gate.find_tags(tmp_path)
     assert problems == []
+    assert sorted(tags) == ["area.fourth", "area.other", "area.thing", "area.third"]
     assert [(t.level, t.target) for t in tags["area.thing"]] == [("system", "store")]
-    assert list(tags) == ["area.thing"]
-    assert gate.check(tmp_path) == []
+
+
+def test_a_sometimes_is_not_evidence_that_a_property_holds(
+    gate: ModuleType, tmp_path: Path
+) -> None:
+    catalog(tmp_path, entry(levels="[system]"))
+    write(
+        tmp_path,
+        "core/switch_core/x.py",
+        "from antithesis.assertions import sometimes, reachable\n"
+        'sometimes(True, "area.thing: reached", {})\n'
+        'reachable("area.thing: reached too", {})\n',
+    )
+    tags, _ = gate.find_tags(tmp_path)
+    assert "area.thing" not in tags
 
 
 def test_an_assertion_for_an_unknown_property_fails(
@@ -424,6 +444,21 @@ def test_an_assertion_for_an_unknown_property_fails(
     )
 
 
+def test_an_assertion_message_that_is_not_a_literal_fails(
+    gate: ModuleType, tmp_path: Path
+) -> None:
+    catalog(tmp_path, entry(levels="[system]"))
+    write(
+        tmp_path,
+        "core/switch_core/x.py",
+        "from antithesis.assertions import always\n"
+        'always(True, f"area.thing: {1}", {})\n'
+        "always(True, name, {})\n",
+    )
+    problems = gate.check(tmp_path)
+    assert sum("string literal" in p for p in problems) == 2
+
+
 def test_a_call_not_from_the_sdk_is_not_an_assertion(
     gate: ModuleType, tmp_path: Path
 ) -> None:
@@ -431,7 +466,8 @@ def test_a_call_not_from_the_sdk_is_not_an_assertion(
     write(
         tmp_path,
         "core/switch_core/x.py",
-        'def always(*args): ...\nalways(True, "area.thing: x")\n',
+        "from antithesis.lifecycle import always\n"
+        "always(True, name)\ndef sometimes(*args): ...\nsometimes(1, name)\n",
     )
-    tags, _ = gate.find_tags(tmp_path)
-    assert "area.thing" not in tags
+    tags, problems = gate.find_tags(tmp_path)
+    assert problems == [] and "area.thing" not in tags

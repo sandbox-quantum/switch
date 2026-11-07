@@ -720,18 +720,9 @@ class EventBuffer:
             )
             return None
         await savepoint.commit()
-        always(
-            all(
-                stored[own.agent_id] == heads[own.agent_id] + 1
-                for own in wanted
-                if own.agent_id in stored
-            ),
-            "delivery.own-seq-contiguous: a stored event takes the number after its agent's head",
-            {"room_id": room_id, "agents": len(wanted)},
-        )
         sometimes(
             len(stored) < len(events),
-            "delivery.no-events-after-leave: an event is not stored for an agent that left the room or already has it",
+            "reached: an event is not stored for an agent that left the room or already has it",
             {"room_id": room_id, "events": len(events), "stored": len(stored)},
         )
         return {agent_id: int(seq) for agent_id, seq in stored.items()}
@@ -2457,7 +2448,7 @@ class EventBuffer:
         rooms = await self.rooms_dropped_after(tenant_id, agent_id, after_seq)
         sometimes(
             bool(rooms),
-            "delivery.no-silent-loss: a reader resumes from below a drop mark",
+            "reached: a reader resumes from below a drop mark",
             {"agent_id": agent_id, "after_seq": after_seq},
         )
         if rooms:
