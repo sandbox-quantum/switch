@@ -23,7 +23,7 @@ export function DeleteSessionModal({ sessions, onSuccess, onClose }: Props) {
 
   const description = isBulk
     ? `${count} sessions will be permanently deleted. This action cannot be undone.`
-    : `"${sessions[0]!.sessionName}" will be permanently deleted. This action cannot be undone.`;
+    : `The session "${sessions[0]!.sessionName}" will be permanently deleted. This action cannot be undone.`;
 
   return (
     <>
