@@ -154,6 +154,17 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="openhands",
+        label="OpenHands CLI",
+        sign_in_command="openhands login",
+        connector_type="OpenHands CLI",
+        tools=(
+            ToolSpec(name="terminal", description="Executes shell commands"),
+            ToolSpec(name="file_editor", description="Edits files"),
+            ToolSpec(name="browser", description="Interacts with web browser"),
+        ),
+    ),
 )
 
 
