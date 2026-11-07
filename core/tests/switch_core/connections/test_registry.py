@@ -71,6 +71,13 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     assert adapters["github"].can_issue is True
 
 
+def test_disabled_linear_never_gets_an_adapter() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    assert "linear" not in adapters
+
+
 def test_github_without_the_app_is_left_not_set_up() -> None:
     adapters = build_adapters(
         CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
