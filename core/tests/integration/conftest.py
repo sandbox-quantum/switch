@@ -623,6 +623,7 @@ async def harness(
                 version=None,
                 telemetry_environment="dev",
                 telemetry_internal=True,
+                deployment_kind="self_hosted",
             ),
             session_factory=session_factory,
         )

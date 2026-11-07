@@ -1,3 +1,4 @@
+import { PROVIDER_RUNTIMES } from '@switch-console/agent-providers';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -67,6 +68,21 @@ beforeEach(() => {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('what the interface is allowed to report', () => {
+  it('accepts every registered provider by its own name in buddy telemetry', () => {
+    for (const runtime of PROVIDER_RUNTIMES) {
+      trackFromRenderer({
+        name: 'buddy_step',
+        properties: { action: 'check_again', provider: runtime.id },
+      });
+    }
+    expect(vi.mocked(trackEvent).mock.calls).toEqual(
+      PROVIDER_RUNTIMES.map((runtime) => [
+        'buddy_step',
+        { action: 'check_again', provider: runtime.id },
+      ])
+    );
+  });
+
   it('passes a catalogued event with permitted values through to the emitter', () => {
     trackFromRenderer({ name: 'view_opened', properties: { view_id: 'settings' } });
 

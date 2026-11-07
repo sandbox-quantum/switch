@@ -149,6 +149,23 @@ it('registers a headless runtime and explicitly inherits the Vibe profile', () =
   expect(EXECUTION_INHERIT_ENV).not.toContain('UNRELATED');
 });
 
+it('surfaces authentication-status errors without attempting authentication', async () => {
+  const error = new JsonRpcError(-32601, 'Auth status unavailable', {});
+  const handshake = vi.fn(async () => ({}));
+  const request = vi.fn().mockRejectedValue(error);
+  await expect(
+    mistralVibeAcp.checkSignIn!({
+      binaryPath: 'vibe-acp',
+      cwd: '/work',
+      env: {},
+      handshake,
+      request,
+    })
+  ).rejects.toBe(error);
+  expect(handshake).toHaveBeenCalledOnce();
+  expect(request).toHaveBeenCalledExactlyOnceWith('_auth/status', {});
+});
+
 it.each([
   ['approval-required', 'ask'],
   ['auto-accept-edits', 'accept-edits'],

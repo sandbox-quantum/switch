@@ -1,7 +1,7 @@
-import { acpInitialize, createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
+import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
 import { readiness, signInWith } from '../readiness';
-import { JsonRpcError, noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
+import { JsonRpcError } from '../transport/stdio-json-rpc';
 
 export const MISTRAL_VIBE_LOGIN = 'vibe-acp --setup';
 
@@ -29,29 +29,17 @@ export const mistralVibeAcp: AcpProviderHooks = {
     userInput: false,
   },
   launch: ({ binaryPath, env }) => ({ command: binaryPath, args: [], env }),
-  checkSignIn: async (input) => {
-    const client = new StdioJsonRpcClient({
-      command: input.binaryPath,
-      args: [],
-      cwd: input.cwd,
-      env: input.env,
-      logger: noopLogger,
-      onExit: () => {},
-    });
-    try {
-      await acpInitialize(client);
-      const status = await client.request<{ authenticated?: unknown }>('_auth/status', {});
-      if (status?.authenticated === true)
-        return readiness('authenticated', "Mistral Vibe's active provider is configured for use.");
-      if (status?.authenticated === false)
-        return readiness('unauthenticated', signInWith(MISTRAL_VIBE_LOGIN));
-      return readiness(
-        'unknown',
-        `Could not verify Mistral Vibe authentication. Run ${MISTRAL_VIBE_LOGIN} on the execution machine.`
-      );
-    } finally {
-      await client.dispose();
-    }
+  checkSignIn: async ({ handshake, request }) => {
+    await handshake();
+    const status = await request<{ authenticated?: unknown }>('_auth/status', {});
+    if (status?.authenticated === true)
+      return readiness('authenticated', "Mistral Vibe's active provider is configured for use.");
+    if (status?.authenticated === false)
+      return readiness('unauthenticated', signInWith(MISTRAL_VIBE_LOGIN));
+    return readiness(
+      'unknown',
+      `Could not verify Mistral Vibe authentication. Run ${MISTRAL_VIBE_LOGIN} on the execution machine.`
+    );
   },
   // agent.py accepts HttpMcpServer in new_session/_project_acp_mcp_servers, but
   // 3.1.0 omits mcpCapabilities from initialize. Never override an explicit false.

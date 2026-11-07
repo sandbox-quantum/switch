@@ -57,6 +57,25 @@ beforeEach(() => {
   agent.session = {};
 });
 
+it.each(['selected-mode', undefined])(
+  'passes advertised modes to the mode hook and honours its answer (%s)',
+  async (modeId) => {
+    const modes = { availableModes: [{ id: 'selected-mode', name: 'Selected mode' }] };
+    agent.session = { modes };
+    const sessionMode = vi.fn(() => modeId);
+    const { adapter, server } = await start({ ...dummy, sessionMode }, { runtimeMode: 'auto' });
+    try {
+      expect(sessionMode).toHaveBeenCalledWith('auto', modes);
+      const requests = server.received.filter((message) => message.method === 'session/set_mode');
+      expect(requests.map((message) => message.params)).toEqual(
+        modeId ? [{ sessionId: 'native', modeId }] : []
+      );
+    } finally {
+      await adapter.stopAll();
+    }
+  }
+);
+
 it.each([undefined, true, false])(
   'uses an HTTP MCP hook only when the handshake omits support (%s)',
   async (http) => {

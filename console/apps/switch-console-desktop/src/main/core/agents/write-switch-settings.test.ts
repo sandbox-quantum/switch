@@ -14,6 +14,7 @@ import {
   ForeignAgentCredentialsError,
   foreignCredentialsEndpoint,
   foreignCredentialsOwnerFs,
+  holdsSwitchToken,
   mergeSwitchApiEndpoint,
   mergeSwitchSettings,
   removeSwitchSettings,
@@ -118,6 +119,48 @@ describe('writeNeutralAgentSettingsFs', () => {
     const ignore = await fs.readFile(path.join(dir, SWITCH_AGENTS_GITIGNORE_RELATIVE), 'utf8');
     expect(ignore).toBe('*\n');
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'leaves the token readable by its owner alone, whatever the umask',
+    async () => {
+      const previous = process.umask(0o022);
+      try {
+        await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+          slug: 'agent-abc',
+          apiEndpoint: 'https://switch.example.com',
+          apiToken: 'secret-token',
+          agentId: 'switch-agent-1',
+        });
+      } finally {
+        process.umask(previous);
+      }
+
+      const file = path.join(dir, agentSettingsRelativePath('agent-abc'));
+      expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(path.dirname(file))).mode & 0o777).toBe(0o700);
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'tightens a credentials file and directory an earlier version left open',
+    async () => {
+      const file = path.join(dir, agentSettingsRelativePath('agent-abc'));
+      await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o755 });
+      await fs.writeFile(file, JSON.stringify({ env: { SWITCH_API_TOKEN: 'old' } }), {
+        mode: 0o644,
+      });
+
+      await writeNeutralAgentSettingsFs(createPluginFs(dir), {
+        slug: 'agent-abc',
+        apiEndpoint: 'https://switch.example.com',
+        apiToken: 'new-token',
+        agentId: 'switch-agent-1',
+      });
+
+      expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(path.dirname(file))).mode & 0o777).toBe(0o700);
+    }
+  );
 
   it('merges into an existing per-agent file, preserving unrelated env keys and allow rules', async () => {
     const relPath = agentSettingsRelativePath('agent-abc');
@@ -480,5 +523,16 @@ describe('removeSwitchSettings', () => {
     await fs.rm(path.join(dir, SWITCH_SETTINGS_RELATIVE_PATH), { force: true });
 
     expect(await detectSwitchAgent(dir)).toBeNull();
+  });
+});
+
+describe('holdsSwitchToken', () => {
+  it('is true only for settings whose env carries a token', () => {
+    expect(holdsSwitchToken(JSON.stringify({ env: { SWITCH_API_TOKEN: 'secret' } }))).toBe(true);
+    expect(holdsSwitchToken(JSON.stringify({ env: { SWITCH_AGENT_ID: 'a' } }))).toBe(false);
+    expect(holdsSwitchToken(JSON.stringify({ SWITCH_API_TOKEN: 'not in env' }))).toBe(false);
+    expect(holdsSwitchToken('null')).toBe(false);
+    expect(holdsSwitchToken('{')).toBe(false);
+    expect(holdsSwitchToken(null)).toBe(false);
   });
 });

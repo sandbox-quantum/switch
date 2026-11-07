@@ -491,7 +491,9 @@ class TestTypeDisplayName:
                 ),
             )
 
-            listed = await list_references(session, svc, _USER_STORE, alice)
+            listed = await list_references(
+                session, svc, _USER_STORE, alice, await _is_admin(session, alice)
+            )
 
             assert [r.type for r in listed] == ["never_registered"]
             assert listed[0].type_display_name is None

@@ -167,7 +167,7 @@ describe('Mistral Vibe real CLI', () => {
       });
     const client = start();
     try {
-      await acpInitialize(client);
+      await acpInitialize(client, mistralVibeAcp);
       const session = await client.request<AcpSessionResult>('session/new', {
         cwd: dir,
         mcpServers: [],
