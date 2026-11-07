@@ -1,32 +1,44 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as doctor from './doctor';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
-import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
+import { infoChange, installerFor, isSupervised, main, planServiceReleases, VERSION } from './main';
 import { dataLayout } from './paths';
+import { assignmentSchema } from './schemas';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
 import { ReleasesDirInstaller } from './self-update';
+import * as separateUsers from './separate-users';
+import * as service from './service';
 import { ControllerStore } from './store';
+import * as update from './update';
 
 let dir: string;
 let bundle: string;
 let stderr: string[];
+let stdout: string[];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-main-'));
   bundle = join(dir, 'shared-host.mjs');
   writeFileSync(bundle, '');
   stderr = [];
+  stdout = [];
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
     stderr.push(String(chunk));
     return true;
   });
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    stdout.push(String(chunk));
+    return true;
+  });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -80,6 +92,8 @@ describe('main', () => {
       '  The build box in the office ',
       '--data-dir',
       dir,
+      '--secret-store',
+      'file',
     ]);
     vi.unstubAllGlobals();
     expect(code).toBe(EXIT_OK);
@@ -87,6 +101,8 @@ describe('main', () => {
     expect(bodies[0]).toMatchObject({
       controller: { kind: 'daemon', name: 'build-box', description: 'The build box in the office' },
     });
+    expect(/Enrolled as controller (\S+)/.exec(stdout.join(''))?.[1]).toBe('controller-1');
+    expect(stdout.join('')).not.toContain('swcc_test');
   });
 
   it('enrolls without a description when none is given, and refuses an overlong one', async () => {
@@ -101,7 +117,15 @@ describe('main', () => {
         );
       })
     );
-    const base = ['enroll', '--server', 'https://switch.example.com', '--code', 'swce_test'];
+    const base = [
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--secret-store',
+      'file',
+    ];
     expect(await main([...base, '--description', 'x'.repeat(501), '--data-dir', dir])).toBe(
       EXIT_CONFIGURATION
     );
@@ -272,6 +296,253 @@ describe('main', () => {
       EXIT_CONFIGURATION
     );
     expect(lastLine()).toMatch(/not enrolled/);
+  });
+});
+
+function saveStatusIdentity(): void {
+  const store = ControllerStore.open(dataLayout(dir).database);
+  store.saveIdentity({
+    controllerId: 'controller-1',
+    name: 'build-box',
+    server: 'https://switch.example',
+    enrolledAt: '2026-10-29T00:00:00Z',
+  });
+  store.saveSecretStoreKind('file');
+  store.close();
+}
+
+describe('CLI output and compatibility', () => {
+  it.each([false, true])('preserves the unenrolled status exit code (json=%s)', async (json) => {
+    expect(await main(['status', '--data-dir', dir, ...(json ? ['--json'] : [])])).toBe(1);
+    const text = stdout.join('');
+    expect(text).not.toContain('\u001b');
+    if (json)
+      expect(JSON.parse(text)).toMatchObject({
+        schemaVersion: 1,
+        command: 'status',
+        identity: null,
+        agents: [],
+        credential: 'not-checked',
+      });
+    else expect(text).toContain('Not enrolled.');
+    expect(stderr).toEqual([]);
+  });
+
+  it('returns JSON for enrolled, revoked, missing and unreadable assignments without changing exit codes', async () => {
+    saveStatusIdentity();
+    const command = ['status', '--json', '--data-dir', dir];
+    expect(await main(command)).toBe(EXIT_OK);
+    expect(JSON.parse(stdout.join(''))).toMatchObject({
+      identity: { controllerId: 'controller-1' },
+      credential: 'missing',
+      assignment: { state: 'none' },
+    });
+    const store = ControllerStore.open(dataLayout(dir).database);
+    store.saveAssignment({ revision: 3, agents: [] }, null, '2026-10-29T00:00:00Z');
+    store.close();
+    const db = new DatabaseSync(dataLayout(dir).database);
+    db.prepare('UPDATE assignment SET body = ? WHERE id = 1').run('{broken');
+    db.close();
+    stdout.length = 0;
+    expect(await main(command)).toBe(EXIT_OK);
+    expect(JSON.parse(stdout.join('')).assignment).toMatchObject({
+      state: 'unreadable',
+      revision: null,
+    });
+    const revoked = ControllerStore.open(dataLayout(dir).database);
+    revoked.markRevoked('2026-10-29T01:00:00Z');
+    revoked.close();
+    stdout.length = 0;
+    expect(await main(command)).toBe(EXIT_OK);
+    expect(JSON.parse(stdout.join(''))).toMatchObject({
+      revokedAt: '2026-10-29T01:00:00Z',
+      credential: 'not-checked',
+    });
+  });
+
+  it('uses the same agent data in text and JSON without exposing credentials', async () => {
+    saveStatusIdentity();
+    const store = ControllerStore.open(dataLayout(dir).database);
+    store.saveAssignment(
+      assignmentSchema.parse({
+        revision: 3,
+        agents: [
+          {
+            agent_id: 'agent-1',
+            revision: 2,
+            desired_state: 'running',
+            definition: {
+              name: 'scout',
+              display_name: null,
+              icon_url: null,
+              provider: 'claude',
+              model: null,
+              advanced_config: {},
+              instructions: '',
+              auto_approve: false,
+              auto_mode: false,
+              directory: null,
+              isolation: 'shared',
+            },
+          },
+        ],
+      }),
+      null,
+      '2026-10-29T00:00:00Z'
+    );
+    store.close();
+    await new FileSecretStore(dataLayout(dir).secrets).set(
+      CONTROLLER_CREDENTIAL,
+      'credential-placeholder'
+    );
+    expect(await main(['status', '--json', '--data-dir', dir])).toBe(EXIT_OK);
+    const raw = stdout.join('');
+    const report = JSON.parse(raw);
+    expect(report).toMatchObject({
+      credential: 'present',
+      assignment: { state: 'ready', revision: 3 },
+      agents: [{ id: 'agent-1', name: 'scout', provider: 'claude', revision: 2 }],
+    });
+    expect(raw).not.toContain('credential-placeholder');
+    stdout.length = 0;
+    expect(await main(['status', '--data-dir', dir])).toBe(EXIT_OK);
+    for (const value of ['scout', 'agent-1', 'claude']) expect(stdout.join('')).toContain(value);
+  });
+
+  it.each([false, true])(
+    'doctor retains failure exit codes and exposes check fixes (json=%s)',
+    async (json) => {
+      const checks: doctor.Check[] = [
+        {
+          name: 'Enrollment',
+          status: 'fail',
+          detail: 'Not enrolled.',
+          fix: 'Get a code from Machines.',
+        },
+      ];
+      vi.spyOn(doctor, 'runDoctor').mockResolvedValue(checks);
+      expect(await main(['doctor', '--data-dir', dir, ...(json ? ['--json'] : [])])).toBe(1);
+      const text = stdout.join('');
+      if (json)
+        expect(JSON.parse(text)).toMatchObject({
+          schemaVersion: 1,
+          command: 'doctor',
+          checks,
+          summary: { ok: 0, warn: 0, fail: 1 },
+        });
+      else expect(text).toContain('Fix: Get a code from Machines.');
+      expect(text).not.toContain('\u001b');
+    }
+  );
+
+  it('doctor warnings do not change its success exit code', async () => {
+    vi.spyOn(doctor, 'runDoctor').mockResolvedValue([
+      { name: 'Service', status: 'warn', detail: 'Not installed' },
+    ]);
+    expect(await main(['doctor', '--json', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(JSON.parse(stdout.join('')).summary).toEqual({ ok: 0, warn: 1, fail: 0 });
+  });
+
+  it.each(['status', 'doctor'])('emits parseable JSON for %s argument errors', async (command) => {
+    expect(await main([command, '--json', '--unknown'])).toBe(EXIT_CONFIGURATION);
+    expect(JSON.parse(stdout.join(''))).toMatchObject({
+      schemaVersion: 1,
+      command,
+      error: { exitCode: 2 },
+    });
+    expect(stderr).toEqual([]);
+  });
+
+  it('emits a JSON failure if a doctor check unexpectedly throws', async () => {
+    vi.spyOn(doctor, 'runDoctor').mockRejectedValue(new Error('check failed'));
+    expect(await main(['doctor', '--json', '--data-dir', dir])).toBe(EXIT_FAILURE);
+    expect(JSON.parse(stdout.join('')).error).toEqual({ exitCode: 1, message: 'check failed' });
+  });
+
+  it('keeps help, version and protocol exit codes and machine-readable values', async () => {
+    expect(await main(['--version'])).toBe(EXIT_OK);
+    expect(stdout.join('')).toBe(`${VERSION}\n`);
+    stdout.length = 0;
+    expect(await main(['--protocol'])).toBe(EXIT_OK);
+    expect(stdout.join('')).toMatch(/^\d+\n$/);
+    for (const command of ['help', '--help', '-h']) {
+      stdout.length = 0;
+      expect(await main([command])).toBe(EXIT_OK);
+      expect(stdout.join('')).toContain('Diagnostics and updates:');
+      expect(stdout.join('')).toContain('status [--json]');
+    }
+  });
+
+  it('keeps update check and missing-release exit codes without installing anything', async () => {
+    const latest = vi.spyOn(update, 'latestRelease').mockResolvedValue(null);
+    expect(await main(['update', '--check'])).toBe(1);
+    expect(stdout.join('')).toContain('[WARN]');
+    latest.mockResolvedValue({
+      version: VERSION,
+      packageUrl: 'https://example.invalid/controller.tgz',
+    });
+    expect(await main(['update', '--check'])).toBe(EXIT_OK);
+    latest.mockResolvedValue({
+      version: '99.0.0',
+      packageUrl: 'https://example.invalid/controller.tgz',
+    });
+    expect(await main(['update', '--check'])).toBe(EXIT_OK);
+    expect(stdout.join('')).toContain('Install it with: switch-agent-controller update');
+  });
+
+  it('formats service installation/removal without touching the real service manager', async () => {
+    saveStatusIdentity();
+    vi.spyOn(service, 'installService').mockResolvedValue({
+      file: '/example/controller.service',
+      notes: ['Starts at login.'],
+    });
+    const remove = vi.spyOn(service, 'uninstallService').mockResolvedValue(true);
+    expect(await main(['install-service', '--data-dir', dir, '--shared-host-bundle', bundle])).toBe(
+      EXIT_OK
+    );
+    expect(stdout.join('')).toMatch(
+      /\[OK\]\s+Installed and started: \/example\/controller.service/
+    );
+    expect(stdout.join('')).toContain('  Starts at login.');
+    expect(await main(['uninstall-service', '--data-dir', dir])).toBe(EXIT_OK);
+    remove.mockResolvedValue(false);
+    expect(await main(['uninstall-service', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(stdout.join('')).toMatch(/\[INFO\]\s+No service was installed./);
+  });
+
+  it('formats the separate-users service paths without creating system users', async () => {
+    vi.spyOn(separateUsers, 'installSeparateUsers').mockResolvedValue({
+      notes: ['System service started.'],
+    });
+    vi.spyOn(separateUsers, 'uninstallSeparateUsers').mockResolvedValue({
+      notes: ['Agent directories kept.'],
+    });
+    expect(
+      await main([
+        'install-service',
+        '--separate-users',
+        '--user',
+        'controller-user',
+        '--data-dir',
+        dir,
+        '--shared-host-bundle',
+        bundle,
+      ])
+    ).toBe(EXIT_OK);
+    expect(await main(['uninstall-service', '--separate-users', '--user', 'controller-user'])).toBe(
+      EXIT_OK
+    );
+    expect(stdout.join('')).toContain('Agents now run as users of their own.');
+    expect(stdout.join('')).toContain('Removed the setup for agents as users of their own.');
+  });
+
+  it('preserves service command failures and puts their reason last on stderr', async () => {
+    vi.spyOn(service, 'uninstallService').mockRejectedValue(
+      new Error('\u001b[31mservice manager refused\u001b[0m')
+    );
+    expect(await main(['uninstall-service', '--data-dir', dir])).toBe(EXIT_FAILURE);
+    expect(lastLine()).toBe('switch-agent-controller: service manager refused');
+    expect(stderr.join('')).not.toContain('\u001b');
   });
 });
 

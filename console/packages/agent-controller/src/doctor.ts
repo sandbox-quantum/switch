@@ -1,5 +1,6 @@
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { ControllerApiError } from './api';
+import { type CliOutput, formatDoctor } from './cli-output';
 import { errorMessage } from './log';
 import { PROVIDERS, type Provider } from './schemas';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
@@ -9,7 +10,7 @@ import type { Identity } from './store';
 import { type ControllerRelease, isNewer } from './update';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail';
-export type Check = { name: string; status: CheckStatus; detail: string };
+export type Check = { name: string; status: CheckStatus; detail: string; fix?: string };
 
 /** The oldest Node the controller runs on: it needs the built-in `node:sqlite`. */
 export const MIN_NODE: readonly [number, number] = [22, 13];
@@ -227,16 +228,41 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
       name: 'Version',
       status: 'warn',
       detail: `${inputs.version}; could not check for a newer one: ${errorMessage(error)}`,
+      fix: 'Check network access to the releases repository and rerun doctor.',
     });
   }
-  return checks;
+  return checks.map((check) =>
+    check.status === 'ok' ? check : { ...check, fix: check.fix ?? checkFix(check, inputs) }
+  );
 }
 
-const MARK: Record<CheckStatus, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL' };
+function checkFix(check: Check, inputs: DoctorInputs): string {
+  switch (check.name) {
+    case 'Node':
+      return `Install Node ${MIN_NODE.join('.')} or later and restart the controller.`;
+    case 'Platform':
+      return 'Run the controller on Linux, macOS or Windows.';
+    case 'Enrollment':
+      return 'Get a code from the Machines page, then run switch-agent-controller enroll --server <url> --code <code>.';
+    case 'Credential':
+      return 'Unlock the configured secret store, or enroll this machine again with a new code from the Machines page.';
+    case 'Server':
+      return 'Check the server URL, network access and proxy routing for /v1; rerun doctor after correcting the reported server error.';
+    case 'Shared host':
+      return 'Build the workspace packages and pass --shared-host-bundle <path> to the built shared host.';
+    case 'Providers':
+      return 'Install a supported provider CLI and sign in as the user running agents, or set its API key in --env-file.';
+    case 'Service':
+      return inputs.separateUsers
+        ? `Check the service with sudo systemctl status ${inputs.separateUsers.controllerUnit}; start it after resolving any errors.`
+        : 'Run switch-agent-controller install-service, or keep switch-agent-controller run going in a terminal.';
+    case 'Version':
+      return 'Run switch-agent-controller update.';
+    default:
+      return `Follow the ${check.name} sign-in instructions above as the user running agents, or configure its API key through --env-file; rerun doctor.`;
+  }
+}
 
-export function formatChecks(checks: Check[]): string {
-  const width = Math.max(...checks.map((check) => check.name.length));
-  return checks
-    .map((check) => `${MARK[check.status]}  ${check.name.padEnd(width)}  ${check.detail}`)
-    .join('\n');
+export function formatChecks(checks: Check[], output: CliOutput): string {
+  return formatDoctor(checks, output);
 }
