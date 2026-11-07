@@ -524,8 +524,9 @@ export class AcpAdapter implements ProviderAdapter {
   private async permission(
     state: State,
     context: AcpSessionContext,
-    request: AcpPermissionRequest
+    received: AcpPermissionRequest
   ): Promise<unknown> {
+    const request = this.hooks.permissionRequest?.(received) ?? received;
     if (request.sessionId !== state.nativeId || !state.turn || state.interrupted)
       return ACP_CANCELLED;
     const vendor = this.hooks.permission?.(context, request);
