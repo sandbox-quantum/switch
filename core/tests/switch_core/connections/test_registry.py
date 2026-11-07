@@ -66,7 +66,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, oauth_clients={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian", "datadog"}
+    assert set(adapters) == {"github", "atlassian", "datadog", "monday"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
@@ -83,6 +83,8 @@ def test_a_key_service_needs_nothing_set_up_on_the_server() -> None:
         CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
     assert isinstance(adapters["datadog"], ApiKeyAdapter)
+    assert isinstance(adapters["monday"], ApiKeyAdapter)
+    assert adapters["monday"].can_issue is False
 
 
 def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
@@ -218,7 +220,7 @@ async def test_an_app_not_set_up_here_says_who_sets_it_up(
     broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, None)
     reason = (
         "{} is not set up on this server. Whoever runs your Switch server can "
-        "set it up in Switch Console, under Admin → Connector apps."
+        "set it up in Switch Console, under Admin â†’ Connector apps."
     )
     assert await availability(broker, "example") == reason.format("Example")
     assert await availability(broker, "github") == reason.format("GitHub")

@@ -1,0 +1,34 @@
+slug: monday
+name: Monday.com
+category: Project management
+description: Read and update Monday.com boards and items with your personal token.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: api_key
+        label: Personal API token
+        secret: true
+        help: Copy your personal V2 token from the Developer Center. It inherits your account permissions; this connection does not restrict it to read-only.
+    identity:
+      method: POST
+      url: https://api.monday.com/v2
+      headers: { Authorization: "{api_key}" }
+      body: { query: "query { me { id name } }" }
+      account_id: data.me.id
+      label: data.me.name
+    help_url: https://developer.monday.com/api-reference/docs/mcp-api-token
+# The documented personal-token path needs no dynamic-client admin approval.
+# OAuth DCR instead needs admin approval and a compatible identity/lifecycle
+# implementation. Do not infer OAuth scopes or expiry from this key entry.
+# Disconnect forgets the token; regenerate it at Monday to invalidate it.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    - name: monday
+      url: https://mcp.monday.com/mcp
+      headers: { Authorization: "Bearer {api_key}" }
+tools: { mode: pass_through }
