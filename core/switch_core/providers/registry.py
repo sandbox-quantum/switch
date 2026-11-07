@@ -154,6 +154,12 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="kimi",
+        label="Kimi Code",
+        connector_type="Kimi Code CLI",
+        sign_in_command="kimi login",
+    ),
 )
 
 
