@@ -204,6 +204,20 @@ async def test_a_turns_tokens_are_counted_once_when_it_first_ends(
     ]
 
 
+async def test_a_turn_withdrawn_from_the_queue_is_recorded_as_cancelled_and_ended(
+    service,
+):
+    await service.report_item(AGENT, SESSION, **_turn("turn-1", 1, "queued"))
+    assert await service.report_item(AGENT, SESSION, **_turn("turn-1", 2, "cancelled"))
+    [row] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert (row.item_id, row.status) == ("turn", "cancelled")
+    # An ended turn takes no usage, and a turn row keeps only the turn's statuses.
+    with pytest.raises(SessionError, match="not a status"):
+        await service.report_item(
+            AGENT, SESSION, **_step(kind="tool-activity", status="cancelled")
+        )
+
+
 async def test_usage_on_a_turn_that_has_not_ended_is_refused(service):
     with pytest.raises(SessionError, match="ended turn"):
         await service.report_item(

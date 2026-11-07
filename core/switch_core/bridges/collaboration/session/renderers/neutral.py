@@ -67,6 +67,9 @@ from . import (
 
 _CONSOLE = "Open in Switch Console"
 
+# What a queued turn's message says beside the command that withdraws it.
+_CANCEL_OFFER = "To cancel it before the agent starts, send"
+
 # What a card says when it could not show all of itself. The reader is told the
 # count rather than left to notice; where the rest of it is comes from the
 # footer, which a cut body always replaces with `_TOO_BIG`.
@@ -266,6 +269,7 @@ def turn_status(
     elapsed_seconds: float | None = None,
     mention: str | None = None,
     error_summary: str | None = None,
+    cancel_command: str | None = None,
     tool_detail: bool,
 ) -> str:
     """A turn's progress, compact enough to live in one message that is edited.
@@ -299,6 +303,10 @@ def turn_status(
 
     `mention` is already in the platform's own syntax and is not escaped: it is
     the adapter's, resolved from an id Switch holds, never host text.
+
+    `cancel_command` is what a queued turn offers to be withdrawn with, as a
+    line under its state. It is the one thing a queued turn can be told that
+    its state cannot, so it is drawn before anything optional.
     """
     budget = _room(limit, mention)
     if error_summary:
@@ -311,6 +319,12 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
+    if cancel_command is not None and turn.status == "queued":
+        offer = f"{_CANCEL_OFFER} {markup.code(markup.literal(escape)(cancel_command))}"
+        # Whole or not at all: a cut command is one a reader would copy and send.
+        if spent + len(offer) + 1 <= budget:
+            lines.append(offer)
+            spent += len(offer) + 1
     did = [item for item in items if item.kind == "tool-activity"]
     for line in _doing(
         did, turn, escape=escape, budget=budget, tool_detail=tool_detail

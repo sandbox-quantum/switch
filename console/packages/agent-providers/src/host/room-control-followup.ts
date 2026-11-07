@@ -43,3 +43,10 @@ export function retryRefusal(reason: string | null): string {
     return "I couldn't try that again: my current session never worked on that message.";
   return `I couldn't try that again: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
 }
+
+/** What the room is told when the session could not cancel a queued message. */
+export function cancelRefusal(reason: string | null): string {
+  if (reason?.includes('NOT_FOUND'))
+    return "I couldn't cancel that: my current session has no queued message with that id.";
+  return `I couldn't cancel that: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
+}

@@ -42,6 +42,7 @@ TURN_STATE = {
     "completed": "Turn complete.",
     "interrupted": "Turn interrupted.",
     "error": "Turn ended with an error.",
+    "cancelled": "Cancelled before the agent started.",
 }
 
 
@@ -86,7 +87,7 @@ def turn_state(
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
             return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
         return state
-    if elapsed_seconds is not None:
+    if elapsed_seconds is not None and turn.status != "cancelled":
         worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
         state = worked if turn.status == "completed" else f"{state} {worked}"
     unfinished = sum(
@@ -280,6 +281,15 @@ INTERRUPT_LABEL = "Stop current work"
 INTERRUPT_QUEUED_NOTE = (
     "Stops what the agent is working on now. This message stays queued."
 )
+
+# What a queued turn's message offers to copy to withdraw it: enough of the
+# turn's id to name it among the agent's queued turns, short enough to type.
+CANCEL_PREFIX_LENGTH = 8
+
+
+def cancel_command(agent_name: str, turn_id: str) -> str:
+    """The command that withdraws `turn_id` while it is still queued."""
+    return f"!cancel @{agent_name} {turn_id[:CANCEL_PREFIX_LENGTH]}"
 
 
 @dataclass(frozen=True)

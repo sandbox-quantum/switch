@@ -117,6 +117,9 @@ export type ApprovalOutcome = {
   answeredBy: string | null;
 };
 
+/** Why a message that is already running cannot be cancelled, and what to do instead. */
+export const STARTED_MESSAGE = 'This message has already started; use !interrupt to stop it.';
+
 /** Execution owner for a local-only session. Shared server leases are an external boundary. */
 export class HostedSession {
   private readonly projector: ChatProjector;
@@ -936,6 +939,7 @@ export class HostedSession {
         throw new Error('Session is not ready.');
     } else if (
       body.type !== 'turn.interrupt' &&
+      body.type !== 'turn.cancel' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
       body.type !== 'session.compact' &&
@@ -1130,6 +1134,8 @@ export class HostedSession {
         } finally {
           this.resetting = false;
         }
+      } else if (body.type === 'turn.cancel') {
+        await this.cancelQueued(command, body.turnId);
       } else if (body.type === 'turn.interrupt') {
         if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
@@ -1209,6 +1215,41 @@ export class HostedSession {
     const status = this.snapshot().commandStatuses.find((value) => value.commandId === commandId);
     if (!status) throw new Error('NOT_FOUND: command not found.');
     return status;
+  }
+
+  /**
+   * Withdraws a turn that has not started. `runNext` claims a turn by shifting
+   * it off the queue and setting `activeTurn` in one step, so this looks for
+   * the turn and takes it out with no `await` between: it is either claimed or
+   * cancelled, never both. A turn already claimed, even one still staging its
+   * attachments, has started and is stopped with an interrupt instead.
+   *
+   * Only whoever sent the message may cancel it, from the room it was sent in.
+   * The turn is journaled as finished so a restart does not report it as a
+   * queued turn the restart interrupted; nothing re-queues a turn after a
+   * restart in any case, as the queue is not recovered.
+   */
+  private async cancelQueued(command: Command, turnId: string): Promise<void> {
+    const at = this.queue.findIndex((queued) => queued.commandId === turnId);
+    if (at === -1) {
+      if (this.activeTurn === turnId) throw new Error(STARTED_MESSAGE);
+      const turn = this.snapshot().turns.find((each) => each.turnId === turnId);
+      if (!turn) throw new Error('NOT_FOUND: this session has no queued turn with that id.');
+      throw new Error(
+        turn.status === 'cancelled'
+          ? 'This message was already cancelled.'
+          : 'This message has already finished.'
+      );
+    }
+    const { origin } = this.queue[at]!;
+    if (origin.actorId !== command.origin.actorId || origin.roomId !== command.origin.roomId)
+      throw new Error('FORBIDDEN: only whoever sent a message can cancel it.');
+    this.queue.splice(at, 1);
+    await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+    this.dispatched.add(command.commandId);
+    await this.inbox.append({ type: 'finished', commandId: turnId });
+    this.finished.add(turnId);
+    await this.publishAll(this.projector.cancel(turnId));
   }
 
   private async runNext(): Promise<void> {

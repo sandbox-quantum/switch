@@ -1185,6 +1185,7 @@ def render_activity_plan(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    cancel_command: str | None = None,
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
 
@@ -1232,7 +1233,9 @@ def render_activity_plan(
     # bytes that must survive whatever trimming the steps need, and a message
     # that dropped its stop button to make room for one more step line would
     # have traded the only thing on it a reader can act on.
-    control = _interrupt_block(interrupt_turn_id, turn, STREAM_SLOTS[len(blocks)])
+    control = _interrupt_block(
+        interrupt_turn_id, cancel_command, turn, STREAM_SLOTS[len(blocks)]
+    )
     if control is not None:
         blocks.append(control)
     return SlackMessage(text=title, blocks=blocks)
@@ -1269,6 +1272,7 @@ def render_activity_stream(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    cancel_command: str | None = None,
 ) -> StreamedActivity:
     """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
 
@@ -1302,7 +1306,7 @@ def render_activity_stream(
     # heading of the newest plan block, and the control has no title at all.
     title = blocks[-1]["title"]
     slot = STREAM_SLOTS[len(blocks)]
-    control = _interrupt_block(interrupt_turn_id, turn, slot)
+    control = _interrupt_block(interrupt_turn_id, cancel_command, turn, slot)
     if control is None:
         return StreamedActivity(
             title=title, blocks=blocks, spent_control=_spent_control(slot)
@@ -1353,7 +1357,10 @@ def _session_card(*, live: bool) -> dict[str, Any]:
 
 
 def _interrupt_block(
-    interrupt_turn_id: str | None, turn: TurnUpsert, block_id: str
+    interrupt_turn_id: str | None,
+    cancel_command: str | None,
+    turn: TurnUpsert,
+    block_id: str,
 ) -> dict[str, Any] | None:
     """The stop control, or None where there is nothing for it to stop.
 
@@ -1388,9 +1395,23 @@ def _interrupt_block(
     Measured against Slack before it was written: both shapes are accepted in a
     stream and in an ordinary post, and a stream accepts one replacing the other
     under the same `block_id`, which is what a turn leaving the queue does.
+
+    A queued turn's message also offers the command that withdraws it, in the
+    same section, so a queued turn with nothing running ahead of it still draws
+    one: its section then has no button, only the command to copy. The section
+    is the same block either way, so the stream replaces it as it replaces the
+    control, and it is written over once the turn has started.
     """
-    if interrupt_turn_id is None or turn.status in TURN_ENDED:
+    offered = cancel_command if turn.status == "queued" else None
+    if turn.status in TURN_ENDED or (interrupt_turn_id is None and offered is None):
         return None
+    if interrupt_turn_id is None:
+        assert offered is not None
+        return {
+            "type": "section",
+            "block_id": block_id,
+            "text": {"type": "mrkdwn", "text": _cancel_offer(offered)},
+        }
     button = {
         "type": "button",
         "action_id": INTERRUPT_ACTION,
@@ -1399,10 +1420,16 @@ def _interrupt_block(
         "value": _truncate(interrupt_turn_id, _MAX_VALUE),
     }
     if turn.status == "queued":
+        note: dict[str, str] = {"type": "plain_text", "text": INTERRUPT_QUEUED_NOTE}
+        if offered is not None:
+            note = {
+                "type": "mrkdwn",
+                "text": f"{INTERRUPT_QUEUED_NOTE}\n{_cancel_offer(offered)}",
+            }
         return {
             "type": "section",
             "block_id": block_id,
-            "text": {"type": "plain_text", "text": INTERRUPT_QUEUED_NOTE},
+            "text": note,
             "accessory": button,
         }
     return {
@@ -1410,6 +1437,11 @@ def _interrupt_block(
         "block_id": block_id,
         "elements": [button],
     }
+
+
+def _cancel_offer(command: str) -> str:
+    """The sentence offering a queued turn's cancel command, as mrkdwn."""
+    return f"To cancel this message before the agent starts it, send `{command}`"
 
 
 def _step_blocks(
