@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity ACP and Cursor. Local sessions and sessions reached through SSH run
+Antigravity and Cursor. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -251,14 +251,14 @@ the native thread setting. Choose an explicit effort to replace it. Claude
 Compaction uses a native operation: Claude's `/compact` with a completed compaction
 boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
 `session.summarize` with native busy/idle completion. Console shows progress and the
-outcome. A timeout or interrupted completion remains unknown. The Antigravity ACP adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
+outcome. A timeout or interrupted completion remains unknown. The Antigravity adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
 
 | Provider | Reset | Model selection | Native compaction | Attachments |
 | --- | --- | --- | --- | --- |
 | Claude Code | Yes | Native catalog and effort | When `/compact` is advertised | Images as bytes; other files staged |
 | Codex | Yes | Native catalog and reasoning effort | App-server compaction | Local images and staged file mentions |
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
-| Antigravity ACP | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
+| Antigravity (`agy acp`) | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 
 Controls depend on the connected provider's reported support. OpenCode models
@@ -293,12 +293,22 @@ workspace permissions in Codex and restart the host before using file tools.
 
 ## Capability and deployment limits
 
-Antigravity uses Google's standalone ACP runtime, installed as `antigravity-acp`.
-It requires a separate sign-in with `antigravity-acp --login` on the execution
-host; an existing `agy` login is not reused. The runtime supports Apple Silicon
-macOS and Linux x64/ARM64. Approvals, offered-answer questions and cancellation
-use ACP. Saved conversations from the older CLI runtime cannot be resumed by ACP;
-reset the conversation to start fresh while preserving its transcript.
+Antigravity runs Google's Antigravity CLI, `agy`, as `agy acp` on macOS, Linux
+and Windows. Install it with Google's installer (`curl -fsSL
+https://antigravity.google/cli/install.sh | bash`, or on Windows `irm
+https://antigravity.google/cli/install.ps1 | iex`, which puts `agy.exe` in
+`%LOCALAPPDATA%\agy\bin`). It uses the person's own `agy` sign-in: sign in with
+`agy acp --login` on the execution host, or set `GEMINI_API_KEY`, which a
+session uses only when `agy` is not signed in itself. The sign-in check asks
+`agy acp` for its sessions, which it refuses while signed out, and never signs
+in itself. A hosted Antigravity login made for the older runtime cannot sign
+`agy` in; a session given one fails with an error saying how to sign in on the
+machine instead. Approvals and cancellation use ACP; questions arrive as
+ACP form elicitations. A machine that only has the `antigravity-acp` runtime
+Switch Console used to install keeps using it, with its own `antigravity-acp
+--login`, until `agy` is installed. Conversations saved by that runtime, or by
+the older CLI runtime, cannot be resumed by `agy`; reset the conversation to
+start fresh while preserving its transcript.
 Other capability limits remain explicit
 in the session contract. Terminal sessions (tmux/PTY) were removed; SDK adapters
 are the only session runtime. Lifecycle scripts use noninteractive commands.

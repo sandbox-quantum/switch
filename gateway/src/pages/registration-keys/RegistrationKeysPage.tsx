@@ -26,6 +26,7 @@ import { type ApiKeyDetail, deleteApiKey, revealApiKey } from "../../data/api";
 import { useApiKeys } from "../../data/hooks";
 import { MONO_SX, formatDate } from "../../theme/hootFormat";
 import CreateKeyDialog from "./CreateKeyDialog";
+import { formatKeyExpiry } from "./keyExpiry";
 
 export default function RegistrationKeysPage() {
   const { data: keys, loading, refetch } = useApiKeys();
@@ -105,6 +106,13 @@ export default function RegistrationKeysPage() {
         valueFormatter: (value) => formatDate(value as string),
       },
       {
+        field: "expires_at",
+        headerName: "Expires",
+        flex: 1,
+        minWidth: 140,
+        valueFormatter: (value) => formatKeyExpiry(value as string | null, new Date()),
+      },
+      {
         field: "actions",
         headerName: "",
         width: 100,
@@ -150,6 +158,13 @@ export default function RegistrationKeysPage() {
         flex: 1,
         minWidth: 140,
         valueFormatter: (value) => formatDate(value as string),
+      },
+      {
+        field: "expires_at",
+        headerName: "Expires",
+        flex: 1,
+        minWidth: 140,
+        valueFormatter: (value) => formatKeyExpiry(value as string | null, new Date()),
       },
       {
         field: "actions",

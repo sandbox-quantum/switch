@@ -105,7 +105,7 @@ does, and there is no polling tool to call.
 
 - **Messages addressed to you** — `[Switch] <sender> addressed you in room
   <room> (message_id …[, thread_id …]):`, the sender named with their role in
-  the room's workspace when Switch knows it (`ada (workspace owner)`), read as
+  the room's workspace when Switch knows it (`ada (workspace admin)`), read as
   the message arrived, then the sender's own text between a
   matching `BEGIN SWITCH MESSAGE <nonce>` / `END SWITCH MESSAGE <nonce>` pair,
   then a parenthetical naming any downloaded attachments. Everything between
@@ -292,8 +292,8 @@ A deployment may run every message through **Switch Trust**, a guardrails
 service, before it is sent. This is unrelated to the addressing policy above:
 addressing refusals always reach the room; a guardrails block does not.
 
-If your content is blocked, `post_message`, `send_targeted_message` and
-`update_status` fail with an error instead of posting —
+If your content is blocked, `post_message`, `send_targeted_message`,
+`update_status` and `send_attachment` fail with an error instead of posting,
 and a notice appears in the room in place of what you tried to send, so other
 participants see that something was withheld rather than nothing happening.
 Rephrase and retry, or drop it. A human's message can be blocked the same way;
@@ -309,12 +309,34 @@ Trust flagged reaches you with a trailing `⚠️ _Switch Trust flagged this
 message…_` line: that line is Switch's annotation, not something the sender
 wrote.
 
+Files are checked too. The text inside a file you send with
+`send_attachment` goes through Switch Trust with the caption: a file it would
+block or redact blocks the whole send, since a file cannot be redacted safely.
+A file it flagged or could not fully check is still sent, and Switch's note
+about it is added to the first file's caption. That line is Switch's, not
+yours.
+
+Your own sends tell you when this happened. The result of `post_message`,
+`send_targeted_message` and `update_status` carries a `trust` field only when
+Switch Trust changed or flagged what you sent, and `send_attachment` adds it
+on a `Switch Trust:` line:
+`{"outcome": "redacted", "delivered": "<what the room received>"}`, or
+`alerted` / `errored` with the `note` posted under it. A redacted message can
+also have been flagged or not fully checked, say a caption redacted beside a
+file that was flagged: `alert` then says `alerted` or `errored`. When that
+notice could not be posted, `note` is absent and `notice_error` says why: the
+room was not warned. If it says your message
+was redacted, read `delivered`: the room saw that, not what you wrote. When the
+redacted version no longer makes sense, tell the room what you meant in words
+that pass. Don't repost the original.
+
 ## Questions and approvals
 
 Native question forms can be answered in the Console or from the room. The
-room presents one question at a time; each addressed reply answers that
-question. A form with several questions stays open until all questions have
-answers. Wait for the tool to return before acting on the answers.
+room shows the whole form as one card. A form of one single-choice question
+gets buttons on Slack and Discord; any other form is answered by typing the
+card's handle and an answer to every question in one reply, as the card shows.
+Wait for the tool to return before acting on the answers.
 
 Approvals reach the room on every host. Native question forms do not: Claude
 Code, OpenCode and Antigravity have them, while Codex and Cursor sessions
@@ -532,12 +554,12 @@ carrying a display name addresses no one.
   so read it before offering: the chat is made on the platform, the Switch app
   added to it, and the room adopted from that.
 - **`create_room`** — provision a room. Required: `name`, `description`,
-  `agent_names`. Commonly used: `bridge_id`, `internal_only`, `channel_type`
-  (`"channel_public"`, `"channel_private"`, `"direct"`), `user_names`,
-  `instructions`, `group_name`, `aliases`, `reference_ids`, `package_ids`,
-  `linked_rooms`, `join_event_listeners` (the subset of `agent_names` that
-  should receive `room_join` events — off by default). You are not a member
-  unless your own name is in `agent_names`. Returns
+  `agent_names`. Commonly used: `bridge_id`, `internal_only`, `include_owner`,
+  `channel_type` (`"channel_public"`, `"channel_private"`, `"direct"`),
+  `user_names`, `instructions`, `group_name`, `aliases`, `reference_ids`,
+  `package_ids`, `linked_rooms`, `join_event_listeners` (the subset of
+  `agent_names` that should receive `room_join` events — off by default). You
+  are not a member unless your own name is in `agent_names`. Returns
   `{id, name, transport_room_id, caller_is_member, failed_attachments}`.
 - **`update_room`** — change an existing room, including its `aliases` map.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
@@ -546,7 +568,9 @@ carrying a display name addresses no one.
   on bridged Slack, Discord and Telegram channels; Telegram registers it as
   `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
   a command tapped from the `/` menu is sent immediately with no argument, so
-  the bot asks for the one it needs and runs when you reply with it.
+  the bot asks for the one it needs and runs when you reply with it. The tool
+  is refused in a direct or group conversation, whose platform fixes who is in
+  it; the command still works there, and is how the people in it add an agent.
 - **`remove_agent_from_room`** — take an agent out of a room by name, the
   opposite of `invite_agent_to_room`; any session it had there is
   disconnected. You need not be in the room. Allowed when you may address
@@ -555,7 +579,8 @@ carrying a display name addresses no one.
   Confirm with the person asking before removing anything. People do the same
   in a room with `!remove-agent @agent-name` (a slash command where
   `/invite-agent` is one, `/remove_agent` on Telegram), which a workspace admin
-  may use on any agent.
+  may use on any agent. As with inviting, the tool is refused in a direct or
+  group conversation, where the command still works.
 - **`add_users_to_room`** — add human users to an existing room, the
   counterpart to `invite_agent_to_room`. Name each person by their username on
   the room's messaging app, or the e-mail address of their account there (not
@@ -563,7 +588,8 @@ carrying a display name addresses no one.
   `get_my_context`; for anyone else, ask. Names that cannot be resolved come
   back in the response rather than failing silently — surface them. The same
   goes for `create_room`'s `user_names`, whose misses come back in
-  `failed_attachments`.
+  `failed_attachments`. Refused in a direct or group conversation, as
+  inviting an agent is.
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
   normal use; confirm with the user first.
@@ -636,6 +662,10 @@ know the deployment's topology.
 To create a room with **no** external channel, pass `internal_only=True`. Do
 that only when the user has explicitly said so — e.g. "just a scratch room for
 agents to coordinate."
+
+Add `include_owner=True` (internal-only, not `direct`) to put your owner in the
+room too; it appears in their Switch Console chats as a group chat, where they
+@-mention an agent to reach it.
 
 **Do not guess a `bridge_id`.** When the user asks you to create a room:
 
@@ -719,12 +749,20 @@ groups nest under a parent to form a tree.
   (`member_rooms`), and its immediate `child_groups`.
 - **`create_room_group`** — provision a group. Only an agent whose owner is a
   workspace admin may: groups are shared by the whole workspace. Anyone else
-  is refused, so file the room under an existing group or ask an admin.
+  is refused; ask an admin.
   Required: `name`. Optional: `description`, `color`, `parent_group_name`
   (omit it for a top-level group). Creating a group does not move any rooms
   into it; file rooms under it later by passing `group_name` to
   `create_room`. Missing parents are not created for you: create each level
   first.
+- **Filing a room in a group** (`group_name` on `create_room`) also needs an
+  owner who is a workspace admin, because an agent's addressing policy can
+  admit everyone in a group's rooms. Without one, create the room standalone
+  and ask an admin to file it.
+- **Group templates** (a `group:` document, through `create_room_from_yaml`
+  or `run_template`) are refused for every agent, whoever its owner: a
+  template runs without your owner's admin reach. Nothing is created. Ask a
+  workspace admin to run it from the dashboard.
 
 Name a group by its **path**: the top-level group, then each child, separated
 by `/`, e.g. `Fraud/Incidents`. The `path` that `list_room_groups` returns
@@ -1114,7 +1152,7 @@ Every Switch tool you call in normal operation, one line each.
 - `list_room_groups` — the group tree rooms are organised into.
 - `get_room_group_detail` — one group's rooms and child groups.
 - `create_room_group` — provision a new room group (workspace admin agents only).
-- `create_room_from_yaml` — provision a room or group from a YAML template.
+- `create_room_from_yaml` — provision a room from a YAML template (group templates are refused).
 - `get_template_guide`: how to write a template, and the schema it is checked against.
 - `list_templates`: the saved templates you can use.
 - `get_template`: one template's document, inputs and agent slots.

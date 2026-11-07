@@ -20,9 +20,11 @@ from switch_core.bridges.collaboration.models import (
     ChannelRetirement,
     RetireOutcome,
 )
+from switch_core.db.audit import OrganizationIssueKind
 from switch_core.db.models import (
     MAX_BUDGET_AMOUNT,
     MAX_BUDGET_PERIOD_HOURS,
+    MAX_MESSAGE_RETENTION_DAYS,
     UsageMetric,
 )
 
@@ -92,13 +94,19 @@ class RoomSummary(BaseModel):
     is_console_chat: bool = False
     # What the caller may do with it, so a client offers a change only where
     # the server would allow it. `can_write` covers its settings, roles,
-    # participants, links and attaching resources; `can_manage` (owner or
-    # tenant admin) covers its access, deleting it and taking the platform
-    # channel's name; `can_unlink` (taking part in it, or tenant admin) covers
-    # unlinking a reference, document or package from it.
+    # links and attaching resources; `can_change_members` covers adding and
+    # removing its agents and people, which is `can_write` unless it is a
+    # direct or group conversation, whose platform fixes who is in it;
+    # `can_manage` (owner or tenant admin) covers its access, deleting it and
+    # taking the platform channel's name; `can_unlink` (taking part in it, or
+    # tenant admin) covers unlinking a reference, document or package from it;
+    # `can_transfer` is `can_manage` for anything but a chat, which stays with
+    # its people.
     can_write: bool
+    can_change_members: bool
     can_manage: bool
     can_unlink: bool
+    can_transfer: bool
 
 
 class RoomDetail(RoomSummary):
@@ -374,6 +382,49 @@ class AgentDetail(AgentSummary):
     children: list[AgentSummary]
 
 
+class AgentCapabilities(BaseModel):
+    """What the caller may do with an agent, as the Gateway reports it.
+
+    On Gateway-only models rather than on `AgentSummary`, which the agent
+    tools share, so an agent never reads them. Each is decided by the rule its
+    route enforces, so no client repeats it.
+    """
+
+    # Edit its icon, display name, description and who may address it, and
+    # delete it: its owner or a workspace admin.
+    can_manage: bool
+    # Edit its options: `can_manage`, for an agent Switch Console runs from a
+    # spec it knows. Any other agent has no options to edit.
+    can_edit_options: bool
+    # Change its name: `can_manage`, unless it is a sub-agent, whose name
+    # comes from its parent's, or has sub-agents named after it. A sub-agent's
+    # display name is still covered by `can_manage`.
+    can_rename: bool
+    # Hand it to another member: `can_manage`, unless it is tied to its owner
+    # by more than its owner id (`accounts/transfer.py`).
+    can_transfer: bool
+    # Why it can't be handed over, set only when `can_manage` is true and
+    # `can_transfer` false. Only its owner is told which services it uses.
+    transfer_blocked_reason: str | None
+
+
+class GatewayAgentSummary(AgentSummary, AgentCapabilities):
+    pass
+
+
+class GatewayAgentDetail(AgentDetail, AgentCapabilities):
+    # Its owner only, not an admin: turning on that it may manage its
+    # owner's agents.
+    can_change_manage_agents: bool
+    # Granting it service access: its owner only, since a grant is made on
+    # the owner's own connections, while service connections are switched on,
+    # and for an agent Switch Console runs from a spec it knows, since nothing
+    # else would start its service tools. Seeing and revoking the grants it
+    # already has needs only the first two.
+    can_grant_services: bool
+    children: list[GatewayAgentSummary]  # type: ignore[assignment]  # narrows the base type
+
+
 class NamedEntry(BaseModel):
     """An id a policy names, with the name a person would know it by.
 
@@ -482,7 +533,7 @@ class RenameAgentResponse(BaseModel):
     `templates_mentioning_old_name` lists saved templates whose text still
     says the old name."""
 
-    agent: AgentSummary
+    agent: GatewayAgentSummary
     old_name: str
     bridge_failures: list[str]
     templates_mentioning_old_name: list[str]
@@ -599,8 +650,22 @@ class RegisterAgentResponse(BaseModel):
 # ── API Keys ────────────────────────────────────────────────────────────────
 
 
+API_KEY_DEFAULT_LIFETIME_DAYS = 90
+API_KEY_MAX_LIFETIME_DAYS = 365
+
+
 class CreateApiKeyRequest(BaseModel):
     label: str
+    expires_in_days: (
+        Annotated[int, Field(ge=1, le=API_KEY_MAX_LIFETIME_DAYS)] | Literal["never"]
+    ) = Field(
+        default=API_KEY_DEFAULT_LIFETIME_DAYS,
+        description=(
+            "Days until the key stops working, at most "
+            f"{API_KEY_MAX_LIFETIME_DAYS}, or `never` for a key that does not "
+            "expire."
+        ),
+    )
 
 
 class ApiKeyDetail(BaseModel):
@@ -609,6 +674,12 @@ class ApiKeyDetail(BaseModel):
     type: str
     key_prefix: str
     created_at: str
+    expires_at: datetime | None
+    # What the caller may do with it: reveal and copy it, their own only; and
+    # delete it, their own unless an agent still signs in with it
+    # (`authz.can_delete_api_key`).
+    can_reveal: bool
+    can_delete: bool
 
 
 class CreateApiKeyResponse(BaseModel):
@@ -616,6 +687,7 @@ class CreateApiKeyResponse(BaseModel):
     label: str
     key: str
     created_at: str
+    expires_at: datetime | None
 
 
 class RevealKeyResponse(BaseModel):
@@ -681,6 +753,12 @@ class BridgeDetail(BaseModel):
     # which is then what stands between this connection and its events.
     receives_webhooks: bool = False
     webhook_url: str | None = None
+    # What the caller may do with it: change its settings, Teams placement
+    # and confirmation rules, or delete it — a workspace admin. That chats
+    # still connected through it must be disconnected first is answered when
+    # it is deleted.
+    can_manage: bool
+    can_delete: bool
 
 
 class BridgeUpdateRequest(BaseModel):
@@ -752,6 +830,9 @@ class IdentityClaimant(BaseModel):
     # False for a claim made before accounts had to confirm their links
     # (CHOO-3881). It still counts, and its owner is asked to confirm it.
     verified: bool
+    # Whether the caller may drop this claim: their own, or anyone's for an
+    # admin.
+    can_unlink: bool
 
 
 class LinkCode(BaseModel):
@@ -838,8 +919,10 @@ class ClaimIdentityRequest(BaseModel):
     user_id: str | None = None
     # That the caller knows the link will wait for the account to confirm it
     # (CHOO-3881). A Console from before then leaves it out and would report
-    # a link that does not count as made, so the claim is refused with a
-    # reason it shows instead.
+    # a link that does not count as made, so its claim is answered with a 409
+    # whose text carries the code, which it shows. One for someone else is
+    # refused while the link needs confirming, since that text would show the
+    # code to the wrong person.
     expects_confirmation: bool = False
 
 
@@ -963,6 +1046,15 @@ Email = Annotated[
 ]
 
 
+class OperatorUserResponse(UserResponse):
+    """An account as the deployment operator manages it. `can_delete`: not
+    their own, which they delete from their account settings, and not the
+    server's administrator account (`accounts.deletion.is_server_administrator`).
+    What else stands in the way is answered when it is asked."""
+
+    can_delete: bool
+
+
 class CreateUserRequest(BaseModel):
     name: str
     email: Email
@@ -1045,10 +1137,18 @@ class OperatorWorkspaceResponse(BaseModel):
 
 class CurrentTenantResponse(TenantMembershipResponse):
     """The tenant this request is bound to. `administers` is whether the
-    caller may manage it — an `owner` or `admin` membership, or the operator
-    bit, which no membership role shows."""
+    caller may manage it — an `admin` membership, `org_admin` of its
+    organization, or the operator bit, which no membership role shows.
+    `can_delete` is whether they may delete it (`authz.can_delete_workspace`):
+    by their own admin membership, never the server's default workspace.
+    `can_manage_data_protection` is whether they may set its messages to be
+    deleted, list the people seen in it and erase them: by their own admin
+    membership too (`authz.admin_by_own_membership`); reading and clearing
+    its retention window takes `administers` only."""
 
     administers: bool
+    can_delete: bool
+    can_manage_data_protection: bool
 
 
 class TenantCreateRequest(BaseModel):
@@ -1072,12 +1172,34 @@ class OrganizationSummary(BaseModel):
 
 class CurrentOrganizationResponse(BaseModel):
     """The bound workspace's organization, and the caller's role in it: None
-    for the platform operator there on the operator flag alone."""
+    for the platform operator there on the operator flag alone.
+    `members_from_directory`: its members and `org_admin`s come from a
+    directory kept outside Switch (`OrganizationDirectory.keeps_members_of`);
+    `directory_takes_changes`: changes made here to them are made there too
+    (`OrganizationDirectory.sends_changes_for`)."""
 
     id: str
     slug: str
     name: str
     role: str | None
+    members_from_directory: bool
+    directory_takes_changes: bool
+    # Whether the caller is its `org_admin`, and whether they may manage its
+    # members and read its issues: its `org_admin`, or the platform operator
+    # while it has none, to make one.
+    administers: bool
+    can_manage_members: bool
+
+
+class OrganizationIssueDetail(BaseModel):
+    """Something in the organization that needs an admin's attention now
+    (`organization_issues.py`): its kind, the workspace it is in (None for
+    the organization's own), and the agents it names, if any."""
+
+    kind: OrganizationIssueKind
+    workspace_id: str | None
+    workspace_name: str | None
+    agents: list[str]
 
 
 class OrganizationAuditEventDetail(BaseModel):
@@ -1105,6 +1227,11 @@ class OrganizationCreateResponse(BaseModel):
 
 
 class WorkspaceCreateRequest(BaseModel):
+    name: str
+
+
+class TenantDeleteRequest(BaseModel):
+    # The workspace's name, typed by the person deleting it.
     name: str
 
 
@@ -1300,6 +1427,15 @@ class MemberDetail(BaseModel):
     service_account: bool
     organization_role: str | None
     via_organization: bool
+    # What the caller may do with this member (`authz.can_change_workspace_member`):
+    # an admin of the workspace, their own row included, never on an
+    # organization admin's. That the last admin stays and that someone still
+    # owning agents can't be removed is checked when it is asked.
+    can_change_role: bool
+    can_remove: bool
+    # Whether the caller may hand them something they own: a member of the
+    # workspace by their own membership, and not the caller.
+    can_receive_transfer: bool
 
 
 class UsageTotalResponse(BaseModel):
@@ -1330,6 +1466,16 @@ class OrganizationMemberDetail(BaseModel):
     # What could not be revoked at a vendor when a demotion took away what
     # they held in workspaces they were in only as `org_admin`.
     warning: str | None
+    # What the caller may do with them, their own row included:
+    # `can_change_role` for whoever passes the role route's gate, the
+    # operator restoring an `org_admin` included;
+    # `can_grant_org_admin` too, unless the organization's members come from
+    # a directory Switch cannot change; `can_remove` for its `org_admin` only.
+    # The last `org_admin`, someone still in a workspace, and a directory that
+    # wants a sign-in first are answered when it is asked.
+    can_change_role: bool
+    can_grant_org_admin: bool
+    can_remove: bool
 
 
 class OrganizationMemberUpdateRequest(BaseModel):
@@ -1427,6 +1573,12 @@ class ReferenceDetail(BaseModel):
     # Resolved server-side, unfiltered by the type's visibility: the caller can
     # already read the raw slug. Null when the slug resolves to no type at all.
     type_display_name: str | None = None
+    # What the caller may do with it (`switch_core.authz`). `can_edit`: change
+    # it — its owner, an admin, or anyone when it is publicly writable.
+    # `can_manage`: delete it, change who may see or edit it, transfer it — its
+    # owner or an admin.
+    can_edit: bool
+    can_manage: bool
 
 
 class ReferenceCreateRequest(BaseModel):
@@ -1488,6 +1640,10 @@ class ReferenceTypeDetail(BaseModel):
     write_visibility: str
     shadowed_by_builtin: bool
     created_at: str
+    # As on `ReferenceDetail`. A built-in is never listed here, so never
+    # offered for editing.
+    can_edit: bool
+    can_manage: bool
 
 
 class ReferenceTypeCreateRequest(BaseModel):
@@ -1630,6 +1786,12 @@ class DocumentDetail(BaseModel):
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
+    # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
+    # All three are false for a room's own document, which is changed and
+    # removed in its room, not through the library.
+    can_edit: bool
+    can_manage: bool
+    can_transfer: bool
 
 
 # Whether the caller may remove a document from a room it is in: delete it if
@@ -1663,6 +1825,10 @@ class DocumentSummary(BaseModel):
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
+    # As on `DocumentDetail`.
+    can_edit: bool
+    can_manage: bool
+    can_transfer: bool
 
 
 class RoomDocumentSummary(DocumentSummary):
@@ -1715,6 +1881,14 @@ class PackageDetail(BaseModel):
     # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
     hidden_rooms_count: int = 0
     created_at: str
+    # Whether the caller may open the package. Every route returns only
+    # packages the caller may read, except a room's package list: a private
+    # package its owner attached is listed to every reader of the room, and the
+    # Gateway shows that one without a link.
+    can_read: bool
+    # As on `ReferenceDetail`.
+    can_edit: bool
+    can_manage: bool
 
 
 class PackageCreateRequest(BaseModel):
@@ -1992,3 +2166,84 @@ class SlackTokensChecked(BaseModel):
     workspace_id: str
     workspace_name: str
     bot_name: str
+
+
+# ── Data retention ──────────────────────────────────────────────────────────
+
+
+class RetentionPolicyRequest(BaseModel):
+    message_retention_days: int = Field(ge=1, le=MAX_MESSAGE_RETENTION_DAYS)
+
+
+class RetentionPolicyResponse(BaseModel):
+    """The workspace's retention policy. `message_retention_days` null means
+    messages are kept forever."""
+
+    message_retention_days: int | None
+    updated_at: datetime | None
+    updated_by_user_id: str | None
+
+
+class RetentionPreviewResponse(BaseModel):
+    """What a window would delete if it applied now."""
+
+    message_retention_days: int
+    messages_to_delete: int
+
+
+# ── Erasing a person ────────────────────────────────────────────────────────
+
+
+class ClaimantDetail(BaseModel):
+    user_id: str
+    name: str
+
+
+class PersonDetail(BaseModel):
+    """Someone seen in the workspace's rooms.
+
+    `kind` is `identity` for a person on a connected chat app, where `id` is
+    their platform identity; `former` for a person on an app since
+    disconnected, where `id` is the transport id their messages carry and
+    `bridge_name` is null; or `member` for a person taking part from Switch
+    Console, where `id` is their member client, `platform` is `switch` and
+    `bridge_name` is null (a deleted account's shows as "Former member").
+    Erase by passing `id` in the matching list of the request.
+    """
+
+    id: str
+    kind: Literal["identity", "former", "member"]
+    username: str
+    platform: str
+    bridge_name: str | None
+    message_count: int
+    claimed_by: list[ClaimantDetail]
+
+
+class ErasureCreateRequest(BaseModel):
+    external_user_ids: list[str] = Field(default_factory=list, max_length=50)
+    former_sender_ids: list[str] = Field(default_factory=list, max_length=50)
+    member_client_ids: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def _names_someone(self) -> ErasureCreateRequest:
+        if (
+            not self.external_user_ids
+            and not self.former_sender_ids
+            and not self.member_client_ids
+        ):
+            raise ValueError("name at least one person to erase")
+        return self
+
+
+class ErasureDetail(BaseModel):
+    id: str
+    state: Literal["queued", "running", "done", "failed"]
+    identities: int
+    identities_erased: int
+    messages_deleted: int
+    files_deleted: int
+    error: str | None
+    requested_by_user_id: str | None
+    created_at: datetime
+    completed_at: datetime | None

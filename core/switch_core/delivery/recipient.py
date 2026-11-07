@@ -681,6 +681,40 @@ class AgentRecipient:
         can be followed in the server's log.
         """
         meta = self._meta
+        if not await self._follows(session, event, decision):
+            return NOTHING
+
+        async def after(row: InboundEvent) -> None:
+            assert isinstance(row, InboundMessage)
+            await self._after_follow_up(row, has_attachment=False)
+
+        sender_role = await self._sender_role(session, event.sender, event.content)
+        notice = await self._switch_notice(session)
+        return Delivery(
+            own_event=_message_own_event(
+                meta,
+                event,
+                event.thread_root_id,
+                self.agent.id,
+                sender_role,
+                notice,
+                await self._sender_owns_agent(session, event),
+                self._mid_turn_delivery(),
+            ),
+            after=after,
+        )
+
+    async def _follows(
+        self,
+        session: AsyncSession,
+        event: InboundMessage,
+        decision: ConversationDecision,
+    ) -> bool:
+        """Whether a message (or a post's first file) that names nobody is
+        delivered to the agent by following the conversation: a rule chose
+        the agent, and its addressing policy and budget let the sender
+        through. Every outcome is logged."""
+        meta = self._meta
         outcome = "nobody"
         delivered = False
         if decision.route is not None:
@@ -704,30 +738,11 @@ class AgentRecipient:
             if outcome != "dropped_not_permitted"
             else "the sender may not instruct this agent, or it is over budget",
         )
-        if not delivered:
-            return NOTHING
+        return delivered
 
-        async def after(row: InboundEvent) -> None:
-            assert isinstance(row, InboundMessage)
-            await self._after_follow_up(row)
-
-        sender_role = await self._sender_role(session, event.sender, event.content)
-        notice = await self._switch_notice(session)
-        return Delivery(
-            own_event=_message_own_event(
-                meta,
-                event,
-                event.thread_root_id,
-                self.agent.id,
-                sender_role,
-                notice,
-                await self._sender_owns_agent(session, event),
-                self._mid_turn_delivery(),
-            ),
-            after=after,
-        )
-
-    async def _after_follow_up(self, event: InboundMessage) -> None:
+    async def _after_follow_up(
+        self, event: InboundMessage, *, has_attachment: bool
+    ) -> None:
         """What a follow-up leaves to do once it has committed: wake the
         agent's cloud machine if it is asleep, so a session can start, and
         report that the agent was asked something. Nothing is posted."""
@@ -737,7 +752,9 @@ class AgentRecipient:
             agent_live = await self._is_available(session, agent, meta.room_id)
         if not agent_live:
             await self._wake_for_follow_up()
-        self._report_addressed(meta, event, agent_live=agent_live, has_attachment=False)
+        self._report_addressed(
+            meta, event, agent_live=agent_live, has_attachment=has_attachment
+        )
 
     async def _wake_for_follow_up(self) -> None:
         """Start the cloud machine of an agent run by a controller that is
@@ -845,9 +862,15 @@ class AgentRecipient:
         lead: InboundMedia,
         complete: bool,
         message_key: str,
+        follow: ConversationDecision | None = None,
     ) -> Delivery:
         """Whether a post of one or more files is one of the agent's own
         events, delivered as one message carrying every file.
+
+        `follow` is what following the conversation decided for the agent,
+        given only when no file of the post named any agent in the room: the
+        post is then delivered as a follow-up would be (`decide_follow_up`),
+        quietly, with no refusal for a sender the policy turns away.
 
         `files` are the post's rows, in the order they were written; a file
         still being written is given as it will be stored, and replaced by
@@ -858,18 +881,22 @@ class AgentRecipient:
 
         The message is anchored on the first file (index 0) when it arrived,
         so its id and time are the ones the sender was given, whichever file
-        completed it. `lead` is the file the rest is taken from when the first
-        is missing, and whose thread and sender name the message carries: the
-        file that completed the post, or for a post given up on, the first of
-        its files written. A post given up on (`complete` False) says in its
+        completed it, and its thread is the message's (`post_anchor`). `lead`
+        is the file the rest is taken from when the first is missing, and
+        whose sender name the message carries: the file that completed the
+        post, or for a post given up on, the first of its files written. A post given up on (`complete` False) says in its
         body how many files arrived.
         """
         meta = self._meta
-        anchor = _first_file(files) or lead
+        anchor = post_anchor(files, lead)
         gate = _GateOutcome(addressed=False, refusal=None)
+        followed = False
         if named:
             agent = await self._fresh_agent(session)
             gate = await self._gate_addressed(session, agent, anchor, meta)
+        elif follow is not None:
+            followed = await self._follows(session, anchor, follow)
+        delivered = gate.addressed or followed
 
         sender_name = lead.sender_name
         if not sender_name:
@@ -878,7 +905,8 @@ class AgentRecipient:
                 "Media received without sender name, using the sender id: %s",
                 sender_name,
             )
-        thread_id = lead.thread_root_id
+        # The thread the rules routed the post by (`_post_as_message`).
+        thread_id = anchor.thread_root_id
         group = parse_attachment_group(lead.content)
         total = group[2] if group is not None else 1
 
@@ -894,18 +922,16 @@ class AgentRecipient:
         opening = opening_message_for(meta, self.agent.id)
         sender_role = (
             await self._sender_role(session, anchor.sender, anchor.content)
-            if gate.addressed
+            if delivered
             else None
         )
-        switch_notice = await self._switch_notice(session) if gate.addressed else None
-        owns = (
-            await self._sender_owns_agent(session, anchor) if gate.addressed else False
-        )
+        switch_notice = await self._switch_notice(session) if delivered else None
+        owns = await self._sender_owns_agent(session, anchor) if delivered else False
         mid_turn_delivery = self._mid_turn_delivery()
 
         def own_event(row: InboundEvent) -> OwnEvent:
             parts = written(row)
-            first = _first_file(parts)
+            first = first_file(parts)
             anchored = first or next(p for p in parts if p.event_id == lead.event_id)
             body = (first.body if first is not None else "") or anchored.body
             if not complete:
@@ -944,14 +970,17 @@ class AgentRecipient:
 
         async def after(row: InboundEvent) -> None:
             parts = written(row)
-            anchored = _first_file(parts) or next(
+            anchored = first_file(parts) or next(
                 p for p in parts if p.event_id == lead.event_id
             )
-            await self._after_post(anchored, gate=gate, thread_id=thread_id)
+            if followed:
+                await self._after_follow_up(anchored, has_attachment=True)
+            else:
+                await self._after_post(anchored, gate=gate, thread_id=thread_id)
 
         return Delivery(
-            own_event=own_event if gate.addressed else None,
-            after=after if named else None,
+            own_event=own_event if delivered else None,
+            after=after if named or followed else None,
             named=named,
         )
 
@@ -1825,7 +1854,7 @@ class AgentRecipient:
         self, session: AsyncSession, sender: str, content: Mapping[str, object]
     ) -> str | None:
         """The sending person's role in this workspace, read as the message
-        arrives: "owner", "admin" or "member". None for an agent, the
+        arrives: "admin" or "member". None for an agent, the
         platform, or a person no Switch user has claimed.
 
         Read fresh for every message, so an agent can rely on it over what it
@@ -1948,9 +1977,24 @@ def file_index(part: InboundMedia) -> int:
     return group[1] if group is not None else 0
 
 
-def _first_file(parts: list[InboundMedia]) -> InboundMedia | None:
+def first_file(parts: list[InboundMedia]) -> InboundMedia | None:
     """The file a post is anchored on, index 0, when it is among `parts`."""
     return next((part for part in parts if file_index(part) == 0), None)
+
+
+def post_anchor(parts: list[InboundMedia], lead: InboundMedia) -> InboundMedia:
+    """The file a post's text, thread and time are taken from: its first
+    file, or `lead` when the first is missing."""
+    return first_file(parts) or lead
+
+
+def caption_of(file: InboundMedia) -> str:
+    """The text the sender wrote with a file, or empty when there is none.
+
+    Without a caption a file's body is its filename (`media_content`); with
+    one, the body is the caption and the filename is carried apart.
+    """
+    return (file.body or "") if "filename" in file.content else ""
 
 
 def command_event(row: InboundCustomEvent) -> CommandEvent:

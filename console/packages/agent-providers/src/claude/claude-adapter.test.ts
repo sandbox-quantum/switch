@@ -227,6 +227,25 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(native.options().settings).toBeUndefined();
   });
 
+  it('excludes connector MCP servers from session settings allow permissions', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    await adapter.startSession(
+      startInput({
+        mcpServers: {
+          switch: { transport: 'stdio', command: 'node', args: ['server.mjs'] },
+          atlassian: { transport: 'http', url: 'http://127.0.0.1:4100/mcp' },
+          other: { transport: 'stdio', command: 'node', args: ['other.mjs'] },
+        },
+        connectorMcpServers: ['atlassian'],
+      })
+    );
+    expect(sdk.options().settings).toEqual({
+      enabledPlugins: { 'switch-connector@switch-plugins': false },
+      permissions: { allow: ['mcp__switch', 'mcp__other'] },
+    });
+  });
+
   it('runs as a named agent definition, and as none when the caller names none', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });

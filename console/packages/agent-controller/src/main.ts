@@ -13,6 +13,7 @@ import {
   SESSION_STARTED_KIND,
   type SessionStartedNotice,
 } from '@switch-console/agent-providers';
+import { withWindowsAgyBinDir } from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
 import {
   AccessTokens,
@@ -397,7 +398,10 @@ async function setInfoCommand(args: string[]): Promise<number> {
  */
 function pathRefresher(log: Logger): () => Promise<void> {
   return async () => {
-    if (process.platform === 'win32') return;
+    if (process.platform === 'win32') {
+      process.env.PATH = withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA);
+      return;
+    }
     const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
     const path = await loginShellPath(shell, process.env.PATH ?? '');
     if (path === null)

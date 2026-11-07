@@ -1,4 +1,5 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
@@ -123,6 +124,14 @@ export default function ReferenceDetailPage() {
         />
         {canMutate && (
           <>
+            <Divider />
+            <TransferOwnershipSection
+              kind="reference"
+              resourceId={id}
+              resourceLabel={ref.name || id}
+              ownerId={ref.owner_id}
+              onTransferred={() => navigate(0)}
+            />
             <Divider />
             <DangerSection onDelete={() => setDeleteOpen(true)} />
           </>

@@ -29,6 +29,7 @@ from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
     Agent,
     MessagingInstall,
+    ServiceConnection,
     Tenant,
     TenantMember,
     User,
@@ -57,9 +58,9 @@ async def get_my_context() -> dict[str, Any]:
 
         `you`: {name, can_manage_agents}, the agent making the call.
         `person`: your owner, {name, email, workspace_role, workspace_admin,
-        runs_server}. `workspace_role` is "owner", "admin" or "member".
+        runs_server}. `workspace_role` is "admin" or "member".
         `workspace_admin` is whether they may set up messaging apps and invite
-        people: an owner or admin of the workspace, or the server's own
+        people: an admin of the workspace, or the server's own
         administrator, which `runs_server` marks.
         `workspace`: {id, name, members}.
         `server`: {kind, version, features}. `kind` is "switch_cloud",
@@ -166,7 +167,7 @@ async def get_my_context() -> dict[str, Any]:
             )
         )
         connections = {
-            connection.service: connection.status
+            connection.service: connection
             for connection in await _CONNECTIONS.list_connections(session, owner.id)
         }
         grants = {
@@ -179,7 +180,7 @@ async def get_my_context() -> dict[str, Any]:
         bridges = await protocol.bridge_store.get_all(session)
         services = await _services(session, protocol, connections, agents, grants)
 
-    admin = role in {"owner", "admin"} or owner.role == "admin"
+    admin = role == "admin" or owner.role == "admin"
     port = management_port()
     managed = (
         {
@@ -284,7 +285,7 @@ def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
 async def _services(
     session: AsyncSession,
     protocol: Any,
-    connections: dict[str, str],
+    connections: dict[str, ServiceConnection],
     agents: list[Agent],
     grants: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
@@ -308,7 +309,9 @@ async def _services(
                 if unavailable is None
                 else unavailable.reason,
                 "unavailable_code": None if unavailable is None else unavailable.code,
-                "connection": connections.get(definition.slug, "not_connected"),
+                "connection": broker.connection_status(
+                    standing, connections.get(definition.slug)
+                ),
                 "agents_using": sorted(
                     names[agent_id]
                     for agent_id, services in grants.items()

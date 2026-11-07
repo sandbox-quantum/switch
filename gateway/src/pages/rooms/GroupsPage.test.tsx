@@ -27,6 +27,7 @@ function authState(canAdminTenant: boolean) {
     refresh: vi.fn(async () => {}),
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),
+    logoutEverywhere: vi.fn(async () => {}),
     switchTo: vi.fn(async () => {}),
   };
 }
@@ -78,18 +79,22 @@ describe("GroupsPage", () => {
     expect(screen.queryByLabelText("Delete Customers")).toBeNull();
   });
 
-  it("files and unfiles only rooms the viewer may write to", async () => {
-    renderAs(false, [
+  it("lets only an admin add rooms, and anyone take out a room they may write to", async () => {
+    const rooms = [
       room("r1", "planning", "g1", true),
       room("r2", "leadership", "g1", false),
       room("r3", "retro", null, true),
       room("r4", "board", null, false),
-    ]);
+    ];
+    renderAs(false, rooms);
     fireEvent.click(screen.getByText("Customers"));
-
     screen.getByRole("button", { name: "Remove planning from group" });
     expect(screen.queryByRole("button", { name: "Remove leadership from group" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /add rooms/i })).toBeNull();
+    cleanup();
 
+    renderAs(true, rooms);
+    fireEvent.click(screen.getByText("Customers"));
     fireEvent.click(screen.getByRole("button", { name: "Add rooms" }));
     await screen.findByText("retro");
     expect(screen.queryByText("board")).toBeNull();

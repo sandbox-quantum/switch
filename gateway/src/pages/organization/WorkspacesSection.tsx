@@ -160,7 +160,7 @@ function AddWorkspaceDialog({
               label="Workspace name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              helperText="You become its owner. Every organization admin administers it."
+              helperText="You become its admin. Every organization admin administers it."
               required
               autoFocus
             />

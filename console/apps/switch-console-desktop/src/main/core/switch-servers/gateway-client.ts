@@ -96,6 +96,8 @@ import {
   type RemoteRoomRole,
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
+  type RoomRoleInput,
+  type RoomVisibility,
   type RetireOutcome,
   type SwitchApiKey,
   type CreatedRegistrationKey,
@@ -108,6 +110,13 @@ import {
   type TrustSettings,
   type UnconfirmedLink,
   type UpdateTrustSettingsParams,
+  type LinkedRoom,
+  type RoomDocumentContent,
+  type RoomResource,
+  type RoomResourceKind,
+  type NewRoomChannel,
+  type RoomAccess,
+  visibilityForAccess,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -592,7 +601,7 @@ export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFea
 
 /**
  * Delete the signed-in account on this server, confirmed by its email. A
- * refusal (the only owner of a shared workspace, the server's own admin, …) is
+ * refusal (the only admin of a shared workspace, the server's own admin, …) is
  * raised with the server's own reason, which says what to do first.
  */
 export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
@@ -675,7 +684,9 @@ type TenantJson = {
 };
 
 function mapRole(raw: unknown): WorkspaceRole {
-  if (raw === 'owner' || raw === 'admin' || raw === 'member') return raw;
+  // A server from before `owner` merged into `admin` still reports it.
+  if (raw === 'owner') return 'admin';
+  if (raw === 'admin' || raw === 'member') return raw;
   throw new GatewayError('http', `Switch server reported an unknown workspace role: ${raw}`);
 }
 
@@ -980,7 +991,7 @@ function joinDomainsPath(tenantId: string): string {
   return `/tenants/${encodeURIComponent(tenantId)}/join-domains`;
 }
 
-/** The domains a workspace is open to. Admins and owners only. */
+/** The domains a workspace is open to. Admins only. */
 export async function fetchJoinDomains(
   server: SwitchServer,
   tenantId: string
@@ -1032,7 +1043,7 @@ function invitationsPath(tenantId: string): string {
   return `/tenants/${encodeURIComponent(tenantId)}/invitations`;
 }
 
-/** Every invitation to a workspace, revoked and spent ones included. Admins and owners only. */
+/** Every invitation to a workspace, revoked and spent ones included. Admins only. */
 export async function fetchInvitations(
   server: SwitchServer,
   tenantId: string
@@ -2394,9 +2405,9 @@ export async function searchBridgeDirectory(
  * with that status.
  *
  * A current server answers with the link still pending and a code to post from
- * the account (`link_request`); see {@link issueIdentityLinkCode}. It refuses a
- * claim that does not say it can show that code (`expects_confirmation`), since
- * a client that cannot would leave the link pending with no way to finish it.
+ * the account (`link_request`); see {@link issueIdentityLinkCode}. A claim that
+ * does not say it can show that code (`expects_confirmation`) gets it as the
+ * text of a 409 instead, which is all a Console from before then shows.
  */
 export async function claimBridgeIdentity(
   server: SwitchServer,
@@ -3228,18 +3239,75 @@ export async function fetchRoomRoles(
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/roles`, {
     authenticated: true,
   });
-  const json = (await res.json()) as Array<{
-    name: string;
-    instructions: string;
-    exclusive: boolean;
-    held_by?: string[];
-  }>;
-  return json.map((r) => ({
+  return ((await res.json()) as RoomRoleJson[]).map(mapRoomRole);
+}
+
+/** The gateway `RoomRoleDetail` wire shape. */
+type RoomRoleJson = {
+  name: string;
+  instructions: string;
+  exclusive: boolean;
+  held_by?: string[];
+};
+
+function mapRoomRole(r: RoomRoleJson): RemoteRoomRole {
+  return {
     name: r.name,
     instructions: r.instructions,
     exclusive: r.exclusive,
     heldBy: r.held_by ?? [],
-  }));
+  };
+}
+
+/**
+ * Define a role in a room (`POST /rooms/{id}/roles`). Requires write access;
+ * a name already taken in the room is refused. Resolves to the room's roles as
+ * they now stand.
+ */
+export async function createRoomRole(
+  server: SwitchServer,
+  roomId: string,
+  role: RoomRoleInput
+): Promise<RemoteRoomRole[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/roles`, {
+    authenticated: true,
+    method: 'POST',
+    body: role,
+  });
+  return ((await res.json()) as RoomRoleJson[]).map(mapRoomRole);
+}
+
+/**
+ * Change a role's instructions or exclusivity (`PATCH /rooms/{id}/roles/{name}`).
+ * The name cannot change. An agent already holding the role keeps the
+ * instructions it was given until it takes the role again.
+ */
+export async function updateRoomRole(
+  server: SwitchServer,
+  roomId: string,
+  name: string,
+  changes: { instructions?: string; exclusive?: boolean }
+): Promise<RemoteRoomRole[]> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/roles/${encodeURIComponent(name)}`,
+    { authenticated: true, method: 'PATCH', body: changes }
+  );
+  return ((await res.json()) as RoomRoleJson[]).map(mapRoomRole);
+}
+
+/** Remove a role from a room, and any agent's hold on it (`DELETE /rooms/{id}/roles/{name}`). */
+export async function deleteRoomRole(
+  server: SwitchServer,
+  roomId: string,
+  name: string
+): Promise<RemoteRoomRole[]> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/roles/${encodeURIComponent(name)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+  return ((await res.json()) as RoomRoleJson[]).map(mapRoomRole);
 }
 
 /** The gateway `RoomSummary` wire shape. `RoomDetail` (returned by create) is a
@@ -3250,6 +3318,7 @@ type RoomSummaryJson = {
   description: string;
   channel_type: string | null;
   agent_count: number;
+  bridge_id?: string | null;
   bridge_display_name: string | null;
   bridge_type?: string | null;
   external_channel_url?: string | null;
@@ -3258,6 +3327,17 @@ type RoomSummaryJson = {
   is_console_chat?: boolean;
   archived: boolean;
   created_at: string;
+  write_visibility?: string;
+  /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
+  can_write?: boolean;
+  can_change_members?: boolean;
+  can_manage?: boolean;
+  can_unlink?: boolean;
+  group_id?: string | null;
+  group_name?: string | null;
+  owner_name?: string | null;
+  read_visibility?: string;
+  connected_user_count?: number;
 };
 
 function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
@@ -3275,6 +3355,25 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     isConsoleChat: r.is_console_chat ?? false,
     archived: r.archived,
     createdAt: r.created_at,
+    // The same reading as a room's detail, so the list and the room page offer the same changes.
+    writeVisibility: visibilityOf(r.write_visibility),
+    ...(r.read_visibility !== undefined ? { readVisibility: visibilityOf(r.read_visibility) } : {}),
+    ...(r.bridge_id !== undefined ? { bridgeId: r.bridge_id } : {}),
+    ...(r.group_id !== undefined ? { groupId: r.group_id, groupName: r.group_name ?? null } : {}),
+    ...(r.owner_name !== undefined ? { ownerName: r.owner_name } : {}),
+    ...(r.connected_user_count !== undefined ? { connectedUserCount: r.connected_user_count } : {}),
+    ...(r.can_write !== undefined && r.can_manage !== undefined
+      ? {
+          serverPermissions: {
+            canWrite: r.can_write,
+            // Who is in a room took write access until the server said otherwise.
+            canChangeMembers: r.can_change_members ?? r.can_write,
+            canManage: r.can_manage,
+            // Detaching took write access until the server said otherwise.
+            canUnlink: r.can_unlink ?? r.can_write,
+          },
+        }
+      : {}),
   };
 }
 
@@ -3294,7 +3393,25 @@ type RoomDetailJson = RoomSummaryJson & {
    * "no channel", so the delete dialog can say it does not know. */
   channel_on_delete?: ChannelRetirement | null;
   linked_channel_name?: string | null;
+  read_visibility?: string;
+  group_id?: string | null;
+  group_name?: string | null;
+  owner_name?: string | null;
+  bridge_id?: string | null;
+  agent_statuses?: Record<string, string>;
+  roles?: RoomRoleJson[];
+  join_event_listeners?: string[];
+  external_channel_id?: string | null;
+  transport_room_id?: string | null;
+  archived_at?: string | null;
 };
+
+/** The server's visibility words; anything else reads as private, the narrower of the two. */
+function visibilityOf(value: string | undefined): RoomVisibility {
+  // Absent only from a server that predates the setting, where every room was open.
+  if (value === undefined) return 'public';
+  return value === 'public' ? 'public' : 'private';
+}
 
 function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
   return {
@@ -3304,6 +3421,18 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     connectedUserNames: r.connected_user_names ?? [],
     channelOnDelete: r.channel_on_delete,
     linkedChannelName: r.linked_channel_name ?? null,
+    readVisibility: visibilityOf(r.read_visibility),
+    writeVisibility: visibilityOf(r.write_visibility),
+    groupId: r.group_id ?? null,
+    groupName: r.group_name ?? null,
+    ownerName: r.owner_name ?? null,
+    bridgeId: r.bridge_id ?? null,
+    agentStatuses: r.agent_statuses ?? {},
+    roles: (r.roles ?? []).map(mapRoomRole),
+    joinEventListeners: r.join_event_listeners ?? [],
+    externalChannelId: r.external_channel_id ?? null,
+    transportRoomId: r.transport_room_id ?? null,
+    archivedAt: r.archived_at ?? null,
   };
 }
 
@@ -3355,14 +3484,123 @@ export async function fetchRoomAgentIds(server: SwitchServer, roomId: string): P
 export async function updateRoom(
   server: SwitchServer,
   roomId: string,
-  changes: { name?: string; description?: string; instructions?: string }
+  changes: {
+    name?: string;
+    description?: string;
+    instructions?: string;
+    readVisibility?: RoomVisibility;
+    writeVisibility?: RoomVisibility;
+  }
 ): Promise<RemoteRoomDetail> {
+  const { readVisibility, writeVisibility, ...fields } = changes;
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
     authenticated: true,
     method: 'PATCH',
-    body: changes,
+    body: {
+      ...fields,
+      ...(readVisibility !== undefined ? { read_visibility: readVisibility } : {}),
+      ...(writeVisibility !== undefined ? { write_visibility: writeVisibility } : {}),
+    },
   });
   return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * File a room under a group, or take it out of one with null
+ * (`PUT /rooms/{id}/group`). Requires write access; a group that does not exist
+ * is refused.
+ */
+export async function setRoomGroup(
+  server: SwitchServer,
+  roomId: string,
+  groupId: string | null
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/group`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { group_id: groupId },
+  });
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * Whether one member agent is told when someone joins the room
+ * (`PATCH /rooms/{id}/agents/{agentId}`). Requires write access; an agent not
+ * in the room is refused.
+ */
+export async function setRoomAgentJoinEvents(
+  server: SwitchServer,
+  roomId: string,
+  agentId: string,
+  receivesJoinEvents: boolean
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}`,
+    { authenticated: true, method: 'PATCH', body: { receives_join_events: receivesJoinEvents } }
+  );
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * Invite people to a bridged room by their messaging-app usernames
+ * (`POST /rooms/{id}/users`). Requires write access, and a room whose bridge is
+ * running. The server does not say who it could not add, so the caller compares
+ * the names it asked for with the room's people afterwards.
+ */
+export async function addRoomUsers(
+  server: SwitchServer,
+  roomId: string,
+  userNames: string[]
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/users`, {
+    authenticated: true,
+    method: 'POST',
+    body: { user_names: userNames },
+  });
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * Archive a room, or bring it back (`POST /rooms/{id}/archive|unarchive`).
+ * Requires write access. An archived room drops out of room lists and agents
+ * can no longer join it; nothing in it is deleted.
+ */
+export async function setRoomArchived(
+  server: SwitchServer,
+  roomId: string,
+  archived: boolean
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/${archived ? 'archive' : 'unarchive'}`,
+    { authenticated: true, method: 'POST' }
+  );
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/** The archived rooms the signed-in user can see (`GET /rooms?include_archived=true`, archived only). */
+export async function fetchArchivedRooms(server: SwitchServer): Promise<RemoteRoomSummary[]> {
+  const res = await gatewayFetch(server, '/rooms?include_archived=true', { authenticated: true });
+  const json = (await res.json()) as RoomSummaryJson[];
+  return json.filter((room) => room.archived).map(mapRoomSummary);
+}
+
+/**
+ * The messaging-app usernames Switch knows on one bridge
+ * (`GET /collaborations/{id}/users`) — the people a bridged room can be given.
+ */
+export async function fetchBridgeUserNames(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<string[]> {
+  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
+    authenticated: true,
+  });
+  const users = (await res.json()) as ExternalUserSummaryJson[];
+  return [...new Set(users.map((user) => user.external_username))].sort((a, b) =>
+    a.localeCompare(b)
+  );
 }
 
 /**
@@ -3456,8 +3694,16 @@ export async function createRoom(
     /** Null makes an internal room: no channel, not even on the default app. */
     bridgeId: string | null;
     agentIds: string[];
+    /** Null for a new public channel. */
+    channel: NewRoomChannel | null;
+    groupId: string | null;
+    /** The server's default (open to the workspace) when absent. */
+    /** Null for the server's default. */
+    access: RoomAccess | null;
   }
 ): Promise<RemoteRoomSummary> {
+  const channel = params.channel ?? { kind: 'new', private: false };
+  const visibility = params.access ? visibilityForAccess(params.access) : null;
   const res = await gatewayFetch(server, '/rooms', {
     authenticated: true,
     method: 'POST',
@@ -3467,7 +3713,17 @@ export async function createRoom(
       instructions: params.instructions?.trim() ? params.instructions : null,
       bridge_id: params.bridgeId,
       ...(params.bridgeId === null ? { internal_only: true } : {}),
-      channel_type: 'channel_public',
+      // An existing channel's type is the platform's, read by the server.
+      ...(channel.kind === 'existing'
+        ? { external_channel_id: channel.externalChannelId }
+        : { channel_type: channel.private ? 'channel_private' : 'channel_public' }),
+      ...(params.groupId ? { group_id: params.groupId } : {}),
+      ...(visibility
+        ? {
+            read_visibility: visibility.readVisibility,
+            write_visibility: visibility.writeVisibility,
+          }
+        : {}),
       agent_ids: params.agentIds,
     },
   });
@@ -4895,4 +5151,158 @@ export async function revokeManagementController(
     authenticated: true,
     method: 'DELETE',
   });
+}
+
+// ── Room resources ──────────────────────────────────────────────────────────
+
+type ResourceJson = {
+  id: string;
+  name: string;
+  description: string;
+  type?: string;
+  type_display_name?: string | null;
+  value?: { urls?: unknown };
+  packages?: string[];
+  scope?: 'global' | 'room';
+  created_by_agent_name?: string | null;
+  can_remove?: boolean;
+  content?: string;
+  owner_id?: string | null;
+  read_visibility?: string;
+  can_read?: boolean;
+};
+
+function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
+  const urls = Array.isArray(r.value?.urls)
+    ? r.value.urls.filter((url): url is string => typeof url === 'string')
+    : [];
+  return {
+    id: r.id,
+    kind,
+    name: r.name,
+    description: r.description,
+    typeLabel: kind === 'references' ? (r.type_display_name ?? r.type ?? null) : null,
+    urls,
+    roomScoped: r.scope === 'room',
+    createdByAgentName: r.created_by_agent_name ?? null,
+    packageIds: r.packages ?? [],
+    ...(r.can_remove !== undefined ? { canRemove: r.can_remove } : {}),
+    ...(kind === 'documents' && typeof r.content === 'string' ? { content: r.content } : {}),
+    ownerId: r.owner_id ?? null,
+    readVisibility: r.read_visibility === 'public' ? 'public' : 'private',
+    ...(r.can_read !== undefined ? { canRead: r.can_read } : {}),
+  };
+}
+
+/** What is attached to a room, of one kind (`GET /rooms/{id}/{kind}`). */
+export async function fetchRoomResources(
+  server: SwitchServer,
+  roomId: string,
+  kind: RoomResourceKind
+): Promise<RoomResource[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/${kind}`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as ResourceJson[]).map((r) => mapResource(kind, r));
+}
+
+/** The library items of one kind the signed-in person may read, for attaching (`GET /{kind}`). */
+export async function fetchLibrary(
+  server: SwitchServer,
+  kind: RoomResourceKind
+): Promise<RoomResource[]> {
+  const res = await gatewayFetch(server, `/${kind}`, { authenticated: true });
+  return ((await res.json()) as ResourceJson[])
+    .map((r) => mapResource(kind, r))
+    .filter((r) => !r.roomScoped);
+}
+
+/** Attach a library item to a room, or detach it; detaching a room-scoped document deletes it. */
+export async function setRoomResourceAttached(
+  server: SwitchServer,
+  roomId: string,
+  kind: RoomResourceKind,
+  resourceId: string,
+  attached: boolean
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/${kind}/${encodeURIComponent(resourceId)}`,
+    { authenticated: true, method: attached ? 'POST' : 'DELETE' }
+  );
+}
+
+/** A document read in full through the room it is attached to. */
+export async function fetchRoomDocument(
+  server: SwitchServer,
+  roomId: string,
+  documentId: string
+): Promise<RoomDocumentContent> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/documents/${encodeURIComponent(documentId)}`,
+    { authenticated: true }
+  );
+  const json = (await res.json()) as {
+    id: string;
+    name: string;
+    description: string;
+    content: string;
+  };
+  return { id: json.id, name: json.name, description: json.description, content: json.content };
+}
+
+type LinkedRoomJson = {
+  target_room_id: string;
+  target_room_name: string;
+  target_room_description: string;
+  label: string;
+};
+
+function mapLinkedRoom(r: LinkedRoomJson): LinkedRoom {
+  return {
+    roomId: r.target_room_id,
+    name: r.target_room_name,
+    description: r.target_room_description,
+    label: r.label,
+  };
+}
+
+/** The rooms this room points at (`GET /rooms/{id}/linked-rooms`). */
+export async function fetchLinkedRooms(
+  server: SwitchServer,
+  roomId: string
+): Promise<LinkedRoom[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/linked-rooms`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as LinkedRoomJson[]).map(mapLinkedRoom);
+}
+
+/** Point this room at another, saying why. */
+export async function addLinkedRoom(
+  server: SwitchServer,
+  roomId: string,
+  targetRoomId: string,
+  label: string
+): Promise<LinkedRoom> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/linked-rooms`, {
+    authenticated: true,
+    method: 'POST',
+    body: { target_room_id: targetRoomId, label },
+  });
+  return mapLinkedRoom((await res.json()) as LinkedRoomJson);
+}
+
+/** Stop this room pointing at another. */
+export async function removeLinkedRoom(
+  server: SwitchServer,
+  roomId: string,
+  targetRoomId: string
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/linked-rooms/${encodeURIComponent(targetRoomId)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
 }
