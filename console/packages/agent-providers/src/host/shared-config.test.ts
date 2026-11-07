@@ -131,7 +131,94 @@ it('gives the provider the host’s own MCP server and no Switch identity', asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+it('gives Auggie the Switch MCP server through the stdio bridge', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-config-auggie-test-'));
+  try {
+    const credentialsPath = join(root, 'credentials.json');
+    await writeFile(
+      credentialsPath,
+      JSON.stringify({
+        env: {
+          SWITCH_API_ENDPOINT: 'https://switch.test',
+          SWITCH_API_TOKEN: 'agent-token',
+          SWITCH_AGENT_ID: 'agent',
+        },
+      })
+    );
 
+    const config = sharedConfigSchema.parse({
+      session: {
+        sessionId: 'session',
+        agentId: 'agent',
+        hostId: 'host',
+        epoch: 'epoch',
+        provider: 'auggie',
+        status: 'starting',
+        connectivity: 'online',
+        pendingRequestIds: [],
+        capabilities: {
+          input: 'queue',
+          approvals: true,
+          questions: true,
+          interrupt: true,
+          reset: false,
+          compact: false,
+          modelChange: false,
+          attachmentMimeTypes: [],
+        },
+      },
+      start: {
+        provider: 'auggie',
+        input: {
+          sessionId: 'session',
+          cwd: root,
+          runtimeMode: 'approval-required',
+          env: { CONFIGURED: 'yes' },
+          mcpServers: {},
+        },
+      },
+      roomConnection: { connectionId: 'controller' },
+      execution: {
+        credentialsPath,
+        inheritEnv: [],
+        codexConfig: '',
+        skill: '',
+        context: '',
+      },
+    });
+
+    const runtime = {
+      transport: 'http' as const,
+      url: 'http://127.0.0.1:4321/mcp',
+      headers: { Authorization: 'Bearer per-session' },
+    };
+
+    const bridgePath = join(root, 'stdio-mcp-bridge.mjs');
+
+    const prepared = await prepareSharedConfig(
+      root,
+      config,
+      runtime,
+      NO_SERVICES,
+      null,
+      {},
+      NO_REDACTIONS,
+      bridgePath
+    );
+
+    expect(prepared.input.mcpServers.switch).toEqual({
+      transport: 'stdio',
+      command: process.execPath,
+      args: [bridgePath],
+      env: {
+        SWITCH_MCP_URL: runtime.url,
+        SWITCH_MCP_HEADERS: JSON.stringify(runtime.headers),
+      },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 /** A Codex session's launch spec, taking its Codex home from `CODEX_HOME`. */
 async function codexHostConfig(root: string) {
   const credentialsPath = join(root, 'credentials.json');
