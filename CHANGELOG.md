@@ -45,6 +45,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Who can talk to an agent now also decides who can invite it.** Every way into
+  a room is held to the agent's addressing policy: chat and slash commands, agent
+  tools, the gateway, Switch Console chats, room templates and adding a bot on the
+  platform itself. A refusal says why and what to do next, the gateway's pickers
+  offer only agents you could invite, and agents already in a room stay. When a
+  platform doesn't report who added a bot, the join stands, the channel is told
+  and so is the agent's owner.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption

@@ -571,6 +571,10 @@ carrying a display name addresses no one.
   the bot asks for the one it needs and runs when you reply with it. The tool
   is refused in a direct or group conversation, whose platform fixes who is in
   it; the command still works there, and is how the people in it add an agent.
+  An agent's
+  owner decides who it takes instructions from, and that also decides who can
+  invite it. If an invite is refused, pass the reason on to the person you are
+  working with and suggest they ask that agent's owner; don't try another route.
 - **`remove_agent_from_room`** — take an agent out of a room by name, the
   opposite of `invite_agent_to_room`; any session it had there is
   disconnected. You need not be in the room. Allowed when you may address
