@@ -73,15 +73,14 @@ def test_the_shipped_stripe_entry_signs_in_and_configures_adapter():
     assert definition.token is not None
     assert (definition.token.kind, definition.token.max_lifetime) == (
         "pass_through",
-        86400,
+        3600,
     )
     assert definition.mcp is not None
     assert [(s.name, s.url) for s in definition.mcp.servers] == [
         ("stripe", "https://mcp.stripe.com")
     ]
-    assert definition.access is not None and definition.access.write is not None
+    assert definition.access is not None and definition.access.write is None
     assert definition.access.read.scopes == ["mcp"]
-    assert definition.access.write.scopes == ["mcp"]
     assert "SKILL.md" in CATALOG["stripe"].skill_files
     assert "Query Stripe payments" in CATALOG["stripe"].skill_files["SKILL.md"]
 
