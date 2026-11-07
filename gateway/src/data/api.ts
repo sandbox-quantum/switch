@@ -281,6 +281,9 @@ export interface RoomDetail extends RoomSummary {
   channel_on_delete: ChannelRetirement | null;
   /** Absent on servers that predate decision routing. */
   auto_route?: RoomAutoRoute;
+  /** Whether people in the room may open what its agents' tool calls were
+   * given and gave back, redacted. Off for a new room. */
+  show_tool_detail: boolean;
 }
 
 /** What deleting a room does to its platform channel when asked to: archived
@@ -348,6 +351,8 @@ export interface UpdateRoomInput {
   admin_mode?: boolean;
   read_visibility?: "public" | "private";
   write_visibility?: "public" | "private";
+  /** The room's owner or a workspace admin only (`can_manage`). */
+  show_tool_detail?: boolean;
 }
 
 /** A failed gateway call that keeps what the server said: the status, for

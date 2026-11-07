@@ -378,6 +378,14 @@ was redacted, read `delivered`: the room saw that, not what you wrote. When the
 redacted version no longer makes sense, tell the room what you meant in words
 that pass. Don't repost the original.
 
+## Tool calls people can open
+
+When `connect_to_room` answers `tool_detail: true`, people in that room can
+open what each of your tool calls was given and gave back: the room's owner
+or an admin turned it on. Secrets are masked by pattern before anything is shown,
+and the masking can miss one, so keep keys and passwords out of commands and
+output there as you would anywhere. It changes nothing about what you may run.
+
 ## Questions and approvals
 
 Native question forms can be answered in the Console or from the room. The

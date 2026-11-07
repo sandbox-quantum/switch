@@ -134,10 +134,12 @@ _MAX_PLAN_TASKS = 50
 _MAX_SECTION_ITEMS = _MAX_PLAN_TASKS - 1
 _MAX_PLAN_TITLE = 150
 _MAX_PLAN_TASK_TITLE = 200
-_MAX_PLAN_TASK_DETAILS = 200
-# Prose gets more room than a tool result because it is read rather than
-# scanned, and because a card's detail is the one part of this block Slack will
-# expand on request.
+# A call's detail is what it was given and what it gave back, sent only where
+# the room asked to see it, and read when someone opens the card:
+# the same room a remark gets below, under the same measured ceiling.
+_MAX_PLAN_TASK_DETAILS = 3000
+# Prose gets this room because it is read rather than scanned, and because a
+# card's detail is the one part of this block Slack will expand on request.
 #
 # Where the ceiling is, observed against a real workspace because Slack
 # documents none of it. A streamed turn draws up to two fifty-card pages into
@@ -1694,9 +1696,10 @@ def _plan_task(item: Item) -> dict[str, Any]:
         },
         "status": _TASK_STATUS[item.status],
     }
-    details = plain_text(item.text) if item.text else ""
-    if details:
-        task["details"] = _rich_text(_truncate_prose(details, _MAX_PLAN_TASK_DETAILS))
+    # As the host sent it: a command's backticks are part of what ran, and a
+    # card's detail parses no markup that would need them taken out.
+    if item.text:
+        task["details"] = _rich_text(_truncate_prose(item.text, _MAX_PLAN_TASK_DETAILS))
     return task
 
 

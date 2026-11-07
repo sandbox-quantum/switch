@@ -33,6 +33,13 @@ export type ActivityRow = {
   message_id: string | null;
   occurred_at: string;
   /**
+   * What a tool call was given and gave back, for a room that may see it:
+   * redacted, and kept apart from `text` so the server draws it only while
+   * the room still has tool detail on. Left out otherwise, so a
+   * server that predates it takes the row.
+   */
+  detail?: string;
+  /**
    * What the turn spent, on its own row once it has ended. Left out when
    * there is nothing to say, so a server that predates it takes the row.
    */
@@ -114,10 +121,16 @@ export class ActivityReporter {
     for (const event of events) this.track(event);
   }
 
+  /**
+   * `detailOf` is what a tool call's row may show of its input and output:
+   * null unless the room asked to see it, and then already redacted and cut
+   * to size. The session's own item never carries it.
+   */
   reports(
     event: ServerEvent,
     originOf: (turnId: string) => Origin | null,
-    usageOf: (turnId: string) => TokenUsage[]
+    usageOf: (turnId: string) => TokenUsage[],
+    detailOf: (turnId: string, itemId: string) => string | null
   ): Report[] {
     const body = event.body;
     const place = (turnId: string): Placement => {
@@ -154,6 +167,7 @@ export class ActivityReporter {
       }
       case 'item.upsert': {
         const { item } = body;
+        const detail = item.kind === 'tool-activity' ? detailOf(item.turnId, item.itemId) : null;
         return [
           {
             kind: 'activity',
@@ -169,6 +183,7 @@ export class ActivityReporter {
               command_id: null,
               ...place(item.turnId),
               occurred_at: event.occurredAt,
+              ...(detail === null ? {} : { detail: truncate(detail, MAX_TEXT) }),
             },
           },
         ];

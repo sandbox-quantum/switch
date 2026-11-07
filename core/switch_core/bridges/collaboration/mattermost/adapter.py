@@ -575,6 +575,7 @@ class MattermostAdapter(PlatformAdapter):
     #: notifies rather than arriving as a silent edit to a status the reader
     #: has already scrolled past. One per turn, cleared when it clears.
     separate_attention_slot: ClassVar[bool] = True
+    shows_tool_detail: ClassVar[bool] = True
 
     #: A Mattermost thread notifies only the people named in it, so the agent's
     #: owner leads — they are who can open Console and act — and an attention

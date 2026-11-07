@@ -85,6 +85,7 @@ const room = {
   roles: [],
   join_event_listeners: [],
   archived_at: null,
+  show_tool_detail: false,
   can_write: true,
   can_manage: false,
   can_unlink: false,
@@ -116,6 +117,10 @@ function accessSelect() {
 
 function nameField() {
   return screen.getByRole<HTMLInputElement>("textbox", { name: "Name" });
+}
+
+function toolDetailSwitch() {
+  return screen.getByRole<HTMLInputElement>("switch", { name: "Show tool calls in this room" });
 }
 
 function joinEventsSwitch() {
@@ -222,6 +227,20 @@ describe("RoomDetailPage permissions", () => {
       read_visibility: "private",
       write_visibility: "private",
     });
+  });
+
+  it("lets only someone who may manage the room show its tool calls", async () => {
+    viewAs({ can_write: true, can_manage: false, can_unlink: false });
+    expect(toolDetailSwitch().disabled).toBe(true);
+    screen.getByText(/workspace admin can change this, and you are neither\./);
+    cleanup();
+
+    viewAs({ can_write: true, can_manage: true, can_unlink: false });
+    expect(toolDetailSwitch().disabled).toBe(false);
+    fireEvent.click(toolDetailSwitch());
+
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateRoom).mock.calls[0]).toEqual(["r1", { show_tool_detail: true }]);
   });
 
   it("loads the platform's users only when someone adds one", async () => {

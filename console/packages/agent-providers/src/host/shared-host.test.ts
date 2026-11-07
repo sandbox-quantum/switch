@@ -95,8 +95,11 @@ function fakeParent() {
   const sent: Sent[] = [];
   const replies = new Map<number, (reply: Sent) => void>();
   // The controller's answer to a host asking for a room's instructions: the
-  // text, or an Error to refuse with.
-  const roomInstructions: { value: string | Error } = { value: '' };
+  // text, or an Error to refuse with, and whether the room may see tool detail.
+  const roomInstructions: { value: string | Error; toolDetail: boolean } = {
+    value: '',
+    toolDetail: false,
+  };
   const port = Object.assign(new EventEmitter(), {
     connected: true,
     send: (message: unknown) => {
@@ -108,7 +111,12 @@ function fakeParent() {
             'message',
             value instanceof Error
               ? { kind: 'answer', id: sentMessage.id, ok: false, error: value.message }
-              : { kind: 'answer', id: sentMessage.id, ok: true, value: { instructions: value } }
+              : {
+                  kind: 'answer',
+                  id: sentMessage.id,
+                  ok: true,
+                  value: { instructions: value, toolDetail: roomInstructions.toolDetail },
+                }
           )
         );
       }
@@ -1071,6 +1079,100 @@ it('reports what an ended turn spent on its row, and the row alone to a server t
     expect(ended()[1]!.body).toHaveProperty('usage');
     expect(ended()[2]!.body).not.toHaveProperty('usage');
     expect(ended()[2]!.body).toMatchObject({ turn_id: host.turns[1]!.turnId });
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+it("sends a tool call's row again without its detail to a server that predates it", async () => {
+  const host = await start({ rooms: true });
+  const callRows = () =>
+    host.switchCore.calls.filter(
+      (c) =>
+        c.path.endsWith('/activity') &&
+        (c.body as { kind: string; title: string }).kind === 'tool-activity' &&
+        (c.body as { title: string }).title === 'cat old.env'
+    );
+  try {
+    host.parent.roomInstructions.toolDetail = true;
+    host.switchCore.state.refusesDetail = true;
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Read the config') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const item = {
+      id: 'old.env',
+      type: 'command_execution' as const,
+      title: 'cat old.env',
+      payload: { command: 'cat old.env' },
+    };
+    const turnId = host.turns[0]!.turnId;
+    host.emit({ type: 'item.started', turnId, item: { ...item, status: 'in_progress' } });
+    host.emit({
+      type: 'item.completed',
+      turnId,
+      item: { ...item, status: 'completed', text: 'ready' },
+    });
+    await until(() => {
+      const sent = callRows().filter((c) => (c.body as { status: string }).status === 'completed');
+      expect(sent.some((c) => 'detail' in (c.body as object))).toBe(true);
+      expect(sent.at(-1)!.body).not.toHaveProperty('detail');
+    });
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+it("shows a tool call's input and output, redacted, only to a room that asked for it", async () => {
+  const host = await start({ rooms: true });
+  const callRows = (title: string) =>
+    host.switchCore.calls.filter(
+      (c) =>
+        c.path.endsWith('/activity') &&
+        (c.body as { kind: string; title: string }).kind === 'tool-activity' &&
+        (c.body as { title: string }).title === title
+    );
+  const call = (turnId: string, id: string) => {
+    const item = {
+      id,
+      type: 'command_execution' as const,
+      title: `cat ${id}`,
+      payload: { command: `cat ${id}` },
+    };
+    host.emit({ type: 'item.started', turnId, item: { ...item, status: 'in_progress' } });
+    host.emit({
+      type: 'item.completed',
+      turnId,
+      item: { ...item, status: 'completed', text: 'DB_PASSWORD=hunter22\nready' },
+    });
+  };
+  try {
+    host.parent.roomInstructions.toolDetail = true;
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Read the config') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    call(host.turns[0]!.turnId, 'shown.env');
+    type Row = { text: string; detail?: string };
+    await until(() =>
+      expect((callRows('cat shown.env').at(-1)?.body as Row)?.detail).toContain('Output:')
+    );
+    const shown = callRows('cat shown.env').at(-1)!.body as Row;
+    expect(shown.detail).toContain('"command": "cat shown.env"');
+    expect(shown.detail).toContain('DB_PASSWORD=[REDACTED]');
+    expect(JSON.stringify(shown)).not.toContain('hunter22');
+
+    host.parent.roomInstructions.toolDetail = false;
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[0]!.turnId,
+      outcome: 'completed',
+      usage: [],
+    });
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'Read it again') });
+    await until(() => expect(host.turns).toHaveLength(2));
+    call(host.turns[1]!.turnId, 'hidden.env');
+    await until(() => expect(callRows('cat hidden.env')).toHaveLength(2));
+    for (const row of callRows('cat hidden.env')) {
+      expect((row.body as Row).text).toBe('');
+      expect(row.body).not.toHaveProperty('detail');
+    }
   } finally {
     await host.stop();
   }

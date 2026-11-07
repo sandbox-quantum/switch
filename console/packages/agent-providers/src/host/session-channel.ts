@@ -96,8 +96,11 @@ export const hostAskSchema = z.discriminatedUnion('type', [
     body: z.string().min(1),
   }),
   /**
-   * The room's own instructions, answered with `{ instructions }` ('' for a
-   * room with none). Refused unless the session still attends `roomId`.
+   * The room's own instructions, answered with `{ instructions, toolDetail }`
+   * ('' for a room with none). `toolDetail` is whether the room may see what
+   * the agent's tool calls were given and gave back; a parent that predates it
+   * leaves it out, which means no. Refused unless the session still attends
+   * `roomId`.
    */
   z.object({
     type: z.literal('room-instructions'),

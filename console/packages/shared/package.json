@@ -21,6 +21,10 @@
       "types": "./dist/session-v1.d.mts",
       "default": "./dist/session-v1.mjs"
     },
+    "./secret-redaction": {
+      "types": "./dist/secret-redaction.d.mts",
+      "default": "./dist/secret-redaction.mjs"
+    },
     "./windows-spawn": {
       "types": "./dist/windows-spawn.d.mts",
       "default": "./dist/windows-spawn.mjs"

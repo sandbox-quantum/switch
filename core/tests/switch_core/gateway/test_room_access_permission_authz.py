@@ -172,3 +172,46 @@ class TestRoomAccessPermissionAuthz:
                     req=RoomUpdateRequest(read_visibility="public"),
                     user=admin,
                 )
+
+    async def test_non_owner_cannot_show_tool_detail_in_a_public_write_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Anyone may write in such a room, so write access alone would let
+        # anyone read what everyone else's agents ran there.
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            other = await _add_user(session, name="other")
+            room = await _add_room(
+                session,
+                name="r1",
+                owner_id=owner.id,
+                read_visibility="public",
+                write_visibility="public",
+            )
+
+            for enabled in (True, False):
+                with pytest.raises(HTTPException) as exc:
+                    await _patch(
+                        session,
+                        room_id=room.id,
+                        req=RoomUpdateRequest(show_tool_detail=enabled),
+                        user=other,
+                    )
+                assert exc.value.status_code == 403
+
+    async def test_owner_and_admin_can_show_tool_detail(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            admin = await _add_user(session, name="admin", role="admin")
+            room = await _add_room(session, name="r1", owner_id=owner.id)
+
+            for user in (owner, admin):
+                with pytest.raises(_GatePassed):
+                    await _patch(
+                        session,
+                        room_id=room.id,
+                        req=RoomUpdateRequest(show_tool_detail=True),
+                        user=user,
+                    )

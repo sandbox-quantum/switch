@@ -8,6 +8,7 @@ import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { ActivityReporter, type Report } from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { cliToolsBase, pinnedBinary } from './cli-binaries';
+import { handedSecrets } from './handed-secrets';
 import { HostWaker } from './handoff';
 import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
@@ -60,6 +61,7 @@ import {
   roomInstructionsNote,
   roomInstructionsUnreadNote,
 } from './told-room-instructions';
+import { toolDetailText } from './tool-detail-text';
 import { startVendorClis } from './vendor-cli';
 import {
   CALL_TIMEOUT_MS,
@@ -116,7 +118,10 @@ export type SharedHostOptions = {
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
-const roomInstructionsAnswerSchema = z.object({ instructions: z.string() });
+const roomInstructionsAnswerSchema = z.object({
+  instructions: z.string(),
+  toolDetail: z.boolean().optional(),
+});
 
 const PARK_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -498,6 +503,25 @@ export async function runSharedHost(
     options.serviceNotices.attach((message) => host!.serviceFallback(message));
 
     // ── What the host reports ────────────────────────────────────────────────
+    // Turns started from a room that may see what this agent's tool calls did.
+    // Held in memory, as the calls' detail is, so a restarted host shows none.
+    const detailTurns = new Set<string>();
+    const detailFor = (turnId: string, itemId: string): string | null => {
+      if (!detailTurns.has(turnId)) return null;
+      const call = host!
+        .reasoning([turnId])
+        .tools?.find((turn) => turn.turnId === turnId)
+        ?.tools.find((tool) => tool.itemId === itemId);
+      if (!call) return null;
+      try {
+        return toolDetailText(call, options.redactions);
+      } catch (error) {
+        console.warn(
+          `Could not prepare what tool call ${itemId} did for the room, so it is shown by its title alone: ${error instanceof Error ? error.message : String(error)}`
+        );
+        return null;
+      }
+    };
     const reporter = await ActivityReporter.load(options.root);
     // A session first reporting here may have a long history behind it, and
     // reporting that would put cards up for requests settled long ago.
@@ -524,8 +548,8 @@ export async function runSharedHost(
           null
         );
     };
-    // Retry new optional fields independently: a server may predate either
-    // usage or child progress. Preserve the tool row and its terminal status.
+    // Retry new optional fields independently: a server may predate usage,
+    // child progress or tool detail. Preserve the tool row and its terminal status.
     const sendCompatible = async (item: Report): Promise<void> => {
       let report = item;
       for (;;) {
@@ -551,6 +575,12 @@ export async function runSharedHost(
               `Switch does not accept subagent metadata; reporting ${row.item_id} as tool activity.`
             );
             report = { kind: 'activity', row };
+          } else if (report.row.detail !== undefined) {
+            const { detail: _detail, ...row } = report.row;
+            console.warn(
+              `Switch refused the detail of tool call ${row.item_id}, so the room sees it by its title alone: ${error.message}`
+            );
+            report = { kind: 'activity', row };
           } else throw error;
         }
       }
@@ -562,11 +592,19 @@ export async function runSharedHost(
       if (reportingUnsupported) return;
       const { events } = host!.replay(reporter.cursor);
       if (!events.length) return;
+      const ended: string[] = [];
       for (const event of events) {
+        if (
+          event.body.type === 'turn.upsert' &&
+          event.body.status !== 'queued' &&
+          event.body.status !== 'running'
+        )
+          ended.push(event.body.turnId);
         const reports = reporter.reports(
           event,
           (turnId) => host!.originOf(turnId),
-          (turnId) => host!.usageOf(turnId)
+          (turnId) => host!.usageOf(turnId),
+          detailFor
         );
         for (const item of reports) {
           try {
@@ -584,6 +622,8 @@ export async function runSharedHost(
         }
       }
       await reporter.advance(events.at(-1)!.sequence);
+      // Once reported, an ended turn has no more calls to show.
+      for (const turnId of ended) detailTurns.delete(turnId);
     };
     let outcomesCheckedAt = -Infinity;
     const applyOutcomes = async (force: boolean) => {
@@ -778,16 +818,18 @@ export async function runSharedHost(
      */
     const roomInstructionsFor = async (
       roomId: string
-    ): Promise<{ note: string | null; instructions: string | null }> => {
-      if (!parentChannel || !options.roomConnection) return { note: null, instructions: null };
+    ): Promise<{ note: string | null; instructions: string | null; toolDetail: boolean }> => {
+      if (!parentChannel || !options.roomConnection)
+        return { note: null, instructions: null, toolDetail: false };
       if (!startedHere()) toldRooms = {};
       try {
-        const { instructions } = roomInstructionsAnswerSchema.parse(
+        const { instructions, toolDetail } = roomInstructionsAnswerSchema.parse(
           await parentChannel.ask({ type: 'room-instructions', roomId })
         );
         return {
           note: roomInstructionsNote(roomId, instructions, toldRooms[roomId]),
           instructions,
+          toolDetail: toolDetail === true,
         };
       } catch (error) {
         executionSignal.throwIfAborted();
@@ -795,7 +837,11 @@ export async function runSharedHost(
         console.warn(
           `Could not read room ${roomId}'s instructions for session ${options.session.sessionId} (${reason}); the session is told to read them itself.`
         );
-        return { note: roomInstructionsUnreadNote(roomId, reason), instructions: null };
+        return {
+          note: roomInstructionsUnreadNote(roomId, reason),
+          instructions: null,
+          toolDetail: false,
+        };
       }
     };
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
@@ -928,10 +974,14 @@ export async function runSharedHost(
         });
         if (message.data.payload.routed || message.data.payload.follow_up)
           host!.unaskedRoomTurn(command.commandId);
+        // Before the command runs, so its first calls are reported with it.
+        if (room.toolDetail) detailTurns.add(command.commandId);
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
         const outcome = await run(command, null, false);
+        if (typeof outcome === 'string' || outcome.status === 'rejected')
+          detailTurns.delete(command.commandId);
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)
@@ -1252,6 +1302,7 @@ export async function hostSessionProcess(input: {
       (secret) => redactions.add(secret)
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
+    for (const secret of handedSecrets(prepared.input)) redactions.add(secret);
     // The people watching see it as a notice; the agent reads it with the
     // context it resumes under, so it does not go looking for tools it no
     // longer has.

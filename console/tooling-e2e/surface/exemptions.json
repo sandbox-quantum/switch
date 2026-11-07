@@ -198,7 +198,6 @@
     "PATCH /gateway/references/reference-types/{type}",
     "PATCH /gateway/references/{reference_id}",
     "PATCH /gateway/room-groups/{group_id}",
-    "PATCH /gateway/rooms/{room_id}",
     "PATCH /gateway/rooms/{room_id}/agents/{agent_id}",
     "PATCH /gateway/rooms/{room_id}/roles/{name}",
     "PATCH /gateway/templates/{template_id}",

@@ -45,6 +45,7 @@ async def test_a_pass_expires_overdue_requests_and_prunes_only_when_asked(
         status="info",
         title="Notice",
         text="old news",
+        detail=None,
         command_id=None,
         room_id=None,
         thread_id=None,

@@ -554,6 +554,7 @@ class SlackAdapter(PlatformAdapter):
     #: `reply_broadcast`: the same message in the thread and in the channel,
     #: so a card threaded under a channel-root message is still seen there.
     broadcasts_thread_replies: ClassVar[bool] = True
+    shows_tool_detail: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "<!channel>"
     #: `chat.postEphemeral`: in the channel, to one member alone.
     private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "ephemeral"

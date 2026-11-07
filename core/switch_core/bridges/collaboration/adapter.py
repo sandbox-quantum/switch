@@ -528,6 +528,11 @@ class PlatformAdapter(ABC):
     #: edit to a message they have already scrolled past.
     separate_attention_slot: ClassVar[bool] = False
 
+    #: Whether the platform may show what a tool call was given and gave back,
+    #: in a room that turned tool detail on: where a reader opens it on demand,
+    #: Slack's collapsed card or the activity view, and not in a plain message.
+    shows_tool_detail: ClassVar[bool] = False
+
     #: Whether a mention is the only way an attention post reaches anyone.
     #:
     #: True where nobody follows a thread they are not already in, so a post

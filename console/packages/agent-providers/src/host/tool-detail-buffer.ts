@@ -44,6 +44,12 @@ export const hostToolDetailSchema = z.object({
   /** The call's arguments, with long strings clipped; null when it had none. */
   input: z.unknown(),
   output: z.string().nullable(),
+  /**
+   * Where the middle of `output` was left out: the length of the head kept
+   * before it, or null when the output is whole. Absent from a host that
+   * predates it.
+   */
+  outputCut: z.number().int().nonnegative().nullable().optional(),
   /** Whether anything above was clipped. */
   truncated: z.boolean(),
   exitCode: z.number().nullable(),
@@ -147,6 +153,7 @@ function detailOf(entry: ToolEntry): HostToolDetail {
         ? `${entry.head}\n…\n${entry.tail}`
         : entry.head + entry.tail
       : null,
+    outputCut: entry.hasOutput && entry.outputClipped ? entry.head.length : null,
     truncated: entry.inputClipped || entry.outputClipped,
     exitCode: entry.exitCode,
   };

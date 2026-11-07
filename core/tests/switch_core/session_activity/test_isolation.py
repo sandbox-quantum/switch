@@ -78,6 +78,7 @@ async def test_each_tenant_sees_only_its_own_activity_and_requests(rls_harness):
                 status="info",
                 title="Notice",
                 text=f"hello from {tenant}",
+                detail=None,
                 command_id=None,
                 room_id=None,
                 thread_id=None,

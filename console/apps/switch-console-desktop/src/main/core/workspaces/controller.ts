@@ -1045,6 +1045,7 @@ export const workspacesController = createRPCController({
         instructions: params.instructions,
         readVisibility: params.readVisibility,
         writeVisibility: params.writeVisibility,
+        showToolDetail: params.showToolDetail,
       })
     ),
 

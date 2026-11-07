@@ -83,12 +83,19 @@ def _protocol(
     registry: AgentConnectionRegistry,
     store: _RecordingSessionStore,
     metadata: dict[str, Any] | None = None,
+    *,
+    room_shows_tools: bool = False,
 ) -> Any:
     room = SimpleNamespace(id=ROOM, name="Room One", description="A room")
     agent = SimpleNamespace(
-        id=AGENT, name="agent-one", integration_profile=_PROFILE, metadata_=metadata
+        id=AGENT,
+        name="agent-one",
+        integration_profile=_PROFILE,
+        metadata_=metadata,
     )
-    room_model = SimpleNamespace(id=ROOM, name="Room One", bridge_id=None)
+    room_model = SimpleNamespace(
+        id=ROOM, name="Room One", bridge_id=None, show_tool_detail=room_shows_tools
+    )
 
     @asynccontextmanager
     async def session_factory():
@@ -272,3 +279,24 @@ async def test_a_caller_with_no_live_connection_still_connects(harness: Any) -> 
 
     assert result["warning"] is None
     assert harness.store.bindings == [(AGENT, ROOM, "mcp-transport-session")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("room_shows_tools", [False, True])
+async def test_says_whether_the_room_may_see_the_agents_tool_calls(
+    monkeypatch: pytest.MonkeyPatch, room_shows_tools: bool
+) -> None:
+    registry = AgentConnectionRegistry()
+    init_operations_protocol(
+        _protocol(
+            registry,
+            _RecordingSessionStore(),
+            room_shows_tools=room_shows_tools,
+        )
+    )
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    try:
+        _open(registry, "session-one")
+        assert (await _connect_as("session-one"))["tool_detail"] is room_shows_tools
+    finally:
+        init_operations_protocol(None)  # type: ignore[arg-type]

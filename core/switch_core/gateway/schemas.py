@@ -146,6 +146,9 @@ class RoomDetail(RoomSummary):
     matrix_room_id: str
     external_channel_id: str | None
     instructions: str | None
+    # Whether the room may see what its agents' tool calls were given and gave
+    # back.
+    show_tool_detail: bool
     protection_config: dict[str, Any] | None
     observe_config: dict[str, Any] | None
     agent_ids: list[str]
@@ -196,6 +199,9 @@ class RoomUpdateRequest(BaseModel):
     admin_mode: bool | None = None
     read_visibility: str | None = None
     write_visibility: str | None = None
+    # Whether the room may see what its agents' tool calls were given and gave
+    # back. Changed only by the room's owner or an admin.
+    show_tool_detail: bool | None = None
 
 
 class RoomSetGroupRequest(BaseModel):

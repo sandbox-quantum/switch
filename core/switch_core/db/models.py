@@ -1218,6 +1218,11 @@ class Room(TenantScoped, Base):
     admin_mode: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
+    # Whether the room may see what its agents' tool calls were given and gave
+    # back, redacted. Off unless the room's owner or an admin turns it on.
+    show_tool_detail: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     protection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     observe_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -4081,6 +4086,10 @@ class AgentSessionActivityItem(TenantScoped, Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    # What a tool call was given and gave back, redacted on its host, kept only
+    # while its room has tool detail on. Drawn in place of `text` only while the
+    # room still does.
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     command_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The Switch message the turn answers, so a platform threads it there.
