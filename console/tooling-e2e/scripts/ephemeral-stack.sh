@@ -164,6 +164,9 @@ echo "Starting switch-core from this checkout…"
 # JSON, so the harness can read back what the server logged during each
 # scenario (SWITCH_E2E_SERVER_LOG): one record per line, timed to the
 # millisecond. `jq -r '"\(.timestamp) \(.status) \(.message)"'` reads it.
+# The server's assertions (Antithesis SDK local mode) are logged here, and read
+# after the fast lane by properties/history/assertions.py.
+ANTITHESIS_SDK_LOCAL_OUTPUT="$OUT/assertions.jsonl" \
 GATEWAY_COOKIE_SECURE=false LOG_FORMAT=json uv run --project core python -m switch_core.main \
   >"$OUT/switch-core.log" 2>&1 &
 SERVER_PID=$!
@@ -256,6 +259,7 @@ if [ "$LANE" = browser ] || [ "$LANE" = explore ]; then
   BROWSER_ENV=(SWITCH_GATEWAY_UI_URL=http://127.0.0.1:4173)
 fi
 
+ASSERTION_REQUIRE=()
 echo "Running the $LANE lane…"
 status=0
 (
@@ -285,6 +289,16 @@ status=0
     pnpm exec vitest run --reporter=verbose --reporter=junit \
       --outputFile.junit="$OUT/junit.xml" ${VITEST_ARGS[@]+"${VITEST_ARGS[@]}"}
 ) || status=$?
+
+# The assertions the server made while the fast lane ran: an `always` that was
+# false, an `unreachable` that was reached, or a `sometimes` the lane never made
+# true fails the run. The ids are the ones the lane is known to reach; the rest
+# need longer or different runs (retention, restarts).
+if [ "$LANE" = fast ]; then
+  echo "Checking the run's assertions…"
+  uv run --project core python "$REPO/properties/history/assertions.py" "$OUT/assertions.jsonl" \
+    ${ASSERTION_REQUIRE[@]+"${ASSERTION_REQUIRE[@]}"} || status=1
+fi
 
 if [ "$status" != 0 ]; then
   echo "The $LANE lane failed. switch-core log: $OUT/switch-core.log" >&2

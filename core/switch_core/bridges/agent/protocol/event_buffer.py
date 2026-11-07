@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
+from antithesis.assertions import always, sometimes
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -719,6 +720,20 @@ class EventBuffer:
             )
             return None
         await savepoint.commit()
+        always(
+            all(
+                stored[own.agent_id] == heads[own.agent_id] + 1
+                for own in wanted
+                if own.agent_id in stored
+            ),
+            "delivery.own-seq-contiguous: a stored event takes the number after its agent's head",
+            {"room_id": room_id, "agents": len(wanted)},
+        )
+        sometimes(
+            len(stored) < len(events),
+            "delivery.no-events-after-leave: an event is not stored for an agent that left the room or already has it",
+            {"room_id": room_id, "events": len(events), "stored": len(stored)},
+        )
         return {agent_id: int(seq) for agent_id, seq in stored.items()}
 
     def _claim(self, tenant_id: str, agent_id: str) -> Any:
@@ -2440,6 +2455,11 @@ class EventBuffer:
         own events numbered after `after_seq`, naming the rooms they were in
         and the number to resume after."""
         rooms = await self.rooms_dropped_after(tenant_id, agent_id, after_seq)
+        sometimes(
+            bool(rooms),
+            "delivery.no-silent-loss: a reader resumes from below a drop mark",
+            {"agent_id": agent_id, "after_seq": after_seq},
+        )
         if rooms:
             await self._expired(tenant_id, agent_id, after_seq, rooms)
 
@@ -2478,6 +2498,15 @@ class EventBuffer:
                     AgentEventDrop.agent_id == agent_id
                 )
             )
+        always(
+            oldest is None or dropped_through is None or dropped_through < oldest,
+            "delivery.no-silent-loss: retention kept nothing at or below what it recorded deleting",
+            {
+                "agent_id": agent_id,
+                "oldest": oldest,
+                "dropped_through": dropped_through,
+            },
+        )
         return max(dropped_through or 0, (oldest or 0) - 1, 0)
 
 

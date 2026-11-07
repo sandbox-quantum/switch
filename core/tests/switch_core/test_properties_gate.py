@@ -384,3 +384,54 @@ def test_the_table_marks_checkers_gaps_and_the_rest(
 
 def test_the_table_is_ascii(gate: ModuleType) -> None:
     assert gate.table(REPO_ROOT).isascii()
+
+
+ASSERTION = """
+from antithesis.assertions import always, sometimes as maybe
+
+
+def store():
+    always(True, "area.thing: it holds", {})
+    maybe(False, message="area.thing")
+    always(True, "not a property: free text", {})
+"""
+
+
+def test_an_assertion_naming_a_property_is_a_system_tag(
+    gate: ModuleType, tmp_path: Path
+) -> None:
+    catalog(tmp_path, entry(levels="[system]"))
+    write(tmp_path, "core/switch_core/x.py", ASSERTION)
+    tags, problems = gate.find_tags(tmp_path)
+    assert problems == []
+    assert [(t.level, t.target) for t in tags["area.thing"]] == [("system", "store")]
+    assert list(tags) == ["area.thing"]
+    assert gate.check(tmp_path) == []
+
+
+def test_an_assertion_for_an_unknown_property_fails(
+    gate: ModuleType, tmp_path: Path
+) -> None:
+    catalog(tmp_path, entry(levels="[system]"))
+    write(
+        tmp_path,
+        "core/switch_core/x.py",
+        "from antithesis.assertions import always\n"
+        'always(True, "area.typo: it holds", {})\n',
+    )
+    assert any(
+        "area.typo" in p and "not in the catalog" in p for p in gate.check(tmp_path)
+    )
+
+
+def test_a_call_not_from_the_sdk_is_not_an_assertion(
+    gate: ModuleType, tmp_path: Path
+) -> None:
+    catalog(tmp_path, entry(levels="[system]"))
+    write(
+        tmp_path,
+        "core/switch_core/x.py",
+        'def always(*args): ...\nalways(True, "area.thing: x")\n',
+    )
+    tags, _ = gate.find_tags(tmp_path)
+    assert "area.thing" not in tags
