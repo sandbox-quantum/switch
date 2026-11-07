@@ -157,6 +157,9 @@ async def list_service_connections(
                 "external_identity": (
                     None if connection is None else connection.external_identity
                 ),
+                # Whether the caller may disconnect it: their own connection,
+                # the only one listed here, while they have one.
+                "can_revoke": connection is not None,
             }
         )
     return {"connections": entries}
