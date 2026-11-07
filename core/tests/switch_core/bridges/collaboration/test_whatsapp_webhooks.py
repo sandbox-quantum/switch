@@ -304,6 +304,24 @@ async def test_a_person_with_a_username_is_known_by_their_scoped_id() -> None:
     assert relayed.channel_name == "Ada"
 
 
+async def test_a_person_whose_number_is_given_is_known_by_it() -> None:
+    inbox = Inbox()
+    adapter = await started(inbox)
+    payload = delivery(text("hi"))
+    value = payload["entry"][0]["changes"][0]["value"]
+    value["contacts"] = [
+        {"profile": {"name": "Ada"}, "user_id": CONTACT_BSUID, "wa_id": CONTACT}
+    ]
+    value["messages"][0]["from_user_id"] = CONTACT_BSUID
+
+    await deliver(adapter, payload)
+
+    (relayed,) = inbox.messages
+    assert relayed.channel_id == CONTACT
+    assert relayed.sender_id == CONTACT
+    assert relayed.channel_name == "Ada"
+
+
 async def test_two_people_with_one_profile_name_are_two_people() -> None:
     inbox = Inbox()
     adapter = await started(inbox)
@@ -421,6 +439,34 @@ async def test_a_command_that_reaches_every_agent_is_refused_from_whatsapp(
     assert inbox.commands == []
     (notice,) = meta.sent()
     assert f"!{command} is not available on WhatsApp" in notice["text"]["body"]
+
+
+@pytest.mark.parametrize("args", ["triage", "@Triage"])
+async def test_an_agent_the_connection_puts_in_new_chats_can_be_invited(
+    meta: FakeMeta, args: str
+) -> None:
+    inbox = Inbox()
+    adapter = await started(inbox, new_chat_agents="support, triage")
+
+    await deliver(adapter, delivery(text(f"!invite-agent {args}")))
+
+    (command,) = inbox.commands
+    assert (command.command, command.args) == ("invite-agent", args)
+    assert meta.sent() == []
+
+
+@pytest.mark.parametrize(
+    "body", ["!invite-agent deployer", "!invite-agent triage deployer"]
+)
+async def test_any_other_agent_is_still_refused(meta: FakeMeta, body: str) -> None:
+    inbox = Inbox()
+    adapter = await started(inbox, new_chat_agents="triage")
+
+    await deliver(adapter, delivery(text(body)))
+
+    assert inbox.commands == []
+    (notice,) = meta.sent()
+    assert "!invite-agent is not available on WhatsApp" in notice["text"]["body"]
 
 
 async def test_the_business_number_s_own_messages_are_not_relayed() -> None:

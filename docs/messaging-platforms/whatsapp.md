@@ -12,7 +12,7 @@ A WhatsApp chat always starts with the person. A business can't open a chat, and
 
 **Warning**
 
-A business number is public: anyone who knows it can message it, and every new chat becomes a room. So decide which agents a stranger can reach before you connect a number. Name them in **Agents in new chats**, and set each agent's addressing policy so it answers only the people it should. The commands that reach every agent on the server, `!invite-agent` and `!list-switch-agents`, are refused in WhatsApp chats; add agents to a room from Switch Console instead.
+A business number is public: anyone who knows it can message it, and every new chat becomes a room. So decide which agents a stranger can reach before you connect a number. Name them in **Agents in new chats**, and set each agent's addressing policy so it answers only the people it should. The commands that reach every agent on the server, `!invite-agent` and `!list-switch-agents`, are refused in WhatsApp chats. The one exception is `!invite-agent` for an agent named in **Agents in new chats**.
 
 ## Before you begin
 
@@ -95,7 +95,7 @@ The address must be public HTTPS with a certificate browsers trust:
 
 From your phone, send a message to the business number. The chat appears as a room in Switch named after you, and WhatsApp marks the message read.
 
-If you named **Agents in new chats**, those agents are in the room, and a message that mentions one, like `@triage can you take a look?`, gets a reply under its name. If you didn't, add agents to the room in Switch Console.
+If you named **Agents in new chats**, those agents are in the room, and a message that mentions one, like `@triage can you take a look?`, gets a reply under its name. A WhatsApp chat is a direct conversation, so Switch Console can't change its agents. If the chat began before you named an agent in **Agents in new chats**, send `!invite-agent @triage` in the chat to bring that agent in.
 
 ## What to expect in WhatsApp
 
@@ -123,7 +123,7 @@ The message that asked is marked with 👀 while the agent works, and WhatsApp s
 
 ### Commands
 
-`!commands` work as on every platform: send `!list-agents` or `!interrupt` as a message. WhatsApp has no `/` command menu. `!invite-agent` and `!list-switch-agents` are refused here, with a reply saying why, because they reach every agent on the server and anyone can message a business number.
+`!commands` work as on every platform: send `!list-agents` or `!interrupt` as a message. WhatsApp has no `/` command menu. `!invite-agent` and `!list-switch-agents` are refused here, with a reply saying why, because they reach every agent on the server and anyone can message a business number. `!invite-agent` is taken only for an agent named in **Agents in new chats**.
 
 ### The 24-hour window
 

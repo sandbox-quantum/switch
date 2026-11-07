@@ -167,8 +167,12 @@ def install_fake_meta(monkeypatch: pytest.MonkeyPatch) -> FakeMeta:
     return fake
 
 
-async def started(inbox: Inbox) -> WhatsAppAdapter:
-    adapter = WhatsAppAdapter(config=WhatsAppConnectionConfig.model_validate(CONFIG))
+async def started(inbox: Inbox, *, new_chat_agents: str = "") -> WhatsAppAdapter:
+    adapter = WhatsAppAdapter(
+        config=WhatsAppConnectionConfig.model_validate(
+            {**CONFIG, "new_chat_agents": new_chat_agents}
+        )
+    )
     adapter.set_webhook_url(WEBHOOK_URL)
     adapter.set_interaction_handler(inbox.interaction)
     await adapter.start(

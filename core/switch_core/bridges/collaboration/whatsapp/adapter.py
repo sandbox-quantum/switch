@@ -173,12 +173,13 @@ _INVALID_PARAMETER_CODE = 131009
 
 # Commands that reach every agent on the server rather than the room's own.
 # Anyone who knows a business number can write to it, so these are not taken
-# from a WhatsApp chat.
+# from a WhatsApp chat, except `!invite-agent` for an agent the connection
+# already puts in every new chat (`_may_run_here`).
 _SERVER_WIDE_COMMANDS = frozenset({"invite-agent", "list-switch-agents"})
 _SERVER_WIDE_REFUSED = (
     "!{command} is not available on WhatsApp: anyone who knows this number can "
-    "write to it, and the command reaches every agent on the server. An admin "
-    "adds agents to this chat from Switch Console."
+    "write to it, and the command reaches every agent on the server. Here "
+    "!invite-agent adds only the agents this connection puts in new chats."
 )
 
 _WINDOW_CLOSED = (
@@ -251,8 +252,8 @@ class WhatsAppConnectionConfig(BridgeConnectionConfig):
         title="Agents in new chats",
         description=(
             "The agents to put in a chat when someone first messages the number, "
-            "separated by commas. Leave it empty to add agents to each chat's "
-            "room in Switch Console."
+            "separated by commas. A chat that started before an agent was named "
+            "here gets it with !invite-agent sent in the chat."
         ),
     )
 
@@ -721,9 +722,11 @@ class WhatsAppAdapter(PlatformAdapter):
     async def _receive(
         self, message: dict[str, Any], names: dict[str, str], business: str
     ) -> None:
-        # A person who has adopted a WhatsApp username is known by their
-        # business-scoped id, and their number may not be given at all.
-        sender = str(message.get("from_user_id") or message.get("from") or "")
+        # A chat is its number wherever Meta gives one: a test number's
+        # allowed recipients are numbers, and a reply addressed to the
+        # business-scoped id is refused there even when the number is allowed.
+        # A person who hides their number behind a username has only that id.
+        sender = str(message.get("from") or message.get("from_user_id") or "")
         wamid = str(message.get("id") or "")
         kind = str(message.get("type") or "")
         if not sender or not wamid or message.get("from") == business:
@@ -758,7 +761,9 @@ class WhatsAppAdapter(PlatformAdapter):
             body = str(_object(message, "text").get("body") or "")
             if body.lstrip().startswith("!") and self._on_command is not None:
                 parts = body.strip().split(None, 1)
-                if parts[0][1:] in _SERVER_WIDE_COMMANDS:
+                if parts[0][1:] in _SERVER_WIDE_COMMANDS and not self._may_run_here(
+                    parts[0][1:], parts[1] if len(parts) > 1 else ""
+                ):
                     await self.admin_message(
                         sender,
                         _SERVER_WIDE_REFUSED.format(command=parts[0][1:]),
@@ -858,6 +863,22 @@ class WhatsAppAdapter(PlatformAdapter):
             )
         mimetype = media.mimetype or declared or "application/octet-stream"
         return Attachment(filename=filename, mimetype=mimetype, data=data), None
+
+    def _may_run_here(self, command: str, args: str) -> bool:
+        """Whether a server-wide command may be taken from a WhatsApp chat.
+
+        A chat is a direct conversation, so its agents change only through
+        commands sent in it. `!invite-agent` may therefore bring in one agent
+        the connection already puts in every new chat, which a chat that began
+        before it was named has no other way to get. Nothing else is taken.
+        """
+        names = args.split()
+        offered = {name.lower() for name in self._config.agents_for_new_chats}
+        return (
+            command == "invite-agent"
+            and len(names) == 1
+            and names[0].removeprefix("@").lower() in offered
+        )
 
     async def _press(self, message: dict[str, Any], sender: str, name: str) -> None:
         reply = _object(message, "interactive")
