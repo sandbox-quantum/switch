@@ -1267,12 +1267,21 @@ class WebexAdapter(PlatformAdapter):
             if person.get("type") == "bot" or not person_id:
                 continue
             emails = person.get("emails")
+            email = emails[0] if isinstance(emails, list) and emails else None
+            # Learned the way a poster's handle is, so that linking, which
+            # checks the account again by searching for this handle, finds it
+            # even where Webex refuses a search by name.
+            handle = (
+                await self._handle(person_id, email)
+                if email
+                else _handle_from(person, person_id)
+            )
             users.append(
                 DirectoryUser(
                     external_user_id=person_id,
-                    username=_handle_from(person, person_id),
+                    username=handle,
                     display_name=str(person.get("displayName") or ""),
-                    email=emails[0] if isinstance(emails, list) and emails else None,
+                    email=email,
                 )
             )
         return users
