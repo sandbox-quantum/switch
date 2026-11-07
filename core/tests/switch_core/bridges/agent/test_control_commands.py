@@ -8,7 +8,9 @@ import pytest
 
 import switch_core.bridges.agent.commands as commands
 from switch_core.bridges.agent.commands import (
+    _check_cancel_target,
     _check_control_target,
+    _cmd_cancel,
     _cmd_reset,
     _cmd_retry,
 )
@@ -503,3 +505,142 @@ async def test_a_controller_backed_agent_is_relayed_a_retry_of_the_message(
     assert agent_id == "agent-1"
     assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
     assert reply.bodies[-1] == "Trying that message again."
+
+
+def test_a_cancel_names_the_target_turn_id() -> None:
+    frame = commands.room_control_frame(
+        agent_id="a",
+        session_id="s",
+        room_id="r",
+        action="cancel",
+        actor_id="@u:s",
+        message_id="m",
+        thread_id=None,
+        surface="slack",
+        requester_name="louisa",
+        turn_id="turn-abc-123",
+    )
+    assert frame["body"] == {"type": "turn.cancel", "turnId": "turn-abc-123"}
+
+
+def test_a_cancel_without_turn_id_raises_value_error() -> None:
+    with pytest.raises(ValueError, match="cancel requires a turn_id"):
+        commands.room_control_frame(
+            agent_id="a",
+            session_id="s",
+            room_id="r",
+            action="cancel",
+            actor_id="@u:s",
+            message_id="m",
+            thread_id=None,
+            surface="slack",
+            requester_name="louisa",
+        )
+
+
+@pytest.mark.parametrize("live", [True, False])
+@pytest.mark.asyncio
+async def test_a_controller_backed_agent_is_sent_the_cancel_command_on_its_controllers_stream(
+    monkeypatch: pytest.MonkeyPatch, live: bool
+) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    async def _surface(*_a: Any) -> str:
+        return "slack"
+
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+    registry = AgentConnectionRegistry()
+    registry.controllers.bind(
+        Binding(
+            agent_id="agent-1",
+            controller_id="controller-1",
+            tenant_id="tenant",
+            controller_name="machine",
+            running=True,
+        )
+    )
+    conn = registry.controllers.open(
+        controller_id="controller-1",
+        tenant_id="tenant",
+        resume_cursors={},
+    )
+    if live:
+        registry.controllers.attach_stream(conn)
+    client = _client(reply, command_level="unsupported", enqueue=[])
+    client._connections = registry
+
+    event = CommandEvent(
+        command="cancel",
+        args="@cc turn-xyz-789",
+        user_id="@u:server",
+        user_name="louisa",
+        message_id="$cancel-command",
+        thread_id="$cancel-command",
+    )
+
+    await _cmd_cancel(client, SimpleNamespace(room_id="!m:server"), event, False)
+
+    if live:
+        [(agent_id, frame)] = conn.session_commands
+        assert agent_id == "agent-1"
+        assert frame["sessionId"] is None
+        assert frame["origin"]["roomId"] == "room-1"
+        assert frame["body"] == {"type": "turn.cancel", "turnId": "turn-xyz-789"}
+        assert "Cancelled queued message `turn-xyz-789`" in reply.bodies[-1]
+    else:
+        assert conn.session_commands == []
+        assert "controller is not connected" in reply.bodies[-1]
+
+
+@pytest.mark.asyncio
+async def test_check_cancel_target_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+    host = _admin_host(agent_names=["triage-agent"], aliases={}, role_names=[])
+
+    # 1. No target
+    await _check_cancel_target(
+        host,
+        SimpleNamespace(room_id="r1"),
+        CommandEvent(command="cancel", args="", user_id="u1", user_name="alice"),
+        _meta(),
+    )
+    assert "`!cancel` needs a target agent and turn ID" in reply.bodies[-1]
+
+    # 2. Unknown agent
+    await _check_cancel_target(
+        host,
+        SimpleNamespace(room_id="r1"),
+        CommandEvent(
+            command="cancel", args="@unknown turn-1", user_id="u1", user_name="alice"
+        ),
+        _meta(),
+    )
+    assert "`@unknown` is not an agent or role" in reply.bodies[-1]
+
+    # 3. Known agent but missing turn ID
+    await _check_cancel_target(
+        host,
+        SimpleNamespace(room_id="r1"),
+        CommandEvent(
+            command="cancel", args="@triage-agent", user_id="u1", user_name="alice"
+        ),
+        _meta(),
+    )
+    assert "`!cancel @triage-agent` needs a turn ID" in reply.bodies[-1]
+
+    # 4. Valid agent and turn ID -> no warning posted
+    count_before = len(reply.bodies)
+    await _check_cancel_target(
+        host,
+        SimpleNamespace(room_id="r1"),
+        CommandEvent(
+            command="cancel",
+            args="@triage-agent turn-999",
+            user_id="u1",
+            user_name="alice",
+        ),
+        _meta(),
+    )
+    assert len(reply.bodies) == count_before
