@@ -1,0 +1,46 @@
+slug: intercom
+name: Intercom
+category: Customer support
+description: Read and manage Intercom conversations, contacts, and articles, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # [MEASURED] Intercom issues single-use rotating refresh tokens on POST https://mcp.intercom.com/token.
+  refresh: rotating
+  oauth:
+    # [MEASURED] RFC 7591 dynamic client registration verified via POST https://mcp.intercom.com/register (201 Created).
+    # Discovered via RFC 9728 and RFC 8414 metadata from https://mcp.intercom.com/mcp.
+    registration: dynamic
+    # [MEASURED] Loopback redirect on 127.0.0.1 (ports 39231-39235) accepted by authorization server with PKCE S256.
+    redirect: [loopback]
+    # [DOCUMENTED] revocation_endpoint is advertised in /.well-known/oauth-authorization-server metadata.
+    revocation_discovered: true
+  identity:
+    # [DOCUMENTED] Intercom REST API admin identity endpoint (GET https://api.intercom.io/me).
+    # [MEASURED LIMITATION] MCP-issued OAuth tokens have audience restricted to https://mcp.intercom.com/mcp;
+    # calling api.intercom.io/me currently yields HTTP 401 until Intercom expands token audience or adds userinfo to MCP.
+    url: https://api.intercom.io/me
+    # [DOCUMENTED] Field 'id' from GET /me response.
+    account_id: id
+    # [DOCUMENTED] Field 'email' from GET /me response.
+    label: email
+# [MEASURED] Token expires_in is 3,600 seconds (1 hour). Enforces hourly grant review by Switch.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # [MEASURED] Official US-hosted MCP server endpoint. (mcp.eu.intercom.com is available for EU workspaces).
+    - { name: intercom, url: "https://mcp.intercom.com/mcp" }
+access:
+  # [MEASURED] Authorization server advertises scopes [mcp, operator].
+  # Least access: 'read' requests only 'mcp' (search conversations/contacts, view articles).
+  # 'write' adds 'operator' (internal notes, article management, operator actions).
+  # Note: Live MCP tool surface does not expose a customer-facing reply tool.
+  read:
+    scopes:
+      - mcp
+  write:
+    scopes:
+      - mcp
+      - operator
+tools: { mode: pass_through }
