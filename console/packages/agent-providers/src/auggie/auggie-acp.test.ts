@@ -16,7 +16,14 @@ const spawn = vi.fn(() => {
 vi.mock('../provider-process', () => ({ spawnProvider: spawn, execProvider: vi.fn() }));
 
 const { execProvider } = await import('../provider-process');
-const { auggieAcp, createAuggieAdapter, parseAuggieSession } = await import('./auggie-acp');
+const {
+  auggieAcp,
+  createAuggieAdapter,
+  parseAuggieSession,
+  parseAuggieAccountStatus,
+  AUGGIE_INDEXING_PERMISSION,
+} = await import('./auggie-acp');
+
 const sessionJson = JSON.stringify({
   accessToken: 'synthetic-token',
   tenantURL: 'https://example.com',
@@ -32,7 +39,10 @@ afterEach(async () => {
   for (const adapter of adapters.splice(0)) await adapter.stopSession('s');
 });
 
-async function start(runtimeMode: 'full-access' | 'approval-required' = 'approval-required') {
+async function start(
+  runtimeMode: 'full-access' | 'approval-required' = 'approval-required',
+  toolCallId = 'shell'
+) {
   const adapter = createAuggieAdapter({ binaryPath: '/opt/bin/auggie' });
   adapters.push(adapter);
   const events: ProviderRuntimeEvent[] = [];
@@ -52,7 +62,11 @@ async function start(runtimeMode: 'full-access' | 'approval-required' = 'approva
     method: 'session/request_permission',
     params: {
       sessionId: 'native',
-      toolCall: { toolCallId: 'shell', kind: 'execute', title: 'Run command' },
+      toolCall: {
+        toolCallId,
+        kind: toolCallId === AUGGIE_INDEXING_PERMISSION ? 'other' : 'execute',
+        title: toolCallId === AUGGIE_INDEXING_PERMISSION ? 'Workspace indexing' : 'Run command',
+      },
       options: [
         { optionId: 'once', name: 'Allow once', kind: 'allow_once' },
         { optionId: 'deny', name: 'Reject', kind: 'reject_once' },
@@ -63,11 +77,11 @@ async function start(runtimeMode: 'full-access' | 'approval-required' = 'approva
   return { adapter, events, server };
 }
 
-it('uses the selected binary and only the supplied environment, without bypass flags or authentication', async () => {
+it('launches auggie in ACP mode without bypass flags or permanent indexing args', async () => {
   const { server } = await start('full-access');
   expect(spawn).toHaveBeenCalledWith(
     '/opt/bin/auggie',
-    ['--acp', '--allow-indexing'],
+    ['--acp'],
     expect.objectContaining({
       env: { AUGMENT_SESSION_AUTH: sessionJson },
     })
@@ -76,8 +90,8 @@ it('uses the selected binary and only the supplied environment, without bypass f
   expect(server.received.some((m) => m.method === 'session/set_mode')).toBe(false);
 });
 
-it('auto-approves an ACP command once in full-access, without asking the user', async () => {
-  const { events, server } = await start('full-access');
+it('auto-approves a standard ACP tool command in full-access mode', async () => {
+  const { events, server } = await start('full-access', 'shell');
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(0);
   expect(server.received.find((m) => m.id === 90)?.result).toEqual({
     outcome: { outcome: 'selected', optionId: 'once' },
@@ -85,9 +99,9 @@ it('auto-approves an ACP command once in full-access, without asking the user', 
 });
 
 it.each(['accept', 'decline'] as const)(
-  'waits for the user to %s a command in approval-required',
+  'waits for user approval to %s a tool command in approval-required',
   async (decision) => {
-    const { adapter, events, server } = await start();
+    const { adapter, events, server } = await start('approval-required', 'shell');
     expect(server.received.find((m) => m.id === 90)).toBeUndefined();
     const request = events.find((event) => event.type === 'request.opened');
     if (request?.type !== 'request.opened') throw new Error('Missing approval');
@@ -99,11 +113,37 @@ it.each(['accept', 'decline'] as const)(
   }
 );
 
+it('requires explicit user confirmation for workspace indexing even in full-access', async () => {
+  const { adapter, events, server } = await start('full-access', AUGGIE_INDEXING_PERMISSION);
+  const request = events.find((event) => event.type === 'request.opened');
+  expect(request).toBeDefined();
+  if (request?.type !== 'request.opened') throw new Error('Indexing must require decision');
+  expect(request.title).toBe('Workspace indexing');
+
+  await adapter.respondToRequest('s', request.requestId, 'accept');
+  await flush();
+  expect(server.received.find((m) => m.id === 90)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+});
+
+it('allows declining workspace indexing session-scoped', async () => {
+  const { adapter, events, server } = await start('approval-required', AUGGIE_INDEXING_PERMISSION);
+  const request = events.find((event) => event.type === 'request.opened');
+  if (request?.type !== 'request.opened') throw new Error('Indexing must require decision');
+
+  await adapter.respondToRequest('s', request.requestId, 'decline');
+  await flush();
+  expect(server.received.find((m) => m.id === 90)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'deny' },
+  });
+});
+
 it.each([
   sessionJson,
   `TOKEN=${sessionJson}`,
   `Augment authentication session:\n\nSESSION=${sessionJson}\n\nUsage for automation:`,
-])('recognizes a stored session without returning its contents', (output) => {
+])('recognizes environment-supplied session JSON', (output) => {
   expect(parseAuggieSession(output)).toEqual({
     status: 'authenticated',
     message: 'Auggie has a stored authentication session.',
@@ -111,14 +151,48 @@ it.each([
   });
 });
 
-it.each(['{}', 'null', '{"accessToken":"synthetic-token"}', 'Not logged in'])(
-  'does not report missing or incomplete credentials as signed in',
-  (output) => {
-    expect(parseAuggieSession(output).status).toBe('unauthenticated');
-    expect(parseAuggieSession(output).message).toContain('auggie login');
-    expect(parseAuggieSession(output).message).not.toContain('synthetic-token');
-  }
-);
+it('verifies authentication using auggie account status --json when signed in', async () => {
+  vi.mocked(execProvider).mockResolvedValue({
+    stdout: JSON.stringify({ email: 'user@example.com', credits: 100 }),
+    stderr: '',
+  });
+  const env = { HOME: '/synthetic-home' };
+  const res = await auggieAcp.checkSignIn!({
+    binaryPath: '/bin/auggie',
+    cwd: '/work',
+    env,
+    handshake: vi.fn(),
+  });
+  expect(res.status).toBe('authenticated');
+  expect(execProvider).toHaveBeenCalledWith(
+    '/bin/auggie',
+    ['account', 'status', '--json'],
+    expect.objectContaining({ cwd: '/work', env, timeout: 15000 })
+  );
+});
+
+it.each([
+  {
+    exitCode: 1,
+    stdout: '',
+    stderr: 'You are not currently logged in to Augment. Run auggie login.',
+  },
+  { exitCode: 1, stdout: '', stderr: 'Authentication required: run `auggie login`.' },
+  { exitCode: 1, stdout: 'no stored session', stderr: '' },
+])('reports unauthenticated when account status reports not logged in (%s)', (result) => {
+  const status = parseAuggieAccountStatus(result);
+  expect(status.status).toBe('unauthenticated');
+  expect(status.message).toContain('auggie login');
+});
+
+it('reports unknown for network / unexpected account status errors', () => {
+  const status = parseAuggieAccountStatus({
+    exitCode: 2,
+    stdout: '',
+    stderr: 'API server unreachable (ECONNREFUSED)',
+  });
+  expect(status.status).toBe('unknown');
+});
 
 it('checks environment authentication without spawning a CLI or opening a browser', async () => {
   const handshake = vi.fn();
@@ -132,60 +206,3 @@ it('checks environment authentication without spawning a CLI or opening a browse
   expect(execProvider).not.toHaveBeenCalled();
   expect(handshake).not.toHaveBeenCalled();
 });
-
-it.each(['unexpected CLI output', '{broken-json'])(
-  'keeps unrecognizable status output unknown without echoing it',
-  (output) => {
-    expect(parseAuggieSession(output).status).toBe('unknown');
-    expect(parseAuggieSession(output).message).not.toContain(output);
-  }
-);
-
-it('checks the local session through the read-only token command with the execution environment', async () => {
-  vi.mocked(execProvider).mockResolvedValue({ stdout: `TOKEN=${sessionJson}`, stderr: '' });
-  const env = { HOME: '/synthetic-home' };
-  expect(
-    (
-      await auggieAcp.checkSignIn!({
-        binaryPath: '/bin/auggie',
-        cwd: '/work',
-        env,
-        handshake: vi.fn(),
-      })
-    ).status
-  ).toBe('authenticated');
-  expect(execProvider).toHaveBeenCalledWith(
-    '/bin/auggie',
-    ['token', 'print'],
-    expect.objectContaining({ cwd: '/work', env, timeout: 15000 })
-  );
-});
-
-it('does not leak credential-bearing exec failures into readiness', async () => {
-  vi.mocked(execProvider).mockRejectedValue(
-    Object.assign(new Error(sessionJson), { stdout: sessionJson, stderr: 'network unavailable' })
-  );
-  const result = await auggieAcp.checkSignIn!({
-    binaryPath: 'auggie',
-    cwd: '/work',
-    env: {},
-    handshake: vi.fn(),
-  });
-  expect(result.status).toBe('unknown');
-  expect(JSON.stringify(result)).not.toContain('synthetic-token');
-});
-
-it.each(['No stored token. Run auggie login.', 'You are not currently logged in to Augment.'])(
-  'shows the login hint when the CLI reports %s',
-  async (stderr) => {
-    vi.mocked(execProvider).mockRejectedValue({ stderr });
-    const result = await auggieAcp.checkSignIn!({
-      binaryPath: 'auggie',
-      cwd: '/work',
-      env: {},
-      handshake: vi.fn(),
-    });
-    expect(result.status).toBe('unauthenticated');
-    expect(result.message).toContain('auggie login');
-  }
-);
