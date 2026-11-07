@@ -44,6 +44,11 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Auggie in the provider table.** Agent definitions, the gateway's provider
+  list and the known-agent registry accept `auggie`, with `auggie login` as the
+  sign-in an offline owner is told to run and no advanced settings.
+
 #### Security
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
@@ -2343,6 +2348,19 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Auggie, Augment Code's CLI, as an agent provider.** An agent can run on
+  `auggie --acp`: created in Console with a model from Auggie's own list,
+  installed from npm, reported as signed in from `auggie token print` without
+  signing it in, with the Switch tools, approvals, interrupts, queued messages
+  and resumed conversations the other ACP agents have. Each action Auggie's own
+  safety check does not pass asks as Allow or Deny; it has no switch that
+  approves everything, so bypassing permissions means the host answering Allow
+  to each request. It is started with `--allow-indexing`, so Augment's context
+  engine indexes the agent's working directory without asking. Not offered on
+  Windows, where Augment supports it only inside WSL. The generic ACP adapter
+  gained one hook for it: a provider can vouch for an MCP transport its agent
+  takes but leaves out of `initialize`, which Auggie 0.36.0 does for HTTP, the
+  transport the Switch tools are served over.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
@@ -4436,6 +4454,10 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Runs Auggie agents.** `auggie` on `PATH` and signed in with `auggie login`,
+  or a session in `AUGMENT_SESSION_AUTH` in the `--env-file`, is reported and
+  run like the other providers. On Windows it is reported as not installed,
+  since Augment supports it only inside WSL.
 - **Waits its turn when Switch is busy opening connections.** An open or an
   attach refused as `busy` comes with when to try again, the controller's
   place in the server's queue, and the controller now waits that long

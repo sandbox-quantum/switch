@@ -125,6 +125,11 @@ export interface AcpProviderHooks {
    * advertises in `initialize` is always honoured as well.
    */
   promptCapabilities?: AcpPromptCapabilities;
+  /**
+   * MCP transports the agent takes whether or not it advertises them in
+   * `initialize`. What it advertises is always honoured as well.
+   */
+  mcpCapabilities?: { http?: boolean };
   /** The ACP mode to put a new session in for Switch's runtime mode. Omit to leave the agent's default. */
   sessionMode?(runtimeMode: RuntimeMode): string;
   /**

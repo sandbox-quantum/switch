@@ -37,7 +37,7 @@ relay accepts.
 - Node 22.13 or later. The store uses the built-in `node:sqlite`.
 - Each provider CLI the agents use, installed on `PATH` and signed in as the user
   the controller runs as (`claude`, `codex`, `opencode`, `agent`/`cursor-agent`,
-  `antigravity-acp`), or its API key in the `--env-file` the controller runs with.
+  `antigravity-acp`, `auggie`), or its API key in the `--env-file` the controller runs with.
 - A Switch server with the `agent_management` feature flag on
   (`FEATURE_FLAGS_ENABLED=agent_management`). Behind a proxy or ingress,
   `/v1` must reach switch-core (the Helm chart routes it).
@@ -183,6 +183,8 @@ data), whose access list it sets to the current user and the system alone.
 - Provider CLIs are found on `PATH` with `PATHEXT`, so `claude.exe` and an npm
   install's `codex.cmd` both count.
 - Antigravity has no Windows build, so it is reported as not installed.
+- Augment supports Auggie on Windows only inside WSL, so it is reported as not
+  installed.
 - `--agent-runtime separate-user` is Linux only.
 - An agent's shell setup is refused: it is a POSIX shell snippet.
 - Stopping an agent host asks it over its IPC channel or a stop file in its

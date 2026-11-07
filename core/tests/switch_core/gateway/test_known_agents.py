@@ -372,6 +372,22 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ["shell", "read_file", "write", "str_replace", "grep", "glob"],
             [],
         ),
+        (
+            "auggie",
+            "Auggie CLI",
+            [
+                "launch-process",
+                "view",
+                "str-replace-editor",
+                "save-file",
+                "remove-files",
+                "grep-search",
+                "codebase-retrieval",
+                "web-search",
+                "web-fetch",
+            ],
+            [],
+        ),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(

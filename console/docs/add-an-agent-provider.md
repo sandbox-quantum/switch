@@ -36,8 +36,8 @@ missing.
 
 ## 1. The ACP hooks
 
-Copy `console/packages/agent-providers/src/cursor/cursor-adapter.ts` or
-`src/antigravity/antigravity-adapter.ts` and trim it. The interface is
+Copy `console/packages/agent-providers/src/cursor/cursor-adapter.ts`,
+`src/antigravity/antigravity-adapter.ts` or `src/auggie/auggie-acp.ts` and trim it. The interface is
 `AcpProviderHooks` in `src/acp/hooks.ts`, and every field is documented there.
 A minimal provider looks like this:
 
@@ -98,6 +98,7 @@ Add hooks only for what really differs:
 | `authMethodId` | The `authenticate` method to send when a session starts, given its environment; return undefined when that environment already signs the CLI in (Cursor with `CURSOR_API_KEY`). Omit it for an agent that needs none. |
 | `sessionMode` | The ACP mode for each Switch runtime mode, when the agent's modes are permission levels. |
 | `promptCapabilities` | Content the agent accepts without advertising it. Prefer fixing the advertisement upstream. |
+| `mcpCapabilities` | MCP transports the agent takes without advertising them. Switch serves its tools over HTTP, so an agent whose `initialize` omits `mcpCapabilities.http` but whose `session/new` takes HTTP servers (Auggie 0.36.0) needs `{ http: true }` here, or no session starts. Prefer fixing the advertisement upstream. |
 | `mcpServerOf` | How a tool call names its MCP server, if the agent says so (in `_meta`, `rawInput`…). Without it, tools on registered servers still ask for permission. |
 | `itemType` | Vendor typing for tool calls, such as subagents. |
 | `permission` | A permission request the vendor uses for something else, such as Antigravity's questions. |

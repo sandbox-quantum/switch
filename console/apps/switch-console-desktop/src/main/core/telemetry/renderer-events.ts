@@ -83,7 +83,7 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'intro_opened',
       'intro_dismissed',
     ]),
-    provider: z.enum(['claude', 'codex', 'opencode', 'cursor', 'antigravity', 'none']),
+    provider: z.enum(['claude', 'codex', 'opencode', 'cursor', 'antigravity', 'auggie', 'none']),
   }),
   buddy_message_sent: z.object({ nth: z.enum(['1', '2', '3', '4', '5', '6+']) }),
   renderer_crashed: z.object({}),

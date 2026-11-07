@@ -84,6 +84,20 @@ it('runs a provider from nothing but its launch hook, with no sign-in or mode ca
   expect(server.received.map((m) => m.method)).toEqual(['initialize', 'session/new']);
 });
 
+it('refuses HTTP MCP servers the agent does not advertise, unless the hooks vouch for them', async () => {
+  const overHttp = { switch: { transport: 'http' as const, url: 'http://127.0.0.1:1/mcp' } };
+  await expect(start(dummy, { mcpServers: overHttp })).rejects.toThrow(
+    'Dummy ACP does not declare MCP over HTTP'
+  );
+  const { server } = await start(
+    { ...dummy, mcpCapabilities: { http: true } },
+    { mcpServers: overHttp }
+  );
+  expect(server.received.find((m) => m.method === 'session/new')?.params).toMatchObject({
+    mcpServers: [{ name: 'switch', type: 'http', url: 'http://127.0.0.1:1/mcp' }],
+  });
+});
+
 it('resumes with session/load when the agent advertises it, and session/resume otherwise', async () => {
   agent.capabilities = { loadSession: true, sessionCapabilities: { resume: {} } };
   const loaded = await start(dummy, { resume: { nativeSessionId: 'saved' } });

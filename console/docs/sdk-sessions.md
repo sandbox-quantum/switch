@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity ACP and Cursor. Local sessions and sessions reached through SSH run
+Antigravity ACP, Cursor and Auggie. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -150,6 +150,7 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity AC
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
 | Antigravity ACP | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
+| Auggie | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 
 Controls depend on the connected provider's reported support. OpenCode models
 that report no image input are labelled in the selector and reject images before
@@ -189,6 +190,14 @@ host; an existing `agy` login is not reused. The runtime supports Apple Silicon
 macOS and Linux x64/ARM64. Approvals, offered-answer questions and cancellation
 use ACP. Saved conversations from the older CLI runtime cannot be resumed by ACP;
 reset the conversation to start fresh while preserving its transcript.
+Auggie runs as `auggie --acp`, installed from npm as `@augmentcode/auggie`, and
+signs in with `auggie login` on the execution host, or with a session passed
+in `AUGMENT_SESSION_AUTH`. It is started with `--allow-indexing`, so Augment's
+context engine indexes the agent's working directory without asking. Each
+action its own safety check does not pass is offered as Allow or Deny; it has
+no switch that approves everything, so bypassing permissions means the host
+answering Allow to each request. Augment supports it on Windows only inside
+WSL.
 Other capability limits remain explicit
 in the session contract. Terminal sessions (tmux/PTY) were removed; SDK adapters
 are the only session runtime. Lifecycle scripts use noninteractive commands.
@@ -271,7 +280,8 @@ resumes or attaches, including ones started automatically:
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
-  uses Smart Auto, and Antigravity approves edits and asks before commands.
+  uses Smart Auto, Antigravity approves edits and asks before commands, and
+  Auggie asks before each action its own safety check does not pass.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
 
@@ -303,13 +313,14 @@ that machine. An inconclusive check produces a warning; it is not treated as a
 missing login. Existing sessions are not stopped when a setup check fails.
 
 Claude uses its native auth status command. Codex uses app-server account status.
-Cursor uses its native account status output. Antigravity initializes an empty
+Cursor uses its native account status output. Auggie uses `auggie token print`,
+which exits 0 only with a usable sign-in; what it prints is not read. Antigravity initializes an empty
 session without sending a prompt, and returns its native model list. OpenCode checks connected backends; a local or free backend may need no
 login. These checks do not prove quota or access to every model, and credentials
 can expire after a check. All model fields use the same editable picker: select a model from the host
 catalogue or enter an ID. Blank uses the provider default. Loading and failed
 catalogue checks are visible and do not prevent text entry. Claude, Codex,
-Cursor and Antigravity catalogues come from native SDK initialization without a
+Cursor, Antigravity and Auggie catalogues come from native SDK initialization without a
 prompt; each metadata session is stopped after the probe. OpenCode uses its
 existing host catalogue.
 

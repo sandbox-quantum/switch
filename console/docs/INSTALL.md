@@ -143,7 +143,8 @@ installer interactively.
 On a server with agent management on (a local server Console runs has it), a
 new agent on **This computer** runs on the PC as a managed agent: Console's
 built-in agents controller runs it, once **Run managed agents on this computer**
-is on. Antigravity has no Windows build, so it can't run there.
+is on. Antigravity has no Windows build, so it can't run there, and Augment supports
+Auggie on Windows only inside WSL.
 
 On a server without agent management, Console runs the agent itself, and those
 sessions need a POSIX execution host, so Windows Console asks you to pick an SSH

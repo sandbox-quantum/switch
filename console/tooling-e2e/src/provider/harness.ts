@@ -68,6 +68,7 @@ const ROLE_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   cursor: 'cursor',
   'claude-code': 'claude',
   codex: 'codex',
+  auggie: 'auggie',
 };
 
 // "Do exactly what you are asked" is load-bearing, and so is the second
@@ -90,6 +91,7 @@ export const PROVIDER_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   codex: 'codex',
   antigravity: 'antigravity',
   cursor: 'cursor',
+  auggie: 'auggie',
 };
 
 /** How long to keep asking a controller to take the agent while it comes up. */
