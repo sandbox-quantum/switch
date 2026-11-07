@@ -50,7 +50,7 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
-from switch_core.connections.adapters.oauth import OAuthAdapter
+from switch_core.connections.adapters.oauth import SIGN_IN_FIELDS, OAuthAdapter
 from switch_core.connections.app_credentials import (
     app_kind,
     cannot_work_here,
@@ -64,6 +64,7 @@ from switch_core.connections.loader import (
     Connection,
     ConnectionDefinition,
     TokenPolicy,
+    render_mcp_url,
 )
 from switch_core.connections.organization_apps import (
     OrganizationApp,
@@ -1350,6 +1351,18 @@ class ServiceBroker:
             # for it is refused, so the session gets none of its tools.
             if entry is not None and not _issued_to_agents(entry):
                 continue
+            values = None
+            if (
+                entry is not None
+                and entry.definition.auth.oauth is not None
+                and entry.definition.auth.oauth.fields
+            ):
+                connection = await self._store.get_connection(
+                    session, agent.owner_id, grant.service
+                )
+                if connection is None or connection.account_id != grant.account_id:
+                    continue
+                values = self._secret(connection).values[SIGN_IN_FIELDS]
             skill = None if entry is None else entry.skill_files.get("SKILL.md")
             mcp = None if entry is None else entry.definition.mcp
             cli = None if entry is None else entry.definition.cli
@@ -1377,7 +1390,11 @@ class ServiceBroker:
                         else [
                             {
                                 "name": server.name,
-                                "url": server.url,
+                                "url": (
+                                    server.url
+                                    if values is None
+                                    else render_mcp_url(server.url, values)
+                                ),
                                 "headers": server.headers
                                 or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
                             }

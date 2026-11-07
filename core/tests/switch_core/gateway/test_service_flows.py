@@ -40,7 +40,11 @@ from switch_core.gateway.service_connections import (
 from switch_core.gateway.service_flows import router as service_flows_router
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeOAuthServer
-from tests.switch_core.connections.test_loader import OAUTH_ENTRY, _write_example
+from tests.switch_core.connections.test_loader import (
+    FIELDS_ENTRY,
+    OAUTH_ENTRY,
+    _write_example,
+)
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
@@ -72,6 +76,7 @@ def _world(
     session_factory: async_sessionmaker[AsyncSession],
     root: Path,
     *,
+    entry: str = OAUTH_ENTRY,
     redirect: str = "[loopback, core]",
     public_url: str | None = None,
     disabled: dict[str, str] | None = None,
@@ -83,9 +88,7 @@ def _world(
     ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
     _write_example(
         root,
-        OAUTH_ENTRY.replace(
-            "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
-        ),
+        entry.replace("redirect: [loopback, core]", f"redirect: {redirect}{ports}"),
     )
     catalog = load_catalog(root)
     oauth = catalog["example"].definition.auth.oauth
@@ -138,10 +141,22 @@ class Console:
         self.state = secrets.token_urlsafe(32)
         self.secret = secrets.token_urlsafe(32)
 
-    async def start(self, service: str = "example", port: int = PORT) -> httpx.Response:
+    async def start(
+        self,
+        service: str = "example",
+        port: int = PORT,
+        fields: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        body: dict[str, object] = {
+            "port": port,
+            "state": self.state,
+            "completion_secret": self.secret,
+        }
+        if fields is not None:
+            body["fields"] = fields
         return await self.client.post(
             f"/gateway/service-connections/{service}/flows",
-            json={"port": port, "state": self.state, "completion_secret": self.secret},
+            json=body,
             cookies=cookies_for(self.user),
         )
 
@@ -199,15 +214,19 @@ async def _connection(
         )
 
 
-async def _loopback_code(world: World, console: Console) -> str:
+async def _loopback_code(
+    world: World, console: Console, fields: dict[str, str] | None = None
+) -> str:
     """Start, sign in at the vendor, and take the code as Console's listener does."""
-    started = await console.start()
+    started = await console.start(fields=fields)
     assert started.status_code == 200, started.text
     return _listener_code(world.vendor.authorize(started.json()["url"]), console.state)
 
 
-async def _loopback_connect(world: World, console: Console) -> httpx.Response:
-    completed = await console.complete(await _loopback_code(world, console))
+async def _loopback_connect(
+    world: World, console: Console, fields: dict[str, str] | None = None
+) -> httpx.Response:
+    completed = await console.complete(await _loopback_code(world, console, fields))
     assert completed.status_code == 200, completed.text
     return completed
 
@@ -804,3 +823,95 @@ class TestWorkspaceSwitch:
             "so it still works. Remove Switch under Connected apps in Example.",
         }
         assert await _connection(session_factory, ada.id) is None
+
+
+class TestSignInFields:
+    async def test_signs_in_to_the_tenant_typed_and_keys_the_account_by_it(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", entry=FIELDS_ENTRY)
+        world.vendor.per_path = True
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada), {"tenant": "team-a"})
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert connection.account_id == "team-a:acct-1"
+        secret = json.loads(TEST_KEYRING.decrypt(connection.encrypted_secret))
+        assert secret["sign_in_fields"] == {"tenant": "team-a"}
+        assert "https://mcp.example.test/v1/mcp/team-a" in world.vendor.paths
+
+    async def test_a_value_outside_the_pattern_is_refused_before_the_vendor(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", entry=FIELDS_ENTRY)
+        world.vendor.per_path = True
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            response = await Console(client, ada).start(
+                fields={"tenant": "https://team-a"}
+            )
+        assert response.status_code == 400
+        assert "Example team is not valid" in response.json()["detail"]
+        assert world.vendor.paths == []
+
+    async def test_the_fields_are_required(self, session_factory, tmp_path) -> None:
+        world = _world(session_factory, tmp_path / "catalog", entry=FIELDS_ENTRY)
+        world.vendor.per_path = True
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            response = await Console(client, ada).start()
+        assert response.status_code == 400
+        assert world.vendor.paths == []
+
+    async def test_another_tenant_is_another_account(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", entry=FIELDS_ENTRY)
+        world.vendor.per_path = True
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada), {"tenant": "team-a"})
+            await _loopback_connect(world, Console(client, ada), {"tenant": "team-b"})
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert connection.account_id == "team-b:acct-1"
+
+    async def test_two_tenants_register_one_client(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", entry=FIELDS_ENTRY)
+        world.vendor.per_path = True
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada), {"tenant": "team-a"})
+            await _loopback_connect(world, Console(client, grace), {"tenant": "team-b"})
+        assert len(world.vendor.registrations) == 1
+
+    async def test_the_service_list_offers_the_sign_in_fields(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", entry=FIELDS_ENTRY)
+        monkeypatch.setattr(
+            "switch_core.gateway.service_connections.CATALOG",
+            load_catalog(tmp_path / "catalog"),
+        )
+        world.vendor.per_path = True
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            response = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(ada)
+            )
+        assert response.status_code == 200
+        entry = next(
+            e for e in response.json()["connections"] if e["slug"] == "example"
+        )
+        assert entry["sign_in_fields"] == [
+            {
+                "name": "tenant",
+                "label": "Example team",
+                "help": "Your team's name, such as team-a.",
+                "pattern": "^[a-z0-9-]{1,30}$",
+            }
+        ]

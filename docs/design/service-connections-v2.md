@@ -31,6 +31,11 @@ auth:
   type: oauth
   refresh: rotating           # rotating | reusable
   oauth:
+    # fields:
+    #   - name: tenant
+    #     label: Example team
+    #     help: Your team's name, such as team-a.
+    #     pattern: '^[a-z0-9-]{1,30}$'
     registration: dynamic     # dynamic: Core registers its own client
                               # static: the operator's, saved in the dashboard or named
                               # by <PREFIX>_CLIENT_CONFIG_PATH (client_settings)
@@ -83,6 +88,15 @@ endpoints are discovered from the first MCP server: the metadata its 401 names
 (RFC 9728), else the well-known addresses, then the authorization server's
 metadata (RFC 8414), which must offer PKCE with S256. A dynamically registered
 client always discovers. Placeholder entries keep their short form.
+
+An OAuth MCP connector may declare up to four sign-in fields under
+`auth.oauth.fields`. Their placeholders fill a whole path segment or a whole
+host label left of a fixed domain in an MCP server URL, never its scheme, port,
+query or fragment.
+The identity's `account_id` lists every field as `connection.<field>` alongside
+vendor identity paths, so accounts from different tenants stay distinct. The
+checked values live in the encrypted connection secret, and grants name a rendered
+server only while their account still matches the owner's connection.
 
 The adapter is named for how it signs in, `oauth`, not for how its tools are
 reached. Its entry delivers its tools one of two ways, never both: the vendor's
@@ -155,6 +169,9 @@ keep working, up to the entry's `max_lifetime` (an hour for Google, eight
 hours for Atlassian, whose tokens cannot be asked for shorter).
 
 ## Connecting
+
+Console sends the sign-in fields with the flow start, and Core checks them
+before contacting the vendor.
 
 Routes under `/gateway/service-connections/{service}/flows`: start, authorize,
 callback, complete, status and drop.

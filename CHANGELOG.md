@@ -47,6 +47,10 @@ version of their own to them without also giving them a release of their own.
 #### Added
 
 - **OAuth identity through MCP.** Catalog entries may identify the connected account with a verified read-only, argument-free MCP tool. Explicit unscoped OAuth entries are recorded as write access.
+- **An OAuth connector can ask for sign-in fields.** Console can supply a
+  team's name when starting sign-in. Core checks it before contacting the
+  vendor, keeps it in the encrypted connection secret, and uses it to name
+  the account and the MCP servers offered to the account's agents.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption

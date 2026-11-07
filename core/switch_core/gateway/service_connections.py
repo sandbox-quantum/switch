@@ -117,6 +117,19 @@ async def list_service_connections(
                 "description": definition.description,
                 "enabled": definition.enabled,
                 "auth_type": definition.auth.type,
+                "sign_in_fields": (
+                    []
+                    if definition.auth.oauth is None
+                    else [
+                        {
+                            "name": field.name,
+                            "label": field.label,
+                            "help": field.help,
+                            "pattern": field.pattern,
+                        }
+                        for field in definition.auth.oauth.fields
+                    ]
+                ),
                 "connectable": standing.connectable,
                 "configured": unavailable is None,
                 "unavailable_reason": None

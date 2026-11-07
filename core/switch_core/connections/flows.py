@@ -25,6 +25,7 @@ at most 256 per workspace, one per person.
 from __future__ import annotations
 
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
@@ -42,6 +43,7 @@ from switch_core.connections.loader import (
     AccessLevel,
     ConnectionDefinition,
     RedirectMode,
+    sign_in_field_values,
 )
 from switch_core.connections.oauth_clients import core_callback, loopback_redirect
 from switch_core.connections.sign_in_flows import (
@@ -66,6 +68,10 @@ def client_changed(name: str) -> str:
 
 class FlowError(Exception):
     """The flow cannot go on; the message is for the person."""
+
+    def __init__(self, message: str, *, status_code: int = 409) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -160,7 +166,13 @@ class ServiceFlows:
         port: int,
         completion_secret: str,
         owner_label: str,
+        fields: Mapping[str, object] | None = None,
     ) -> ServiceFlow:
+        assert definition.auth.oauth is not None
+        try:
+            values = sign_in_field_values(definition.auth.oauth.fields, fields or {})
+        except ValueError as error:
+            raise FlowError(str(error), status_code=400) from None
         mode = self.mode(definition)
         if mode is None:
             raise FlowError(
@@ -199,6 +211,7 @@ class ServiceFlows:
                 owner_label=owner_label,
                 details={
                     "name": definition.name,
+                    "sign_in_fields": values,
                     "consent": consent,
                     "unscoped": access.unscoped,
                     "scopes": list(level.scopes),
@@ -243,6 +256,7 @@ class ServiceFlows:
         the browser sent there; once per flow. The flow records the client it
         is sent through, so a code issued to one client is never exchanged
         with another."""
+        adapter = adapter.for_fields(flow.stored.details.get("sign_in_fields", {}))
         nonce = secrets.token_urlsafe(32)
         client_id = await adapter.client_id()
         taken = await self._flows.advance(
@@ -307,6 +321,7 @@ class ServiceFlows:
         """Console hands back the code; Core exchanges it and reads the account.
         The flow stays `checking` until the caller writes the connection and
         settles it with `connected` or `failed`."""
+        adapter = adapter.for_fields(flow.stored.details.get("sign_in_fields", {}))
         ready_for = "authorizing" if flow.mode == "loopback" else "delivered"
         refused = FlowError(
             f"{flow.name} sign-in could not be verified. Connect again."
