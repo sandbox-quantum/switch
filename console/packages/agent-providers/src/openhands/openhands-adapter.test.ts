@@ -13,6 +13,15 @@ vi.mock('node:fs/promises', async (original) => ({
   realpath: async (path: string) => path,
 }));
 const servers: FakeAppServer[] = [];
+const preflight = vi.hoisted(() => vi.fn());
+vi.mock('./launcher', () => ({
+  preflightOpenHands: preflight,
+  launchOpenHands: ({ binaryPath, env }: { binaryPath: string; env: Record<string, string> }) => ({
+    command: binaryPath,
+    args: ['acp'],
+    env,
+  }),
+}));
 vi.mock('node:child_process', () => ({
   spawn: () => {
     const server = new FakeAppServer();
@@ -47,6 +56,7 @@ const { createOpenHandsAdapter, openhandsAcp, openhandsHome, openhandsSignedIn }
   await import('./openhands-adapter');
 beforeEach(() => {
   servers.length = 0;
+  preflight.mockReset().mockResolvedValue(undefined);
 });
 async function setup(
   resume = false,
@@ -72,12 +82,6 @@ afterEach(() => {
 });
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-it('launches the CLI as its ACP server', () => {
-  expect(
-    openhandsAcp.launch({ binaryPath: '/opt/openhands', cwd: '/work', env: { A: '1' } })
-  ).toEqual({ command: '/opt/openhands', args: ['acp'], env: { A: '1' } });
-});
-
 it('maps Switch runtime modes onto the OpenHands confirmation modes', () => {
   expect(openhandsAcp.sessionMode?.('approval-required', undefined)).toBe('always-ask');
   expect(openhandsAcp.sessionMode?.('auto-accept-edits', undefined)).toBe('always-ask');
@@ -100,6 +104,54 @@ it('starts a session without authenticating, and sets its confirmation mode', as
     sessionId: 'native',
     modeId: 'always-ask',
   });
+});
+
+it('passes MCP servers through the host bridge without putting credentials in arguments', async () => {
+  const adapter = createOpenHandsAdapter({
+    mcpBridge: { command: '/host/node', args: ['/host/sidecar.mjs', '--openhands-mcp-bridge'] },
+  });
+  await adapter.startSession({
+    sessionId: 's',
+    cwd: '/work',
+    runtimeMode: 'approval-required',
+    env: {},
+    mcpServers: {
+      switch: {
+        transport: 'http',
+        url: 'http://127.0.0.1:9999/mcp',
+        headers: { authorization: 'secret' },
+      },
+    },
+    connectorMcpServers: [],
+  });
+  const request = servers.at(-1)!.received.find((message) => message.method === 'session/new');
+  const mapped = request?.params?.mcpServers as Array<{
+    name: string;
+    args: string[];
+    env: Array<{ name: string; value: string }>;
+  }>;
+  expect(mapped).toHaveLength(1);
+  expect(mapped[0].name).toBe('switch');
+  expect(JSON.stringify(mapped[0].args)).not.toContain('secret');
+  const config = mapped[0].env.find((entry) => entry.name === 'SWITCH_OPENHANDS_MCP_SPEC');
+  expect(JSON.parse(config!.value).headers.authorization).toBe('secret');
+  await adapter.stopAll();
+});
+
+it('fails closed when a host starts OpenHands with MCP but no bridge entrypoint', async () => {
+  const adapter = createOpenHandsAdapter();
+  await expect(
+    adapter.startSession({
+      sessionId: 'no-bridge',
+      cwd: '/work',
+      runtimeMode: 'approval-required',
+      env: {},
+      mcpServers: { switch: { transport: 'http', url: 'http://127.0.0.1:9999/mcp' } },
+      connectorMcpServers: [],
+    })
+  ).rejects.toThrow('OpenHands MCP requires the Switch host MCP bridge.');
+  expect(servers.at(-1)!.received.some((message) => message.method === 'session/new')).toBe(false);
+  await adapter.stopAll();
 });
 
 it('puts a full-access session in always-approve, so nothing asks', async () => {
@@ -193,8 +245,7 @@ function fixtureHome(files: Record<string, string>): string {
 const noHandshake = {
   binaryPath: 'openhands',
   cwd: '/work',
-  // The check reads files only; running the agent would start a session
-  // process (and the Cloud method would open a browser at a session start).
+  // The check must not start an agent session or open the Cloud login.
   handshake: async (): Promise<never> => {
     throw new Error('the sign-in check must not run the agent');
   },
@@ -218,6 +269,34 @@ it('reports a configured agent as signed in', async () => {
   await expect(openhandsAcp.checkSignIn!({ ...noHandshake, env: { HOME: home } })).resolves.toEqual(
     { status: 'authenticated', message: 'Signed in.', models: [] }
   );
+});
+
+it('checks the selected installation before reporting a configured agent ready', async () => {
+  const home = fixtureHome({ 'agent_settings.json': JSON.stringify({ llm: { model: 'test' } }) });
+  const input = {
+    ...noHandshake,
+    binaryPath: '/chosen/openhands',
+    cwd: '/chosen/work',
+    env: { HOME: home, PATH: '/chosen/bin' },
+  };
+  await expect(openhandsAcp.checkSignIn!(input)).resolves.toMatchObject({
+    status: 'authenticated',
+  });
+  expect(preflight).toHaveBeenCalledWith({
+    binaryPath: input.binaryPath,
+    cwd: input.cwd,
+    env: input.env,
+  });
+});
+
+it('reports incompatible installations with actionable, sanitized readiness', async () => {
+  const home = fixtureHome({ 'agent_settings.json': JSON.stringify({ llm: { model: 'test' } }) });
+  preflight.mockRejectedValue(new Error('sensitive path or secret'));
+  const result = await openhandsAcp.checkSignIn!({ ...noHandshake, env: { HOME: home } });
+  expect(result).toMatchObject({ status: 'unconfigured', loginHelps: false });
+  expect(result.message).toContain('OpenHands CLI 1.16.0');
+  expect(result.message).toContain('SDK/tools 1.21.0');
+  expect(result.message).not.toContain('sensitive');
 });
 
 it('does not treat a Cloud login alone as a configured local agent', async () => {

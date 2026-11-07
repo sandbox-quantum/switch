@@ -1,5 +1,5 @@
 import { checkAcpSignIn, createAcpAdapter } from '../acp/acp-adapter';
-import type { AcpProviderHooks } from '../acp/hooks';
+import type { AcpMcpBridge, AcpProviderHooks } from '../acp/hooks';
 import type { ProviderAdapter } from '../adapter';
 import { antigravityAcp } from '../antigravity/antigravity-adapter';
 import { createClaudeAdapter } from '../claude/claude-adapter';
@@ -30,6 +30,8 @@ export interface ProviderRuntimeOptions {
    * (`prepareSharedConfig`).
    */
   serviceSkills: readonly { name: string; content: string }[];
+  /** Optional host-owned MCP compatibility entry point. */
+  mcpBridge?: AcpMcpBridge;
 }
 
 /** What the execution host needs to run one provider. */
@@ -62,7 +64,8 @@ export function acpProviderRuntime(hooks: AcpProviderHooks): ProviderRuntime {
     ...(hooks.loginCommandFor ? { loginCommandFor: hooks.loginCommandFor } : {}),
     inheritEnv: hooks.inheritEnv ?? [],
     unsupportedPlatforms: hooks.unsupportedPlatforms ?? {},
-    createAdapter: ({ binaryPath, logger }) => createAcpAdapter(hooks, { binaryPath, logger }),
+    createAdapter: ({ binaryPath, logger, mcpBridge }) =>
+      createAcpAdapter(hooks, { binaryPath, logger, mcpBridge }),
     checkSignIn: (input) => checkAcpSignIn(hooks, input),
   };
 }

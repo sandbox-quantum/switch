@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
+import type { AcpMcpBridge } from '../acp/hooks';
 import type { AgentLaunchDefinition, ProviderAdapter, ProviderSessionStartInput } from '../adapter';
 import { isProviderRuntime, providerRuntime, providerRuntimeIds } from '../providers/registry';
 import { replaceFile } from './replace-file';
@@ -76,13 +77,15 @@ export function adapterFor(
   provider: Session['provider'],
   binaryPath: string | undefined,
   skill: string,
-  serviceSkills: ServiceSkill[]
+  serviceSkills: ServiceSkill[],
+  mcpBridge?: AcpMcpBridge
 ): ProviderAdapter {
   return providerRuntime(provider).createAdapter({
     binaryPath,
     logger: undefined,
     skill,
     serviceSkills,
+    mcpBridge,
   });
 }
 
@@ -98,7 +101,8 @@ async function body(request: IncomingMessage): Promise<unknown> {
 }
 
 export async function startHostServer(
-  root: string
+  root: string,
+  mcpBridge?: AcpMcpBridge
 ): Promise<{ endpoint: HostEndpoint; close(): Promise<void> }> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const ownerPath = join(root, 'owner.lock');
@@ -118,7 +122,7 @@ export async function startHostServer(
         throw new Error(
           'Shared Switch sessions require the server lease and command transport; local bypass is not permitted.'
         );
-      const adapter = adapterFor(input.provider, undefined, '', []);
+      const adapter = adapterFor(input.provider, undefined, '', [], mcpBridge);
       const path = folder(root, input.input.sessionId);
       await mkdir(path, { recursive: true, mode: 0o700 });
       await writeFile(join(path, 'config.json'), JSON.stringify(input), { mode: 0o600 });

@@ -3,7 +3,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
-import { readiness } from '../readiness';
+import { loginWontHelp, readiness } from '../readiness';
+import { launchOpenHands, preflightOpenHands } from './launcher';
+import { prepareOpenHandsMcpServers } from './mcp-config';
 
 /**
  * Where OpenHands keeps everything it persists — the configured agent, its
@@ -60,7 +62,9 @@ export const openhandsAcp: AcpProviderHooks = {
     // its confirmation prompts; questions have no channel.
     userInput: false,
   },
-  launch: ({ binaryPath, env }) => ({ command: binaryPath, args: ['acp'], env }),
+  launch: launchOpenHands,
+  prepareMcpServers: prepareOpenHandsMcpServers,
+  maxRequestBytes: 16 * 1024 * 1024,
   loginCommand: 'openhands',
   // The one variable of OpenHands' a session host must pass through: a
   // session has to read the same home the sign-in check read. The LLM
@@ -68,13 +72,26 @@ export const openhandsAcp: AcpProviderHooks = {
   // `--override-with-envs`, which Switch does not pass, and runs the
   // persisted agent instead.
   inheritEnv: ['OPENHANDS_PERSISTENCE_DIR'],
-  checkSignIn: async ({ env }) =>
-    (await openhandsSignedIn(env))
+  checkSignIn: async ({ binaryPath, cwd, env }) => {
+    try {
+      await preflightOpenHands({ binaryPath, cwd, env });
+    } catch {
+      // The compatibility check can fail on a path or child process error;
+      // never surface those raw errors, which could contain private values.
+      return loginWontHelp(
+        readiness(
+          'unconfigured',
+          'OpenHands is unavailable or incompatible. Install Python-based OpenHands CLI 1.16.0 with SDK/tools 1.21.0 and agent-client-protocol >=0.8.1,<0.9.0 on the execution machine.'
+        )
+      );
+    }
+    return (await openhandsSignedIn(env))
       ? readiness('authenticated', 'Signed in.')
       : readiness(
           'unauthenticated',
           'OpenHands has no LLM configured on this machine. Run `openhands` once on the execution machine to set one up.'
-        ),
+        );
+  },
   // OpenHands asks before an action in its confirmation modes, and Switch's
   // runtime modes map onto them. Auto-accept-edits stays always-ask: the
   // generic adapter answers edit requests itself in that mode, and the CLI

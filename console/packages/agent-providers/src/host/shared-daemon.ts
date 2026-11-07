@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { runOpenHandsMcpBridge } from '../openhands/mcp-bridge';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
 import {
@@ -251,7 +252,8 @@ async function main(): Promise<void> {
           config.start.provider,
           config.execution?.binaryPath,
           config.execution?.skill ?? '',
-          grantedSkills(services.grants)
+          grantedSkills(services.grants),
+          { command: process.execPath, args: [process.argv[1]!, '--openhands-mcp-bridge'] }
         ),
         services,
         servicesChange,
@@ -315,7 +317,8 @@ function isCliConversationMode(value: string): value is CliConversationMode {
   return (CLI_CONVERSATION_MODES as readonly string[]).includes(value);
 }
 
-if (root === '--git-credential' || root === '--github-cli') await helper();
+if (root === '--openhands-mcp-bridge') await runOpenHandsMcpBridge();
+else if (root === '--git-credential' || root === '--github-cli') await helper();
 else
   try {
     await main();

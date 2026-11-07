@@ -1,9 +1,19 @@
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { describeConformance, echoMcpServerSpec } from '../testing/index';
 import { createOpenHandsAdapter, openhandsSignedIn } from './openhands-adapter';
 
 describeConformance('openhands', {
-  createAdapter: async () => createOpenHandsAdapter(),
+  createAdapter: async () =>
+    createOpenHandsAdapter({
+      mcpBridge: {
+        command: process.execPath,
+        args: [
+          '--experimental-strip-types',
+          fileURLToPath(new URL('../testing/openhands-mcp-bridge.mjs', import.meta.url)),
+        ],
+      },
+    }),
   unavailableReason: async () => {
     const probe = spawnSync('openhands', ['--version'], { encoding: 'utf8' });
     if (probe.error || probe.status !== 0) return 'the openhands binary is not on PATH';
