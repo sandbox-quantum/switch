@@ -213,6 +213,21 @@ class TestSignIn:
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
 
+    async def test_reads_the_account_with_a_post_when_the_catalog_asks(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "  identity:\n    url: https://api.example.test/me\n",
+                "  identity:\n    method: POST\n    url: https://api.example.test/me\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        assert vendor.identity_methods[-1] == "POST"
+
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}
         adapter, _ = _adapter(vendor)
@@ -643,3 +658,95 @@ class TestThroughTheBroker:
         assert vendor.revoked == []
         async with session_factory() as session:
             assert await STORE.get_connection(session, owner.id, "example") is None
+
+
+@pytest.mark.parametrize("status", [200, 400, 401, 429, 500])
+async def test_bearer_revocation_sends_only_access_token_and_checks_status(status):
+    seen = []
+
+    def handle(request):
+        seen.append(request)
+        return httpx.Response(status, json={"error": "invalid_token"})
+
+    definition = _definition(
+        STATIC.replace(
+            "    client_settings: EXAMPLE\n",
+            f"    client_settings: EXAMPLE\n    revocation_url: {ISSUER}/revoke\n    revocation_auth: bearer_access_token\n    authorization_url: {ISSUER}/authorize\n    token_url: {ISSUER}/token\n",
+        )
+    )
+    client = StaticClient(
+        OAuthClientCredentials(
+            STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+        )
+    )
+    adapter = OAuthAdapter(
+        definition, client, httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    )
+    secret = ConnectionSecret(
+        {
+            "access_token": "access-only-dummy",
+            "refresh_token": "never-send-refresh-dummy",
+        }
+    )
+    if status == 200:
+        await adapter.revoke_connection(secret)
+    else:
+        with pytest.raises(ServiceAdapterError):
+            await adapter.revoke_connection(secret)
+    [request] = seen
+    assert request.method == "POST"
+    assert request.headers["Authorization"] == "Bearer access-only-dummy"
+    assert request.content == b""
+    assert "never-send-refresh" not in str(request.headers)
+
+
+async def test_bearer_revocation_missing_access_token_fails_without_request():
+    def handle(request):
+        raise AssertionError("must not send without access token")
+
+    definition = _definition(
+        STATIC.replace(
+            "    client_settings: EXAMPLE\n",
+            f"    client_settings: EXAMPLE\n    revocation_url: {ISSUER}/revoke\n    revocation_auth: bearer_access_token\n    authorization_url: {ISSUER}/authorize\n    token_url: {ISSUER}/token\n",
+        )
+    )
+    adapter = OAuthAdapter(
+        definition,
+        StaticClient(
+            OAuthClientCredentials(
+                STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+            )
+        ),
+        httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    with pytest.raises(ServiceAdapterError, match="needs an access token"):
+        await adapter.revoke_connection(ConnectionSecret({"refresh_token": "dummy"}))
+
+
+async def test_post_identity_uses_json_null_and_bearer_token():
+    from switch_core.connections.loader import CATALOG
+
+    seen = []
+
+    def handle(request):
+        seen.append(request)
+        return httpx.Response(
+            200, json={"account_id": "dbid:example", "email": "owner@example.test"}
+        )
+
+    adapter = OAuthAdapter(
+        CATALOG["dropbox"].definition,
+        StaticClient(
+            OAuthClientCredentials("public-example", None, authentication=None)
+        ),
+        httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+    )
+    identity = await adapter.identify("dummy-access")
+    assert identity.account_id == "dbid:example"
+    assert identity.label == "owner@example.test"
+    [request] = seen
+    assert request.method == "POST"
+    assert str(request.url) == "https://api.dropboxapi.com/2/users/get_current_account"
+    assert request.content == b"null"
+    assert request.headers["content-type"] == "application/json"
+    assert request.headers["authorization"] == "Bearer dummy-access"
