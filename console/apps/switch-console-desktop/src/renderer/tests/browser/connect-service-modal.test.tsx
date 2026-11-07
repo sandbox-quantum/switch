@@ -8,6 +8,7 @@
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
+import { page } from 'vitest/browser';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
@@ -191,4 +192,17 @@ it('stays open with the reason when the server refuses the sign-in', async () =>
   expect(onConnected).not.toHaveBeenCalled();
   expect(onClose).not.toHaveBeenCalled();
   expect(modal.querySelector('[data-slot="dialog-close"]')).not.toBeNull();
+});
+
+it('presents a write-only OAuth connection as write access before sign-in', async () => {
+  const modal = await render(entry({ name: 'Azure DevOps', requested_access: 'write' }));
+  expect(modal.textContent).toContain('This connection requests write access.');
+  expect(modal.textContent).not.toContain('This connection requests read access.');
+  await page.screenshot({ path: '__screenshots__/azure-write-only-connect.png' });
+});
+
+it('keeps read-only OAuth access labelled read', async () => {
+  const modal = await render(entry({ requested_access: 'read' }));
+  expect(modal.textContent).toContain('This connection requests read access.');
+  expect(modal.textContent).not.toContain('This connection requests write access.');
 });
