@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `pi` | `pi --mode rpc`, Pi's JSONL protocol over stdio, with a Switch extension the host writes for each session | Pi does not speak ACP. The `pi-acp` bridge accepts MCP servers without passing them to Pi and has no permission path, so a session would have neither the Switch tools nor approvals. RPC mode has steering, abort and session ids, and carries an extension's questions to the client. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -67,6 +68,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
+| pi | 1.4.0, 1.5.0 | 8/10 with `google/gemini-flash-lite-latest` on 1.4.0 (2026-10-29), and 8/10 with a scripted model on 1.4.0 and on 1.5.0 (2026-11-07) | `user-input` is skipped: Pi has no tool for asking the user, so an agent on Pi asks in the room. `subagent` is skipped: Pi has none of its own. Pi asks for no approvals itself; see [Pi](#pi). It signs in with `/login` in its own interface, or a provider's API key, so Console's Sign in button cannot sign it in: `/login` needs a terminal. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
@@ -127,3 +129,38 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+## Pi
+
+Pi (`src/pi/`) has an adapter of its own, on `pi --mode rpc`. Its turn ends
+at `agent_settled`, not `agent_end`, since Pi may go on to retry, compact or
+answer a queued message after a run ends. A message sent mid-turn goes as
+`prompt` with `streamingBehavior: 'steer'` and joins the running turn. An
+interrupt clears Pi's queue first, since Pi's `abort` goes on to queued
+messages, and cancels the questions the extension is waiting on, since a tool
+call waiting for an answer holds the run that `abort` waits for.
+
+Pi reads MCP servers from its configuration files and asks for no approvals,
+so both come from the Switch extension (`src/pi/extension.ts`), which the host
+writes into a folder of the session's own and loads with `-e`. Nothing is
+installed in Pi's folders and no file of Pi's is changed. The extension:
+
+- registers the session's servers with `pi.registerMcpServer`, every tool
+  declared to the model, from a variable it removes as it reads it, so the
+  commands the agent runs do not inherit the servers' tokens. Values are
+  escaped, since Pi expands `$NAME` and runs a value starting with `!`;
+- asks the host about every tool call, through Pi's extension UI protocol, and
+  runs a call only on an explicit allow;
+- says when its session has started, and the host starts no turn before it
+  does.
+
+The decision is the host's (`src/pi/tools.ts`): the session's own servers
+never ask, full access asks about nothing, read-only tools run,
+auto-accept-edits runs `edit` and `write`, and everything else asks. Pi has no
+automatic reviewer, so auto mode asks as approval-required does, as Cursor's
+does.
+
+A session is refused when a Pi `mcp.json` defines a server with one of the
+session's server names, since Pi would use that one in its place. A resumed
+session whose conversation Pi no longer has is refused rather than started
+empty: Pi's `--session-id` creates a session it cannot find.

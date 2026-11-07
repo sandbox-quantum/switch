@@ -388,6 +388,8 @@ version of their own to them without also giving them a release of their own.
   Workspace token. With Helm, set `switchCore.serviceAccessProfiles` (and
   `switchCore.disabledServices` for `DISABLED_SERVICES`). Without the setting
   nothing changes.
+- **Agents can run on Pi.** `pi` is a provider an agent definition can name,
+  and `create_agent` takes it. It has no advanced settings.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -2746,6 +2748,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Pi as an agent provider.** An agent can run on Pi, the open-source coding
+  agent that works with many model providers. Its sessions run on Pi's RPC
+  mode: tool calls ask in the room as the agent's permission mode says, a
+  message sent mid-turn joins the turn, `!interrupt` stops it, and the
+  conversation resumes after a restart. The session host writes Switch's
+  extension for Pi for each session, so nothing is installed in Pi's folders.
+  Pi signs in with `/login` in its own interface or a model provider's key.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
@@ -4898,6 +4907,9 @@ tags; see RELEASING.md.
   whose check says its login command would not fix the problem is reported
   with `login_helps: false` beside `auth_problem`, so Console does not offer
   the command. Absent otherwise, as before.
+- **Pi agents on a headless machine.** The controller reports whether Pi is
+  installed and signed in and runs agents on it, with `pi` on the PATH and a
+  model provider's key in the environment or a `/login` already done.
 - **Provider logins given to the machine, on demand.** The controller makes an
   X25519 keypair at enrollment (or on its next run, for one enrolled before)
   and registers the public half. When its owner gives the machine a login
