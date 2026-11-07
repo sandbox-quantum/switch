@@ -10,11 +10,14 @@ model (`specs/delivery.qnt`) and the state machine check the steps.
 
 reads every tenant, so it connects as the schema owner, which the row-level
 policies do not apply to, and exits 1 with one line per violation. `--json`
-prints one object instead: the counts of what was read, and the violations.
+prints one object instead (the counts of what was read, and the violations) and
+exits 0 whenever it could read, so a nonzero exit is always a failure to run;
+`--tag` reads only the rooms and agents whose names start with it.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
@@ -63,38 +66,55 @@ class History:
     members: set[tuple[str, str]] = field(default_factory=set)
 
 
-async def load(connection: asyncpg.Connection) -> History:
-    """Every tenant's rows, in one transaction so they agree with each other."""
+async def load(connection: asyncpg.Connection, tag: str | None) -> History:
+    """The rows of every tenant, or only of the rooms and agents whose names
+    start with `tag` (the harness names what a scenario makes that way), in one
+    transaction so they agree with each other."""
     history = History()
     async with connection.transaction(isolation="repeatable_read", readonly=True):
         for room_id, seq in await connection.fetch(
-            "SELECT room_id, seq FROM messages WHERE seq > 0 ORDER BY room_id, seq"
+            "SELECT m.room_id, m.seq FROM messages m JOIN rooms r ON r.id = m.room_id "
+            "WHERE m.seq > 0 AND ($1::text IS NULL OR starts_with(r.name, $1)) "
+            "ORDER BY m.room_id, m.seq",
+            tag,
         ):
             history.room_seqs.setdefault(room_id, []).append(seq)
         history.events = [
             Event(**dict(row))
             for row in await connection.fetch(
-                "SELECT agent_id, seq, room_id, room_seq, message_key, type, "
-                "created_at FROM agent_events ORDER BY agent_id, seq"
+                "SELECT e.agent_id, e.seq, e.room_id, e.room_seq, e.message_key, "
+                "e.type, e.created_at FROM agent_events e "
+                "JOIN agents a ON a.id = e.agent_id "
+                "WHERE $1::text IS NULL OR starts_with(a.name, $1) "
+                "ORDER BY e.agent_id, e.seq",
+                tag,
             )
         ]
         history.heads = {
             row["agent_id"]: (row["first_seq"], row["last_seq"])
             for row in await connection.fetch(
-                "SELECT agent_id, first_seq, last_seq FROM agent_event_heads"
+                "SELECT h.agent_id, h.first_seq, h.last_seq FROM agent_event_heads h "
+                "JOIN agents a ON a.id = h.agent_id "
+                "WHERE $1::text IS NULL OR starts_with(a.name, $1)",
+                tag,
             )
         }
         history.drops = {
             (row["agent_id"], row["room_id"]): row["dropped_through"]
             for row in await connection.fetch(
-                "SELECT agent_id, room_id, dropped_through FROM agent_event_drops"
+                "SELECT d.agent_id, d.room_id, d.dropped_through "
+                "FROM agent_event_drops d JOIN agents a ON a.id = d.agent_id "
+                "WHERE $1::text IS NULL OR starts_with(a.name, $1)",
+                tag,
             )
         }
         history.members = {
             (row["agent_id"], row["room_id"])
             for row in await connection.fetch(
                 "SELECT a.id AS agent_id, cr.room_id FROM client_rooms cr "
-                "JOIN agents a ON a.client_id = cr.client_id"
+                "JOIN agents a ON a.client_id = cr.client_id "
+                "WHERE $1::text IS NULL OR starts_with(a.name, $1)",
+                tag,
             )
         }
     return history
@@ -145,8 +165,9 @@ def own_seq_contiguous(history: History) -> list[str]:
 
 @checks("delivery.addressed-exactly-once")
 def addressed_exactly_once(history: History) -> list[str]:
-    """An agent has one event for each row of a room, and each event is for a
-    row that exists (or that retention has since deleted)."""
+    """An agent has one event for each row of a room, and no event is for a
+    row past the newest the room has. A room with no rows left, or not read, says
+    nothing: retention deletes from the front."""
     found = []
     sources: dict[tuple[str, str, int, str], int] = {}
     for event in history.events:
@@ -160,7 +181,7 @@ def addressed_exactly_once(history: History) -> list[str]:
         else:
             sources[source] = event.seq
         rows = history.room_seqs.get(event.room_id)
-        if rows is None or event.room_seq > rows[-1]:
+        if rows is not None and event.room_seq > rows[-1]:
             found.append(
                 f"agent {event.agent_id}: event {event.seq} is for room "
                 f"{event.room_id} row {event.room_seq}, which was never committed"
@@ -183,16 +204,17 @@ def no_events_after_leave(history: History) -> list[str]:
 @checks("delivery.no-silent-loss")
 def no_silent_loss(history: History) -> list[str]:
     """Retention deleted a prefix of each agent's numbers: nothing is kept
-    below the newest number it recorded deleting, in any room, because a reader
+    at or below the newest number it recorded deleting, in any room (a kept
+    event at that number would be a number given out twice), because a reader
     resuming below what is kept is told only about the rooms it recorded."""
     found = []
     by_agent = _by_agent(history)
     for (agent, room), dropped in sorted(history.drops.items()):
         for event in by_agent.get(agent, []):
-            if event.seq < dropped:
+            if event.seq <= dropped:
                 found.append(
-                    f"agent {agent}: event {event.seq} is kept below {dropped}, "
-                    f"which retention deleted in room {room}"
+                    f"agent {agent}: event {event.seq} is kept at or below "
+                    f"{dropped}, which retention deleted in room {room}"
                 )
     return found
 
@@ -207,9 +229,14 @@ def violations(history: History) -> list[str]:
 
 
 async def main(argv: list[str]) -> int:
-    as_json = argv == ["--json"]
-    if argv and not as_json:
-        print("usage: delivery.py [--json]", file=sys.stderr)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--tag", help="only rooms and agents whose names start so")
+    args = parser.parse_args(argv)
+    names = ("DB_HOST", "DB_PORT", "DB_OWNER_USER", "DB_OWNER_PASSWORD", "DB_NAME")
+    missing = [name for name in names if name not in os.environ]
+    if missing:
+        print(f"history: {', '.join(missing)} not set", file=sys.stderr)
         return 2
     connection = await asyncpg.connect(
         host=os.environ["DB_HOST"],
@@ -219,7 +246,7 @@ async def main(argv: list[str]) -> int:
         database=os.environ["DB_NAME"],
     )
     try:
-        history = await load(connection)
+        history = await load(connection, args.tag)
     finally:
         await connection.close()
     found = violations(history)
@@ -229,16 +256,16 @@ async def main(argv: list[str]) -> int:
         "events": len(history.events),
         "agents": len(history.heads),
     }
-    if as_json:
+    if args.json:
         print(json.dumps({**counts, "violations": found}))
-    else:
-        for line in found:
-            print(line)
-        print(
-            f"history: {counts['rows']} rows in {counts['rooms']} rooms, "
-            f"{counts['events']} own events for {counts['agents']} agents, "
-            f"checked {len(CHECKS)} properties: {len(found)} violations"
-        )
+        return 0
+    for line in found:
+        print(line)
+    print(
+        f"history: {counts['rows']} rows in {counts['rooms']} rooms, "
+        f"{counts['events']} own events for {counts['agents']} agents, "
+        f"checked {len(CHECKS)} properties: {len(found)} violations"
+    )
     return 1 if found else 0
 
 

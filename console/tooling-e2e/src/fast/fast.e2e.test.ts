@@ -68,12 +68,15 @@ describe('fast lane', () => {
         } catch (error) {
           failure = error;
         }
-        // Before teardown, which deletes the agents and with them their own events.
-        if (failure === null && historyCheck !== null) {
+        // Before teardown, which deletes the agents and with them their own
+        // events, and whether or not the scenario failed: a failing run's
+        // history is the one most worth reading.
+        if (historyCheck !== null) {
           try {
-            await historyCheck.verify();
+            await historyCheck.verify(names.tag);
           } catch (error) {
-            failure = error;
+            if (failure === null) failure = error;
+            else log(`history: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
         leftovers = await fixtures.teardown();
@@ -175,10 +178,10 @@ describe('fast lane, derived checks', () => {
   // A check over an empty history passes anything, so say the run gave it agents' own events.
   it('the history checks saw agents\' own events', async (context) => {
     if (historyCheck === null) return context.skip('SWITCH_E2E_HISTORY_CHECK is not set');
-    expect(historyCheck.checks, 'no history check ran').toBeGreaterThan(0);
+    if (historyCheck.checks === 0) return context.skip('no scenario ran, so no history was checked');
     expect(
       historyCheck.mostEvents,
-      'no history check found an own event, so none of them checked delivery'
+      'when each scenario was checked none had left an agent an own event, so the checks looked at no delivery'
     ).toBeGreaterThan(0);
   });
 

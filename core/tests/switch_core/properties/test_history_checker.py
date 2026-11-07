@@ -47,7 +47,7 @@ def _found(machine: Delivery, mutate: str | None) -> list[str]:
         try:
             if mutate is not None:
                 await connection.execute(mutate)
-            history = await history_delivery.load(connection)
+            history = await history_delivery.load(connection, None)
         finally:
             await connection.close()
         return history_delivery.violations(history)
@@ -101,3 +101,21 @@ def test_each_check_fails_on_its_bug(
 ) -> None:
     found: list[Any] = _found(run, mutation)
     assert any(line.startswith(f"{property_id}: ") for line in found), found
+
+
+def test_a_tag_reads_only_the_agents_and_rooms_named_so(run: Delivery) -> None:
+    async def go() -> tuple[int, int, int]:
+        connection = await asyncpg.connect(
+            run.url.replace("postgresql+asyncpg://", "postgresql://")
+        )
+        try:
+            scoped = await history_delivery.load(connection, "alpha")
+            nothing = await history_delivery.load(connection, "no-such-tag")
+            everything = await history_delivery.load(connection, None)
+        finally:
+            await connection.close()
+        return len(scoped.events), len(nothing.events), len(everything.events)
+
+    scoped, nothing, everything = run.run(go())
+    assert (scoped, nothing) == (3, 0)
+    assert everything == 5
