@@ -17,6 +17,10 @@ vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) 
 
 const {
   addLinkedRoom,
+  createRoomSchedule,
+  deleteRoomSchedule,
+  fetchRoomSchedules,
+  updateRoomSchedule,
   addRoomUsers,
   fetchLibrary,
   fetchLinkedRooms,
@@ -413,5 +417,93 @@ describe('linked rooms', () => {
     await removeLinkedRoom(SERVER, 'room-1', 'room-2');
     expect(lastCall()).toMatchObject({ method: 'DELETE' });
     expect(lastCall().url).toMatch(/\/rooms\/room-1\/linked-rooms\/room-2$/);
+  });
+});
+
+describe('room schedules', () => {
+  const SCHEDULE = {
+    id: 's-1',
+    room_id: 'room-1',
+    agent_ids: ['a-1'],
+    message: 'Summarise new issues',
+    schedule_type: 'cron',
+    cron_expression: '0 9 * * 1-5',
+    run_at: null,
+    timezone: 'Europe/Berlin',
+    enabled: true,
+    next_run_at: '2026-11-09T08:00:00+00:00',
+    last_run_at: null,
+    last_outcome: null,
+    last_error: null,
+    created_by_user_id: 'u1',
+    updated_by_user_id: 'u1',
+    created_at: '2026-11-06T10:00:00+00:00',
+    updated_at: '2026-11-06T10:00:00+00:00',
+  };
+  const MAPPED = {
+    id: 's-1',
+    roomId: 'room-1',
+    agentIds: ['a-1'],
+    message: 'Summarise new issues',
+    type: 'cron',
+    cronExpression: '0 9 * * 1-5',
+    runAt: null,
+    timezone: 'Europe/Berlin',
+    enabled: true,
+    nextRunAt: '2026-11-09T08:00:00+00:00',
+    lastRunAt: null,
+    lastOutcome: null,
+    lastError: null,
+  };
+
+  it('lists a room’s schedules', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse([SCHEDULE]));
+
+    expect(await fetchRoomSchedules(SERVER, 'room-1')).toEqual([MAPPED]);
+    expect(lastCall()).toMatchObject({ method: 'GET' });
+    expect(lastCall().url).toMatch(/\/rooms\/room-1\/schedules$/);
+  });
+
+  it('creates one, sending the fields the server names them by', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse(SCHEDULE));
+
+    expect(
+      await createRoomSchedule(SERVER, 'room-1', {
+        agentIds: ['a-1'],
+        message: 'Summarise new issues',
+        type: 'cron',
+        cronExpression: '0 9 * * 1-5',
+        runAt: null,
+        timezone: 'Europe/Berlin',
+      })
+    ).toEqual(MAPPED);
+    expect(lastCall()).toMatchObject({
+      method: 'POST',
+      body: {
+        agent_ids: ['a-1'],
+        message: 'Summarise new issues',
+        schedule_type: 'cron',
+        cron_expression: '0 9 * * 1-5',
+        run_at: null,
+        timezone: 'Europe/Berlin',
+      },
+    });
+  });
+
+  it('sends only what changes when pausing', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ ...SCHEDULE, enabled: false }));
+
+    const paused = await updateRoomSchedule(SERVER, 'room-1', 's-1', { enabled: false });
+
+    expect(paused.enabled).toBe(false);
+    expect(lastCall()).toMatchObject({ method: 'PATCH', body: { enabled: false } });
+    expect(lastCall().url).toMatch(/\/rooms\/room-1\/schedules\/s-1$/);
+  });
+
+  it('deletes one', async () => {
+    await deleteRoomSchedule(SERVER, 'room-1', 's-1');
+
+    expect(lastCall()).toMatchObject({ method: 'DELETE' });
+    expect(lastCall().url).toMatch(/\/rooms\/room-1\/schedules\/s-1$/);
   });
 });

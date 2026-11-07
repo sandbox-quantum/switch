@@ -1697,6 +1697,56 @@ class LinkedRoomCreateRequest(BaseModel):
     label: str
 
 
+# ── Room schedules ──────────────────────────────────────────────────────────
+
+
+class RoomScheduleDetail(BaseModel):
+    id: str
+    room_id: str
+    agent_ids: list[str]
+    message: str
+    schedule_type: Literal["once", "cron"]
+    cron_expression: str | None
+    run_at: datetime | None
+    timezone: str
+    enabled: bool
+    # When it fires next; null while paused or finished.
+    next_run_at: datetime | None
+    last_run_at: datetime | None
+    # posted | partial | skipped | missed | failed, with `last_error` saying why
+    # for anything but posted.
+    last_outcome: str | None
+    last_error: str | None
+    created_by_user_id: str | None
+    updated_by_user_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RoomScheduleCreateRequest(BaseModel):
+    agent_ids: list[str]
+    message: str
+    schedule_type: Literal["once", "cron"]
+    # A five-field cron expression, for `cron`.
+    cron_expression: str | None = None
+    # For `once`. With no offset it is wall-clock time in `timezone`.
+    run_at: datetime | None = None
+    timezone: str
+
+
+class RoomScheduleUpdateRequest(BaseModel):
+    """Only the fields sent change. Sending `schedule_type` switches the
+    timing: `cron` drops the one-off time, `once` drops the expression."""
+
+    agent_ids: list[str] | None = None
+    message: str | None = None
+    schedule_type: Literal["once", "cron"] | None = None
+    cron_expression: str | None = None
+    run_at: datetime | None = None
+    timezone: str | None = None
+    enabled: bool | None = None
+
+
 class RoomGraphNode(BaseModel):
     id: str
     name: str

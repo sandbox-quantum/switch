@@ -34,6 +34,7 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.organization_directory import OrganizationDirectory
+from switch_core.room_schedules import RoomScheduleService
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
 from switch_core.telemetry import TelemetryService
@@ -169,6 +170,13 @@ def get_agent_store() -> AgentStore:
 
 def get_room_store() -> RoomStore:
     return _state["room_store"]  # type: ignore[no-any-return]
+
+
+def get_room_schedules() -> RoomScheduleService:
+    service = _state["protocol"].room_schedules
+    if service is None:
+        raise RuntimeError("Room schedules are not wired on this server")
+    return service  # type: ignore[no-any-return]
 
 
 def get_room_group_store() -> RoomGroupStore:

@@ -1408,3 +1408,52 @@ export type RoomDocumentContent = {
 
 /** Another room this room points at, and why. */
 export type LinkedRoom = { roomId: string; name: string; description: string; label: string };
+
+/**
+ * What a schedule's latest firing came to. `partial`: posted, with some
+ * addressed agents no longer in the room left out. `skipped`: nothing posted
+ * (no agent left in the room, or the room archived). `missed`: Switch did not
+ * get to it within a day of its time. `failed`: the post itself did not go.
+ */
+export type RoomScheduleOutcome = 'posted' | 'partial' | 'skipped' | 'missed' | 'failed';
+
+/** `once` fires at one moment; `cron` on a five-field cron rule. */
+export type RoomScheduleType = 'once' | 'cron';
+
+/** A message Switch posts to some of a room's agents at a set time. */
+export type RoomSchedule = {
+  id: string;
+  roomId: string;
+  agentIds: string[];
+  message: string;
+  type: RoomScheduleType;
+  cronExpression: string | null;
+  /** ISO 8601 moment of a one-off; null for a recurring schedule. */
+  runAt: string | null;
+  /** IANA timezone the times are read in. */
+  timezone: string;
+  /** False while paused or, for a one-off, finished. */
+  enabled: boolean;
+  /** ISO 8601 moment of the next firing; null while paused or finished. */
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastOutcome: RoomScheduleOutcome | null;
+  /** Why the latest firing was not a plain `posted`. */
+  lastError: string | null;
+};
+
+/**
+ * What a schedule is made of. `runAt` is a date and time as a person types it
+ * (`2026-12-01T09:00`), read in `timezone` by the server.
+ */
+export type RoomScheduleInput = {
+  agentIds: string[];
+  message: string;
+  type: RoomScheduleType;
+  cronExpression: string | null;
+  runAt: string | null;
+  timezone: string;
+};
+
+/** A change to a schedule: the fields sent are the ones that change. */
+export type RoomScheduleChanges = Partial<RoomScheduleInput> & { enabled?: boolean };

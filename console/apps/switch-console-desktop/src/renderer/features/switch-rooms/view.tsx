@@ -21,6 +21,7 @@ import { RoomConfigurationPanel } from './room-configuration-panel';
 import { roomEmbedSlotStore } from './room-embed-slot';
 import { openRoomChannel } from './room-links';
 import { RoomResourcesPanel } from './room-resources-panel';
+import { RoomSchedulesPanel } from './room-schedules-panel';
 import { RoomSidePanel } from './room-side-panel';
 import { embeddedRoomTab, type RoomTab, roomTabStore } from './room-tab-store';
 
@@ -69,12 +70,13 @@ export const OpenInMessagingApp = observer(function OpenInMessagingApp({
 const TABS = [
   { value: 'chat', label: 'Chat' },
   { value: 'resources', label: 'Resources' },
+  { value: 'schedules', label: 'Schedules' },
   { value: 'configuration', label: 'Configuration' },
 ] as const satisfies readonly { value: RoomTab; label: string }[];
 
 /**
- * A room's tabs — its conversation, what its agents are given, and its
- * settings — to pick between; `fallback` is the tab showing until one is
+ * A room's tabs — its conversation, what its agents are given, the messages
+ * scheduled to them, and its settings — to pick between; `fallback` is the tab showing until one is
  * picked.
  */
 export const RoomTabs = observer(function RoomTabs({
@@ -168,7 +170,7 @@ const ConsoleChat = observer(function ConsoleChat({ roomId }: { roomId: string }
 /**
  * The room's page: who is in it down the side, the same on every platform,
  * and beside that the tab picked in the title bar — its conversation, its
- * resources or its settings.
+ * resources, its schedules or its settings.
  */
 const RoomMainPanel = observer(function RoomMainPanel(): React.JSX.Element {
   const { params } = useParams('room');
@@ -185,6 +187,8 @@ const RoomMainPanel = observer(function RoomMainPanel(): React.JSX.Element {
           <div className="min-w-0 flex-1">
             {tab === 'resources' ? (
               <RoomResourcesPanel roomId={roomId} />
+            ) : tab === 'schedules' ? (
+              <RoomSchedulesPanel roomId={roomId} />
             ) : (
               <RoomConfigurationPanel roomId={roomId} />
             )}
@@ -246,6 +250,7 @@ export const EmbeddedRoom = observer(function EmbeddedRoom({ roomId }: { roomId:
 
 function embeddedTabContent(roomId: string, tab: RoomTab): React.ReactNode {
   if (tab === 'resources') return <RoomResourcesPanel roomId={roomId} />;
+  if (tab === 'schedules') return <RoomSchedulesPanel roomId={roomId} />;
   if (tab === 'configuration') return <RoomConfigurationPanel roomId={roomId} />;
   return <ConsoleChat roomId={roomId} />;
 }
