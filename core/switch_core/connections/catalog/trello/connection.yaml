@@ -1,0 +1,61 @@
+slug: trello
+name: Trello
+category: Project management
+description: Read and update Trello boards, lists and cards, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Every refresh hands out a new refresh token.
+  refresh: rotating
+  oauth:
+    # Trello signs in through Atlassian, which registers clients dynamically,
+    # so Core registers its own.
+    registration: dynamic
+    # Sign-ins come back to Switch Console, so a server without a public
+    # address can connect Trello too. The ports are Atlassian's.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.atlassian.com/me
+    account_id: account_id
+    label: email
+# Trello's MCP access tokens lived 28,800 s when measured, and none can be
+# asked for shorter, so an agent's copy may outlive its grant by up to that
+# long. Agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: trello, url: "https://mcp.trello.com/v1" }
+access:
+  # The person picks one workspace and the permissions to grant on Atlassian's
+  # consent screen. Where it offers only Read, Atlassian grants the read
+  # scopes alone and the connection is recorded as read. Without the Inbox
+  # and Planner scopes, a request for board writes is refused outright. Not
+  # asked for: write:organization:trello, which changes workspaces.
+  read:
+    scopes:
+      - read:me
+      - read:account
+      - offline_access
+      - read:board:trello
+      - read:organization:trello
+      - read:member:trello
+      - read:member.inbox:trello
+      - read:member.planner:trello
+  write:
+    scopes:
+      - read:me
+      - read:account
+      - offline_access
+      - read:board:trello
+      - write:board:trello
+      - read:organization:trello
+      - read:member:trello
+      - read:member.inbox:trello
+      - write:member.inbox:trello
+      - read:member.planner:trello
+      - write:member.planner:trello
+tools: { mode: pass_through }
