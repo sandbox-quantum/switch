@@ -13,6 +13,7 @@ import type {
 import { ProviderConversationUnavailableError, ProviderSessionError } from '../adapter';
 import type {
   ApprovalDecision,
+  ItemType,
   ProviderItem,
   ProviderRuntimeEvent,
   UserInputAnswers,
@@ -38,7 +39,7 @@ import type {
   AcpSelectedAnswer,
   AcpSessionContext,
 } from './hooks';
-import { acpMcpServers, requireHttpMcp } from './mcp';
+import { acpMcpServers, relayHttpMcp, requireHttpMcp } from './mcp';
 import {
   ACP_CANCELLED,
   modelConfigOption,
@@ -124,15 +125,63 @@ interface State {
   messageText: string;
   stopping: boolean;
   interrupted: boolean;
+  /** The model is answering an earlier part of a prompt sent in parts; its text is not shown. */
+  muted: boolean;
   context: string;
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
   mcpNames: Set<string>;
+  /** Every MCP server the agent has: the session's, and those of its own settings. */
+  agentMcpNames: Set<string>;
   /** The registered servers whose tools are allowed without asking: all but the connectors. */
   autoApprovedMcpNames: Set<string>;
   toolServers: Map<string, string>;
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
+}
+
+/** A tool call a permission request is about. */
+interface AskedToolCall {
+  title: string;
+  /** Its ACP kind: `execute`, `edit`… */
+  kind: string | undefined;
+  /** The MCP server it is on, when that is known. */
+  server: string | undefined;
+}
+
+/** The ACP kind of a tool call shown as each item type. */
+const ACP_KIND_OF_ITEM: Partial<Record<ItemType, string>> = {
+  command_execution: 'execute',
+  file_change: 'edit',
+};
+
+/** Room in a prompt part's line for the label saying which part it is. */
+const PART_LABEL_BYTES = 200;
+
+const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+
+/**
+ * `text` cut into pieces that each take at most `bytes` inside a JSON string,
+ * after the last line end in a piece when the rest still fits in the next.
+ */
+function splitText(text: string, bytes: number): string[] {
+  const size = (value: string) => jsonBytes(value) - 2;
+  const pieces: string[] = [];
+  let piece = '';
+  let used = 0;
+  for (const char of text) {
+    const charBytes = size(char);
+    if (used + charBytes > bytes) {
+      let cut = piece.lastIndexOf('\n') + 1;
+      if (cut === 0 || size(piece.slice(cut)) + charBytes > bytes) cut = piece.length;
+      pieces.push(piece.slice(0, cut));
+      piece = piece.slice(cut);
+      used = size(piece);
+    }
+    piece += char;
+    used += charBytes;
+  }
+  return [...pieces, piece];
 }
 
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
@@ -182,15 +231,18 @@ export class AcpAdapter implements ProviderAdapter {
         prefix.legacyMessage
       );
     const binaryPath = this.options.binaryPath ?? hooks.defaultBinary;
+    const resumeId = input.resume?.nativeSessionId.slice(prefix?.prefix.length ?? 0);
     const launch = await hooks.launch({
       binaryPath,
       cwd,
       env: input.env,
+      resumeSessionId: hooks.resumeOnLaunch ? resumeId : undefined,
     });
     const client = new StdioJsonRpcClient({
       ...launch,
       cwd,
       logger: this.logger,
+      maxLineBytes: hooks.maxLineBytes,
       onExit: (reason) => this.exited(input.sessionId, reason),
     });
     const state: State = {
@@ -206,9 +258,11 @@ export class AcpAdapter implements ProviderAdapter {
       messageText: '',
       stopping: false,
       interrupted: false,
+      muted: false,
       context: input.systemContext ?? '',
       runtimeMode: input.runtimeMode,
       mcpNames: new Set(Object.keys(input.mcpServers)),
+      agentMcpNames: new Set(Object.keys(input.mcpServers)),
       autoApprovedMcpNames: new Set(
         Object.keys(input.mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
       ),
@@ -223,9 +277,12 @@ export class AcpAdapter implements ProviderAdapter {
       const payload = params as { sessionId: string; update: AcpSessionUpdate };
       if (payload.sessionId === state.nativeId) this.update(state, payload.update);
     });
-    client.onServerRequest('session/request_permission', (params) =>
-      this.permission(state, context, params as AcpPermissionRequest)
-    );
+    client.onServerRequest('session/request_permission', async (params) => {
+      const answer = await this.permission(state, context, params as AcpPermissionRequest);
+      if (answer === ACP_CANCELLED && state.interrupted && hooks.interruptPermissionWithError)
+        throw new Error('The turn was interrupted.');
+      return answer;
+    });
     hooks.extensions?.(context, {
       request: (method, handler) => client.onServerRequest(method, async (p) => handler(p)),
       notification: (method, handler) => client.onNotification(method, handler),
@@ -234,7 +291,15 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      const servers = hooks.httpMcpOverStdio
+        ? relayHttpMcp(
+            hooks.label,
+            input.mcpServers,
+            this.options.mcpRelay,
+            hooks.renamedToolArguments
+          )
+        : input.mcpServers;
+      requireHttpMcp(hooks.label, servers, agent.mcpCapabilities?.http);
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -255,9 +320,9 @@ export class AcpAdapter implements ProviderAdapter {
         }))
       )
         await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = acpMcpServers(servers, input.env);
       let method = 'session/new';
-      if (input.resume) {
+      if (resumeId !== undefined && !hooks.resumeOnLaunch) {
         method = agent.loadSession
           ? 'session/load'
           : agent.sessionCapabilities?.resume
@@ -269,19 +334,32 @@ export class AcpAdapter implements ProviderAdapter {
             input.sessionId,
             `This ${hooks.label} cannot resume saved conversations.`
           );
-        state.nativeId = input.resume.nativeSessionId.slice(prefix?.prefix.length ?? 0);
+        state.nativeId = resumeId;
       }
       const result = await client.request<AcpSessionResult>(method, {
         cwd,
         mcpServers,
-        ...(input.resume ? { sessionId: state.nativeId } : {}),
+        ...(method === 'session/new' ? {} : { sessionId: state.nativeId }),
       });
+      if (hooks.resumeOnLaunch && resumeId !== undefined && result.sessionId !== resumeId)
+        throw new ProviderConversationUnavailableError(
+          hooks.provider,
+          input.sessionId,
+          `${hooks.label} started a new conversation instead of resuming ${resumeId}.`
+        );
       state.nativeId = result.sessionId ?? state.nativeId;
       if (!state.nativeId) throw new Error(`${hooks.label} returned no session ID.`);
       state.configOptions = result.configOptions ?? [];
-      state.models = modelConfigOption(state.configOptions)
-        ? modelsFromConfig(state.configOptions)
-        : modelsFromList(result.models);
+      const fixedModel = hooks.fixedModel && (await hooks.fixedModel(input.env));
+      state.models = hooks.fixedModel
+        ? fixedModel
+          ? [{ id: fixedModel, label: fixedModel, options: {} }]
+          : []
+        : modelConfigOption(state.configOptions)
+          ? modelsFromConfig(state.configOptions)
+          : modelsFromList(result.models);
+      for (const name of (await hooks.ownMcpServers?.(input.env)) ?? [])
+        state.agentMcpNames.add(name);
       const mode = hooks.sessionMode?.(input.runtimeMode, result.modes);
       if (mode)
         await client.request('session/set_mode', { sessionId: state.nativeId, modeId: mode });
@@ -361,10 +439,21 @@ export class AcpAdapter implements ProviderAdapter {
 
   private async run(state: State, input: ProviderSendTurnInput): Promise<string> {
     if (input.model) await this.setModel(state.id, input.model);
-    const prompt: Array<Record<string, unknown>> = [
-      { type: 'text', text: state.context ? `${state.context}\n\n${input.text}` : input.text },
-    ];
+    const parts = this.promptParts(
+      state,
+      state.context ? `${state.context}\n\n${input.text}` : input.text
+    );
     state.context = '';
+    for (const part of parts.slice(0, -1)) {
+      state.muted = true;
+      try {
+        const stopReason = await this.prompt(state, [{ type: 'text', text: part }]);
+        if (stopReason !== 'end_turn') return stopReason;
+      } finally {
+        state.muted = false;
+      }
+    }
+    const prompt: Array<Record<string, unknown>> = [{ type: 'text', text: parts.at(-1)! }];
     for (const attachment of input.attachments ?? []) {
       const { mimeType, path } = attachment;
       const media = mimeType.startsWith('image/')
@@ -394,12 +483,40 @@ export class AcpAdapter implements ProviderAdapter {
         });
       }
     }
+    return await this.prompt(state, prompt);
+  }
+
+  private async prompt(state: State, prompt: Array<Record<string, unknown>>): Promise<string> {
     return (
       await state.client.request<{ stopReason: string }>('session/prompt', {
         sessionId: state.nativeId,
         prompt,
       })
     ).stopReason;
+  }
+
+  /**
+   * The texts to send `text` in: itself, or for hooks with `maxLineBytes`, when
+   * its `session/prompt` would not fit in one line, labelled parts that each
+   * fit in one before any attachment is added to the last.
+   */
+  private promptParts(state: State, text: string): string[] {
+    const limit = this.hooks.maxLineBytes;
+    if (limit === undefined) return [text];
+    const envelope =
+      jsonBytes({
+        jsonrpc: '2.0',
+        id: Number.MAX_SAFE_INTEGER,
+        method: 'session/prompt',
+        params: { sessionId: state.nativeId, prompt: [{ type: 'text', text: '' }] },
+      }) + 1;
+    if (envelope + jsonBytes(text) - 2 <= limit) return [text];
+    const pieces = splitText(text, limit - envelope - PART_LABEL_BYTES);
+    return pieces.map((piece, index) =>
+      index < pieces.length - 1
+        ? `[Part ${index + 1} of ${pieces.length} of one message. Reply with only "OK" and do nothing else until the last part.]\n\n${piece}`
+        : `[Part ${pieces.length} of ${pieces.length}, the last. Act on all the parts as one message.]\n\n${piece}`
+    );
   }
 
   async interruptTurn(id: string): Promise<void> {
@@ -416,6 +533,18 @@ export class AcpAdapter implements ProviderAdapter {
 
   async setModel(id: string, model: ModelSelection): Promise<void> {
     const state = this.require(id);
+    if (this.hooks.fixedModel) {
+      // It runs that model already, and `session/set_model` would change nothing.
+      if (state.models.some((choice) => choice.id === model.id)) return;
+      const fixed = state.models[0]?.id;
+      throw new ProviderSessionError(
+        this.provider,
+        id,
+        fixed
+          ? `${this.hooks.label} runs ${fixed}, the model set in its own settings, and cannot run ${model.id}. Choose ${model.id} in its settings, or leave the agent's model empty.`
+          : `${this.hooks.label} has no model set in its own settings.`
+      );
+    }
     if (!modelConfigOption(state.configOptions)) {
       await state.client.request('session/set_model', {
         sessionId: state.nativeId,
@@ -532,15 +661,13 @@ export class AcpAdapter implements ProviderAdapter {
     if (vendor) return await vendor;
     const { toolCall } = request;
     const once = request.options.find((option) => option.kind === 'allow_once');
-    const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    const asked = this.askedAbout(state, request);
+    const allowed = ({ kind, server }: AskedToolCall) =>
+      (server !== undefined && state.autoApprovedMcpNames.has(server)) ||
+      (state.runtimeMode === 'auto-accept-edits' && kind === 'edit');
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
-    if (
-      once &&
-      ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
-        state.runtimeMode === 'full-access' ||
-        (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
-    )
+    if (once && (state.runtimeMode === 'full-access' || (asked.length > 0 && asked.every(allowed))))
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
     for (const option of request.options) {
@@ -566,19 +693,51 @@ export class AcpAdapter implements ProviderAdapter {
       });
     }
     options.push({ decision: 'cancel', label: 'Cancel', response: ACP_CANCELLED });
+    // A request about several tool calls is titled as the agent titles it and
+    // lists them; one about a single call is that call's.
+    const only = asked.length === 1 ? asked[0] : undefined;
+    const server = only?.server;
     const mcp = server !== undefined && state.mcpNames.has(server);
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
-        : toolCall.kind === 'execute'
+        : only?.kind === 'execute'
           ? 'command_execution_approval'
-          : toolCall.kind === 'edit'
+          : only?.kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
-      title: toolCall.title ?? `${this.hooks.label} needs permission`,
+      title: only?.title || toolCall.title || `${this.hooks.label} needs permission`,
+      ...(asked.length > 1 ? { detail: asked.map(({ title }) => `- ${title}`).join('\n') } : {}),
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
+  }
+
+  /**
+   * The tool calls a permission request is about: the one it names, or, for
+   * hooks with `confirmsAnnouncedToolCalls`, each one the turn announced and
+   * has not finished.
+   */
+  private askedAbout(state: State, request: AcpPermissionRequest): AskedToolCall[] {
+    if (!this.hooks.confirmsAnnouncedToolCalls?.(request)) {
+      const { toolCall } = request;
+      return [
+        {
+          title: toolCall.title ?? '',
+          kind: toolCall.kind,
+          server:
+            this.hooks.mcpServerOf?.(toolCall, state.agentMcpNames) ??
+            state.toolServers.get(toolCall.toolCallId),
+        },
+      ];
+    }
+    return [...state.items.values()]
+      .filter((item) => item.status === 'in_progress')
+      .map((item) => ({
+        title: item.title,
+        kind: ACP_KIND_OF_ITEM[item.type],
+        server: state.toolServers.get(item.id),
+      }));
   }
 
   private applyConfigOptions(state: State, options: AcpConfigOption[]): void {
@@ -598,6 +757,7 @@ export class AcpAdapter implements ProviderAdapter {
       !Array.isArray(update.content) &&
       update.content.type === 'text'
     ) {
+      if (state.muted) return;
       if (!state.messageText)
         this.emit(state, {
           type: 'item.started',
@@ -632,7 +792,7 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
-    const server = this.hooks.mcpServerOf?.(update);
+    const server = this.hooks.mcpServerOf?.(update, state.agentMcpNames);
     if (server !== undefined) state.toolServers.set(update.toolCallId, server);
     const text = (update.content ?? [])
       .map((part) =>

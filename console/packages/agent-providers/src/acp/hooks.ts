@@ -1,4 +1,4 @@
-import type { ProviderCapabilities, RuntimeMode } from '../adapter';
+import type { ProviderCapabilities, RuntimeMode, StdioMcpServerSpec } from '../adapter';
 import type {
   ApprovalDecision,
   ItemType,
@@ -34,6 +34,8 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /** The native id of the conversation to resume, for hooks with `resumeOnLaunch`. */
+  resumeSessionId?: string;
 }
 
 /**
@@ -117,6 +119,47 @@ export interface AcpProviderHooks {
   /** The platforms the agent cannot run on, each with the reason a person is told. */
   unsupportedPlatforms?: Partial<Record<NodeJS.Platform, string>>;
   /**
+   * The agent cannot take an MCP server over HTTP as ACP sends one, whatever it
+   * declares, so each is handed to it as a stdio server relaying to it
+   * (`AcpAdapterOptions.mcpRelay`).
+   */
+  httpMcpOverStdio?: boolean;
+  /**
+   * Tool arguments the agent cannot take under their own names. OpenHands
+   * builds a model for each MCP tool on a base with a `kind` field, so a tool
+   * with a `kind` argument (Switch's `list_templates`) fails the build and
+   * takes every tool of the session with it. A relayed server
+   * (`httpMcpOverStdio`) offers each such argument with a trailing underscore,
+   * and the relay passes it on under its own name.
+   */
+  renamedToolArguments?: readonly string[];
+  /**
+   * The agent resumes the conversation it is launched with
+   * (`AcpLaunchInput.resumeSessionId`) through `session/new`, because its
+   * `session/load` drops the session's MCP servers.
+   */
+  resumeOnLaunch?: boolean;
+  /**
+   * The model the agent runs, read from its own settings, for an agent that
+   * answers `session/set_model` without changing it. A session lists this
+   * model as its only one and refuses any other. Undefined when none is set.
+   */
+  fixedModel?(env: Record<string, string>): Promise<string | undefined>;
+  /**
+   * The agent takes ACP's `cancelled` answer to a permission request as a
+   * refusal and carries on with the turn, so a request an interrupt cuts off
+   * is answered with an error, which stops it.
+   */
+  interruptPermissionWithError?: boolean;
+  /**
+   * The longest line, newline included, the agent reads from its input. At a
+   * longer one it stops reading for good without a word. Prompt text over it
+   * (a long system context, say) is sent in labelled parts, the model told to
+   * answer the earlier ones with only "OK", and those answers are not shown;
+   * any other message over it is refused rather than written.
+   */
+  maxLineBytes?: number;
+  /**
    * Whether the CLI is signed in, answered without signing it in: a check
    * must never be what changes its answer. `handshake` runs the agent and
    * returns its `initialize` answer. Without this hook the check runs the
@@ -155,8 +198,26 @@ export interface AcpProviderHooks {
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
-  /** The MCP server a tool call belongs to, when the agent says so. */
-  mcpServerOf?(toolCall: AcpToolCall): string | undefined;
+  /**
+   * The MCP server a tool call belongs to, when the agent says so or only one
+   * of `mcpServerNames`, every MCP server the agent has (the session's and
+   * `ownMcpServers`), can be it.
+   */
+  mcpServerOf?(toolCall: AcpToolCall, mcpServerNames: ReadonlySet<string>): string | undefined;
+  /**
+   * The MCP servers the agent adds to every session from its own settings, by
+   * name. `mcpServerOf` is given them with the session's, so a tool call that
+   * may be on one of them is not taken for a session server's and allowed
+   * without asking.
+   */
+  ownMcpServers?(env: Record<string, string>): Promise<readonly string[]>;
+  /**
+   * Whether a permission request is about every tool call the turn announced
+   * and has not finished, rather than the tool call it names (OpenHands asks
+   * one "Confirm Agent Actions" for all of a step's actions). Such a request
+   * is answered from those calls and shows them.
+   */
+  confirmsAnnouncedToolCalls?(request: AcpPermissionRequest): boolean;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**
@@ -192,4 +253,6 @@ export interface AcpSignInInput extends SignInCheckInput {
 export interface AcpAdapterOptions {
   binaryPath?: string;
   logger?: ProviderLogger;
+  /** How this host runs a stdio relay to an HTTP MCP server, for hooks with `httpMcpOverStdio`. */
+  mcpRelay?: StdioMcpServerSpec;
 }

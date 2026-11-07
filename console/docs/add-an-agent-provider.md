@@ -98,11 +98,19 @@ Add hooks only for what really differs:
 | `authMethodId` | The `authenticate` method to send when a session starts, given its environment; return undefined when that environment already signs the CLI in (Cursor with `CURSOR_API_KEY`). Omit it for an agent that needs none. |
 | `sessionMode` | The ACP mode for each Switch runtime mode, when the agent's modes are permission levels. |
 | `promptCapabilities` | Content the agent accepts without advertising it. Prefer fixing the advertisement upstream. |
-| `mcpServerOf` | How a tool call names its MCP server, if the agent says so (in `_meta`, `rawInput`…). Without it, tools on registered servers still ask for permission. |
+| `mcpServerOf` | How a tool call names its MCP server, if the agent says so (in `_meta`, `rawInput`…), or which of the agent's MCP servers it must be on. Without it, tools on registered servers still ask for permission. |
 | `itemType` | Vendor typing for tool calls, such as subagents. |
 | `permission` | A permission request the vendor uses for something else, such as Antigravity's questions. |
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
 | `nativeSessionIdPrefix` | Only when an earlier, non-ACP runtime of the same provider stored session ids that must not be resumed. |
+| `httpMcpOverStdio` | Only when the agent cannot take an MCP server over HTTP as ACP sends one (OpenHands passes the headers on as a list). Each is handed to it as a stdio relay. |
+| `renamedToolArguments` | Only with `httpMcpOverStdio`, when the agent fails on a tool argument of some name (OpenHands on `kind`). The relay offers it with a trailing underscore and passes it on under its own name. |
+| `resumeOnLaunch` | Only when the agent's `session/load` drops the session's MCP servers. `launch` is given the conversation to resume, and the session starts with `session/new` (OpenHands' `--resume`). |
+| `fixedModel` | Only when the agent runs the model in its own settings whatever `session/set_model` asks for (OpenHands accepts it and changes nothing). Return that model: the session lists it as its only one and refuses any other. |
+| `interruptPermissionWithError` | Only when the agent takes ACP's `cancelled` answer to a permission request as a refusal and carries on with the turn (OpenHands). A request an interrupt cuts off is answered with an error instead, which stops it. |
+| `maxLineBytes` | Only when the agent stops reading its input at a line longer than this (OpenHands, 64 KiB). Prompt text over it, the system context included, is sent in labelled parts, the earlier ones answered with "OK" and not shown; any other message over it is refused. |
+| `confirmsAnnouncedToolCalls` | Only when one permission request covers every tool call the turn announced and hasn't finished, rather than the one it names (OpenHands' "Confirm Agent Actions"). The request is answered from those calls and shows them. |
+| `ownMcpServers` | Only with an `mcpServerOf` that goes by which MCP servers there are, when the agent also runs servers from its own settings (OpenHands' `mcp.json`). Return their names, so a tool call that may be on one of them isn't put on a session server. |
 
 Then add the runtime to `PROVIDER_RUNTIMES` in `src/providers/registry.ts`:
 

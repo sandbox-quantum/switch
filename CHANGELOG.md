@@ -294,6 +294,9 @@ version of their own to them without also giving them a release of their own.
   history is kept, and the deletion is recorded in the server audit log. The
   server's default workspace can't be deleted. Deleting your account now also
   deletes a workspace you leave empty.
+- **OpenHands is a provider.** Agent definitions, the gateway's provider list
+  and advanced configuration accept `openhands`, whose owner is told to sign
+  it in with `openhands login`. switch-buddy tries it after the others.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
@@ -2746,6 +2749,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **OpenHands as an agent CLI.** Agents can run on the OpenHands CLI
+  (`openhands acp`) through the generic ACP adapter, on the model set in
+  OpenHands' own settings, with approvals and resumable conversations.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
