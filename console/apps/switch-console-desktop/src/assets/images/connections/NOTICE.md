@@ -58,3 +58,9 @@ written out as the equivalent `fill` attributes and its ids removed.
   Fetched 2026-09-29. Vendor permission has not been verified; trademark of its
   owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
+
+- **Azure DevOps** (`azure-devops.svg`): unchanged Microsoft Azure architecture
+  icon, from `Azure_Public_Service_Icons_V25.zip`, fetched 2026-11-07 from
+  https://arch-center.azureedge.net/icons/Azure_Public_Service_Icons_V25.zip .
+  Usage guidance: https://learn.microsoft.com/en-us/azure/architecture/icons/ .
+  Microsoft trademark; identifies the integration, not an endorsement.
