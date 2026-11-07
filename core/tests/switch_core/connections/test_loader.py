@@ -31,12 +31,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "github",
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "github",
         "google-workspace",
@@ -46,6 +48,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["cloudflare"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +179,51 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_cloudflare_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["cloudflare"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("cloudflare", "https://mcp.cloudflare.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read_scopes = [
+        "offline_access",
+        "user:read",
+        "account:read",
+        "zone:read",
+        "dns:read",
+        "workers:read",
+    ]
+    write_scopes = [
+        *read_scopes,
+        "zone:edit",
+        "dns:edit",
+        "workers:edit",
+    ]
+    assert definition.access.read.scopes == read_scopes
+    assert definition.access.write.scopes == write_scopes
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.cloudflare.com/client/v4/user"
+    assert definition.auth.identity.account_id == "result.id"
+    assert definition.auth.identity.label == "result.email"
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
