@@ -194,6 +194,63 @@ it('answers Vibe permission requests with its once and session options, never it
   ]);
 });
 
+it('runs the session’s own MCP tools without asking, and asks for any other tool', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  // vibe-acp 3.1.0's announcement of a call to the `switch` server's tool.
+  for (const [toolCallId, toolName] of [
+    ['mcp-call', 'mcp_switch.list_rooms'],
+    ['other-call', 'mcp_elsewhere.list_rooms'],
+  ])
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId,
+        title: toolName,
+        kind: 'other',
+        status: 'in_progress',
+        rawInput: {},
+        _meta: { tool_name: toolName, effect_kind: 'tool' },
+      },
+    });
+  const options = [
+    { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
+    { optionId: 'reject_once', name: 'Deny', kind: 'reject_once' },
+  ];
+  for (const [id, toolCallId] of [
+    [80, 'mcp-call'],
+    [81, 'other-call'],
+  ] as const)
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: { sessionId: 'native', toolCall: { toolCallId }, options },
+    });
+  await flush();
+  expect(server.received.find((m) => m.id === 80)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'allow_once' },
+  });
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
+  expect(mistralVibeAcp.mcpServerOf?.({ toolCallId: 'x', _meta: { tool_name: 'bash' } })).toBe(
+    undefined
+  );
+});
+
+it('shows a spawned Vibe agent as a subagent', () => {
+  // vibe-acp 3.1.0's announcement of `agents.spawn`, trimmed.
+  const spawn = {
+    toolCallId: 'spawn',
+    title: 'Starting readme_reader',
+    kind: 'think',
+    _meta: { tool_name: 'agents.spawn', effect_kind: 'subagent', agent: 'generic' },
+  };
+  expect(mistralVibeAcp.itemType?.(spawn)).toBe('subagent');
+  expect(
+    mistralVibeAcp.itemType?.({ toolCallId: 'read', _meta: { effect_kind: 'file_read' } })
+  ).toBe(undefined);
+});
+
 /** `elicitation/create` as vibe-acp 3.1.0 sends it for `ask_user_question`. */
 const vibeQuestion = {
   message: 'User input required',

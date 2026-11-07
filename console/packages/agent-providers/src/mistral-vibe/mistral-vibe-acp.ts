@@ -126,6 +126,20 @@ export const mistralVibeAcp: AcpProviderHooks = {
       : readiness('unauthenticated', signInWith(VIBE_LOGIN));
   },
   sessionMode: vibeSessionMode,
+  // vibe-acp 3.1 names a tool from a registered MCP server
+  // `mcp_<server>.<tool>` in `_meta.tool_name`, and its permission request
+  // carries only the tool call id. Without this, the session's own Switch
+  // tools stop for an approval in ask mode.
+  mcpServerOf: (toolCall) => {
+    const name = (toolCall._meta as { tool_name?: unknown } | undefined)?.tool_name;
+    const match = typeof name === 'string' ? /^mcp_(.+)\.[^.]+$/.exec(name) : null;
+    return match?.[1];
+  },
+  // A spawned child agent (`agents.spawn`) is marked `effect_kind: subagent`.
+  itemType: (toolCall) =>
+    (toolCall._meta as { effect_kind?: unknown } | undefined)?.effect_kind === 'subagent'
+      ? 'subagent'
+      : undefined,
   // vibe-acp 3.1 registers HTTP MCP servers from `session/new` (as
   // streamable HTTP) but does not declare `mcpCapabilities.http`.
   mcpCapabilities: { http: true },
