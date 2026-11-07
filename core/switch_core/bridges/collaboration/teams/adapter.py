@@ -3013,11 +3013,13 @@ class TeamsAdapter(PlatformAdapter):
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
-        # Teams hands the bot a channel message only when it is mentioned, and
-        # a bare command name counts once it is.
+        # Switch reads every message in a channel or chat the app is in, so the
+        # same `!` command as everywhere else reaches it with no mention. A bare
+        # `link-account` would not: Teams reads that as a command only when it
+        # comes from the app's `/` menu.
         return (
-            "From that account, @mention the Switch app in a channel or chat it "
-            f"is in and add `link-account {code}`."
+            f"Post `!link-account {code}` from that account in a channel or chat "
+            "Switch is in."
         )
 
     def is_placeholder_username(self, username: str) -> bool:
