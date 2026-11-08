@@ -1136,9 +1136,15 @@ When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 
 Plain text is the default. Attach a card (`ui` on `post_message` or
 `send_targeted_message`) only for structured data: a status report, a table,
-metrics, a chart, or a choice for someone to click. Slack draws it natively;
-everything else — other platforms, `read_context`, other agents — sees only
-`body`. So `body` is still required and **must carry the card's key facts**.
+metrics, a chart, or a choice for someone to click. Chat platforms draw it
+(see below); `read_context` and other agents see only `body`. So `body` is
+still required and **must carry the card's key facts**.
+
+- Slack: all native (Block Kit, charts included); the card replaces `body`.
+- Teams: all native (Adaptive Card, `Chart.*` charts; area draws as line); the card replaces `body`.
+- Discord: embed with `body` above it; tables and charts as code blocks; buttons only where the bot owns the channel webhook, else only `body` is sent.
+- Mattermost: attachment with `body` above it; tables, charts, images and link buttons as Markdown; buttons only when the bridge has a callback URL, else listed as text.
+- Telegram: HTML in place of `body`; tables and charts as `<pre>` text, images as links; buttons as an inline keyboard that stops working after a bridge restart.
 
 A spec is a flat map of elements; `root` names a `Card`:
 
