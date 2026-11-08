@@ -120,6 +120,7 @@ import {
   fetchManagedReferenceTypes,
   updateReferenceType,
 } from '@main/core/switch-servers/library-client';
+import { dismissOwnerNotice, fetchOwnerNotices } from '@main/core/switch-servers/owner-notices';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
 import {
@@ -530,6 +531,16 @@ export const workspacesController = createRPCController({
 
   listAgents: (workspaceId: string): Promise<RemoteAgentSummary[]> =>
     withWorkspaceSession(workspaceId, fetchAgents),
+
+  listOwnerNotices: (params: { workspaceId: string; userId: string; tenantId: string }) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchOwnerNotices(server, params.userId, params.tenantId)
+    ),
+
+  dismissOwnerNotice: (params: { workspaceId: string; noticeId: string }): Promise<void> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      dismissOwnerNotice(server, params.noticeId)
+    ),
 
   listRooms: (workspaceId: string): Promise<RemoteRoomSummary[]> =>
     withWorkspaceSession(workspaceId, fetchRooms),

@@ -85,11 +85,17 @@ class RetentionService:
         failed: list[str] = []
 
         messages, message_backlog = 0, False
+        notices, notice_backlog = 0, False
         try:
             async with tenant_session(self._sessions, tenant_id) as db:
                 policy = await self._retention.get_policy(db)
             if policy is not None:
                 messages, message_backlog = await self._delete_messages(
+                    tenant_id,
+                    now - timedelta(days=policy.message_retention_days),
+                    deadline,
+                )
+                notices, notice_backlog = await self._delete_owner_notices(
                     tenant_id,
                     now - timedelta(days=policy.message_retention_days),
                     deadline,
@@ -134,7 +140,7 @@ class RetentionService:
             approvals=approvals,
             invitations=invitations,
             install_states=install_states,
-            backlog=message_backlog or media_backlog,
+            backlog=message_backlog or notice_backlog or media_backlog,
             failed=tuple(failed),
         )
         if result.backlog:
@@ -144,9 +150,24 @@ class RetentionService:
                 tenant_id,
                 result,
             )
-        elif messages or media or approvals or invitations or install_states:
+        elif messages or notices or media or approvals or invitations or install_states:
             logger.info("Retention in tenant %s: %s", tenant_id, result)
         return result
+
+    async def _delete_owner_notices(
+        self, tenant_id: str, cutoff: datetime, deadline: float
+    ) -> tuple[int, bool]:
+        deleted = 0
+        while True:
+            async with tenant_session(self._sessions, tenant_id) as db, db.begin():
+                count = await self._retention.delete_owner_notices_before(
+                    db, cutoff, limit=MESSAGE_BATCH
+                )
+            deleted += count
+            if count < MESSAGE_BATCH:
+                return deleted, False
+            if time.monotonic() >= deadline:
+                return deleted, True
 
     async def _delete_messages(
         self, tenant_id: str, cutoff: datetime, deadline: float

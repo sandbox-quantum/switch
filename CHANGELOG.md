@@ -803,9 +803,10 @@ version of their own to them without also giving them a release of their own.
   the platform says who that was. A refusal says why and who can invite
   instead (the agent's owner, or anyone the policy admits); there is no
   admin bypass. When a platform does not say who added an agent, the join
-  still stands, but the room is told Switch could not verify the inviter
-  and the owner is named there so they can remove it. Agents already in a
-  room are untouched: only agents about to be added are judged.
+  still stands, but the room is told Switch could not verify the inviter.
+  The agent's current owner also sees a notice in Console and Gateway, even
+  without a linked platform account. Agents already in a room are untouched:
+  only agents about to be added are judged.
 - **Two organization admins demoting or removing each other at once** could
   leave the refused one without their keys and connections in the workspaces
   they reached as an organization admin: those were taken away before the

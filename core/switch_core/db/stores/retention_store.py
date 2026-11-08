@@ -22,6 +22,7 @@ from switch_core.db.models import (
     Invitation,
     Message,
     MessagingInstallState,
+    OwnerNotice,
     TenantRetentionPolicy,
     require_tenant_id,
 )
@@ -94,6 +95,27 @@ class RetentionStore:
             )
         )
         return _rowcount(result) > 0
+
+    async def delete_owner_notices_before(
+        self, session: AsyncSession, cutoff: datetime, *, limit: int
+    ) -> int:
+        """Delete one bounded batch of notices past the retention window."""
+        candidates = (
+            select(OwnerNotice.id)
+            .where(
+                OwnerNotice.tenant_id == require_tenant_id(),
+                OwnerNotice.created_at < cutoff,
+            )
+            .order_by(OwnerNotice.created_at, OwnerNotice.id)
+            .limit(limit)
+        )
+        result = await session.execute(
+            delete(OwnerNotice).where(
+                OwnerNotice.tenant_id == require_tenant_id(),
+                OwnerNotice.id.in_(candidates),
+            )
+        )
+        return _rowcount(result)
 
     async def count_messages_before(
         self, session: AsyncSession, cutoff: datetime

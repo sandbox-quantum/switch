@@ -1,12 +1,15 @@
 import { Box, Stack } from "@mui/material";
 import { Outlet } from "react-router";
+import { useAuth } from "../data/AuthContext";
 import NavRail from "./NavRail";
+import OwnerNotices from "./OwnerNotices";
 import TopBar from "./TopBar";
 
 /** Hoot's signature shell: a narrow icon rail and a slim top bar sitting bare on
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
  *  the content is the hero — an "app within a surface", not edge-to-edge chrome. */
 export default function PageShell() {
+  const { session } = useAuth();
   return (
     <Box
       sx={{
@@ -32,6 +35,13 @@ export default function PageShell() {
             p: 4,
           }}
         >
+          {session?.tenant && (
+            <OwnerNotices
+              key={`${session.user.id}:${session.tenant.id}`}
+              ownerId={session.user.id}
+              tenantId={session.tenant.id}
+            />
+          )}
           <Outlet />
         </Stack>
       </Stack>

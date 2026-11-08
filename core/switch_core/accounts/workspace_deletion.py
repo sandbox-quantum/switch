@@ -113,6 +113,7 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "messages": "deleted",
     "messaging_event_receipts": "deleted",
     "messaging_install_states": "deleted",
+    "owner_notices": "deleted",
     "models": "deleted",
     "package_documents": "deleted",
     "package_references": "deleted",

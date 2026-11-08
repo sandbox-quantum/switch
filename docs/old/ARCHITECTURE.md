@@ -238,7 +238,13 @@ of the policy) before anything is added. The inviter is whoever is acting —
 a user, an agent, a chat command's sender, a template's runner, or, for a
 join made on the platform itself, the person who added the agent there when
 the platform reports it; a platform join that names nobody is let through
-but disclosed in the room, with the owner named, rather than trusted.
+but disclosed in the room, with the owner named, rather than trusted. The
+membership transaction also writes a tenant-scoped owner notice for each
+restricted agent. It follows the current agent owner, is displayed in the
+selected workspace in Console and Gateway, and is removed on dismissal,
+agent/room deletion or expiry under the workspace message-retention policy.
+Names are read live, not retained as snapshots. An ownerless agent has no
+recipient, so only the room notice and warning log are available.
 
 A message is never blocked at the sender: `send_targeted_message` posts, and
 reports `not_permitted` for that target instead of a reachability status, so the

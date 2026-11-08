@@ -48,6 +48,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.invites import InviteGate, InviteOutcome, Inviter, actor_kind
+from switch_core.owner_notices import record_unverified_invites
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -815,6 +816,9 @@ class RoomService:
                         agent_ids,
                         join_event_listeners=join_event_listeners,
                     )
+                await record_unverified_invites(
+                    session, room, invite_outcome.unverified
+                )
                 for spec in config.roles or []:
                     session.add(
                         RoomRole(
@@ -1189,6 +1193,9 @@ class RoomService:
                     join_event_listeners={
                         aid for aid in new_agent_ids if aid in listeners
                     },
+                )
+                await record_unverified_invites(
+                    session, room, invite_outcome.unverified
                 )
                 if with_agents is not None:
                     await with_agents(session)

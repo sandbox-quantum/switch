@@ -66,6 +66,7 @@ from switch_core.gateway.organization_services import (
     router as organization_services_router,
 )
 from switch_core.gateway.organizations import router as organizations_router
+from switch_core.gateway.owner_notices import router as owner_notices_router
 from switch_core.gateway.ownership import router as ownership_router
 from switch_core.gateway.packages import router as packages_router
 from switch_core.gateway.providers import router as providers_router
@@ -230,6 +231,7 @@ def create_gateway_app(
     app.include_router(workos_sign_in_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(organizations_router, tags=["organizations"])
+    app.include_router(owner_notices_router, tags=["owner-notices"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
     app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])

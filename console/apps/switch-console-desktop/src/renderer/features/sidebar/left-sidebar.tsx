@@ -8,6 +8,7 @@ import { cn } from '@renderer/utils/utils';
 import { FROZEN, isFrozenServer } from '../switch-servers/managed-server-state';
 import { switchServersStore } from '../switch-servers/switch-servers-store';
 import { WorkspaceSwitcher } from '../switch-servers/workspace-switcher';
+import { OwnerNotices } from './owner-notices';
 import { SidebarPinnedSessionList } from './pinned-session-list';
 import { SessionDiscoveryStatus } from './session-discovery-status';
 import { SessionsSectionHeader } from './sessions-section-header';
@@ -61,6 +62,7 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
               the sessions section sets the larger gap that separates it. */}
           <div className="flex flex-col">
             <WorkspaceSwitcher />
+            <OwnerNotices />
             <WorkspaceNav />
           </div>
           <SidebarGroup className={cn('mt-0 mb-0 flex min-h-0 flex-1 flex-col', frozen && FROZEN)}>
