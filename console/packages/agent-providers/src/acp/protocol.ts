@@ -96,12 +96,24 @@ export interface AcpPermissionRequest {
 
 export const ACP_CANCELLED = { outcome: { outcome: 'cancelled' } } as const;
 
+/** Models are selected by ID, so repeated IDs cannot represent distinct choices. */
+function uniqueModels(models: ModelChoice[]): ModelChoice[] {
+  const seen = new Set<string>();
+  return models.filter(({ id }) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 /** Models offered through a `model` select in the session's config options. */
 export function modelsFromConfig(options: AcpConfigOption[]): ModelChoice[] {
   const model = modelConfigOption(options);
-  return (model?.options ?? [])
-    .flatMap((option) => ('value' in option ? [option] : option.options))
-    .map((option) => ({ id: option.value, label: option.name, options: {}, imageInput: true }));
+  return uniqueModels(
+    (model?.options ?? [])
+      .flatMap((option) => ('value' in option ? [option] : option.options))
+      .map((option) => ({ id: option.value, label: option.name, options: {}, imageInput: true }))
+  );
 }
 
 export function modelConfigOption(options: AcpConfigOption[]): AcpConfigOption | undefined {
@@ -110,9 +122,11 @@ export function modelConfigOption(options: AcpConfigOption[]): AcpConfigOption |
 
 /** Models offered through the session's `models` list. */
 export function modelsFromList(models: AcpSessionModels | undefined): ModelChoice[] {
-  return (models?.availableModels ?? []).map((model) => ({
-    id: model.modelId,
-    label: model.name,
-    options: {},
-  }));
+  return uniqueModels(
+    (models?.availableModels ?? []).map((model) => ({
+      id: model.modelId,
+      label: model.name,
+      options: {},
+    }))
+  );
 }

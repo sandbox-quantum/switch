@@ -115,6 +115,28 @@ it('selects models through the models list when the agent offers no model config
   });
 });
 
+it('lists each model ID once while preserving the first label and selection through a models list', async () => {
+  agent.session = {
+    models: {
+      availableModels: [
+        { modelId: 'auto', name: 'Auto' },
+        { modelId: 'fast', name: 'Fast' },
+        { modelId: 'auto', name: 'Automatic' },
+      ],
+    },
+  };
+  const { adapter, server } = await start();
+  expect(await adapter.listModels('s')).toEqual([
+    { id: 'auto', label: 'Auto', options: {} },
+    { id: 'fast', label: 'Fast', options: {} },
+  ]);
+  await adapter.setModel('s', { id: 'auto' });
+  expect(server.received.find((m) => m.method === 'session/set_model')?.params).toEqual({
+    sessionId: 'native',
+    modelId: 'auto',
+  });
+});
+
 it('selects models through the model config option, refusing one it does not offer', async () => {
   agent.session = {
     models: { availableModels: [{ modelId: 'ignored', name: 'Ignored' }] },
@@ -130,6 +152,37 @@ it('selects models through the model config option, refusing one it does not off
     value: 'deep',
   });
   expect(server.received.some((m) => m.method === 'session/set_model')).toBe(false);
+});
+
+it('deduplicates model config choices across groups and still selects the advertised ID', async () => {
+  agent.session = {
+    configOptions: [
+      {
+        id: 'model',
+        type: 'select',
+        options: [
+          { value: 'auto', name: 'Auto' },
+          {
+            options: [
+              { value: 'auto', name: 'Automatic' },
+              { value: 'deep', name: 'Deep' },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const { adapter, server } = await start();
+  expect(await adapter.listModels('s')).toMatchObject([
+    { id: 'auto', label: 'Auto' },
+    { id: 'deep', label: 'Deep' },
+  ]);
+  await adapter.setModel('s', { id: 'auto' });
+  expect(server.received.find((m) => m.method === 'session/set_config_option')?.params).toEqual({
+    sessionId: 'native',
+    configId: 'model',
+    value: 'auto',
+  });
 });
 
 it('sends attachments as the agent advertises it can take them, else as resource links', async () => {
