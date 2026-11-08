@@ -1,0 +1,43 @@
+slug: clickup
+name: ClickUp
+category: Project management
+description: Read and update ClickUp tasks, lists, and docs, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # ClickUp OAuth 2.1 tokens rotate on refresh.
+  refresh: rotating
+  oauth:
+    # ClickUp offers dynamic client registration at https://mcp.clickup.com/oauth/register.
+    registration: dynamic
+    # ClickUp matches the loopback redirect port exactly, so sign-ins come back
+    # to Switch Console on a registered loopback port.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # ClickUp has no token revocation endpoint; sign-ins must be disconnected
+    # by the user in ClickUp settings.
+    remove_access: >-
+      Disconnect it in ClickUp under Settings, Integrations (or App Center).
+  identity:
+    # ClickUp API v2 returns the authorized user profile.
+    url: https://api.clickup.com/api/v2/user
+    account_id: user.id
+    label: user.email
+# ClickUp access tokens live up to 24 hours (86400s) / measured, capped at max_lifetime.
+# Agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    - { name: clickup, url: "https://mcp.clickup.com/mcp" }
+access:
+  # ClickUp's MCP server supports read and write scopes.
+  read:
+    scopes:
+      - read
+  write:
+    scopes:
+      - read
+      - write
+tools: { mode: pass_through }
+
