@@ -394,6 +394,16 @@ the properties that `src/explore/spec/gateway.ts` exports:
 | `noServerErrors` | the server answers no `/gateway` request with a 5xx |
 | `signsIn` | the explorer gets past the login page within 30 s |
 | `staysSignedIn` | once signed in, it is never sent back to the login page |
+| `listMatchesApi` | the room list page, with its filters at their defaults, counts the rooms the API returns and shows only those |
+| `listChecked` | that check reached an answer at least once within five minutes: a run that never got the page settled has checked nothing |
+
+`listMatchesApi` is the one property that reads the API: a custom action
+(`checkRooms`) reads the page, asks `/gateway/rooms`, and reads the page again,
+and says nothing if the page moved or is loading. A disagreement counts only if
+it stays over four looks 750 ms apart, because the page refetches after the
+explorer archives a room and the API can be a step ahead. The trace keeps, for
+each check, how many reached an answer and why the last one that did not
+stopped.
 
 These are the browser lane's rules for a page that renders but is broken,
 checked everywhere the explorer reaches rather than on a scripted path. A 4xx

@@ -61,6 +61,32 @@ properties:
     levels: [ui]
     owner: platform
     status: checked
+  - id: ui.list-matches-api
+    title: The room list shows what the API returns
+    statement: >
+      The room list page, once it has settled and with its filters at their
+      defaults, counts the rooms the API returns for the person and shows no
+      room the API left out.
+    kind: safety
+    formality: semi-formal
+    levels: [ui]
+    owner: platform
+    status: checked
+    notes: >
+      A disagreement counts only if it persists over four looks, because the
+      page refetches after an action and the API can be a step ahead. Only the
+      room list is checked; the other list pages have the same shape.
+  - id: ui.list-checked
+    title: The explorer reaches a settled room list
+    statement: >
+      Within five minutes the explorer has opened the room list, seen it
+      settle with default filters and compared it with the API, so that
+      `ui.list-matches-api` has been tried on something.
+    kind: reachability
+    formality: semi-formal
+    levels: [ui]
+    owner: platform
+    status: checked
   - id: ui.no-server-errors
     title: The gateway answers no request from the UI with a 5xx
     statement: >
