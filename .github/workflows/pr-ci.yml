@@ -200,7 +200,9 @@ jobs:
     name: Backend (core)
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    # ubuntu-latest is 26.04, which Playwright does not support yet (its
+    # `install --with-deps chromium` refuses it), so this job stays on 24.04.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
