@@ -103,12 +103,22 @@ Add hooks only for what really differs:
 | `permission` | A permission request the vendor uses for something else, such as Antigravity's questions. |
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
 | `nativeSessionIdPrefix` | Only when an earlier, non-ACP runtime of the same provider stored session ids that must not be resumed. |
+| `resumeWithLaunch` | Launch restores the native conversation using `AcpLaunchInput.resumeSessionId`; the adapter then uses `session/new` to attach current MCP servers. |
+| `inputByteLimit` | Maximum UTF-8 JSON-RPC line, including its newline. Oversize text prompts are sent in labelled parts; other oversize messages are refused. |
+| `interruptPermissionAsError` | Use only when the CLI continues after a cancelled permission but pauses on a request error. |
 
 Then add the runtime to `PROVIDER_RUNTIMES` in `src/providers/registry.ts`:
 
 ```ts
 acpProviderRuntime(exampleAcp),
 ```
+
+OpenHands adds a thin model guard around the shared ACP adapter because its
+model-setting RPC succeeds without applying the requested model. Its custom
+runtime supplies `modelCatalogue` from saved CLI settings, so Console's model
+picker creates no throwaway conversation. MCP transport and reserved argument
+compatibility stay in the OpenHands module; the execution host supplies its
+stdio helper command to that adapter.
 
 ### Sign-in checks
 

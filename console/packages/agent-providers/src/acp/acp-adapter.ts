@@ -39,6 +39,7 @@ import type {
   AcpSessionContext,
 } from './hooks';
 import { acpMcpServers, requireHttpMcp } from './mcp';
+import { promptParts } from './prompt-parts';
 import {
   ACP_CANCELLED,
   modelConfigOption,
@@ -105,6 +106,7 @@ export async function checkAcpSignIn(
 interface PendingDecision {
   responses: Map<ApprovalDecision, unknown>;
   settle: (value: unknown) => void;
+  reject: (reason: Error) => void;
 }
 interface PendingQuestion {
   questions: UserInputQuestion[];
@@ -124,6 +126,7 @@ interface State {
   messageText: string;
   stopping: boolean;
   interrupted: boolean;
+  collectingPrompt: boolean;
   context: string;
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
   mcpNames: Set<string>;
@@ -186,11 +189,13 @@ export class AcpAdapter implements ProviderAdapter {
       binaryPath,
       cwd,
       env: input.env,
+      resumeSessionId: input.resume?.nativeSessionId.slice(prefix?.prefix.length ?? 0),
     });
     const client = new StdioJsonRpcClient({
       ...launch,
       cwd,
       logger: this.logger,
+      inputByteLimit: hooks.inputByteLimit,
       onExit: (reason) => this.exited(input.sessionId, reason),
     });
     const state: State = {
@@ -206,6 +211,7 @@ export class AcpAdapter implements ProviderAdapter {
       messageText: '',
       stopping: false,
       interrupted: false,
+      collectingPrompt: false,
       context: input.systemContext ?? '',
       runtimeMode: input.runtimeMode,
       mcpNames: new Set(Object.keys(input.mcpServers)),
@@ -257,7 +263,7 @@ export class AcpAdapter implements ProviderAdapter {
         await client.request('authenticate', { methodId: authMethodId });
       const mcpServers = acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
-      if (input.resume) {
+      if (input.resume && !hooks.resumeWithLaunch) {
         method = agent.loadSession
           ? 'session/load'
           : agent.sessionCapabilities?.resume
@@ -274,9 +280,19 @@ export class AcpAdapter implements ProviderAdapter {
       const result = await client.request<AcpSessionResult>(method, {
         cwd,
         mcpServers,
-        ...(input.resume ? { sessionId: state.nativeId } : {}),
+        ...(input.resume && !hooks.resumeWithLaunch ? { sessionId: state.nativeId } : {}),
       });
       state.nativeId = result.sessionId ?? state.nativeId;
+      if (
+        input.resume &&
+        hooks.resumeWithLaunch &&
+        state.nativeId !== input.resume.nativeSessionId.slice(prefix?.prefix.length ?? 0)
+      )
+        throw new ProviderConversationUnavailableError(
+          hooks.provider,
+          input.sessionId,
+          'The provider did not restore the requested conversation.'
+        );
       if (!state.nativeId) throw new Error(`${hooks.label} returned no session ID.`);
       state.configOptions = result.configOptions ?? [];
       state.models = modelConfigOption(state.configOptions)
@@ -394,12 +410,22 @@ export class AcpAdapter implements ProviderAdapter {
         });
       }
     }
-    return (
-      await state.client.request<{ stopReason: string }>('session/prompt', {
-        sessionId: state.nativeId,
-        prompt,
-      })
-    ).stopReason;
+    const text = String(prompt[0]?.text ?? '');
+    const parts = promptParts(state.nativeId, text, prompt.slice(1), this.hooks.inputByteLimit);
+    try {
+      for (const [index, part] of parts.entries()) {
+        if (state.interrupted) return 'cancelled';
+        state.collectingPrompt = index < parts.length - 1;
+        const result = await state.client.request<{ stopReason: string }>('session/prompt', {
+          sessionId: state.nativeId,
+          prompt: part,
+        });
+        if (result.stopReason !== 'end_turn') return result.stopReason;
+      }
+      return 'end_turn';
+    } finally {
+      state.collectingPrompt = false;
+    }
   }
 
   async interruptTurn(id: string): Promise<void> {
@@ -500,8 +526,8 @@ export class AcpAdapter implements ProviderAdapter {
         const responses = new Map<ApprovalDecision, unknown>();
         for (const option of options)
           if (option.decision !== 'cancel') responses.set(option.decision, option.response);
-        return await new Promise((settle) => {
-          state.decisions.set(requestId, { responses, settle });
+        return await new Promise((settle, reject) => {
+          state.decisions.set(requestId, { responses, settle, reject });
           this.emit(state, {
             type: 'request.opened',
             turnId,
@@ -526,6 +552,8 @@ export class AcpAdapter implements ProviderAdapter {
     context: AcpSessionContext,
     request: AcpPermissionRequest
   ): Promise<unknown> {
+    if (state.interrupted && this.hooks.interruptPermissionAsError)
+      throw new Error('The user interrupted this turn.');
     if (request.sessionId !== state.nativeId || !state.turn || state.interrupted)
       return ACP_CANCELLED;
     const vendor = this.hooks.permission?.(context, request);
@@ -587,6 +615,7 @@ export class AcpAdapter implements ProviderAdapter {
   }
 
   private update(state: State, update: AcpSessionUpdate): void {
+    if (state.collectingPrompt && update.sessionUpdate === 'agent_message_chunk') return;
     if (update.sessionUpdate === 'config_option_update' && update.configOptions) {
       this.applyConfigOptions(state, update.configOptions);
       return;
@@ -749,7 +778,9 @@ export class AcpAdapter implements ProviderAdapter {
     }
     state.questions.clear();
     for (const [requestId, pending] of state.decisions) {
-      pending.settle(ACP_CANCELLED);
+      if (state.interrupted && this.hooks.interruptPermissionAsError)
+        pending.reject(new Error('The user interrupted this turn.'));
+      else pending.settle(ACP_CANCELLED);
       this.emit(state, { type: 'request.resolved', requestId, decision: 'cancel' });
     }
     state.decisions.clear();
