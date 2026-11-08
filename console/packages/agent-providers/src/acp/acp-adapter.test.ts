@@ -250,6 +250,37 @@ it('offers allow-for-session, maps it to the agent option, and answers decline w
   });
 });
 
+it('reads the kind of a permission request that leaves it out from the tool call it names', async () => {
+  // Kiro sends `kind` on the tool call and not on the permission request that follows.
+  for (const [runtimeMode, kind, prompted] of [
+    ['auto-accept-edits', 'edit', 0],
+    ['approval-required', 'execute', 1],
+  ] as const) {
+    const { adapter, events, server } = await start(dummy, { runtimeMode });
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    server.send({
+      method: 'session/update',
+      params: {
+        sessionId: 'native',
+        update: { sessionUpdate: 'tool_call', toolCallId: 'x', kind, title: 'a tool' },
+      },
+    });
+    server.send({
+      id: 50,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: 'x', title: 'a tool' },
+        options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+    await flush();
+    const opened = events.filter((e) => e.type === 'request.opened');
+    expect(opened).toHaveLength(prompted);
+    if (prompted) expect(opened[0]).toMatchObject({ requestType: 'command_execution_approval' });
+  }
+});
+
 it('approves without asking in full access, approves only edits in auto-accept-edits, and asks in auto', async () => {
   for (const [runtimeMode, kind, prompted] of [
     ['full-access', 'execute', 0],

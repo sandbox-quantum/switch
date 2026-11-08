@@ -40,7 +40,13 @@ export const kiroAcp: AcpProviderHooks = {
   },
   // Kiro's modes are agent configurations, not permission levels, so none is
   // set: the runtime mode is enforced on its permission requests.
-  mcpServerOf: (toolCall) => /^mcp__(.+?)__/.exec(toolCall.title ?? '')?.[1],
+  // Kiro 3.1.0 titles an MCP call `@<server>/<tool>` and names the server in
+  // `_meta.kiro.serverName`; its permission request carries the title only.
+  mcpServerOf: (toolCall) => {
+    const meta = (toolCall._meta as { kiro?: { serverName?: unknown } } | undefined)?.kiro;
+    if (typeof meta?.serverName === 'string') return meta.serverName;
+    return /^@([^/\s]+)\//.exec(toolCall.title ?? '')?.[1];
+  },
 };
 
 export function createKiroAdapter(options: AcpAdapterOptions = {}): AcpAdapter {

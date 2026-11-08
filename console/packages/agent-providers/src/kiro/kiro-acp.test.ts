@@ -82,4 +82,26 @@ describe('Kiro CLI ACP hooks', () => {
     expect(result.message).toContain('KIRO_API_KEY');
     expect(calls).toEqual(['initialize', 'session/list']);
   });
+
+  it('reads the MCP server as Kiro names it, on the tool call and on its permission request', () => {
+    // What Kiro 3.1.0 sends for a tool of a registered MCP server named echo.
+    expect(
+      kiroAcp.mcpServerOf!({
+        toolCallId: 'tooluse_1',
+        title: '@echo/switch_echo',
+        kind: 'other',
+        _meta: { kiro: { serverName: 'echo', toolOrigin: 'default' } },
+      })
+    ).toBe('echo');
+    expect(kiroAcp.mcpServerOf!({ toolCallId: 'tooluse_1', title: '@echo/switch_echo' })).toBe(
+      'echo'
+    );
+    expect(
+      kiroAcp.mcpServerOf!({
+        toolCallId: 'run_command_1',
+        title: 'echo hi > a.txt',
+        kind: 'execute',
+      })
+    ).toBeUndefined();
+  });
 });
