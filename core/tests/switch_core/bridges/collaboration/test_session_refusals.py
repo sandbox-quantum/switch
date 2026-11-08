@@ -57,6 +57,7 @@ def _press(**overrides: Any) -> InboundInteraction:
         "channel_id": "C1",
         "sender_id": "U1",
         "sender_name": "someone",
+        "sender_display_name": "Someone",
         "action_id": f"{ANSWER_ACTION}:allow-once",
         "value": "opaque-token",
         "message_ref": CARD,

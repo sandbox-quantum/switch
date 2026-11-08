@@ -1284,7 +1284,7 @@ class TelegramAdapter(PlatformAdapter):
             return
         card, groups = await self._ui_card(author, spec)
         text = (
-            f"{card}\n✅ {html.escape(interaction.sender_name, quote=False)} "
+            f"{card}\n✅ {html.escape(interaction.sender_display_name, quote=False)} "
             f"chose {html.escape(label, quote=False)}"
         )
         links = [
@@ -2745,6 +2745,10 @@ class TelegramAdapter(PlatformAdapter):
                     channel_id=str(chat.id),
                     sender_id=str(user.id),
                     sender_name=name,
+                    sender_display_name=" ".join(
+                        part for part in (user.first_name, user.last_name) if part
+                    )
+                    or name,
                     action_id=action_id,
                     value=value,
                     message_ref=self._ref(message),

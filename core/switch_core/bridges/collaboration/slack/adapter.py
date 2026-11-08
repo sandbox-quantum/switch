@@ -843,7 +843,7 @@ class SlackAdapter(PlatformAdapter):
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"✅ {escape_mrkdwn(interaction.sender_name)} chose "
+                    "text": f"✅ {escape_mrkdwn(interaction.sender_display_name)} chose "
                     f"{escape_mrkdwn(label)}",
                 }
             ],
@@ -3533,6 +3533,7 @@ class SlackAdapter(PlatformAdapter):
                         channel_id=channel_id,
                         sender_id=user_id,
                         sender_name=user.name,
+                        sender_display_name=user.display_name,
                         action_id=action_id,
                         value=value,
                         message_ref=message_ref,

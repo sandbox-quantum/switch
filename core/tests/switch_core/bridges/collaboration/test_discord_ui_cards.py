@@ -455,7 +455,7 @@ async def test_a_settled_press_takes_off_its_row_and_says_who_chose() -> None:
     redraw = press.redraws[0]
     assert redraw["view"].children == []
     assert redraw["view"].is_finished()
-    assert redraw["embeds"][-1].description == "✅ kim chose Stop"
+    assert redraw["embeds"][-1].description == "✅ Kim Lee chose Stop"
     assert redraw["embeds"][0].title == "Deploy 1.4.2"
 
 
@@ -467,6 +467,7 @@ async def test_settling_with_no_press_held_leaves_the_card_alone() -> None:
             channel_id=str(CHANNEL_ID),
             sender_id="1",
             sender_name="kim",
+            sender_display_name="kim",
             action_id="switch.ui:stop",
             value="halt now",
             message_ref=f"{CHANNEL_ID}:901",

@@ -1928,7 +1928,7 @@ class TeamsAdapter(PlatformAdapter):
             )
             return
         line = (
-            f"✅ {self.escape_label_for_body(interaction.sender_name)} chose "
+            f"✅ {self.escape_label_for_body(interaction.sender_display_name)} chose "
             f"{self._card_text(label)}"
         )
         activity = await self._ui_activity(author, spec, body)
@@ -3765,6 +3765,7 @@ class TeamsAdapter(PlatformAdapter):
                     channel_id=channel_id,
                     sender_id=sender_id,
                     sender_name=sender_name,
+                    sender_display_name=str(sender.get("name") or "") or sender_name,
                     action_id=action_id,
                     value=value,
                     message_ref=card,

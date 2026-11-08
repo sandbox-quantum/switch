@@ -1073,7 +1073,7 @@ class DiscordAdapter(PlatformAdapter):
                 view.remove_item(item)
         view.stop()
         chosen = discord.utils.escape_markdown(
-            f"✅ {escape_card_text(interaction.sender_name)} chose "
+            f"✅ {escape_card_text(interaction.sender_display_name)} chose "
             f"{escape_card_text(label)}"
         )
         try:
@@ -3274,6 +3274,7 @@ class DiscordAdapter(PlatformAdapter):
                     channel_id=channel_id,
                     sender_id=str(user.id),
                     sender_name=name,
+                    sender_display_name=str(user.display_name),
                     action_id=action_id,
                     value=value,
                     message_ref=message_ref,

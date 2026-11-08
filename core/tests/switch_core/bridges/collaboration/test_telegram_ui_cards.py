@@ -233,6 +233,7 @@ async def test_a_press_names_its_button_by_position_for_core_to_resolve(
             channel_id=CHANNEL,
             sender_id="9",
             sender_name="a<b>&c",
+            sender_display_name="Alice",
             action_id=action_id,
             value="",
             message_ref=ref,
@@ -265,7 +266,8 @@ async def test_a_settled_card_is_redrawn_with_who_chose_and_only_its_links() -> 
         InboundInteraction(
             channel_id=CHANNEL,
             sender_id="9",
-            sender_name="a<b>&c",
+            sender_name="alice",
+            sender_display_name="a<b>&c",
             action_id="switch.ui:#1",
             value="",
             message_ref=ref,

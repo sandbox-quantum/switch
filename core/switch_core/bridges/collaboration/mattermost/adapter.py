@@ -825,6 +825,7 @@ class MattermostAdapter(PlatformAdapter):
                     channel_id=press.channel_id,
                     sender_id=press.user_id,
                     sender_name=name,
+                    sender_display_name=name,
                     action_id=action_id,
                     value=value,
                     message_ref=press.post_id,
@@ -1215,7 +1216,7 @@ class MattermostAdapter(PlatformAdapter):
             )
             return
         pressed = [interaction.action_id, interaction.value]
-        chosen = _defuse_at(f"✅ {interaction.sender_name} chose {label}")
+        chosen = _defuse_at(f"✅ {interaction.sender_display_name} chose {label}")
         address = self._button_address()
         try:
             post = await loop.run_in_executor(None, driver.posts.get_post, ref)

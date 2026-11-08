@@ -379,6 +379,7 @@ async def test_a_stop_press_goes_in_under_the_shared_action_id() -> None:
             channel_id=CHANNEL,
             sender_id=PRESSER_ID,
             sender_name=PRESSER_NAME,
+            sender_display_name="Alice",
             action_id=INTERRUPT_ACTION,
             value=RUNNING_TURN,
             message_ref=PRESS_MESSAGE_REF,

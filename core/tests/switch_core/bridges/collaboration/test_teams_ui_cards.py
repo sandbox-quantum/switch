@@ -335,7 +335,8 @@ async def test_a_settled_card_is_redrawn_with_who_chose_and_only_its_links() -> 
     press = InboundInteraction(
         channel_id=CHANNEL,
         sender_id="aad-kim",
-        sender_name="@kim",
+        sender_name="kim",
+        sender_display_name="@kim",
         action_id="switch.ui:go",
         value="g",
         message_ref="MSG1",

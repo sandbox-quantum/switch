@@ -22,7 +22,8 @@ from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
 from switch_core.clients.mentions import mention_tokens
 from switch_core.delivery.addressing import named_agents
 from switch_core.sessions.errors import SessionError
-from switch_core.trust.client import NullTrustClient
+from switch_core.transport.derived_ids import derived_writes
+from switch_core.trust.client import NullTrustClient, TrustCheckResult
 from switch_core.ui_spec import (
     UI_CONTENT_KEY,
     UI_PRESS_KEY,
@@ -83,6 +84,7 @@ class _Human:
         self.transport = _Transport(card)
         self.sent: list[tuple[str, str, str | None]] = []
         self.extra: list[dict[str, Any] | None] = []
+        self.sources: list[str] = []
         self.event_id: str | None = "$press"
 
     async def send_message(
@@ -96,6 +98,9 @@ class _Human:
     ) -> str | None:
         self.sent.append((room_id, content, thread_root_id))
         self.extra.append(extra_content)
+        derived = derived_writes(self.client_id)
+        assert derived is not None
+        self.sources.append(derived.source_id)
         return self.event_id
 
 
@@ -175,7 +180,11 @@ def _card(**overrides: Any) -> SimpleNamespace:
 
 class _Agents:
     async def get_by_name(self, session: Any, name: str) -> Any:
-        return SimpleNamespace(id="agent-deploybot") if name == "deploybot" else None
+        if name != "deploybot":
+            return None
+        return SimpleNamespace(
+            id="agent-deploybot", name="deploybot", display_name="Deploy <!here>"
+        )
 
 
 class _Controls:
@@ -232,6 +241,7 @@ def _bridge(
         _event_for_external_post=event_for,
         _external_post_for_event=post_for,
         _repair_placeholder_username=noop,
+        _post_trust_notice=noop,
         _handle_text_answer=noop,
         _record_message_map=noop,
         _session_factory=_session,
@@ -253,6 +263,7 @@ def _press(bridge: SimpleNamespace, **overrides: Any) -> None:
         "channel_id": "C1",
         "sender_id": "U1",
         "sender_name": "alice",
+        "sender_display_name": "Alice Liddell",
         "action_id": "switch.ui:approve",
         "value": "v-1",
         "message_ref": CARD_REF,
@@ -310,7 +321,9 @@ def test_an_account_switch_cannot_name_is_refused_and_nothing_is_delivered() -> 
 
     assert bridge.actor.sent == []
     assert bridge._adapter.settled == []
-    assert "does not know who this account belongs to" in bridge._adapter.told[0]
+    assert bridge._adapter.told == [
+        "Switch couldn't identify your account, so your answer was not sent."
+    ]
 
 
 def test_a_forged_button_is_refused() -> None:
@@ -325,7 +338,10 @@ def test_a_forged_button_is_refused() -> None:
 
         assert bridge.actor.sent == []
         assert bridge._adapter.settled == []
-        assert "not on an agent's card" in bridge._adapter.told[0]
+        assert bridge._adapter.told == [
+            "That button isn't on an agent's card in this room, so your answer "
+            "was not sent."
+        ]
 
 
 def test_a_card_not_posted_by_an_agent_is_refused() -> None:
@@ -352,7 +368,10 @@ def test_a_press_on_a_message_the_bridge_did_not_post_is_refused() -> None:
     _press(bridge, message_ref="C1:999.0")
 
     assert bridge.actor.sent == []
-    assert "not connected to a Switch room message" in bridge._adapter.told[0]
+    assert bridge._adapter.told == [
+        "This card is no longer connected to a Switch room, so your answer was "
+        "not sent."
+    ]
 
 
 def test_stop_presses_still_go_to_the_stop_handler() -> None:
@@ -426,11 +445,7 @@ def test_a_card_takes_one_answer() -> None:
     assert bridge._adapter.settled == [("switch.ui:approve", "Approve")]
     assert (
         bridge._adapter.told
-        == [
-            "That card was already answered by alice (Approve), so the press was "
-            "not delivered."
-        ]
-        * 2
+        == ["This card was already answered by Alice Liddell (Approve)."] * 2
     )
 
 
@@ -442,11 +457,62 @@ def test_a_press_that_was_not_delivered_leaves_the_card_unanswered() -> None:
 
     assert bridge._bridge_message_map_store.answers == {}
     assert bridge._adapter.settled == []
+    assert bridge._adapter.told == [
+        "Your answer could not be delivered to Deploy <\u200b!here>."
+    ]
 
     bridge.actor.event_id = "$press"
+    _press(bridge)
     _press(bridge, sender_id="U2", sender_name="bob")
 
     assert bridge._adapter.settled == [("switch.ui:approve", "Approve")]
+    # A retried press is the same post, so the room would write it once; another
+    # presser's is a different one.
+    first, retried = bridge.actor.sources
+    assert first == retried and "#press:approve:U1" in first
+
+
+def test_a_press_that_failed_after_its_send_keeps_the_card_answered() -> None:
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
+
+    async def lost(**_kw: Any) -> None:
+        raise RuntimeError("message map is down")
+
+    bridge._record_message_map = lost
+
+    with pytest.raises(RuntimeError):
+        _press(bridge)
+    _press(bridge, sender_id="U2", sender_name="bob")
+
+    assert len(bridge.actor.sent) == 1
+    assert bridge._adapter.settled == []
+    assert bridge._adapter.told == [
+        "This card was already answered by Alice Liddell (Approve)."
+    ]
+
+
+class _RedactingTrust:
+    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+        return TrustCheckResult(
+            outcome="redacted",
+            policy_id="p",
+            policy_name="p",
+            redacted_content=content.replace("v-1", "[REDACTED]"),
+        )
+
+    async def is_active(self) -> bool:
+        return True
+
+
+def test_a_press_switch_trust_redacted_carries_no_raw_value() -> None:
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
+    bridge._trust_client = _RedactingTrust()
+
+    _press(bridge)
+
+    [(_, body, _)] = bridge.actor.sent
+    assert "v-1" not in body
+    assert bridge.actor.extra == [None]
 
 
 def test_a_presser_who_may_not_address_the_author_is_refused() -> None:
@@ -462,8 +528,8 @@ def test_a_presser_who_may_not_address_the_author_is_refused() -> None:
     assert bridge._adapter.settled == []
     assert bridge._bridge_message_map_store.answers == {}
     assert bridge._adapter.told == [
-        "The press was not delivered (NOT_AUTHORIZED): You may not address this "
-        "agent, so you may not answer its card."
+        "You can't answer this card: you're not allowed to address Deploy "
+        "<\u200b!here>."
     ]
 
 
@@ -476,14 +542,16 @@ def test_a_press_may_name_its_button_by_position_on_the_card() -> None:
     assert bridge._adapter.settled == [("switch.ui:#2", "Reject")]
 
 
-@pytest.mark.parametrize("position", ["0", "3", "01", "x", "", "1" * 5000])
+@pytest.mark.parametrize(
+    "position", ["0", "3", "01", "x", "", pytest.param("1" * 5000, id="huge")]
+)
 def test_a_position_the_card_has_no_button_at_is_refused(position: str) -> None:
     bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
 
     _press(bridge, action_id=f"switch.ui:#{position}", value="")
 
     assert bridge.actor.sent == []
-    assert "not on an agent's card" in bridge._adapter.told[0]
+    assert "isn't on an agent's card" in bridge._adapter.told[0]
 
 
 # ── From each platform's own press ───────────────────────────────────────────
@@ -628,8 +696,8 @@ async def test_a_platform_press_from_a_presser_who_may_not_address_is_refused(
     assert bridge._adapter.settled == []
     assert bridge._bridge_message_map_store.answers == {}
     assert bridge._adapter.told == [
-        "The press was not delivered (NOT_AUTHORIZED): You may not address this "
-        "agent, so you may not answer its card."
+        "You can't answer this card: you're not allowed to address Deploy "
+        "<\u200b!here>."
     ]
 
 
@@ -647,6 +715,34 @@ async def test_a_platform_press_made_twice_is_delivered_once(
     assert len(bridge.actor.sent) == 1
     assert len(bridge._adapter.settled) == 1
     [told] = bridge._adapter.told
-    assert told.startswith("That card was already answered by ")
-    assert told.endswith("so the press was not delivered.")
+    assert told.startswith("This card was already answered by ")
     assert "<!" not in told and "<@" not in told
+
+
+@pytest.mark.parametrize(
+    ("platform_press", "shown_as"),
+    [
+        pytest.param(_teams_press, "kim", id="teams"),
+        pytest.param(_discord_press, "Kim Lee", id="discord"),
+        pytest.param(_mattermost_press, "alice", id="mattermost"),
+        pytest.param(_telegram_card_press, "Alice", id="telegram"),
+    ],
+)
+async def test_a_card_is_answered_by_the_name_the_platform_shows(
+    platform_press: PlatformPress, shown_as: str
+) -> None:
+    bridge, interaction = await _platform_bridge(platform_press)
+
+    await _deliver(bridge, interaction)
+    await _deliver(bridge, interaction)
+
+    assert interaction.sender_display_name == shown_as
+    assert (
+        bridge._bridge_message_map_store.answers[interaction.message_ref]["by"]
+        == shown_as
+    )
+    assert bridge._adapter.told == [
+        f"This card was already answered by {shown_as} ({INJECTED_LABEL}).".replace(
+            "<", "<\u200b"
+        ).replace("@", "@\u200b")
+    ]
