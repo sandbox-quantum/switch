@@ -124,6 +124,55 @@ describe.skipIf(process.platform === 'win32')('Amp adapter', () => {
     expect(secondTurn).not.toContain('--mode');
   });
 
+  it.each(['failed', 'denied', 'blocked-by-registry'])(
+    'warns safely when the Switch MCP server reports %s',
+    async (status) => {
+      const secret = 'fixture-secret-do-not-display';
+      await start({
+        env: env({
+          FAKE_AMP_MCP_SERVERS: JSON.stringify([{ name: 'switch', status, error: secret }]),
+        }),
+        mcpServers: { switch: { transport: 'http', url: 'http://127.0.0.1:1234/mcp' } },
+      });
+      await adapter.sendTurn({ sessionId: 's1', turnId: 't1', text: 'hello' });
+      await recorder.waitFor('turn.completed');
+      expect(recorder.ofType('runtime.warning')).toEqual([
+        expect.objectContaining({
+          message:
+            'Amp could not connect to the Switch tools. Room replies and other Switch actions may be unavailable.',
+        }),
+      ]);
+      expect(JSON.stringify(recorder.events)).not.toContain(secret);
+    }
+  );
+
+  it.each([
+    ['connected', [{ name: 'switch', status: 'connected' }]],
+    ['connecting', [{ name: 'switch', status: 'connecting' }]],
+    ['authenticating', [{ name: 'switch', status: 'authenticating' }]],
+    ['reconnecting', [{ name: 'switch', status: 'reconnecting' }]],
+    ['awaiting approval', [{ name: 'switch', status: 'awaiting-approval' }]],
+    ['absent', []],
+    ['another server failed', [{ name: 'other', status: 'failed' }]],
+  ])('does not warn for %s', async (_description, servers) => {
+    await start({
+      env: env({ FAKE_AMP_MCP_SERVERS: JSON.stringify(servers) }),
+      mcpServers: { switch: { transport: 'http', url: 'http://127.0.0.1:1234/mcp' } },
+    });
+    await adapter.sendTurn({ sessionId: 's1', turnId: 't1', text: 'hello' });
+    await recorder.waitFor('turn.completed');
+    expect(recorder.ofType('runtime.warning')).toEqual([]);
+  });
+
+  it('does not warn about Switch MCP when the session did not configure it', async () => {
+    await start({
+      env: env({ FAKE_AMP_MCP_SERVERS: JSON.stringify([{ name: 'switch', status: 'failed' }]) }),
+    });
+    await adapter.sendTurn({ sessionId: 's1', turnId: 't1', text: 'hello' });
+    await recorder.waitFor('turn.completed');
+    expect(recorder.ofType('runtime.warning')).toEqual([]);
+  });
+
   it('leaves out what Amp resumes from earlier work before the new message', async () => {
     await start({ env: env({ FAKE_AMP_EARLIER_WORK: '1' }) });
     await adapter.sendTurn({ sessionId: 's1', turnId: 't1', text: 'hello' });

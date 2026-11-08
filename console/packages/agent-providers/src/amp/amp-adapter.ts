@@ -96,6 +96,7 @@ interface State {
   settingsPath: string;
   approvalsDir: string;
   mcpConfig?: string;
+  hasSwitchMcp: boolean;
   connectors: Set<string>;
   turn: RunningTurn | null;
   /** A turn's process is being started; set until it is `turn`. */
@@ -194,6 +195,7 @@ export class AmpAdapter implements ProviderAdapter {
         ...(Object.keys(input.mcpServers).length
           ? { mcpConfig: JSON.stringify(mcpConfig(input.mcpServers, input.env)) }
           : {}),
+        hasSwitchMcp: Object.hasOwn(input.mcpServers, 'switch'),
         connectors,
         turn: null,
         launching: false,
@@ -427,6 +429,12 @@ export class AmpAdapter implements ProviderAdapter {
       return;
     }
     if (message.type === 'system') {
+      if (message.subtype === 'init' && state.hasSwitchMcp && switchMcpFailed(message.mcp_servers))
+        this.emit(state, {
+          type: 'runtime.warning',
+          message:
+            'Amp could not connect to the Switch tools. Room replies and other Switch actions may be unavailable.',
+        });
       if (message.subtype === 'error_during_execution' || message.subtype === 'error_max_turns')
         turn.result = { isError: true, message: message.error ?? message.subtype };
       return;
@@ -808,6 +816,21 @@ interface AmpStreamMessage {
   error?: string;
   usage?: AmpUsage;
   permission_denials?: string[];
+  mcp_servers?: unknown;
+}
+
+function switchMcpFailed(servers: unknown): boolean {
+  if (!Array.isArray(servers)) return false;
+  return servers.some((server: unknown) => {
+    if (typeof server !== 'object' || server === null) return false;
+    const entry = server as Record<string, unknown>;
+    return (
+      entry.name === 'switch' &&
+      (entry.status === 'failed' ||
+        entry.status === 'denied' ||
+        entry.status === 'blocked-by-registry')
+    );
+  });
 }
 
 function emptyUsage(): TokenUsage {

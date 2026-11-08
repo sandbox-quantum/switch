@@ -73,7 +73,7 @@ function permitted(tool, input) {
   return { allowed: false, error: 'no rule' };
 }
 
-out({ type: 'system', subtype: 'init', cwd: process.cwd(), tools: ['Bash'], mcp_servers: [], subagents: [] });
+out({ type: 'system', subtype: 'init', cwd: process.cwd(), tools: ['Bash'], mcp_servers: JSON.parse(process.env.FAKE_AMP_MCP_SERVERS ?? '[]'), subagents: [] });
 // Earlier work Amp resumes before the new message: not part of this turn.
 if (process.env.FAKE_AMP_EARLIER_WORK) say('left over from an earlier turn');
 
