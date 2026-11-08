@@ -9,6 +9,7 @@ function check(env: Record<string, string>, handshake: () => Promise<unknown>) {
     cwd: '/work',
     env,
     handshake: handshake as never,
+    request: () => Promise.reject(new Error('Junie is not asked anything else')),
   });
 }
 
@@ -31,8 +32,8 @@ it('does not claim signed out from the sign-in method the agent always lists', a
 });
 
 it('signs in with the account only when it was given no key', () => {
-  expect(junieAcp.authMethodId?.({})).toBe('jetbrains-account');
-  expect(junieAcp.authMethodId?.({ JUNIE_API_KEY: 'jb_synthetic' })).toBeUndefined();
+  expect(junieAcp.authMethodId?.({}, '/bin/junie')).toBe('jetbrains-account');
+  expect(junieAcp.authMethodId?.({ JUNIE_API_KEY: 'jb_synthetic' }, '/bin/junie')).toBeUndefined();
 });
 
 it('reports signed in when the agent wants no sign-in', async () => {
