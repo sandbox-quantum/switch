@@ -713,7 +713,7 @@ def _message(room: Room, sender: Client, body: str) -> Message:
     "deliveries", [1, 2], ids=["single", "duplicate-across-processes"]
 )
 async def test_message_edit_preserves_original_and_recipients(
-    session_factory: SessionFactory, deliveries: int
+    session_factory: SessionFactory, deliveries: int, statement_counts: StatementCounts
 ) -> None:
     here, there = process_on(session_factory), process_on(session_factory)
     room = await make_room(session_factory)
@@ -748,7 +748,17 @@ async def test_message_edit_preserves_original_and_recipients(
             )
         return result.event_id
 
-    edit_ids = await asyncio.gather(*(deliver(p) for p in (here, there)[:deliveries]))
+    with statement_counts.scope("edit recipients") as scope:
+        edit_ids = await asyncio.gather(
+            *(deliver(p) for p in (here, there)[:deliveries])
+        )
+    lookups = [
+        sql
+        for sql in scope.statements
+        if "JOIN agents ON" in sql and "agent_events.message_key =" in sql
+    ]
+    assert lookups
+    assert all("agent_events.agent_id IN (" in sql for sql in lookups)
     await here.idle()
     await there.idle()
     assert len(set(edit_ids)) == 1

@@ -1001,15 +1001,20 @@ class MessageRouter:
             raise ValueError(
                 "Replacement must reference the sender's message in this room"
             )
-        if not await self._messages.create_unless_stored(session, message, []):
+        announced_by_writer = self.services.announcer is not None
+        if not await self._messages.create_unless_stored(
+            session, message, [], announced_by_writer=announced_by_writer
+        ):
             return None
         group = parse_attachment_group(original.content)
         original_key = group[0] if group else original.transport_event_id
+        agent_ids = await self.services.room_store.get_agent_ids(session, room_id)
         recipients = (
             await session.execute(
                 select(AgentEventRow, Agent.client_id)
                 .join(Agent, Agent.id == AgentEventRow.agent_id)
                 .where(
+                    AgentEventRow.agent_id.in_(agent_ids),
                     AgentEventRow.room_id == room_id,
                     AgentEventRow.message_key == original_key,
                     AgentEventRow.type == "message",
@@ -1017,7 +1022,7 @@ class MessageRouter:
                 .order_by(AgentEventRow.agent_id)
             )
         ).all()
-        stored = []
+        stored: list[tuple[str, int]] = []
         for source, client_id in recipients:
             event = AgentEvent.model_validate(source.payload)
             if not getattr(event.payload, "addressed", False):
@@ -1047,7 +1052,7 @@ class MessageRouter:
                 message_key=message.transport_event_id,
             )
             if seq is not None:
-                stored.append(source.agent_id)
+                stored.append((source.agent_id, seq))
         return Routed(
             self,
             None,
@@ -1056,6 +1061,13 @@ class MessageRouter:
             seq=message.seq,
             stored=stored,
             deadline_in=None,
+            announcement=(
+                message_announcement(
+                    room_id, message.seq, message.id, message.event_type
+                )
+                if announced_by_writer
+                else None
+            ),
         )
 
     @staticmethod
