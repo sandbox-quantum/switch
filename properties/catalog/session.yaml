@@ -1,16 +1,41 @@
 properties:
-  - id: session.addressed-eventually-started
-    title: Addressing an agent with no session starts one
+  - id: session.addressed-reaches-controller
+    title: What is addressed to an agent reaches its controller
     statement: >
-      Addressing an agent that has no live session, where auto-start is
-      configured, eventually starts one, through the controller that hosts the
-      agent when it is a hosted or managed agent.
+      Every event addressed to an agent that a controller has attached reaches
+      the controller's stream, after the position the stream attached the agent
+      at, in the agent's own order, with none skipped and none repeated within
+      one stream. A controller that reopens its socket or its connection from
+      the position it confirmed is sent everything past it again.
     kind: liveness
     formality: semi-formal
-    levels: [model, system]
+    levels: [code]
+    owner: platform
+    status: checked
+    notes: >
+      Core never asks a controller to start a session. The controller reads
+      every event of each of its agents off one unfiltered stream
+      (`controller_stream.py`) and decides locally whether to start one, so
+      this is the half core owes an agent with no live session. The other half
+      is `session.controller-starts-on-addressed`. An agent the controller has
+      no position for is attached at its head, so what was addressed before
+      that is not the stream's to deliver.
+  - id: session.controller-starts-on-addressed
+    title: A controller starts a session for an addressed agent
+    statement: >
+      A controller whose auto-start setting is on starts a session for an
+      agent when an event addressed to it arrives and the agent has no session
+      for that room, starts none when auto-start is off, and never starts two
+      for one room.
+    kind: liveness
+    formality: semi-formal
+    levels: [code]
     owner: platform
     status: proposed
     notes: >
-      Waits for auto-start in core. The controller path is the one to check:
-      the server asks the agent's controller to start a session, and the
-      session comes up bound to the agent.
+      TypeScript, in the controller (`console/packages/agent-controller` and
+      `watch-flags.ts`). Core's own reply, "Starting a session…", is promised
+      only for an agent with a spawn-capable direct connection, never for a
+      controller-backed one, and is covered by unit tests in
+      `delivery/test_mention_routing.py`. The provider e2e lane exercises the
+      whole path against a real console.
