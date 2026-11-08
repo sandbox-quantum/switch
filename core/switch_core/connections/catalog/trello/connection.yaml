@@ -1,0 +1,66 @@
+slug: trello
+name: Trello
+category: Project management
+description: Read and update Trello boards, lists and cards, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Nothing to set up on the server: Core registers its own client.
+    registration: dynamic
+    # A client registered with the portless loopback redirect signed in on a
+    # port it never named, so unlike Atlassian's this entry fixes no ports.
+    redirect: [loopback]
+    # Every sign-in measured for this entry sent it; none was tried without.
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.atlassian.com/me
+    account_id: account_id
+    label: email
+# Measured: access tokens live 8 hours. Revoking a sign-in ends its refresh
+# token at once, but its access token still answered MCP initialize straight
+# after in two of three runs, so an agent's copy may outlive its grant by up to
+# that long.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: trello, url: "https://mcp.trello.com/v1" }
+access:
+  # Trello grants reading and writing each as a whole group. Leave out any read
+  # scope (read:organization, or Inbox or Planner reading) and consent stops at
+  # "Permissions are blocked for these workspaces". That says to ask an admin,
+  # but no admin setting caused it, and none needed changing: read sign-ins
+  # worked with the organization's default Atlassian MCP server settings (Read
+  # and Write allowed, supported domains on, no domain added). With every read
+  # scope present, leaving out write:organization, or asking for write:board
+  # alone, is dropped without an error: the token's scope lists the reads, and
+  # 9 read tools are offered. So the write level includes organization write,
+  # Inbox and Planner.
+  read:
+    scopes:
+      - read:me
+      - read:account
+      - offline_access
+      - read:board:trello
+      - read:organization:trello
+      - read:member:trello
+      - read:member.inbox:trello
+      - read:member.planner:trello
+  write:
+    scopes:
+      - read:me
+      - read:account
+      - offline_access
+      - read:board:trello
+      - write:board:trello
+      - read:organization:trello
+      - write:organization:trello
+      - read:member:trello
+      - read:member.inbox:trello
+      - write:member.inbox:trello
+      - read:member.planner:trello
+      - write:member.planner:trello
+tools: { mode: pass_through }

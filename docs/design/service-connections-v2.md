@@ -479,6 +479,37 @@ To connect: Settings, Connections in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
+## Trello
+
+Built from sign-in runs against a personal Trello account with one workspace:
+
+- Trello offers dynamic registration, so Core registers its client. A client
+  registered with the portless loopback redirect signed in on a port it never
+  named, so the entry fixes no ports.
+- Trello grants reading and writing each as a whole group. Leaving out a read
+  scope stops consent at "Permissions are blocked for these workspaces", with
+  Accept disabled. The message says to ask an admin, but no admin setting caused
+  it, and none needed changing: asking for exactly the board, organization,
+  member, Inbox and Planner reads signed in with the organization's default
+  Atlassian MCP server settings (Read and Write allowed, supported domains on, no
+  domain added), and gave 9 read tools.
+- Writes are dropped without an error. With every read present, asking for
+  `write:board:trello` alone, or for every write except
+  `write:organization:trello`, gave a token whose `scope` listed only the reads,
+  and 9 read tools. All 12 advertised scopes gave every write and 15 tools. So
+  the write level includes organization write, and Core reads the level from
+  the token's `scope`.
+- Access tokens are JWTs that live 8 hours. Refresh tokens rotate, though the
+  previous one still worked straight after a refresh, and the refresh answer
+  gives no lifetime for them. Revoking a sign-in ends its refresh token at once
+  (403); its access token still answered MCP `initialize` straight after in two
+  of three runs.
+- `api.atlassian.com/me` accepts the token and returns the account id and email.
+
+To connect: Settings, Connections in Switch Console, then Trello. Nothing needs
+configuring on the server. To roll back, add `trello` to `DISABLED_SERVICES`, or
+set the entry's `enabled: false`.
+
 ## Airtable
 
 Built from sign-in runs against free Airtable accounts; the operator's setup
