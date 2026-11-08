@@ -105,7 +105,14 @@ from switch_core.trust.client import (
     trust_is_active,
     trust_redaction_notice,
 )
-from switch_core.ui_spec import UI_CONTENT_KEY, UISpecError, parse_ui_spec
+from switch_core.ui_spec import (
+    UI_ACTION_PREFIX,
+    UI_CONTENT_KEY,
+    ButtonProps,
+    UISpecError,
+    button_action,
+    parse_ui_spec,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
@@ -432,7 +439,7 @@ class CollaborationCore:
         )
 
     def _traced(
-        self, kind: str, handler: Callable[[_InboundEventT], Awaitable[None]]
+        self, kind: str, handler: Callable[[_InboundEventT], Awaitable[object]]
     ) -> Callable[[_InboundEventT], Awaitable[None]]:
         """Give each inbound platform event its own id in the logs, count it,
         and bind the tenant the event belongs to.
@@ -1085,7 +1092,9 @@ class CollaborationCore:
             msg.channel_id, _LOBBY_DEPRECATION_NOTICE, thread_root_id
         )
 
-    async def _handle_inbound_message(self, msg: InboundMessage) -> None:
+    async def _handle_inbound_message(self, msg: InboundMessage) -> str | None:
+        """Write a platform message into its room as its sender, and return
+        the event it became, or None when it was not relayed."""
         logger.debug(
             "[BRIDGE-IN] channel=%s sender=%s content=%s",
             msg.channel_id,
@@ -1102,13 +1111,13 @@ class CollaborationCore:
             logger.debug(
                 "[BRIDGE-IN] dropping echo from Switch agent %s", msg.sender_name
             )
-            return
+            return None
         if msg.channel_type == "lobby":
             # The Slack app's DM ("lobby") is deprecated as a place to talk to
             # agents: point the user at the docs instead of auto-creating a room
             # and routing the message. Only Slack im/mpim map to "lobby".
             await self._handle_lobby_message(msg)
-            return
+            return None
         # An answer typed in words. Almost no message is one, and the check is a
         # parse before it is a query, so this costs a channel nothing. It does
         # not consume the message: the room still sees what was said.
@@ -1127,7 +1136,7 @@ class CollaborationCore:
                         channel_name=msg.channel_name,
                     )
             if room_ids is None:
-                return
+                return None
 
         room_id, transport_room_id = room_ids
 
@@ -1149,7 +1158,7 @@ class CollaborationCore:
             transport_room_id=transport_room_id,
         )
         if human_actor is None:
-            return
+            return None
 
         content = self._adapter.translate_inbound(msg.content)
         if mention_target is not None and (
@@ -1215,7 +1224,7 @@ class CollaborationCore:
                     "can't access it.",
                     AdminMessageType.TRUST_BLOCKED,
                 )
-                return
+                return None
             if check.redacted_content is not None:
                 content = check.redacted_content
             annotation = trust_annotation(check)
@@ -1242,7 +1251,7 @@ class CollaborationCore:
                     msg.sender_name,
                     transport_room_id,
                 )
-                return
+                return None
             # Tell the sender what happened only now that the message is
             # actually confirmed to have reached the room — posting this
             # beforehand risks telling them their message was flagged/
@@ -1270,7 +1279,7 @@ class CollaborationCore:
                 transport_event_id=event_id,
                 external_post_id=msg.message_ref,
             )
-            return
+            return event_id
 
         # A message with files is checked as a whole before anything is
         # uploaded: the typed text exactly as above, and each file through the
@@ -1325,7 +1334,7 @@ class CollaborationCore:
                     "can't access it."
                 )
             await self._post_trust_notice(msg, notice, AdminMessageType.TRUST_BLOCKED)
-            return
+            return None
         if caption_check is not None and caption_check.redacted_content is not None:
             content = caption_check.redacted_content
         caption_annotation = (
@@ -1418,6 +1427,7 @@ class CollaborationCore:
                 transport_event_id=first_event_id,
                 external_post_id=msg.message_ref,
             )
+        return first_event_id
 
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType
@@ -2049,6 +2059,9 @@ class CollaborationCore:
         if interaction.action_id == INTERRUPT_ACTION:
             await self._handle_stop_press(interaction)
             return
+        if interaction.action_id.startswith(UI_ACTION_PREFIX):
+            await self._handle_card_press(interaction)
+            return
         if self._approval_answers is None:
             return
         answered = await self._approval_answers.for_press(interaction)
@@ -2150,6 +2163,119 @@ class CollaborationCore:
             "Switch has asked the agent to stop its current work. The activity "
             "message will say when it has."
         )
+
+    async def _handle_card_press(self, interaction: InboundInteraction) -> None:
+        """Someone pressed a button on an agent's card (`ui_spec`).
+
+        Only which message it was on and who the platform says pressed it are
+        taken from the press. The room, the agent and the thread come from the
+        room message the bridge posted as that message, and the button has to
+        be one that message's card drew. The press then goes to the room as the
+        presser's message to the agent, in the card's thread, through the path
+        a typed message takes, so it gets the same identity, addressing and
+        Switch Trust checks.
+        """
+
+        async def tell(text: str) -> None:
+            await self._adapter.tell_actor(
+                interaction.channel_id,
+                interaction.sender_id,
+                interaction.sender_name,
+                interaction.thread_ref,
+                text,
+            )
+
+        room_ids = self._channel_to_room.get(interaction.channel_id)
+        card_event_id = (
+            await self._event_for_external_post(interaction.message_ref)
+            if interaction.message_ref is not None
+            else None
+        )
+        if room_ids is None or card_event_id is None:
+            logger.warning(
+                "Ignoring a card press in %s on bridge %s: message %s maps to no "
+                "room message",
+                interaction.channel_id,
+                self._bridge_id,
+                interaction.message_ref,
+            )
+            await tell(
+                "That card is not connected to a Switch room message, so the "
+                "press was not delivered."
+            )
+            return
+        room_id, transport_room_id = room_ids
+        human_actor = await self._ensure_human_in_room(
+            external_user_id=interaction.sender_id,
+            external_username=interaction.sender_name,
+            room_id=room_id,
+            transport_room_id=transport_room_id,
+        )
+        if human_actor is None or human_actor.transport is None:
+            logger.warning(
+                "Ignoring a card press on %s: no Switch identity for %s on bridge %s",
+                card_event_id,
+                interaction.sender_id,
+                self._bridge_id,
+            )
+            await tell(
+                "Switch does not know who this account belongs to, so the press "
+                "was not delivered."
+            )
+            return
+        card = await human_actor.transport.get_event(transport_room_id, card_event_id)
+        button: ButtonProps | None = None
+        if card is not None and card.sender_name:
+            try:
+                spec = parse_ui_spec(card.content.get(UI_CONTENT_KEY))
+            except UISpecError:
+                spec = None
+            if spec is not None and await self._is_registered_agent(card.sender_name):
+                button = next(
+                    (
+                        e.props
+                        for e in spec.elements.values()
+                        if isinstance(e.props, ButtonProps)
+                        and button_action(e.props)
+                        == (interaction.action_id, interaction.value)
+                    ),
+                    None,
+                )
+        if card is None or button is None:
+            logger.warning(
+                "Ignoring a card press on %s: %s/%s is not a button an agent's "
+                "card drew there",
+                card_event_id,
+                interaction.action_id,
+                interaction.value,
+            )
+            await tell(
+                "That button is not on an agent's card in this room, so the "
+                "press was not delivered."
+            )
+            return
+        details = f"action: {button.id}" + (
+            f", value: {button.value}" if button.value else ""
+        )
+        delivered = await self._handle_inbound_message(
+            InboundMessage(
+                channel_id=interaction.channel_id,
+                channel_type=await self._adapter.get_channel_type(
+                    interaction.channel_id
+                ),
+                sender_id=interaction.sender_id,
+                sender_name=interaction.sender_name,
+                content=f"@{card.sender_name} Clicked “{button.label}” ({details})",
+                # Each press is its own post, so it is never taken for the card
+                # or for an earlier press.
+                message_ref=f"{interaction.message_ref}#press-{uuid.uuid4().hex}",
+                root_id=await self._external_post_for_event(
+                    card.thread_root_event_id or card_event_id
+                ),
+            )
+        )
+        if delivered is not None:
+            await self._adapter.settle_card_press(interaction, button.label)
 
     async def _handle_text_answer(self, msg: InboundMessage) -> None:
         """An answer to an approval card, typed rather than pressed.

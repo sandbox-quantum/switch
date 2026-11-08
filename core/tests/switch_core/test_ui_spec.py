@@ -473,6 +473,17 @@ def test_button_value_cap() -> None:
     ]
 
 
+def test_button_ids_are_unique() -> None:
+    assert _issues(
+        _minimal(
+            ("a", _el("Actions", {}, "b", "d")),
+            ("b", _el("Button", {"id": "go", "label": "Go"})),
+            ("d", _el("Button", {"id": "go", "label": "Go again"})),
+            children=["a"],
+        )
+    ) == ["spec: Button ids must be unique, repeated 'go'"]
+
+
 def test_not_an_object() -> None:
     assert _issues(["root"]) == [
         "spec: expected an object with root and elements, got list"

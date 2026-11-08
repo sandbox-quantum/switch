@@ -1105,6 +1105,14 @@ class PlatformAdapter(ABC):
             room_wide_mention=room_wide_mention,
         )
 
+    async def settle_card_press(
+        self, interaction: InboundInteraction, label: str
+    ) -> None:
+        """Show on the card that its button `label` was pressed and the press
+        delivered, so it is not pressed again. Only a platform that draws card
+        buttons has anything to do."""
+        return None
+
     async def admin_message(
         self,
         channel_id: str,

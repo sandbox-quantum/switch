@@ -27,6 +27,8 @@ from pydantic import (
 )
 
 UI_CONTENT_KEY = "com.switch.ui"
+# A press on a card button reaches the bridge under this action id prefix.
+UI_ACTION_PREFIX = "switch.ui:"
 
 MAX_BLOCKS = 50
 MAX_DEPTH = 8
@@ -313,6 +315,14 @@ def parse_ui_spec(raw: object) -> UISpec:
     issues += _structure_issues(root, shapes)
     for key, element in elements.items():
         issues += _element_issues(key, element)
+    button_ids = [
+        e.props.id for e in elements.values() if isinstance(e.props, ButtonProps)
+    ]
+    dupes = sorted({i for i in button_ids if button_ids.count(i) > 1})
+    if dupes:
+        issues.append(
+            f"spec: Button ids must be unique, repeated {', '.join(map(repr, dupes))}"
+        )
     for kind, limit in (("Table", MAX_TABLES), ("Chart", MAX_CHARTS)):
         keys = [k for k, (t, _) in shapes.items() if t == kind]
         if len(keys) > limit:
@@ -477,6 +487,13 @@ def _element_issues(key: str, element: UIElement) -> list[str]:
                     f"{', '.join(map(repr, dupes))}"
                 )
     return issues
+
+
+def button_action(button: ButtonProps) -> tuple[str, str]:
+    """The action id and value a button is drawn with, by which a press is
+    matched back to it. The value is never empty: Slack drops a press that
+    carries none."""
+    return f"{UI_ACTION_PREFIX}{button.id}", button.value or button.id
 
 
 def estimated_block_count(spec: UISpec) -> int:
