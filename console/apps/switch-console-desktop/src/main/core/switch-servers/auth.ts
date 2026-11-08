@@ -138,7 +138,25 @@ async function persistSessionCookie(
       message: `${action} succeeded but the gateway did not return a session cookie.`,
     });
   }
-  await setSessionCookie(server.id, jwt);
+  try {
+    await setSessionCookie(server.id, jwt);
+  } catch (cause) {
+    // The server has already accepted this request, so the failure is ours:
+    // Console could not keep the session (the OS credential store refused or is
+    // unavailable). Left to throw, the call rejects without a message the form
+    // can show, and the person sees a button that does nothing.
+    log.error('Switch session could not be saved after the server accepted it', {
+      server: server.id,
+      action,
+      cause: cause instanceof Error ? cause.message : String(cause),
+    });
+    return err({
+      kind: 'failed',
+      message: `${server.url} accepted the ${action.toLowerCase()}, but Switch Console could not save the session: ${
+        cause instanceof Error ? cause.message : String(cause)
+      } Allow Switch Console to use your system keychain if you are asked, or start it from a normal desktop session, then try again.`,
+    });
+  }
   return ok(true);
 }
 

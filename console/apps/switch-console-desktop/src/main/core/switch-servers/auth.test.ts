@@ -308,6 +308,32 @@ describe('signup', () => {
     expect(result).toMatchObject({ success: false, error: { kind: 'failed' } });
     expect(setSessionCookie).not.toHaveBeenCalled();
   });
+
+  it('says so when the server accepted the account but the session cannot be kept', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(
+        201,
+        { ...USER, machine: { status: 'starting', reason: null } },
+        ['switch_auth=jwt-1; Path=/; HttpOnly']
+      )
+    );
+    setSessionCookie.mockRejectedValueOnce(
+      new Error('Secure secret storage is unavailable on this system.')
+    );
+
+    const result = await signup(SIGNUP_SERVER, {
+      email: 'ada@example.com',
+      password: 'correct-horse',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: {
+        kind: 'failed',
+        message: expect.stringContaining('Secure secret storage is unavailable'),
+      },
+    });
+  });
 });
 
 describe('oidcLogin', () => {
