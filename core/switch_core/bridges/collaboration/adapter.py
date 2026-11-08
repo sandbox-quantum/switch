@@ -66,6 +66,7 @@ from switch_core.sessions.contract import (
     SnapshotRequest,
     TurnUpsert,
 )
+from switch_core.ui_spec import UISpec
 
 if TYPE_CHECKING:
     from switch_core.db.models import Agent
@@ -1076,6 +1077,33 @@ class PlatformAdapter(ABC):
         (Discord's `allowed_mentions`). Everywhere else the text alone does it.
         """
         ...
+
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """Post an agent's message that carries a card (`ui_spec`), drawn
+        natively where the platform can. `fallback_text` is what
+        `send_message` would have posted; a platform with no card rendering
+        posts just that, which is the default.
+
+        Raise only when nothing was posted: the caller falls back to
+        `send_message` on an exception, so raising after a post would post
+        the message twice.
+        """
+        return await self.send_message(
+            channel_id,
+            sender_name,
+            fallback_text,
+            thread_root_id=thread_root_id,
+            room_wide_mention=room_wide_mention,
+        )
 
     async def admin_message(
         self,

@@ -152,13 +152,16 @@ class TrustFeedback(BaseModel):
     so the redaction does not hide it. `note` is the notice posted in the
     room under the message, when one was posted. When a notice was due but
     could not be posted, `note` is unset and `notice_error` says why, so the
-    agent is not told the room was warned when it was not."""
+    agent is not told the room was warned when it was not. `card` is
+    `dropped` when Switch Trust redacted the message's card, which was then
+    not sent: only `delivered` reached the room."""
 
     outcome: Literal["redacted", "alerted", "errored"]
     delivered: str | None
     alert: Literal["alerted", "errored"] | None = None
     note: str | None
     notice_error: str | None
+    card: Literal["dropped"] | None = None
 
     def to_result(self) -> dict[str, str]:
         """The tool-result form: the fields that are set, and no others."""

@@ -105,6 +105,7 @@ from switch_core.trust.client import (
     trust_is_active,
     trust_redaction_notice,
 )
+from switch_core.ui_spec import UI_CONTENT_KEY, UISpecError, parse_ui_spec
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_connections import (
@@ -2759,14 +2760,38 @@ class CollaborationCore:
         # Only the marker pages a channel. An `@channel` an agent wrote
         # itself is defused by `translate_outbound` like any other text.
         room_wide = is_room_wide_mention(event_content)
+        text = (
+            self._adapter.render_room_wide_mention(event.body)
+            if room_wide
+            else self._adapter.translate_outbound(event.body)
+        )
+        if UI_CONTENT_KEY in event_content:
+            try:
+                # Re-parsed: the card crossed the transport since it was checked.
+                spec = parse_ui_spec(event_content[UI_CONTENT_KEY])
+                return await self._adapter.send_ui_message(
+                    channel_id,
+                    sender_name,
+                    spec,
+                    text,
+                    thread_root_ref,
+                    room_wide_mention=room_wide,
+                )
+            except UISpecError as error:
+                logger.error(
+                    "[BRIDGE-OUT] card on %s is invalid; posting its text only: %s",
+                    event.event_id,
+                    error,
+                )
+            except Exception:
+                logger.exception(
+                    "[BRIDGE-OUT] card on %s failed to post; posting its text only",
+                    event.event_id,
+                )
         return await self._adapter.send_message(
             channel_id,
             sender_name,
-            (
-                self._adapter.render_room_wide_mention(event.body)
-                if room_wide
-                else self._adapter.translate_outbound(event.body)
-            ),
+            text,
             thread_root_id=thread_root_ref,
             room_wide_mention=room_wide,
         )
