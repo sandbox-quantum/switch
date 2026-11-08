@@ -20,17 +20,21 @@ from fastapi.exceptions import RequestValidationError
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import owner_only_policy
 from switch_core.bridges.agent.api import handlers, operations
 from switch_core.bridges.agent.app import log_http_exceptions, log_validation_errors
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.db.models import Agent
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.room_store import RoomStore
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
     _make_public_room,
     _make_user,
     _register,
     _service,
 )
+from tests.switch_core.test_room_service_invites import _service as _room_service
 
 
 async def _request(
@@ -92,6 +96,32 @@ async def test_a_refused_invite_is_403(
 
     assert resp.status_code == 403
     assert resp.json() == {"detail": "Not authorized to change this room's membership"}
+
+
+async def test_invite_operation_enforces_target_addressing_policy(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    r = await _room_with_an_outsider(session_factory)
+    async with session_factory() as session:
+        target = await session.get(Agent, r.outsider_id)
+        assert target is not None
+        target.addressing_policy = owner_only_policy([]).model_dump()
+        await session.commit()
+        before = await RoomStore().get_agent_ids(session, r.room_id)
+    r.svc.room_service = _room_service(session_factory, {})
+
+    resp = await _request(
+        r.svc,
+        r.member_id,
+        "POST",
+        f"/agents/{r.member_id}/ops/invite_agent_to_room",
+        json={"room_id": r.room_id, "agent_name": "outsider-agent"},
+    )
+
+    assert resp.status_code == 403
+    assert "doesn't take instructions from you" in resp.json()["detail"]
+    async with session_factory() as session:
+        assert await RoomStore().get_agent_ids(session, r.room_id) == before
 
 
 async def test_a_non_member_looking_up_a_room_is_403(

@@ -238,6 +238,36 @@ class TestCreateRoomInvites:
 
 
 class TestAddAgentsInvites:
+    async def test_a_refused_new_invite_keeps_existing_agents(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        seed = await _seed(session_factory)
+        svc = _service(session_factory, seed.running)
+        await svc.add_agents_to_room(
+            seed.room_id,
+            agent_ids=[seed.agent_id],
+            invited_by=UserInviter(seed.owner_id),
+        )
+        async with session_factory() as session:
+            other = await _agent(
+                session,
+                "another-guarded.bot",
+                owner_id=seed.owner_id,
+                policy=OWNER_ONLY,
+                running=seed.running,
+            )
+            other_id = other.id
+            await session.commit()
+
+        with pytest.raises(InviteRefused):
+            await svc.add_agents_to_room(
+                seed.room_id,
+                agent_ids=[seed.agent_id, other_id],
+                invited_by=UserInviter(seed.stranger_id),
+            )
+
+        assert await _members(session_factory, seed.room_id) == [seed.agent_id]
+
     async def test_a_stranger_cannot_add_a_guarded_agent(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
