@@ -3829,6 +3829,15 @@ class AgentSessionActivityItem(TenantScoped, Base):
             name="ck_session_activity_items_kind",
         ),
         Index("ix_session_activity_items_updated_at", "updated_at"),
+        # A platform edit names a message, not an agent: the turns it may
+        # correct are found by where the message was said.
+        Index(
+            "ix_session_activity_items_room_message",
+            "tenant_id",
+            "room_id",
+            "message_id",
+            postgresql_where=text("message_id IS NOT NULL"),
+        ),
     )
 
     agent_id: Mapped[str] = mapped_column(Text, nullable=False)

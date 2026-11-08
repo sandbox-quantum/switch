@@ -52,6 +52,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
     PrivateNoticeDelivery,
@@ -3494,7 +3495,9 @@ class SlackAdapter(PlatformAdapter):
     # Message subtypes we still treat as real posts. file_share carries uploaded
     # attachments; thread_broadcast is a thread reply also sent to the channel;
     # bot_message is a post from a third-party Slack app (e.g. Datadog alerts).
-    # Everything else (edits, deletes, channel-join system messages, …) is skipped.
+    # message_changed is not one of these: nothing new was said, so it goes to
+    # the edit path rather than the post path. Everything else (deletes,
+    # channel-join system messages, …) is skipped.
     _ALLOWED_SUBTYPES = frozenset({"file_share", "thread_broadcast", "bot_message"})
 
     async def _handle_message_event(self, event: dict[str, object]) -> None:
@@ -3506,6 +3509,9 @@ class SlackAdapter(PlatformAdapter):
         ):
             return
         subtype = event.get("subtype")
+        if subtype == "message_changed":
+            await self._handle_message_changed(event)
+            return
         if subtype and subtype not in self._ALLOWED_SUBTYPES:
             return
 
@@ -3532,6 +3538,76 @@ class SlackAdapter(PlatformAdapter):
             # (`collaboration_core._post_source`).
             self._seen_ts.pop(message_ts, None)
             raise
+
+    async def _handle_message_changed(self, event: dict[str, object]) -> None:
+        """Someone corrected a post. Carry the new text, not a new post.
+
+        Slack sends `message_changed` for more than an edit — a link unfurled,
+        a file finishing its upload, and every `chat.update` this bridge makes
+        to its own activity cards. Only a post a person edited carries
+        `message.edited`, and only that is passed on. The bridge's own posts
+        are dropped whether or not they carry it: the identity for this
+        subtype is on the inner message, not on the envelope the outer check
+        reads.
+        """
+        if self._on_message_edit is None:
+            return
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        if message.get("user") == self._bot_user_id or (
+            self._bot_id and message.get("bot_id") == self._bot_id
+        ):
+            return
+        edited = message.get("edited")
+        if not isinstance(edited, dict):
+            return
+        channel_id = str(event.get("channel", ""))
+        message_ts = str(message.get("ts", ""))
+        revision = str(edited.get("ts", ""))
+        # An app's post carries no `user`; it is keyed on its bot_id and named
+        # from its profile, exactly as the post path keys and names it, so an
+        # app correcting its own post resolves to the sender that made it.
+        bot_id = str(message.get("bot_id", ""))
+        user_id = str(message.get("user", "")) or bot_id
+        if not channel_id or not message_ts or not revision or not user_id:
+            logger.warning(
+                "Slack message_changed in %s is missing the channel, the post, "
+                "its editor or the edit's own timestamp, so the correction "
+                "cannot be placed; skipping",
+                channel_id or "an unnamed channel",
+            )
+            return
+        text = str(message.get("text", ""))
+        if not text.strip():
+            text = self._extract_rich_text(message)
+        thread_ts = str(message.get("thread_ts", "")) or None
+        root_id = (
+            f"{channel_id}:{thread_ts}"
+            if thread_ts and thread_ts != message_ts
+            else None
+        )
+        if user_id == bot_id:
+            profile = message.get("bot_profile") or {}
+            name = (
+                (profile.get("name") if isinstance(profile, dict) else "")
+                or str(message.get("username", ""))
+                or bot_id
+            )
+            user = SlackUser(name=name, display_name=name)
+        else:
+            user = await self._resolve_user_name(user_id)
+        await self._on_message_edit(
+            InboundMessageEdit(
+                channel_id=channel_id,
+                sender_id=user_id,
+                sender_name=user.name,
+                content=self._unwrap_code_span(text.strip()),
+                message_ref=f"{channel_id}:{message_ts}",
+                revision=revision,
+                root_id=root_id,
+            )
+        )
 
     async def _deliver_message_event(
         self, event: dict[str, object], channel_id: str, message_ts: str

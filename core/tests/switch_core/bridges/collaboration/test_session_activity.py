@@ -352,6 +352,49 @@ async def test_a_turn_with_no_items_at_all_shows_its_state_too() -> None:
     assert render_activity_text([], _turn()) == "Working…"
 
 
+# ── A message corrected before the agent started it ───────────────────────────
+
+
+async def test_a_queued_turn_says_it_is_waiting() -> None:
+    """The pin: what a queued turn has always said, and still says for a
+    message nobody has touched since sending it."""
+    assert (
+        turn_state(
+            [_item(itemId="user-1", kind="user-message")],
+            _turn("queued"),
+            tool_detail=True,
+        )
+        == "Queued. Waiting for the agent to start…"
+    )
+
+
+async def test_a_queued_turn_whose_message_was_corrected_says_so() -> None:
+    """The card never prints the prompt, so a correction that changed what the
+    agent will run is invisible unless the state line says it. The revision on
+    the person's own item is what says it: it is 1 for a message as sent, and
+    higher for every correction after."""
+    assert (
+        turn_state(
+            [_item(itemId="user-1", kind="user-message", revision=2)],
+            _turn("queued"),
+            tool_detail=True,
+        )
+        == "Queued (prompt updated). Waiting for the agent to start…"
+    )
+
+
+async def test_only_a_queued_turn_reports_a_correction() -> None:
+    """A correction cannot reach a turn the agent already has, so a running or
+    finished turn carrying a revised message is one that was corrected too
+    late. Its state line says what it always said; the refusal was told to
+    whoever edited, in the room."""
+    corrected = [_item(itemId="user-1", kind="user-message", revision=2)]
+    assert turn_state(corrected, _turn("running"), tool_detail=True) == "Working…"
+    assert (
+        turn_state(corrected, _turn("completed"), tool_detail=True) == "Turn complete."
+    )
+
+
 # ── How long it worked ────────────────────────────────────────────────────────
 
 

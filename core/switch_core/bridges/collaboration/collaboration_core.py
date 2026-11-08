@@ -13,12 +13,19 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, TypeVar
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.bridges.agent.commands import link_account_reply, stop_control_frame
+from switch_core.bridges.agent.commands import (
+    REVISED_QUEUED_REPLY,
+    link_account_reply,
+    revise_control_frame,
+    revise_started_reply,
+    stop_control_frame,
+)
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
@@ -34,6 +41,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
 )
@@ -48,7 +56,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
-from switch_core.db.models import BridgeMessageMap, Client, ExternalUser
+from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser, Message
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
@@ -58,6 +66,7 @@ from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     RoomStore,
 )
+from switch_core.db.stores.session_activity_store import AgentSessionActivityStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.logging_context import log_context
@@ -122,6 +131,7 @@ _InboundEventT = TypeVar(
     "_InboundEventT",
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundCommand,
     InboundAgentJoin,
     InboundUserJoin,
@@ -522,6 +532,9 @@ class CollaborationCore:
             self._adapter.set_interaction_handler(
                 self._traced("interaction", self._handle_inbound_interaction)
             )
+        self._adapter.set_message_edit_handler(
+            self._traced("message_edit", self._handle_message_edit)
+        )
         if self._activity_publisher is not None:
             self._adapter.set_activity_resolver(
                 self._activity_publisher.activity_shown_at
@@ -2149,6 +2162,116 @@ class CollaborationCore:
             "Switch has asked the agent to stop its current work. The activity "
             "message will say when it has."
         )
+
+    async def _handle_message_edit(self, edit: InboundMessageEdit) -> None:
+        """Someone corrected a post this bridge had already relayed.
+
+        The room keeps what was said — a correction writes no row and rewrites
+        none. What it can still reach is a turn no agent has picked up, and
+        that is the whole of what it does: the queued prompt is replaced
+        through the session's own command path, so the agent reads the
+        corrected words and never the stale ones. A turn already under way is
+        left exactly as it is and whoever edited is told so; steering a
+        running turn is a different thing entirely.
+
+        Only Slack and Mattermost report edits. On every other platform this
+        is never called and the agent acts on the original text, as it always
+        has.
+        """
+        room_ids = self._channel_to_room.get(edit.channel_id)
+        if room_ids is None:
+            return
+        room_id, _ = room_ids
+
+        async def tell(text: str) -> None:
+            await self._adapter.tell_actor(
+                edit.channel_id,
+                edit.sender_id,
+                edit.sender_name,
+                edit.root_id or edit.message_ref,
+                text,
+            )
+
+        async with self._session_factory() as session:
+            mapping = await self._bridge_message_map_store.get_by_external_post_id(
+                session, self._bridge_id, edit.message_ref
+            )
+            if mapping is None:
+                return
+            message_id = mapping.transport_event_id
+            turns = await AgentSessionActivityStore().turns_for_message(
+                session, room_id, message_id
+            )
+            if not turns:
+                return
+            message = (
+                await session.execute(
+                    select(Message).where(
+                        Message.room_id == room_id,
+                        Message.transport_event_id == message_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            agents: dict[str, Agent | None] = {turn.agent_id: None for turn in turns}
+            for found in await self._agent_store.get_many(session, agents.keys()):
+                agents[found.id] = found
+        actor_id = await self._identify_actor(edit)
+        if actor_id is None:
+            logger.warning(
+                "Ignoring an edit to %s on bridge %s: no Switch identity for %s.",
+                edit.message_ref,
+                self._bridge_id,
+                edit.sender_id,
+            )
+            return
+        # A person can only edit their own post, so this never refuses an
+        # ordinary correction. It refuses anything that would rewrite somebody
+        # else's words into an agent's prompt. Mattermost names the author
+        # rather than the editor, so an admin allowed to edit other people's
+        # posts is taken for the author there.
+        if message is None or message.sender_id != actor_id:
+            logger.warning(
+                "Ignoring an edit to %s on bridge %s: %s did not send it.",
+                edit.message_ref,
+                self._bridge_id,
+                actor_id,
+            )
+            return
+        content = self._adapter.translate_inbound(edit.content)
+        revised = False
+        lines: list[str] = []
+        seen: set[str] = set()
+        for turn in turns:
+            agent = agents[turn.agent_id]
+            if agent is None or turn.agent_id in seen:
+                continue
+            seen.add(turn.agent_id)
+            if turn.status != "queued":
+                lines.append(revise_started_reply(agent.name))
+                continue
+            frame = revise_control_frame(
+                agent_id=turn.agent_id,
+                session_id=turn.session_id,
+                room_id=room_id,
+                turn_id=turn.turn_id,
+                text=content,
+                revision=edit.revision,
+                actor_id=actor_id,
+                message_id=message_id,
+                thread_id=turn.thread_id,
+                surface=self._bridge_type,
+            )
+            if self._connections.relay_session_command(turn.agent_id, frame):
+                revised = True
+                continue
+            lines.append(
+                f"Could not update that message for {agent.name}: its "
+                "controller is not connected to Switch."
+            )
+        if revised:
+            lines.insert(0, REVISED_QUEUED_REPLY)
+        if lines:
+            await tell("\n".join(lines))
 
     async def _handle_text_answer(self, msg: InboundMessage) -> None:
         """An answer to an approval card, typed rather than pressed.

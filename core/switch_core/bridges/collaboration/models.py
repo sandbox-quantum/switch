@@ -150,6 +150,28 @@ class InboundMessage(BaseModel):
     sender_is_app: bool = False
 
 
+class InboundMessageEdit(BaseModel):
+    """Someone corrected a post the bridge already relayed.
+
+    Not a message: nothing new was said, so nothing new reaches the room. It
+    carries the correction to the one place it can still make a difference —
+    a turn the agent has not started yet.
+
+    `revision` is what the platform calls this version of the post. Two edits
+    of the same post differ in it and in nothing else, so it is what keeps the
+    second from arriving under the first one's identity.
+    """
+
+    channel_id: str
+    sender_id: str
+    sender_name: str
+    content: str
+    message_ref: str
+    revision: str
+    # The platform's thread root for the edited post, None at the channel root.
+    root_id: str | None = None
+
+
 class InboundCommand(BaseModel):
     channel_id: str
     channel_type: ChannelType

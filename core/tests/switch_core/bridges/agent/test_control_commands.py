@@ -431,6 +431,102 @@ def test_an_interrupt_names_the_current_turn() -> None:
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
 
 
+def test_a_room_control_keeps_the_command_id_it_has_always_had() -> None:
+    """The pin for the identity every control but a correction is keyed on:
+    the agent, the room, the message it was asked on, and the action. Each of
+    those is typed or pressed once per message, so the key has nothing else to
+    distinguish and must not acquire anything else either."""
+    frames = {
+        action: commands.room_control_frame(
+            agent_id="a",
+            session_id="s",
+            room_id="r",
+            action=action,
+            actor_id="@u:s",
+            message_id="$m",
+            thread_id=None,
+            surface="slack",
+            requester_name="louisa",
+            target_message_id=None,
+        )["commandId"]
+        for action in ("reset", "compact", "interrupt")
+    }
+    assert frames == {
+        "reset": "a0806460-d686-50ce-9fef-2b9e91fc5f09",
+        "compact": "81a50932-e1b8-5223-b88e-f7c59b254a65",
+        "interrupt": "c058016c-0270-519b-9f85-f6dc13be5ba9",
+    }
+
+
+def test_a_correction_carries_the_new_text_for_the_turn_it_names() -> None:
+    frame = commands.revise_control_frame(
+        agent_id="a",
+        session_id="s",
+        room_id="r",
+        turn_id="$m",
+        text="Deploy to staging",
+        revision="1700000001.000000",
+        actor_id="@u:s",
+        message_id="$m",
+        thread_id="$root",
+        surface="slack",
+    )
+
+    assert frame["body"] == {
+        "type": "turn.revise",
+        "turnId": "$m",
+        "text": "Deploy to staging",
+    }
+    assert frame["sessionId"] == "s"
+    assert frame["origin"] == {
+        "surface": "slack",
+        "actorId": "@u:s",
+        "roomId": "r",
+        "threadId": "$root",
+        "messageId": "$m",
+    }
+
+
+def test_each_correction_of_one_message_is_its_own_command() -> None:
+    """The bug this had to fix: keyed on the message and the action alone,
+    a second correction would arrive under the first one's id and be refused
+    as an idempotency conflict. The platform's own name for the version of
+    the post is what tells the two apart; the same edit delivered twice is
+    still one command."""
+
+    def correction(revision: str) -> str:
+        return str(
+            commands.revise_control_frame(
+                agent_id="a",
+                session_id="s",
+                room_id="r",
+                turn_id="$m",
+                text=f"Attempt {revision}",
+                revision=revision,
+                actor_id="@u:s",
+                message_id="$m",
+                thread_id=None,
+                surface="slack",
+            )["commandId"]
+        )
+
+    first = correction("1700000001.000000")
+    second = correction("1700000002.000000")
+    assert first != second
+    assert correction("1700000001.000000") == first
+
+
+def test_what_a_correction_is_answered_with() -> None:
+    assert (
+        commands.REVISED_QUEUED_REPLY
+        == "Updated that message — I hadn't started it yet."
+    )
+    assert commands.revise_started_reply("helper") == (
+        "I'd already started that one — send a new message, or use "
+        "`!interrupt @helper`."
+    )
+
+
 def test_a_retry_runs_again_the_message_it_names() -> None:
     assert commands.retry_target("@helper $m1") == "$m1"
     assert commands.retry_target("@helper") is None
