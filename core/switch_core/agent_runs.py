@@ -86,6 +86,8 @@ class AgentOrigin:
     parent_room_id: str | None
     run_id: str | None
     trace: str | None = None
+    #: Agents this template run has just created, which belong to the runner.
+    created_agent_ids: frozenset[str] = frozenset()
 
     @property
     def headline_name(self) -> str:

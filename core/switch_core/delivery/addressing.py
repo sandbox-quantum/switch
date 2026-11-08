@@ -417,6 +417,31 @@ class AddressingResolver:
             )
             return AddressingDecision(allowed=False, refusal=ADDRESSING_DENIED_MESSAGE)
 
+        return await self.judge(
+            session,
+            agent=agent,
+            principal=principal,
+            room_id=room_id,
+            group_id=group_id,
+        )
+
+    async def judge(
+        self,
+        session: AsyncSession,
+        *,
+        agent: Agent,
+        principal: SenderPrincipal,
+        room_id: str,
+        group_id: str | None,
+    ) -> AddressingDecision:
+        """What this agent's policy says to someone we can already name.
+
+        Reading a message and being invited to a room both end here, so "who
+        may ask this agent for things" has one answer an owner can rely on.
+        `room_id` is "" for a room not made yet, which a rule naming particular
+        rooms does not admit.
+        """
+        policy = parse_policy(agent.addressing_policy)
         if principal.kind == "platform" and principal.on_behalf_of is not None:
             allowed = allows_on_behalf_of(
                 policy,

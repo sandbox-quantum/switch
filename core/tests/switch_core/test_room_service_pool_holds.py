@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import Agent, ApiKey, Client, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.invites import Inviter
 from switch_core.room_service import RoomService
 
 
@@ -172,7 +173,11 @@ class TestAddAgentsToRoom:
         tracker = _TrackingSessionFactory(session_factory)
         svc, provisioning = _service(tracker, running)
 
-        await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
+        await svc.add_agents_to_room(
+            room_id,
+            agent_ids=agent_ids,
+            invited_by=Inviter.system("test setup"),
+        )
 
         assert len(provisioning.calls) == 3
         assert [live for _kind, _who, live in provisioning.calls] == [0, 0, 0]
@@ -194,7 +199,11 @@ class TestAddAgentsToRoom:
 
         provisioning.invite_to_room = _invite  # type: ignore[method-assign]
 
-        await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
+        await svc.add_agents_to_room(
+            room_id,
+            agent_ids=agent_ids,
+            invited_by=Inviter.system("test setup"),
+        )
 
         assert seen_at_invite == [agent_ids]
 
@@ -217,7 +226,11 @@ class TestAddAgentsToRoom:
 
         provisioning.invite_to_room = _invite  # type: ignore[method-assign]
 
-        await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
+        await svc.add_agents_to_room(
+            room_id,
+            agent_ids=agent_ids,
+            invited_by=Inviter.system("test setup"),
+        )
 
         assert seen_at_invite == [[]]
         async with session_factory() as session:
@@ -233,7 +246,11 @@ class TestAddAgentsToRoom:
         svc, provisioning = _service(tracker, running)
 
         with pytest.raises(ValueError, match="Room not found"):
-            await svc.add_agents_to_room("no-such-room", agent_ids=agent_ids)
+            await svc.add_agents_to_room(
+                "no-such-room",
+                agent_ids=agent_ids,
+                invited_by=Inviter.system("test setup"),
+            )
 
         assert provisioning.calls == []
 
@@ -245,7 +262,11 @@ class TestRemoveAgentsFromRoom:
         room_id, agent_ids, running = await _seed(session_factory, agents=3)
         tracker = _TrackingSessionFactory(session_factory)
         svc, provisioning = _service(tracker, running)
-        await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
+        await svc.add_agents_to_room(
+            room_id,
+            agent_ids=agent_ids,
+            invited_by=Inviter.system("test setup"),
+        )
         provisioning.calls.clear()
 
         await svc.remove_agents_from_room(room_id, agent_ids)
@@ -276,7 +297,11 @@ class TestRemoveAgentsFromRoom:
         room_id, agent_ids, running = await _seed(session_factory, agents=1)
         tracker = _TrackingSessionFactory(session_factory)
         svc, provisioning = _service(tracker, running)
-        await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
+        await svc.add_agents_to_room(
+            room_id,
+            agent_ids=agent_ids,
+            invited_by=Inviter.system("test setup"),
+        )
         seen_at_kick: list[list[str]] = []
 
         async def _kick(transport_room_id: str, transport_user_id: str) -> None:
@@ -316,7 +341,11 @@ class TestRemoveAgentsFromRoom:
         room_id, agent_ids, running = await _seed(session_factory, agents=2)
         tracker = _TrackingSessionFactory(session_factory)
         svc, provisioning = _service(tracker, running)
-        await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
+        await svc.add_agents_to_room(
+            room_id,
+            agent_ids=agent_ids,
+            invited_by=Inviter.system("test setup"),
+        )
 
         # Every state the rows are seen in, sampled from a separate connection
         # on each commit the service makes.
@@ -349,7 +378,11 @@ class TestDeleteRoom:
         room_id, agent_ids, running = await _seed(session_factory, agents=2)
         tracker = _TrackingSessionFactory(session_factory)
         svc, provisioning = _service(tracker, running)
-        await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
+        await svc.add_agents_to_room(
+            room_id,
+            agent_ids=agent_ids,
+            invited_by=Inviter.system("test setup"),
+        )
         provisioning.calls.clear()
 
         await svc.delete_room(room_id, retire_channel=True)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any
 
 from switch_core.agent_refusals import AgentRefused, record_refusal
@@ -60,6 +61,7 @@ from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.invites import Inviter
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_installs import InstallSource, record_install, source_of
@@ -1786,7 +1788,9 @@ async def _provision_as_agent(
     if yaml is None:
         if creator is None:
             raise ValueError("The template describes no agent and no room")
-        created = await creator.create(tenant_id, owner.id, checked)
+        created = await creator.create(
+            tenant_id, owner.id, checked, invited_by=Inviter.agent(agent.id)
+        )
         return {"created_agents": _created_view(created)}
 
     rooms_yaml = protocol.room_yaml_service()
@@ -1825,7 +1829,13 @@ async def _provision_as_agent(
         created = (
             []
             if creator is None
-            else await creator.create(tenant_id, owner.id, checked)
+            else await creator.create(
+                tenant_id, owner.id, checked, invited_by=Inviter.agent(agent.id)
+            )
+        )
+        origin = replace(
+            origin,
+            created_agent_ids=frozenset(agent.agent_id for agent in created),
         )
         try:
             if isinstance(parsed.spec, GroupSpec):

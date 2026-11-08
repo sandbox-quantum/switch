@@ -3481,6 +3481,7 @@ class SlackAdapter(PlatformAdapter):
         channel_type = await self.get_channel_type(channel_id)
         channel_name = await self._resolve_channel_name(channel_id)
 
+        inviter = event.get("inviter")
         await self._on_user_joined(
             InboundUserJoin(
                 channel_id=channel_id,
@@ -3488,6 +3489,9 @@ class SlackAdapter(PlatformAdapter):
                 external_user_id=user_id,
                 external_username=user.name,
                 channel_name=channel_name,
+                added_by_external_user_id=(
+                    inviter if isinstance(inviter, str) else None
+                ),
             )
         )
 

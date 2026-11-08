@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from switch_core.invites import Inviter
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness
 
@@ -44,7 +45,8 @@ async def test_harness_boots_and_agents_join_room(harness: Harness) -> None:
             name="smoke-room",
             description="integration harness smoke test",
             agent_ids=[alice.agent_id, bob.agent_id],
-        )
+        ),
+        invited_by=Inviter.system("test setup"),
     )
     transport_room_id = result.room.transport_room_id
 

@@ -3850,6 +3850,9 @@ class TeamsAdapter(PlatformAdapter):
                     )
             elif self._on_user_joined is not None:
                 joiner_id = str(member.get("aadObjectId") or member_id)
+                # `from` is who performed the add, which is not the person
+                # being added. Teams names them by Entra object id when it can.
+                adder = activity.get("from") or {}
                 await self._on_user_joined(
                     InboundUserJoin(
                         channel_id=channel_id,
@@ -3859,6 +3862,10 @@ class TeamsAdapter(PlatformAdapter):
                             joiner_id, str(member.get("name") or "")
                         ),
                         channel_name=channel_name,
+                        added_by_external_user_id=(
+                            str(adder.get("aadObjectId") or adder.get("id") or "")
+                            or None
+                        ),
                     )
                 )
 

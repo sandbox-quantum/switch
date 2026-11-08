@@ -121,6 +121,42 @@ A rule admits an attempt when the room matches **and** the group matches **and**
 
 Policies are set from the Gateway by the agent's owner or an admin. They aren't agent-facing, so an agent can't widen its own.
 
+### Who may invite an agent
+
+The same policy also decides who may bring an agent into a room. Being able to read what an agent answers is not the point: an invite seats the agent among people who may not be allowed to talk to it, and it tells the person inviting where that agent is used. So the rule is one rule, asked twice.
+
+Every invite path ends in one of two `RoomService` methods, and both take the inviter as a required argument, so a new path cannot skip the question by forgetting to ask it:
+
+- `create_room` — a room with agents in it, from the Gateway, Switch Console, a template run, or the agent's own `create_room` tool.
+- `add_agents_to_room` — `!invite-agent`, the `/invite-agent` slash command, the `invite_agent_to_room` MCP tool, the agent-bridge API, the Gateway's room page, and a platform join.
+
+The decision comes from the same `AddressingResolver.judge` that decides message delivery, so "may invite" and "may address" cannot drift apart. The inviter is expressed as the principal a policy is written in:
+
+- **A signed-in person** is that Switch user. A rule naming a platform account does not match them, because they are not speaking through that platform; the `owner` rule and `users: "*"` do.
+- **An agent** is that agent, never its owner. It gets in through the `agents` dimension or through `owner_agents`.
+- **A chat command** is whoever typed it, resolved through their claimed platform account exactly as a message from them would be.
+- **A platform adder** is the account the messaging platform named as having added the bot.
+- **An unknown adder** is nobody. It is never treated as the owner or an administrator.
+- **Switch's own machinery** is not judged at all, and the call site has to say why it is exempt.
+
+A template run is judged as whoever started it: the person in the Gateway, or the agent whose tool call ran it. Agents the run has just created come with it, so a template can still seat the agents it makes.
+
+A refusal is one sentence: what happened, and that the owner (or someone the policy admits) can either invite the agent or widen the policy. It never says where the agent already is.
+
+Only agents *new* to a room are judged. Tightening a policy never removes an agent that is already in a room, and re-adding an existing member is a no-op.
+
+### Platform joins
+
+A messaging platform can add a bot to a channel without Switch asking anyone. That join is allowed — refusing it would leave a channel broken for a reason nobody in it can fix — but never quietly:
+
+- **The platform named who added it**: that person is judged as themselves for the bot they added. A channel with several agents judges each bot against the person reported for it; the others are not that person's to answer for.
+- **The platform did not say**: an agent open to everyone would have admitted whoever it was, so nothing is reported. A restricted agent's join is disclosed in the channel (naming the owner's account there when they have one), logged as a warning, and sent to the owner privately when they have no account in that channel.
+- **A direct chat** is not an invitation to a room full of people. It is always admitted, and every message in it is still judged on its own.
+
+### Linearization
+
+The check runs twice on `create_room` and `add_agents_to_room`: once before anything is provisioned, so a refusal leaves no channel, room, membership or platform invite behind, and once inside the membership transaction. The second read takes `FOR SHARE` on the agent rows (ordered by id, so two invites cannot deadlock) and a key-share lock on the room row. A policy update therefore waits for an in-flight invite to commit, or an invite sees the update — never the other order. A refusal in the second check rolls the membership back too.
+
 ## Identity claims
 
 A **claim** links a platform account to a Switch user. Addressing rules name Switch users; a message from Slack arrives from a Slack account, and the claim connects the two.
