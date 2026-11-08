@@ -178,6 +178,94 @@ const serverErrors = extract((state) => {
   return [...page.switchExploreServerErrors];
 });
 
+/** What the room list checks found, written by `checkRooms`. */
+type RoomsCheck = {
+  /** Why the page and the API disagreed the last time they did, or null. */
+  mismatch: string | null;
+  /** How many checks reached an answer. */
+  concluded: number;
+  /** Why the last check that did not reach one stopped, or null before any. */
+  skipped: string | null;
+};
+
+const roomsCheck = extract((state) => {
+  const page = state.window as Window & { switchExploreRoomsCheck?: RoomsCheck };
+  return page.switchExploreRoomsCheck ?? { mismatch: null, concluded: 0, skipped: null };
+});
+
+/**
+ * The room list page, settled and with its filters at their defaults, shows the
+ * rooms the API returns: the footer counts exactly the active ones, and every
+ * row on the page is one of them. Checked in one step of the explorer, which
+ * reads the page, asks the API and reads the page again, and concludes nothing
+ * when the page moved meanwhile or is still loading, so a refetch in flight is
+ * not taken for a disagreement. Why a check stopped is kept, for the trace.
+ *
+ * Only the default filters are checked: a search or a filter narrows the list
+ * on purpose, and the other lists have the same shape and can follow.
+ */
+const checkRooms = registerCustomAction('checkRooms', async (document, window) => {
+  const page = window as Window & { switchExploreRoomsCheck?: RoomsCheck };
+  const record = (change: Partial<RoomsCheck>) => {
+    const was = page.switchExploreRoomsCheck ?? { mismatch: null, concluded: 0, skipped: null };
+    page.switchExploreRoomsCheck = { ...was, ...change };
+  };
+  const shown = () => {
+    // The filters are the controls beside the search box; the page has other
+    // selects (the workspace switcher) that are not filters.
+    const search = document.querySelector('input[placeholder="Search rooms..."]') as
+      | HTMLInputElement
+      | null;
+    const bar = search?.closest('.MuiStack-root') ?? null;
+    const defaults =
+      search !== null &&
+      search.value === '' &&
+      bar !== null &&
+      Array.from(bar.querySelectorAll('input.MuiSelect-nativeInput')).every((input) =>
+        ['', 'active'].includes((input as HTMLInputElement).value)
+      );
+    const footer = document.querySelector('.MuiTablePagination-displayedRows')?.textContent ?? '';
+    return {
+      defaults,
+      // The page shows a spinner in place of the table while it fetches.
+      loading: document.querySelector('.MuiDataGrid-root') === null,
+      total: footer.match(/of (\d+)/)?.[1] ?? null,
+      ids: Array.from(document.querySelectorAll('.MuiDataGrid-row[data-id]'))
+        .map((row) => row.getAttribute('data-id') ?? '')
+        .sort(),
+    };
+  };
+  // A refetch the page started (after archiving a room, say) may not have
+  // landed when the API is asked, so a disagreement counts only if it stays
+  // while the page does not move, over a few looks.
+  let mismatch: string | null = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 750));
+    const before = shown();
+    if (before.loading) return record({ skipped: 'the page is loading' });
+    if (!before.defaults) return record({ skipped: 'a filter is set' });
+    if (before.total === null) return record({ skipped: 'no row count in the footer' });
+    const response = await window.fetch('/gateway/rooms', { credentials: 'same-origin' });
+    if (!response.ok) return record({ skipped: `the API answered ${response.status}` });
+    const rooms = (await response.json()) as { id: string; archived: boolean }[];
+    const after = shown();
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      return record({ skipped: 'the page changed while the API was asked' });
+    }
+    const active = rooms.filter((room) => !room.archived).map((room) => room.id);
+    const unknown = after.ids.filter((id) => !active.includes(id));
+    mismatch = null;
+    if (after.total !== String(active.length)) {
+      mismatch = `the page counts ${after.total} rooms; the API returned ${active.length} active`;
+    } else if (unknown.length > 0) {
+      mismatch = `the page shows ${unknown.length} room(s) the API did not return: ${unknown.slice(0, 3).join(', ')}`;
+    }
+    if (mismatch === null) break;
+  }
+  const was = page.switchExploreRoomsCheck ?? { mismatch: null, concluded: 0, skipped: null };
+  record({ mismatch: mismatch ?? was.mismatch, concluded: was.concluded + 1 });
+});
+
 /**
  * The explorer signs in from the login page it starts on.
  *
@@ -194,6 +282,24 @@ export const signsIn = eventually(() => signedIn.current).within(30, 'seconds');
 export const staysSignedIn = always(
   now(() => signedIn.current).implies(always(() => !onLoginPage.current))
 );
+
+/**
+ * The room list page shows what the API returns: after the page has settled,
+ * its count is the API's and nothing on it is a room the API left out.
+ *
+ * @property ui.list-matches-api
+ */
+export const listMatchesApi = always(
+  () => roomsCheck.current.mismatch === null
+);
+
+/**
+ * The check above ran: a run that never reached the room list, or never saw it
+ * settle with default filters, has checked nothing.
+ *
+ * @property ui.list-checked
+ */
+export const listChecked = eventually(() => roomsCheck.current.concluded > 0).within(300, 'seconds');
 
 const noBanner = () => errorBanners.current.length === 0;
 
@@ -288,6 +394,10 @@ export const exploring = weighted([
   [50, scroll],
   [10, navigation],
   [5, jumps],
+  [
+    10,
+    actions(() => [checkRooms()]).when(() => path.current === '/rooms'),
+  ],
 ]).when(() => signedIn.current && !unsettled());
 
 /**

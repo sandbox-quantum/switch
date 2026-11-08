@@ -423,7 +423,9 @@ adding under two minutes to PR CI (anything slower runs nightly).
    500 on generated input, a NUL in a string being the commonest cause, and
    error bodies that do not match the schema; the ones found are in an accepted
    baseline, and a new one fails the run. Ids in the body are replaced too.
-4. **UI tied to the API.** One or two Bombadil properties that read the API from
+4. **UI tied to the API** (built: `ui.list-matches-api`, with `ui.list-checked`
+   to show it was tried; the room list, as the pattern for the other lists).
+   One or two Bombadil properties that read the API from
    the page: a list page that has settled shows what the API returns. The
    "renamed in one tab, renamed in another" property waits until Bombadil can
    drive two pages.
