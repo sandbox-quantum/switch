@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, CollaborationBridge, Tenant
+from switch_core.db.models import (
+    Client,
+    CollaborationBridge,
+    Tenant,
+    TenantNotBoundError,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.tenant_context import tenant_scope
@@ -428,3 +434,113 @@ async def test_an_edit_merges_into_what_the_bridge_learned_since_it_was_read(
         assert bridge.connection_config["channel_teams"] == {
             "19:a@thread.tacv2": "team-1"
         }
+
+
+@pytest.mark.asyncio
+async def test_store_queries_filter_explicitly_by_require_tenant_id() -> None:
+    store = CollaborationBridgeStore()
+    session = AsyncMock(spec=AsyncSession)
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    session.execute.return_value = mock_result
+
+    tenant_id = "tenant-fixed-1234"
+    with tenant_scope(tenant_id):
+        await store.get_all(session)
+        query = session.execute.call_args[0][0]
+        clause = str(query.whereclause)
+        assert "collaboration_bridges.tenant_id =" in clause
+
+        await store.get_active(session)
+        query = session.execute.call_args[0][0]
+        clause = str(query.whereclause)
+        assert "collaboration_bridges.tenant_id =" in clause
+        assert "collaboration_bridges.status =" in clause
+
+        await store.get_many(session, ["b1", "b2"])
+        query = session.execute.call_args[0][0]
+        clause = str(query.whereclause)
+        assert "collaboration_bridges.tenant_id =" in clause
+        assert "collaboration_bridges.id IN" in clause
+
+
+@pytest.mark.asyncio
+async def test_get_all_and_get_active_refuse_when_no_tenant_is_bound() -> None:
+    store = CollaborationBridgeStore()
+    session = AsyncMock(spec=AsyncSession)
+    with pytest.raises(TenantNotBoundError):
+        await store.get_all(session)
+    with pytest.raises(TenantNotBoundError):
+        await store.get_active(session)
+    with pytest.raises(TenantNotBoundError):
+        await store.get_many(session, ["some-id"])
+
+
+async def _make_bridge_for_tenant(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    tenant_id: str,
+    status: str = "active",
+) -> str:
+    async with tenant_session(session_factory, tenant_id) as session:
+        client = Client(
+            transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+            display_name="bridge client",
+            type="bridge",
+        )
+        session.add(client)
+        await session.flush()
+        bridge = CollaborationBridge(
+            type="mattermost",
+            display_name=f"MM-{uuid.uuid4().hex[:4]}",
+            client_id=client.id,
+            status=status,
+        )
+        session.add(bridge)
+        await session.flush()
+        await session.commit()
+        return bridge.id
+
+
+@pytest.mark.asyncio
+async def test_get_all_and_get_active_only_return_bridges_for_bound_tenant(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    tenant_a = f"tenant-{uuid.uuid4().hex[:8]}"
+    tenant_b = f"tenant-{uuid.uuid4().hex[:8]}"
+
+    async with session_factory() as session:
+        session.add_all(
+            [
+                Tenant(id=tenant_a, slug=tenant_a, name="A"),
+                Tenant(id=tenant_b, slug=tenant_b, name="B"),
+            ]
+        )
+        await session.commit()
+
+    bridge_a1 = await _make_bridge_for_tenant(
+        session_factory, tenant_id=tenant_a, status="active"
+    )
+    bridge_a2 = await _make_bridge_for_tenant(
+        session_factory, tenant_id=tenant_a, status="inactive"
+    )
+    bridge_b1 = await _make_bridge_for_tenant(
+        session_factory, tenant_id=tenant_b, status="active"
+    )
+
+    store = CollaborationBridgeStore()
+    async with tenant_session(session_factory, tenant_a) as session:
+        all_a = await store.get_all(session)
+        active_a = await store.get_active(session)
+        many_a = await store.get_many(session, [bridge_a1, bridge_b1])
+        assert {b.id for b in all_a} == {bridge_a1, bridge_a2}
+        assert {b.id for b in active_a} == {bridge_a1}
+        assert {b.id for b in many_a} == {bridge_a1}
+
+    async with tenant_session(session_factory, tenant_b) as session:
+        all_b = await store.get_all(session)
+        active_b = await store.get_active(session)
+        many_b = await store.get_many(session, [bridge_a1, bridge_b1])
+        assert {b.id for b in all_b} == {bridge_b1}
+        assert {b.id for b in active_b} == {bridge_b1}
+        assert {b.id for b in many_b} == {bridge_b1}
