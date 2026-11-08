@@ -21,9 +21,13 @@ import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
   planAttachments,
   roomCommand,
+  roomCommandId,
+  roomEditSchema,
   roomFreshStartCommandId,
   roomMessageSchema,
   type RoomAttachmentSource,
+  type RoomCommandInput,
+  type RoomEdit,
 } from './room-prompt';
 import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
 import { githubRepositoryVisible } from './service-github';
@@ -808,9 +812,52 @@ export async function runSharedHost(
       }
       return status ?? 'The host did not record the command.';
     };
+    /**
+     * What each room message still waiting in the host's queue was built
+     * from, and the time of the edit it was last built with: an edit of the
+     * message is built the same way, with the edited text, so the agent is
+     * told what it would have been told. Forgotten once the message's turn
+     * has left the queue.
+     */
+    const waitingRoomMessages = new Map<string, { input: RoomCommandInput; editedAt: number }>();
+    /**
+     * Runs a room message still waiting in the queue as its sender edited
+     * it. An edit older than one already run, or one that changes nothing,
+     * is left out; the host says in the transcript what became of the rest.
+     */
+    const editRoomMessage = async (roomId: string, edit: RoomEdit): Promise<void> => {
+      const commandId = roomCommandId(agentId, roomId, edit.payload.message_id);
+      const waiting = waitingRoomMessages.get(commandId);
+      if (
+        waiting &&
+        (edit.payload.edited_at <= waiting.editedAt ||
+          edit.payload.body === waiting.input.message.payload.body)
+      )
+        return;
+      const input: RoomCommandInput | null = waiting
+        ? {
+            ...waiting.input,
+            message: {
+              ...waiting.input.message,
+              payload: { ...waiting.input.message.payload, body: edit.payload.body },
+            },
+          }
+        : null;
+      const outcome = await host!.editQueued(commandId, input ? roomCommand(input) : null);
+      if (outcome === 'applied' && input)
+        waitingRoomMessages.set(commandId, { input, editedAt: edit.payload.edited_at });
+    };
     /** Turn each room message handed over into the command it amounts to, in order. */
     const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
+      for (const commandId of waitingRoomMessages.keys())
+        if (!host!.isQueued(commandId)) waitingRoomMessages.delete(commandId);
       for (const event of inbox.pending()) {
+        const edit = roomEditSchema.safeParse(event.event);
+        if (edit.success) {
+          await editRoomMessage(event.roomId, edit.data);
+          await inbox.acknowledge(event);
+          continue;
+        }
         const message = roomMessageSchema.safeParse(event.event);
         if (!message.success) {
           await host!.notice(
@@ -838,7 +885,7 @@ export async function runSharedHost(
         }
         const room = await roomInstructionsFor(event.roomId);
         const preface = [instructionsNote, room.note].filter((note) => note !== null);
-        const command = roomCommand({
+        const input: RoomCommandInput = {
           agentId,
           sessionId: options.session.sessionId,
           epoch: host!.snapshot().session.epoch,
@@ -848,11 +895,17 @@ export async function runSharedHost(
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
-        });
+        };
+        const command = roomCommand(input);
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
         const outcome = await run(command, null);
+        if (host!.isQueued(command.commandId))
+          waitingRoomMessages.set(command.commandId, {
+            input,
+            editedAt: Number.NEGATIVE_INFINITY,
+          });
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)
@@ -1036,7 +1089,10 @@ export async function runSharedHost(
       }
       if (host.resetDecisionPending) {
         heldForDecision = true;
-        const first = rooms?.pending()[0];
+        // An edit is no reason to start one: what it edits is not waiting any more.
+        const first = rooms
+          ?.pending()
+          .find((event) => !roomEditSchema.safeParse(event.event).success);
         if (first) await startFreshFor(first);
       } else if (heldForDecision) {
         heldForDecision = false;

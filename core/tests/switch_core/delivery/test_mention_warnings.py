@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.clients.admin_messages import AdminMessageType, admin_extra_content
 from switch_core.clients.mention_warnings import MentionWarnings
 from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.messages.edits import Edit, edit_content
 from tests.routing import add_member, make_agent, make_person, make_room, process_on
 
 SessionFactory = async_sessionmaker[AsyncSession]
@@ -121,6 +122,39 @@ async def test_switchs_own_messages_are_not_checked(
         "@alice @absentee is not in this room",
         sender=alice,
         extra_content=admin_extra_content(AdminMessageType.ABSENT_AGENT),
+    )
+    await here.idle()
+
+    assert ran == []
+    assert admin.posted == []
+
+
+async def test_an_edit_is_not_checked(
+    session_factory: SessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An edit addresses nobody, so a heads-up about a name in it would read as
+    though fixing the name would reach somebody."""
+    here = process_on(session_factory)
+    admin = _Admin()
+    here.router.use_admin(lambda _tenant_id: admin)  # type: ignore[arg-type,return-value]
+    ran = _checks(monkeypatch)
+    room = await make_room(session_factory)
+    alice = await make_person(session_factory, "alice")
+    await make_agent(session_factory, "absentee")
+    await add_member(session_factory, room, alice)
+    asked = await here.say(room, "anyone around?", sender=alice)
+
+    await here.say(
+        room,
+        "* @absentee anyone around?",
+        sender=alice,
+        extra_content=edit_content(
+            Edit(
+                original_event_id=asked,
+                body="@absentee anyone around?",
+                edited_at=1,
+            )
+        ),
     )
     await here.idle()
 

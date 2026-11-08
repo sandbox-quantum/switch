@@ -177,6 +177,9 @@ class _StartableAdapter:
     def set_channel_rename_handler(self, handler: Any) -> None:
         pass
 
+    def set_edit_handler(self, handler: Any) -> None:
+        pass
+
     def set_channel_migration_handler(self, handler: Any) -> None:
         return None
 

@@ -39,6 +39,7 @@ from switch_core.bridges.agent.commands import (
 )
 from switch_core.bridges.agent.protocol.message_events import (
     attachment_ref,
+    message_edit_event,
     message_event,
     room_join_event,
 )
@@ -115,6 +116,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.room_role_store import RoomRoleStore
     from switch_core.db.stores.room_store import RoomStore
     from switch_core.delivery.conversation import ConversationDecision
+    from switch_core.messages.edits import Edit
     from switch_core.telemetry.messages import MessageTelemetry
 
 logger = logging.getLogger(__name__)
@@ -827,6 +829,27 @@ class AgentRecipient:
                 if unavailable == _STARTING_SESSION_MESSAGE
                 else reply_thread_root,
             )
+
+    def decide_edit(self, edit: Edit, message_id: str) -> Delivery:
+        """An edit of a message the agent was sent as `message_id`: one of its
+        own events, and nothing to say in the room. Whether the agent goes on
+        with the message as first sent or as edited is the agent's to decide;
+        the router has only to tell it."""
+        meta = self._meta
+
+        def own_event(row: InboundEvent) -> OwnEvent:
+            assert isinstance(row, InboundMessage)
+            agent_event = message_edit_event(
+                room_id=meta.room_id,
+                bridge_id=meta.bridge_id,
+                channel_type=meta.channel_type,
+                event=row,
+                edit=edit,
+                message_id=message_id,
+            )
+            return OwnEvent(agent_event, room_seq=row.seq, message_key=row.event_id)
+
+        return Delivery(own_event=own_event, after=None)
 
     # ── Files ─────────────────────────────────────────────────────────────────
 

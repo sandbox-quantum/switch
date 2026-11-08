@@ -16,7 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from switch_core.bridges.collaboration.session.renderers import RUNNING_CLOCK_SECONDS
+from switch_core.bridges.collaboration.session.renderers import (
+    RUNNING_CLOCK_SECONDS,
+    message_edited,
+)
 from switch_core.db.models import AgentSessionActivityItem
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
@@ -103,7 +106,9 @@ def status_state(
     platform redraws for it, and then in the whole minutes a running turn
     shows. What the agent is saying does not: prose is
     revised on every token, and it goes out with the next change to either,
-    and with the edit that ends the turn. The turn a stop control names
+    and with the edit that ends the turn. The message that started the turn
+    being edited while it waited counts, since the state line says so. The
+    turn a stop control names
     counts, so a queued turn's message stops offering to stop a turn that
     has ended. So does the platform having closed the message on its own,
     since closing it changed what it shows.
@@ -119,4 +124,7 @@ def status_state(
         if item.kind == "tool-activity"
     )
     closed = ":closed" if closed_by_platform else ""
-    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}"
+    edited = ":edited" if message_edited(view.items) else ""
+    return (
+        f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}{edited}"
+    )

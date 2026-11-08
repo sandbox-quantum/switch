@@ -472,6 +472,70 @@ it('turns a room message it was handed into a fenced prompt, once', async () => 
   }
 });
 
+const roomEdit = (sequence: number, edits: number, body: string, editedAt: number) => ({
+  sequence,
+  roomId: 'room',
+  messageId: `edit-${sequence}`,
+  event: {
+    type: 'message_edit',
+    payload: {
+      message_id: `message-${edits}`,
+      edit_id: `edit-${sequence}`,
+      sender: '@person:test',
+      sender_name: 'A  Person',
+      body,
+      edited_at: editedAt,
+    },
+    missed: null,
+  },
+});
+
+it('runs a waiting room message as its sender last edited it, told as it would have been', async () => {
+  const host = await start({ rooms: true });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Look at the logs') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'Fix the typo in READNE') });
+    await host.parent.ask({ type: 'room', handoff: roomEdit(3, 2, 'Fix the typo in README', 20) });
+    // Sent before the edit above and delivered after it: the later edit stands.
+    await host.parent.ask({ type: 'room', handoff: roomEdit(4, 2, 'Fix the typo', 10) });
+    // Too late for the turn already running.
+    await host.parent.ask({ type: 'room', handoff: roomEdit(5, 1, 'Look at the metrics', 30) });
+    const events = async () =>
+      (await readFile(join(host.root, 'events.jsonl'), 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    await poll(async () =>
+      expect(
+        (await events()).some(
+          (event) => event.body.type === 'notice' && event.body.code === 'EDIT_AFTER_START'
+        )
+      ).toBe(true)
+    );
+
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[0]!.turnId,
+      outcome: 'completed',
+      usage: [],
+    });
+
+    await until(() => expect(host.turns).toHaveLength(2));
+    const [first, second] = host.turns;
+    expect(first!.text).toContain('\nLook at the logs\n');
+    expect(second!.text).toContain('\nFix the typo in README\n');
+    expect(second!.text).not.toContain('READNE');
+    // Built as the message was, with the rest of what it was told.
+    expect(second!.text).toContain(
+      '[Switch] A Person addressed you in room room (message_id message-2, thread_id none):'
+    );
+    expect(second!.text).toContain('(2 unaddressed room messages arrived');
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
 it('starts a continued conversation as new here: its instructions are not news, and its first room message opens it', async () => {
   const host = await start({
     rooms: true,
