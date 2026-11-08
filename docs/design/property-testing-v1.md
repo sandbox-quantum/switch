@@ -294,7 +294,8 @@ moves the delivery ones to `checked`.
 | `delivery.per-room-order` | An agent's own events from one room arrive in `room_seq` order | safety | model, system |
 | `lease.fenced-takeover` | A lease's token strictly increases per key; once a key is taken over, every write by an earlier holder is refused | safety | model, code |
 | `lease.eventual-owner` | Work whose holder stopped or stopped renewing is eventually held by a live process | liveness | model, system |
-| `session.addressed-eventually-started` | Addressing an agent with no live session, where auto-start is configured, eventually starts one | liveness | model, system |
+| `session.addressed-reaches-controller` | Every event addressed to an agent a controller has attached reaches the controller's stream, in order, none skipped | liveness | code |
+| `session.controller-starts-on-addressed` | A controller with auto-start on starts a session for an addressed agent that has none, and never two for one room | liveness | code |
 | `task.lifecycle` | A task moves only delegate → ongoing → finalised; finalised is terminal (retired: the protocol was removed) | safety | model, code |
 | `tenancy.no-cross-tenant-ids` | No response to a principal in one tenant contains an id from another | safety | code, system |
 | `api.no-5xx` | No request, however malformed, is answered with a 5xx | safety | code, system |
@@ -429,8 +430,13 @@ adding under two minutes to PR CI (anything slower runs nightly).
    the page: a list page that has settled shows what the API returns. The
    "renamed in one tab, renamed in another" property waits until Bombadil can
    drive two pages.
-5. **Sessions.** `session.addressed-eventually-started` waits for auto-start,
-   which core does not have yet.
+5. **Sessions.** Auto-start exists, and core never asks a controller to start a
+   session: the controller reads every event of its agents off one unfiltered
+   stream and decides locally. The property is split to match.
+   `session.addressed-reaches-controller` is built, as a Hypothesis machine over
+   the real controller stream (`controller_stream_machine.py`);
+   `session.controller-starts-on-addressed` is the controller's half, in
+   TypeScript, and is still to do.
 
 Not in this phase, and why: `bus.room-seq-dense` and `delivery.decided-at-write`
 at the system level (they need the commit order or the room's state at write
@@ -482,8 +488,9 @@ How they relate to what is there:
 - `presence.reaches-every-replica` would fail today: presence goes over an
   in-process bus (`transport/ephemeral.py`). It is recorded with that as its
   gap so the limitation is tracked, not checked into a failing lane.
-- `session.addressed-eventually-started` now names the controller path; it
-  still waits for auto-start.
+- `session.addressed-eventually-started` is replaced by the two properties
+  above: it assumed core asks the controller to start a session, and it does
+  not.
 
 In this order, cheapest and most security-relevant first, each checker shown to
 fail on a planted bug:
