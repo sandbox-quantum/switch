@@ -120,9 +120,10 @@ class ProcessLease:
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.process_id = process_id
-        # This process's monotonic clock; a test moves it, and drifts one
-        # process's against another's, without sleeping.
-        self._monotonic = monotonic
+        # This process's monotonic clock, the one `held_until` is on; a test
+        # moves it, and drifts one process's against another's, without
+        # sleeping.
+        self.monotonic = monotonic
         self._session_factory = session_factory
         self._processes = processes
         # The ids of the keys this process can read, recorded on its row so a
@@ -149,11 +150,7 @@ class ProcessLease:
         however far the two clocks have drifted.
         """
         held_until = self.held_until()
-        return held_until is not None and self._monotonic() < held_until
-
-    def monotonic(self) -> float:
-        """This process's monotonic clock, the one `held_until` is on."""
-        return self._monotonic()
+        return held_until is not None and self.monotonic() < held_until
 
     def held_until(self) -> float | None:
         """On this process's monotonic clock, when `surely_held` turns false
@@ -168,7 +165,7 @@ class ProcessLease:
         once the lease is stopped: a draining process stays released."""
         if self._stopped:
             return
-        sent_at = self._monotonic()
+        sent_at = self.monotonic()
         async with self._session_factory() as session:
             await self._processes.renew(session, self.process_id, self._key_ids)
             pruned = await self._processes.prune(session, PRUNE_AFTER)
@@ -219,4 +216,4 @@ class ProcessLease:
     def _until_next_renewal(self) -> float:
         if self._renewed_at is None:
             return 0.0 if not self._stopped else RENEW_EVERY_SECONDS
-        return max(0.0, self._renewed_at + RENEW_EVERY_SECONDS - self._monotonic())
+        return max(0.0, self._renewed_at + RENEW_EVERY_SECONDS - self.monotonic())

@@ -210,10 +210,7 @@ class Ownerships(RuleBasedStateMachine):
         process = self.processes[number]
         if not process.live:
             return
-        claims, before = len(self.fenced), self.token()
-        self.run(process.ownership.balance())
-        if len(self.fenced) > claims and before > 0:
-            note("a holder's lease lapses and another process takes the key")
+        self.run(self._noting_takeover(process, process.ownership.balance()))
 
     @rule(number=st.sampled_from(PROCESSES))
     def balance_alone(self, number: int) -> None:
@@ -224,10 +221,26 @@ class Ownerships(RuleBasedStateMachine):
         process = self.processes[number]
         if not process.live or not process.lease.surely_held():
             return
-        claims, before = len(self.fenced), self.token()
-        self.run(self._balance_alone(process))
-        if len(self.fenced) > claims and before > 0:
+        self.run(self._noting_takeover(process, self._balance_alone(process)))
+
+    async def _noting_takeover(self, process: Process, balancing: Any) -> None:
+        """Run a balance, and note when it claimed the key from another
+        process that still held it as far as the lease row said: one whose
+        lease had lapsed."""
+        claims, holder = len(self.fenced), await self._holder()
+        await balancing
+        if len(self.fenced) > claims and holder not in (None, process.id):
             note("a holder's lease lapses and another process takes the key")
+
+    async def _holder(self) -> str | None:
+        async with self.session_factory() as session:
+            return (
+                await session.execute(
+                    select(OwnershipLease.process_id).where(
+                        OwnershipLease.kind == KIND, OwnershipLease.key == KEY
+                    )
+                )
+            ).scalar_one_or_none()
 
     async def _balance_alone(self, process: Process) -> None:
         async with process.ownership.balancing():
