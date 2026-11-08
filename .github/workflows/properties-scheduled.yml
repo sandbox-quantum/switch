@@ -54,7 +54,20 @@ jobs:
         env:
           SCHEMATHESIS_EXAMPLES: '100'
           SCHEMATHESIS_MAX_SECONDS: '1200'
-        run: just properties-http
+        run: >
+          uv run --project core --group schemathesis pytest -c core/pyproject.toml
+          core/tests/switch_core/properties/test_http_surface.py
+          -m schemathesis -p no:cacheprovider
+
+      # What each run said in full, which the failure report cuts to the
+      # failures.
+      - name: Keep what Schemathesis said
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: schemathesis
+          path: build/properties/http
+          if-no-files-found: ignore
 
   state-machines:
     name: State machines, nightly profile

@@ -83,6 +83,7 @@ dev = [
     "hypothesis>=6.170.15",
 ]
 schemathesis = [
+    "graphql-core<3.3.2",
     "schemathesis>=4.33.1",
 ]
 

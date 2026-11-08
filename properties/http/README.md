@@ -9,9 +9,13 @@ has objects, then as an admin of the first, whose path and query parameters that
 look like ids (`id`, `*_id`) are often ids of the second's objects (`hooks.py`).
 
 ```bash
-just properties-http                      # 25 examples a route, ten minutes at most
+just properties-http                      # 25 examples a route; two runs of ten minutes at most
 SCHEMATHESIS_EXAMPLES=100 SCHEMATHESIS_MAX_SECONDS=1200 just properties-http
 ```
+
+The time budget is for each of the two runs. Each run's whole output is kept in
+`build/properties/http` (the workflow uploads it), and a run that was refused with
+401 on most requests fails, because it lost its session and tested little.
 
 It needs Docker and runs nightly (`properties-scheduled.yml`), not on a pull
 request. The checks are `not_a_server_error` (`api.no-5xx`),
