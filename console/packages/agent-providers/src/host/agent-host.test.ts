@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
+import fc from 'fast-check';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   MAX_HOST_RESTARTS,
@@ -2710,3 +2711,100 @@ it('tells the room once a session keeps not taking a message, instead of startin
     vi.useRealTimers();
   }
 });
+
+type Step = { kind: 'address'; room: string } | { kind: 'toggle' };
+
+const steps = fc.array(
+  fc.oneof(
+    fc.record({ kind: fc.constant('address' as const), room: fc.constantFrom('r0', 'r1', 'r2') }),
+    fc.record({ kind: fc.constant('toggle' as const) })
+  ),
+  { maxLength: 12 }
+);
+
+/**
+ * `session.controller-starts-on-addressed`: a controller starts a session for
+ * a room that has none exactly when it may, holds the room's events when it
+ * may not and starts the session once it may, and never has two for one room.
+ * The model is a set of rooms with a session and a set with events held; every
+ * step moves it the way the controller is meant to, and the journal, the
+ * sessions launched and the placements stated to Switch must agree with it.
+ *
+ * @property session.controller-starts-on-addressed
+ */
+it.each([{ startsOn: true }, { startsOn: false }])(
+  'starts a session for an addressed room exactly when it may (starting with spawning $startsOn)',
+  async ({ startsOn }) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await fc.assert(
+      fc.asyncProperty(steps, async (run: Step[]) => {
+        streams.length = 0;
+        declarations.length = 0;
+        published.length = 0;
+        vi.mocked(ensureSharedProcess).mockReset();
+        const root = await mkdtemp(join(tmpdir(), 'shared-watch-property-'));
+        roots.push(root);
+        paths.root = root;
+        const config = await spawning(root);
+        if (!startsOn) await stopSpawning(root);
+        const { supervision } = sessionHosts();
+        const abort = new AbortController();
+        const running = runAgentHost(
+          root,
+          config,
+          abort.signal,
+          supervision,
+          new WatcherControl(),
+          openSwitchStream
+        );
+        try {
+          await eventually(() => streams.length === 1);
+          let on = startsOn;
+          const placed = new Set<string>();
+          const held = new Set<string>();
+          let sequence = 0;
+          const agrees = async (when: string) => {
+            const journal = await AgentHostAssignments.open(root);
+            const rooms = new Set(journal.pending().map((entry) => entry.roomId));
+            expect([...rooms].sort(), `held rooms ${when}`).toEqual([...held].sort());
+            expect(journal.sessions().length, `sessions ${when}`).toBe(placed.size);
+            expect(vi.mocked(ensureSharedProcess).mock.calls.length, `launches ${when}`).toBe(
+              placed.size
+            );
+            const stated = Object.values(published.at(-1) ?? {});
+            expect(stated.length, `a room twice in the placements ${when}`).toBe(
+              new Set(stated).size
+            );
+            expect(new Set(stated), `placed rooms ${when}`).toEqual(placed);
+          };
+          for (const step of run) {
+            if (step.kind === 'address') {
+              await streams[0]!.onEvent!(addressed(++sequence, step.room));
+              if (!placed.has(step.room)) {
+                if (on && !held.has(step.room)) placed.add(step.room);
+                else held.add(step.room);
+              }
+              await agrees(`after ${step.room} was addressed`);
+            } else {
+              const before = declarations.length;
+              on = !on;
+              await writeFlags(root, { enabled: true, spawn: on });
+              await eventually(() => declarations.length > before);
+              if (on) {
+                await eventually(() => settled(root));
+                for (const room of held) placed.add(room);
+                held.clear();
+              }
+              await agrees(`after spawning was turned ${on ? 'on' : 'off'}`);
+            }
+          }
+        } finally {
+          abort.abort();
+          await running;
+        }
+      }),
+      { numRuns: Number(process.env.PROPERTY_RUNS ?? 15) }
+    );
+  },
+  120_000
+);

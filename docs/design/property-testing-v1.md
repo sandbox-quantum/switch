@@ -435,8 +435,8 @@ adding under two minutes to PR CI (anything slower runs nightly).
    stream and decides locally. The property is split to match.
    `session.addressed-reaches-controller` is built, as a Hypothesis machine over
    the real controller stream (`controller_stream_machine.py`);
-   `session.controller-starts-on-addressed` is the controller's half, in
-   TypeScript, and is still to do.
+   `session.controller-starts-on-addressed` is the controller's half, built in
+   TypeScript with fast-check over the real host (`agent-host.test.ts`).
 
 Not in this phase, and why: `bus.room-seq-dense` and `delivery.decided-at-write`
 at the system level (they need the commit order or the room's state at write
