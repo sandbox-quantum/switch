@@ -6,4 +6,9 @@ properties:
     formality: semi-formal
     levels: [model, code]
     owner: platform
-    status: proposed
+    status: retired
+    notes: >
+      The task protocol was removed from the server (tools, routes, events and
+      instructions; only the unused `tasks` table remains), so nothing writes
+      a task and there is nothing to check. Bring the property back, with a
+      machine over the operations, if the protocol does.
