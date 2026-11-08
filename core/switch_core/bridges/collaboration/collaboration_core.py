@@ -2299,6 +2299,10 @@ class CollaborationCore:
                 else f"You can't answer this card: {agent_name} is not available."
             )
             return
+        channel_type = await self._adapter.get_channel_type(interaction.channel_id)
+        root_id = await self._external_post_for_event(
+            card.thread_root_event_id or card_event_id
+        )
         async with self._session_factory() as session:
             answered = await self._bridge_message_map_store.answer_card(
                 session,
@@ -2321,9 +2325,7 @@ class CollaborationCore:
         delivered = await self._handle_inbound_message(
             InboundMessage(
                 channel_id=interaction.channel_id,
-                channel_type=await self._adapter.get_channel_type(
-                    interaction.channel_id
-                ),
+                channel_type=channel_type,
                 sender_id=interaction.sender_id,
                 sender_name=interaction.sender_name,
                 content=(
@@ -2335,9 +2337,7 @@ class CollaborationCore:
                 message_ref=(
                     f"{card_event_id}#press:{button.id}:{interaction.sender_id}"
                 ),
-                root_id=await self._external_post_for_event(
-                    card.thread_root_event_id or card_event_id
-                ),
+                root_id=root_id,
                 extra_content={
                     UI_PRESS_KEY: {
                         "action": button.id,
