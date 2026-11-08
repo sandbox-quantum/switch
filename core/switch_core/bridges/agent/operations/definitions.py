@@ -680,6 +680,8 @@ async def read_context(
     `kind` is "message" for something a participant said, or "room_join" for
     someone arriving in the room (body reads "<name> joined the room"). Joins
     are part of the timeline so the history explains who appeared and when.
+    A person editing a message adds a "message_edit" entry: `edits` is the id
+    of the message and `body` is what it reads now.
 
     **`truncated` matters.** It is True when older history exists that this
     call did not reach — you are looking at a partial conversation. Widen

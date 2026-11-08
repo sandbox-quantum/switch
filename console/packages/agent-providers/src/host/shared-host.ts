@@ -17,10 +17,18 @@ import {
   roomControlFollowup,
   roomControlRefusal,
 } from './room-control-followup';
-import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
+import {
+  heldEditsOf,
+  isRoomEditId,
+  SharedRoomInbox,
+  type roomConnectionSchema,
+} from './room-inbox';
 import {
   planAttachments,
   roomCommand,
+  roomCommandId,
+  type RoomEdit,
+  roomEditSchema,
   roomFreshStartCommandId,
   roomMessageSchema,
   type RoomAttachmentSource,
@@ -39,7 +47,7 @@ import {
   type ParentChannel,
   type ParentPort,
 } from './session-channel';
-import { HostedSession } from './session-host';
+import { HostedSession, type MessageEditInput } from './session-host';
 import { startSessionMcp } from './session-mcp';
 import { owedSessionStart, settleSessionStart, type OwedSessionStart } from './session-start';
 import {
@@ -186,7 +194,10 @@ export const ROOM_POSTING_TOOLS = new Set([
 export function postFailure(name: string, result: unknown): string | null {
   if (!ROOM_POSTING_TOOLS.has(name)) return null;
   if (typeof result !== 'object' || result === null) return null;
-  const { isError, content } = result as { isError?: unknown; content?: unknown };
+  const { isError, content } = result as {
+    isError?: unknown;
+    content?: unknown;
+  };
   if (isError !== true) return null;
   const text = Array.isArray(content)
     ? content
@@ -808,9 +819,26 @@ export async function runSharedHost(
       }
       return status ?? 'The host did not record the command.';
     };
+    const roomEdit = (roomId: string, edit: RoomEdit): MessageEditInput => ({
+      commandId: roomCommandId(agentId, roomId, edit.payload.message_id),
+      roomId,
+      authorId: edit.payload.sender,
+      editEventId: edit.payload.edit_event_id,
+      revision: edit.payload.revision,
+      body: edit.payload.new_body,
+    });
     /** Turn each room message handed over into the command it amounts to, in order. */
     const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
-      for (const event of inbox.pending()) {
+      const pending = inbox.pending();
+      const folded = new Set<string>();
+      for (const event of pending) {
+        if (folded.has(event.messageId)) continue;
+        const edit = roomEditSchema.safeParse(event.event);
+        if (edit.success) {
+          await host!.editMessage(roomEdit(event.roomId, edit.data));
+          await inbox.acknowledge(event);
+          continue;
+        }
         const message = roomMessageSchema.safeParse(event.event);
         if (!message.success) {
           await host!.notice(
@@ -838,6 +866,14 @@ export async function runSharedHost(
         }
         const room = await roomInstructionsFor(event.roomId);
         const preface = [instructionsNote, room.note].filter((note) => note !== null);
+        // Edited while it waited to be admitted. The command is built with the
+        // words as they now read rather than amended after it is accepted:
+        // with nothing ahead of it, a command leaves the queue as it is taken.
+        const { latest, handled } = heldEditsOf(
+          pending.filter((each) => each.roomId === event.roomId),
+          message.data.payload
+        );
+        if (latest) message.data.payload.body = latest.payload.new_body;
         const command = roomCommand({
           agentId,
           sessionId: options.session.sessionId,
@@ -856,7 +892,19 @@ export async function runSharedHost(
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)
-            await roomInstructionsTold({ ...toldRooms, [event.roomId]: room.instructions });
+            await roomInstructionsTold({
+              ...toldRooms,
+              [event.roomId]: room.instructions,
+            });
+        }
+        if (latest)
+          await host!.editMessage({
+            ...roomEdit(event.roomId, latest),
+            alreadyInCommand: true,
+          });
+        for (const each of handled) {
+          folded.add(each.messageId);
+          await inbox.acknowledge(each);
         }
         await inbox.acknowledge(event);
       }
@@ -1036,7 +1084,8 @@ export async function runSharedHost(
       }
       if (host.resetDecisionPending) {
         heldForDecision = true;
-        const first = rooms?.pending()[0];
+        // An edit starts nothing, not even a fresh conversation.
+        const first = rooms?.pending().find((event) => !isRoomEditId(event.messageId));
         if (first) await startFreshFor(first);
       } else if (heldForDecision) {
         heldForDecision = false;

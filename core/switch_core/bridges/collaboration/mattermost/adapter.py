@@ -68,6 +68,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundEdit,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
@@ -2794,6 +2795,10 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
+        if event_type == "post_edited":
+            self._handle_post_edited(event)
+            return
+
         if event_type != "posted":
             return
 
@@ -2918,6 +2923,67 @@ class MattermostAdapter(PlatformAdapter):
             )
             coro = self._on_message(inbound)
             self._dispatch(coro, loop)  # type: ignore[arg-type]
+
+    def _handle_post_edited(self, event: dict[str, Any]) -> None:
+        """Report a `post_edited` that is a person rewording their post.
+
+        Mattermost sends one for any update to a post, a pin among them, with
+        `edit_at` left as it was unless the words changed: never edited at all
+        is 0, and a repeat of an earlier edit is the same edit. Every socket
+        this adapter holds hears each one. Its bots' posts are the cards this
+        bridge redraws; other bots and webhooks rewriting their own posts are
+        not requests anybody is correcting.
+        """
+        if self._on_edit is None:
+            return
+        try:
+            post = json.loads(event.get("data", {}).get("post", ""))
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(post, dict):
+            return
+        user_id = post.get("user_id", "")
+        post_id = post.get("id", "")
+        channel_id = post.get("channel_id", "")
+        edit_at = post.get("edit_at", 0)
+        props = post.get("props") or {}
+        if (
+            not user_id
+            or not post_id
+            or not channel_id
+            or post.get("type")
+            or user_id in self._bridge_bot_ids
+            or user_id == self._admin_user_id
+            or not isinstance(edit_at, int)
+            or edit_at <= 0
+            or str(props.get("from_webhook", "")).lower() == "true"
+            or str(props.get("from_bot", "")).lower() == "true"
+        ):
+            return
+        heard = f"{post_id}:{edit_at}"
+        with self._seen_lock:
+            if heard in self._seen_post_ids:
+                return
+            self._seen_post_ids[heard] = None
+            if len(self._seen_post_ids) > self._seen_post_ids_max:
+                self._seen_post_ids.popitem(last=False)
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError("Cannot handle post_edited event: adapter not started")
+        self._dispatch(
+            self._on_edit(
+                InboundEdit(
+                    channel_id=channel_id,
+                    sender_id=user_id,
+                    sender_name=user_id,
+                    message_ref=post_id,
+                    content=post.get("message", ""),
+                    revision=edit_at,
+                    timestamp=edit_at,
+                )
+            ),
+            loop,
+        )  # type: ignore[arg-type]
 
     async def _fetch_attachments(
         self, file_ids: list[str], loop: asyncio.AbstractEventLoop

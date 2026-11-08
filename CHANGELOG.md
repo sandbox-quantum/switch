@@ -294,6 +294,17 @@ version of their own to them without also giving them a release of their own.
   history is kept, and the deletion is recorded in the server audit log. The
   server's default workspace can't be deleted. Deleting your account now also
   deletes a workspace you leave empty.
+- **Editing a message the agent has not picked up yet (#804).** On Slack and
+  Mattermost, a person can edit their message while its card says Queued, and
+  the agent runs the edited text in the same turn and the same place in line. The
+  card says `Queued (prompt updated)`. Once the turn has started, an edit leaves
+  it unchanged and the card says `Edited after start. Turn unchanged.` There is no
+  time limit and no estimate: a message can be edited for as long as it waits,
+  which is almost no time when the agent is free. An edit reaches only the agents
+  that received the original, starts nothing, and goes through Switch Trust as the
+  original did. The original message row is kept unchanged, and the edit is stored
+  beside it as a generic `com.switch.message_edit` event. Other platforms do not
+  report edits yet.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
@@ -2746,6 +2757,11 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A queued message runs as edited (#804).** A session replaces a queued turn's
+  prompt when its room message is edited, keeping the turn, its place in line, its
+  thread and its attachments. A turn already started, or finished, is left as it
+  was. Each replacement is journaled apart from the accepted command, so it
+  survives a restart, and a retry runs the edited text.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

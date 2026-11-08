@@ -229,6 +229,7 @@ class RoomDetailDescriptor(BaseModel):
 
 EventType = Literal[
     "message",
+    "message_edit",
     "command",
     "room_join",
 ]
@@ -278,6 +279,26 @@ class MessagePayload(BaseModel):
     switch_notice: str | None = None
 
 
+class MessageEditPayload(BaseModel):
+    """Someone edited a message this agent was already given.
+
+    Goes only to the agents the original went to, and asks nothing new of any
+    of them: what an agent does with it depends on whether it has started on
+    the message. `message_id` is the original's, as its `message` event named
+    it. An agent that does not know this type can ignore it.
+    """
+
+    message_id: str
+    # The row the edit was written as.
+    edit_event_id: str
+    new_body: str
+    # Higher is later, whatever order two edits arrive in.
+    revision: int
+    sender: str
+    sender_name: str
+    timestamp: int
+
+
 class CommandPayload(BaseModel):
     command: str
     args: str = ""
@@ -302,10 +323,11 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
-Payload = MessagePayload | CommandPayload | RoomJoinPayload
+Payload = MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
+    "message_edit": MessageEditPayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
 }

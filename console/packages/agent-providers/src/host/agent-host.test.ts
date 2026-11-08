@@ -108,7 +108,12 @@ function sessionHosts() {
   const links = new SessionLinks();
   const children = new Map<string, HostChild>();
   const requests: { root: string; request: SessionRequest }[] = [];
-  const answers: { id: number; ok: boolean; value?: unknown; error?: string }[] = [];
+  const answers: {
+    id: number;
+    ok: boolean;
+    value?: unknown;
+    error?: string;
+  }[] = [];
   let nextAsk = 0;
   const hosts = {
     links,
@@ -136,7 +141,10 @@ function sessionHosts() {
           answers.push(message as (typeof answers)[number]);
           return true;
         }
-        const { id, request } = message as { id: number; request: SessionRequest };
+        const { id, request } = message as {
+          id: number;
+          request: SessionRequest;
+        };
         requests.push({ root, request });
         setImmediate(() => {
           if (hosts.drop) child.emit('exit', null, 'SIGKILL');
@@ -899,7 +907,11 @@ it('puts a move Console asked for back when Switch refuses it', async () => {
 
 /** A Switch answering the operation list and `connect_to_room`, refusing when told to. */
 function switchOps(refuse: { connect: boolean }) {
-  const calls: { path: string; headers: Record<string, string>; body: unknown }[] = [];
+  const calls: {
+    path: string;
+    headers: Record<string, string>;
+    body: unknown;
+  }[] = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const path = new URL(url).pathname;
     calls.push({
@@ -1678,7 +1690,12 @@ it('brings live sessions in step with a rewritten definition, each once its turn
   await hosts.start(idle.sessionRoot);
   hosts.busy(working.sessionRoot, true);
   hosts.busy(idle.sessionRoot, false);
-  const restarted: { root: string; model: unknown; context: unknown; resuming: boolean }[] = [];
+  const restarted: {
+    root: string;
+    model: unknown;
+    context: unknown;
+    resuming: boolean;
+  }[] = [];
   vi.mocked(ensureSharedProcess).mockImplementation(
     async ({ root: sessionRoot, config: started, resuming }) => {
       restarted.push({
@@ -2381,7 +2398,11 @@ it('reports its connection and placements as they change, and why it stopped', a
   const placed = await existing(root, config);
   const hosts = sessionHosts();
   const control = new WatcherControl();
-  const heard: { state: string; detail: string | null; placements: Record<string, string> }[] = [];
+  const heard: {
+    state: string;
+    detail: string | null;
+    placements: Record<string, string>;
+  }[] = [];
   control.onHealth(({ state, detail, placements }) => heard.push({ state, detail, placements }));
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -2455,7 +2476,11 @@ it('reports a room connection that is turned off, and a watcher that failed', as
 
 /** Answers the Switch operations the watcher calls as a session, recording each. */
 function switchOperations(answers: { owner: string | null; refuseTargeted?: boolean }) {
-  const calls: { name: string; body: Record<string, unknown>; session: string | null }[] = [];
+  const calls: {
+    name: string;
+    body: Record<string, unknown>;
+    session: string | null;
+  }[] = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
     const name = String(url).split('/ops/')[1] ?? '';
     const headers = init.headers as Record<string, string>;
@@ -2703,4 +2728,80 @@ it('tells the room once a session keeps not taking a message, instead of startin
     await run;
     vi.useRealTimers();
   }
+});
+
+const edited = (sequence: number, roomId: string, messageId: string): AgentBridgeEvent => ({
+  type: 'message_edit',
+  room_id: roomId,
+  sequence,
+  payload: {
+    message_id: messageId,
+    edit_event_id: `edit-${sequence}`,
+    new_body: 'Run the other check',
+    revision: sequence,
+    sender: '@owner:example.test',
+    sender_name: 'Owner',
+    timestamp: sequence,
+  },
+});
+
+it('hands an edit to the session in its room, behind the message it edits', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-edit-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const owner = await existing(root, config);
+  await assignTo(root, config, 1, 'room', owner.sessionId);
+  const hosts = sessionHosts();
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(2, 'room'));
+    await streams[0]!.onEvent!(edited(3, 'room', 'message-2'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(
+    hosts
+      .to(owner.sessionRoot)
+      .map((sent) => (sent.type === 'room' ? sent.handoff.messageId : sent.type))
+  ).toEqual(['message-2', 'message-edit:message-2:3']);
+});
+
+it('starts no session for an edit in a room that has none, even where it may start one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-edit-none-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(edited(2, 'quiet-room', 'message-1'));
+    await eventually(() => settled(root));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
+  const journal = await AgentHostAssignments.open(root);
+  expect(journal.sessions()).toHaveLength(0);
 });

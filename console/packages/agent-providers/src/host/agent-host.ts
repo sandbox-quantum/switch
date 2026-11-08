@@ -21,7 +21,7 @@ import {
 } from './launch';
 import { releaseOwner, replaceOwner, withOwnershipLockOutlasting } from './ownership-lock';
 import { SessionPlacements } from './placements';
-import { roomInputId } from './room-inbox';
+import { isRoomEditId, roomInputId } from './room-inbox';
 import {
   SessionHostFailedError,
   type SessionRequest,
@@ -1210,10 +1210,19 @@ export async function runAgentHost(
      * when it was addressed should still get one.
      */
     const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
+      const edit = isRoomEditId(event.messageId);
       const placed = placements.sessionIn(event.roomId);
       if (placed) {
         const owner = await sessionConfig(placed);
         if (owner && !(await stopped(placed))) {
+          // A session that is not running has nothing queued for an edit to
+          // change, and an edit is no reason to start it again.
+          if (
+            edit &&
+            !links.ready(sharedSessionRoot(owner.session.sessionId)) &&
+            !pumps.get(owner.session.sessionId)?.queue.length
+          )
+            return true;
           await deliver(owner, event, waiting);
           return true;
         }
@@ -1223,6 +1232,9 @@ export async function runAgentHost(
           `Session ${placed} ${owner ? 'was stopped' : 'is not one of this agent’s sessions here'}, so room ${event.roomId} has no session attending it now.`
         );
       }
+      // Nothing is waiting on an edit: a room with no session has no queued
+      // turn for it to change, and it never starts one.
+      if (edit) return true;
       if (!spawning) return false;
       const config = await assignments.assign(
         sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),

@@ -43,6 +43,21 @@ export interface MessagePayload {
   sender_role?: 'admin' | 'member' | 'owner' | null;
 }
 
+/**
+ * Someone edited a message this agent was given. It starts nothing: only what
+ * has not started yet can still change. Absent from servers that predate it.
+ */
+export interface MessageEditPayload {
+  message_id: string;
+  edit_event_id: string;
+  new_body: string;
+  /** Higher is later, whatever order two edits arrive in. */
+  revision: number;
+  sender: string;
+  sender_name: string;
+  timestamp: number;
+}
+
 export interface CommandPayload {
   command: string;
   // Command arguments. For `reset`/`compact` this carries the role name the
@@ -66,7 +81,7 @@ export interface RoomJoinPayload {
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  payload: MessagePayload | CommandPayload | RoomJoinPayload;
+  payload: MessagePayload | MessageEditPayload | CommandPayload | RoomJoinPayload;
   /**
    * The event's number in the agent's own events (`s`). It is present on the push
    * transport and absent on the legacy poll. It is also absent on a message

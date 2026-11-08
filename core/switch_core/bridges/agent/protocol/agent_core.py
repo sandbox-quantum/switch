@@ -133,6 +133,7 @@ from switch_core.events import (
 from switch_core.events import (
     ToolCallReport as RoomToolCallReport,
 )
+from switch_core.messages.edits import MESSAGE_EDIT_EVENT_TYPE, parse_edit
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
 from switch_core.room_service import require_membership_changeable_from_outside
@@ -2750,6 +2751,24 @@ class AgentCore:
                 "timestamp": _epoch_ms(message.sent_at),
                 "attachments": [],
             }
+        edit = (
+            parse_edit(message.content or {})
+            if message.event_type == MESSAGE_EDIT_EVENT_TYPE
+            else None
+        )
+        if edit is not None:
+            # The original stays as it was written, and this says what it now
+            # reads: what a reader of the room would otherwise never learn.
+            return {
+                "id": message.transport_event_id,
+                "kind": "message_edit",
+                "edits": edit.original_event_id,
+                "sender": message.sender_id,
+                "sender_name": name,
+                "body": edit.new_body,
+                "timestamp": _epoch_ms(message.sent_at),
+                "attachments": [],
+            }
         entry: dict[str, Any] = {
             "id": message.transport_event_id,
             "kind": "message",
@@ -2811,7 +2830,8 @@ class AgentCore:
         "timestamp", "attachments"}, plus "sender_kind" ("platform" for a
         message the Switch app posted) and "on_behalf_of" (the person a
         platform message spoke for) when they apply. `kind` is "message" for
-        something someone said and "room_join" for an arrival. Top-level entries are roots with
+        something someone said, "room_join" for an arrival and "message_edit"
+        for an edit to the message named by its "edits". Top-level entries are roots with
         an empty replies list; replies are ordered oldest-first within a
         thread. A root that falls outside the fetched window but has a reply
         inside it is fetched alongside; if no record of it exists it is

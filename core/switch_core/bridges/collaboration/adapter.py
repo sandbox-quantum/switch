@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.models import (
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
+    InboundEdit,
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
@@ -662,6 +663,8 @@ class PlatformAdapter(ABC):
         )
         self._on_user_joined: Callable[[InboundUserJoin], Awaitable[None]] | None = None
         self._on_app_joined: Callable[[InboundAppJoin], Awaitable[None]] | None = None
+        # Set by set_edit_handler. Called when a person edits a post of theirs.
+        self._on_edit: Callable[[InboundEdit], Awaitable[None]] | None = None
         # Set by set_interaction_handler. Called when someone operates a control
         # on a message this bridge posted. Left unset on a platform with no such
         # controls, and on an adapter running without a bridge core behind it.
@@ -2012,6 +2015,16 @@ class PlatformAdapter(ABC):
         platforms with interactive message controls ever call it, and an adapter
         that never does needs no change to go on working."""
         self._on_interaction = handler
+
+    def set_edit_handler(
+        self, handler: Callable[[InboundEdit], Awaitable[None]]
+    ) -> None:
+        """Install the callback for a person editing a post of theirs.
+
+        A setter for the reason `set_interaction_handler` is: an adapter whose
+        platform does not report edits, or that has not been taught to yet,
+        needs no change to go on working."""
+        self._on_edit = handler
 
     def set_activity_resolver(
         self, resolver: Callable[[str, str], Awaitable[ActivitySnapshot | None]]

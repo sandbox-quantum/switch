@@ -72,6 +72,7 @@ from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
+from switch_core.bridges.agent.protocol.message_events import message_edit_event
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
 from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
@@ -84,6 +85,7 @@ from switch_core.db.agent_event_notify_ddl import (
 from switch_core.db.models import (
     Agent,
     AgentConnectionRecord,
+    AgentEventRow,
     Client,
     ClientRoom,
     CollaborationBridge,
@@ -110,6 +112,7 @@ from switch_core.delivery.recipient import (
     NOTHING,
     AgentRecipient,
     Delivery,
+    OwnEvent,
     RecipientServices,
     RoomMember,
     caption_of,
@@ -118,6 +121,7 @@ from switch_core.delivery.recipient import (
     post_anchor,
 )
 from switch_core.logging_context import log_context
+from switch_core.messages.edits import MESSAGE_EDIT_EVENT_TYPE, MessageEdit, parse_edit
 from switch_core.observability.catalogue import ROUTING_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL
@@ -636,6 +640,32 @@ class Routed:
             router.after_commit(reads.tenant_id, reads.room_id, work)
 
 
+def _edit_own_event(
+    meta: RoomMeta, edit: MessageEdit, *, message_id: str, sender_name: str
+) -> Callable[[InboundEvent], OwnEvent]:
+    """How an agent's own event for an edit is built once the edit is written."""
+
+    def own_event(row: InboundEvent) -> OwnEvent:
+        return OwnEvent(
+            message_edit_event(
+                room_id=meta.room_id,
+                bridge_id=meta.bridge_id,
+                channel_type=meta.channel_type,
+                message_id=message_id,
+                edit_event_id=row.event_id,
+                new_body=edit.new_body,
+                revision=edit.revision,
+                sender=row.sender,
+                sender_name=sender_name,
+                timestamp=edit.timestamp,
+            ),
+            room_seq=row.seq,
+            message_key=row.event_id,
+        )
+
+    return own_event
+
+
 def _bind(
     recipient: AgentRecipient,
     after: Callable[[InboundEvent], Awaitable[None]],
@@ -1127,6 +1157,8 @@ class MessageRouter:
         if isinstance(event, InboundMedia):
             return await self._decide_file(session, reads, recipients, event)
         if isinstance(event, InboundCustomEvent):
+            if event.event_type == MESSAGE_EDIT_EVENT_TYPE:
+                return await self._decide_edit(session, reads, recipients, event)
             return await self._decide_custom(recipients, event)
         assert isinstance(event, InboundMessage)
         return await self._decide_message(session, reads, recipients, event)
@@ -1382,6 +1414,83 @@ class MessageRouter:
         ):
             plan.arrival = self._recipient(reads, joining)
         return plan
+
+    async def _decide_edit(
+        self,
+        session: AsyncSession,
+        reads: RoomReads,
+        recipients: list[AgentRecipient],
+        event: InboundCustomEvent,
+    ) -> _Plan:
+        """An edit is for the agents its original was for, read from the
+        original's own events and never from the addressing rules: changing
+        the mentions in a message addresses nobody new, and it starts nothing.
+
+        An edit that names no message of this room, or a message its writer
+        did not write, is for nobody. Bridges refuse those before writing;
+        this is the check every writer goes through.
+        """
+        edit = parse_edit(event.content)
+        if edit is None:
+            return _Plan()
+        original = await self._messages.get_by_transport_event_id(
+            session, edit.original_event_id
+        )
+        if (
+            original is None
+            or original.event_type != "m.room.message"
+            or original.room_id != reads.room_id
+            or edit.room != reads.room_id
+            or original.sender_id != event.sender
+            or edit.author != event.sender
+        ):
+            logger.info(
+                "Edit %s names no message of its writer's in room %s; it is for nobody",
+                event.event_id,
+                reads.room_id,
+            )
+            return _Plan()
+        if not recipients:
+            return _Plan()
+        group = parse_attachment_group(original.content)
+        rows = (
+            await session.execute(
+                select(AgentEventRow.agent_id, AgentEventRow.payload)
+                .where(
+                    # Leads with the agents so `uq_agent_events_source` serves
+                    # this, rather than a scan of the workspace's events.
+                    AgentEventRow.agent_id.in_(
+                        [recipient.agent.id for recipient in recipients]
+                    ),
+                    AgentEventRow.room_id == reads.room_id,
+                    AgentEventRow.message_key
+                    == (group[0] if group else original.transport_event_id),
+                    AgentEventRow.type == "message",
+                )
+                .order_by(AgentEventRow.seq.desc())
+            )
+        ).all()
+        # The id each agent was told the message by, which for a multi-file
+        # post is not necessarily the row this edit names.
+        told = {agent_id: stored["payload"]["message_id"] for agent_id, stored in rows}
+        return _Plan(
+            deliveries=[
+                (
+                    recipient,
+                    Delivery(
+                        own_event=_edit_own_event(
+                            reads.meta,
+                            edit,
+                            message_id=told[recipient.agent.id],
+                            sender_name=original.sender_name or event.sender,
+                        ),
+                        after=None,
+                    ),
+                )
+                for recipient in recipients
+                if recipient.agent.id in told
+            ]
+        )
 
     async def _decide_custom(
         self, recipients: list[AgentRecipient], event: InboundCustomEvent

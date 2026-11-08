@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session, Snapshot } from '@switch-console/shared/session-v1';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type ConversationHistoryTurn,
   ProviderConversationUnavailableError,
@@ -15,6 +15,7 @@ import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { Redactions } from './redaction';
+import { SharedRoomInbox } from './room-inbox';
 import { ServiceNotices } from './service-notices';
 import { connectParent, type ParentChannel } from './session-channel';
 import { parkAfterMs, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
@@ -1046,8 +1047,12 @@ it('tells the room at once when it refuses a compaction asked for there mid-turn
   const host = await start({ rooms: true });
   const asks = () =>
     host.parent.sent.filter(
-      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
-        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+      (
+        message
+      ): message is typeof message & {
+        id: number;
+        ask: Record<string, unknown>;
+      } => message.kind === 'ask' && message.ask?.type !== 'room-instructions'
     );
   try {
     expect(
@@ -1380,8 +1385,12 @@ it('posts for a room turn that ended without the agent posting, and not for one 
   const host = await start({ rooms: true });
   const asks = () =>
     host.parent.sent.filter(
-      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
-        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+      (
+        message
+      ): message is typeof message & {
+        id: number;
+        ask: Record<string, unknown>;
+      } => message.kind === 'ask' && message.ask?.type !== 'room-instructions'
     );
   const answer = (id: number, value: unknown) =>
     host.parent.port.emit('message', { kind: 'answer', id, ok: true, value });
@@ -1477,8 +1486,12 @@ it('runs a room message again on a retry asked for there, and says so when it ca
   const host = await start({ rooms: true });
   const asks = () =>
     host.parent.sent.filter(
-      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
-        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+      (
+        message
+      ): message is typeof message & {
+        id: number;
+        ask: Record<string, unknown>;
+      } => message.kind === 'ask' && message.ask?.type !== 'room-instructions'
     );
   const retry = (commandId: string): Command => ({
     ...relayed('current', commandId, { type: 'message.retry', messageId: 'message-1' }),
@@ -1529,8 +1542,12 @@ it('tells the room once when every post of a turn was refused, and not when one 
   const host = await start({ rooms: true });
   const asks = () =>
     host.parent.sent.filter(
-      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
-        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+      (
+        message
+      ): message is typeof message & {
+        id: number;
+        ask: Record<string, unknown>;
+      } => message.kind === 'ask' && message.ask?.type !== 'room-instructions'
     );
   const answer = (id: number, value: unknown) =>
     host.parent.port.emit('message', { kind: 'answer', id, ok: true, value });
@@ -1577,3 +1594,83 @@ it('tells the room once when every post of a turn was refused, and not when one 
     expect(await host.stop()).toBeNull();
   }
 }, 20000);
+
+describe('an edit to a room message', () => {
+  const edited = (sequence: number, messageId: string, body: string, revision: number) => ({
+    sequence,
+    roomId: 'room',
+    messageId: `message-edit:${messageId}:${revision}`,
+    event: {
+      type: 'message_edit',
+      payload: {
+        message_id: messageId,
+        edit_event_id: `edit-${revision}`,
+        new_body: body,
+        revision,
+        sender: '@person:test',
+        sender_name: 'A Person',
+        timestamp: sequence,
+      },
+    },
+  });
+
+  it('builds the command with the edit when both were waiting, so the replaced text never runs', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'sdk-shared-edit-'));
+    roots.push(base);
+    await mkdir(join(base, 'session'), { recursive: true });
+    const handoffs = [
+      roomMessage(1, 'Approve work order WO-SAMPLE'),
+      edited(2, 'message-1', 'Hold work order WO-SAMPLE', 1),
+      edited(3, 'message-1', 'Decline work order WO-SAMPLE', 2),
+    ];
+    await writeFile(
+      join(base, 'session', 'room-inbox.jsonl'),
+      handoffs.map((each) => `${JSON.stringify({ type: 'handoff', ...each })}\n`).join('')
+    );
+    const host = await start({ rooms: true, base });
+    try {
+      await until(() => expect(host.turns).toHaveLength(1));
+      expect(host.turns[0]!.text).toContain('Decline work order WO-SAMPLE');
+      expect(host.turns[0]!.text).not.toContain('Approve');
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(host.turns).toHaveLength(1);
+    } finally {
+      expect(await host.stop()).toBeNull();
+    }
+    const inbox = await SharedRoomInbox.open(join(base, 'session'));
+    expect(inbox.pending()).toEqual([]);
+  });
+
+  it('starts no turn for an edit of a message this session never had', async () => {
+    const host = await start({ rooms: true });
+    try {
+      expect(
+        await host.parent.ask({
+          type: 'room',
+          handoff: edited(1, 'nothing', 'x', 1),
+        })
+      ).toMatchObject({ ok: true });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(host.turns).toEqual([]);
+    } finally {
+      expect(await host.stop()).toBeNull();
+    }
+  });
+
+  it('starts no second turn for an edit of a message already answered', async () => {
+    const host = await start({ rooms: true });
+    try {
+      await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'first') });
+      await until(() => expect(host.turns).toHaveLength(1));
+      await host.parent.ask({
+        type: 'room',
+        handoff: edited(2, 'message-1', 'second', 1),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(host.turns).toHaveLength(1);
+      expect(host.turns[0]!.text).toContain('first');
+    } finally {
+      expect(await host.stop()).toBeNull();
+    }
+  });
+});
