@@ -28,5 +28,9 @@ describeConformance('kiro', {
   },
   ...(process.env['SWITCH_KIRO_MODEL'] ? { model: { id: process.env['SWITCH_KIRO_MODEL'] } } : {}),
   env: ENV,
+  skip: {
+    'user-input':
+      'kiro-cli 3.1.0 offers no ask-the-user tool over ACP: asked to use one, the model says it can only ask in chat. Checked 2026-11-08.',
+  },
   mcpServers: { echo: echoMcpServerSpec() },
 });

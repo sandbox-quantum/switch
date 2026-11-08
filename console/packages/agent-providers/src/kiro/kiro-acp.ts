@@ -40,6 +40,13 @@ export const kiroAcp: AcpProviderHooks = {
   },
   // Kiro's modes are agent configurations, not permission levels, so none is
   // set: the runtime mode is enforced on its permission requests.
+  // A sub-agent call carries `_meta.kiro.kind: 'agent-subtask'` on Kiro 3.1.0.
+  itemType: (toolCall) => {
+    const meta = (toolCall._meta as { kiro?: { kind?: unknown } } | undefined)?.kiro;
+    return meta?.kind === 'agent-subtask' || toolCall.toolCallId.startsWith('invoke_subagent_')
+      ? 'subagent'
+      : undefined;
+  },
   // Kiro 3.1.0 titles an MCP call `@<server>/<tool>` and names the server in
   // `_meta.kiro.serverName`; its permission request carries the title only.
   mcpServerOf: (toolCall) => {

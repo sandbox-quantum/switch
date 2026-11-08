@@ -104,4 +104,19 @@ describe('Kiro CLI ACP hooks', () => {
       })
     ).toBeUndefined();
   });
+
+  it('shows a sub-agent call as a subagent', () => {
+    // How Kiro 3.1.0 sends its sub-agent tool.
+    expect(
+      kiroAcp.itemType!({
+        toolCallId: 'invoke_subagent_tooluse_1',
+        title: 'Sub-agent: general-task-execution',
+        kind: 'other',
+        _meta: { kiro: { kind: 'agent-subtask', agentSubtaskId: 'a1' } },
+      })
+    ).toBe('subagent');
+    expect(
+      kiroAcp.itemType!({ toolCallId: 'run_command_1', title: 'echo hi', kind: 'execute' })
+    ).toBeUndefined();
+  });
 });
