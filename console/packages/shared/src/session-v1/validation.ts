@@ -15,6 +15,7 @@ const origin = z.strictObject({
   roomId: id.nullable(),
   threadId: id.nullable(),
   messageId: id.nullable(),
+  actorIsAgentOwner: z.boolean().optional(),
 });
 const capabilities = z.object({
   input: z.enum(['queue', 'steer']),
@@ -48,6 +49,7 @@ const item = z.strictObject({
   text: z.string(),
   attachments: z.array(attachmentSchema),
   origin: origin.nullable(),
+  delivery: z.enum(['steered', 'queued']).optional(),
 });
 const option = z.strictObject({
   optionId: id,

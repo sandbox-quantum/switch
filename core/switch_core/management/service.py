@@ -92,10 +92,12 @@ from switch_core.management.schemas import (
     assignment_entry,
     controller_release_view,
     controller_view,
+    kept_settings,
     managed_agent_view,
     operation_view,
     operation_wire,
     sealed_login_view,
+    sent_definition,
     workspaces_dir_of,
 )
 from switch_core.management.sealed_logins import PublicKey, SealedLogin, key_id
@@ -1383,6 +1385,14 @@ class ManagementService:
         """Adopt an agent the caller owns, or replace its definition and placement."""
         agent = await self._owned_agent(session, owner_id, agent_id)
         existing = await self.definitions.get_for_agent(session, tenant_id, agent_id)
+        target = _Placement(
+            controller_id=target.controller_id,
+            desired_state=target.desired_state,
+            definition=kept_settings(
+                target.definition,
+                existing.definition if existing is not None else None,
+            ),
+        )
         return await self._apply(
             session,
             tenant_id,
@@ -1417,7 +1427,7 @@ class ManagementService:
             else existing.controller_id,
             desired_state=desired_state or existing.desired_state,
             definition=(
-                definition.model_dump()
+                kept_settings(sent_definition(definition), existing.definition)
                 if definition is not None
                 else existing.definition
             ),
@@ -1742,10 +1752,11 @@ def _resume_cursors(recorded: dict[str, Any] | None) -> dict[str, int | None]:
 def placement_from(
     controller_id: str | None, desired_state: str, definition: DefinitionV1
 ) -> _Placement:
+    # Without the settings the client left out; `put_managed_agent` keeps them.
     return _Placement(
         controller_id=controller_id,
         desired_state=desired_state,
-        definition=definition.model_dump(),
+        definition=sent_definition(definition),
     )
 
 

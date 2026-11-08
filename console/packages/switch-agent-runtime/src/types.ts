@@ -41,6 +41,8 @@ export interface MessagePayload {
    * server from before `owner` merged into `admin` may still send `owner`,
    * which means `admin`. */
   sender_role?: 'admin' | 'member' | 'owner' | null;
+  /** Whether the sender is the receiving agent's owner. Absent from servers that predate the field. */
+  sender_is_owner?: boolean | null;
 }
 
 export interface CommandPayload {

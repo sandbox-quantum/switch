@@ -3,8 +3,10 @@ import {
   agentLaunchDefinitionSchema,
   controllerConnectionId,
   EXECUTION_INHERIT_ENV,
+  DEFAULT_MID_TURN_MESSAGES,
   providerRuntime,
   runtimeModeFor,
+  sessionInputFor,
   type ProviderCapabilities,
   type SharedHostConfig,
   sharedConfigSchema,
@@ -91,7 +93,13 @@ export function buildWatcherTemplate(input: {
   provider: Provider;
   definition: Pick<
     AgentDefinition,
-    'name' | 'model' | 'advanced_config' | 'instructions' | 'auto_approve' | 'auto_mode'
+    | 'name'
+    | 'model'
+    | 'advanced_config'
+    | 'instructions'
+    | 'auto_approve'
+    | 'auto_mode'
+    | 'mid_turn_messages'
   >;
   cwd: string;
   credentialsPath: string;
@@ -116,7 +124,14 @@ export function buildWatcherTemplate(input: {
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        // Steering where the provider can and the agent is set to; a setting
+        // this build does not know queues, as every session did before.
+        input: sessionInputFor(
+          capabilities,
+          (input.definition.mid_turn_messages ?? DEFAULT_MID_TURN_MESSAGES) === 'steer'
+            ? 'steer'
+            : 'queue'
+        ),
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,

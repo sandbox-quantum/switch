@@ -163,6 +163,12 @@ async function start(
     developerMessages?: string[];
     /** The session continues a conversation started outside Switch, which had these turns. */
     continuing?: ConversationHistoryTurn[];
+    /**
+     * The provider steers, and so does the session: a message sent while a
+     * turn runs joins it (reported through `steeredInto`) until that turn
+     * is completed through `emit`.
+     */
+    steering?: boolean;
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
@@ -180,7 +186,9 @@ async function start(
   const turns: Harness['turns'] = [];
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
   let live = false;
-  const emit = (event: Record<string, unknown>) =>
+  let runningTurn: string | null = null;
+  const emit = (event: Record<string, unknown>) => {
+    if (event.type === 'turn.completed' && event.turnId === runningTurn) runningTurn = null;
     listener({
       ...event,
       sessionId: 'session',
@@ -188,11 +196,12 @@ async function start(
       eventId: randomUUID(),
       createdAt: new Date().toISOString(),
     } as ProviderRuntimeEvent);
+  };
   const adapter: ProviderAdapter = {
     provider: 'claude',
     capabilities: {
       resume: true,
-      steering: false,
+      steering: opts.steering ?? false,
       approvals: true,
       userInput: true,
       modelSwitchInSession: false,
@@ -210,6 +219,8 @@ async function start(
     }),
     sendTurn: vi.fn(async ({ turnId, text, attachments }) => {
       turns.push({ turnId, text, attachments: attachments ?? [] });
+      if (opts.steering && runningTurn !== null) return { turnId, steeredInto: runningTurn };
+      if (opts.steering) runningTurn = turnId;
       emit({ type: 'turn.started', turnId });
       if (opts.ask === 'questions')
         emit({
@@ -300,6 +311,7 @@ async function start(
   const session = structuredClone(SESSION);
   if (opts.rooms) session.capabilities.attachmentMimeTypes = ['text/plain'];
   if (opts.resettable) session.capabilities.reset = true;
+  if (opts.steering) session.capabilities.input = 'steer';
   const channel = connectParent(parent.port);
   const running = runSharedHost(
     {
@@ -1004,6 +1016,113 @@ it('reports what an ended turn spent on its row, and the row alone to a server t
     await host.stop();
   }
 }, 20000);
+
+/** A room message from `sender`, with the rest of its payload as given. */
+const roomMessageFrom = (
+  sequence: number,
+  body: string,
+  sender: string,
+  payload: Record<string, unknown> = {}
+) => {
+  const message = roomMessage(sequence, body);
+  return {
+    ...message,
+    event: { ...message.event, payload: { ...message.event.payload, sender, ...payload } },
+  };
+};
+
+/** The user-message rows the host reported, as `[turn, delivery]`. */
+const userRows = (host: Harness) =>
+  host.switchCore.calls
+    .filter(
+      (c) => c.path.endsWith('/activity') && (c.body as { kind: string }).kind === 'user-message'
+    )
+    .map((c) => {
+      const row = c.body as { turn_id: string; delivery?: string };
+      return [row.turn_id, row.delivery ?? null];
+    });
+
+it('steers a room message from whoever started the turn into it, and queues anyone else', async () => {
+  const host = await start({ rooms: true, steering: true });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Build it') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const running = host.turns[0]!.turnId;
+
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'In blue, please') });
+    await until(() => expect(host.turns).toHaveLength(2));
+    expect(host.turns[1]!.text).toContain('In blue, please');
+
+    await host.parent.ask({
+      type: 'room',
+      handoff: roomMessageFrom(3, 'Make it red', '@someone-else:test'),
+    });
+    await until(() => expect(userRows(host)).toHaveLength(3));
+    expect(userRows(host)).toEqual([
+      [running, null],
+      [running, 'steered'],
+      [expect.not.stringMatching(running), 'queued'],
+    ]);
+    // Not handed to the provider until the turn it waits behind has ended.
+    expect(host.turns).toHaveLength(2);
+    host.emit({ type: 'turn.completed', turnId: running, outcome: 'completed', usage: [] });
+    await until(() => expect(host.turns).toHaveLength(3));
+    expect(host.turns[2]!.text).toContain('Make it red');
+  } finally {
+    await host.stop();
+  }
+});
+
+it("steers the agent owner's room message into a turn someone else started", async () => {
+  const host = await start({ rooms: true, steering: true });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Build it') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({
+      type: 'room',
+      handoff: roomMessageFrom(2, 'Stop and use the staging data', '@owner:test', {
+        sender_is_owner: true,
+      }),
+    });
+    await until(() => expect(host.turns).toHaveLength(2));
+    await until(() => expect(userRows(host)).toHaveLength(2));
+    expect(userRows(host)[1]).toEqual([host.turns[0]!.turnId, 'steered']);
+  } finally {
+    await host.stop();
+  }
+});
+
+it('queues every mid-turn room message when the session does not steer', async () => {
+  const host = await start({ rooms: true });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Build it') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'In blue, please') });
+    await until(() => expect(userRows(host)).toHaveLength(2));
+    expect(userRows(host)[1]![1]).toBe('queued');
+    expect(host.turns).toHaveLength(1);
+  } finally {
+    await host.stop();
+  }
+});
+
+it('reports a steered message without its mark to a server that predates the mark', async () => {
+  const host = await start({ rooms: true, steering: true });
+  try {
+    host.switchCore.state.refusesDelivery = true;
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Build it') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'In blue, please') });
+    await until(() => expect(userRows(host)).toHaveLength(3));
+    // Refused with the mark, then taken without it, in the turn it joined.
+    expect(userRows(host).slice(1)).toEqual([
+      [host.turns[0]!.turnId, 'steered'],
+      [host.turns[0]!.turnId, null],
+    ]);
+  } finally {
+    await host.stop();
+  }
+});
 
 it('tells the session to rejoin its room once a reset asked for there has applied', async () => {
   const host = await start({ resettable: true });

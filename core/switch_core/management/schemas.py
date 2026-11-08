@@ -36,6 +36,12 @@ Provider = AgentProviderId
 ControllerKind = Literal["console", "daemon", "ec2"]
 DesiredState = Literal["running", "stopped"]
 Isolation = Literal["shared", "isolated"]
+# What a session does with a message sent while a turn is running: `steer`
+# delivers it into the running turn, where the provider can and the sender may
+# (the person who started the turn, or the agent's owner); `queue` always runs
+# it as a turn of its own once the running one ends.
+MidTurnMessages = Literal["steer", "queue"]
+DEFAULT_MID_TURN_MESSAGES: MidTurnMessages = "steer"
 
 MAX_INSTRUCTIONS_BYTES = 32 * 1024
 MAX_CONTROLLER_NAME_CHARS = 200
@@ -91,6 +97,10 @@ class DefinitionV1(_GatewayBody):
     auto_mode: bool = True
     # Bypass: every permission check skipped. Wins over `auto_mode`.
     auto_approve: bool = False
+    # Messages sent mid-turn steer the running turn by default. A client that
+    # predates the setting leaves it out, and the stored one is kept
+    # (`sent_definition`, `kept_settings`).
+    mid_turn_messages: MidTurnMessages = DEFAULT_MID_TURN_MESSAGES
     directory: str | None = None
     # `shared`: the agent host runs inside its machine's controller.
     # `isolated`: it runs as a process of its own (a systemd unit on a cloud
@@ -442,8 +452,45 @@ class CreateOperationRequest(_GatewayBody):
 
 def stored_definition(definition: dict[str, Any]) -> dict[str, Any]:
     """A stored v1 definition with the fields it may predate filled in as they
-    read: a definition saved before `auto_mode` existed has it off."""
-    return {**definition, "auto_mode": definition.get("auto_mode", False)}
+    read: a definition saved before `auto_mode` existed has it off, and one
+    saved before `mid_turn_messages` steers, the default."""
+    return {
+        **definition,
+        "auto_mode": definition.get("auto_mode", False),
+        "mid_turn_messages": definition.get(
+            "mid_turn_messages", DEFAULT_MID_TURN_MESSAGES
+        ),
+    }
+
+
+# Settings a definition keeps as stored when a client leaves them out. A
+# client built before one existed sends every field it knows and none it does
+# not, and replacing the definition with what it sent would quietly put the
+# setting back to its default each time that client saved the agent.
+KEPT_UNLESS_SENT: tuple[str, ...] = ("mid_turn_messages",)
+
+
+def sent_definition(definition: DefinitionV1) -> dict[str, Any]:
+    """A client's definition as it is stored, without any kept setting the
+    client left out: `kept_settings` fills those in from what is stored."""
+    dumped = definition.model_dump()
+    for key in KEPT_UNLESS_SENT:
+        if key not in definition.model_fields_set:
+            dumped.pop(key, None)
+    return dumped
+
+
+def kept_settings(
+    definition: dict[str, Any], stored: dict[str, Any] | None
+) -> dict[str, Any]:
+    """`definition` with each kept setting it lacks taken from the stored
+    definition, or set to its default when there is none to keep."""
+    filled = dict(definition)
+    if "mid_turn_messages" not in filled:
+        filled["mid_turn_messages"] = (stored or {}).get(
+            "mid_turn_messages", DEFAULT_MID_TURN_MESSAGES
+        )
+    return filled
 
 
 def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
@@ -468,6 +515,9 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "instructions": definition.get("instructions", ""),
             "auto_mode": definition.get("auto_mode", False),
             "auto_approve": definition.get("auto_approve", False),
+            "mid_turn_messages": definition.get(
+                "mid_turn_messages", DEFAULT_MID_TURN_MESSAGES
+            ),
             "directory": definition.get("directory"),
             "isolation": definition.get("isolation", "shared"),
         },

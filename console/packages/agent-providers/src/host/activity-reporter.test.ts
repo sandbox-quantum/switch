@@ -170,6 +170,37 @@ it('reports every message and tool item, streamed parts included, as its own row
     ['answer:part:1', 'assistant-message', 3, 'in-progress', '', 'more'],
   ]);
   expect(reported[0]).toMatchObject({ turn_id: 'turn', command_id: null, ...placed });
+  // Nothing says how a message was delivered unless the host marked it.
+  expect(reported.every((row) => !('delivery' in row))).toBe(true);
+});
+
+it('says whether a message sent mid-turn was steered into the turn or queued', async () => {
+  const lines = await reporter();
+  const user = (itemId: string, delivery: 'steered' | 'queued') =>
+    item({ itemId, kind: 'user-message', status: 'completed', title: '', text: 'And X', delivery });
+  const reported = rows(
+    [event(1, user('user-steered', 'steered')), event(2, user('user-queued', 'queued'))].flatMap(
+      (e) => lines.reports(e, originOf, noUsage)
+    )
+  );
+  expect(reported.map((row) => [row.item_id, row.delivery])).toEqual([
+    ['user-steered', 'steered'],
+    ['user-queued', 'queued'],
+  ]);
+  // A steered message is drawn in the running turn, so it is placed where that turn was asked.
+  expect(reported[0]).toMatchObject({ turn_id: 'turn', ...placed });
+});
+
+it('never puts a delivery mark on anything but a user message', async () => {
+  const lines = await reporter();
+  const [row] = rows(
+    lines.reports(
+      event(1, item({ kind: 'assistant-message', delivery: 'steered' })),
+      originOf,
+      noUsage
+    )
+  );
+  expect(row).not.toHaveProperty('delivery');
 });
 
 it('truncates long titles and texts', async () => {

@@ -160,6 +160,41 @@ describe('session-v1 wire contract', () => {
     expect(replica.snapshot().requests[0].state).toBe('closed');
     expect(replica.snapshot().requests[0].decidedBy).toBeNull();
   });
+  it('reads how a message sent mid-turn was delivered and who sent it', () => {
+    // The Python case of the same name reads the same shapes.
+    const userMessage = (extra: Record<string, unknown>, owner: boolean) =>
+      parseHostEvent({
+        ...examples.hostRequest,
+        body: {
+          type: 'item.upsert',
+          item: {
+            itemId: 'user-steer',
+            turnId: 'turn-demo',
+            revision: 1,
+            kind: 'user-message',
+            status: 'completed',
+            title: '',
+            text: 'In blue, please',
+            attachments: [],
+            origin: {
+              surface: 'switch-web',
+              actorId: '@owner:test',
+              roomId: 'room',
+              threadId: null,
+              messageId: 'm2',
+              ...(owner ? { actorIsAgentOwner: true } : {}),
+            },
+            ...extra,
+          },
+        },
+      }).body;
+    expect(userMessage({ delivery: 'steered' }, true)).toMatchObject({
+      item: { delivery: 'steered', origin: { actorIsAgentOwner: true } },
+    });
+    // Both are optional: a host that predates them is read as before.
+    expect(userMessage({}, false)).toMatchObject({ item: { origin: { actorId: '@owner:test' } } });
+    expect(() => userMessage({ delivery: 'interrupted' }, false)).toThrow();
+  });
 });
 
 describe('session-v1 client transport', () => {

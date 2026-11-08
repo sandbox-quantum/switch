@@ -3,6 +3,7 @@ export type {
   ConversationHistoryItem,
   ConversationHistoryTurn,
   HttpMcpServerSpec,
+  MidTurnMessages,
   McpServerSpec,
   ModelSelection,
   ProviderAdapter,
@@ -15,7 +16,13 @@ export type {
   StdioMcpServerSpec,
   TurnAttachment,
 } from './adapter';
-export { ProviderSessionError, ProviderUnavailableError, runtimeModeFor } from './adapter';
+export {
+  DEFAULT_MID_TURN_MESSAGES,
+  ProviderSessionError,
+  ProviderUnavailableError,
+  runtimeModeFor,
+  sessionInputFor,
+} from './adapter';
 export type { ClaudeAdapterLogger, ClaudeAdapterOptions } from './claude/claude-adapter';
 export { ClaudeAdapter, createClaudeAdapter } from './claude/claude-adapter';
 export type {

@@ -272,6 +272,10 @@ class MessagePayload(BaseModel):
     # arrived: "admin" or "member". None for an agent, the platform,
     # or a person no Switch user has claimed.
     sender_role: str | None = None
+    # Whether the sending person is the receiving agent's owner, read as the
+    # message arrived. A session uses it to let the owner steer a turn someone
+    # else started. False for an agent, the platform, or an unclaimed person.
+    sender_is_owner: bool = False
     # What Switch has to tell the agent before this message, such as that
     # its template has a new revision it was not brought fully up to; told
     # with every message until the agent reads about it. None for nothing.

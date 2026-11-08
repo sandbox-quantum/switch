@@ -35,6 +35,10 @@ export type Agent = {
    * without asking, risky ones still ask. On for new agents, off for agents
    * that predate it; editable per agent. */
   autoMode: boolean;
+  /** What a message sent while a turn runs does: `steer` joins the running
+   * turn (from whoever started it, or from you) where the provider can, and
+   * `queue` waits for a turn of its own. Steers unless set otherwise. */
+  midTurnMessages: MidTurnMessages;
   /** The agent's owner on the Switch server, set when the agent was loaded from
    * another install. Null for agents this Console created. */
   ownerName: string | null;
@@ -65,6 +69,9 @@ export type CreateAgentParams = {
   /** Optional per-agent provider config set at creation. */
   providerConfig?: AgentProviderConfig | null;
 };
+
+/** How an agent's sessions take a message sent while a turn is running. */
+export type MidTurnMessages = 'steer' | 'queue';
 
 /** The permission settings a new agent starts with, wherever it runs: the
  * provider's auto mode on, bypass off. */

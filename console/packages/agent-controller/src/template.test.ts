@@ -227,6 +227,29 @@ describe('buildWatcherTemplate', () => {
     expect(codex.session.capabilities).toMatchObject({ approvals: true, questions: false });
     expect(claude.session.capabilities).toMatchObject({ approvals: true, questions: true });
   });
+
+  it('steers mid-turn messages by default where the provider can, and queues where it cannot', () => {
+    const input = (provider: (typeof PROVIDERS)[number], midTurn?: 'steer' | 'queue' | 'unknown') =>
+      buildWatcherTemplate({
+        agentId: 'agent-1',
+        provider,
+        definition:
+          midTurn === undefined ? definition : { ...definition, mid_turn_messages: midTurn },
+        cwd: '/w',
+        credentialsPath: '/c',
+        binaryPath: null,
+      }).session.capabilities.input;
+    // A definition from a server older than the setting steers, the default.
+    expect(input('claude')).toBe('steer');
+    expect(input('codex', 'steer')).toBe('steer');
+    expect(input('opencode', 'steer')).toBe('steer');
+    expect(input('claude', 'queue')).toBe('queue');
+    // A setting this build does not know queues, as every session did before.
+    expect(input('claude', 'unknown')).toBe('queue');
+    // These providers cannot steer, whatever the agent is set to.
+    expect(input('cursor', 'steer')).toBe('queue');
+    expect(input('antigravity', 'steer')).toBe('queue');
+  });
 });
 
 describe('advancedConfigDefinitionProblem', () => {

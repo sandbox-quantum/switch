@@ -1157,3 +1157,109 @@ class TestWhatTheOwnerMayDo:
         # nothing, which its `revoked_at` says.
         assert revoked["revoked_at"] is not None
         assert (revoked["can_edit"], revoked["can_remove"]) == (True, True)
+
+
+class TestMidTurnMessages:
+    """Whether a managed agent's sessions steer the running turn with a message
+    sent mid-turn or always queue it: steer by default, and kept as stored
+    when a client that predates the setting saves the agent without it."""
+
+    async def _assignment(
+        self, client: httpx.AsyncClient, controller: EnrolledController
+    ) -> dict[str, dict[str, object]]:
+        response = await client.get(
+            f"/v1/management/controllers/{controller.controller_id}/assignment",
+            headers=controller.headers,
+        )
+        assert response.status_code == 200, response.text
+        return {entry["agent_id"]: entry for entry in response.json()["agents"]}
+
+    async def test_a_new_agent_steers_and_its_machine_is_told(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, ada, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            viewed = await client.get(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(ada)
+            )
+            assigned = await self._assignment(client, controller)
+
+        assert created.status_code == 201, created.text
+        assert viewed.json()["definition"]["mid_turn_messages"] == "steer"
+        assert assigned[agent_id]["definition"]["mid_turn_messages"] == "steer"  # type: ignore[index]
+
+    async def test_an_older_client_saving_the_agent_keeps_it_as_set(
+        self, harness: Harness
+    ) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client,
+                ada,
+                name="reviewer",
+                controller_id=controller.controller_id,
+                definition_body=definition(mid_turn_messages="queue"),
+            )
+            agent_id = created.json()["agent_id"]
+            url = f"/gateway/management/agents/{agent_id}"
+
+            async def stored() -> object:
+                viewed = await client.get(url, cookies=cookies_for(ada))
+                return viewed.json()["definition"]["mid_turn_messages"]
+
+            queued = await stored()
+            # `definition()` has no mid_turn_messages: a client from before it.
+            patched = await client.patch(
+                url,
+                json={"definition": definition(model="opus")},
+                cookies=cookies_for(ada),
+            )
+            after_patch = await stored()
+            put = await client.put(
+                url,
+                json={
+                    "controller_id": controller.controller_id,
+                    "desired_state": "running",
+                    "definition": definition(),
+                },
+                cookies=cookies_for(ada),
+            )
+            after_put = await stored()
+            turned = await client.patch(
+                url,
+                json={"definition": definition(mid_turn_messages="steer")},
+                cookies=cookies_for(ada),
+            )
+            after_turn = await stored()
+            assigned = await self._assignment(client, controller)
+
+        assert queued == "queue"
+        assert patched.status_code == 200, patched.text
+        assert after_patch == "queue"
+        assert put.status_code == 200, put.text
+        assert after_put == "queue"
+        assert turned.status_code == 200, turned.text
+        assert after_turn == "steer"
+        assert assigned[agent_id]["definition"]["mid_turn_messages"] == "steer"  # type: ignore[index]
+
+    async def test_a_setting_that_is_neither_is_refused(self, harness: Harness) -> None:
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, ada)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client,
+                ada,
+                name="reviewer",
+                controller_id=controller.controller_id,
+                definition_body=definition(mid_turn_messages="interrupt"),
+            )
+        assert created.status_code == 422

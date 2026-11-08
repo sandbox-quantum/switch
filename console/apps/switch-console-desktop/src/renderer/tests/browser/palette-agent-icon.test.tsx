@@ -40,6 +40,7 @@ const AGENT: Agent = {
   status: null,
   autoApprove: false,
   autoMode: false,
+  midTurnMessages: 'steer',
   ownerName: null,
   providerConfig: null,
   createdAt: '2026-01-01T00:00:00.000Z',

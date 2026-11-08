@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { versionedJsonColumn } from '@main/db/versioned-column';
 import { agentProviderConfig } from '@shared/core/agents/agent-provider-config';
+import type { MidTurnMessages } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sessionConfig } from '@shared/core/sessions/session-config';
 import type { OrganizationRole, WorkspaceRole } from '@shared/core/workspaces/workspaces';
@@ -235,6 +236,11 @@ export const agents = sqliteTable(
     // without asking, risky ones still ask. The column defaults false so rows
     // that predate it keep their behaviour; every create path sets it.
     autoMode: integer('auto_mode', { mode: 'boolean' }).notNull().default(false),
+    // What a message sent while a turn runs does: 'steer' joins the running
+    // turn where the provider can, 'queue' waits for a turn of its own. Steers
+    // by default, for agents that predate it too. Editable per agent in
+    // location settings.
+    midTurnMessages: text('mid_turn_messages').$type<MidTurnMessages>().notNull().default('steer'),
     // The display name of the agent's owner on the Switch server, set when the
     // agent was loaded from another install rather than created here.
     ownerName: text('owner_name'),

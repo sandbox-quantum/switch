@@ -2,7 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '@main/db/client';
 import { agents } from '@main/db/schema';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
-import type { Agent } from '@shared/core/agents/agents';
+import type { Agent, MidTurnMessages } from '@shared/core/agents/agents';
 import { agentEvents } from './agent-events';
 import { mapAgentRow } from './utils';
 
@@ -14,6 +14,7 @@ export type UpdateAgentParams = {
   workspaceId?: string;
   autoApprove?: boolean;
   autoMode?: boolean;
+  midTurnMessages?: MidTurnMessages;
   /** Null clears the agent's specialization, putting it back on provider defaults. */
   providerConfig?: AgentProviderConfig | null;
 };
@@ -28,6 +29,7 @@ export async function updateAgent(params: UpdateAgentParams): Promise<Agent | un
   if (params.workspaceId !== undefined) set.workspaceId = params.workspaceId;
   if (params.autoApprove !== undefined) set.autoApprove = params.autoApprove;
   if (params.autoMode !== undefined) set.autoMode = params.autoMode;
+  if (params.midTurnMessages !== undefined) set.midTurnMessages = params.midTurnMessages;
   if (params.providerConfig !== undefined) set.providerConfig = params.providerConfig;
 
   const [row] = await db.update(agents).set(set).where(eq(agents.id, params.agentId)).returning();

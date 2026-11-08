@@ -6,7 +6,14 @@ import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import type { ChatActivityItem, ChatApproval } from '@shared/core/chats/activity';
 import { reasoningLabel } from '@shared/core/sessions/reasoning';
-import { isThinking, toolState, type TurnActivity, turnTools } from '../activity-join';
+import {
+  isThinking,
+  queuedLabel,
+  steeredLabel,
+  toolState,
+  type TurnActivity,
+  turnTools,
+} from '../activity-join';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import { Reasoning } from '../ui/reasoning';
 import { FailedIcon, ThinkingIcon, ToolKindIcon, WorkLogDetails, WorkLogRow } from '../ui/work-log';
@@ -139,7 +146,8 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     turn.status === 'interrupted' ||
     turn.status === 'error' ||
     turn.requests.length > 0 ||
-    turnWarnings(turn).length > 0
+    turnWarnings(turn).length > 0 ||
+    steeredLabel(turn) !== null
   );
 }
 
@@ -176,6 +184,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   const thinking = isThinking(turn) && !(label && !reasoning?.completedAt);
   const ended = turn.status === 'interrupted' || turn.status === 'error';
   const requests = turn.requests;
+  const steered = steeredLabel(turn);
   if (!turnShown(activity, turn)) return null;
   return (
     <AgentRow
@@ -204,10 +213,13 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           tone="passive"
         />
       ))}
+      {steered && (
+        <WorkLogRow icon={<ToolKindIcon kind="switch" />} label={steered} tone="passive" />
+      )}
       {thinking && (
         <WorkLogRow
           icon={<ThinkingIcon />}
-          label={turn.status === 'queued' ? 'Queued…' : 'Thinking…'}
+          label={turn.status === 'queued' ? queuedLabel(turn) : 'Thinking…'}
           active
         />
       )}
