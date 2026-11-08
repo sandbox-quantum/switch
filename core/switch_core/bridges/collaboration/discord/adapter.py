@@ -48,6 +48,12 @@ from switch_core.bridges.collaboration.discord.slash import (
     build_app_commands,
     reassemble_args,
 )
+from switch_core.bridges.collaboration.discord.ui_embeds import (
+    card_custom_id,
+    escape_card_text,
+    parse_card_custom_id,
+    ui_spec_to_message,
+)
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -89,6 +95,7 @@ from switch_core.room_wide_mention import (
     defuse_mass_mention_words_in_prose,
 )
 from switch_core.sessions.contract import TURN_ENDED
+from switch_core.ui_spec import UI_ACTION_PREFIX, UISpec
 
 logger = logging.getLogger(__name__)
 
@@ -278,12 +285,16 @@ def _parse_interrupt_id(custom_id: str) -> str | None:
 def _press_action(custom_id: str) -> tuple[str, str] | None:
     """The Switch action a press carries and what it names, or None if not ours.
 
-    Two buttons arrive here and they name different things — a card's option
-    names the card, a stop names the turn — but they leave by the same door,
-    because what happens next is the same for both: acknowledge inside
+    Three buttons arrive here and they name different things — a request
+    card's option names the card, a stop names the turn, an agent card's
+    button names itself — but they leave by the same door,
+    because what happens next is the same for all: acknowledge inside
     Discord's three seconds, then hand the press to the shared inbound path and
     tell the presser alone whatever comes back.
     """
+    card_button = parse_card_custom_id(custom_id)
+    if card_button is not None:
+        return card_button
     turn_id = _parse_interrupt_id(custom_id)
     if turn_id is not None:
         return INTERRUPT_ACTION, turn_id
@@ -670,6 +681,9 @@ class DiscordAdapter(PlatformAdapter):
         # Of those, the ones this application created — the only ones Discord
         # will let carry buttons. See `_application_owns`.
         self._owned_webhooks: set[int] = set()
+        # The press on an agent card's button, by message ref, held while the
+        # press is handled so `settle_card_press` can redraw that message.
+        self._pressed_cards: dict[str, discord.Interaction] = {}
         self._seen_ids: OrderedDict[int, None] = OrderedDict()
         self._seen_ids_max = 1000
         # Discord user id ↔ username caches, for mention translation both ways.
@@ -953,6 +967,121 @@ class DiscordAdapter(PlatformAdapter):
             ),
             where=f"channel {channel_id}",
         )
+
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """The card as embeds and buttons (`ui_spec_to_message`) under
+        `fallback_text` as the message's content: the content is what a
+        notification previews and the only part of a message whose mentions
+        notify, so it stays even where it repeats the card. Raises before
+        posting when the card or the text does not fit one Discord message, so
+        the caller posts the text alone."""
+        target = await self._get_channel(int(channel_id))
+        lobby = self._channel_type_of(target) == "lobby"
+        content = (
+            f"**{await self.agent_label_for_body(sender_name)}**: {fallback_text}"
+            if lobby
+            else fallback_text
+        )
+        if len(content) > MAX_MESSAGE:
+            raise ValueError(
+                f"the card's text is {len(content)} characters, over Discord's "
+                f"{MAX_MESSAGE}"
+            )
+        allowed_mentions = _ROOM_WIDE_MENTION if room_wide_mention else NO_MASS_MENTIONS
+        presses = self._on_interaction is not None
+        if lobby:
+            # The bot's own message, which may always carry buttons.
+            embeds, view = ui_spec_to_message(spec, interactive=presses)
+            sent = await target.send(
+                content,
+                embeds=embeds,
+                allowed_mentions=allowed_mentions,
+                **({} if view is None else {"view": view}),
+            )
+            return f"{sent.channel.id}:{sent.id}"
+
+        webhook = await self._get_webhook(int(channel_id))
+        embeds, view = ui_spec_to_message(
+            spec, interactive=presses and webhook.id in self._owned_webhooks
+        )
+        payload: dict[str, Any] = {
+            "content": content,
+            "embeds": embeds,
+            "allowed_mentions": allowed_mentions,
+            "wait": True,
+        }
+        if view is not None:
+            payload["view"] = view
+        if thread_root_id:
+            try:
+                payload["thread"] = await self._ensure_thread(
+                    int(channel_id), thread_root_id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to resolve Discord thread for root %s — posting at channel root",
+                    thread_root_id,
+                )
+        agent = await self.agent_rendering(sender_name)
+        payload["avatar_url"] = agent.icon_url
+        sent = await _WebhookIdentity(agent.field_label, sender_name).send(
+            webhook, payload
+        )
+        return f"{sent.channel.id}:{sent.id}"
+
+    async def settle_card_press(
+        self, interaction: InboundInteraction, label: str
+    ) -> None:
+        """Take the pressed button's row off the card and say who chose what,
+        so the same choice cannot be made twice. Edited through the press
+        itself, which reaches a webhook's message and the bot's alike."""
+        ref = interaction.message_ref
+        press = self._pressed_cards.get(ref) if ref is not None else None
+        if press is None or press.message is None:
+            logger.warning(
+                "Cannot mark the card press in %s as done: no press is held for "
+                "message %s, so its buttons stay pressable",
+                interaction.channel_id,
+                ref,
+            )
+            return
+        message = press.message
+        pressed = card_custom_id(interaction.action_id, interaction.value)
+        view = discord.ui.View.from_message(message, timeout=None)
+        rows = {
+            item.row
+            for item in view.children
+            if getattr(item, "custom_id", None) == pressed
+        }
+        for item in list(view.children):
+            if item.row in rows:
+                view.remove_item(item)
+        view.stop()
+        chosen = discord.utils.escape_markdown(
+            f"✅ {escape_card_text(interaction.sender_name)} chose "
+            f"{escape_card_text(label)}"
+        )
+        try:
+            await press.edit_original_response(
+                embeds=[*message.embeds, discord.Embed(description=chosen)],
+                view=view,
+            )
+        except (discord.HTTPException, ValueError) as error:
+            logger.warning(
+                "Discord refused to mark the card press on %s as done (%s), so "
+                "its buttons stay pressable",
+                ref,
+                error,
+            )
 
     async def _send_chunked(
         self,
@@ -3125,6 +3254,12 @@ class DiscordAdapter(PlatformAdapter):
         parent_id = getattr(channel, "parent_id", None)
         channel_id = str(parent_id if parent_id is not None else channel.id)
 
+        message_ref = f"{channel.id}:{message.id}"
+        card_ref = message_ref if action_id.startswith(UI_ACTION_PREFIX) else None
+        if card_ref is not None:
+            # shortcut: two presses on one card at once share this slot, so one
+            # may leave its buttons pressable; key by press if that matters.
+            self._pressed_cards[card_ref] = interaction
         notices: list[str] = []
         held = _PRESS_NOTICE.set(notices)
         try:
@@ -3135,11 +3270,13 @@ class DiscordAdapter(PlatformAdapter):
                     sender_name=name,
                     action_id=action_id,
                     value=value,
-                    message_ref=f"{channel.id}:{message.id}",
+                    message_ref=message_ref,
                 )
             )
         finally:
             _PRESS_NOTICE.reset(held)
+            if card_ref is not None:
+                self._pressed_cards.pop(card_ref, None)
         if notices:
             await self._tell_presser(interaction, notices[0])
 
