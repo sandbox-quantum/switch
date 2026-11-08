@@ -27,7 +27,7 @@ process.stdin.on('data', (chunk) => {
     if (message.method === 'initialize')
       reply({ result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [{ id: 'kiro-login' }] } });
     else if (process.env.FAKE_KIRO_SIGNED_OUT)
-      reply({ error: { code: -32000, message: 'Authentication required.' } });
+      reply({ error: { code: -32000, message: 'Authentication required. Not logged in. Set the KIRO_API_KEY environment variable or run kiro-cli login first.' } });
     else if (message.method === 'session/list') reply({ result: { sessions: [] } });
     else reply({ error: { code: -32601, message: 'Method not found' } });
   }
@@ -79,6 +79,7 @@ describe('Kiro CLI ACP hooks', () => {
     const { result, calls } = await check({ FAKE_KIRO_SIGNED_OUT: '1' });
     expect(result.status).toBe('unauthenticated');
     expect(result.message).toContain('kiro-cli login');
+    expect(result.message).toContain('KIRO_API_KEY');
     expect(calls).toEqual(['initialize', 'session/list']);
   });
 });

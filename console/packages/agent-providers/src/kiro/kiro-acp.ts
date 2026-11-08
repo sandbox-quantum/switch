@@ -4,6 +4,7 @@ import { readiness, signInWith } from '../readiness';
 import { JsonRpcError } from '../transport/stdio-json-rpc';
 
 const KIRO_LOGIN = 'kiro-cli login';
+const KIRO_SIGN_IN = `${signInWith(KIRO_LOGIN)} Or set KIRO_API_KEY to a key from app.kiro.dev.`;
 // ACP's `auth_required`, which Kiro answers every request after `initialize` with while signed out.
 const AUTH_REQUIRED = -32000;
 
@@ -24,15 +25,15 @@ export const kiroAcp: AcpProviderHooks = {
   // Kiro reads its saved login first, then KIRO_API_KEY.
   inheritEnv: ['KIRO_API_KEY'],
   // `initialize` lists `kiro-login` signed in or out, and that method only
-  // tells a person to run `kiro-cli login`. A read-only `session/list` is
-  // refused with `auth_required` while Kiro holds no login.
+  // tells a person to run `kiro-cli login`. Kiro 3.1.0 refuses a read-only
+  // `session/list` with `auth_required` while it holds no login or key.
   checkSignIn: async ({ handshake, request }) => {
     await handshake();
     try {
       await request('session/list', {});
     } catch (error) {
       if (error instanceof JsonRpcError && error.code === AUTH_REQUIRED)
-        return readiness('unauthenticated', signInWith(KIRO_LOGIN));
+        return readiness('unauthenticated', KIRO_SIGN_IN);
       throw error;
     }
     return readiness('authenticated', 'Signed in to Kiro.');
