@@ -691,6 +691,28 @@ async def test_a_queued_turns_stop_control_follows_the_running_turn(
     await platform.wait_until(lambda: queued_names()[-1] == "turn-2")
 
 
+async def test_a_queued_turn_withdrawn_before_it_started_is_redrawn_as_cancelled(
+    service, publisher, platform, bridged
+):
+    await _turn(service, bridged.room_id, "running", 1, turn_id="turn-1")
+    await _turn(service, bridged.room_id, "queued", 1, turn_id="turn-2")
+    await platform.wait_until(lambda: len(_turns(platform)) >= 2)
+
+    def drawn_turn_2():
+        return [
+            d.content for d in _turns(platform) if d.content.turn.turn_id == "turn-2"
+        ]
+
+    assert drawn_turn_2()[-1].interrupt_turn_id == "turn-1"
+    await _turn(service, bridged.room_id, "cancelled", 2, turn_id="turn-2")
+    await platform.wait_until(lambda: drawn_turn_2()[-1].turn.status == "cancelled")
+
+    # Ended, so the stop control comes off it; never started, so no clock.
+    last = drawn_turn_2()[-1]
+    assert last.interrupt_turn_id is None
+    assert last.elapsed_seconds is None
+
+
 async def test_a_press_on_a_turns_message_finds_its_turn(
     service, publisher, platform, bridged
 ):

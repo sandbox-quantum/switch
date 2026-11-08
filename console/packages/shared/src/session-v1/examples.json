@@ -196,5 +196,36 @@
       "commandId": null,
       "result": null
     }
+  },
+  "platformCancel": {
+    "contractVersion": 1,
+    "commandId": "cancel-demo",
+    "sessionId": "session-demo",
+    "epoch": "epoch-demo",
+    "origin": {
+      "surface": "mattermost",
+      "actorId": "actor-demo",
+      "roomId": "room-demo",
+      "threadId": "thread-demo",
+      "messageId": "message-cancel"
+    },
+    "body": {
+      "type": "turn.cancel",
+      "turnId": "turn-queued"
+    }
+  },
+  "cancelledTurn": {
+    "contractVersion": 1,
+    "eventId": "event-cancelled",
+    "sessionId": "session-demo",
+    "epoch": "epoch-demo",
+    "hostSequence": 11,
+    "occurredAt": "2026-09-07T12:00:04Z",
+    "body": {
+      "type": "turn.upsert",
+      "turnId": "turn-queued",
+      "status": "cancelled",
+      "commandId": "turn-queued"
+    }
   }
 }

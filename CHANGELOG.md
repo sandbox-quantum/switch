@@ -443,6 +443,28 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **`!cancel` withdraws a queued message before the agent starts on it.**
+  `!cancel @agent-name <turn-id>` asks the agent's session to take back a
+  message still waiting for it. Only the message's sender can, and the
+  message stays in the room's history. Switch relays it as `turn.cancel`, a
+  new command in the session contract, and the session tells the room how it
+  went. A queued turn's activity card shows the command its sender can copy:
+  `!cancel`, the agent's mention and the first 8 characters of the turn ID,
+  which `!cancel` takes as well as the full ID, looking them up among that
+  agent's queued turns in the room and refusing a start that matches none or
+  several. On Teams, for an agent name with `_` in it, the card shows the ID
+  and how to cancel it, without a command to copy. On Discord through the
+  shared connection, where typed commands do not reach Switch by default,
+  the card gives the slash command `/cancel` instead, with the agent and the
+  turn ID in its options. Switch's help for a misused cancel names `/cancel`
+  (and `/list-agents` for an unknown agent), and a start of a turn ID that
+  matches no waiting message points to `/interrupt`. The session host's
+  replies are unchanged, including `!interrupt` for a turn that has already
+  started. A cancelled turn's card
+  reads "Cancelled before the agent started.", and
+  `POST /agent-sessions/{session_id}/activity` takes `cancelled` as a turn
+  status. A session host without `turn.cancel` does not read the command, so
+  the room gets Switch's acknowledgement and nothing more (#800).
 
 #### Changed
 - **Admins step down and leave from their own row.** The workspace and
@@ -2784,6 +2806,15 @@ version of their own to them without also giving them a release of their own.
   copy of the one picked, so the terminal's own is never written to, and its
   transcript starts with what was said in it. A conversation still open in a
   terminal can't be picked. No earlier prompt is sent again.
+- **The session host withdraws a queued message on `!cancel`.** It takes the
+  message off its queue before the provider sees it, records the turn as
+  `cancelled` and tells the room how the cancel went. Only the message's
+  sender can cancel it, from the room it was sent in; a turn that has started
+  or ended is refused, and the room is told why. The chat shows a cancelled
+  turn as "Cancelled" under its message, with no cancel control of its own,
+  and the session transcript ends it with "Turn cancelled.".
+  A Switch server from before this change does not know `cancelled`, so the
+  host reports such a turn to it as interrupted (#800).
 
 #### Changed
 - **The Switch skill tells agents what to do when their message was
@@ -2812,6 +2843,11 @@ version of their own to them without also giving them a release of their own.
   `server_kind`. An install once signed in with a staff account stays
   labelled internal after it signs out. `agent_reset`, which was listed but
   never sent, is gone from the list. `docs/TELEMETRY.md` has every field.
+- **A session that exits ends the turns waiting in its queue.** The host
+  marks them interrupted before it writes anything, so a `!cancel` that
+  arrives meanwhile is refused and a turn already cancelled stays cancelled.
+  The host checks the queue once more as it exits, so a message that joined
+  by then ends the same way.
 - **Managed agents and machines update when the server says they changed.**
   Against a server that pushes change notices, Console reads those lists
   again when told to, and otherwise only every five minutes instead of every

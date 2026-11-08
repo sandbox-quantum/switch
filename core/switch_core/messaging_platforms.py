@@ -15,6 +15,7 @@ registered them. Nothing here comes from a request or the database.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 #: What a platform key may look like. Lowercase, starting with a letter, short.
@@ -44,6 +45,11 @@ class MessagingPlatform:
     #: The platform's logo as SVG markup, or None where the adapter ships none.
     #: Drawn by Console as an image, never inlined into a page.
     icon_svg: str | None
+    #: Whether a `!` command typed in a room on a connection with these
+    #: settings reaches Switch (`PlatformAdapter.receives_typed_commands`).
+    #: Here for what Switch says about a command it has received, so that the
+    #: command it names is one that would reach it.
+    receives_typed_commands: Callable[[Mapping[str, object]], bool]
 
 
 _REGISTERED: dict[str, MessagingPlatform] = {}

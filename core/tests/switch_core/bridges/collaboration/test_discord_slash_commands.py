@@ -11,6 +11,7 @@ from switch_core.bridges.agent.commands import (
     COMMANDS_BY_NAME,
     Command,
     CommandArg,
+    parse_cancel_args,
 )
 from switch_core.bridges.collaboration.discord import slash
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -625,3 +626,49 @@ def test_free_text_must_come_last() -> None:
     )
     with pytest.raises(ValueError, match="only come last"):
         validate_args_spec(bad)
+
+
+_TURN = "1b4e28ba-2fa1-51d2-883f-0016d3cca427"
+
+
+def test_a_cancel_turn_id_goes_in_without_an_at() -> None:
+    """A turn ID is made of name characters, so as a name token it would come
+    back as `@<id>` — a mention, which `!cancel` drops."""
+    args = reassemble_args(
+        COMMANDS_BY_NAME["cancel"].args_spec, {"target": "worker", "turn_id": _TURN}
+    )
+    assert args == f"@worker {_TURN}"
+    assert parse_cancel_args(args) == _TURN
+
+
+def test_slash_cancel_reaches_dispatch_with_the_turn_id() -> None:
+    adapter = _adapter()
+    commands = _capture_commands(adapter)
+
+    _invoke(
+        adapter,
+        _FakeInteraction(_FakeChannel()),
+        "cancel",
+        target="@worker",
+        turn_id=f" {_TURN} ",
+    )
+
+    assert commands[0].command == "cancel"
+    assert commands[0].args == f"@worker {_TURN}"
+    assert parse_cancel_args(commands[0].args) == _TURN
+
+
+def test_slash_cancel_takes_a_turn_id_pasted_as_code() -> None:
+    adapter = _adapter()
+    commands = _capture_commands(adapter)
+
+    _invoke(
+        adapter,
+        _FakeInteraction(_FakeChannel()),
+        "cancel",
+        target="@worker",
+        turn_id=f"`{_TURN}`",
+    )
+
+    assert commands[0].args == f"@worker `{_TURN}`"
+    assert parse_cancel_args(commands[0].args) == _TURN

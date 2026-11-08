@@ -295,7 +295,7 @@ stored one is ignored (`recorded: false`), an equal one is a no-op.
   "item_id": str,        // "turn" for the turn itself, "notice:<event sequence>" for a notice, else the item's id
   "kind": "turn" | "user-message" | "assistant-message" | "tool-activity" | "notice",
   "revision": int >= 0,  // turn: the host event sequence; item: item.revision; notice: 0
-  "status": str,         // turn: queued|running|completed|interrupted|error
+  "status": str,         // turn: queued|running|completed|interrupted|error|cancelled
                          // item: in-progress|completed|failed|declined
                          // notice: info|warning|error
   "title": str,          // <= 500 chars, host truncates with "…"
@@ -411,7 +411,23 @@ map. No Node/npx and no credentials in the CLI's environment.
   notice; question cards; answered-card removal; the unconfirmed-card search
   or notice; and the "host offline" card state. A 5-second tick redraws
   running turns where the platform redraws for the clock, and anything whose
-  agent went offline or came back.
+  agent went offline or came back. The card of a `queued` turn shows one
+  command to copy: `!cancel`, the agent's mention (the name `post_rich` was
+  given) and the first 8 characters of the turn ID, marked as one literal and
+  not escaped, so the `@` survives (`renderers.withdraw_hint`). `!cancel`
+  takes that start or the full ID. Where there is no agent to name
+  (`rich_fallback_text`, which a failed publication carries on Discord and
+  Telegram) or the name would not read back as one mention,
+  and on Teams for a name with `_` in it, the card names the pieces instead.
+  On Discord through the shared connection, where typed commands do not
+  reach Switch by default (`receives_typed_commands`), the card gives the
+  slash command `/cancel` instead, with the agent and the turn ID in its
+  options. The help for a misused cancel names `/cancel` (and `/list-agents`
+  for an unknown agent), and a start of a turn ID that matches no queued
+  turn points to `/interrupt` (`_SLASH_NO_QUEUED_TURN`). A full ID goes to
+  the host, whose replies are unchanged, including `!interrupt` for a turn
+  that has already started (`roomCancelReply`): the host is not told which
+  connection the room is on.
 - Stop: a press (`INTERRUPT_ACTION`) resolves its turn from
   `turn_status_posts`, is refused if that turn is no longer running, is
   judged by the agent's addressing policy in the room (as `!interrupt` is),

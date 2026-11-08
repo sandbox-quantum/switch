@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from switch_core.bridges.agent.commands import TurnIdPrefix, parse_cancel_args
 from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
 from switch_core.bridges.collaboration.session.renderers import (
     RequestReference,
@@ -36,6 +37,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.clients.mentions import mention_tokens
 from switch_core.sessions.contract import (
     ApprovalContent,
     ApprovalOption,
@@ -638,7 +640,7 @@ async def test_a_request_card_with_no_turn_draws_exactly_as_it_always_has() -> N
     request = await _request()
     card = RequestCard(request, REFERENCE)
 
-    rendered = _slack_adapter()._render_rich(card)
+    rendered = _slack_adapter()._render_rich(card, agent_name="cc")
 
     assert rendered == render_request(request, REFERENCE)
 
@@ -649,7 +651,7 @@ async def test_a_request_card_with_its_turn_draws_the_combined_message() -> None
     request = await _request()
     card = RequestCard(request, REFERENCE, turn, items, elapsed_seconds=80)
 
-    combined = _slack_adapter()._render_rich(card)
+    combined = _slack_adapter()._render_rich(card, agent_name="cc")
 
     assert combined == render_turn_with_request(
         items, turn, request, REFERENCE, elapsed_seconds=80
@@ -668,7 +670,7 @@ async def test_a_turn_with_no_items_yet_still_draws_combined_not_dropped() -> No
     request = await _request()
     card = RequestCard(request, REFERENCE, turn)
 
-    combined = _slack_adapter()._render_rich(card)
+    combined = _slack_adapter()._render_rich(card, agent_name="cc")
 
     assert combined == render_turn_with_request(
         [], turn, request, REFERENCE, elapsed_seconds=None
@@ -682,9 +684,9 @@ async def test_a_turn_activity_card_is_unaffected_by_the_request_card_change() -
     items = await _items()
     turn = _turn()
 
-    rendered = _slack_adapter()._render_rich(TurnActivity(items, turn))
+    rendered = _slack_adapter()._render_rich(TurnActivity(items, turn), agent_name="cc")
 
-    assert rendered == render_activity_plan(items, turn)
+    assert rendered == render_activity_plan(items, turn, agent_name="cc")
 
 
 async def test_the_one_message_leads_with_the_state_and_the_step_it_is_on() -> None:
@@ -693,7 +695,9 @@ async def test_the_one_message_leads_with_the_state_and_the_step_it_is_on() -> N
     items = await _items()
     running = _item(itemId="live", status="in-progress", title="Read")
 
-    drawn = render_activity_plan([*items, running], _turn(), elapsed_seconds=140)
+    drawn = render_activity_plan(
+        [*items, running], _turn(), elapsed_seconds=140, agent_name="cc"
+    )
 
     plan = drawn.blocks[0]
     assert plan["type"] == "plan"
@@ -709,8 +713,8 @@ async def test_a_turn_with_nothing_to_plan_yet_still_shows_it_is_working() -> No
     the session card is in it before the turn has done anything, which is what
     lets one shape serve a turn at both ends of its life.
     """
-    running = render_activity_plan([], _turn(), elapsed_seconds=3)
-    ended = render_activity_plan([], _turn("completed"))
+    running = render_activity_plan([], _turn(), elapsed_seconds=3, agent_name="cc")
+    ended = render_activity_plan([], _turn("completed"), agent_name="cc")
 
     assert running.blocks[0]["type"] == "plan"
     assert [task["status"] for task in running.blocks[0]["tasks"]] == ["in_progress"]
@@ -734,6 +738,7 @@ async def test_what_the_agent_said_is_a_card_in_the_plan_marked_as_speech() -> N
     drawn = render_activity_plan(
         [_item(itemId="call", title="Ran the tests"), _said("All green.")],
         _turn("completed"),
+        agent_name="cc",
     )
 
     titles = [task["title"] for task in _turn_cards(drawn.blocks[0])]
@@ -745,7 +750,9 @@ async def test_a_sentence_is_never_marked_unfinished_when_the_turn_stops() -> No
     still open when the turn ends. "Unfinished" belongs to a call that never
     came back, not to the sentence the agent had just finished saying."""
     drawn = render_activity_plan(
-        [_said("Handing it over.", status="in-progress")], _turn("completed")
+        [_said("Handing it over.", status="in-progress")],
+        _turn("completed"),
+        agent_name="cc",
     )
 
     card = _turn_cards(drawn.blocks[0])[0]
@@ -756,7 +763,9 @@ async def test_a_sentence_is_never_marked_unfinished_when_the_turn_stops() -> No
 async def test_a_turn_that_only_talked_has_a_plan_rather_than_a_bare_line() -> None:
     """It called nothing, so it used to have no disclosure at all — and the
     thing it produced was exactly what a reader would have opened it for."""
-    drawn = render_activity_plan([_said("Fixed that yesterday.")], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said("Fixed that yesterday.")], _turn("completed"), agent_name="cc"
+    )
 
     assert drawn.blocks[0]["type"] == "plan"
     assert _turn_cards(drawn.blocks[0])[0]["title"] == "❝ Fixed that yesterday."
@@ -766,7 +775,9 @@ async def test_a_paragraph_is_folded_onto_the_one_line_its_card_gives_it() -> No
     """A card title is one line. Prose arrives with its own breaks in it, and
     four lines of sentence in a list of calls reads as four things happening."""
     drawn = render_activity_plan(
-        [_said("First thought.\n\nSecond thought.")], _turn("completed")
+        [_said("First thought.\n\nSecond thought.")],
+        _turn("completed"),
+        agent_name="cc",
     )
 
     assert (
@@ -779,7 +790,7 @@ async def test_a_remark_too_long_for_its_line_keeps_the_rest_where_it_expands() 
     there threw the rest away, which is the part a reader opened the block for
     — the detail is the one place in this block Slack offers to expand."""
     said = "Right. " + "The failure is in the retry path. " * 12
-    drawn = render_activity_plan([_said(said)], _turn("completed"))
+    drawn = render_activity_plan([_said(said)], _turn("completed"), agent_name="cc")
 
     card = _turn_cards(drawn.blocks[0])[0]
     assert card["title"].endswith("…")
@@ -791,7 +802,9 @@ async def test_a_remark_too_long_for_its_line_keeps_the_rest_where_it_expands() 
 async def test_even_a_remark_that_would_fit_a_line_is_drawn_in_the_detail() -> None:
     """The detail used to be the overflow and is now the whole card: the title
     is hidden, so a remark left out of the detail is a remark nobody sees."""
-    drawn = render_activity_plan([_said("All green.")], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said("All green.")], _turn("completed"), agent_name="cc"
+    )
 
     card = _turn_cards(drawn.blocks[0])[0]
     assert card["hide_title"] is True
@@ -801,7 +814,9 @@ async def test_even_a_remark_that_would_fit_a_line_is_drawn_in_the_detail() -> N
 async def test_a_hidden_title_still_says_what_the_card_is() -> None:
     """Hiding is the card asking; a client that does not honour it falls back to
     the title, and an empty one would leave the remark showing as nothing."""
-    drawn = render_activity_plan([_said("All green.")], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said("All green.")], _turn("completed"), agent_name="cc"
+    )
 
     assert _turn_cards(drawn.blocks[0])[0]["title"] == "❝ All green."
 
@@ -813,6 +828,7 @@ async def test_prose_and_calls_are_told_apart_by_the_glyph_not_by_the_status() -
     drawn = render_activity_plan(
         [_said("Looking now."), _item(status="completed", title="Read backoff.py")],
         _turn("completed"),
+        agent_name="cc",
     )
 
     said, call = _turn_cards(drawn.blocks[0])
@@ -827,6 +843,7 @@ async def test_the_markdown_an_agent_wrote_reaches_the_reader_unstripped() -> No
     drawn = render_activity_plan(
         [_said("The failure is in **retry** — see `backoff.reset()`.")],
         _turn("completed"),
+        agent_name="cc",
     )
 
     assert (
@@ -840,7 +857,7 @@ async def test_the_expansion_keeps_the_breaks_the_line_had_to_fold_out() -> None
     list of calls. That reason is about the line; it does not apply to the body
     behind it, where the breaks are how the remark was written."""
     said = "First thought.\n\nSecond thought. " + "More on that. " * 20
-    drawn = render_activity_plan([_said(said)], _turn("completed"))
+    drawn = render_activity_plan([_said(said)], _turn("completed"), agent_name="cc")
 
     card = _turn_cards(drawn.blocks[0])[0]
     assert "\n" not in card["title"]
@@ -854,7 +871,9 @@ async def test_a_remark_longer_than_the_expansion_is_says_so_where_it_was_cut() 
     the end of a sentence reads as punctuation rather than as a warning. The
     notice has to be something no agent would have typed.
     """
-    drawn = render_activity_plan([_said("word " * 4000)], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said("word " * 4000)], _turn("completed"), agent_name="cc"
+    )
 
     detail = _detail(_turn_cards(drawn.blocks[0])[0])
     assert len(detail) <= _MAX_SAID_DETAILS
@@ -863,7 +882,9 @@ async def test_a_remark_longer_than_the_expansion_is_says_so_where_it_was_cut() 
 
 async def test_a_remark_that_fits_is_not_accused_of_being_cut() -> None:
     """The notice is a claim about missing text, so it has to be false silently."""
-    drawn = render_activity_plan([_said("A short remark. " * 30)], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said("A short remark. " * 30)], _turn("completed"), agent_name="cc"
+    )
 
     assert "truncated" not in _detail(_turn_cards(drawn.blocks[0])[0])
 
@@ -899,6 +920,7 @@ async def test_the_worst_streamed_message_is_one_slack_would_accept() -> None:
         _talkative(2 * _MAX_SECTION_ITEMS, "漢" * _MAX_SAID_DETAILS),
         _turn("completed"),
         elapsed_seconds=90,
+        agent_name="cc",
     )
 
     assert (
@@ -920,6 +942,7 @@ async def test_the_worst_ordinary_post_is_one_slack_would_accept() -> None:
         _talkative(_MAX_SECTION_ITEMS, "漢" * _MAX_SAID_DETAILS),
         _turn("completed"),
         elapsed_seconds=90,
+        agent_name="cc",
     )
 
     assert len(_turn_cards(drawn.blocks[0])) == _MAX_SECTION_ITEMS
@@ -936,6 +959,7 @@ async def test_a_message_cut_down_to_fit_says_so_on_every_card_it_cut() -> None:
         _talkative(2 * _MAX_SECTION_ITEMS, "漢" * _MAX_SAID_DETAILS),
         _turn("completed"),
         elapsed_seconds=90,
+        agent_name="cc",
     )
 
     details = [_detail(task) for block in drawn.blocks for task in _turn_cards(block)]
@@ -951,7 +975,7 @@ async def test_a_turn_that_fits_keeps_every_word_the_per_card_budget_allows() ->
     budget was widened to give them.
     """
     drawn = render_activity_stream(
-        [_said("漢" * 10_000)], _turn("completed"), elapsed_seconds=90
+        [_said("漢" * 10_000)], _turn("completed"), elapsed_seconds=90, agent_name="cc"
     )
 
     assert len(_detail(_turn_cards(drawn.blocks[0])[0])) == _MAX_SAID_DETAILS
@@ -964,6 +988,7 @@ async def test_the_header_still_counts_calls_rather_than_everything_drawn() -> N
         [_item(itemId="call", title="Ran the tests"), _said("All green.")],
         _turn("completed"),
         elapsed_seconds=5,
+        agent_name="cc",
     )
 
     assert "1 tool call" in drawn.blocks[0]["title"]
@@ -980,8 +1005,145 @@ async def test_the_live_step_label_lands_on_the_page_the_call_is_actually_on() -
     ]
     live = _item(itemId="live", title="Grep", status="in-progress")
 
-    drawn = render_activity_stream([*talked, *calls, live], _turn("running"))
+    drawn = render_activity_stream(
+        [*talked, *calls, live], _turn("running"), agent_name="cc"
+    )
 
     pages = [block for block in drawn.blocks if block["type"] == "plan"]
     assert "Running: Grep" not in pages[0]["title"]
     assert pages[1]["title"].endswith("· Running: Grep")
+
+
+# ── A turn withdrawn before it started, and how to withdraw one ──────────────
+
+# A turn id as the host mints it for a room message: the id `!cancel` takes.
+QUEUED_ID = "3f2b8c1e-5d4a-5b6c-9e7f-0a1b2c3d4e5f"
+CANCELLED = "Cancelled before the agent started."
+
+
+def _turn_with_id(status: str, turn_id: str = QUEUED_ID) -> TurnUpsert:
+    return TurnUpsert.model_validate(
+        {"type": "turn.upsert", "turnId": turn_id, "status": status, "commandId": None}
+    )
+
+
+def _session_card(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    """The newest section's session card: the one the heading sits over."""
+    plan = [block for block in blocks if block["type"] == "plan"][-1]
+    card = plan["tasks"][0]
+    assert isinstance(card, dict)
+    assert card["task_id"] == "switch-session"
+    return card
+
+
+def _hint_pieces(card: dict[str, Any]) -> list[tuple[str, bool]]:
+    [section] = card["details"]["elements"]
+    return [
+        (element["text"], element.get("style") == {"code": True})
+        for element in section["elements"]
+    ]
+
+
+async def test_a_cancelled_turn_says_so_and_nothing_about_time_on_slack() -> None:
+    """Every Slack shape a turn's message takes: the plan a post carries, the
+    stream, the bare line and the notification string. None of them says how
+    long it worked, and none counts the step it never got to as unfinished."""
+    items = [_item(itemId="live", status="in-progress", title="Read")]
+    turn = _turn_with_id("cancelled")
+
+    plan = render_activity_plan(items, turn, elapsed_seconds=125, agent_name="cc")
+    stream = render_activity_stream(items, turn, elapsed_seconds=125, agent_name="cc")
+
+    assert plan.blocks[0]["title"] == CANCELLED
+    assert plan.text == CANCELLED
+    assert stream.title == CANCELLED
+    assert _state([], turn) == f"_{CANCELLED}_"
+    assert render_activity_text([], turn, elapsed_seconds=125) == CANCELLED
+    assert _session_card(plan.blocks)["status"] == "complete"
+    assert "details" not in _session_card(plan.blocks)
+    assert "details" not in _session_card(stream.blocks)
+
+
+async def test_a_queued_turn_offers_one_command_to_copy_on_its_session_card() -> None:
+    """On the card, not in the heading: a plan's title is plain text and has no
+    way to mark a literal, and a card's detail is rich text, which can. The
+    command is one code element, the agent's mention and the id's first eight
+    characters in it."""
+    for drawn in (
+        render_activity_plan([], _turn_with_id("queued"), agent_name="cc").blocks,
+        render_activity_stream([], _turn_with_id("queued"), agent_name="cc").blocks,
+    ):
+        assert _hint_pieces(_session_card(drawn)) == [
+            ("!cancel @cc 3f2b8c1e", True),
+            (" — the sender can send this to withdraw it.", False),
+        ]
+        plan = [block for block in drawn if block["type"] == "plan"][-1]
+        assert plan["title"] == "Queued. Waiting for the agent to start…"
+        assert "`" not in json.dumps(drawn)
+
+
+async def test_the_command_copied_off_a_slack_card_names_the_turn_and_the_agent() -> (
+    None
+):
+    """Sent as copied, with or without the backticks Slack can keep on a pasted
+    code span, the message goes through what the adapter does to an inbound
+    `!` command and leaves `!cancel` the turn's start and, as its first
+    mention, the agent the card was drawn for."""
+    adapter = _slack_adapter()
+    drawn = adapter._render_rich(
+        TurnActivity([], _turn_with_id("queued")), agent_name="cc"
+    )
+    [(copied, literal), _] = _hint_pieces(_session_card(drawn.blocks))
+    assert literal
+
+    for sent in (copied, f"`{copied}`"):
+        command, rest = adapter._unwrap_code_span(sent).split(None, 1)
+        args = adapter.translate_inbound(rest.strip())
+
+        assert command == "!cancel"
+        assert parse_cancel_args(args) == TurnIdPrefix("3f2b8c1e")
+        assert mention_tokens(args)[0] == "cc"
+
+
+async def test_without_an_agent_to_name_the_slack_card_names_the_pieces() -> None:
+    """No agent to name: the card does not offer a command that names nobody."""
+    for drawn in (
+        render_activity_plan([], _turn_with_id("queued"), agent_name=None).blocks,
+        render_activity_stream([], _turn_with_id("queued"), agent_name=None).blocks,
+    ):
+        assert _hint_pieces(_session_card(drawn)) == [
+            ("Turn ID: ", False),
+            # The first eight characters, which `!cancel` takes.
+            ("3f2b8c1e", True),
+            (" — the sender can withdraw it with ", False),
+            ("!cancel", True),
+            (", the agent's mention and this ID.", False),
+        ]
+        plan = [block for block in drawn if block["type"] == "plan"][-1]
+        assert plan["title"] == "Queued. Waiting for the agent to start…"
+        assert "`" not in json.dumps(drawn)
+
+
+async def test_a_follow_up_the_host_queued_itself_offers_nothing_on_slack() -> None:
+    """Nobody sent it and `!cancel` cannot name it, so the card stays bare."""
+    turn = _turn_with_id("queued", f"{QUEUED_ID}:followup")
+
+    assert "details" not in _session_card(
+        render_activity_plan([], turn, agent_name="cc").blocks
+    )
+    assert "details" not in _session_card(
+        render_activity_stream([], turn, agent_name="cc").blocks
+    )
+
+
+async def test_the_hint_goes_from_the_card_once_the_turn_starts() -> None:
+    """Redrawn in place: the section is replaced whole, so leaving it out is
+    what takes it off — a stream cannot remove a block of its own."""
+    turn = _turn_with_id("running")
+
+    assert "details" not in _session_card(
+        render_activity_plan([], turn, agent_name="cc").blocks
+    )
+    assert "details" not in _session_card(
+        render_activity_stream([], turn, agent_name="cc").blocks
+    )

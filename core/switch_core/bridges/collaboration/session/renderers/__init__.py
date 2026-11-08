@@ -16,8 +16,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from switch_core import messaging_platforms
+from switch_core.clients.mentions import NAME_CHAR
+from switch_core.room_wide_mention import is_reserved_mention_name
 from switch_core.sessions.contract import (
     TURN_ENDED,
+    TURN_ID_PATTERN,
     ApprovalContent,
     Item,
     Question,
@@ -42,6 +45,7 @@ TURN_STATE = {
     "completed": "Turn complete.",
     "interrupted": "Turn interrupted.",
     "error": "Turn ended with an error.",
+    "cancelled": "Cancelled before the agent started.",
 }
 
 
@@ -80,8 +84,14 @@ def turn_state(
     reporting — the duration stays, because that is the turn's own. What a
     turn left unfinished is not covered by it: that is an outcome, and it is
     reported wherever the turn is.
+
+    A cancelled turn says only that. It was withdrawn before the agent began,
+    so there is no run to time and no step it could have left open — and a
+    caller that measured something anyway is measuring the wait, not the turn.
     """
     state = TURN_STATE[turn.status]
+    if turn.status == "cancelled":
+        return state
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
             return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
@@ -115,6 +125,87 @@ def _format_duration(elapsed_seconds: float) -> str:
     total = max(int(elapsed_seconds), 0)
     minutes, seconds = divmod(total, 60)
     return f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+
+
+# Pieces rather than a sentence: each platform marks a literal its own way, and
+# a backtick in the wording would reach Telegram and Teams as a backtick. "The
+# sender", because everyone in the room reads it and only they can withdraw it.
+CANCEL_COMMAND = "!cancel"
+SLASH_CANCEL_COMMAND = "/cancel"
+
+# An agent name `!cancel` reads back as one whole mention.
+_MENTIONABLE = re.compile(rf"{NAME_CHAR}+")
+
+
+def withdraw_hint(
+    turn: TurnUpsert,
+    *,
+    agent_name: str | None,
+    slash_options: tuple[str, str] | None = None,
+) -> list[tuple[str, bool]] | None:
+    """How to withdraw a queued turn, as (text, is_literal) pieces, or None.
+
+    None for a turn the host queued for itself (the `<commandId>:followup`
+    after a reset or a compaction): nobody sent it and `!cancel` cannot name
+    it. The test is the parser's own pattern, so the card never offers an id
+    the command would reject.
+
+    The card shows the id's first eight characters, the shortest start
+    `!cancel` takes (`SHORT_TURN_ID_LENGTH` in its parser): core looks them up
+    among the agent's queued turns in the room. The full id works too.
+
+    With the agent's name, the command is one literal to copy and send as it
+    is: `!cancel @<agent> <id>`. Without it (a drawing nobody named an agent
+    for, or a name `!cancel` would not read back as one mention) the card
+    names the pieces instead. A literal here is the fixed command, an id the
+    parser's pattern accepted and a name made of mention characters, so it
+    holds nothing a platform reads as markup. That is why renderers mark it
+    without escaping it: the escape puts a zero-width space after every `@`,
+    and the parser does not find a mention broken that way.
+
+    `slash_options` is for a platform where a typed `!cancel` never reaches
+    Switch and the slash command does: the names of the command's agent and
+    turn ID options, in that order. With them the card offers
+    `/cancel <target>:<agent> <turn_id>:<id>`, and without a name it asks for
+    the agent's name, which is what that option takes, rather than a mention.
+    """
+    if turn.status != "queued" or not TURN_ID_PATTERN.fullmatch(turn.turn_id):
+        return None
+    short = turn.turn_id[:8]
+    named = (
+        agent_name is not None
+        and _MENTIONABLE.fullmatch(agent_name) is not None
+        and not is_reserved_mention_name(agent_name)
+    )
+    if slash_options is not None:
+        target, turn_id = slash_options
+        if named:
+            return [
+                (
+                    f"{SLASH_CANCEL_COMMAND} {target}:{agent_name} {turn_id}:{short}",
+                    True,
+                ),
+                (" — the sender can run this to withdraw it.", False),
+            ]
+        return [
+            ("Turn ID: ", False),
+            (short, True),
+            (" — the sender can withdraw it with ", False),
+            (SLASH_CANCEL_COMMAND, True),
+            (", the agent's name and this ID.", False),
+        ]
+    if named:
+        return [
+            (f"{CANCEL_COMMAND} @{agent_name} {short}", True),
+            (" — the sender can send this to withdraw it.", False),
+        ]
+    return [
+        ("Turn ID: ", False),
+        (short, True),
+        (" — the sender can withdraw it with ", False),
+        (CANCEL_COMMAND, True),
+        (", the agent's mention and this ID.", False),
+    ]
 
 
 # How a request that was never answered ended, in the words a reader sees. One

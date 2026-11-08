@@ -56,11 +56,13 @@ function item(overrides: Partial<Item>): ServerEvent['body'] {
   };
 }
 
-const turn = (status: 'queued' | 'running' | 'completed' | 'error'): ServerEvent['body'] => ({
+type TurnStatus = 'queued' | 'running' | 'completed' | 'error' | 'interrupted' | 'cancelled';
+
+const turn = (status: TurnStatus, turnId = 'turn'): ServerEvent['body'] => ({
   type: 'turn.upsert',
-  turnId: 'turn',
+  turnId,
   status,
-  commandId: 'turn',
+  commandId: turnId,
 });
 
 const notice = (message: string): ServerEvent['body'] => ({
@@ -118,6 +120,20 @@ it("carries an ended turn's usage on its row, and nothing on a turn still runnin
   expect(rows(lines.reports(event(3, turn('error')), originOf, noUsage))[0]).not.toHaveProperty(
     'usage'
   );
+});
+
+it('reports a cancelled turn as ended, like an interrupted one, with nothing spent', async () => {
+  const lines = await reporter();
+  const asked: string[] = [];
+  const usageOf = (turnId: string) => {
+    asked.push(turnId);
+    return [];
+  };
+  const [interrupted] = rows(lines.reports(event(1, turn('interrupted')), originOf, usageOf));
+  const [cancelled] = rows(lines.reports(event(2, turn('cancelled')), originOf, usageOf));
+  expect(cancelled).toEqual({ ...interrupted, revision: 2, status: 'cancelled' });
+  expect(cancelled).not.toHaveProperty('usage');
+  expect(asked).toEqual(['turn', 'turn']);
 });
 
 it('places a turn in its origin thread when it has one', async () => {
@@ -213,6 +229,29 @@ it('reports a notice in the running turn, and in a turn that just ended', async 
     },
     expect.objectContaining({ item_id: 'notice:5', turn_id: 'turn', title: 'The turn failed' }),
   ]);
+});
+
+it('keeps the running turn when another one is cancelled, and its notices with it', async () => {
+  const lines = await reporter();
+  const reported = [
+    event(1, turn('running', 'a')),
+    event(2, turn('queued', 'b')),
+    event(3, turn('cancelled', 'b')),
+    event(4, notice('Slow provider')),
+  ].flatMap((e) => lines.reports(e, originOf, noUsage));
+  expect(rows(reported).filter((row) => row.kind === 'notice')).toMatchObject([
+    { turn_id: 'a', item_id: 'notice:4' },
+  ]);
+});
+
+it('leaves a notice right after a cancellation outside any turn', async () => {
+  const lines = await reporter();
+  const reported = [
+    event(1, turn('queued', 'b')),
+    event(2, turn('cancelled', 'b')),
+    event(3, notice('Could not deliver the reply')),
+  ].flatMap((e) => lines.reports(e, originOf, noUsage));
+  expect(rows(reported).filter((row) => row.kind === 'notice')).toEqual([]);
 });
 
 it('knows the running turn after a restart from the events it already reported', async () => {

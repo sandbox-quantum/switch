@@ -776,6 +776,7 @@ class PlatformAdapter(ABC):
             display_name=display_name,
             docs_slug=cls.docs_slug,
             icon_svg=cls.icon_svg(),
+            receives_typed_commands=cls.receives_typed_commands,
         )
 
     @classmethod
@@ -907,6 +908,19 @@ class PlatformAdapter(ABC):
         while showing the code, with or without a running adapter.
         """
         return f"Post `!link-account {code}` from that account in any channel Switch is in."
+
+    @classmethod
+    def receives_typed_commands(cls, connection_config: Mapping[str, object]) -> bool:
+        """Whether a `!` command typed in a room on this connection reaches
+        Switch.
+
+        True by default. False where Switch is not given the text of messages,
+        so a command reaches it only as one of the platform's own commands, and
+        what Switch says about a command must name that form instead. A class
+        method because the answer is read from a room's connection settings,
+        with or without a running adapter.
+        """
+        return True
 
     @classmethod
     def unlinkable_account_reason(cls, external_user_id: str) -> str | None:

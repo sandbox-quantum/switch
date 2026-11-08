@@ -100,7 +100,7 @@ const RUNTIME_STATUS_MARKERS = [
  * it: one post per turn, edited in place from `Working…` to how the turn ended
  * (`TURN_STATE` in core/switch_core/bridges/collaboration/session/renderers).
  */
-export type TurnState = 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
+export type TurnState = 'queued' | 'running' | 'completed' | 'interrupted' | 'error' | 'cancelled';
 
 const TURN_STATE_HEADINGS: readonly [TurnState, string][] = [
   ['queued', 'Queued.'],
@@ -110,6 +110,7 @@ const TURN_STATE_HEADINGS: readonly [TurnState, string][] = [
   ['completed', 'Worked for '],
   ['interrupted', 'Turn interrupted.'],
   ['error', 'Turn ended with an error.'],
+  ['cancelled', 'Cancelled before the agent started.'],
 ];
 
 /** The state a turn status card reports, or null when the post is not one. */

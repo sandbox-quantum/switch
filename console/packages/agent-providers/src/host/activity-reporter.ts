@@ -73,7 +73,7 @@ export type Report =
 
 type Placement = Pick<ActivityRow, 'room_id' | 'thread_id' | 'message_id'>;
 
-const ENDED = new Set(['completed', 'interrupted', 'error']);
+const ENDED = new Set(['completed', 'interrupted', 'error', 'cancelled']);
 
 const cursorSchema = z.strictObject({ through: z.number().int().nonnegative() });
 
@@ -266,6 +266,9 @@ export class ActivityReporter {
     }
     if (body.status === 'queued') return;
     if (this.runningTurn === body.turnId) this.runningTurn = null;
+    // A message cancelled before it ran has nothing to say after it ends: the
+    // notice that follows is someone else's.
+    if (body.status === 'cancelled') return;
     this.endedTurn = { turnId: body.turnId, sequence: event.sequence };
   }
 }
