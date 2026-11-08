@@ -5,9 +5,9 @@ The gateway, fuzzed from its OpenAPI schema by [Schemathesis](https://schemathes
 app (the role matrix's, whose stand-ins answer 418 where a route reaches a
 platform or a vendor) over HTTP, as the database role row-level security applies
 to, and runs the Schemathesis CLI twice: as an admin of a second workspace, so it
-has objects, then as an admin of the first, whose path and query parameters that
-look like ids (`id`, `*_id`, `*_ids`), in the path, query or body, are often ids
-of the second's objects (`hooks.py`).
+has objects, then as an admin of the first, whose parameters that look like ids (`id`,
+`*_id`, `*_ids`), in the path, query or body, are often ids of the second's
+objects (`hooks.py`).
 
 ```bash
 just properties-http                      # 25 examples a route; two runs of ten minutes at most
