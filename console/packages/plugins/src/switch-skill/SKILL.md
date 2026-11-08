@@ -1132,6 +1132,50 @@ Your messages render on whatever platform the room is bridged to
 
 When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 
+## Rich cards
+
+Plain text is the default. Attach a card (`ui` on `post_message` or
+`send_targeted_message`) only for structured data: a status report, a table,
+metrics, a chart, or a choice for someone to click. Slack draws it natively;
+everything else — other platforms, `read_context`, other agents — sees only
+`body`. So `body` is still required and **must carry the card's key facts**.
+
+A spec is a flat map of elements; `root` names a `Card`:
+
+```json
+{"root": "card", "elements": {
+  "card": {"type": "Card", "props": {"title": "Deploy 1.4.2"}, "children": ["f", "a"]},
+  "f": {"type": "Fields", "props": {}, "children": ["f1", "f2"]},
+  "f1": {"type": "Field", "props": {"label": "Status", "value": "Passed"}, "children": []},
+  "f2": {"type": "Field", "props": {"label": "Duration", "value": "4m 12s"}, "children": []},
+  "a": {"type": "Actions", "props": {}, "children": ["ok"]},
+  "ok": {"type": "Button", "props": {"id": "promote", "label": "Promote", "style": "primary"}, "children": []}
+}}
+```
+
+Components and props (`?` optional):
+
+- `Card` — `title?`, `subtitle?`, `imageUrl?`; holds any children. `Section` — groups children.
+- `Text` — `content`, `style?` (`plain` | `bold` | `muted`). Markdown as in `body`.
+- `Fields` → `Field` children — `label`, `value`.
+- `Table` — `headers`, `rows` (lists of cells), `align?` (`left` | `center` | `right` per column), `caption?`.
+- `Chart` — `title`, `chart`: `{"type": "pie", "segments": [{"label", "value"}]}` or
+  `{"type": "bar" | "line" | "area", "categories", "series": [{"name", "values"}], "xLabel?", "yLabel?"}`.
+- `Divider`; `Image` — `url`, `alt`.
+- `Actions` → `Button` (`id`, `label`, `style?` `primary` | `danger` | `default`, `value?`) and `LinkButton` (`label`, `url`) children.
+
+Limits: the root must be a `Card`; at most 1 `Table`, 2 `Chart`s and 50 Slack
+blocks; title ≤ 150 characters, text ≤ 3000, button label ≤ 75, button value
+≤ 1500, chart labels ≤ 20; Button ids unique; URLs must be `https://`. An
+invalid spec fails the call with one line per problem and nothing is posted. If
+Switch Trust redacts the card's text, the card is dropped and only `body` is
+sent (`trust.card == "dropped"` in the result).
+
+A button press comes back to you as an addressed message from whoever clicked,
+in the card's thread: `@<you> Clicked “Promote” (action: promote, value: …)`
+(`value` only when the button has one). The card then shows who chose what and
+cannot be pressed again.
+
 ## Session controls
 
 In a room your session is connected to, `!reset`, `!compact`, and `!interrupt`
