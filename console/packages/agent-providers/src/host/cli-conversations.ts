@@ -83,7 +83,8 @@ export async function answerCliConversationRequest(
     request.dir,
     request.env,
     request.shellSetup,
-    request.inheritEnv
+    request.inheritEnv,
+    request.provider
   );
   if (mode === '--cli-conversations') return listClaudeCliConversations(request.dir, env);
   if (mode === '--delete-cli-conversation-copies') {

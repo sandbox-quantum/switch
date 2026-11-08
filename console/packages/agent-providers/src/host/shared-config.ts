@@ -162,7 +162,8 @@ export async function prepareSharedConfig(
       input.cwd,
       input.env,
       execution.shellSetup,
-      execution.inheritEnv
+      execution.inheritEnv,
+      config.start.provider
     );
     input.env = { ...inherited, ...input.env };
     if (config.start.provider === 'codex') {
@@ -305,17 +306,21 @@ export async function executionEnvironment(
   cwd: string,
   configured: Record<string, string>,
   setup: string | undefined,
-  inheritEnv: string[]
+  inheritEnv: string[],
+  provider: string
 ): Promise<Record<string, string>> {
   const env: Record<string, string> = {};
   const inherited =
     process.platform === 'win32'
       ? new Set(inheritEnv.map((key) => key.toUpperCase()))
       : new Set(inheritEnv);
+  // Do not pass a host's Factory key to other providers. A per-agent value in
+  // `configured` remains explicit and is applied below, before shell setup.
   for (const [key, value] of Object.entries(process.env))
     if (
       value !== undefined &&
       inherited.has(process.platform === 'win32' ? key.toUpperCase() : key) &&
+      (provider === 'factory-droid' || key.toUpperCase() !== 'FACTORY_API_KEY') &&
       !key.startsWith('SWITCH_') &&
       !key.startsWith('ELECTRON_')
     )

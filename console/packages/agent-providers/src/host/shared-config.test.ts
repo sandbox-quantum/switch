@@ -26,7 +26,8 @@ it.skipIf(process.platform === 'win32')(
       process.cwd(),
       { SDK_CONFIGURED: 'configured' },
       'echo setup-output; export SDK_CUSTOM_SETUP="$SDK_CONFIGURED-from-setup"',
-      ['SDK_CUSTOM_HOST_VALUE', 'PATH', 'HOME', 'SHELL']
+      ['SDK_CUSTOM_HOST_VALUE', 'PATH', 'HOME', 'SHELL'],
+      'claude'
     );
     expect(env.SDK_UNLISTED_VALUE).toBeUndefined();
     expect(env.SDK_CUSTOM_HOST_VALUE).toBe('from-host');
@@ -36,11 +37,11 @@ it.skipIf(process.platform === 'win32')(
 );
 
 it('fails before provider startup if shell setup fails', async () => {
-  await expect(executionEnvironment(process.cwd(), {}, 'false', [])).rejects.toThrow();
+  await expect(executionEnvironment(process.cwd(), {}, 'false', [], 'claude')).rejects.toThrow();
 });
 
 it.runIf(process.platform === 'win32')('refuses shell setup on Windows, saying why', async () => {
-  await expect(executionEnvironment(process.cwd(), {}, 'echo hi', [])).rejects.toThrow(
+  await expect(executionEnvironment(process.cwd(), {}, 'echo hi', [], 'claude')).rejects.toThrow(
     /POSIX shell snippet/
   );
 });
@@ -50,7 +51,7 @@ it('inherits Path whatever its case on Windows', async () => {
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
   vi.stubEnv('Path', 'C:\\Windows\\System32');
   try {
-    const env = await executionEnvironment(process.cwd(), {}, undefined, ['PATH']);
+    const env = await executionEnvironment(process.cwd(), {}, undefined, ['PATH'], 'claude');
     // Windows has one variable whatever its case; the key is the case it was first set in.
     const key = Object.keys(env).find(
       (name) => name.toUpperCase() === 'PATH' && env[name] === 'C:\\Windows\\System32'
@@ -61,9 +62,36 @@ it('inherits Path whatever its case on Windows', async () => {
   }
 });
 
+it('does not inherit a case-variant Factory key for another provider on Windows', async () => {
+  const platform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  vi.stubEnv('Factory_Api_Key', 'synthetic-host-key');
+  try {
+    const env = await executionEnvironment(
+      process.cwd(),
+      {},
+      undefined,
+      ['FACTORY_API_KEY'],
+      'claude'
+    );
+    expect(Object.keys(env).some((name) => name.toUpperCase() === 'FACTORY_API_KEY')).toBe(false);
+    const droid = await executionEnvironment(
+      process.cwd(),
+      {},
+      undefined,
+      ['FACTORY_API_KEY'],
+      'factory-droid'
+    );
+    expect(Object.values(droid)).toContain('synthetic-host-key');
+  } finally {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  }
+});
+
 it('gives the provider the host’s own MCP server and no Switch identity', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
   try {
+    vi.stubEnv('FACTORY_API_KEY', 'synthetic-host-key');
     const credentialsPath = join(root, 'credentials.json');
     await writeFile(
       credentialsPath,
@@ -107,7 +135,17 @@ it('gives the provider the host’s own MCP server and no Switch identity', asyn
         },
       },
       roomConnection: { connectionId: 'controller' },
-      execution: { credentialsPath, inheritEnv: [], codexConfig: '', skill: '', context: '' },
+      execution: {
+        credentialsPath,
+        inheritEnv: ['FACTORY_API_KEY'],
+        shellSetup:
+          process.platform === 'win32'
+            ? undefined
+            : 'if [ -n "$FACTORY_API_KEY" ]; then export FACTORY_KEY_SEEN=yes; fi',
+        codexConfig: '',
+        skill: '',
+        context: '',
+      },
     });
     const runtime = {
       transport: 'http' as const,
@@ -124,9 +162,40 @@ it('gives the provider the host’s own MCP server and no Switch identity', asyn
       NO_REDACTIONS
     );
     expect(prepared.input.mcpServers).toEqual({ switch: runtime });
-    expect(prepared.input.env).toEqual({ CONFIGURED: 'yes' });
+    expect(prepared.input.env).toMatchObject({ CONFIGURED: 'yes' });
+    expect(prepared.input.env?.FACTORY_API_KEY).toBeUndefined();
+    expect(prepared.input.env?.FACTORY_KEY_SEEN).toBeUndefined();
     // The host itself still reports to Switch as the agent.
     expect(prepared).toMatchObject({ agentApiUrl: 'https://switch.test', token: 'agent-token' });
+
+    const droidConfig = structuredClone(config);
+    droidConfig.start.provider = 'factory-droid';
+    droidConfig.session.provider = 'factory-droid';
+    const droid = await prepareSharedConfig(
+      root,
+      droidConfig,
+      runtime,
+      NO_SERVICES,
+      null,
+      {},
+      NO_REDACTIONS
+    );
+    expect(droid.input.env?.FACTORY_API_KEY).toBe('synthetic-host-key');
+    if (process.platform !== 'win32') expect(droid.input.env?.FACTORY_KEY_SEEN).toBe('yes');
+
+    const explicitlyConfigured = structuredClone(config);
+    explicitlyConfigured.start.input.env.FACTORY_API_KEY = 'synthetic-configured-key';
+    const explicit = await prepareSharedConfig(
+      root,
+      explicitlyConfigured,
+      runtime,
+      NO_SERVICES,
+      null,
+      {},
+      NO_REDACTIONS
+    );
+    expect(explicit.input.env?.FACTORY_API_KEY).toBe('synthetic-configured-key');
+    if (process.platform !== 'win32') expect(explicit.input.env?.FACTORY_KEY_SEEN).toBe('yes');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
