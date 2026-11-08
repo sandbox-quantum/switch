@@ -148,7 +148,8 @@ Candidates, in order of how much a model would find:
    model with a clock and a TTL can check.
 3. **Agent sessions**: connect, disconnect, auto-start when a person addresses
    an agent with no live session (liveness, under fairness).
-4. **Tasks**: delegate, accept, update, finalise; finalised is terminal.
+4. **Tasks**: delegate, accept, update, finalise; finalised is terminal. Retired
+   in phase 2: the server no longer has the task protocol.
 
 PR CI runs each model at small bounds (seconds). The nightly run uses deeper
 bounds and long random simulation.
@@ -294,7 +295,7 @@ moves the delivery ones to `checked`.
 | `lease.fenced-takeover` | A lease's token strictly increases per key; once a key is taken over, every write by an earlier holder is refused | safety | model, code |
 | `lease.eventual-owner` | Work whose holder stopped or stopped renewing is eventually held by a live process | liveness | model, system |
 | `session.addressed-eventually-started` | Addressing an agent with no live session, where auto-start is configured, eventually starts one | liveness | model, system |
-| `task.lifecycle` | A task moves only delegate → ongoing → finalised; finalised is terminal | safety | model, code |
+| `task.lifecycle` | A task moves only delegate → ongoing → finalised; finalised is terminal (retired: the protocol was removed) | safety | model, code |
 | `tenancy.no-cross-tenant-ids` | No response to a principal in one tenant contains an id from another | safety | code, system |
 | `api.no-5xx` | No request, however malformed, is answered with a 5xx | safety | code, system |
 | `bridge.roundtrip-exactly-once` | A post from a collaboration platform appears in its room once, and an agent's reply appears on the platform once | safety | system |
@@ -401,12 +402,14 @@ adding under two minutes to PR CI (anything slower runs nightly).
      agreed.
    - **System**: an `always` at the fenced write sites. `lease.eventual-owner`
      in a real run needs two replicas and belongs to phase 3.
-2. **Tasks.** A Hypothesis machine over delegate, accept, update and finalise
-   through the operation definitions, in any order and by the wrong agent;
-   `task.lifecycle` and who may do what. A history check over `tasks` (status
-   consistent with `accepted_at` and `finalised_at`). `task.lifecycle` drops its
-   model level: a three-state lifecycle gives a model little the machine does
-   not already cover by trying every order, and no property is lost.
+2. **Tasks, dropped.** The plan was a Hypothesis machine over delegate, accept,
+   update and finalise, and a history check over `tasks`. The task protocol was
+   removed from the server before this phase (#952: tools, routes, events and
+   instructions; the `tasks` table was left), and
+   `test_task_routes_removed.py` and the tool-surface test keep it removed.
+   Nothing writes a task, so there is nothing to check, and `task.lifecycle` is
+   retired in the catalog rather than left proposed. The published agent-protocol
+   page still lists the task events and tools, which is for the docs repository.
 3. **HTTP surface.** Schemathesis against the FastAPI app, with two tenants: no
    5xx, responses that match their schema, and no id from the other tenant.
    Nightly only, at many examples; not in PR CI yet. Ids are recognised from the
