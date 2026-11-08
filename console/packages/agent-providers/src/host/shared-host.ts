@@ -485,6 +485,17 @@ export async function runSharedHost(
       await send({ kind: 'activity', row });
       return true;
     };
+    // A server rollout where older pods don't recognize 'cancelled' answers 422.
+    // Resend as 'interrupted' so the card is marked ended rather than staying queued.
+    const sentAsInterrupted = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (item.kind !== 'activity' || item.row.status !== 'cancelled' || error.status !== 422) return false;
+      const row = { ...item.row, status: 'interrupted' as const };
+      console.warn(
+        `Switch refused cancelled status for turn ${row.turn_id}, retrying as interrupted: ${error.message}`
+      );
+      await send({ kind: 'activity', row });
+      return true;
+    };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
@@ -505,6 +516,7 @@ export async function runSharedHost(
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
             if (await sentWithoutUsage(item, error)) continue;
+            if (await sentAsInterrupted(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;

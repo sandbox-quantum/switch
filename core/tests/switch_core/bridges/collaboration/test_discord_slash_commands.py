@@ -614,6 +614,14 @@ def test_free_text_may_be_left_out() -> None:
     )
 
 
+def test_cancel_slash_command_reassembles_turn_id_as_free_text() -> None:
+    spec = COMMANDS_BY_NAME["cancel"].args_spec
+    assert (
+        reassemble_args(spec, {"target": "worker", "turn_id": "turn-12345"})
+        == "@worker turn-12345"
+    )
+
+
 def test_free_text_must_come_last() -> None:
     bad = Command(
         "x",
