@@ -208,6 +208,14 @@ switchCore:
   # https://<public URL>/gateway/service-connections/airtable/flows/callback.
   # Without it, Airtable shows as not set up.
   airtableClientSecret: ""
+  # Existing Secret with client.json ({"client_id", "client_secret"}): an
+  # Asana MCP app with these loopback redirect URLs:
+  # http://127.0.0.1:39231/switch-services/callback
+  # http://127.0.0.1:39232/switch-services/callback
+  # http://127.0.0.1:39233/switch-services/callback
+  # http://127.0.0.1:39234/switch-services/callback
+  # http://127.0.0.1:39235/switch-services/callback
+  asanaClientSecret: ""
   # Existing Secret with client.json ({"client_id", "client_secret"}): the
   # Web OAuth client of an internal Google app, for the Google Workspace
   # connection. Register <gatewayPublicUrl>/gateway/service-connections/google-workspace/flows/callback

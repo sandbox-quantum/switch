@@ -87,9 +87,14 @@ class OAuthClient(BaseModel):
     account through the same client then does not revoke the sign-in it
     replaces, as that would end the new one too.
 
+    `grant_context_path`: a token-response path to a stable authorization
+    context, such as a workspace. A new sign-in must name it so an agent grant
+    cannot silently follow the same account into a different context.
+
     `unchecked`: what a static client's operator must see to themselves,
     because asking the vendor about the client cannot show it; said with every
-    check that passes.
+    check that passes. `client_check: none` saves a static client without a
+    made-up-code exchange when the vendor cannot confirm it before sign-in.
 
     `loopback_ports`: the only ports Switch Console's listener may use, for a
     vendor that matches a loopback redirect exactly, port included; without
@@ -122,7 +127,9 @@ class OAuthClient(BaseModel):
     revocation_discovered: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
+    grant_context_path: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
+    client_check: Literal["code", "none"] = "code"
 
     @model_validator(mode="after")
     def _consistent(self) -> "OAuthClient":
@@ -164,6 +171,14 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "revocation_ends_grant is for a vendor Switch revokes sign-ins at"
             )
+        if self.client_check == "none" and (
+            self.registration != "static"
+            or self.unchecked is None
+            or not self.unchecked.strip()
+        ):
+            raise ValueError(
+                "client_check: none is for a static client whose unchecked says what the first connection confirms"
+            )
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")
         if (
@@ -179,14 +194,25 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Where the account's stable id and human-readable label are read.
+
+    Most vendors answer an HTTPS GET. An MCP server may instead expose a
+    read-only, no-argument identity tool such as Asana's `get_me`.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    mcp_tool: str | None = Field(
+        default=None, pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$"
+    )
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "ConnectionIdentity":
+        if (self.url is None) == (self.mcp_tool is None):
+            raise ValueError("identity names exactly one of url or mcp_tool")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -519,15 +545,27 @@ class LevelAccess(BaseModel):
     def _one_kind(self) -> "LevelAccess":
         if (self.scopes is None) == (self.permissions is None):
             raise ValueError("an access level holds scopes or permissions, not both")
-        if not (self.scopes or self.permissions):
-            raise ValueError("an access level needs at least one scope or permission")
+        if self.permissions is not None and not self.permissions:
+            raise ValueError("an access level needs at least one permission")
         return self
 
 
 class ConnectionAccess(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    unscoped: bool = False
     read: LevelAccess
     write: LevelAccess | None = None
+
+    @model_validator(mode="after")
+    def _scopes(self) -> "ConnectionAccess":
+        if self.unscoped:
+            if self.write is None or self.read.scopes != [] or self.write.scopes != []:
+                raise ValueError("unscoped access needs empty read and write scopes")
+        elif self.read.scopes == [] or (
+            self.write is not None and self.write.scopes == []
+        ):
+            raise ValueError("an access level needs at least one scope or permission")
+        return self
 
 
 class AccessProfile(BaseModel):
@@ -609,6 +647,12 @@ class ConnectionDefinition(BaseModel):
             self._check_oauth()
         elif self.adapter == "api_key":
             self._check_api_key()
+        if (
+            self.access is not None
+            and self.access.unscoped
+            and (self.adapter != "oauth" or self.mcp is None)
+        ):
+            raise ValueError("unscoped consent is only for an OAuth MCP entry")
         if self.access_profiles:
             self._check_access_profiles()
         if self.adapter != "api_key":
@@ -629,6 +673,8 @@ class ConnectionDefinition(BaseModel):
                 "only an oauth entry with access levels has access profiles"
             )
         for name, profile in self.access_profiles.items():
+            if profile.access.unscoped and self.mcp is None:
+                raise ValueError("unscoped consent is only for an OAuth MCP entry")
             # A grant keeps its level when the server changes profile.
             if (profile.access.write is None) != (self.access.write is None):
                 raise ValueError(
@@ -751,6 +797,13 @@ class ConnectionDefinition(BaseModel):
             for level in (self.access.read, self.access.write)
         ):
             raise ValueError("an oauth entry's levels name OAuth scopes")
+        identity = self.auth.identity
+        if (
+            identity is not None
+            and identity.mcp_tool is not None
+            and (self.mcp is None or len(self.mcp.servers) != 1)
+        ):
+            raise ValueError("MCP identity needs exactly one MCP server")
 
     def level_tools(self, access: AccessLevel) -> list[str]:
         """Every tool a grant at `access` may be given. None are named while

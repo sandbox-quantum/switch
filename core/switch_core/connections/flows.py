@@ -201,6 +201,7 @@ class ServiceFlows:
                     "name": definition.name,
                     "consent": consent,
                     "scopes": list(level.scopes),
+                    "unscoped": access.unscoped,
                     "read_scopes": list(access.read.scopes),
                     "write_scopes": list(level.scopes) if consent == "write" else [],
                 },
@@ -352,6 +353,8 @@ class ServiceFlows:
         """What the person consented to, as the vendor granted it."""
         granted = set(exchange.signed_in.granted_scopes)
         details = exchange.flow.details
+        if details.get("unscoped") is True:
+            return "write"
         write_scopes = set(details["write_scopes"])
         if write_scopes and write_scopes <= granted:
             return "write"

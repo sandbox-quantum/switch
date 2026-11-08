@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -13,9 +14,12 @@ from switch_core.connections.app_checks import (
     check_oauth_client,
 )
 from switch_core.connections.app_credentials import AppValues
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, ConnectionDefinition
+from tests.switch_core.connections.fake_vendor import ISSUER, FakeOAuthServer
+from tests.switch_core.connections.test_loader import OAUTH_ENTRY
 
 REDIRECT = "https://switch.example.test/gateway/service-connections/google-workspace/flows/callback"
+EXAMPLE_REDIRECT = "http://127.0.0.1:39231/switch-services/callback"
 GOOGLE = CATALOG["google-workspace"].definition
 
 
@@ -30,7 +34,61 @@ def _google(secret: str = "example-secret-0000") -> AppValues:
     return AppValues("example-client-id", {}, {"client_secret": secret})
 
 
+def _example_definition(client_check: bool) -> ConnectionDefinition:
+    oauth_fields = (
+        "    registration: static\n"
+        "    client_settings: EXAMPLE\n"
+        "    unchecked: The first connection confirms this client.\n"
+    )
+    if client_check:
+        oauth_fields += "    client_check: none\n"
+    return ConnectionDefinition.model_validate(
+        yaml.safe_load(OAUTH_ENTRY.replace("    registration: dynamic\n", oauth_fields))
+    )
+
+
 class TestOAuthClient:
+    async def test_a_client_the_vendor_cannot_check_is_saved_as_unchecked(self) -> None:
+        vendor = FakeOAuthServer()
+        token_requests: list[httpx.Request] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            if str(request.url) == f"{ISSUER}/token":
+                token_requests.append(request)
+                return httpx.Response(400, json={"error": "invalid_grant"})
+            return vendor.handle(request)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        definition = _example_definition(client_check=True)
+        result = await check_oauth_client(http, definition, _google(), EXAMPLE_REDIRECT)
+        assert result.ok
+        [check] = result.checks
+        assert check.message.startswith("Saved without checking")
+        oauth = definition.auth.oauth
+        assert oauth is not None and check.note == oauth.unchecked
+        assert token_requests == []
+
+        default_result = await check_oauth_client(
+            http, _example_definition(client_check=False), _google(), EXAMPLE_REDIRECT
+        )
+        [default_check] = default_result.checks
+        assert default_result.ok
+        assert "accepts this client ID and secret" in default_check.message
+        assert len(token_requests) == 1
+
+    async def test_an_unreachable_vendor_is_reported_even_with_client_check_none(
+        self,
+    ) -> None:
+        vendor = FakeOAuthServer()
+        vendor.fail[f"{ISSUER}/.well-known/oauth-authorization-server"] = (503, {})
+        with pytest.raises(VendorUnreachableError):
+            await check_oauth_client(
+                vendor.client(),
+                _example_definition(client_check=True),
+                _google(),
+                EXAMPLE_REDIRECT,
+            )
+
     @pytest.mark.parametrize(
         ("status", "error", "ok", "says", "field"),
         [

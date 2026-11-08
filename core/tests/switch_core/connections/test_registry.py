@@ -124,6 +124,25 @@ def test_airtable_is_set_up_by_its_operators_own_client() -> None:
     assert adapter._client.client.client_id == "c"
 
 
+def test_asana_is_set_up_by_its_operators_own_client() -> None:
+    assert "asana" not in build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapters = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={
+            "asana": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
+        http=HTTP,
+        registration=REG,
+    )
+    adapter = adapters["asana"]
+    assert isinstance(adapter, OAuthAdapter)
+    assert isinstance(adapter._client, StaticClient)
+    assert adapter._client.client.client_id == "c"
+
+
 def test_a_static_oauth_client_gets_the_generic_adapter(tmp_path: Path) -> None:
     adapters = build_adapters(
         _catalog(tmp_path, STATIC),
@@ -288,8 +307,8 @@ async def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
         "Atlassian is not set up on this server.",
     )
     assert (await standing(broker, "atlassian")).server_setup_needed is False
-    asana = (await standing(broker, "asana")).unavailable
-    assert asana is not None and asana.code == "coming_soon"
+    box = (await standing(broker, "box")).unavailable
+    assert box is not None and box.code == "coming_soon"
 
 
 async def test_a_key_that_never_expires_is_neither_connected_nor_granted(

@@ -81,6 +81,17 @@ describe("a token's expiry", () => {
       })
     ).rejects.toThrow('not one');
   });
+
+  it('reads the grant identity from an issued token', async () => {
+    expect(
+      await answered({
+        token: 'synthetic-owner-token',
+        expires_at: '2026-10-08T13:00:00Z',
+        grant_revision: 1,
+        grant_id: 'the-grant',
+      })
+    ).toMatchObject({ grantRevision: 1, grantId: 'the-grant' });
+  });
 });
 
 const SWITCH = {
@@ -108,6 +119,11 @@ const answering = (status: number, body: unknown) =>
   vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status }));
 
 describe('readServiceGrants', () => {
+  it('keeps the grant identity in the agent grant response', async () => {
+    const grant = { ...GITHUB, revision: 1, grant_id: 'the-grant' };
+    expect(await readServiceGrants(SWITCH, answering(200, { grants: [grant] }))).toEqual([grant]);
+  });
+
   it('reads the grants through the agent’s Switch endpoint, as the agent', async () => {
     const fetchImpl = answering(200, { grants: [GITHUB] });
     expect(await readServiceGrants(SWITCH, fetchImpl)).toEqual([GITHUB]);

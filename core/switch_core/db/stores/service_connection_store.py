@@ -249,6 +249,20 @@ class ServiceConnectionStore:
             .values(revision=ServiceGrant.revision + 1, updated_at=func.now())
         )
 
+    async def bump_grants_for_connection(
+        self, session: AsyncSession, owner_id: str, service: str
+    ) -> None:
+        """Move retained grants on when a relink revokes their issued tokens."""
+        await session.execute(
+            update(ServiceGrant)
+            .where(
+                ServiceGrant.tenant_id == require_tenant_id(),
+                ServiceGrant.owner_id == owner_id,
+                ServiceGrant.service == service,
+            )
+            .values(revision=ServiceGrant.revision + 1, updated_at=func.now())
+        )
+
     async def list_grants(
         self, session: AsyncSession, agent_id: str
     ) -> list[ServiceGrant]:
@@ -316,6 +330,21 @@ class ServiceConnectionStore:
                 ServiceGrant.id == grant_id,
             )
         )
+
+    async def delete_grants_for_connection(
+        self, session: AsyncSession, owner_id: str, service: str
+    ) -> int:
+        """Remove only this owner's grants for this service in this tenant."""
+        deleted = await session.scalars(
+            delete(ServiceGrant)
+            .where(
+                ServiceGrant.tenant_id == require_tenant_id(),
+                ServiceGrant.owner_id == owner_id,
+                ServiceGrant.service == service,
+            )
+            .returning(ServiceGrant.id)
+        )
+        return len(deleted.all())
 
     # ── Issued tokens ────────────────────────────────────────────────────────
 

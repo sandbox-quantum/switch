@@ -55,6 +55,7 @@ export interface SecretField {
 
 const GOOGLE = 'google-workspace';
 const AIRTABLE = 'airtable';
+const ASANA = 'asana';
 
 export function vendorName(app: Pick<ConnectorApp, 'slug' | 'kind' | 'name'>): string {
   if (app.kind === 'github_app') return 'GitHub';
@@ -358,6 +359,37 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === ASANA)
+    return [
+      {
+        text: "In Asana's developer console, create a new app and choose Asana MCP as its type, not API app or External MCP. Use an Asana account your organization owns: whoever owns the app can delete it, and that stops every connection.",
+        copy: [],
+        link: { label: 'Open the developer console', href: 'https://app.asana.com/0/my-apps' },
+        items: [],
+      },
+      {
+        text: "Name it as people should see it on Asana's consent page, for example Switch.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      redirectStep(
+        'On its OAuth tab, add these redirect URLs. Asana matches the port, so add all of them:',
+        redirectUris(app)
+      ),
+      {
+        text: 'Under Manage distribution, choose Specific workspaces and pick each workspace whose people may connect, or choose Any workspace. Anyone else is refused by Asana with "This app is not available to your workspace".',
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: "Copy the Client ID and the Client secret from the OAuth tab. Asana can't confirm them until someone connects, so have someone connect once after saving.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === GOOGLE)
     return [
       {
@@ -438,6 +470,7 @@ const HELM_VALUES: Record<string, string> = {
   github: 'switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath',
   [GOOGLE]: 'switchCore.googleWorkspaceClientSecret',
   [AIRTABLE]: 'switchCore.airtableClientSecret',
+  [ASANA]: 'switchCore.asanaClientSecret',
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */
@@ -467,11 +500,20 @@ export interface Confirmation {
 
 /** What the operator confirms before the check, because asking the vendor cannot show it. */
 export function confirmBeforeCheck(app: Pick<ConnectorApp, 'slug'>): Confirmation | null {
-  if (app.slug !== AIRTABLE) return null;
-  return {
-    label: "I've filled in its support details in Builder Hub.",
-    why: "Support email, privacy policy URL and terms of service URL. Until all three are set, only the integration's owner can connect.",
-  };
+  switch (app.slug) {
+    case AIRTABLE:
+      return {
+        label: "I've filled in its support details in Builder Hub.",
+        why: "Support email, privacy policy URL and terms of service URL. Until all three are set, only the integration's owner can connect.",
+      };
+    case ASANA:
+      return {
+        label: 'I chose Asana MCP as its type, and its workspaces under Manage distribution.',
+        why: "Asana refuses sign-ins through an API app's client, and from any workspace its distribution leaves out. Switch can't see either.",
+      };
+    default:
+      return null;
+  }
 }
 
 export function changeBlocked(app: ConnectorApp, publicUrl: string | null): boolean {

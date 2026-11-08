@@ -45,6 +45,11 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Asana can be connected.** People connect their own Asana account through
+  an Asana MCP app the server's operator registers, and turn it on per agent;
+  agents read and update tasks and projects as them. Every connection can
+  write: Asana offers no narrower consent. A connector app a vendor can't
+  check before a sign-in is saved as unchecked, and says so.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption

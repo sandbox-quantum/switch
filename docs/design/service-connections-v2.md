@@ -102,7 +102,9 @@ neither, the service is shown as not set up on this server, and people are told
 to ask whoever runs it; a file set but unusable stops the server, and a saved
 row that cannot be used leaves the service not set up, with the reason on the
 operator's page. A saved client is checked with the vendor before it is stored
-and is in use at once. Each connection records the client it signed in through
+and is in use at once. A vendor that cannot check a client before sign-in can
+opt into `client_check: none`, saving it as unchecked with a note to the operator.
+Each connection records the client it signed in through
 (`service_connections.oauth_client_id`), so one made through a client the
 operator has since replaced is told to reconnect rather than refused by the
 vendor.
@@ -537,6 +539,49 @@ To connect: Settings, Connections in Switch Console, then Airtable. To roll
 back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
+
+## Asana
+
+Built from sign-in runs against a free Asana workspace; the operator's setup
+is in [`docs/old/asana-setup.md`](../old/asana-setup.md).
+
+- Loopback redirects work for an Asana MCP app, so Switch Console can receive
+  the callback without a public server URL.
+- Asana matches each loopback port exactly. Console may use any of five ports,
+  so the operator must register all five callback URLs.
+- Both the code exchange and a refresh return `expires_in: 3600`; the entry
+  limits an access token to one hour.
+- A refresh returns no replacement refresh token, and the old one works again.
+  The entry uses `refresh: reusable` rather than expecting rotation.
+- Revoking one sign-in ends every sign-in that person made through the app.
+  `revocation_ends_grant: true` keeps a reconnect from revoking its replacement.
+- The `get_me` MCP tool has `readOnlyHint: true`, accepts an empty object with
+  no arguments, and returns `data.gid`, `data.email` and `data.name`. It
+  identifies exactly one account; an MCP token cannot call the REST
+  `/users/me` endpoint, which returns 401.
+- Asana still honors an access token issued before a refresh. Switch therefore
+  needs no host-side handoff when it renews the token.
+- After revocation, MCP `initialize` still returns 200, but tools report
+  `unauthorized` and ask the person to re-authorize; refresh returns
+  `invalid_grant`. A tool failure must be relayed, and the next refresh marks
+  the connection as needing reconnection.
+- Before a sign-in, the token endpoint returns `invalid_grant` for any client
+  ID, secret or redirect, revocation returns 200 for anything, and the logged
+  out authorization page looks the same. `client_check: none` therefore saves
+  the operator's client as unchecked instead of claiming Asana accepted it.
+- The token answer names one `authorized_workspace`. Each connection reaches
+  that workspace, and a person's Asana permissions still bound what it can do.
+- The V2 MCP server's 401 advertises protected-resource metadata at
+  `https://mcp.asana.com/.well-known/oauth-protected-resource/v2`, naming
+  `https://mcp.asana.com/v2/mcp` as the resource and `https://app.asana.com` as
+  the authorization server. Its metadata supplies `/-/oauth_authorize`,
+  `/-/oauth_token` and `/-/oauth_revoke`, with S256 PKCE. A sign-in without
+  `scope` grants `default identity`; Asana documents no narrower MCP scope, so
+  `access.unscoped` sends no scope and records write-level consent.
+
+To connect: Settings, Connections in Switch Console, then Asana. To roll
+back, add `asana` to `DISABLED_SERVICES`, remove its client under Connector
+apps or unset `ASANA_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false`.
 
 ## Google Workspace
 
