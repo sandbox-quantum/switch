@@ -309,11 +309,13 @@ moves the delivery ones to `checked`.
 2. **Breadth**: models and state machines for leases, sessions and tasks;
    Schemathesis with two tenants; Bombadil properties that tie the UI to the
    API.
-3. **System fuzzing**: the workload generator, faults, two replicas, nightly;
-   then trace validation of the delivery history against the Quint model.
+3. **Across processes and boundaries**: several replicas, the signal bus and
+   its caches, the controller, in-console chats and connectors; the
+   two-replica lane and the workload generator; then trace validation of the
+   delivery history against the Quint model. Planned below.
 4. **Antithesis evaluation**: the assertions, workload and properties already
-   exist, so the question left is whether deterministic replay of the stack
-   justifies the cost.
+   exist, so the question left is whether deterministic replay of the stack,
+   with its process kills and partitions, justifies the cost.
 
 ## The first slice: delivery, at three levels
 
@@ -431,8 +433,105 @@ adding under two minutes to PR CI (anything slower runs nightly).
 Not in this phase, and why: `bus.room-seq-dense` and `delivery.decided-at-write`
 at the system level (they need the commit order or the room's state at write
 time), `bus.lost-wakeup-only-delays` (needs injected faults), and
-`lease.eventual-owner` in a real run (two replicas). These are phase 3, with the
-workload generator and trace validation.
+`lease.eventual-owner` in a real run (two replicas, now
+`replica.ownership-eventual`). These are phase 3, with the workload generator
+and trace validation.
+
+## Phase 3: across processes and boundaries
+
+Every check so far runs against one switch-core process, so none would catch a
+problem between replicas. The design rests on three rules, each stated in the
+code: process leases on the database's clock (`process_lease.py`), signals that
+only say "look again" and are backed by a periodic re-check (`signals.py`), and
+caches held only while the bus keeps listening (`bridges/agent/held_rows.py`).
+Phase 3 puts those rules, and the boundaries to the controller, chats and
+connectors, in the catalog. Every property below is in it as `proposed`.
+
+| Property | Level | Checked by |
+| --- | --- | --- |
+| `replica.single-owner` | system | two-replica lane, Antithesis |
+| `replica.ownership-eventual` | model, system | untimed lease model; killing a replica |
+| `signal.loss-only-delays` | model, system | `signals.qnt`; dropped `NOTIFY` |
+| `cache.no-stale-past-reconnect` | model, code, system | `signals.qnt`; cache machine |
+| `membership.removal-reaches-every-replica` | model, system | `signals.qnt`; two-replica lane |
+| `presence.reaches-every-replica` | system | two-replica lane (fails today) |
+| `presence.online-iff-lease` | code, system | lease clock seam; killing a replica |
+| `controller.stream-complete` | model, code | delivery model and machine with a controller reader |
+| `controller.revoked-refused` | code, system | two in-process replicas; two-replica lane |
+| `controller.takeover-fenced` | code, system | connection-ledger machine |
+| `chats.membership-is-read-authority` | code, system | grant/revoke machine; Schemathesis |
+| `chats.owned-sync-reversible` | code | grant/revoke/transfer machine |
+| `chats.streams-close-on-sign-out` | system, ui | fast-lane scenario; Bombadil |
+| `connector.token-only-to-granted` | code, system | broker machine; Schemathesis |
+| `connector.refresh-single-flight` | code | concurrent-refresh machine, fake provider |
+| `connector.revoke-stops-issue` | code, system | broker machine; two-replica lane |
+
+How they relate to what is there:
+
+- `replica.single-owner` is the end-to-end statement of `lease.no-overlap`,
+  which holds it for one key at the model and code levels; this one is about
+  the consumer or bridge connection itself, in processes that die.
+- `replica.ownership-eventual` supersedes `lease.eventual-owner`, now retired.
+- `signal.loss-only-delays` and `bus.lost-wakeup-only-delays` are one rule on
+  two channels, so one model covers both.
+- `controller.takeover-fenced` has the shape of `lease.fenced-takeover` on a
+  different mechanism (the connection ledger's `taken_over`), so it stays a
+  property of its own.
+- `presence.reaches-every-replica` would fail today: presence goes over an
+  in-process bus (`transport/ephemeral.py`). It is recorded with that as its
+  gap so the limitation is tracked, not checked into a failing lane.
+- `session.addressed-eventually-started` now names the controller path; it
+  still waits for auto-start.
+
+In this order, cheapest and most security-relevant first, each checker shown to
+fail on a planted bug:
+
+1. **The signals model** (`properties/specs/signals.qnt`): processes with a
+   listening connection that drops and comes back, signals sent after commit
+   and lost, the periodic re-check, resync on reconnect, and a held cache with
+   its TTL and generation. Invariants for `signal.loss-only-delays` and
+   `bus.lost-wakeup-only-delays` (no wrong answer; staleness bounded by the
+   re-check), `cache.no-stale-past-reconnect` and
+   `membership.removal-reaches-every-replica`. Mutants: a handler that acts on
+   the payload, no resync on reconnect, no periodic re-check, a cache that keeps
+   its hold across a reconnect.
+2. **Security at the code level**, which needs no new infrastructure: several
+   processes in one test share Postgres, each with its own signal bus, as
+   `test_connections_across_processes.py` and the ownership machine already do.
+   Hypothesis machines for the held caches across bus disconnects
+   (`cache.no-stale-past-reconnect`), controller revocation and key expiry
+   (`controller.revoked-refused`), broker grants, revokes and disconnects
+   (`connector.token-only-to-granted`, `connector.revoke-stops-issue`), and
+   chat read authority (`chats.membership-is-read-authority`). An `always` at
+   each grant check, so the system level comes with the lane.
+3. **The two-replica lane.** A mode of the ephemeral stack with two switch-core
+   processes behind a load balancer that does not pin a client to one, and the
+   fast lane's scenarios run through it, each with a history check before
+   teardown. Then a replica killed mid-scenario
+   (`replica.ownership-eventual`, `presence.online-iff-lease`), and a scenario
+   for presence that documents the gap. This is the infrastructure the rest of
+   the system level needs.
+4. **The controller.** A controller reader in the delivery machine, with
+   bindings changing mid-stream (`controller.stream-complete`; the model gets
+   the same step). A machine over the connection ledger for
+   `controller.takeover-fenced`, and `presence.online-iff-lease` with the lease
+   clock seam from phase 2.
+5. **Chats.** A machine of random grants, revokes and ownership transfers
+   against `sync_owned_rooms`, checked after every step
+   (`chats.owned-sync-reversible`). A fast-lane scenario and a Bombadil property
+   for `chats.streams-close-on-sign-out`.
+6. **Connector refresh.** A machine whose fake OAuth provider rotates refresh
+   tokens and refuses a used one, with concurrent requests near expiry
+   (`connector.refresh-single-flight`).
+7. **Faults.** Dropped `NOTIFY` and a severed listening connection in the lane
+   (`signal.loss-only-delays`), then the workload generator and trace
+   validation as before. Process kills and network partitions at scale are what
+   Antithesis gives (phase 4); the assertions above are already in place for it.
+
+Not planned here: the controller's own rules on its side (TypeScript), such as
+a handed-over session never being driven by two controllers at once in
+handover and the detached runtime. They look like properties of the same kind;
+whoever owns that code should say what they are first.
 
 ## Open questions
 
@@ -445,3 +544,10 @@ workload generator and trace validation.
   the delivery path.
 - Whether Schemathesis's tenant check needs the OpenAPI document to mark
   which fields are ids, or can find them from the schema's naming.
+- Which load balancer the two-replica lane uses, and whether it should also
+  break WebSocket connections on purpose, to reach reconnects.
+- Whether presence is to move to the signal bus. If not, the gap on
+  `presence.reaches-every-replica` stands, and it should say what a client on
+  another replica sees instead.
+- What rules the controller's handover and detached runtime keep, from whoever
+  owns them.

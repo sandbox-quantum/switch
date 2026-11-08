@@ -1,0 +1,16 @@
+properties:
+  - id: cache.no-stale-past-reconnect
+    title: A cached row never outlives the change to it
+    statement: >
+      A row held in a cache (`ControllerAuthCache`, `RoomAccessCache`) is never
+      used after a signal that changed it was delivered. A row read while the bus
+      was not listening, or held across a reconnect, lasts the short TTL and no
+      longer.
+    kind: safety
+    formality: semi-formal
+    levels: [model, code, system]
+    owner: platform
+    status: proposed
+    notes: >
+      Security-relevant: a revoked controller or a removed room member must not
+      keep access through a cache (`bridges/agent/held_rows.py`).

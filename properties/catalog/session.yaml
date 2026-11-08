@@ -3,9 +3,14 @@ properties:
     title: Addressing an agent with no session starts one
     statement: >
       Addressing an agent that has no live session, where auto-start is
-      configured, eventually starts one.
+      configured, eventually starts one, through the controller that hosts the
+      agent when it is a hosted or managed agent.
     kind: liveness
     formality: semi-formal
     levels: [model, system]
     owner: platform
     status: proposed
+    notes: >
+      Waits for auto-start in core. The controller path is the one to check:
+      the server asks the agent's controller to start a session, and the
+      session comes up bound to the agent.
