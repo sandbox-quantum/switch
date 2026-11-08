@@ -1,10 +1,10 @@
 import { passwordLogin } from '@main/core/switch-servers/auth';
+import { updateMyName } from '@main/core/switch-servers/gateway-client';
 import {
   assertManagedServerUrlFree,
   ensureManagedServer,
   setActiveServerId,
 } from '@main/core/switch-servers/servers-store';
-import { updateMyName } from '@main/core/switch-servers/gateway-client';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import { log } from '@main/lib/logger';
 import { RELEASE_REPO_OWNER } from '@shared/app-identity';
