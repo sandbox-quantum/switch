@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 from slack_sdk.socket_mode.request import SocketModeRequest
 
 from switch_core.bridges.collaboration.models import InboundInteraction
@@ -14,7 +15,12 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackConnectionConfig,
 )
 from switch_core.bridges.collaboration.slack.ui_blocks import ui_spec_to_blocks
-from switch_core.ui_spec import UISpec, estimated_block_count, parse_ui_spec
+from switch_core.ui_spec import (
+    UISpec,
+    UISpecError,
+    estimated_block_count,
+    parse_ui_spec,
+)
 
 from .slack_fakes import FakeWebClient
 
@@ -345,3 +351,86 @@ def _named(name: str) -> Any:
         return type("User", (), {"name": name, "display_name": name})()
 
     return resolve
+
+
+def test_a_press_settles_though_another_on_its_card_finished_first() -> None:
+    adapter, client = _adapter()
+    blocks = _blocks(FULL)
+
+    async def scenario() -> None:
+        release = asyncio.Event()
+        presses: list[InboundInteraction] = []
+
+        async def on_press(interaction: InboundInteraction) -> None:
+            presses.append(interaction)
+            if len(presses) == 1:
+                await release.wait()
+                await adapter.settle_card_press(interaction, "Go")
+
+        adapter.set_interaction_handler(on_press)
+        first = asyncio.create_task(
+            adapter.dispatch_event(
+                envelope_type="interactive", payload=_press_payload(blocks)
+            )
+        )
+        while not presses:
+            await asyncio.sleep(0)
+        await adapter.dispatch_event(
+            envelope_type="interactive", payload=_press_payload(blocks)
+        )
+        release.set()
+        await first
+
+    _run(scenario())
+
+    assert len(client.updated) == 1
+    assert adapter._pressed_cards == {}
+
+
+@pytest.mark.parametrize(
+    ("props", "length"),
+    [
+        ({"content": "x" * 2998, "style": "bold"}, 3000),
+        ({"content": "&" * 600}, 3000),
+        ({"content": "<" * 750}, 3000),
+    ],
+)
+def test_text_at_the_rendered_limit_draws(props: dict[str, Any], length: int) -> None:
+    (block,) = _blocks(_spec({"t": _el("Text", **props)}, ["t"]))
+
+    assert len(block["text"]["text"]) == length
+
+
+def test_a_field_at_the_rendered_limit_draws() -> None:
+    # *label*\nvalue: 3 characters of framing.
+    spec = _spec(
+        {"fs": _el("Fields", ["f"]), "f": _el("Field", label="&", value="v" * 1992)},
+        ["fs"],
+    )
+
+    (block,) = _blocks(spec)
+
+    assert len(block["fields"][0]["text"]) == 2000
+
+
+def test_text_the_translation_grows_past_a_limit_is_refused_by_name() -> None:
+    def grow(text: str) -> str:
+        return text + "!"
+
+    text = _spec({"t": _el("Text", content="x" * 2998, style="bold")}, ["t"])
+    field = _spec(
+        {"fs": _el("Fields", ["f"]), "f": _el("Field", label="l", value="v" * 1995)},
+        ["fs"],
+    )
+
+    with pytest.raises(UISpecError) as text_error:
+        ui_spec_to_blocks(text, grow)
+    with pytest.raises(UISpecError) as field_error:
+        ui_spec_to_blocks(field, grow)
+
+    assert text_error.value.issues[0].startswith(
+        "elements.t.props.content: 3001 characters as sent to Slack, over 3000"
+    )
+    assert field_error.value.issues[0].startswith(
+        "elements.f.props.label+value: 2001 characters as sent to Slack, over 2000"
+    )

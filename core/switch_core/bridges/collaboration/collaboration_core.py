@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, TypeVar
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE, defuse_label_markup
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import link_account_reply, stop_control_frame
@@ -48,7 +49,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
-from switch_core.db.models import BridgeMessageMap, Client, ExternalUser
+from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
@@ -108,6 +109,7 @@ from switch_core.trust.client import (
 from switch_core.ui_spec import (
     UI_ACTION_PREFIX,
     UI_CONTENT_KEY,
+    UI_PRESS_KEY,
     ButtonProps,
     UISpecError,
     button_action,
@@ -207,6 +209,20 @@ def _no_agents_notice(slash_hint: str | None) -> str:
         "Once an agent is in the room, @-mention it here and it'll pick up the "
         "conversation."
     )
+
+
+def _inert(text: str) -> str:
+    """Text a card's author wrote, unable to address anyone once it is a
+    person's message: no `@name`, and no `<@U…>` or `<!channel>` for
+    `translate_inbound` to turn into one."""
+    return defuse_label_markup(text).replace("<", "<" + ZERO_WIDTH_SPACE)
+
+
+def _inbound_extra_content(msg: InboundMessage) -> dict[str, object] | None:
+    extra = dict(msg.extra_content)
+    if msg.sender_is_app:
+        extra[SENDER_IS_APP_MARKER] = True
+    return extra or None
 
 
 def _post_source(bridge_id: str, channel_id: str, message_ref: str) -> str:
@@ -1240,9 +1256,7 @@ class CollaborationCore:
                     format="markdown",
                     thread_root_id=thread_root_id,
                     metered=True,
-                    extra_content=(
-                        {SENDER_IS_APP_MARKER: True} if msg.sender_is_app else None
-                    ),
+                    extra_content=_inbound_extra_content(msg),
                 )
             if event_id is None:
                 logger.error(
@@ -1388,9 +1402,7 @@ class CollaborationCore:
                         else None
                     ),
                     metered=True,
-                    extra_content=(
-                        {SENDER_IS_APP_MARKER: True} if msg.sender_is_app else None
-                    ),
+                    extra_content=_inbound_extra_content(msg),
                 )
             if event_id is None:
                 logger.error(
@@ -2172,8 +2184,12 @@ class CollaborationCore:
         room message the bridge posted as that message, and the button has to
         be one that message's card drew. The press then goes to the room as the
         presser's message to the agent, in the card's thread, through the path
-        a typed message takes, so it gets the same identity, addressing and
-        Switch Trust checks.
+        a typed message takes, so it gets the same identity and Switch Trust
+        checks, once the presser is shown to be someone who may address the
+        author (the check a stop press takes). It addresses the card's author and no one else: what the
+        button says is made inert, and goes structured under `UI_PRESS_KEY`.
+        A card takes one answer, recorded on the bridge's mapping of the
+        card's post before the press is delivered; any later press is refused.
         """
 
         async def tell(text: str) -> None:
@@ -2186,12 +2202,13 @@ class CollaborationCore:
             )
 
         room_ids = self._channel_to_room.get(interaction.channel_id)
+        card_ref = interaction.message_ref
         card_event_id = (
-            await self._event_for_external_post(interaction.message_ref)
-            if interaction.message_ref is not None
+            await self._event_for_external_post(card_ref)
+            if card_ref is not None
             else None
         )
-        if room_ids is None or card_event_id is None:
+        if room_ids is None or card_ref is None or card_event_id is None:
             logger.warning(
                 "Ignoring a card press in %s on bridge %s: message %s maps to no "
                 "room message",
@@ -2225,12 +2242,18 @@ class CollaborationCore:
             return
         card = await human_actor.transport.get_event(transport_room_id, card_event_id)
         button: ButtonProps | None = None
+        author: Agent | None = None
         if card is not None and card.sender_name:
             try:
                 spec = parse_ui_spec(card.content.get(UI_CONTENT_KEY))
             except UISpecError:
                 spec = None
-            if spec is not None and await self._is_registered_agent(card.sender_name):
+            if spec is not None:
+                async with self._session_factory() as session:
+                    author = await self._agent_store.get_by_name(
+                        session, card.sender_name
+                    )
+            if spec is not None and author is not None:
                 button = next(
                     (
                         e.props
@@ -2241,7 +2264,7 @@ class CollaborationCore:
                     ),
                     None,
                 )
-        if card is None or button is None:
+        if card is None or author is None or button is None:
             logger.warning(
                 "Ignoring a card press on %s: %s/%s is not a button an agent's "
                 "card drew there",
@@ -2254,26 +2277,70 @@ class CollaborationCore:
                 "press was not delivered."
             )
             return
+        try:
+            await self._session_activity_service.authorize_room_control(
+                author.id,
+                room_id,
+                PlatformPerson(human_actor.transport_user_id),
+                doing="answer its card",
+            )
+        except SessionError as error:
+            await tell(f"The press was not delivered ({error.code}): {error}")
+            return
+        async with self._session_factory() as session:
+            answered = await self._bridge_message_map_store.answer_card(
+                session,
+                bridge_id=self._bridge_id,
+                external_post_id=card_ref,
+                answer={"by": interaction.sender_name, "label": button.label},
+            )
+            await session.commit()
+        if answered is not None:
+            await tell(
+                f"That card was already answered by {_inert(str(answered['by']))} "
+                f"({_inert(str(answered['label']))}), so the press was not delivered."
+            )
+            return
         details = f"action: {button.id}" + (
             f", value: {button.value}" if button.value else ""
         )
-        delivered = await self._handle_inbound_message(
-            InboundMessage(
-                channel_id=interaction.channel_id,
-                channel_type=await self._adapter.get_channel_type(
-                    interaction.channel_id
-                ),
-                sender_id=interaction.sender_id,
-                sender_name=interaction.sender_name,
-                content=f"@{card.sender_name} Clicked “{button.label}” ({details})",
-                # Each press is its own post, so it is never taken for the card
-                # or for an earlier press.
-                message_ref=f"{interaction.message_ref}#press-{uuid.uuid4().hex}",
-                root_id=await self._external_post_for_event(
-                    card.thread_root_event_id or card_event_id
-                ),
+        delivered: str | None = None
+        try:
+            delivered = await self._handle_inbound_message(
+                InboundMessage(
+                    channel_id=interaction.channel_id,
+                    channel_type=await self._adapter.get_channel_type(
+                        interaction.channel_id
+                    ),
+                    sender_id=interaction.sender_id,
+                    sender_name=interaction.sender_name,
+                    content=(
+                        f"@{card.sender_name} Clicked “{_inert(button.label)}” "
+                        f"({_inert(details)})"
+                    ),
+                    # Each press is its own post, so it is never taken for the card
+                    # or for an earlier press.
+                    message_ref=f"{interaction.message_ref}#press-{uuid.uuid4().hex}",
+                    root_id=await self._external_post_for_event(
+                        card.thread_root_event_id or card_event_id
+                    ),
+                    extra_content={
+                        UI_PRESS_KEY: {
+                            "action": button.id,
+                            "value": button.value,
+                            "label": button.label,
+                            "card_event_id": card_event_id,
+                        }
+                    },
+                )
             )
-        )
+        finally:
+            if delivered is None:
+                async with self._session_factory() as session:
+                    await self._bridge_message_map_store.clear_card_answer(
+                        session, bridge_id=self._bridge_id, external_post_id=card_ref
+                    )
+                    await session.commit()
         if delivered is not None:
             await self._adapter.settle_card_press(interaction, button.label)
 

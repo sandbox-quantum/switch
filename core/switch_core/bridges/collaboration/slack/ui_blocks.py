@@ -4,6 +4,11 @@
 neither mention nor link by Slack's own syntax; it is applied to every string
 that goes into an `mrkdwn` text. `plain_text` and table `raw_text` are not
 parsed by Slack, so their strings go as written.
+
+Every text is measured as sent against Slack's limit for its place; one over
+raises UISpecError naming the element and prop. The spec's validation counts
+the same escaping and markup, so only what `mrkdwn` changes beyond escaping
+can get here.
 """
 
 from __future__ import annotations
@@ -12,7 +17,12 @@ from collections.abc import Callable
 from typing import Any
 
 from switch_core.ui_spec import (
+    BUTTON_LABEL_MAX,
+    FIELD_TEXT_MAX,
     FIELDS_PER_SECTION,
+    HEADER_TEXT_MAX,
+    TABLE_CHARS_MAX,
+    TEXT_MAX,
     ActionsProps,
     ButtonProps,
     CardProps,
@@ -26,8 +36,19 @@ from switch_core.ui_spec import (
     TableProps,
     TextProps,
     UISpec,
+    UISpecError,
     button_action,
+    field_mrkdwn,
+    over_rendered_limit,
+    styled_mrkdwn,
 )
+
+
+def _fit(where: str, text: str, limit: int) -> str:
+    issue = over_rendered_limit(where, text, limit)
+    if issue is not None:
+        raise UISpecError([issue])
+    return text
 
 
 def _plain(text: str) -> dict[str, Any]:
@@ -42,8 +63,11 @@ def _section(text: str) -> dict[str, Any]:
     return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
 
 
-def _button(props: ButtonProps | LinkButtonProps) -> dict[str, Any]:
-    button: dict[str, Any] = {"type": "button", "text": _plain(props.label)}
+def _button(where: str, props: ButtonProps | LinkButtonProps) -> dict[str, Any]:
+    button: dict[str, Any] = {
+        "type": "button",
+        "text": _plain(_fit(f"{where}.label", props.label, BUTTON_LABEL_MAX)),
+    }
     if isinstance(props, LinkButtonProps):
         button["url"] = props.url
         return button
@@ -87,13 +111,16 @@ def ui_spec_to_blocks(
 
     def blocks(key: str) -> list[dict[str, Any]]:
         element = spec.elements[key]
+        where = f"elements.{key}.props"
         p = element.props
         out: list[dict[str, Any]] = []
         if isinstance(p, CardProps):
             if p.title:
-                out.append({"type": "header", "text": _plain(p.title)})
+                title = _fit(f"{where}.title", p.title, HEADER_TEXT_MAX)
+                out.append({"type": "header", "text": _plain(title)})
             if p.subtitle:
-                out.append(_context(mrkdwn(p.subtitle)))
+                subtitle = _fit(f"{where}.subtitle", mrkdwn(p.subtitle), TEXT_MAX)
+                out.append(_context(subtitle))
             if p.imageUrl:
                 out.append(
                     {
@@ -103,13 +130,13 @@ def ui_spec_to_blocks(
                     }
                 )
         elif isinstance(p, TextProps):
-            text = mrkdwn(p.content)
-            if p.style == "muted":
-                return [_context(text)]
-            return [_section(f"*{text}*" if p.style == "bold" else text)]
+            text = _fit(
+                f"{where}.content", styled_mrkdwn(mrkdwn(p.content), p.style), TEXT_MAX
+            )
+            return [_context(text) if p.style == "muted" else _section(text)]
         elif isinstance(p, FieldsProps):
             fields = [
-                f
+                (c, f)
                 for c in element.children
                 if isinstance(f := spec.elements[c].props, FieldProps)
             ]
@@ -119,24 +146,36 @@ def ui_spec_to_blocks(
                     "fields": [
                         {
                             "type": "mrkdwn",
-                            "text": f"*{mrkdwn(f.label)}*\n{mrkdwn(f.value)}",
+                            "text": _fit(
+                                f"elements.{c}.props.label+value",
+                                field_mrkdwn(mrkdwn(f.label), mrkdwn(f.value)),
+                                FIELD_TEXT_MAX,
+                            ),
                         }
-                        for f in fields[i : i + FIELDS_PER_SECTION]
+                        for c, f in fields[i : i + FIELDS_PER_SECTION]
                     ],
                 }
                 for i in range(0, len(fields), FIELDS_PER_SECTION)
             ]
         elif isinstance(p, TableProps):
+            rows = [p.headers, *p.rows]
+            _fit(
+                f"{where}.headers+rows",
+                "".join(cell for row in rows for cell in row),
+                TABLE_CHARS_MAX,
+            )
             table: dict[str, Any] = {
                 "type": "table",
                 "rows": [
-                    [{"type": "raw_text", "text": cell} for cell in row]
-                    for row in [p.headers, *p.rows]
+                    [{"type": "raw_text", "text": cell} for cell in row] for row in rows
                 ],
             }
             if p.align is not None:
                 table["column_settings"] = [{"align": a} for a in p.align]
-            return [table, *([_context(mrkdwn(p.caption))] if p.caption else [])]
+            if p.caption:
+                caption = _fit(f"{where}.caption", mrkdwn(p.caption), TEXT_MAX)
+                return [table, _context(caption)]
+            return [table]
         elif isinstance(p, ChartProps):
             return [_chart(p)]
         elif isinstance(p, DividerProps):
@@ -148,7 +187,7 @@ def ui_spec_to_blocks(
                 {
                     "type": "actions",
                     "elements": [
-                        _button(b)
+                        _button(f"elements.{c}.props", b)
                         for c in element.children
                         if isinstance(
                             b := spec.elements[c].props, ButtonProps | LinkButtonProps

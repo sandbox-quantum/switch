@@ -572,9 +572,9 @@ class SlackAdapter(PlatformAdapter):
         self._seen_ts_max = 1000
         self._channel_type_cache: dict[str, str] = {}
         self._last_user_message_ts: dict[str, str] = {}
-        # The message a card button was pressed on, by message ref, as the
-        # press carried it, held while the press is handled.
-        self._pressed_cards: dict[str, dict[str, Any]] = {}
+        # The message a card button was pressed on, by message ref, as each
+        # press in flight carried it, held while the press is handled.
+        self._pressed_cards: dict[str, list[dict[str, Any]]] = {}
         # Thread root (thread_ts, else message ts) of the last inbound user
         # message per channel — used to thread the "thinking" indicator into the
         # conversation the agent is responding to.
@@ -823,7 +823,8 @@ class SlackAdapter(PlatformAdapter):
         same choice cannot be made twice. Edits the message as the press saw it
         (`_pressed_cards`), leaving the rest of the card as it was."""
         ref = interaction.message_ref
-        message = self._pressed_cards.get(ref) if ref is not None else None
+        pressed = self._pressed_cards.get(ref) if ref is not None else None
+        message = pressed[-1] if pressed else None
         if ref is None or message is None:
             logger.warning(
                 "Cannot mark the card press in %s as done: Slack sent no message "
@@ -3517,10 +3518,9 @@ class SlackAdapter(PlatformAdapter):
             if not action_id or not value:
                 continue
             card_ref = message_ref if action_id.startswith(UI_ACTION_PREFIX) else None
+            message = payload.get("message") or {}
             if card_ref is not None:
-                # shortcut: two presses on one message at once share this slot, so
-                # one may leave its buttons pressable; key by press if that matters.
-                self._pressed_cards[card_ref] = payload.get("message") or {}
+                self._pressed_cards.setdefault(card_ref, []).append(message)
             try:
                 await self._on_interaction(
                     InboundInteraction(
@@ -3535,7 +3535,10 @@ class SlackAdapter(PlatformAdapter):
                 )
             finally:
                 if card_ref is not None:
-                    self._pressed_cards.pop(card_ref, None)
+                    in_flight = self._pressed_cards[card_ref]
+                    in_flight.remove(message)
+                    if not in_flight:
+                        del self._pressed_cards[card_ref]
 
     async def _handle_member_joined_channel(self, event: dict[str, object]) -> None:
         user_id = str(event.get("user", ""))

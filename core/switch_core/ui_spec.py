@@ -26,9 +26,13 @@ from pydantic import (
     ValidationError,
 )
 
+from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
+
 UI_CONTENT_KEY = "com.switch.ui"
 # A press on a card button reaches the bridge under this action id prefix.
 UI_ACTION_PREFIX = "switch.ui:"
+# The room message a press becomes carries what was pressed under this key.
+UI_PRESS_KEY = "com.switch.ui_press"
 
 MAX_BLOCKS = 50
 MAX_DEPTH = 8
@@ -37,9 +41,6 @@ MAX_CHARTS = 2
 HEADER_TEXT_MAX = 150
 TEXT_MAX = 3000
 FIELD_TEXT_MAX = 2000
-# A field's label and value share one Slack field text, with room for the
-# markup that sets the label apart.
-FIELD_MARKUP_RESERVE = 10
 FIELDS_PER_SECTION = 10
 ACTIONS_PER_BLOCK = 25
 BUTTON_LABEL_MAX = 75
@@ -442,14 +443,23 @@ def _element_issues(key: str, element: UIElement) -> list[str]:
             issues.append(
                 f"elements.{key}: a Card needs a title, an imageUrl or at least one child"
             )
+        if p.subtitle:
+            issues += _over(f"{where}.subtitle", escape_mrkdwn(p.subtitle), TEXT_MAX)
+    elif isinstance(p, TextProps):
+        issues += _over(
+            f"{where}.content",
+            styled_mrkdwn(escape_mrkdwn(p.content), p.style),
+            TEXT_MAX,
+        )
     elif isinstance(p, FieldProps):
-        budget = FIELD_TEXT_MAX - FIELD_MARKUP_RESERVE
-        if len(p.label) + len(p.value) > budget:
-            issues.append(
-                f"{where}: label and value together have "
-                f"{len(p.label) + len(p.value)} characters, over {budget}"
-            )
+        issues += _over(
+            f"{where}.label+value",
+            field_mrkdwn(escape_mrkdwn(p.label), escape_mrkdwn(p.value)),
+            FIELD_TEXT_MAX,
+        )
     elif isinstance(p, TableProps):
+        if p.caption:
+            issues += _over(f"{where}.caption", escape_mrkdwn(p.caption), TEXT_MAX)
         width = len(p.headers)
         for i, row in enumerate(p.rows):
             if len(row) != width:
@@ -487,6 +497,34 @@ def _element_issues(key: str, element: UIElement) -> list[str]:
                     f"{', '.join(map(repr, dupes))}"
                 )
     return issues
+
+
+def styled_mrkdwn(text: str, style: str | None) -> str:
+    """A Text's Slack text, from its content already rendered as mrkdwn."""
+    return f"*{text}*" if style == "bold" else text
+
+
+def field_mrkdwn(label: str, value: str) -> str:
+    """A Field's Slack text, from its label and value already rendered as mrkdwn."""
+    return f"*{label}*\n{value}"
+
+
+def over_rendered_limit(where: str, text: str, limit: int) -> str | None:
+    """The issue when `text`, as Slack receives it, is over `limit`. Shared by
+    the validation (on the escaped text) and the Slack renderer (on what it
+    sends), so the two count alike."""
+    if len(text) <= limit:
+        return None
+    return (
+        f"{where}: {len(text)} characters as sent to Slack, over {limit} "
+        "(& < > are sent as &amp; &lt; &gt;, and bold text and field labels "
+        "are wrapped in *)"
+    )
+
+
+def _over(where: str, text: str, limit: int) -> list[str]:
+    issue = over_rendered_limit(where, text, limit)
+    return [] if issue is None else [issue]
 
 
 def button_action(button: ButtonProps) -> tuple[str, str]:

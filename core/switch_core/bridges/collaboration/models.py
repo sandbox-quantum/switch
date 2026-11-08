@@ -148,6 +148,8 @@ class InboundMessage(BaseModel):
     # delivers another bot's posts, and Teams does not mark them, so both leave
     # this False and their cards accept the answer.
     sender_is_app: bool = False
+    # Content keys for the room message, beside its body.
+    extra_content: dict[str, object] = {}
 
 
 class InboundCommand(BaseModel):

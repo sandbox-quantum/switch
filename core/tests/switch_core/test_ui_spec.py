@@ -492,3 +492,60 @@ def test_not_an_object() -> None:
         "root: expected the key of the root Card element",
         "elements: expected a non-empty object of elements by key",
     ]
+
+
+_AS_SENT = (
+    "characters as sent to Slack, over {limit} (& < > are sent as &amp; &lt; "
+    "&gt;, and bold text and field labels are wrapped in *)"
+)
+
+
+def _text(**props: Any) -> dict[str, Any]:
+    return _minimal(("t", _el("Text", props)), children=["t"])
+
+
+@pytest.mark.parametrize(
+    ("props", "length"),
+    [
+        ({"content": "x" * 3000, "style": "bold"}, 3002),
+        ({"content": "&" * 1000}, 5000),
+        ({"content": "<>" * 500, "style": "muted"}, 4000),
+    ],
+)
+def test_text_is_measured_as_sent(props: dict[str, Any], length: int) -> None:
+    assert _issues(_text(**props)) == [
+        f"elements.t.props.content: {length} " + _AS_SENT.format(limit=3000)
+    ]
+
+
+def test_text_at_the_limit_as_sent_parses() -> None:
+    parse_ui_spec(_text(content="x" * 2998, style="bold"))
+    parse_ui_spec(_text(content="&" * 600))
+    parse_ui_spec(_text(content="x" * 3000, style="muted"))
+
+
+def test_a_field_is_measured_with_its_label_markup() -> None:
+    def spec(label: str, value: str) -> dict[str, Any]:
+        return _minimal(
+            ("fs", _el("Fields", {}, "f")),
+            ("f", _el("Field", {"label": label, "value": value})),
+            children=["fs"],
+        )
+
+    parse_ui_spec(spec("&", "v" * 1992))
+    assert _issues(spec("&", "v" * 1993)) == [
+        "elements.f.props.label+value: 2001 " + _AS_SENT.format(limit=2000)
+    ]
+
+
+def test_subtitle_and_caption_are_measured_as_sent() -> None:
+    raw = _minimal(
+        ("tbl", _el("Table", {"headers": ["h"], "rows": [], "caption": "<" * 751})),
+        children=["tbl"],
+    )
+    raw["elements"]["c"]["props"]["subtitle"] = ">" * 751
+
+    assert _issues(raw) == [
+        "elements.c.props.subtitle: 3004 " + _AS_SENT.format(limit=3000),
+        "elements.tbl.props.caption: 3004 " + _AS_SENT.format(limit=3000),
+    ]
