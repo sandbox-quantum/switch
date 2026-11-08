@@ -30,7 +30,13 @@ async function home(settings?: unknown, dotenv?: string) {
 
 async function check(env: Record<string, string>) {
   const handshake = vi.fn();
-  const result = await qwenAcp.checkSignIn!({ binaryPath: 'qwen', cwd: '.', env, handshake });
+  const result = await qwenAcp.checkSignIn!({
+    binaryPath: 'qwen',
+    cwd: '.',
+    env,
+    handshake,
+    request: vi.fn(),
+  });
   expect(handshake).not.toHaveBeenCalled();
   return result;
 }
@@ -54,7 +60,7 @@ describe('Qwen Code ACP hooks', () => {
     ['auto', 'auto'],
     ['full-access', 'yolo'],
   ] as const)('puts %s sessions in Qwen mode %s', (mode, expected) => {
-    expect(qwenAcp.sessionMode!(mode)).toBe(expected);
+    expect(qwenAcp.sessionMode!(mode, undefined)).toBe(expected);
   });
 
   describe('sign-in', () => {
@@ -134,12 +140,12 @@ describe('Qwen Code ACP hooks', () => {
     });
 
     it.each([
-      ['a wrong shape', { security: { auth: { selectedType: 7 } } }],
+      ['a wrong shape', { security: { auth: { selectedType: 987654321 } } }],
       ['broken JSON', '{ "security": { "auth": { "selectedType": "secret-shape" '],
     ])('reports settings with %s as unknown, without their contents', async (_what, settings) => {
       const result = await check(await home(settings));
       expect(result.status).toBe('unknown');
-      expect(result.message).not.toMatch(/7|secret-shape/);
+      expect(result.message).not.toMatch(/987654321|secret-shape/);
     });
 
     it('reads the profile QWEN_HOME names', async () => {
