@@ -84,6 +84,11 @@ async def test_documented_tools_exist(tool_names: set[str]) -> None:
     """
     documented = {
         "list_rooms",
+        "list_room_schedules",
+        "schedule_room_message",
+        "edit_room_schedule",
+        "pause_room_schedule",
+        "delete_room_schedule",
         "connect_to_room",
         "read_context",
         "post_message",

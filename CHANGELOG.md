@@ -294,6 +294,11 @@ version of their own to them without also giving them a release of their own.
   history is kept, and the deletion is recorded in the server audit log. The
   server's default workspace can't be deleted. Deleting your account now also
   deletes a workspace you leave empty.
+- **Scheduled room messages.** Room managers can create one-off or timezone-aware
+  recurring messages from Console, edit or pause them, and see their next run.
+  The server records each message and advances its schedule in one transaction,
+  so worker restarts cannot split those two operations. See
+  [room schedules](docs/room-schedules.md) for timing and recovery behavior.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package

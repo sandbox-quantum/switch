@@ -47,6 +47,10 @@ vi.mock('./console-identity', () => ({
 }));
 
 const {
+  fetchRoomSchedules,
+  saveRoomSchedule,
+  pauseRoomSchedule,
+  deleteRoomSchedule,
   cloudMachineLifecycle,
   listCloudMachines,
   getConnectionCatalog,
@@ -219,6 +223,85 @@ const CONNECTOR_APP = {
   workspaces: 1,
   stale_connections: 0,
 };
+
+describe('room schedules', () => {
+  const wire = {
+    id: 'schedule-1',
+    body: 'Review the queue',
+    agent_ids: ['triage'],
+    timezone: 'Asia/Kolkata',
+    cron: '0 9 * * 1-5',
+    next_run_at: '2026-11-06T03:30:00Z',
+    paused: false,
+    last_error: null,
+    last_run_at: null,
+  };
+  const input = {
+    body: wire.body,
+    agentIds: wire.agent_ids,
+    timezone: wire.timezone,
+    cron: wire.cron,
+    runAt: null,
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(7200));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('maps the server next-run and target fields', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse([wire]));
+    const rows = await fetchRoomSchedules(SERVER, 'room/one');
+    expect(rows[0]).toMatchObject({
+      agentIds: ['triage'],
+      authorAgentId: null,
+      nextRunAt: wire.next_run_at,
+      lastError: null,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/rooms/room%2Fone/schedules'),
+      expect.any(Object)
+    );
+  });
+
+  it('preserves the creating agent identity for Console display', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([{ ...wire, author_agent_id: 'creator' }])
+    );
+    expect((await fetchRoomSchedules(SERVER, 'room'))[0].authorAgentId).toBe('creator');
+  });
+
+  it.each([undefined, 'schedule/one'])('saves the correct schedule with id %s', async (id) => {
+    fetchMock.mockImplementation(async () => jsonResponse(wire));
+    await saveRoomSchedule(SERVER, 'room', input, id);
+    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[1].method).toBe(id ? 'PUT' : 'POST');
+    expect(JSON.parse(call[1].body as string)).toEqual({
+      body: input.body,
+      agent_ids: input.agentIds,
+      timezone: input.timezone,
+      cron: input.cron,
+      run_at: null,
+    });
+    if (id) expect(call[0]).toContain('schedule%2Fone');
+  });
+
+  it('sends pause independently from timing', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ ...wire, paused: true }));
+    expect((await pauseRoomSchedule(SERVER, 'room', wire.id, true)).paused).toBe(true);
+    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[1].method).toBe('PATCH');
+    expect(JSON.parse(call[1].body as string)).toEqual({ paused: true });
+  });
+
+  it('accepts an empty successful delete response', async () => {
+    fetchMock.mockImplementation(async () => new Response(null, { status: 204 }));
+    await expect(deleteRoomSchedule(SERVER, 'room', wire.id)).resolves.toBeUndefined();
+    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[1].method).toBe('DELETE');
+  });
+});
 
 describe('gatewayFetch proactive session renewal', () => {
   beforeEach(() => {
