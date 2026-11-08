@@ -75,7 +75,10 @@ permissions:
 jobs:
   run:
     name: ${{ inputs.lane }} lane
-    runs-on: ubuntu-latest
+    # ubuntu-latest is 26.04, which Playwright does not support yet: its
+    # `install --with-deps chromium` refuses it. The lanes that run a browser
+    # stay on 24.04 until it does.
+    runs-on: ${{ (inputs.lane == 'browser' || inputs.lane == 'explore') && 'ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: 45
     environment: ${{ (inputs.lane == 'provider' || inputs.lane == 'agentic') && 'e2e-provider' || '' }}
     outputs:
