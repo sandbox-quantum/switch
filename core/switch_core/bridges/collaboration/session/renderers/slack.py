@@ -57,6 +57,7 @@ from . import (
     INTERRUPT_QUEUED_NOTE,
     NO_OPTIONS,
     RequestReference,
+    call_title,
     example_value,
     surface_label,
     turn_state,
@@ -1166,7 +1167,8 @@ def _activity_lines(items: list[Item]) -> list[str]:
     lines: list[str] = []
     spent = 0
     for position, item in enumerate(reversed(items), start=1):
-        title = _fit(item.title, _MAX_ACTIVITY_TITLE) if item.title else "_(untitled)_"
+        name = call_title(item)
+        title = _fit(name, _MAX_ACTIVITY_TITLE) if name else "_(untitled)_"
         line = f"{_ACTIVITY[item.status]} {title}"
         if item.text:
             line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
@@ -1671,7 +1673,8 @@ def _plan_task(item: Item) -> dict[str, Any]:
             "status": "complete",
             "details": _rich_text(_truncate_prose(item.text, _MAX_SAID_DETAILS)),
         }
-    title = plain_text(item.title) if item.title else ""
+    name = call_title(item)
+    title = plain_text(name) if name else ""
     if item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()
     task: dict[str, Any] = {

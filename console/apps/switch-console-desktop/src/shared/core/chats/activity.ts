@@ -61,6 +61,8 @@ export const chatActivityItemSchema = z.object({
   roomId: z.string().nullable(),
   threadId: z.string().nullable(),
   messageId: z.string().nullable(),
+  /** On a tool call that runs a subagent; absent from a server that predates it. */
+  subagent: z.object({ agent: z.string().nullable() }).nullish(),
   occurredAt: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),

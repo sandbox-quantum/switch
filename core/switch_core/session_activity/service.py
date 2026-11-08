@@ -49,6 +49,7 @@ from switch_core.sessions.contract import (
     ApprovalResult,
     QuestionsResult,
     RequestResult,
+    Subagent,
 )
 from switch_core.sessions.errors import SessionError
 
@@ -199,11 +200,13 @@ class AgentSessionActivityService:
         message_id: str | None,
         occurred_at: datetime,
         usage: list[TokenSpend],
+        subagent: Subagent | None,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
         `usage` is what the turn spent, and only a turn's own row, reported as
-        ended, carries it.
+        ended, carries it. `subagent` names the agent a tool call runs, on that
+        call's row only.
         """
         if kind not in SESSION_ACTIVITY_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown activity kind: {kind}")
@@ -229,6 +232,10 @@ class AgentSessionActivityService:
         if usage and not (kind == "turn" and status in TURN_ENDED):
             raise SessionError(
                 "INVALID_EVENT", "Only an ended turn's own row carries its usage."
+            )
+        if subagent is not None and kind != "tool-activity":
+            raise SessionError(
+                "INVALID_EVENT", "Only a tool call's row names a subagent."
             )
         if len(title) > MAX_TITLE_CHARS or len(text) > MAX_TEXT_CHARS:
             raise SessionError(
@@ -264,6 +271,7 @@ class AgentSessionActivityService:
                     room_id=room_id,
                     thread_id=thread_id,
                     message_id=message_id,
+                    subagent=subagent.model_dump() if subagent else None,
                     occurred_at=occurred_at,
                 ),
             )

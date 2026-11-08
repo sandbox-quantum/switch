@@ -1877,6 +1877,32 @@ async def test_room_activity_is_the_rooms_steps_and_requests_in_every_state(
     assert refused.status_code == 403
 
 
+async def test_room_activity_names_the_subagent_a_tool_call_runs(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    await _step(chats, agent, room_id, "t1", "tool-1", 1)
+    await _step(chats, agent, room_id, "t1", "tool-2", 2)
+    async with chats.factory() as session:
+        await session.execute(
+            update(AgentSessionActivityItem)
+            .where(AgentSessionActivityItem.item_id == "tool-2")
+            .values(subagent={"agent": "Explore"})
+        )
+        await session.commit()
+
+    response = await chats.client.get(
+        f"/chats/{room_id}/activity", headers=chats.as_user(chats.alice)
+    )
+
+    assert response.status_code == 200, response.text
+    assert [(i["itemId"], i["subagent"]) for i in response.json()["items"]] == [
+        ("tool-1", None),
+        ("tool-2", {"agent": "Explore"}),
+    ]
+
+
 async def test_room_activity_keeps_open_requests_past_retention(
     chats: _Harness,
 ) -> None:

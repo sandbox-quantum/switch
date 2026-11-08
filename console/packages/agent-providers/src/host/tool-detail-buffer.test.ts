@@ -155,3 +155,22 @@ it('keeps an answer bounded, newest turns first, listing what is left over bare'
   expect(turns.at(-1)!.tools[0]!.output).toBe(big);
   expect(turns.flatMap((turn) => turn.tools).some((tool) => tool.output === null)).toBe(true);
 });
+
+it('says which agent a subagent call runs, and nothing for other calls', () => {
+  const buffer = new ToolDetailBuffer();
+  buffer.ingest(
+    itemEvent('item.started', 'turn', { id: 'tu1', type: 'subagent', toolName: 'Explore' }),
+    'epoch'
+  );
+  buffer.ingest(
+    itemEvent('item.started', 'turn', { id: 'tu2', type: 'command_execution', toolName: 'Bash' }),
+    'epoch'
+  );
+  const id = (callId: string) => JSON.stringify(['turn', callId]);
+
+  expect(buffer.subagentOf('epoch', 'turn', id('tu1'))).toEqual({ agent: 'Explore' });
+  expect(buffer.subagentOf('epoch', 'turn', id('tu2'))).toBeNull();
+  expect(buffer.subagentOf('epoch', 'turn', id('unknown'))).toBeNull();
+  // A lookup for another epoch finds nothing.
+  expect(buffer.subagentOf('next', 'turn', id('tu1'))).toBeNull();
+});

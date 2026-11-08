@@ -205,7 +205,11 @@ interface SessionState {
   turn: ActiveTurn | null;
   pendingApprovals: Map<string, PendingApproval>;
   pendingUserInputs: Map<string, PendingUserInput>;
-  toolItems: Map<string, ProviderItem>;
+  /**
+   * Each started tool call with the turn it started in. A background
+   * subagent's own calls end after that turn, and still end in it.
+   */
+  toolItems: Map<string, { turnId: string; item: ProviderItem }>;
   streamedMessageIds: Set<string>;
   textBlocks: Map<number, TextBlockState>;
   streamMessageId: string | null;
@@ -223,7 +227,24 @@ interface SessionState {
    * the background. A background one outlives the turn that started it, so
    * the session is still at work after the turn ends.
    */
-  subagentTasks: Map<string, { backgrounded: boolean }>;
+  subagentTasks: Map<string, { backgrounded: boolean; toolUseId: string | null }>;
+  /**
+   * The item of each background subagent whose `Agent` call has returned, by
+   * task id, with the turn that started it. The call returns as soon as the
+   * subagent is launched, so its item stays in progress until the task ends,
+   * which is often after that turn has.
+   */
+  backgroundItems: Map<string, { turnId: string; item: ProviderItem }>;
+}
+
+/** What a finished task's status can be, across `task_updated` and `task_notification`. */
+const ENDED_TASK_STATUSES = new Set(['completed', 'failed', 'killed', 'stopped']);
+
+/** The background subagent task an `Agent` call launched, if it was launched in the background. */
+function backgroundTaskOf(session: SessionState, toolUseId: string): string | null {
+  for (const [taskId, task] of session.subagentTasks)
+    if (task.backgrounded && task.toolUseId === toolUseId) return taskId;
+  return null;
 }
 
 /** Task types that are agents doing work, rather than shells or tool calls. */
@@ -553,6 +574,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       usage: new CumulativeUsage(),
       unreportedUsage: [],
       subagentTasks: new Map(),
+      backgroundItems: new Map(),
     };
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
@@ -827,6 +849,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   private handleMessage(session: SessionState, message: SDKMessage): void {
     if (message.type === 'result') this.recordUsage(session, message);
     this.trackSubagentTasks(session, message);
+    this.settleBackgroundItem(session, message);
     if (session.compaction) {
       if (message.type === 'system' && message.subtype === 'compact_boundary')
         session.compaction.boundary = true;
@@ -891,7 +914,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     switch (message.subtype) {
       case 'task_started':
         if (isSubagentTask(message))
-          tasks.set(message.task_id, { backgrounded: message.is_backgrounded !== false });
+          tasks.set(message.task_id, {
+            backgrounded: message.is_backgrounded !== false,
+            toolUseId: message.tool_use_id ?? null,
+          });
         return;
       case 'task_updated': {
         const task = tasks.get(message.task_id);
@@ -907,16 +933,37 @@ export class ClaudeAdapter implements ProviderAdapter {
         tasks.delete(message.task_id);
         return;
       case 'background_tasks_changed': {
-        const foreground = [...tasks].filter(([, task]) => !task.backgrounded);
+        const previous = new Map(tasks);
         tasks.clear();
-        for (const [taskId, task] of foreground) tasks.set(taskId, task);
+        for (const [taskId, task] of previous) if (!task.backgrounded) tasks.set(taskId, task);
         for (const task of message.tasks)
-          if (isSubagentTask(task)) tasks.set(task.task_id, { backgrounded: true });
+          if (isSubagentTask(task))
+            tasks.set(task.task_id, {
+              backgrounded: true,
+              toolUseId: previous.get(task.task_id)?.toolUseId ?? null,
+            });
         return;
       }
       default:
         return;
     }
+  }
+
+  /** Completes a background subagent's item when its task ends, in the turn that started it. */
+  private settleBackgroundItem(session: SessionState, message: SDKMessage): void {
+    if (message.type !== 'system') return;
+    if (message.subtype !== 'task_notification' && message.subtype !== 'task_updated') return;
+    const status = message.subtype === 'task_notification' ? message.status : message.patch.status;
+    if (status === undefined || !ENDED_TASK_STATUSES.has(status)) return;
+    const pending = session.backgroundItems.get(message.task_id);
+    if (!pending) return;
+    session.backgroundItems.delete(message.task_id);
+    this.emit(session, {
+      type: 'item.completed',
+      turnId: pending.turnId,
+      item: { ...pending.item, status: status === 'completed' ? 'completed' : 'failed' },
+      raw: { source: 'claude', payload: message },
+    });
   }
 
   private handleStreamEvent(
@@ -1039,7 +1086,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         toolName: toolNameForItem(name, toolInput),
         payload: toolInput,
       };
-      session.toolItems.set(id, item);
+      session.toolItems.set(id, { turnId, item });
       this.emit(session, {
         type: 'item.started',
         turnId,
@@ -1050,8 +1097,7 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   private handleToolResults(session: SessionState, content: unknown): void {
-    const turnId = session.turn?.turnId;
-    if (turnId === undefined || !Array.isArray(content)) return;
+    if (!Array.isArray(content)) return;
 
     for (const block of content) {
       if (!isRecord(block) || block.type !== 'tool_result') continue;
@@ -1060,12 +1106,18 @@ export class ClaudeAdapter implements ProviderAdapter {
       const started = session.toolItems.get(toolUseId);
       if (!started) continue;
       session.toolItems.delete(toolUseId);
+      const { turnId, item } = started;
+      const backgroundTask = item.type === 'subagent' ? backgroundTaskOf(session, toolUseId) : null;
+      if (backgroundTask !== null) {
+        session.backgroundItems.set(backgroundTask, { turnId, item });
+        continue;
+      }
       const status: ItemStatus = block.is_error === true ? 'failed' : 'completed';
       const text = textFromToolResultContent(block.content);
       this.emit(session, {
         type: 'item.completed',
         turnId,
-        item: { ...started, status, ...(text !== undefined ? { text } : {}) },
+        item: { ...item, status, ...(text !== undefined ? { text } : {}) },
         raw: { source: 'claude', payload: block },
       });
     }
