@@ -1374,6 +1374,14 @@ describe('GitHub connection transport', () => {
     expect(await getGitHubConnection(SERVER)).not.toHaveProperty('access_token');
   });
   it('reads the service connections, mapped onto the catalog', async () => {
+    const signInFields = [
+      {
+        name: 'stack',
+        label: 'Grafana Cloud stack',
+        help: 'Your stack address.',
+        pattern: '^.+\\.grafana\\.net$',
+      },
+    ];
     const entry = {
       slug: 'github',
       name: 'GitHub',
@@ -1401,6 +1409,7 @@ describe('GitHub connection transport', () => {
               status: 'active',
               pass_through: true,
               token_lifetime: 7200,
+              sign_in_fields: signInFields,
             },
           ],
         })
@@ -1423,6 +1432,7 @@ describe('GitHub connection transport', () => {
         token_lifetime: null,
         loopback_ports: null,
         key: null,
+        sign_in_fields: [],
         external_identity: 'ada-gh',
         consent: 'write',
         // A server without the workspace switch: no workspace layer.
@@ -1434,6 +1444,7 @@ describe('GitHub connection transport', () => {
         status: 'connected',
         pass_through: true,
         token_lifetime: 7200,
+        sign_in_fields: signInFields,
       }),
     ]);
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
@@ -1847,6 +1858,21 @@ describe('a service sign-in', () => {
       input,
       { code: 'SYNTHETIC-CODE', completion_secret: 'b'.repeat(43) },
     ]);
+  });
+
+  it('sends the sign-in fields', async () => {
+    answer({ id: state, mode: 'core', url: `${flows}/authorize?state=${state}` });
+    const fields = { stack: 'example-stack.grafana.net' };
+    await startServiceConnection(SERVER, 'example', { ...input, fields });
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect(JSON.parse(calls[0]![1].body as string)).toEqual({ ...input, fields });
+  });
+
+  it('leaves out empty fields for older servers', async () => {
+    answer({ id: state, mode: 'core', url: `${flows}/authorize?state=${state}` });
+    await startServiceConnection(SERVER, 'example', { ...input, fields: {} });
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect(JSON.parse(calls[0]![1].body as string)).toEqual(input);
   });
 
   it('accepts Core’s own authorize step on this server in core mode', async () => {

@@ -10,19 +10,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import { Input } from '@renderer/lib/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
 import type {
   ConnectionCatalogEntry,
   ServiceKeyForm,
 } from '@shared/core/switch-servers/connection-catalog';
 import type { ServiceCalls } from './service-calls';
+import { ServiceFieldInputs } from './service-field-inputs';
 
 /**
  * Connecting a service by pasting a key: a form of the fields the catalog
@@ -132,49 +125,18 @@ export function ServiceKeyStep({
           </p>
         )}
         {editing && (
-          <div role="group" aria-label={`${name} key`} className="space-y-3">
-            {form.fields.map((field) => {
-              const id = `service-key-${service}-${field.name}`;
-              const value = values[field.name] ?? '';
-              const set = (next: string) => {
-                setValues((current) => ({ ...current, [field.name]: next }));
+          <div className="space-y-3">
+            <ServiceFieldInputs
+              idPrefix={`service-key-${service}`}
+              label={`${name} key`}
+              fields={form.fields}
+              values={values}
+              disabled={busy}
+              onChange={(fieldName, next) => {
+                setValues((current) => ({ ...current, [fieldName]: next }));
                 setError(null);
-              };
-              return (
-                <div key={field.name} className="space-y-1">
-                  <label htmlFor={id} className="block text-sm font-medium">
-                    {field.label}
-                  </label>
-                  {field.choices ? (
-                    <Select value={value || null} onValueChange={(next) => set(next ?? '')}>
-                      <SelectTrigger id={id} aria-label={field.label} className="w-full">
-                        <SelectValue placeholder={`Choose a ${field.label.toLowerCase()}`}>
-                          {value || undefined}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {field.choices.map((choice) => (
-                          <SelectItem key={choice} value={choice}>
-                            {choice}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Input
-                      id={id}
-                      type={field.secret ? 'password' : 'text'}
-                      autoComplete="off"
-                      spellCheck={false}
-                      disabled={busy}
-                      value={value}
-                      onChange={(event) => set(event.target.value)}
-                    />
-                  )}
-                  {field.help && <p className="text-xs text-foreground-muted">{field.help}</p>}
-                </div>
-              );
-            })}
+              }}
+            />
             {form.help_url && (
               <button
                 type="button"

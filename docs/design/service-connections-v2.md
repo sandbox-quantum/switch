@@ -5,9 +5,9 @@ Status: built (Phases 1 and 2). This note covers what v2 adds to
 whose tools are its own MCP servers or its command-line tool, and any vendor
 people connect with a key they paste, connected, granted and called from a
 session on generic parts, with Atlassian (Jira), Google Workspace and Datadog
-as the first. v1's tables,
-broker checks, agent routes, token cache and redaction carry over unchanged;
-GitHub works as it did.
+as the first. The Grafana Cloud catalog entry is disabled after a failed stack
+isolation probe. v1's tables, broker checks, agent routes, token cache and
+redaction carry over unchanged; GitHub works as it did.
 
 ## What changes from v1
 
@@ -31,6 +31,11 @@ auth:
   type: oauth
   refresh: rotating           # rotating | reusable
   oauth:
+    # fields:
+    #   - name: tenant
+    #     label: Example team
+    #     help: Your team's name, such as team-a.
+    #     pattern: '^[a-z0-9-]{1,30}$'
     registration: dynamic     # dynamic: Core registers its own client
                               # static: the operator's, saved in the dashboard or named
                               # by <PREFIX>_CLIENT_CONFIG_PATH (client_settings)
@@ -56,6 +61,25 @@ access:
 tools: { mode: pass_through } # the vendor's tool list as it is, until classified
 ```
 
+An OAuth identity can instead name `mcp_tool: user_info` in place of `url`.
+Switch initializes the configured first MCP server and checks that exactly one
+matching tool advertises `readOnlyHint: true` and accepts an empty argument
+object before calling it. Its result must be a single account object, either
+structured content or one JSON text block. Identity requests have time and
+response-size limits, refuse redirects, and report fixed failure codes rather
+than vendor diagnostics.
+
+`identity.account_id` can be a nonempty list of dotted paths when the account
+needs several stable identifiers. Each value must be a nonempty string or an
+integer. Switch percent-encodes each part and joins them with `:`, so a vendor
+value containing a colon cannot collide with a boundary. A single path keeps
+its existing account-id representation.
+
+For a vendor offering no OAuth scopes, `access.unscoped: true` explicitly permits
+empty `read.scopes` and `write.scopes`. Both levels are required and a connection
+is always recorded as write access. Vendors with scopes must keep the normal
+scoped levels.
+
 The loader stays strict and refuses an entry whose fields contradict its
 adapter: a GitHub entry with MCP servers, a pass-through GitHub token, an
 `oauth` entry without its client, identity or tools, a minted token that
@@ -64,6 +88,15 @@ endpoints are discovered from the first MCP server: the metadata its 401 names
 (RFC 9728), else the well-known addresses, then the authorization server's
 metadata (RFC 8414), which must offer PKCE with S256. A dynamically registered
 client always discovers. Placeholder entries keep their short form.
+
+An OAuth MCP connector may declare up to four sign-in fields under
+`auth.oauth.fields`. Their placeholders fill a whole path segment or a whole
+host label left of a fixed domain in an MCP server URL, never its scheme, port,
+query or fragment.
+The identity's `account_id` lists every field as `connection.<field>` alongside
+vendor identity paths, so accounts from different tenants stay distinct. The
+checked values live in the encrypted connection secret, and grants name a rendered
+server only while their account still matches the owner's connection.
 
 The adapter is named for how it signs in, `oauth`, not for how its tools are
 reached. Its entry delivers its tools one of two ways, never both: the vendor's
@@ -137,6 +170,9 @@ hours for Atlassian, whose tokens cannot be asked for shorter).
 
 ## Connecting
 
+Console sends the sign-in fields with the flow start, and Core checks them
+before contacting the vendor.
+
 Routes under `/gateway/service-connections/{service}/flows`: start, authorize,
 callback, complete, status and drop.
 Switch Console starts a flow with a one-time state, its listener's port and a
@@ -160,7 +196,9 @@ There is no confirm step: the person chose the account at the vendor. The
 flow then reads `connected` (with the account and any warning) or `failed`
 (with the reason), holding no token, until Console drops it or it expires.
 The consent recorded is what the vendor granted: write where every write
-scope was granted, else read. Flows are rows in `sign_in_flows`, so any
+scope was granted, read where none of the scopes only writing needs was, and a
+sign-in granted part of the write access is refused, so a connection that can
+write is never recorded as read-only. Flows are rows in `sign_in_flows`, so any
 process can take any step: ten minutes each, at most 256 per workspace, one
 per person.
 
@@ -537,6 +575,53 @@ To connect: Settings, Connections in Switch Console, then Airtable. To roll
 back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
+
+## Grafana Cloud
+
+Built from the Grafana Cloud design and a live sign-in probe reported by the
+controller. **This entry is switched off.** Gate 0 failed: a token issued for
+one stack received HTTP 200 from a made-up other-stack endpoint; no second real
+stack was available. Keep it disabled until Grafana binds a token to its stack.
+The intended connection shape below is retained for future verification.
+
+- Each intended connection represents one stack. When enabled, Console asks
+  for its address, such as
+  `example-stack.grafana.net`, without `https://`. Core validates the field and
+  uses `https://mcp.grafana.com/mcp/{stack}`. Another stack needs another
+  connection. Dynamic registration uses Grafana's shared registration and token
+  endpoints; no operator client setup is needed.
+- Identity comes from the read-only `user_info` MCP tool, with no arguments.
+  The controller's live probe returned the keys `currentOrgId`, `email`,
+  `isGrafanaAdmin`, `login`, `name` and `orgs`, with no numeric user id. Account
+  identity combines the checked `connection.stack` with `login`; the stack is
+  supplied by Core, never taken from the answer, orgs or claims. The live probe
+  also confirmed that `user_info` is read-only and takes no arguments.
+- Grafana's consent page offers Read, Query and Write separately. Read maps to
+  `grafana:read`; write requires all of `grafana:read`, `grafana:query` and
+  `grafana:write`. Query runs SQL as written and may change data, so Query or
+  Write without the other is refused, never recorded as read. Only org Admins
+  can grant Write; Editors connect read-only by clearing Query. Chosen tool
+  areas may further limit which tools appear. The live Admin consent granted
+  all three scopes; the consent stack-picker observation remains pending.
+- The controller's live probe reported `expires_in=3600` and refresh rotation.
+  The old access token still worked after refresh. Grafana documents refresh for
+  30 days, followed by sign-in again; the 30-day window has not been measured.
+  An agent's copy can outlive its Switch grant until expiry, bounded by the
+  catalog's one-hour cap.
+- No revocation endpoint is configured. Disconnect forgets the sign-in in
+  Switch; remove the remaining grant in the stack under Grafana Assistant,
+  Settings, Connectors, MCP clients, Your connections. Confirm discovery and
+  this removal path in a further live run.
+- The stack needs Grafana Assistant enabled and the person needs the Assistant
+  Cloud MCP User role or `grafana-assistant-app.cloud-mcp:access` permission
+  (Editor and above have it). Each MCP user counts as an Assistant active user
+  for billing. `ask_assistant` and `create_investigation` use Assistant models
+  with costs and limits. A future enabled skill must reserve them for an explicit
+  request; no agent skill ships while this entry is disabled.
+
+Grafana Cloud appears as coming soon in Switch Console while `enabled: false`.
+If it is enabled after verification, connect under Settings, Connections. To
+roll back then, add `grafana` to `DISABLED_SERVICES` or restore `enabled: false`.
 
 ## Google Workspace
 
