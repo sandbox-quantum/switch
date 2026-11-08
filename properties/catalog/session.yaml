@@ -19,7 +19,9 @@ properties:
       this is the half core owes an agent with no live session. The other half
       is `session.controller-starts-on-addressed`. An agent the controller has
       no position for is attached at its head, so what was addressed before
-      that is not the stream's to deliver.
+      that is not the stream's to deliver. The machine runs one process with
+      a failing pool injected, so delivery when the controller's stream and the
+      writer are on different replicas is not covered (see `signal.*`).
   - id: session.controller-starts-on-addressed
     title: A controller starts a session for an addressed agent
     statement: >

@@ -21,7 +21,6 @@ from collections import Counter
 from typing import Any, ClassVar
 
 import hypothesis.strategies as st
-from hypothesis import event
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -93,6 +92,8 @@ class ControllerStreams(RuleBasedStateMachine):
         self._scope = tenant_scope(TENANT_ZERO_ID)
         self._scope.__enter__()
         self.engine = create_async_engine(self.url)
+        self.http_open = False
+        self.stream: Any = None
         self._retry_wait = controller_stream.PASS_RETRY_FIRST_SECONDS
         controller_stream.PASS_RETRY_FIRST_SECONDS = 0.01
         try:
@@ -107,6 +108,7 @@ class ControllerStreams(RuleBasedStateMachine):
         self.harness: Harness = build_harness(self.session_factory)
         self.http = self.harness.client()
         self.run(self.http.__aenter__())
+        self.http_open = True
         self.controller: EnrolledController
         self.agents: dict[str, str] = {}
         self.run(self._seed())
@@ -116,7 +118,6 @@ class ControllerStreams(RuleBasedStateMachine):
         self.position = {agent: 0 for agent in AGENTS}
         self.confirmed = {agent: 0 for agent in AGENTS}
         self.opened: dict[str, Any] | None = None
-        self.stream: Any = None
         self.failing = 0
         self.asked = 0
         buffer = self.harness.protocol.event_buffer
@@ -148,12 +149,12 @@ class ControllerStreams(RuleBasedStateMachine):
 
     def _release(self) -> None:
         try:
-            if getattr(self, "stream", None) is not None:
+            if self.stream is not None:
                 with contextlib.suppress(Exception):
                     self.run(self.stream.aclose())
             if hasattr(self, "_buffer"):
                 self._buffer.read_from = self._read_from  # type: ignore[method-assign]
-            if hasattr(self, "http"):
+            if self.http_open:
                 self.run(self.http.__aexit__(None, None, None))
             self.run(self.engine.dispose())
         finally:
@@ -192,7 +193,13 @@ class ControllerStreams(RuleBasedStateMachine):
                 self.position[agent] = data["seq"]
                 taken += 1
 
-        await asyncio.wait_for(pump(), timeout=READ_SECONDS)
+        try:
+            await asyncio.wait_for(pump(), timeout=READ_SECONDS)
+        except TimeoutError:
+            raise AssertionError(
+                f"{taken} of {events} events arrived in {READ_SECONDS}s; the "
+                f"controller is at {self.position} of {self.head}"
+            ) from None
 
     async def _opening(self) -> None:
         """The frames a stream opens with: its own state, then each agent
@@ -206,10 +213,18 @@ class ControllerStreams(RuleBasedStateMachine):
                 if raw is IDLE:
                     continue
                 name, data = parse_frame(raw)
+                if name == "agent.gap":
+                    raise AssertionError(f"the stream reported a gap: {data}")
                 if name == "agent.attached":
                     attached[by_id[data["agent_id"]]] = data["from_seq"]
 
-        await asyncio.wait_for(pump(), timeout=READ_SECONDS)
+        try:
+            await asyncio.wait_for(pump(), timeout=READ_SECONDS)
+        except TimeoutError:
+            raise AssertionError(
+                f"the stream attached {sorted(attached)} of {list(AGENTS)} "
+                f"in {READ_SECONDS}s"
+            ) from None
         for agent, from_seq in attached.items():
             assert from_seq == self.confirmed[agent], (
                 f"{agent} was attached from {from_seq}, "
@@ -249,7 +264,6 @@ class ControllerStreams(RuleBasedStateMachine):
             )
 
         self.head[agent] = self.run(go())
-        event("asked")
 
     @precondition(lambda self: self.opened is None)
     @rule()

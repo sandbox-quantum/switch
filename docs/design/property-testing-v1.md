@@ -294,7 +294,7 @@ moves the delivery ones to `checked`.
 | `delivery.per-room-order` | An agent's own events from one room arrive in `room_seq` order | safety | model, system |
 | `lease.fenced-takeover` | A lease's token strictly increases per key; once a key is taken over, every write by an earlier holder is refused | safety | model, code |
 | `lease.eventual-owner` | Work whose holder stopped or stopped renewing is eventually held by a live process | liveness | model, system |
-| `session.addressed-reaches-controller` | Every event addressed to an agent a controller has attached reaches the controller's stream, in order, none skipped | liveness | code |
+| `session.addressed-reaches-controller` | Every event addressed to an agent a controller has attached reaches the controller's stream, in order, none skipped (one process; delivery across replicas is not covered) | liveness | code |
 | `session.controller-starts-on-addressed` | A controller with auto-start on starts a session for an addressed agent that has none, and never two for one room | liveness | code |
 | `task.lifecycle` | A task moves only delegate → ongoing → finalised; finalised is terminal (retired: the protocol was removed) | safety | model, code |
 | `tenancy.no-cross-tenant-ids` | No response to a principal in one tenant contains an id from another | safety | code, system |
