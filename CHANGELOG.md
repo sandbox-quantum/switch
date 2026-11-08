@@ -2746,6 +2746,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Mistral Vibe is available as an agent provider.** Create an agent using
+  Vibe on a machine where it is installed and configured, and choose a model
+  from Vibe's available models. The integration uses Vibe's ACP server for
+  conversations, tools, approvals, and session resumption.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
