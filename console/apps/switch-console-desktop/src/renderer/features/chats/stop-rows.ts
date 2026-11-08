@@ -64,7 +64,5 @@ export function hiddenStopRows(messages: readonly Row[]): Set<string> {
 /** An agent's acknowledgement of a Stop or Retry, which the chat leaves out: never where a turn shows. */
 export function isControlAck(message: Pick<ChatMessage, 'body' | 'sender'>): boolean {
   const allAcks = [...SYSTEM_COMMANDS, ...HUMAN_COMMANDS];
-  return (
-    message.sender.kind !== 'human' && allAcks.some(([, ack]) => message.body.startsWith(ack))
-  );
+  return message.sender.kind !== 'human' && allAcks.some(([, ack]) => message.body.startsWith(ack));
 }
