@@ -31,6 +31,8 @@ In Switch Console, open **Connect a messaging app** and choose **Custom app
 When you connect, Switch sends your app a signed `ping`. Your app must answer
 with a `2xx`. Anything else shows up as a clear error: a rejected signature, an
 HTTP error, or an address that cannot be reached.
+Switch sends the same `ping` later to check on the connection, so keep
+answering it quickly.
 
 Once connected, the connection shows its **address**:
 
@@ -107,7 +109,7 @@ stored the event.
 
 | `type` | When | Fields used |
 |---|---|---|
-| `ping` | Connecting. | none |
+| `ping` | Connecting, and whenever Switch checks the connection. | none |
 | `message.created` | An agent or a person in the room posted. | `channel_id`, `message_id`, `sender`, `text`, `thread_id`, `files` |
 | `message.updated` | A message was edited. | `channel_id`, `message_id`, `text` |
 | `message.deleted` | A message was deleted. | `channel_id`, `message_id` |
@@ -199,4 +201,4 @@ export function isFromSwitch(headers, rawBody, secret) {
 | Connecting says it "could not reach" the URL | The URL is wrong or blocked. Private addresses must be allowed by the deployment's `OUTBOUND_ALLOWED_PRIVATE_HOSTS`. |
 | Your events get `401` | The inbound token differs from the one saved on the connection. |
 | Your events get `400` | The JSON does not match the schema. The response says which field. |
-| The connection reports Switch cannot deliver messages | Your app is down or answering with errors. It recovers on its own when messages get through again. |
+| The connection shows a warning | When someone looks at the connection, Switch sends your app a signed `ping`, at most once every 30 seconds per server, and waits 2 seconds for the answer. The warning says what it got: an address it cannot reach, a rejected signature, or an error status. It clears on its own once the app answers the `ping` with a `2xx`. |

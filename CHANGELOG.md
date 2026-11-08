@@ -309,7 +309,9 @@ version of their own to them without also giving them a release of their own.
   and Switch posts room messages, edits, deletes, typing and files to the
   app's URL, signed with the connection's secret. Connecting sends the app a
   signed ping, so a rejected signature or an unreachable URL is reported
-  straight away. The payloads are versioned and published in
+  straight away. The connection's warning comes from the same ping, sent when
+  someone looks at the connection, so every server process shows the same
+  one. The payloads are versioned and published in
   `docs/messaging-platforms/webhook.schema.json`, and
   `examples/webhook-chat` is a one-file app that shows the round trip.
 - **An agent controller can send its agents' operations on its socket.**

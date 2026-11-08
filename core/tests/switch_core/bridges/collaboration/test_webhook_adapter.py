@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from collections.abc import Callable
@@ -41,7 +42,7 @@ from switch_core.bridges.collaboration.webhooks import (
 )
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.gateway.collaborations import list_bridge_types
-from switch_core.outbound import OutboundPolicy
+from switch_core.outbound import OutboundPolicy, OutboundURLRefused
 
 from .test_lifecycle_tenant_binding import _service
 from .test_platform_self_contained import _hook_bridge, _RunningBridge
@@ -502,7 +503,6 @@ class TestWhenTheAppMisbehaves:
         adapter = _running(_App(503))
         with pytest.raises(BridgeOperationError, match="503"):
             await adapter.send_message("c-1", "triager", "hi")
-        assert "cannot deliver" in (await adapter.attention() or "")
 
     async def test_a_client_error_is_not_retried(self) -> None:
         app = _App(400)
@@ -517,15 +517,6 @@ class TestWhenTheAppMisbehaves:
         adapter = _running(_App(status))
         with pytest.raises(BridgeCredentialError, match="signing secret"):
             await adapter.send_message("c-1", "triager", "hi")
-        assert "signing secret" in (await adapter.attention() or "")
-
-    async def test_attention_clears_once_the_app_accepts_again(self) -> None:
-        app = _App(401, 200)
-        adapter = _running(app)
-        with pytest.raises(BridgeCredentialError):
-            await adapter.send_message("c-1", "triager", "one")
-        await adapter.send_message("c-1", "triager", "two")
-        assert await adapter.attention() is None
 
     async def test_an_unreachable_app_is_a_network_failure(self) -> None:
         def refuse(request: httpx.Request) -> httpx.Response:
@@ -538,6 +529,117 @@ class TestWhenTheAppMisbehaves:
     async def test_sending_before_the_bridge_starts_is_refused(self) -> None:
         with pytest.raises(BridgeOperationError, match="not running"):
             await WebhookAdapter(config=_config()).send_message("c-1", "x", "hi")
+
+
+class TestTheConnectionsWarning:
+    """Every server process runs the adapter and any of them can answer the
+    gateway, but one process sends the room's messages. The warning is read
+    from the app, so all of them say the same thing."""
+
+    @pytest.fixture(autouse=True)
+    def _no_waiting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(adapter_module, "_BACKOFF_SECONDS", (0, 0))
+
+    async def test_an_app_that_answers_has_nothing_to_report(self) -> None:
+        assert await _running(_App(200)).attention() is None
+
+    async def test_the_check_is_a_signed_ping(self) -> None:
+        app = _App(200)
+        await _running(app).attention()
+        [request] = app.requests
+        stamp = request.headers["x-switch-timestamp"]
+        assert request.headers["x-switch-event"] == "ping"
+        assert request.headers["x-switch-signature"] == schema.sign(
+            SIGNING_SECRET, stamp, request.content
+        )
+
+    async def test_the_check_waits_only_a_moment(self) -> None:
+        waits: list[Any] = []
+
+        def app(request: httpx.Request) -> httpx.Response:
+            waits.append(request.extensions["timeout"]["read"])
+            return httpx.Response(200)
+
+        await _running(app).attention()
+        assert waits == [adapter_module._CHECK_TIMEOUT]
+
+    async def test_a_server_that_never_sent_a_message_reports_an_app_that_is_down(
+        self,
+    ) -> None:
+        def refuse(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        sender, bystander = _running(refuse), _running(refuse)
+        with pytest.raises(BridgeOperationError):
+            await sender.send_message("c-1", "triager", "hi")
+        warning = await bystander.attention()
+        assert warning is not None and "cannot reach" in warning
+        assert warning == await sender.attention()
+
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_every_server_reports_a_rejected_signature(self, status: int) -> None:
+        sender, bystander = _running(_App(status)), _running(_App(status))
+        with pytest.raises(BridgeCredentialError):
+            await sender.send_message("c-1", "triager", "hi")
+        warning = await bystander.attention()
+        assert warning is not None and "signing secret" in warning
+        assert warning == await sender.attention()
+
+    async def test_an_app_that_errors_is_reported_with_its_status(self) -> None:
+        warning = await _running(_App(500)).attention()
+        assert warning is not None and "500" in warning
+
+    async def test_a_failed_delivery_does_not_change_what_a_server_reports(
+        self,
+    ) -> None:
+        def only_messages_fail(request: httpx.Request) -> httpx.Response:
+            event = json.loads(request.content)["type"]
+            return httpx.Response(200 if event == "ping" else 500)
+
+        sender, bystander = _running(only_messages_fail), _running(only_messages_fail)
+        with pytest.raises(BridgeOperationError):
+            await sender.send_message("c-1", "triager", "hi")
+        assert await sender.attention() is None
+        assert await bystander.attention() is None
+
+    async def test_the_warning_clears_when_the_app_comes_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(adapter_module, "_CHECK_INTERVAL", 0)
+        adapter = _running(_App(503, 200))
+        assert "503" in (await adapter.attention() or "")
+        assert await adapter.attention() is None
+
+    async def test_the_app_is_not_asked_again_within_the_interval(self) -> None:
+        app = _App(200)
+        adapter = _running(app)
+        for _ in range(3):
+            await adapter.attention()
+        assert len(app.requests) == 1
+
+    async def test_callers_at_the_same_moment_share_one_check(self) -> None:
+        app = _App(200)
+        adapter = _running(app)
+        await asyncio.gather(*(adapter.attention() for _ in range(5)))
+        assert len(app.requests) == 1
+
+    async def test_an_address_the_outbound_policy_refuses_is_reported(self) -> None:
+        def blocked(request: httpx.Request) -> httpx.Response:
+            raise OutboundURLRefused("chat.example resolves to a private address")
+
+        warning = await _running(blocked).attention()
+        assert warning is not None
+        assert "not allowed" in warning and "private address" in warning
+
+    async def test_a_bridge_that_is_not_running_has_nothing_to_report(self) -> None:
+        assert await WebhookAdapter(config=_config()).attention() is None
+
+    async def test_stopping_forgets_the_last_answer(self) -> None:
+        adapter = _running(_App(503))
+        assert await adapter.attention()
+        await adapter.stop()
+        adapter._http = httpx.AsyncClient(transport=httpx.MockTransport(_App(200)))
+        assert await adapter.attention() is None
 
 
 class TestCheckingTheConnection:

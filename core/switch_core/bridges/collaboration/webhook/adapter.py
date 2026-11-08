@@ -44,7 +44,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.collaboration.webhook import schema
 from switch_core.bridges.collaboration.webhook.chunking import split_text
-from switch_core.outbound import guarded_async_client
+from switch_core.outbound import OutboundURLRefused, guarded_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,8 @@ _MIN_MESSAGE_LENGTH = 100
 _ATTEMPTS = 3
 _BACKOFF_SECONDS = (0.5, 1.5)
 _REQUEST_TIMEOUT = 10.0
+_CHECK_INTERVAL = 30.0
+_CHECK_TIMEOUT = 2.0
 
 _CHANNEL_TYPES: dict[str, ChannelType] = {
     "channel": "channel_public",
@@ -126,7 +128,8 @@ class WebhookAdapter(PlatformAdapter):
         super().__init__()
         self.config = config
         self._http: httpx.AsyncClient | None = None
-        self._unhealthy: str | None = None
+        self._checked: tuple[float, str | None] | None = None
+        self._checking = asyncio.Lock()
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
@@ -156,7 +159,31 @@ class WebhookAdapter(PlatformAdapter):
             raise BridgeCredentialError(problem)
 
     async def attention(self) -> str | None:
-        return self._unhealthy
+        """What is wrong with the app, found by asking it.
+
+        Every server process runs this adapter and any of them can answer the
+        gateway, but only one sends the room's messages. So the answer cannot
+        come from what this process has delivered: it comes from the app.
+        """
+        client = self._http
+        if client is None:
+            return None
+        async with self._checking:
+            now = time.monotonic()
+            if self._checked is None or now - self._checked[0] >= _CHECK_INTERVAL:
+                self._checked = (now, await self._check_app(client))
+            return self._checked[1]
+
+    async def _check_app(self, client: httpx.AsyncClient) -> str | None:
+        url = self.config.outbound_url
+        event = schema.OutboundEvent(type="ping", sent_at=int(time.time()))
+        try:
+            response = await _post(client, self.config, event, timeout=_CHECK_TIMEOUT)
+        except OutboundURLRefused as exc:
+            return f"Switch is not allowed to reach {url}: {exc}"
+        except httpx.HTTPError:
+            return f"Switch cannot reach {url}. Check that the app is running."
+        return _refusal(response, url)
 
     # ── Receiving ────────────────────────────────────────────────────────────
 
@@ -181,6 +208,7 @@ class WebhookAdapter(PlatformAdapter):
         )
 
     async def stop(self) -> None:
+        self._checked = None
         if self._http is not None:
             await self._http.aclose()
             self._http = None
@@ -429,19 +457,14 @@ class WebhookAdapter(PlatformAdapter):
             else:
                 problem = _refusal(response, self.config.outbound_url)
                 if problem is None:
-                    self._unhealthy = None
                     return
                 if response.status_code in (401, 403):
-                    self._unhealthy = problem
                     raise BridgeCredentialError(problem)
                 if response.status_code < 500 and response.status_code != 429:
                     raise BridgeOperationError(problem)
                 failure = BridgeOperationError(problem)
             if attempt < len(_BACKOFF_SECONDS):
                 await asyncio.sleep(_BACKOFF_SECONDS[attempt])
-        self._unhealthy = (
-            f"Switch cannot deliver messages to {self.config.outbound_url}."
-        )
         if isinstance(failure, httpx.TransportError):
             raise _AppUnreachable(
                 f"Could not reach {self.config.outbound_url}: {failure}"
@@ -505,12 +528,15 @@ async def _post(
     client: httpx.AsyncClient,
     config: WebhookConnectionConfig,
     event: schema.OutboundEvent,
+    *,
+    timeout: float = _REQUEST_TIMEOUT,
 ) -> httpx.Response:
     body = event.model_dump_json(exclude_none=True).encode()
     timestamp = str(int(time.time()))
     return await client.post(
         config.outbound_url,
         content=body,
+        timeout=timeout,
         headers={
             "content-type": "application/json",
             "x-switch-event": event.type,
