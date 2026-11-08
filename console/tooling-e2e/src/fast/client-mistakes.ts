@@ -6,6 +6,8 @@ import { WRITABLE, type FastScenario } from './scenario.ts';
  * 500: an HTTP agent reads a 500 as the server broken and may retry a request
  * that can never succeed. The server-error check fails the scenario too, if
  * any of these is logged as an error.
+ *
+ * @property api.no-5xx
  */
 export const clientMistakes: FastScenario = {
   header: {

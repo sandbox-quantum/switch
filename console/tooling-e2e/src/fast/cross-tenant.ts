@@ -121,6 +121,12 @@ export function crossTenantPath(
   return complete && path !== template ? { method, path } : null;
 }
 
+/**
+ * Sends every route that takes an id the other workspace's ids, as a member of
+ * this one, and records what was served instead of refused.
+ *
+ * @property tenancy.no-cross-tenant-ids
+ */
 export async function probeCrossTenant(
   prober: SwitchClient,
   surface: ServerSurface,

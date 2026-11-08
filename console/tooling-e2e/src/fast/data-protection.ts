@@ -134,6 +134,8 @@ export const retentionWindow: FastScenario = {
  * people, queues their erasure and waits for it to finish, after which the
  * agent's history of that chat no longer holds their words. A plain member
  * may not see the list or erase anyone.
+ *
+ * @property retention.erasure-complete
  */
 export const memberErasure: FastScenario = {
   header: {

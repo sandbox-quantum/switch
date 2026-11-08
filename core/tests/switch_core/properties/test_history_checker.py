@@ -89,6 +89,14 @@ def test_a_history_the_code_wrote_passes(run: Delivery) -> None:
             "(SELECT agent_id FROM agent_events LIMIT 1))",
         ),
         (
+            "retention.erasure-complete",
+            "INSERT INTO person_erasures (id, tenant_id, external_user_ids, "
+            "member_client_ids, state, completed_at) "
+            "SELECT 'erasure-1', tenant_id, '[]'::jsonb, "
+            "jsonb_build_array(sender_client_id), 'done', now() + interval '1 hour' "
+            "FROM messages WHERE sender_client_id IS NOT NULL LIMIT 1",
+        ),
+        (
             "delivery.no-silent-loss",
             "INSERT INTO agent_event_drops (tenant_id, agent_id, room_id, "
             "dropped_through) SELECT tenant_id, agent_id, room_id, seq + 1 "

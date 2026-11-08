@@ -7,3 +7,5 @@ properties:
     levels: [code, system]
     owner: platform
     status: proposed
+    gaps:
+      code: core's erasure tests are not tagged for the gate yet

@@ -42,6 +42,7 @@ is not a checker, and the gate says so:
 | model | `specs/*.qnt` | `/// @property <id>` directly above the definition |
 | code | `core/tests/switch_core/properties/` | `@pytest.mark.property("<id>")` on the test |
 | system | `history/*.py` | `@checks("<id>")` on the check |
+| system | `console/tooling-e2e/src/fast/*.ts` | `@property <id>` in the doc comment above the exported scenario or probe |
 | ui | `console/tooling-e2e/src/explore/spec/*.ts` | `@property <id>` in the doc comment above the export |
 
 When every level a property lists has a checker, set `status: checked` and

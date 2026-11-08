@@ -1,8 +1,10 @@
 name: Properties scheduled
 
 # The checks that take too long for a pull request: the Quint models at their
-# larger bounds (`properties/specs/configs.qnt`, `recipients_deep`). The
-# bounds a PR runs are pr-ci.yml's `properties-model` job. A failure fails the
+# larger bounds (`properties/specs/configs.qnt`, `recipients_deep`), and the
+# Hypothesis state machines at a thousand examples, whose database of what they
+# found is kept between runs so a failure found one night is replayed first the
+# next. The bounds and sizes a PR runs are pr-ci.yml's. A failure fails the
 # run, which GitHub reports to whoever last edited the schedule.
 
 on:
@@ -27,3 +29,32 @@ jobs:
 
       - name: Every invariant holds in the larger bounds
         run: python3 properties/specs/run.py verify --deep
+
+  state-machines:
+    name: State machines, nightly profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --project core
+
+      # Saved on every run, passing or not: restore finds the newest, and the
+      # run id makes each key new.
+      - name: Restore what Hypothesis found before
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .hypothesis
+          key: hypothesis-${{ github.run_id }}
+          restore-keys: hypothesis-
+
+      - name: Run the machines, then check their assertions
+        run: properties/run-machine.sh nightly
