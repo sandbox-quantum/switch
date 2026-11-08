@@ -31,7 +31,11 @@ from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
-from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
+from switch_core.db.stores.room_store import (
+    LINKED_CHANNEL_NAME_KEY,
+    RoomStore,
+    tool_detail_enabled_in,
+)
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
@@ -246,6 +250,7 @@ async def _build_room_detail(
         matrix_room_id=room.transport_room_id,
         external_channel_id=room.external_channel_id,
         instructions=room.instructions,
+        show_tool_detail=tool_detail_enabled_in(room.metadata_),
         protection_config=room.protection_config,
         observe_config=room.observe_config,
         agent_ids=agent_ids,
@@ -969,7 +974,13 @@ async def patch_room(
     # publicly-writable room grants to everyone) is not enough. Otherwise any
     # user could re-permission any room and lock out its owner. It is the rule
     # for deleting the room, asked the same way so `can_manage` cannot drift.
-    changes_access = req.read_visibility is not None or req.write_visibility is not None
+    # Showing tool detail is held to the same, or anyone who can write in an
+    # open room could read what everyone else's agents ran there.
+    changes_access = (
+        req.read_visibility is not None
+        or req.write_visibility is not None
+        or req.show_tool_detail is not None
+    )
     if changes_access and not can(principal, "delete", target):
         raise HTTPException(
             status_code=403, detail="Not authorized to change this room's access"
@@ -983,6 +994,7 @@ async def patch_room(
             admin_mode=req.admin_mode,
             read_visibility=req.read_visibility,
             write_visibility=req.write_visibility,
+            show_tool_detail=req.show_tool_detail,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

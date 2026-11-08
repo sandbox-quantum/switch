@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from html import unescape
 from typing import Any
 
+from switch_core.bridges.collaboration.session.redaction import redact_secrets
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn, plain_text
 from switch_core.sessions.contract import (
     TURN_ENDED,
@@ -1590,6 +1591,7 @@ def _plan(
     turn: TurnUpsert,
     *,
     elapsed_seconds: float | None = None,
+    show_tool_details: bool = True,
 ) -> dict[str, Any]:
     """The tool log as a plan: a header to read, and the steps behind it.
 
@@ -1612,11 +1614,13 @@ def _plan(
     return {
         "type": "plan",
         "title": _truncate(title, _MAX_PLAN_TITLE),
-        "tasks": [_plan_task(item) for item in kept],
+        "tasks": [
+            _plan_task(item, show_tool_details=show_tool_details) for item in kept
+        ],
     }
 
 
-def _plan_task(item: Item) -> dict[str, Any]:
+def _plan_task(item: Item, *, show_tool_details: bool = True) -> dict[str, Any]:
     """One tool call as a card inside the plan.
 
     Plain text, not mrkdwn: a card's title renders none, so markup passed into
@@ -1681,8 +1685,11 @@ def _plan_task(item: Item) -> dict[str, Any]:
         "status": _TASK_STATUS[item.status],
     }
     details = plain_text(item.text) if item.text else ""
-    if details:
-        task["details"] = _rich_text(_truncate_prose(details, _MAX_PLAN_TASK_DETAILS))
+    if details and show_tool_details:
+        safe_detail = redact_secrets(details)
+        task["details"] = _rich_text(
+            _truncate_prose(safe_detail, _MAX_PLAN_TASK_DETAILS)
+        )
     return task
 
 

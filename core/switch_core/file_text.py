@@ -28,7 +28,11 @@ import io
 import json
 import logging
 import posixpath
-import resource
+
+try:
+    import resource
+except ImportError:
+    resource = None  # type: ignore[assignment]
 import sys
 import weakref
 import zipfile
