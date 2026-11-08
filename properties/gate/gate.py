@@ -92,9 +92,12 @@ TS_DOC_COMMENT = re.compile(
     re.DOTALL,
 )
 TS_TEST_DOC = re.compile(
-    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*(?:it|test)(?:\.each\(.*?\)\()?\(?\s*(?P<quote>['\"`])(?P<title>.*?)(?P=quote)",
+    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*"
+    r"(?P<fn>(?:it|test)(?:\.[A-Za-z]+(?:\([^()\n]*\))?)*)"
+    r"(?:\((?:(?!\n[ \t]*\n).)*?\)\(|\()\s*(?P<quote>['\"`])(?P<title>.*?)(?P=quote)",
     re.DOTALL,
 )
+TS_NOT_RUN = {"skip", "todo", "skipIf", "fails"}
 TS_TAG = re.compile(r"^\s*\*\s*@property\s+(?P<id>[^\s{]\S*)", re.MULTILINE)
 
 NOT_RUN = {"pytest.mark.skip", "pytest.mark.xfail"}
@@ -383,8 +386,14 @@ def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
     for path in sorted(root.glob(VITEST_GLOB)):
         label = path.relative_to(root).as_posix()
         for comment in TS_TEST_DOC.finditer(path.read_text(encoding="utf-8")):
+            skipped = TS_NOT_RUN & set(re.sub(r"\([^()]*\)", "", comment["fn"]).split(".")[1:])
             for tag in TS_TAG.finditer(comment["body"]):
-                found[tag["id"]].append(Tag("code", label, comment["title"]))
+                if skipped:
+                    problems.append(
+                        f"{label}: {comment['title']!r} is tagged for {tag['id']} but is {comment['fn']}, which does not run"
+                    )
+                else:
+                    found[tag["id"]].append(Tag("code", label, comment["title"]))
     return found, problems
 
 

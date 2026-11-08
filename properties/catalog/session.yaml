@@ -39,9 +39,11 @@ properties:
       `hold`, `resolveHeld`), checked with fast-check against the real host over
       a fake stream and fake session hosts: a model of the rooms that have a
       session and the rooms whose events are held, moved by addresses and by
-      toggling auto-start. Delivering held events the moment auto-start turns
-      on is not distinguished from the next retry. Core's own reply, "Starting a session…", is promised
-      only for an agent with a spawn-capable direct connection, never for a
-      controller-backed one, and is covered by unit tests in
+      toggling auto-start. Held events must be answered within 3 s of turning
+      auto-start on, well inside the host's 5 s retry, so a host that waited
+      for the retry fails; the check is probabilistic, since a retry tick can
+      fall inside the window. Core's own reply, "Starting a session…", is
+      promised only for an agent with a spawn-capable direct connection, never
+      for a controller-backed one, and is covered by unit tests in
       `delivery/test_mention_routing.py`. The provider e2e lane exercises the
       whole path against a real console.

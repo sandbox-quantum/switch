@@ -2712,6 +2712,10 @@ it('tells the room once a session keeps not taking a message, instead of startin
   }
 });
 
+/** Under the host's retry interval of 5 s. */
+const HELD_ANSWER_MS = 3000;
+const PROPERTY_RUNS = Number(process.env.PROPERTY_RUNS ?? 15);
+
 type Step = { kind: 'address'; room: string } | { kind: 'toggle' };
 
 const steps = fc.array(
@@ -2763,19 +2767,31 @@ it.each([{ startsOn: true }, { startsOn: false }])(
           const placed = new Set<string>();
           const held = new Set<string>();
           let sequence = 0;
-          const agrees = async (when: string) => {
+          const disagreement = async (): Promise<string | null> => {
             const journal = await AgentHostAssignments.open(root);
-            const rooms = new Set(journal.pending().map((entry) => entry.roomId));
-            expect([...rooms].sort(), `held rooms ${when}`).toEqual([...held].sort());
-            expect(journal.sessions().length, `sessions ${when}`).toBe(placed.size);
-            expect(vi.mocked(ensureSharedProcess).mock.calls.length, `launches ${when}`).toBe(
-              placed.size
-            );
+            const rooms = [...new Set(journal.pending().map((entry) => entry.roomId))].sort();
+            if (rooms.join() !== [...held].sort().join())
+              return `rooms with events held are ${rooms}, not ${[...held]}`;
+            if (journal.sessions().length !== placed.size)
+              return `${journal.sessions().length} sessions, not ${placed.size}`;
+            const launches = vi.mocked(ensureSharedProcess).mock.calls.length;
+            if (launches !== placed.size) return `${launches} launches, not ${placed.size}`;
             const stated = Object.values(published.at(-1) ?? {});
-            expect(stated.length, `a room twice in the placements ${when}`).toBe(
-              new Set(stated).size
-            );
-            expect(new Set(stated), `placed rooms ${when}`).toEqual(placed);
+            if (stated.length !== new Set(stated).size)
+              return `a room has two sessions in the placements ${stated}`;
+            if ([...new Set(stated)].sort().join() !== [...placed].sort().join())
+              return `the placements are ${stated}, not ${[...placed]}`;
+            return null;
+          };
+          // The host publishes placements and launches sessions after the
+          // event is handed over, so what it says is read until it agrees.
+          const agrees = async (when: string) => {
+            let found = await disagreement();
+            for (let attempt = 0; found !== null && attempt < 600; attempt++) {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              found = await disagreement();
+            }
+            expect(found, when).toBeNull();
           };
           for (const step of run) {
             if (step.kind === 'address') {
@@ -2791,7 +2807,15 @@ it.each([{ startsOn: true }, { startsOn: false }])(
               await writeFlags(root, { enabled: true, spawn: on });
               await eventually(() => declarations.length > before);
               if (on) {
-                await eventually(() => settled(root));
+                // Well inside the retry interval, so a host that waited for
+                // the next retry to answer what was held fails here.
+                const until = Date.now() + HELD_ANSWER_MS;
+                while (!(await settled(root)) && Date.now() < until)
+                  await new Promise((resolve) => setTimeout(resolve, 5));
+                expect(
+                  await settled(root),
+                  'held events answered when spawning was turned on'
+                ).toBe(true);
                 for (const room of held) placed.add(room);
                 held.clear();
               }
@@ -2803,8 +2827,8 @@ it.each([{ startsOn: true }, { startsOn: false }])(
           await running;
         }
       }),
-      { numRuns: Number(process.env.PROPERTY_RUNS ?? 15) }
+      { numRuns: PROPERTY_RUNS }
     );
   },
-  120_000
+  PROPERTY_RUNS * 20_000
 );
