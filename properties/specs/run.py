@@ -6,7 +6,7 @@
     python3 properties/specs/run.py mutants           # every mutant must be caught
     python3 properties/specs/run.py                   # verify and mutants
 
-`verify` has TLC search every state `delivery.qnt` can reach in the bounds
+`verify` has TLC search every state `delivery.qnt` and `ownership.qnt` can reach in the bounds
 `configs.qnt` gives a module, and checks each invariant in all of them. It is
 exhaustive in those bounds and says nothing about more rooms, agents, rows or
 writers. `mutants` does the same on a module with one behaviour that is not in
@@ -35,10 +35,20 @@ INVARIANTS = [
     "NoSilentLoss",
 ]
 
-# Modules in configs.qnt whose every invariant must hold, and the ones that
-# take minutes.
-CHECKS = ["bus", "retention", "recipients"]
-DEEP_CHECKS = ["recipients_deep"]
+LEASE_INVARIANTS = ["NoOverlap", "FencedTakeover"]
+
+# Modules in configs.qnt whose every invariant must hold, with those it names,
+# and the ones that take minutes.
+CHECKS = [
+    ("bus", INVARIANTS),
+    ("retention", INVARIANTS),
+    ("recipients", INVARIANTS),
+    ("lease", LEASE_INVARIANTS),
+]
+DEEP_CHECKS = [
+    ("recipients_deep", INVARIANTS),
+    ("lease_deep", LEASE_INVARIANTS),
+]
 
 # (module in configs.qnt, the invariant it must violate)
 MUTANTS = [
@@ -51,6 +61,10 @@ MUTANTS = [
     ("mutant_expire_without_drop_mark", "NoSilentLoss"),
     ("mutant_own_seq_released_early", "NoSilentLoss"),
     ("mutant_created_at_transaction_start", "NoSilentLoss"),
+    ("mutant_claim_ignores_holder", "NoOverlap"),
+    ("mutant_release_before_stop", "NoOverlap"),
+    ("mutant_stop_at_full_lease", "NoOverlap"),
+    ("mutant_write_without_token", "FencedTakeover"),
 ]
 
 
@@ -95,12 +109,12 @@ def check(module: str, invariants: list[str]) -> tuple[str, str]:
     return "error", f"status {status!r}, exit {run.returncode}\n{said}"
 
 
-def verify(modules: list[str]) -> int:
+def verify(modules: list[tuple[str, list[str]]]) -> int:
     failures = 0
-    for module in modules:
-        status, said = check(module, INVARIANTS)
+    for module, invariants in modules:
+        status, said = check(module, invariants)
         if status == "ok":
-            print(f"ok     {module}: {', '.join(INVARIANTS)}")
+            print(f"ok     {module}: {', '.join(invariants)}")
             continue
         failures += 1
         print(f"FAILED {module}: {status}", file=sys.stderr)

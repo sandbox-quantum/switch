@@ -21,6 +21,17 @@ module retention {
   ).* from "./delivery"
 }
 
+// Two ticks of the database's clock: enough for a lease to lapse and be taken
+// over, and for the holder to stall across it.
+module lease {
+  import ownership(PROCS = Set(1, 2), MAX_NOW = 4, BUGS = Set()).* from "./ownership"
+}
+
+// Three ticks: minutes, so `properties-scheduled.yml` runs it nightly.
+module lease_deep {
+  import ownership(PROCS = Set(1, 2), MAX_NOW = 6, BUGS = Set()).* from "./ownership"
+}
+
 module recipients {
   import delivery(
     ROOMS = Set("r1"), AGENTS = Set(1, 2), WRITERS = Set(1, 2),
@@ -111,4 +122,28 @@ module mutant_created_at_transaction_start {
     MAX_ROWS = 1, MAX_BOOT = 0, MAX_CLOCK = 3,
     BUGS = Set("created-at-transaction-start")
   ).* from "./delivery"
+}
+
+module mutant_claim_ignores_holder {
+  import ownership(
+    PROCS = Set(1, 2), MAX_NOW = 4, BUGS = Set("claim-ignores-holder")
+  ).* from "./ownership"
+}
+
+module mutant_release_before_stop {
+  import ownership(
+    PROCS = Set(1, 2), MAX_NOW = 4, BUGS = Set("release-before-stop")
+  ).* from "./ownership"
+}
+
+module mutant_stop_at_full_lease {
+  import ownership(
+    PROCS = Set(1, 2), MAX_NOW = 4, BUGS = Set("stop-at-full-lease")
+  ).* from "./ownership"
+}
+
+module mutant_write_without_token {
+  import ownership(
+    PROCS = Set(1, 2), MAX_NOW = 4, BUGS = Set("write-without-token")
+  ).* from "./ownership"
 }

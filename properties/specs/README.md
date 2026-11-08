@@ -1,8 +1,9 @@
 # Specs
 
 Quint models of the concurrent parts of Switch. `delivery.qnt` follows how a
-room's rows reach an agent; `configs.qnt` says what bounds each check runs at
-and which behaviours that are not in the code each invariant must fail on.
+room's rows reach an agent; `ownership.qnt` follows how owned work passes
+between processes; `configs.qnt` says what bounds each check runs at and which
+behaviours that are not in the code each invariant must fail on.
 
 ```bash
 just properties-model     # model-check every invariant (needs quint and Java)
@@ -13,8 +14,9 @@ Both run `run.py`, which has TLC (through `quint verify --backend=tlc`) search
 every state the model can reach. A pass is exhaustive in the bounds `configs.qnt`
 gives a module, and says nothing about more rooms, agents, rows or writers; the
 bounds are small because the states TLC searches multiply with each (`bus` is
-5,000 states, `retention` 35,000, `recipients` 44,000, `recipients_deep` 2.3
-million and minutes). `just properties-model --deep` adds the larger ones, which `properties-scheduled.yml` runs nightly.
+5,000 states, `retention` 35,000, `recipients` 44,000, `lease` 6.4 million
+and 20 seconds, `recipients_deep` 2.3 million and minutes, `lease_deep` 65
+million and three). `just properties-model --deep` adds the larger ones, which `properties-scheduled.yml` runs nightly.
 
 ## What the state is
 
@@ -61,6 +63,38 @@ agent does that is not receiving.
 | `NoSilentLoss` | `delivery.no-silent-loss` | Whatever a client's position has passed, it was given or told it lost |
 | `NoEventsAfterLeave` | `delivery.no-events-after-leave` | A member who has left has no events in the room |
 
+## Leases and ownership
+
+`ownership.qnt` has one key and two processes. Time is the database's `now`;
+each process's own monotonic clock moves one to three for every two, so one can
+run at half the rate and another at one and a half. A process can also stall
+(a paused runtime) and go on from where it was.
+
+| Field | Is | In the code |
+| --- | --- | --- |
+| `procs[p].row`, `beat`, `stopped` | A process's lease as the database holds it | `switch_core_processes` |
+| `procs[p].local`, `sent`, `pending`, `inflight` | The process's clock; when the last renewal that landed was sent; one in flight | `ProcessLease._renewed_at` |
+| `procs[p].running`, `token` | Whether it runs the key, and under which token | `OwnedKind._held`, `Fence` |
+| `holder`, `token` | The key's lease row, whose token survives a release | `ownership_leases` |
+| `writes` | The token of every write accepted | `DeliveryCursorStore.advance` |
+
+Actions are `renew_send` and `renew_land` (a renewal is stamped when it lands,
+and counted from when it was sent), `claim`, `stop_work`, `release`, `shutdown`,
+`crash`, `stall`, `resume`, `write` and `tick`. Time cannot pass a running,
+unstalled process's deadline: `Ownership.run` wakes it as the lease stops being
+sure. A stalled process is the one that misses it, and the fence is what then
+refuses its writes. A running process past its deadline also stops before it
+handles the answer to a renewal, so a late answer cannot revive it.
+
+| Invariant | Property | It says |
+| --- | --- | --- |
+| `NoOverlap` | `lease.no-overlap` | At most one process is running the key and sure of its lease |
+| `FencedTakeover` | `lease.fenced-takeover` | Accepted writes carry non-decreasing tokens, none above the key's |
+
+`lease.eventual-owner` is not modelled: a liveness check needs fairness over
+time that this bounded model cannot give honestly, so it stays a property of
+the running system.
+
 ## Mutants
 
 Each module `mutant_*` in `configs.qnt` switches on one behaviour that is not
@@ -78,6 +112,10 @@ invariant that held on such a system could not have caught that bug.
 | `expire_without_drop_mark` | Retention deletes without recording where | `NoSilentLoss` |
 | `own_seq_released_early` | Agent numbers taken from a sequence and not held to commit | `NoSilentLoss` |
 | `created_at_transaction_start` | An event's `created_at` is when its transaction began | `NoSilentLoss` |
+| `claim_ignores_holder` | A key taken from a holder whose process lease still holds | `NoOverlap` |
+| `release_before_stop` | The key released while its work still runs | `NoOverlap` |
+| `stop_at_full_lease` | The holder stops at the whole lease, not half | `NoOverlap` |
+| `write_without_token` | A write accepted whoever the holder is | `FencedTakeover` |
 
 The last is the code as it was. `created_at` defaulted to `now()`, the start of
 the transaction, so a transaction that began earlier and numbered its event later
