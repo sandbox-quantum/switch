@@ -39,4 +39,7 @@ properties:
     formality: semi-formal
     levels: [model, system]
     owner: platform
-    status: proposed
+    status: retired
+    notes: >
+      Superseded by `replica.ownership-eventual`, which says the same of the
+      work itself and is checked with two replicas.

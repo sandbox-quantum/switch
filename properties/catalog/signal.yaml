@@ -1,0 +1,15 @@
+properties:
+  - id: signal.loss-only-delays
+    title: A lost signal only delays
+    statement: >
+      A dropped `NOTIFY` on the signal bus delays an update by at most the
+      periodic re-check and never causes a wrong answer: every handler and
+      re-check reads the database, and none acts on the payload.
+    kind: safety
+    formality: semi-formal
+    levels: [model, system]
+    owner: platform
+    status: proposed
+    notes: >
+      The rule `signals.py` states, and the same rule as `bus.lost-wakeup-only-delays`
+      for room wake-ups; one model (`signals.qnt`) covers both.

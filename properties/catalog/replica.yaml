@@ -1,0 +1,30 @@
+properties:
+  - id: replica.single-owner
+    title: Run-once work runs on one process at a time
+    statement: >
+      Work that must run once (a client's consumer, a bridge's platform
+      connection) runs on at most one switch-core process at a time, and a
+      process that cannot confirm its own lease stops it.
+    kind: safety
+    formality: semi-formal
+    levels: [system]
+    owner: platform
+    status: proposed
+    notes: >
+      The end-to-end statement of `lease.no-overlap`, which holds it at the model
+      and code levels for one key: this one is about the work itself, in real
+      processes that are killed and partitioned (`ownership.py`, `surely_held`).
+  - id: replica.ownership-eventual
+    title: Work whose owner died is picked up
+    statement: >
+      Work whose owning process died, or stopped renewing its lease, is held
+      and running on a live process once the lease has expired.
+    kind: liveness
+    formality: semi-formal
+    levels: [model, system]
+    owner: platform
+    status: proposed
+    notes: >
+      Supersedes `lease.eventual-owner`. The model level needs an untimed
+      abstraction of the lease (expiry as an event under fairness), because a
+      bounded clock cannot carry a liveness property.

@@ -1,0 +1,40 @@
+properties:
+  - id: controller.stream-complete
+    title: A controller's stream drops nothing
+    statement: >
+      The controller's single stream gives each agent bound to it every one of
+      that agent's own events from its cursor, or a gap notice, and bindings that
+      change mid-stream neither drop nor duplicate an event.
+    kind: safety
+    formality: semi-formal
+    levels: [model, code]
+    owner: platform
+    status: proposed
+    notes: >
+      `delivery.no-silent-loss` with the controller as a step in the middle
+      (`bridges/agent/protocol/controller_stream.py`); the delivery machine can add
+      a controller reader.
+  - id: controller.revoked-refused
+    title: A revoked controller is refused everywhere
+    statement: >
+      Once a controller is revoked or its key expires, every process refuses its
+      socket, its token exchange and its enrollment within the cache's bound.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
+    status: proposed
+  - id: controller.takeover-fenced
+    title: A controller connection that was taken over is fenced
+    statement: >
+      When a second socket takes over a controller's connection, the old one is
+      sent no more frames and its writes are refused.
+    kind: safety
+    formality: semi-formal
+    levels: [code, system]
+    owner: platform
+    status: proposed
+    notes: >
+      `taken_over` in `management/connection_ledger.py`. A different mechanism
+      from `lease.fenced-takeover` (the ledger, not ownership tokens), with the
+      same shape.
