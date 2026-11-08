@@ -26,12 +26,13 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_grafana():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
+        "grafana",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "grafana",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["grafana"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +179,54 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_grafana_entry_connects_as_grafana_documents_and_serves():
+    definition = CATALOG["grafana"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Grafana Cloud MCP registers clients itself (RFC 7591), discovered from
+    # https://mcp.grafana.com/.well-known/oauth-authorization-server/mcp.
+    assert (definition.adapter, oauth.registration) == ("oauth", "dynamic")
+    # Grafana matches a loopback redirect on any port (RFC 8252), so no
+    # ports are pinned; Core's own callback is offered where one is public.
+    assert oauth.redirect == ["loopback", "core"]
+    assert oauth.loopback_ports is None
+    # The metadata names no revocation endpoint and none is documented, so a
+    # disconnect tells the person where to revoke it themselves.
+    assert oauth.revocation_url is None and not oauth.revocation_discovered
+    assert oauth.remove_access is not None and "MCP clients" in oauth.remove_access
+    # OAuth 2.1 with PKCE S256; refresh-token rotation is expected.
+    assert definition.auth.refresh == "rotating"
+    # Grafana documents access tokens of 1 hour, refreshed for 30 days.
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("grafana", "https://mcp.grafana.com/mcp/{stack}")
+    ]
+    # The stack is part of the MCP URL, so it is a pattern-validated
+    # connection field (maintainer direction on #826): one whole path
+    # segment on Grafana's fixed domain.
+    assert [f.name for f in oauth.fields] == ["stack"]
+    assert oauth.fields[0].pattern.endswith(r"\.grafana\.net$")
+    # No REST endpoint accepts Grafana's MCP token (maintainer direction on
+    # #826), so identity comes from the server's read-only, no-argument
+    # user_info tool through identity.mcp_tool. The same login signs in to
+    # every stack, so the account is the stack and the login together,
+    # keyed by the list form of account_id; email can be empty, so the
+    # login is the label.
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url is None
+    assert definition.auth.identity.mcp_tool == "user_info"
+    assert definition.auth.identity.account_id == ["connection.stack", "login"]
+    assert definition.auth.identity.label == "login"
+    assert definition.access is not None and definition.access.read is not None
+    assert definition.access.read.scopes == ["grafana:read"]
+    assert definition.access.write is None
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -1137,6 +1188,13 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
         load_catalog(catalog_copy)
+
+
+def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
+    path.write_bytes(raw.replace(b"\n", b"\r\n"))
+    assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()
 
 
 def _rewrite_google(catalog_copy, old, new):

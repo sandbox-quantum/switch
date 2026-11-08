@@ -42,6 +42,7 @@ from switch_core.connections.loader import (
     AccessLevel,
     ConnectionDefinition,
     RedirectMode,
+    oauth_field_values,
 )
 from switch_core.connections.oauth_clients import core_callback, loopback_redirect
 from switch_core.connections.sign_in_flows import (
@@ -160,7 +161,15 @@ class ServiceFlows:
         port: int,
         completion_secret: str,
         owner_label: str,
+        fields: dict[str, str] | None = None,
     ) -> ServiceFlow:
+        assert definition.auth.oauth is not None
+        try:
+            checked_fields = oauth_field_values(
+                definition.auth.oauth.fields, fields or {}
+            )
+        except ValueError as error:
+            raise FlowError(str(error)) from None
         mode = self.mode(definition)
         if mode is None:
             raise FlowError(
@@ -199,6 +208,8 @@ class ServiceFlows:
                 owner_label=owner_label,
                 details={
                     "name": definition.name,
+                    "connection_fields": checked_fields,
+                    "unscoped": access.unscoped,
                     "consent": consent,
                     "scopes": list(level.scopes),
                     "read_scopes": list(access.read.scopes),
@@ -242,6 +253,7 @@ class ServiceFlows:
         the browser sent there; once per flow. The flow records the client it
         is sent through, so a code issued to one client is never exchanged
         with another."""
+        adapter = adapter.with_fields(flow.stored.details.get("connection_fields", {}))
         nonce = secrets.token_urlsafe(32)
         client_id = await adapter.client_id()
         taken = await self._flows.advance(
@@ -323,6 +335,9 @@ class ServiceFlows:
         if checking is None:
             raise refused
         try:
+            adapter = adapter.with_fields(
+                flow.stored.details.get("connection_fields", {})
+            )
             recorded = flow.stored.details.get("client_id")
             if recorded is not None and recorded != await adapter.client_id():
                 raise ServiceAdapterError(client_changed(flow.name))
@@ -352,6 +367,8 @@ class ServiceFlows:
         """What the person consented to, as the vendor granted it."""
         granted = set(exchange.signed_in.granted_scopes)
         details = exchange.flow.details
+        if details.get("unscoped"):
+            return "write"
         write_scopes = set(details["write_scopes"])
         if write_scopes and write_scopes <= granted:
             return "write"

@@ -1,0 +1,74 @@
+slug: grafana
+name: Grafana
+category: Observability
+description: Read Grafana Cloud dashboards, metrics, logs, traces and alerts, as you. Needs Grafana Assistant on the stack, and each person who connects counts as an Assistant user for billing.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Grafana's server is OAuth 2.1 with PKCE S256, so refresh-token rotation
+  # is expected; the token endpoint's answers were not measured against a
+  # live stack. Confirm at manual QA.
+  refresh: rotating
+  oauth:
+    # The person types their stack's address and Switch signs in to that
+    # stack's own MCP server: Grafana documents a per-stack endpoint under
+    # "Connect multiple stacks" (grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/).
+    # The stack fills one whole path segment on Grafana's fixed domain -
+    # maintainer direction on #826 (petr-sandbox, 2026-11-03): the stack is
+    # part of the MCP URL, so it is a pattern-validated connection field.
+    fields:
+      - name: stack
+        label: Grafana Cloud stack
+        help: The stack's address, for example example-stack.grafana.net, without https:// or a path.
+        pattern: '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.grafana\.net$'
+    # Grafana Cloud MCP registers clients itself (RFC 7591), as its docs say
+    # most clients need: Core registers one on first connect, discovered from
+    # the MCP server's metadata with the authorization and token endpoints.
+    registration: dynamic
+    # Grafana matches a pre-registered https redirect exactly but accepts a
+    # loopback redirect on any port (RFC 8252), so no ports are pinned.
+    redirect: [loopback, core]
+    # The authorization-server metadata names no revocation endpoint and no
+    # revoke API is documented, so a disconnect cannot revoke at Grafana.
+    remove_access: In your Grafana stack, open Assistant Settings, Connectors, MCP clients and revoke the connection under Your connections. Until you do, the sign-in stays authorized for up to 30 days.
+  identity:
+    # Maintainer direction on #826 (petr-sandbox, 2026-11-02 and 2026-11-03):
+    # no REST endpoint accepts Grafana's MCP token, so identity comes from
+    # the server's read-only, no-argument user_info tool through
+    # identity.mcp_tool. Grafana Cloud sign-in uses the same login across
+    # stacks, so the account is the stack and the login together: Core
+    # supplies connection.stack from the connection's own field - never read
+    # from Grafana's answer, its org list or the token's claims - and the
+    # list form of account_id keys the connection by both.
+    # user_info's result carries login, email, name and the current
+    # organization; email can be empty for a Grafana user, so the login is
+    # the label.
+    mcp_tool: user_info
+    account_id: [connection.stack, login]
+    label: login
+# Grafana documents access tokens of 1 hour, refreshed without the user for
+# 30 days; not yet measured. An agent's copy may outlive its grant by up to
+# an hour; agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  # One server signs in per stack; the {stack} field names whose. The
+  # X-Grafana-URL header variant is not a sign-in Switch offers. Self-hosted
+  # Grafana is out of scope.
+  servers:
+    - { name: grafana, url: "https://mcp.grafana.com/mcp/{stack}" }
+access:
+  # Grafana's authorization-server metadata advertises grafana:read,
+  # grafana:query and grafana:write, so access.unscoped does not apply
+  # (maintainer direction on #826: unscoped is only for servers that offer
+  # no scopes at all).
+  # grafana:read alone is truly read-only: dashboards, alerts, incidents and
+  # queries to read-only data sources (Prometheus, Loki, Tempo, Pyroscope).
+  read:
+    scopes:
+      - grafana:read
+  # Inspection only: grafana:query can mutate SQL data, and grafana:write
+  # changes resources. Neither is needed for this connector's read workflows.
+  # Generic sign-in asks for the broadest declared level, so do not declare
+  # a write level unless an explicit access-choice flow is added first.
+tools: { mode: pass_through }

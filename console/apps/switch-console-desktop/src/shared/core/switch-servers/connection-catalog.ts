@@ -54,6 +54,13 @@ export function knownUnavailableCode(code: string | null): UnavailableCode | nul
   return UNAVAILABLE_CODES.find((known) => known === code) ?? null;
 }
 
+export const serviceOAuthFieldSchema = z.object({
+  name: z.string(),
+  label: z.string(),
+  help: z.string(),
+  pattern: z.string(),
+});
+
 export const connectionCatalogEntrySchema = z.object({
   slug: z.string(),
   name: z.string(),
@@ -83,6 +90,8 @@ export const connectionCatalogEntrySchema = z.object({
    * vendor that matches the port registered; null for any port.
    */
   loopback_ports: z.array(z.number().int()).nullable(),
+  /** The public values typed before signing in, such as a Grafana Cloud stack; absent when none. */
+  oauth_fields: z.array(serviceOAuthFieldSchema).optional(),
   /** The fields a person pastes to connect it, for a service connected with a key; else null. */
   key: serviceKeyFormSchema.nullable(),
   /** The connected account as people recognise it; null when not connected. */
@@ -135,6 +144,7 @@ export const serviceConnectionsSchema = z.object({
       unavailable_code: z.string().nullable().default(null),
       pass_through: z.boolean().default(false),
       token_lifetime: z.number().nullable().default(null),
+      oauth_fields: z.array(serviceOAuthFieldSchema).default([]),
       loopback_ports: z.array(z.number().int()).nullable().default(null),
       key: serviceKeyFormSchema.nullable().default(null),
       external_identity: z.string().nullable().default(null),

@@ -64,6 +64,8 @@ from switch_core.connections.loader import (
     Connection,
     ConnectionDefinition,
     TokenPolicy,
+    oauth_field_values,
+    oauth_mcp_url,
 )
 from switch_core.connections.organization_apps import (
     OrganizationApp,
@@ -1353,6 +1355,21 @@ class ServiceBroker:
             skill = None if entry is None else entry.skill_files.get("SKILL.md")
             mcp = None if entry is None else entry.definition.mcp
             cli = None if entry is None else entry.definition.cli
+            connection_fields = {}
+            if (
+                entry is not None
+                and entry.definition.auth.oauth is not None
+                and entry.definition.auth.oauth.fields
+            ):
+                connection = await self._store.get_connection(
+                    session, grant.owner_id, grant.service
+                )
+                if connection is None or connection.account_id != grant.account_id:
+                    continue
+                connection_fields = oauth_field_values(
+                    entry.definition.auth.oauth.fields,
+                    self._secret(connection).values.get("connection_fields", {}),
+                )
             grants.append(
                 {
                     "service": grant.service,
@@ -1377,7 +1394,9 @@ class ServiceBroker:
                         else [
                             {
                                 "name": server.name,
-                                "url": server.url,
+                                "url": oauth_mcp_url(server.url, connection_fields)
+                                if connection_fields
+                                else server.url,
                                 "headers": server.headers
                                 or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
                             }
