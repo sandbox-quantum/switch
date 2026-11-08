@@ -1,7 +1,11 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
+import {
+  generateSealingKeyPair,
+  providerUnsupportedReason,
+  sealProviderLogin,
+} from '@switch-console/agent-providers';
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -660,6 +664,23 @@ describe('PathProviderLocator', () => {
     });
     expect(await locator.locate('claude')).toBeNull();
     expect(await locator.locate('codex')).toBeNull();
+  });
+
+  it('finds Google’s agy for Antigravity ahead of a legacy antigravity-acp, on every OS', async () => {
+    expect(providerUnsupportedReason('antigravity', 'win32')).toBeNull();
+    const legacy = await writeNodeCli(dir, 'antigravity-acp', 'console.log("1.1.1")');
+    const locator = new PathProviderLocator(() => dir, join(dir, 'probe-home'));
+    expect(await locator.locate('antigravity')).toEqual({
+      path: expect.stringMatching(new RegExp(`^${escape(legacy)}$`, 'i')),
+      version: '1.1.1',
+      versionProblem: null,
+    });
+    const agy = await writeNodeCli(dir, 'agy', 'console.log("1.5.1")');
+    expect(await locator.locate('antigravity')).toEqual({
+      path: expect.stringMatching(new RegExp(`^${escape(agy)}$`, 'i')),
+      version: '1.5.1',
+      versionProblem: null,
+    });
   });
 
   it('reads the version of a CLI that writes in its home first, with a home of its own', async () => {

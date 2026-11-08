@@ -8,6 +8,7 @@ function fakeFs(seed: Record<string, string> = {}): PluginFs {
     read: async (p) => files.get(p) ?? null,
     write: async (p, c) => void files.set(p, c),
     delete: async (p) => void files.delete(p),
+    protectSecret: async (p) => files.has(p),
     exists: async (p) => files.has(p),
     list: async () => [...files.keys()],
   };

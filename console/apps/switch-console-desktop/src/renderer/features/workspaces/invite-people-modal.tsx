@@ -41,7 +41,7 @@ import {
 import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
 
 type InvitePeopleModalArgs = {
-  /** The workspace to invite to. Its admins and owners are the only ones offered this. */
+  /** The workspace to invite to. Its admins are the only ones offered this. */
   workspaceId: string;
 };
 
@@ -56,7 +56,6 @@ const EXPIRY_CHOICES = [
 const ROLE_LABEL: Record<WorkspaceRole, string> = {
   member: 'Member',
   admin: 'Admin',
-  owner: 'Owner',
 };
 
 const STATUS_LABEL: Record<InvitationStatus, string> = {
@@ -201,8 +200,7 @@ export const InvitePeopleModal = observer(function InvitePeopleModal({
     );
   }
 
-  const roles: WorkspaceRole[] =
-    workspace.role === 'owner' ? ['member', 'admin', 'owner'] : ['member', 'admin'];
+  const roles: WorkspaceRole[] = ['member', 'admin'];
   const trimmedEmail = email.trim();
   const usesNumber = Number(uses);
   const usesValid = Number.isInteger(usesNumber) && usesNumber > 0;

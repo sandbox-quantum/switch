@@ -26,6 +26,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     ChannelNotBindable,
     PlatformAdapter,
+    PrivateNoticeRefused,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -61,6 +62,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -589,6 +591,10 @@ class DiscordAdapter(PlatformAdapter):
     # nobody.
     notifies_only_by_mention: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "@everyone"
+    #: Discord shows a bot's message to one member of a channel only in answer
+    #: to an interaction, and a posted message is not one, so a notice about
+    #: it goes to them as a direct message from the bot.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "direct_message"
 
     # The status is the turn's one post, so the clock rides along with the next
     # real change rather than rewriting a message somebody is reading. See the
@@ -1186,6 +1192,36 @@ class DiscordAdapter(PlatformAdapter):
             ),
             where=f"channel {channel_id}",
         )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """A direct message from the bot, naming the channel the message was
+        posted in, split over several if it is past Discord's length cap.
+        Discord refuses it when the person does not accept direct messages
+        from members of the server, and that refusal is raised as
+        `PrivateNoticeRefused`."""
+        client = self._require_client()
+        user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+        body = (
+            f"About your message in <#{channel_id}>:\n"
+            f"{self.translate_outbound(content)}"
+        )
+        try:
+            for chunk in chunk_message(body):
+                await user.send(
+                    chunk,
+                    suppress_embeds=True,
+                    allowed_mentions=NO_MASS_MENTIONS,
+                )
+        except discord.Forbidden as refused:
+            raise PrivateNoticeRefused(str(refused)) from refused
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
@@ -2511,7 +2547,7 @@ class DiscordAdapter(PlatformAdapter):
         # the pair, visible only to the bridge and the user.
         guild = await self._get_guild()
         channel = await guild.create_text_channel(
-            name=self._sanitize_channel_name(f"dm-{user_name}-{agent_name}"),
+            name=self._sanitize_channel_name(f"{agent_name}-{user_name}"),
             topic=f"Direct conversation between {user_name} and {agent_name}",
             overwrites=self._private_channel_overwrites(guild),
         )
@@ -2994,6 +3030,10 @@ class DiscordAdapter(PlatformAdapter):
                 attachments=attachments,
                 attachment_failures=attachment_failures,
                 self_mention_token=str(bot_user_id) if self_mention else None,
+                # Another bot, or a webhook that is not one of ours (ours were
+                # dropped above): an integration posting, not a person.
+                sender_is_app=bool(getattr(author, "bot", False))
+                or getattr(message, "webhook_id", None) is not None,
             )
         )
 

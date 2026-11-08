@@ -25,6 +25,8 @@ export const UI_ENTRY_POINTS = [
   'server_page',
   'onboarding',
   'agent_page',
+  /** A machine's page, which creates an agent on that machine. */
+  'machine_page',
   'session_list',
   'room_row',
   'link',

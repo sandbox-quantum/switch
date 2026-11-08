@@ -121,7 +121,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     AgentProvider(
         id="antigravity",
         label="Antigravity",
-        sign_in_command="antigravity-acp --login",
+        sign_in_command="agy acp --login",
         connector_type="Antigravity CLI",
         tools=(
             ToolSpec(name="run_command", description="Executes shell commands"),

@@ -27,7 +27,13 @@ async function check(
     agentInfo: { name: 'goose', version: '1.57.0' },
   }))
 ) {
-  const result = await gooseAcp.checkSignIn!({ binaryPath: 'goose', cwd: '.', env, handshake });
+  const result = await gooseAcp.checkSignIn!({
+    binaryPath: 'goose',
+    cwd: '.',
+    env,
+    handshake,
+    request: vi.fn(),
+  });
   expect(handshake).toHaveBeenCalledTimes(1);
   return result;
 }
@@ -58,7 +64,7 @@ describe('Goose ACP hooks', () => {
     ['auto', 'smart_approve'],
     ['full-access', 'auto'],
   ] as const)('maps %s to %s', (mode, expected) => {
-    expect(gooseAcp.sessionMode!(mode)).toBe(expected);
+    expect(gooseAcp.sessionMode!(mode, undefined)).toBe(expected);
   });
 
   it('recognizes environment configuration without reading the profile', async () => {
