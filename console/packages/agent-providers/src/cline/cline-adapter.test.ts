@@ -109,6 +109,15 @@ it('shows spawn_agent calls as subagents', () => {
   expect(clineAcp.itemType!({ toolCallId: 'c', title: 'run_commands: ls' })).toBeUndefined();
 });
 
+it('marks apply_patch calls as edits', () => {
+  expect(
+    clineAcp.toolKind!({ toolCallId: 'c', kind: 'other', title: 'apply_patch: {"input":"x"}' })
+  ).toBe('edit');
+  expect(
+    clineAcp.toolKind!({ toolCallId: 'c', kind: 'other', title: 'run_commands: ls' })
+  ).toBeUndefined();
+});
+
 it('takes an API key in the environment as a sign-in without starting Cline', async () => {
   expect(await check({ CLINE_API_KEY: 'k', CLINE_PROVIDER: 'gemini' })).toMatchObject({
     status: 'authenticated',

@@ -274,6 +274,46 @@ it('approves without asking in full access, approves only edits in auto-accept-e
   }
 });
 
+it('takes the kind of an unlabelled tool call from the hooks, and never overrides one the agent gave', async () => {
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    toolKind: (toolCall) => (toolCall.title?.startsWith('patch:') ? 'edit' : undefined),
+  };
+  for (const [kind, title, prompted] of [
+    ['other', 'patch: a.txt', 0],
+    [undefined, 'patch: a.txt', 0],
+    ['execute', 'patch: a.txt', 1],
+    ['other', 'shell: ls', 1],
+  ] as const) {
+    const { adapter, events, server } = await start(hooks, { runtimeMode: 'auto-accept-edits' });
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    server.send({
+      id: 50,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: 'x', kind, title },
+        options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+    await flush();
+    expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(prompted);
+  }
+  const { adapter, events, server } = await start(hooks);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send({
+    method: 'session/update',
+    params: {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call', toolCallId: 'p', kind: 'other', title: 'patch: a.txt' },
+    },
+  });
+  await flush();
+  expect(events.find((e) => e.type === 'item.started')).toMatchObject({
+    item: { id: 'p', type: 'file_change' },
+  });
+});
+
 it('lets vendor extensions ask questions and add items, and cancels them outside a turn', async () => {
   const hooks: AcpProviderHooks = {
     ...dummy,

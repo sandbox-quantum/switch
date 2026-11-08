@@ -29,7 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
-| `cline` | `cline --acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection through a `model` config option and approvals. Cline 3.0 ignores ACP's `mcpServers`, so the launch writes the session's servers to a settings file of its own (`CLINE_MCP_SETTINGS_PATH`) and runs the session in the `--acp` process (`CLINE_SESSION_BACKEND_MODE=local`). |
+| `cline` | `cline --acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model selection through a `model` config option and approvals. Cline 3.0 ignores ACP's `mcpServers`, so the launch writes the session's servers to a settings file of its own (`CLINE_MCP_SETTINGS_PATH`) and runs the session in the `--acp` process (`CLINE_SESSION_BACKEND_MODE=local`). Its `apply_patch` edits arrive as `other` and are typed as edits. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter

@@ -169,6 +169,8 @@ export interface AcpProviderHooks {
   mcpServerOf?(toolCall: AcpToolCall): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
+  /** The ACP `kind` of a tool call the agent sends as `other` or without one. */
+  toolKind?(toolCall: AcpToolCall): string | undefined;
   /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.

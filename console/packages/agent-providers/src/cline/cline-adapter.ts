@@ -107,6 +107,8 @@ export const clineAcp: AcpProviderHooks = {
     return split > 0 && /^[\w.-]+$/.test(name) ? name.slice(0, split) : undefined;
   },
   itemType: (toolCall) => (toolCall.title?.startsWith('spawn_agent:') ? 'subagent' : undefined),
+  // Cline sends its file edits as `other`.
+  toolKind: (toolCall) => (toolCall.title?.startsWith('apply_patch:') ? 'edit' : undefined),
 };
 
 export function createClineAdapter(options: AcpAdapterOptions = {}): AcpAdapter {
