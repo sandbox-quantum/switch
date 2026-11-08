@@ -113,6 +113,7 @@ from switch_core.room_wide_mention import (
 )
 from switch_core.sessions.contract import TURN_ENDED
 from switch_core.ui_spec import (
+    ANSWERER_NAME_MAX,
     UI_POSITION_PREFIX,
     ButtonProps,
     LinkButtonProps,
@@ -244,6 +245,12 @@ def _parse_interrupt(data: str) -> str | None:
     if prefix != _INTERRUPT_PREFIX or not separator or not turn_id:
         return None
     return turn_id
+
+
+def _settled_line(name: str, label: str) -> str:
+    return (
+        f"\n✅ {html.escape(name, quote=False)} chose {html.escape(label, quote=False)}"
+    )
 
 
 def _ui_card_keyboard(
@@ -1209,10 +1216,18 @@ class TelegramAdapter(PlatformAdapter):
         before anything is posted, so the caller sends `fallback_text`.
         """
         text, groups = await self._ui_card(sender_name, spec)
-        if len(text) > MAX_MESSAGE:
+        # A card with Buttons gains a line naming who answered it.
+        answer = max(
+            (
+                len(_settled_line("&" * ANSWERER_NAME_MAX, b.label))
+                for b in card_buttons(spec)
+            ),
+            default=0,
+        )
+        if len(text) + answer > MAX_MESSAGE:
             raise ValueError(
-                f"The card is {len(text)} characters of Telegram HTML, over "
-                f"{MAX_MESSAGE}"
+                f"The card is {len(text)} characters of Telegram HTML, and "
+                f"{answer} more kept for its answer, over {MAX_MESSAGE}"
             )
         positions = {b.id: i for i, b in enumerate(card_buttons(spec), 1)}
         rows: list[list[InlineKeyboardButton]] = []
@@ -1283,10 +1298,7 @@ class TelegramAdapter(PlatformAdapter):
             )
             return
         card, groups = await self._ui_card(author, spec)
-        text = (
-            f"{card}\n✅ {html.escape(interaction.sender_display_name, quote=False)} "
-            f"chose {html.escape(label, quote=False)}"
-        )
+        text = card + _settled_line(interaction.sender_display_name, label)
         links = [
             [
                 InlineKeyboardButton(text=b.label, url=b.url)

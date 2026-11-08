@@ -4,6 +4,7 @@ under its text, and its buttons pressed and settled."""
 from __future__ import annotations
 
 import copy
+import json
 import re
 from typing import Any
 
@@ -18,7 +19,7 @@ from switch_core.bridges.collaboration.mattermost.callback import (
     read_press,
 )
 from switch_core.bridges.collaboration.models import InboundInteraction
-from switch_core.ui_spec import UISpec, parse_ui_spec
+from switch_core.ui_spec import UISpec, answerer_name, parse_ui_spec
 
 from .test_mattermost_press import CHANNEL, HANDLE, USER, _adapter, _key, _record
 from .test_mattermost_sdk_only import _posts
@@ -291,3 +292,41 @@ async def test_settling_takes_every_button_off_and_says_once_who_chose() -> None
         None,
         f"✅ @{ZERO_WIDTH_SPACE}alice chose Go",
     ]
+
+
+async def test_an_answered_card_is_no_bigger_than_the_card_it_was() -> None:
+    """Settling takes off every button, each with its signed integration, and
+    adds one footer, so a card that fit the post still fits once answered."""
+    adapter = _adapter()
+    _record(adapter)
+    spec = _spec(
+        {
+            "act": _el("Actions", ["go"]),
+            "go": _el("Button", id="go", label="@" * 75, value="g"),
+        },
+        ["act"],
+        title="Pick",
+    )
+    ref = await _send(adapter, spec)
+    posts = _posts(adapter)
+    sent = json.dumps(posts.created[-1]["props"], ensure_ascii=False)
+
+    await adapter.settle_card_press(
+        InboundInteraction(
+            channel_id=CHANNEL,
+            sender_id=USER,
+            sender_name=HANDLE,
+            sender_display_name=answerer_name("@" * 100),
+            action_id="switch.ui:go",
+            value="g",
+            message_ref=ref,
+        ),
+        "@" * 75,
+        author="worker",
+        spec=spec,
+        body="the body",
+    )
+
+    settled = posts.patched[-1][1]["props"]
+    settled = {k: v for k, v in settled.items() if k in posts.created[-1]["props"]}
+    assert len(json.dumps(settled, ensure_ascii=False)) <= len(sent)

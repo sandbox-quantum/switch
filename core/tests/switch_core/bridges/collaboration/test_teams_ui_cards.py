@@ -17,8 +17,9 @@ from switch_core.bridges.collaboration.teams.cards import (
 from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorRefused,
     BotConnectorUnavailable,
+    checked_payload,
 )
-from switch_core.ui_spec import UISpec, parse_ui_spec
+from switch_core.ui_spec import UISpec, answerer_name, parse_ui_spec
 
 from .test_teams_sdk_only import AGENT, CHANNEL, ROOT, SERVICE_URL, _Connector, _teams
 
@@ -367,3 +368,58 @@ async def test_a_settled_card_is_redrawn_with_who_chose_and_only_its_links(
     assert [e["type"] for e in body[1:]] == ["TextBlock", "ActionSet", "TextBlock"]
     assert [a["type"] for a in body[2]["actions"]] == ["Action.OpenUrl"]
     assert body[3]["text"] == "✅ @​kim chose Go"
+
+
+async def test_a_card_at_the_size_limit_still_fits_once_answered() -> None:
+    label = "<" * 75
+
+    def card(n: int) -> UISpec:
+        texts = {
+            f"t{i}": _el("Text", content="x" * min(3000, n - i))
+            for i in range(0, n, 3000)
+        }
+        return _spec(
+            {
+                **texts,
+                "a": _el("Actions", ["go"]),
+                "go": _el("Button", id="go", label=label, value="g"),
+            },
+            [*texts, "a"],
+            title="Pick",
+        )
+
+    async def fits(n: int) -> bool:
+        adapter, _ = _teams()
+        try:
+            await adapter.send_ui_message(
+                CHANNEL, AGENT, card(n), "pick", ROOT, room_wide_mention=False
+            )
+        except BotConnectorRefused:
+            return False
+        return True
+
+    low, high = 1, 60000
+    while low < high:
+        middle = (low + high + 1) // 2
+        low, high = (middle, high) if await fits(middle) else (low, middle - 1)
+    assert 1 < low < 60000
+    adapter, connector = _teams()
+
+    await adapter.settle_card_press(
+        InboundInteraction(
+            channel_id=CHANNEL,
+            sender_id="aad-kim",
+            sender_name="kim",
+            sender_display_name=answerer_name("@" * 100),
+            action_id="switch.ui:go",
+            value="g",
+            message_ref="MSG1",
+        ),
+        label,
+        author=AGENT,
+        spec=card(low),
+        body="pick",
+    )
+
+    [update] = connector.updates
+    checked_payload("update", update["activity"])

@@ -14,7 +14,7 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
 )
 from switch_core.bridges.collaboration.telegram.chunking import MAX_MESSAGE
-from switch_core.ui_spec import UISpec, parse_ui_spec
+from switch_core.ui_spec import UISpec, answerer_name, parse_ui_spec
 
 from .test_telegram_adapter import (
     CHAT_ID,
@@ -282,3 +282,51 @@ async def test_a_settled_card_is_redrawn_with_who_chose_and_only_its_links() -> 
     assert edit["chat_id"] == CHAT_ID and edit["message_id"] == 501
     assert edit["text"] == posted["text"] + "\n✅ a&lt;b&gt;&amp;c chose Go"
     assert [[b.text for b in r] for r in _buttons(edit)] == [["Docs"]]
+
+
+async def test_a_card_at_the_length_limit_still_fits_once_answered() -> None:
+    def card(n: int) -> UISpec:
+        return _spec(
+            {
+                "a": _el("Text", content="x" * 3000),
+                "b": _el("Text", content="y" * n),
+                "acts": _el("Actions", ["go"]),
+                "go": _el("Button", id="go", label="G&" * 37),
+            },
+            ["a", "b", "acts"],
+            title="Pick",
+        )
+
+    async def fits(n: int) -> bool:
+        try:
+            await _send(_adapter(), card(n))
+        except ValueError:
+            return False
+        return True
+
+    low, high = 0, 3000
+    while low < high:
+        middle = (low + high + 1) // 2
+        low, high = (middle, high) if await fits(middle) else (low, middle - 1)
+    assert 0 < low < 3000
+    adapter = _adapter()
+
+    await adapter.settle_card_press(
+        InboundInteraction(
+            channel_id=CHANNEL,
+            sender_id="9",
+            sender_name="alice",
+            sender_display_name=answerer_name("&" * 100),
+            action_id="switch.ui:#1",
+            value="",
+            message_ref=f"{CHAT_ID}:501",
+        ),
+        "G&" * 37,
+        author="scout",
+        spec=card(low),
+        body="fallback",
+    )
+
+    [edit] = _bot(adapter).edits
+    assert len(edit["text"]) <= MAX_MESSAGE
+    assert edit["text"].endswith(" chose " + "G&amp;" * 37)

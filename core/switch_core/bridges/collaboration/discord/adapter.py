@@ -49,8 +49,8 @@ from switch_core.bridges.collaboration.discord.slash import (
     reassemble_args,
 )
 from switch_core.bridges.collaboration.discord.ui_embeds import (
-    escape_card_text,
     parse_card_custom_id,
+    settled_notice,
     ui_spec_to_message,
 )
 from switch_core.bridges.collaboration.models import (
@@ -1065,13 +1065,13 @@ class DiscordAdapter(PlatformAdapter):
             if getattr(item, "url", None) is None:
                 view.remove_item(item)
         view.stop()
-        chosen = discord.utils.escape_markdown(
-            f"✅ {escape_card_text(interaction.sender_display_name)} chose "
-            f"{escape_card_text(label)}"
-        )
+        # In the last embed's footer rather than an embed of its own, which
+        # could take the card over Discord's embed count.
+        *embeds, last = message.embeds or [discord.Embed()]
+        footer = settled_notice(interaction.sender_display_name, label)
         try:
             await press.edit_original_response(
-                embeds=[*message.embeds, discord.Embed(description=chosen)],
+                embeds=[*embeds, last.copy().set_footer(text=footer)],
                 view=view,
             )
         except (discord.HTTPException, ValueError) as error:

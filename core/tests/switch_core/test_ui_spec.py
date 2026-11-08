@@ -439,6 +439,32 @@ def test_block_count_over_limit() -> None:
     )
 
 
+def test_a_card_with_buttons_keeps_a_block_for_its_answer() -> None:
+    texts = {f"t{i}": _el("Text", {"content": "x"}) for i in range(MAX_BLOCKS - 2)}
+    links = _el("LinkButton", {"label": "Docs", "url": "https://example.com"})
+    go = _el("Button", {"id": "go", "label": "Go"})
+
+    linked = _minimal(
+        *texts.items(),
+        ("a", _el("Actions", {}, "docs")),
+        ("docs", links),
+        children=[*texts, "a"],
+    )
+    pressable = _minimal(
+        *texts.items(),
+        ("a", _el("Actions", {}, "docs", "go")),
+        ("docs", links),
+        ("go", go),
+        children=[*texts, "a"],
+    )
+
+    parse_ui_spec(linked)
+    (issue,) = _issues(pressable)
+    assert issue.startswith(
+        f"spec: expands to {MAX_BLOCKS} Slack blocks, over the 49-block limit"
+    )
+
+
 def test_fields_split_into_sections_of_ten() -> None:
     fields = {f"f{i}": _el("Field", {"label": "a", "value": "b"}) for i in range(11)}
     raw = _minimal(("fs", _el("Fields", {}, *fields)), *fields.items(), children=["fs"])

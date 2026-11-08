@@ -118,7 +118,8 @@ def _failure(operation: str, resp: httpx.Response) -> BotConnectorError:
     return BotConnectorUnavailable(detail, status=status, retry_after=None)
 
 
-def _payload(operation: str, body: dict[str, Any]) -> bytes:
+def checked_payload(operation: str, body: dict[str, Any]) -> bytes:
+    """`body` as sent, or `BotConnectorRefused` when it is over the size limit."""
     text = json.dumps(body, ensure_ascii=False)
     wire = text.encode()
     measured = len(text.encode("utf-16-le"))
@@ -206,7 +207,7 @@ class BotConnectorClient:
         if body is not None:
             # Serialised once, so the bytes the guard measured are the bytes
             # that go out.
-            content = _payload(operation, body)
+            content = checked_payload(operation, body)
             headers["Content-Type"] = "application/json"
         try:
             resp = await self._http.request(

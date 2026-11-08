@@ -3,6 +3,7 @@ under its text, and its buttons pressed and settled."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import discord
@@ -13,11 +14,12 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
 )
 from switch_core.bridges.collaboration.discord.ui_embeds import (
+    EMBED_TOTAL_MAX,
     parse_card_custom_id,
     ui_spec_to_message,
 )
 from switch_core.bridges.collaboration.models import InboundInteraction
-from switch_core.ui_spec import UISpec, button_action, parse_ui_spec
+from switch_core.ui_spec import UISpec, answerer_name, button_action, parse_ui_spec
 
 from .test_discord_card_buttons import _Interaction
 from .test_discord_sdk_only import (
@@ -487,8 +489,72 @@ async def test_a_settled_press_takes_off_every_button_but_links_and_says_who_cho
         ("Docs", "https://example.com/docs")
     ]
     assert redraw["view"].is_finished()
-    assert redraw["embeds"][-1].description == "✅ Kim Lee chose Stop"
+    # In the footer of the last embed rather than an embed of its own.
+    assert len(redraw["embeds"]) == len(press.message.embeds)
+    assert redraw["embeds"][-1].footer.text == "✅ Kim Lee chose Stop"
     assert redraw["embeds"][0].title == "Deploy 1.4.2"
+
+
+def _largest(fits: Callable[[int], bool], high: int) -> int:
+    low = 0
+    while low < high:
+        middle = (low + high + 1) // 2
+        low, high = (middle, high) if fits(middle) else (low, middle - 1)
+    return low
+
+
+async def test_a_card_at_the_size_limit_still_fits_once_answered() -> None:
+    def card(n: int) -> UISpec:
+        fields = {f"f{i}": _el("Field", label="L", value="v" * 1000) for i in range(5)}
+        return _spec(
+            {
+                "t": _el("Text", content="x" * n),
+                "fs": _el("Fields", list(fields)),
+                **fields,
+                "acts": _el("Actions", ["no"]),
+                "no": _el("Button", id="stop", label="Stop", value="halt now"),
+            },
+            ["t", "fs", "acts"],
+            title="Deploy",
+        )
+
+    def fits(n: int) -> bool:
+        try:
+            ui_spec_to_message(card(n), interactive=True)
+        except ValueError:
+            return False
+        return True
+
+    n = _largest(fits, 3000)
+    assert 0 < n < 3000
+    embeds, view = ui_spec_to_message(card(n), interactive=True)
+    adapter, _channel, thread, _ = _guild_setup()
+    press = _CardPress(
+        "switch.ui:stop halt now",
+        channel=thread,
+        message=_CardMessage(thread, {"embeds": embeds, "view": view}),
+    )
+    adapter._pressed_cards[f"{thread.id}:901"] = press  # type: ignore[assignment]
+
+    await adapter.settle_card_press(
+        InboundInteraction(
+            channel_id=str(CHANNEL_ID),
+            sender_id="1",
+            sender_name="kim",
+            sender_display_name=answerer_name("k" * 100),
+            action_id="switch.ui:stop",
+            value="halt now",
+            message_ref=f"{thread.id}:901",
+        ),
+        "Stop",
+        author="my-agent",
+        spec=card(n),
+        body="text",
+    )
+
+    redraw = press.redraws[0]["embeds"]
+    assert redraw[-1].footer.text.startswith("✅ kkk")
+    assert sum(len(e) for e in redraw) <= EMBED_TOTAL_MAX
 
 
 async def test_settling_with_no_press_held_leaves_the_card_alone() -> None:

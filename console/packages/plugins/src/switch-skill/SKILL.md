@@ -1171,7 +1171,7 @@ Components and props (`?` optional):
 - `Actions` → `Button` (`id`, `label`, `style?` `primary` | `danger` | `default`, `value?`) and `LinkButton` (`label`, `url`) children.
 
 Limits: the root must be a `Card`; at most 1 `Table`, 2 `Chart`s and 50 Slack
-blocks; title ≤ 150 characters, text ≤ 3000, button label ≤ 75, button value
+blocks (49 when the card has a `Button`: one is kept for who answered); title ≤ 150 characters, text ≤ 3000, button label ≤ 75, button value
 ≤ 1500, chart labels ≤ 20; Button ids unique; URLs must be `https://`. An
 invalid spec fails the call with one line per problem and nothing is posted. If
 Switch Trust redacts the card's text, the card is dropped and only `body` is

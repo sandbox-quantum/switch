@@ -87,6 +87,7 @@ from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorGone,
     BotConnectorRefused,
     BotConnectorThrottled,
+    checked_payload,
 )
 from switch_core.bridges.collaboration.teams.crypto import (
     ResourceDataError,
@@ -110,7 +111,12 @@ from switch_core.room_wide_mention import (
     defuse_mass_mention_words_in_prose,
 )
 from switch_core.sessions.contract import TURN_ENDED
-from switch_core.ui_spec import UI_ACTION_PREFIX, UISpec
+from switch_core.ui_spec import (
+    ANSWERER_NAME_MAX,
+    UI_ACTION_PREFIX,
+    UISpec,
+    card_buttons,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.collaboration.teams.shared_app import TeamsSharedApp
@@ -207,6 +213,16 @@ _PRESS_CONVERSATION: ContextVar[tuple[str, str] | None] = ContextVar(
 """The (service URL, conversation) the press being handled came from, as the
 authenticated invoke names them: where its card is redrawn. After a restart
 `_locate` can only guess, and guesses wrong for a card posted in a thread."""
+
+
+def _settled(activity: dict[str, Any], line: str) -> dict[str, Any]:
+    """A card's activity as answered: its buttons replaced by `line`."""
+    return {
+        **activity,
+        "attachments": [
+            card_attachment(settle_card(activity["attachments"][0]["content"], line))
+        ],
+    }
 
 
 def _invoke_error(status: int, code: str, message: str) -> dict[str, Any]:
@@ -1879,6 +1895,20 @@ class TeamsAdapter(PlatformAdapter):
         if self._connector is None:
             raise RuntimeError("Cannot send card: Teams adapter not started")
         activity = await self._ui_activity(sender_name, spec, fallback_text)
+        labels = [b.label for b in card_buttons(spec)]
+        if labels:
+            # Refused now, as an over-size card is, if the redraw naming who
+            # answered could not be sent.
+            checked_payload(
+                "A card",
+                _settled(
+                    activity,
+                    self._settled_line(
+                        "@" * ANSWERER_NAME_MAX,
+                        max(labels, key=lambda label: len(self._card_text(label))),
+                    ),
+                ),
+            )
         thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
         try:
             msg_id = await self._relay(
@@ -1910,6 +1940,9 @@ class TeamsAdapter(PlatformAdapter):
             ],
         }
 
+    def _settled_line(self, name: str, label: str) -> str:
+        return f"✅ {self.escape_label_for_body(name)} chose {self._card_text(label)}"
+
     def _card_text(self, text: str) -> str:
         """Card text with any `<at>` tag broken, so it renders as text."""
         return self.defuse_mass_mentions(text.replace("<", "<" + _ZERO_WIDTH_SPACE))
@@ -1934,14 +1967,10 @@ class TeamsAdapter(PlatformAdapter):
                 interaction.channel_id,
             )
             return
-        line = (
-            f"✅ {self.escape_label_for_body(interaction.sender_display_name)} chose "
-            f"{self._card_text(label)}"
+        activity = _settled(
+            await self._ui_activity(author, spec, body),
+            self._settled_line(interaction.sender_display_name, label),
         )
-        activity = await self._ui_activity(author, spec, body)
-        activity["attachments"] = [
-            card_attachment(settle_card(activity["attachments"][0]["content"], line))
-        ]
         service_url, conversation_id = _PRESS_CONVERSATION.get() or self._locate(
             interaction.channel_id, ref
         )

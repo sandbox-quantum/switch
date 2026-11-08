@@ -18,6 +18,7 @@ from collections.abc import Sequence
 import discord
 
 from switch_core.ui_spec import (
+    ANSWERER_NAME_MAX,
     UI_ACTION_PREFIX,
     ActionsProps,
     ButtonProps,
@@ -124,6 +125,12 @@ def _chart(props: ChartProps) -> str:
         else ""
     )
     return f"**{escape_card_text(props.title)}**{y_label}\n{grid}"
+
+
+def settled_notice(name: str, label: str) -> str:
+    """Who chose what, as a settled card's footer says it: plain text, since a
+    footer renders neither markdown nor mentions."""
+    return f"✅ {name} chose {label}"
 
 
 def _embed_fields(spec: UISpec) -> str | None:
@@ -261,10 +268,20 @@ def ui_spec_to_message(
         raise ValueError(
             f"it has {len(embed.fields)} fields, over Discord's {EMBED_FIELDS_MAX}"
         )
-    if len(embed) > EMBED_TOTAL_MAX:
+    # A card with Buttons gains a footer naming who answered it.
+    answer = max(
+        (
+            len(settled_notice("x" * ANSWERER_NAME_MAX, b.label))
+            for g in groups
+            for b in g
+            if isinstance(b, ButtonProps)
+        ),
+        default=0,
+    )
+    if len(embed) + answer > EMBED_TOTAL_MAX:
         raise ValueError(
-            f"it is {len(embed)} characters, over Discord's {EMBED_TOTAL_MAX} per "
-            "message"
+            f"it is {len(embed)} characters, and {answer} more kept for its "
+            f"answer, over Discord's {EMBED_TOTAL_MAX} per message"
         )
     if len(embeds) > EMBEDS_MAX:
         raise ValueError(

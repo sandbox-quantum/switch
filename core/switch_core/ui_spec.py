@@ -38,6 +38,9 @@ UI_POSITION_PREFIX = f"{UI_ACTION_PREFIX}#"
 UI_PRESS_KEY = "com.switch.ui_press"
 
 MAX_BLOCKS = 50
+# A card is settled with a line naming who answered it; the name is cut to this
+# so the room each platform keeps for that line is bounded.
+ANSWERER_NAME_MAX = 64
 MAX_DEPTH = 8
 MAX_TABLES = 1
 MAX_CHARTS = 2
@@ -339,13 +342,16 @@ def parse_ui_spec(raw: object) -> UISpec:
     assert root is not None
     spec = UISpec(root=root, elements=elements)
     blocks = estimated_block_count(spec)
-    if blocks > MAX_BLOCKS:
+    # A card with Buttons gains a block when it is answered.
+    limit = MAX_BLOCKS - 1 if card_buttons(spec) else MAX_BLOCKS
+    if blocks > limit:
         raise UISpecError(
             [
-                f"spec: expands to {blocks} Slack blocks, over the {MAX_BLOCKS}-block "
-                "limit (a Card title, subtitle and image, and each Text, Table, "
-                "Table caption, Chart, Divider, Image and Actions take one block; "
-                f"Fields take one per {FIELDS_PER_SECTION} fields)"
+                f"spec: expands to {blocks} Slack blocks, over the {limit}-block "
+                f"limit ({MAX_BLOCKS}, less one kept for the answer when the card "
+                "has a Button; a Card title, subtitle and image, and each Text, "
+                "Table, Table caption, Chart, Divider, Image and Actions take one "
+                f"block; Fields take one per {FIELDS_PER_SECTION} fields)"
             ]
         )
     return spec
@@ -535,6 +541,13 @@ def button_action(button: ButtonProps) -> tuple[str, str]:
     matched back to it. The value is never empty: Slack drops a press that
     carries none."""
     return f"{UI_ACTION_PREFIX}{button.id}", button.value or button.id
+
+
+def answerer_name(name: str) -> str:
+    """Who answered a card, as its settled line names them."""
+    if len(name) <= ANSWERER_NAME_MAX:
+        return name
+    return name[: ANSWERER_NAME_MAX - 1] + "…"
 
 
 def card_buttons(spec: UISpec) -> list[ButtonProps]:

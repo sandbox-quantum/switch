@@ -113,6 +113,7 @@ from switch_core.ui_spec import (
     ButtonProps,
     UISpec,
     UISpecError,
+    answerer_name,
     parse_ui_spec,
     pressed_button,
 )
@@ -2308,7 +2309,10 @@ class CollaborationCore:
                 session,
                 bridge_id=self._bridge_id,
                 external_post_id=card_ref,
-                answer={"by": interaction.sender_display_name, "label": button.label},
+                answer={
+                    "by": answerer_name(interaction.sender_display_name),
+                    "label": button.label,
+                },
             )
             await session.commit()
         if answered is not None:
@@ -2357,7 +2361,13 @@ class CollaborationCore:
             await tell(f"Your answer could not be delivered to {agent_name}.")
             return
         await self._adapter.settle_card_press(
-            interaction,
+            interaction.model_copy(
+                update={
+                    "sender_display_name": answerer_name(
+                        interaction.sender_display_name
+                    )
+                }
+            ),
             button.label,
             author=card.sender_name,
             spec=spec,

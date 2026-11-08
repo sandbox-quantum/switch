@@ -16,6 +16,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
 )
 from switch_core.bridges.collaboration.slack.ui_blocks import ui_spec_to_blocks
 from switch_core.ui_spec import (
+    MAX_BLOCKS,
     UISpec,
     UISpecError,
     estimated_block_count,
@@ -346,6 +347,27 @@ def test_a_settled_press_takes_off_every_button_but_links_and_says_who_chose() -
         "elements": [{"type": "mrkdwn", "text": "✅ a&lt;b&gt;&amp;c chose Go"}],
     }
     assert adapter._pressed_cards == {}
+
+
+def test_a_card_of_the_most_blocks_still_fits_once_answered() -> None:
+    adapter, client = _adapter()
+    texts = {f"t{i}": _el("Text", content="x") for i in range(MAX_BLOCKS - 3)}
+    spec = _spec(
+        {
+            **texts,
+            "act": _el("Actions", ["go", "doc"]),
+            "go": _el("Button", id="go", label="Go", value="g"),
+            "doc": _el("LinkButton", label="Docs", url="https://example.com/docs"),
+        },
+        [*texts, "act"],
+        title="Pick",
+    )
+    blocks = _blocks(spec)
+    assert len(blocks) == MAX_BLOCKS - 1
+
+    _press(adapter, _press_payload(blocks), settle=True)
+
+    assert len(client.updated[0]["blocks"]) == MAX_BLOCKS
 
 
 def test_a_press_that_is_not_settled_leaves_the_card_alone() -> None:
