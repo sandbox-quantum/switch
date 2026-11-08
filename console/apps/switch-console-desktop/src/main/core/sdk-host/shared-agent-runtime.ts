@@ -469,7 +469,7 @@ export async function buildSharedHostConfig(
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: capabilities.steering ? 'steer' : 'queue',
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,
@@ -524,6 +524,9 @@ export async function buildSharedHostConfig(
       skill: sessionLaunch.skill,
       context: sessionLaunch.context,
       instructions: sessionLaunch.instructions,
+      ...(launch.specialization?.midTurnDelivery === 'queue'
+        ? { midTurnDelivery: 'queue' as const }
+        : {}),
     },
   };
   return config;

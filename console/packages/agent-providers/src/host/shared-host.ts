@@ -113,6 +113,8 @@ export type SharedHostOptions = {
   redactions: Redactions;
   /** Its services falling back to the machine's own sign-in, shown in the session once it is up. */
   serviceNotices: ServiceNotices;
+  /** How messages sent mid-turn are delivered: 'steer' (default) or 'queue'. */
+  midTurnDelivery?: 'steer' | 'queue';
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
@@ -838,6 +840,27 @@ export async function runSharedHost(
         }
         const room = await roomInstructionsFor(event.roomId);
         const preface = [instructionsNote, room.note].filter((note) => note !== null);
+        const canSteer =
+          (options.midTurnDelivery ?? 'steer') === 'steer' &&
+          Boolean(adapter.capabilities.steering);
+        let delivery: 'queue' | 'steer' = 'queue';
+        if (canSteer && host!.runningTurn) {
+          const runningOrigin = host!.runningTurn.origin;
+          if (runningOrigin) {
+            const sameRoom = runningOrigin.roomId === event.roomId;
+            const sameThread =
+              (runningOrigin.threadId ?? null) === (message.data.payload.thread_id ?? null);
+            const isStarter = runningOrigin.actorId === message.data.payload.sender;
+            const isOwner = Boolean(
+              message.data.payload.sender_owns_agent ||
+                message.data.payload.sender_role === 'owner' ||
+                message.data.payload.sender_role === 'admin'
+            );
+            if (sameRoom && sameThread && (isStarter || isOwner)) {
+              delivery = 'steer';
+            }
+          }
+        }
         const command = roomCommand({
           agentId,
           sessionId: options.session.sessionId,
@@ -848,6 +871,7 @@ export async function runSharedHost(
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
+          delivery,
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
@@ -1199,6 +1223,7 @@ export async function hostSessionProcess(input: {
         instructions: config.execution?.instructions ?? null,
         redactions,
         serviceNotices,
+        midTurnDelivery: config.execution?.midTurnDelivery ?? 'steer',
       },
       input.adapter,
       input.signal

@@ -37,6 +37,7 @@ export const roomMessageSchema = z.object({
       .enum(['admin', 'member', 'owner'])
       .nullish()
       .transform((role) => (role === 'owner' ? 'admin' : role)),
+    sender_owns_agent: z.boolean().default(false),
     /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
     switch_notice: z.string().nullish(),
   }),
@@ -166,6 +167,8 @@ export function roomCommand(input: {
    * opening words (`opening_message`), if any, are told.
    */
   firstOfConversation: boolean;
+  /** Whether the message steers a running turn or queues behind it. */
+  delivery?: 'queue' | 'steer';
 }): Command {
   const { payload } = input.message;
   const attachments: Attachment[] = input.attachments
@@ -218,6 +221,6 @@ export function roomCommand(input: {
       threadId: payload.thread_id ?? null,
       messageId: payload.message_id,
     },
-    body: { type: 'message.send', text, attachments, delivery: 'queue' },
+    body: { type: 'message.send', text, attachments, delivery: input.delivery ?? 'queue' },
   };
 }
