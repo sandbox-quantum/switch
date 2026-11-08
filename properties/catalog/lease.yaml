@@ -11,9 +11,7 @@ properties:
     spec: ownership.qnt::NoOverlap
     levels: [model, code]
     owner: platform
-    status: proposed
-    gaps:
-      code: the ownership state machine follows in this change
+    status: checked
     notes: >
       A process that stalls past its deadline can still run for a moment;
       `lease.fenced-takeover` is what refuses what it writes then.
@@ -27,9 +25,7 @@ properties:
     spec: ownership.qnt::FencedTakeover
     levels: [model, code]
     owner: platform
-    status: proposed
-    gaps:
-      code: the ownership state machine follows in this change
+    status: checked
     notes: >
       Two processes can both believe they hold a key for a while, as when
       one stalled across its deadline; the property is about what the stale
