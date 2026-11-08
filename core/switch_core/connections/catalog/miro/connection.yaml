@@ -1,0 +1,33 @@
+slug: miro
+name: Miro
+category: Design
+description: Search and summarize Miro boards, identify action items and create board artifacts.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [37821, 37822, 37823, 37824, 37825]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.miro.com/v1/users/me
+    account_id: id
+    label: email
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - name: miro
+      url: "https://mcp.miro.com/mcp"
+access:
+  read:
+    scopes:
+      - "boards:read"
+  write:
+    scopes:
+      - "boards:read"
+      - "boards:write"
+tools: { mode: pass_through }
