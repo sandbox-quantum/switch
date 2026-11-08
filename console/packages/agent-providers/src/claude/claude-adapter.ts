@@ -205,7 +205,8 @@ interface SessionState {
   turn: ActiveTurn | null;
   pendingApprovals: Map<string, PendingApproval>;
   pendingUserInputs: Map<string, PendingUserInput>;
-  toolItems: Map<string, ProviderItem>;
+  /** Background Agent calls can finish after another turn has become active. */
+  toolItems: Map<string, { turnId: string; item: ProviderItem; backgrounded: boolean }>;
   streamedMessageIds: Set<string>;
   textBlocks: Map<number, TextBlockState>;
   streamMessageId: string | null;
@@ -223,11 +224,22 @@ interface SessionState {
    * the background. A background one outlives the turn that started it, so
    * the session is still at work after the turn ends.
    */
-  subagentTasks: Map<string, { backgrounded: boolean }>;
+  subagentTasks: Map<string, { backgrounded: boolean; toolUseId?: string; description?: string }>;
+  /** Pre-tool correlation survives background snapshots; capped independently of live work. */
+  pendingSubagentItems: Map<
+    string,
+    {
+      taskId: string;
+      backgrounded: boolean;
+      status?: 'completed' | 'failed' | 'stopped';
+      description?: string;
+    }
+  >;
 }
 
 /** Task types that are agents doing work, rather than shells or tool calls. */
 const SUBAGENT_TASK_TYPES = new Set(['local_agent', 'remote_agent', 'local_workflow']);
+const MAX_PENDING_SUBAGENT_ITEMS = 128;
 
 function isSubagentTask(task: {
   task_type?: string;
@@ -553,6 +565,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       usage: new CumulativeUsage(),
       unreportedUsage: [],
       subagentTasks: new Map(),
+      pendingSubagentItems: new Map(),
     };
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
@@ -889,13 +902,54 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
     if (message.type !== 'system') return;
     switch (message.subtype) {
-      case 'task_started':
-        if (isSubagentTask(message))
-          tasks.set(message.task_id, { backgrounded: message.is_backgrounded !== false });
+      case 'task_started': {
+        if (!isSubagentTask(message)) return;
+        const backgrounded = message.is_backgrounded !== false;
+        tasks.set(message.task_id, {
+          backgrounded,
+          toolUseId: message.tool_use_id,
+          description: message.description,
+        });
+        const tracked = message.tool_use_id && session.toolItems.get(message.tool_use_id);
+        if (!tracked && message.tool_use_id) {
+          session.pendingSubagentItems.set(message.tool_use_id, {
+            ...session.pendingSubagentItems.get(message.tool_use_id),
+            taskId: message.task_id,
+            backgrounded,
+            description: truncate(message.description),
+          });
+          if (session.pendingSubagentItems.size > MAX_PENDING_SUBAGENT_ITEMS) {
+            session.pendingSubagentItems.delete(session.pendingSubagentItems.keys().next().value!);
+            this.emit(session, {
+              type: 'runtime.warning',
+              message:
+                'Too many subagent tasks arrived without tool blocks; the oldest pending correlation was discarded.',
+            });
+          }
+        }
+        if (!tracked || tracked.item.type !== 'subagent') return;
+        tracked.backgrounded = backgrounded;
+        const title = truncate(message.description) || tracked.item.title;
+        if (tracked.item.nativeChildId === message.task_id && tracked.item.title === title) return;
+        tracked.item = { ...tracked.item, nativeChildId: message.task_id, title };
+        this.emit(session, {
+          type: 'item.updated',
+          turnId: tracked.turnId,
+          item: tracked.item,
+        });
         return;
+      }
       case 'task_updated': {
+        const pending = [...session.pendingSubagentItems.values()].find(
+          (entry) => entry.taskId === message.task_id
+        );
+        if (pending && message.patch.is_backgrounded !== undefined)
+          pending.backgrounded = message.patch.is_backgrounded;
         const task = tasks.get(message.task_id);
         if (!task) return;
+        const tracked = task.toolUseId && session.toolItems.get(task.toolUseId);
+        if (tracked && message.patch.is_backgrounded !== undefined)
+          tracked.backgrounded = message.patch.is_backgrounded;
         const status = message.patch.status;
         if (status === 'completed' || status === 'failed' || status === 'killed')
           tasks.delete(message.task_id);
@@ -903,20 +957,65 @@ export class ClaudeAdapter implements ProviderAdapter {
           task.backgrounded = message.patch.is_backgrounded;
         return;
       }
-      case 'task_notification':
+      case 'task_notification': {
+        const task = tasks.get(message.task_id);
+        const pending = [...session.pendingSubagentItems].find(
+          ([, entry]) => entry.taskId === message.task_id
+        );
+        const toolUseId = message.tool_use_id ?? task?.toolUseId ?? pending?.[0];
+        const tracked = toolUseId
+          ? session.toolItems.get(toolUseId)
+          : [...session.toolItems.values()].find(
+              (entry) => entry.item.nativeChildId === message.task_id
+            );
         tasks.delete(message.task_id);
+        if (message.ambient || message.skip_transcript) return;
+        if (!tracked && pending) {
+          // The active-task level may already have removed this child. Its
+          // correlation lasts until the tool block arrives; terminal wins once.
+          pending[1].status ??= message.status;
+          return;
+        }
+        if (!tracked || tracked.item.type !== 'subagent') return;
+        this.completeSubagent(session, tracked, message.task_id, message.status);
         return;
+      }
       case 'background_tasks_changed': {
+        const previous = new Map(tasks);
         const foreground = [...tasks].filter(([, task]) => !task.backgrounded);
         tasks.clear();
         for (const [taskId, task] of foreground) tasks.set(taskId, task);
         for (const task of message.tasks)
-          if (isSubagentTask(task)) tasks.set(task.task_id, { backgrounded: true });
+          if (isSubagentTask(task))
+            tasks.set(task.task_id, { ...previous.get(task.task_id), backgrounded: true });
         return;
       }
       default:
         return;
     }
+  }
+
+  private completeSubagent(
+    session: SessionState,
+    tracked: { turnId: string; item: ProviderItem },
+    taskId: string,
+    status: 'completed' | 'failed' | 'stopped'
+  ): void {
+    session.toolItems.delete(tracked.item.id);
+    this.emit(session, {
+      type: 'item.completed',
+      turnId: tracked.turnId,
+      item: {
+        ...tracked.item,
+        nativeChildId: taskId,
+        status: status === 'completed' ? 'completed' : 'failed',
+        ...(status === 'stopped'
+          ? { title: `${truncate(tracked.item.title)} (stopped)`, text: 'Subagent stopped.' }
+          : status === 'failed'
+            ? { text: 'Subagent failed.' }
+            : {}),
+      },
+    });
   }
 
   private handleStreamEvent(
@@ -1031,40 +1130,64 @@ export class ClaudeAdapter implements ProviderAdapter {
       const name = block.name;
       if (typeof id !== 'string' || typeof name !== 'string') return;
       const toolInput = isRecord(block.input) ? block.input : {};
+      const task = [...session.subagentTasks].find(([, task]) => task.toolUseId === id);
+      const pending = session.pendingSubagentItems.get(id);
+      session.pendingSubagentItems.delete(id);
+      const childId = task?.[0] ?? pending?.taskId;
       const item: ProviderItem = {
         id,
         type: itemTypeForTool(name),
         status: 'in_progress',
-        title: toolTitle(name, toolInput),
+        title:
+          pending?.description ||
+          (task?.[1].description && truncate(task[1].description)) ||
+          toolTitle(name, toolInput),
         toolName: toolNameForItem(name, toolInput),
         payload: toolInput,
+        ...(childId ? { nativeChildId: childId } : {}),
       };
-      session.toolItems.set(id, item);
+      session.toolItems.set(id, {
+        turnId,
+        item,
+        backgrounded:
+          task?.[1].backgrounded ?? pending?.backgrounded ?? toolInput.run_in_background === true,
+      });
       this.emit(session, {
         type: 'item.started',
         turnId,
         item,
         raw: { source: 'claude', payload: block },
       });
+      if (pending?.status && item.type === 'subagent')
+        this.completeSubagent(session, { turnId, item }, pending.taskId, pending.status);
     });
   }
 
   private handleToolResults(session: SessionState, content: unknown): void {
-    const turnId = session.turn?.turnId;
-    if (turnId === undefined || !Array.isArray(content)) return;
+    if (!Array.isArray(content)) return;
 
     for (const block of content) {
       if (!isRecord(block) || block.type !== 'tool_result') continue;
       const toolUseId = block.tool_use_id;
       if (typeof toolUseId !== 'string') continue;
-      const started = session.toolItems.get(toolUseId);
-      if (!started) continue;
+      const tracked = session.toolItems.get(toolUseId);
+      if (!tracked) continue;
+      const started = tracked.item;
+      // Background launches return a placeholder, not the child's outcome.
+      // A launch error before task_started is terminal; otherwise the task
+      // notification owns completion, even after the parent turn has ended.
+      if (
+        started.type === 'subagent' &&
+        tracked.backgrounded &&
+        (started.nativeChildId !== undefined || block.is_error !== true)
+      )
+        continue;
       session.toolItems.delete(toolUseId);
       const status: ItemStatus = block.is_error === true ? 'failed' : 'completed';
       const text = textFromToolResultContent(block.content);
       this.emit(session, {
         type: 'item.completed',
-        turnId,
+        turnId: tracked.turnId,
         item: { ...started, status, ...(text !== undefined ? { text } : {}) },
         raw: { source: 'claude', payload: block },
       });
@@ -1268,6 +1391,17 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.exited = true;
     session.stopping = true;
     this.sessions.delete(session.sessionId);
+
+    for (const { turnId, item } of session.toolItems.values())
+      if (item.type === 'subagent')
+        this.emit(session, {
+          type: 'item.completed',
+          turnId,
+          item: { ...item, status: 'failed', text: reason },
+        });
+    session.toolItems.clear();
+    session.subagentTasks.clear();
+    session.pendingSubagentItems.clear();
 
     for (const [requestId, pending] of [...session.pendingApprovals]) {
       session.pendingApprovals.delete(requestId);

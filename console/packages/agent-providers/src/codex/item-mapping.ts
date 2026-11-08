@@ -108,6 +108,7 @@ export function mapCodexItem(raw: CodexThreadItem, lifecycle: ItemLifecycle): Pr
         status: lifecycleStatus,
         title: item.agentPath,
         toolName: item.agentPath,
+        nativeChildId: item.agentThreadId,
         payload: { kind: item.kind, agentThreadId: item.agentThreadId },
       };
     case 'webSearch':

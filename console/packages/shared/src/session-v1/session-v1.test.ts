@@ -57,6 +57,40 @@ function transport() {
 }
 
 describe('session-v1 wire contract', () => {
+  it.each([null, 'native-child'])(
+    'round-trips subagent metadata (%s) in events and snapshots',
+    (childId) => {
+      const tool: Item = { ...item(1, ''), kind: 'tool-activity', subagent: { childId } };
+      const update = event(11, { type: 'item.upsert', item: tool });
+      expect(serverEventSchema.parse(JSON.parse(JSON.stringify(update)))).toEqual(update);
+      const snapshot = { ...initial(), items: [tool] };
+      expect(snapshotSchema.parse(JSON.parse(JSON.stringify(snapshot))).items).toEqual([tool]);
+      const host = { ...examples.hostRequest, body: update.body };
+      expect(parseHostEvent(host).body).toEqual(update.body);
+    }
+  );
+
+  it('accepts legacy items but confines strict child metadata to tool activity', () => {
+    const update = (metadata: unknown, kind = 'tool-activity') => ({
+      ...event(11, { type: 'item.upsert', item: item(1, '') }),
+      body: { type: 'item.upsert', item: { ...item(1, ''), kind, subagent: metadata } },
+    });
+    expect(
+      serverEventSchema.parse(event(11, { type: 'item.upsert', item: item(1, '') }))
+    ).toBeDefined();
+    for (const invalid of [
+      {},
+      { childId: '' },
+      { childId: 5 },
+      { childId: null, transcript: 'private' },
+    ]) {
+      expect(() => serverEventSchema.parse(update(invalid))).toThrow();
+    }
+    for (const kind of ['user-message', 'assistant-message']) {
+      expect(() => serverEventSchema.parse(update({ childId: 'child' }, kind))).toThrow();
+    }
+  });
+
   it('accepts server approval expiry offsets in snapshots and events', () => {
     const expiresAt = '2026-09-11T15:30:00.123456+00:00';
     const snapshot = initial();

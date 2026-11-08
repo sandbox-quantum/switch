@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -42,7 +42,7 @@ from switch_core.session_activity.service import (
     Question,
     QuestionOption,
 )
-from switch_core.sessions.contract import Answer, QuestionsResult
+from switch_core.sessions.contract import Answer, QuestionsResult, Subagent
 from switch_core.tenant_context import current_tenant_id
 
 from .bridge_fixtures import BridgedRoom, RecordingPlatform, make_bridged_room
@@ -178,6 +178,7 @@ async def _step(
     title="",
     text="",
     message_id=ASKED,
+    subagent: Subagent | None = None,
 ):
     await service.report_item(
         AGENT,
@@ -195,6 +196,7 @@ async def _step(
         message_id=message_id,
         occurred_at=datetime.now(UTC),
         usage=[],
+        subagent=subagent,
     )
 
 
@@ -594,6 +596,113 @@ async def test_a_turn_is_drawn_step_by_step_in_one_message(
     assert last.content.elapsed_seconds is not None
     post = await _turn_post(session_factory)
     assert post.external_post_id == first.ref
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_a_late_subagent_completion_edits_the_same_final_turn_post(
+    service, session_factory, bridged, listener, online, platform, restart
+):
+    # The parent has already ended when first drawn; its child continues.
+    child = Subagent(child_id="native-child")
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="child-task",
+        kind="tool-activity",
+        status="in-progress",
+        revision=1,
+        title="Inspect files",
+        subagent=child,
+    )
+    await _turn(service, bridged.room_id, "completed", 1)
+    await _turn(service, bridged.room_id, "completed", 1, turn_id="ordinary-turn")
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await platform.wait_until(
+            lambda: (
+                len(_turns(platform)) == 2
+                and publisher._remembered(_key("turn-1")).final
+                and _key("turn-1") in publisher._live_turns
+            )
+        )
+        first = next(d for d in _turns(platform) if d.content.turn.turn_id == "turn-1")
+        assert first.call == "post_rich"
+        assert first.content.turn.status == "completed"
+        assert first.content.items[0].status == "in-progress"
+        assert first.content.items[0].subagent == child
+        assert _key("ordinary-turn") not in publisher._live_turns
+        assert (await _turn_post(session_factory)).external_post_id == first.ref
+
+        if restart:
+            await publisher.stop()
+            old = datetime.now(UTC) - timedelta(hours=1)
+            async with session_factory() as db, db.begin():
+                await db.execute(
+                    update(AgentSessionActivityItem)
+                    .where(
+                        AgentSessionActivityItem.agent_id == AGENT,
+                        AgentSessionActivityItem.session_id == SESSION,
+                    )
+                    .values(created_at=old, occurred_at=old, updated_at=old)
+                )
+                await db.execute(
+                    update(TurnStatusPost)
+                    .where(
+                        TurnStatusPost.agent_id == AGENT,
+                        TurnStatusPost.session_id == SESSION,
+                    )
+                    .values(updated_at=old)
+                )
+            platform = RecordingPlatform()
+            publisher = _publisher(session_factory, bridged, listener, platform, online)
+            # Check the startup scan itself, before subscribing to new changes:
+            # a notification cannot make this pass instead of the SQL predicate.
+            await publisher._resync()
+            assert _key("turn-1") in publisher._pending
+            assert _key("ordinary-turn") not in publisher._pending
+            publisher.start()
+            await platform.wait_until(
+                lambda: (
+                    len(_turns(platform)) >= 1
+                    and _key("turn-1") in publisher._live_turns
+                )
+            )
+            assert all(d.content.turn.turn_id == "turn-1" for d in _turns(platform))
+            assert all(
+                d.call == "update_rich" and d.ref == first.ref for d in _turns(platform)
+            )
+
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="child-task",
+            kind="tool-activity",
+            status="completed",
+            revision=2,
+            title="Inspect files",
+            subagent=child,
+        )
+        await platform.wait_until(
+            lambda: (
+                _turns(platform)[-1].content.turn.turn_id == "turn-1"
+                and _turns(platform)[-1].content.items[0].status == "completed"
+                and _key("turn-1") not in publisher._live_turns
+            )
+        )
+        last = _turns(platform)[-1]
+        assert (last.call, last.ref) == ("update_rich", first.ref)
+        assert last.content.turn.status == "completed"
+        assert last.content.items[0].revision == 2
+        assert last.content.items[0].subagent == child
+        drawn = [d for d in _turns(platform) if d.content.turn.turn_id == "turn-1"]
+        assert [d for d in drawn if d.call == "post_rich"] == (
+            [] if restart else [first]
+        )
+        assert all(d.ref == first.ref for d in drawn)
+        assert (await _turn_post(session_factory)).external_post_id == first.ref
+    finally:
+        await publisher.stop()
 
 
 async def test_the_asking_message_is_marked_working_while_the_turn_runs(

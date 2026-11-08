@@ -462,9 +462,16 @@ class AgentSessionActivityPublisher:
                     )
                 )
             ).all()
-            unended = and_(
-                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
-                AgentSessionActivityItem.status.in_(("queued", "running")),
+            unended = or_(
+                and_(
+                    AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                    AgentSessionActivityItem.status.in_(("queued", "running")),
+                ),
+                and_(
+                    AgentSessionActivityItem.kind == "tool-activity",
+                    AgentSessionActivityItem.status == "in-progress",
+                    AgentSessionActivityItem.subagent.has_key("child_id"),
+                ),
             )
             turns = (
                 await db.execute(
@@ -1147,7 +1154,11 @@ class AgentSessionActivityPublisher:
             await self._marks(key, post, view, target, waiting_behind=bool(unended))
         if post is not None:
             await self._attention(post, view, target, error_summary, recipient, drawn)
-        if post is not None and not view.ended:
+        children_running = any(
+            item.subagent is not None and item.status == "in-progress"
+            for item in view.items
+        )
+        if post is not None and (not view.ended or children_running):
             self._live_turns[key] = agent_id
             drawn.clock_due = self._redraw_due(drawn, elapsed)
         else:
