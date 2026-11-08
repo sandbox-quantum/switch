@@ -71,5 +71,8 @@ def test_a_holder_that_stalled_past_its_lease_is_refused(postgres_schema: str) -
         assert not holder.running
         machine.no_overlap()
         machine.fenced_takeover()
+        # The machine's own run need only reach these on the nightly profile;
+        # this one reaches each every time.
+        assert not [what for what in SHOULD_REACH if COVERAGE[what] == 0]
     finally:
         machine.teardown()

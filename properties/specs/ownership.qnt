@@ -116,10 +116,11 @@ module ownership {
   // from a holder whose lease still holds.
   action claim(p: int): bool = {
     val me = s.procs.get(p)
+    val holder_lapsed =
+      if (s.holder == 0) true else not(holds(s.now, s.procs.get(s.holder)))
     val holder_gone = BUGS.contains("claim-ignores-holder")
-      or s.holder == 0
       or s.holder == p
-      or (if (s.holder == 0) false else not(holds(s.now, s.procs.get(s.holder))))
+      or holder_lapsed
     all {
       not(me.crashed),
       not(me.stalled),
@@ -168,7 +169,7 @@ module ownership {
       not(me.crashed),
       not(me.stalled),
       not(me.running),
-      s' = with_proc(p, { ...me, crashed: true, stopped: me.row }),
+      s' = with_proc(p, { ...me, crashed: true, inflight: false, stopped: me.row }),
     }
   }
 
