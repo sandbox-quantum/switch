@@ -1,7 +1,9 @@
 import { definePlugin, registerPluginBehavior } from '@switch-console/core/agents/plugins';
 import { icon } from './icon';
 
-const OPENHANDS_INSTALL_COMMAND = 'curl -fsSL https://install.openhands.dev/install.sh | sh';
+// Switch's ACP launcher requires the Python distribution and checks these exact versions.
+// OpenHands' standalone binary installer is intentionally unsupported by the launcher.
+const OPENHANDS_INSTALL_COMMAND = 'uv tool install --python 3.12 openhands==1.16.0';
 
 export const plugin = definePlugin(
   {
@@ -25,26 +27,22 @@ export const plugin = definePlugin(
       installCommands: {
         macos: [
           {
-            method: 'curl',
+            method: 'other',
+            label: 'uv (Python 3.12)',
             command: OPENHANDS_INSTALL_COMMAND,
           },
         ],
         linux: [
           {
-            method: 'curl',
+            method: 'other',
+            label: 'uv (Python 3.12)',
             command: OPENHANDS_INSTALL_COMMAND,
           },
         ],
       },
-      updates: {
-        kind: 'supported',
-        releaseSource: {
-          kind: 'none',
-        },
-        update: {
-          kind: 'package-manager',
-        },
-      },
+      // Upgrading to an untested CLI version would fail the launcher's version check.
+      updates: { kind: 'none' },
+      installDocs: 'https://docs.openhands.dev/openhands/usage/cli/installation',
     },
     mcp: {
       kind: 'none',

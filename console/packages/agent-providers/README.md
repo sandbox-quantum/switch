@@ -32,6 +32,8 @@ protocols. These five adapters are the only Console session runtime.
 | `openhands` | Installed OpenHands ACP agent over stdio, on the generic ACP adapter | Native sessions, resume, MCP registration and confirmation prompts mapped onto OpenHands' confirmation modes; the model is OpenHands' own setting (see Known provider limits). |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
+For OpenHands, install `uv` first, then run `uv tool install --python 3.12 openhands==1.16.0` on the execution machine. The standalone executable is unsupported by Switch's ACP launcher. Switch does not offer automatic OpenHands upgrades while that launcher is limited to this version.
+
 ## Rules for an adapter
 
 - Map the vendor's permission model onto `RuntimeMode` inside the adapter.
