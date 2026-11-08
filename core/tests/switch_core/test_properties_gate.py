@@ -471,3 +471,57 @@ def test_a_call_not_from_the_sdk_is_not_an_assertion(
     )
     tags, problems = gate.find_tags(tmp_path)
     assert problems == [] and "area.thing" not in tags
+
+
+@pytest.mark.parametrize(
+    "mark", ["pytest.mark.skip", "[pytest.mark.slow, pytest.mark.xfail]"]
+)
+def test_a_module_level_pytestmark_that_stops_tests_removes_the_checker(
+    gate: ModuleType, tmp_path: Path, mark: str
+) -> None:
+    write(
+        tmp_path,
+        "core/tests/switch_core/properties/test_x.py",
+        f"pytestmark = {mark}\n" + CODE_TEST,
+    )
+    assert gate.find_tags(tmp_path) == ({}, [])
+
+
+def test_a_conditional_skip_still_counts_where_the_test_runs(
+    gate: ModuleType, tmp_path: Path
+) -> None:
+    write(
+        tmp_path,
+        "core/tests/switch_core/properties/test_x.py",
+        '@pytest.mark.skipif(sys.platform == "win32", reason="x")\n' + CODE_TEST,
+    )
+    tags, _ = gate.find_tags(tmp_path)
+    assert [t.target for t in tags["area.thing"]] == ["test_x"]
+
+
+def test_two_tags_stacked_on_one_model_definition_are_both_found(
+    gate: ModuleType, tmp_path: Path
+) -> None:
+    write(
+        tmp_path,
+        "properties/specs/m.qnt",
+        "/// @property area.one\n/// @property area.two\n/// Both hold.\nval Inv = true\n",
+    )
+    tags, problems = gate.find_tags(tmp_path)
+    assert problems == []
+    assert sorted(tags) == ["area.one", "area.two"]
+
+
+def test_reachable_and_unreachable_take_their_message_first(
+    gate: ModuleType, tmp_path: Path
+) -> None:
+    write(
+        tmp_path,
+        "core/switch_core/x.py",
+        "from antithesis.assertions import reachable, unreachable\n"
+        'unreachable("area.one: never", {})\n'
+        'reachable("area.two: reached", {})\n',
+    )
+    tags, problems = gate.find_tags(tmp_path)
+    assert problems == []
+    assert list(tags) == ["area.one"]

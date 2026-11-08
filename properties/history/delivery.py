@@ -130,8 +130,8 @@ def _by_agent(history: History) -> dict[str, list[Event]]:
 @checks("delivery.own-seq-contiguous")
 def own_seq_contiguous(history: History) -> list[str]:
     """An agent's own events fall inside what its head row says was handed out,
-    each later number is created no earlier than the one before it, and no
-    number is stored twice.
+    and each later number is created no earlier than the one before it (a
+    number cannot be stored twice: it is the table's primary key).
 
     Numbers a leave or retention deleted leave holes, so a hole is not a
     violation here; what retention does with `created_at` is, because it
@@ -151,14 +151,11 @@ def own_seq_contiguous(history: History) -> list[str]:
                     f"agent {agent}: event {event.seq} is outside its head "
                     f"{first}..{last}"
                 )
-            if previous is not None:
-                if event.seq == previous.seq:
-                    found.append(f"agent {agent}: number {event.seq} stored twice")
-                elif event.created_at < previous.created_at:
-                    found.append(
-                        f"agent {agent}: event {event.seq} was created before "
-                        f"event {previous.seq}, which has a lower number"
-                    )
+            if previous is not None and event.created_at < previous.created_at:
+                found.append(
+                    f"agent {agent}: event {event.seq} was created before "
+                    f"event {previous.seq}, which has a lower number"
+                )
             previous = event
     return found
 

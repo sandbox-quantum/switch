@@ -2479,16 +2479,20 @@ class EventBuffer:
         placed at 0 would find the deleted numbers ahead of it on every read.
         """
         async with tenant_session(self._session_factory, tenant_id) as session:
-            oldest = await session.scalar(
-                select(func.min(AgentEventRow.seq)).where(
-                    AgentEventRow.agent_id == agent_id
+            # One statement, so a retention pass that commits between two reads
+            # cannot show an oldest kept and a deleted-through from different moments.
+            oldest, dropped_through = (
+                await session.execute(
+                    select(
+                        select(func.min(AgentEventRow.seq))
+                        .where(AgentEventRow.agent_id == agent_id)
+                        .scalar_subquery(),
+                        select(func.max(AgentEventDrop.dropped_through))
+                        .where(AgentEventDrop.agent_id == agent_id)
+                        .scalar_subquery(),
+                    )
                 )
-            )
-            dropped_through = await session.scalar(
-                select(func.max(AgentEventDrop.dropped_through)).where(
-                    AgentEventDrop.agent_id == agent_id
-                )
-            )
+            ).one()
         always(
             oldest is None or dropped_through is None or dropped_through < oldest,
             "delivery.no-silent-loss: retention kept nothing at or below what it recorded deleting",

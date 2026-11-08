@@ -74,12 +74,12 @@ ASSERT_MESSAGE = re.compile(
 
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 QUINT_DEFINITION = r"(?:pure[ \t]+)?(?:val|def|temporal|action|run)[ \t]+(?P<name>\w+)"
-QUINT_TAG = re.compile(
-    r"^[ \t]*///[ \t]*@property[ \t]+(?P<id>\S+)[ \t]*\n"
-    r"(?:[ \t]*///[^\n]*\n)*"
+QUINT_DOC = re.compile(
+    r"(?P<doc>(?:^[ \t]*///[^\n]*\n)+)"
     rf"(?:[ \t]*{QUINT_DEFINITION})?",
     re.MULTILINE,
 )
+QUINT_TAG = re.compile(r"^[ \t]*///[ \t]*@property[ \t]+(?P<id>\S+)", re.MULTILINE)
 QUINT_NAME = re.compile(rf"^[ \t]*{QUINT_DEFINITION}", re.MULTILINE)
 TS_DOC_COMMENT = re.compile(
     r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*(?:export\s+(?:const|function)\s+(?P<name>\w+))?",
@@ -87,7 +87,7 @@ TS_DOC_COMMENT = re.compile(
 )
 TS_TAG = re.compile(r"^\s*\*\s*@property\s+(?P<id>\S+)", re.MULTILINE)
 
-NOT_RUN = {"pytest.mark.skip", "pytest.mark.skipif", "pytest.mark.xfail"}
+NOT_RUN = {"pytest.mark.skip", "pytest.mark.xfail"}
 
 
 class Property(BaseModel):
@@ -178,6 +178,36 @@ def _decorator_name(node: ast.expr) -> str:
     return _dotted(node.func if isinstance(node, ast.Call) else node)
 
 
+def _mark_stops_a_test(node: ast.expr) -> bool:
+    """Whether a mark means the test does not run: a skip or an expected
+    failure, or a `skipif` whose condition is the literal `True`. Any other
+    `skipif` depends on where it runs, so the test still counts."""
+    name = _decorator_name(node)
+    if name in NOT_RUN:
+        return True
+    if name == "pytest.mark.skipif" and isinstance(node, ast.Call) and node.args:
+        first = node.args[0]
+        return isinstance(first, ast.Constant) and first.value is True
+    return False
+
+
+def _module_marks_stop_tests(tree: ast.AST) -> bool:
+    """Whether a module-level `pytestmark` stops every test in the file."""
+    if not isinstance(tree, ast.Module):
+        return False
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets
+        ):
+            marks = (
+                node.value.elts
+                if isinstance(node.value, ast.List | ast.Tuple)
+                else [node.value]
+            )
+            return any(_mark_stops_a_test(mark) for mark in marks)
+    return False
+
+
 def _python_tags(
     tree: ast.AST, label: str, level: Level, decorator: str
 ) -> tuple[list[tuple[str, Tag]], list[str]]:
@@ -186,9 +216,7 @@ def _python_tags(
 
     def visit(node: ast.AST, not_run: bool) -> None:
         if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
-            not_run = not_run or any(
-                _decorator_name(d) in NOT_RUN for d in node.decorator_list
-            )
+            not_run = not_run or any(_mark_stops_a_test(d) for d in node.decorator_list)
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 for d in node.decorator_list:
                     if _decorator_name(d) != decorator:
@@ -206,7 +234,7 @@ def _python_tags(
         for child in ast.iter_child_nodes(node):
             visit(child, not_run)
 
-    visit(tree, False)
+    visit(tree, _module_marks_stop_tests(tree))
     return tags, problems
 
 
@@ -254,7 +282,13 @@ def _assertion_tags(
             and name is not None
             and name.startswith(ASSERT_PREFIXES)
         ):
-            position = 2 if "_than" in name else 1
+            position = (
+                0
+                if name in ("reachable", "unreachable")
+                else 2
+                if "_than" in name
+                else 1
+            )
             message = (
                 node.args[position]
                 if len(node.args) > position
@@ -288,13 +322,14 @@ def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
     for path in sorted(root.glob(MODEL_GLOB)):
         label = path.relative_to(root).as_posix()
         text = BLOCK_COMMENT.sub("", path.read_text(encoding="utf-8"))
-        for match in QUINT_TAG.finditer(text):
-            if match["name"] is None:
-                problems.append(
-                    f"{label}: tag for {match['id']} is not above a definition"
-                )
-            else:
-                found[match["id"]].append(Tag("model", label, match["name"]))
+        for block in QUINT_DOC.finditer(text):
+            for tag in QUINT_TAG.finditer(block["doc"]):
+                if block["name"] is None:
+                    problems.append(
+                        f"{label}: tag for {tag['id']} is not above a definition"
+                    )
+                else:
+                    found[tag["id"]].append(Tag("model", label, block["name"]))
 
     for glob, level, decorator in (
         (CODE_GLOB, "code", "pytest.mark.property"),

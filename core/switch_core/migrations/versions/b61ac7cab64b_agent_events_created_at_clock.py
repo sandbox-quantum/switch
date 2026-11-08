@@ -10,7 +10,10 @@ kept, and the reader would skip the second without being told.
 ``clock_timestamp()`` is the time of the insert, which happens under the
 agent's head row after every lower number has been inserted. Rows already
 stored keep their ``created_at``; any that were out of order have gone once
-retention has passed.
+retention has passed. Until then retention can still delete a higher number and
+keep a lower one among those rows, and the checks that read ``created_at`` order
+(the history check, the retention assertion) can report them: they are old data,
+not a new fault, and cannot be repaired by renumbering, which readers hold.
 
 Expand only: a process from before this revision inserts with the old default
 until the column changes, and again as it was after a downgrade.
