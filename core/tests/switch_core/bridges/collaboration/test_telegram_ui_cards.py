@@ -1,0 +1,318 @@
+"""An agent's card (`ui_spec`) drawn as one Telegram HTML message with an
+inline keyboard, and its buttons pressed and settled."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from telegram.error import BadRequest
+
+from switch_core.bridges.collaboration.models import InboundInteraction
+from switch_core.bridges.collaboration.telegram.adapter import (
+    _MAX_CALLBACK_BYTES,
+    _UI_CARD_FORGOTTEN,
+    TelegramAdapter,
+)
+from switch_core.bridges.collaboration.telegram.chunking import MAX_MESSAGE
+from switch_core.ui_spec import UISpec, parse_ui_spec
+
+from .test_telegram_adapter import (
+    CHAT_ID,
+    SCOUT_MARK,
+    _adapter,
+    _bot,
+    _FakeChat,
+    _FakeSentMessage,
+    _FakeUser,
+)
+from .test_telegram_sdk_only import _press
+
+CHANNEL = str(CHAT_ID)
+HOSTILE = "<b>x</b> & @here"
+
+
+def _el(kind: str, children: list[str] | None = None, **props: Any) -> dict[str, Any]:
+    return {"type": kind, "props": props, "children": children or []}
+
+
+def _spec(elements: dict[str, Any], root_children: list[str], **card: Any) -> UISpec:
+    return parse_ui_spec(
+        {
+            "root": "card",
+            "elements": {"card": _el("Card", root_children, **card), **elements},
+        }
+    )
+
+
+FULL = _spec(
+    {
+        "intro": _el("Text", content="**All** green"),
+        "quiet": _el("Text", content="checked 5m ago", style="muted"),
+        "loud": _el("Text", content="Ship it", style="bold"),
+        "flds": _el("Fields", ["f1"]),
+        "f1": _el("Field", label="Status", value="Passed"),
+        "sec": _el("Section", ["div", "img"]),
+        "div": _el("Divider"),
+        "img": _el("Image", url="https://example.com/a.png?x=1&y=2", alt="graph"),
+        "tbl": _el(
+            "Table",
+            headers=["Service", "p95"],
+            rows=[["api", 120], ["web", "80"]],
+            align=["left", "right"],
+            caption="last hour",
+        ),
+        "pie": _el(
+            "Chart",
+            title="Share",
+            chart={"type": "pie", "segments": [{"label": "a", "value": 3}]},
+        ),
+        "bar": _el(
+            "Chart",
+            title="Load",
+            chart={
+                "type": "bar",
+                "categories": ["Mon", "Tue"],
+                "series": [{"name": "req", "values": [1, 2.5]}],
+                "xLabel": "Day",
+            },
+        ),
+        "acts": _el("Actions", ["go", "stop", "docs"]),
+        "go": _el("Button", id="go", label="Go", style="primary", value="g"),
+        "stop": _el("Button", id="stop", label="Stop", style="danger"),
+        "docs": _el("LinkButton", label="Docs", url="https://example.com/docs"),
+    },
+    ["intro", "quiet", "loud", "flds", "sec", "tbl", "pie", "bar", "acts"],
+    title="Status",
+    subtitle="nightly",
+    imageUrl="https://example.com/logo.png",
+)
+
+
+async def _send(adapter: TelegramAdapter, spec: UISpec) -> str | None:
+    return await adapter.send_ui_message(
+        CHANNEL, "scout", spec, "fallback", None, room_wide_mention=False
+    )
+
+
+def _buttons(message: dict[str, Any]) -> list[list[Any]]:
+    markup = message["reply_markup"]
+    return [] if markup is None else [list(row) for row in markup.inline_keyboard]
+
+
+async def test_every_component_draws_as_telegram_html() -> None:
+    adapter = _adapter()
+
+    ref = await _send(adapter, FULL)
+
+    [sent] = _bot(adapter).messages
+    assert ref == f"{CHAT_ID}:501"
+    assert sent["parse_mode"] == "HTML"
+    assert sent["text"] == "\n".join(
+        [
+            f"{SCOUT_MARK} <b>scout</b>",
+            "<b>Status</b>",
+            "<i>nightly</i>",
+            '<a href="https://example.com/logo.png">Image</a>',
+            "<b>All</b> green",
+            "<i>checked 5m ago</i>",
+            "<b>Ship it</b>",
+            "<b>Status:</b> Passed",
+            "──────────",
+            '<a href="https://example.com/a.png?x=1&amp;y=2">graph</a>',
+            "<pre>Service | p95\napi     | 120\nweb     |  80</pre>",
+            "<i>last hour</i>",
+            "<b>Share</b>",
+            "<pre>a | 3</pre>",
+            "<b>Load</b>",
+            "<pre>Day | req\nMon |   1\nTue | 2.5</pre>",
+        ]
+    )
+    [row] = _buttons(sent)
+    assert [(b.text, b.callback_data, b.url) for b in row] == [
+        ("Go", "su:1", None),
+        ("Stop", "su:2", None),
+        ("Docs", None, "https://example.com/docs"),
+    ]
+    assert [b.api_kwargs.get("style") for b in row] == ["primary", "danger", None]
+
+
+async def test_card_text_is_escaped_and_cannot_add_markup() -> None:
+    adapter = _adapter()
+    spec = _spec(
+        {
+            "t": _el("Text", content=HOSTILE),
+            "f": _el("Fields", ["f1"]),
+            "f1": _el("Field", label=HOSTILE, value=HOSTILE),
+            "tbl": _el("Table", headers=[HOSTILE], rows=[]),
+            "img": _el("Image", url='https://e.example/"><b>', alt=HOSTILE),
+        },
+        ["t", "f", "tbl", "img"],
+        title=HOSTILE,
+    )
+
+    await _send(adapter, spec)
+
+    text = _bot(adapter).messages[0]["text"]
+    assert "<b>x</b>" not in text
+    assert "&lt;b&gt;x&lt;/b&gt; &amp;" in text
+    assert text.count("@here") == 1
+    assert "<pre>&lt;b&gt;x&lt;/b&gt; &amp; @here</pre>" in text
+    assert 'href="https://e.example/&quot;&gt;&lt;b&gt;"' in text
+
+
+async def test_a_markdown_link_in_card_text_still_links() -> None:
+    adapter = _adapter()
+    spec = _spec({"t": _el("Text", content="[docs](https://e.example)")}, ["t"])
+
+    await _send(adapter, spec)
+
+    assert '<a href="https://e.example">docs</a>' in _bot(adapter).messages[0]["text"]
+
+
+async def test_buttons_wrap_three_to_a_row_and_fit_the_callback_limit() -> None:
+    adapter = _adapter()
+    ids = [f"b{i}" for i in range(25)]
+    spec = _spec(
+        {
+            "acts": _el("Actions", ids),
+            **{i: _el("Button", id=i, label=i, value="v" * 1500) for i in ids},
+        },
+        ["acts"],
+        title="Pick",
+    )
+
+    await _send(adapter, spec)
+
+    rows = _buttons(_bot(adapter).messages[0])
+    assert [len(r) for r in rows] == [3] * 8 + [1]
+    assert all(
+        len(b.callback_data.encode()) <= _MAX_CALLBACK_BYTES for r in rows for b in r
+    )
+
+
+async def test_a_card_too_long_for_one_message_raises_before_posting() -> None:
+    adapter = _adapter()
+    spec = _spec({k: _el("Text", content="x" * 3000) for k in ("a", "b")}, ["a", "b"])
+
+    with pytest.raises(ValueError, match=str(MAX_MESSAGE)):
+        await _send(adapter, spec)
+    assert _bot(adapter).messages == []
+
+
+async def test_a_card_telegram_refuses_raises_so_the_text_is_sent() -> None:
+    adapter = _adapter()
+    _bot(adapter).send_message_error = BadRequest("can't parse entities")
+
+    with pytest.raises(BadRequest):
+        await _send(adapter, FULL)
+    assert adapter._ui_cards == {}
+
+
+def _press_on(ref: str) -> dict[str, Any]:
+    chat_id, message_id = ref.split(":")
+    return {
+        "message": _FakeSentMessage(_FakeChat(int(chat_id)), int(message_id)),
+        "from_user": _FakeUser(user_id=9, username="a<b>&c"),
+    }
+
+
+async def test_a_press_resolves_its_button_from_the_posted_card() -> None:
+    adapter = _adapter()
+    ref = await _send(adapter, FULL)
+    assert ref is not None
+
+    seen = await _press(adapter, "su:1", **_press_on(ref))
+
+    assert seen == [
+        InboundInteraction(
+            channel_id=CHANNEL,
+            sender_id="9",
+            sender_name="a<b>&c",
+            action_id="switch.ui:go",
+            value="g",
+            message_ref=ref,
+        )
+    ]
+    assert _bot(adapter).answers == [
+        {"callback_query_id": "cq-1", "text": None, "show_alert": False}
+    ]
+
+
+@pytest.mark.parametrize("data", ["su:3", "su:0", "su:x"])
+async def test_a_press_naming_no_button_on_the_card_goes_nowhere(data: str) -> None:
+    adapter = _adapter()
+    ref = await _send(adapter, FULL)
+    assert ref is not None
+
+    seen = await _press(adapter, data, **_press_on(ref))
+
+    assert seen == []
+    assert len(_bot(adapter).answers) == 1
+
+
+async def test_a_press_on_a_card_the_bridge_does_not_know_says_so() -> None:
+    adapter = _adapter()
+
+    seen = await _press(adapter, "su:1")
+
+    assert seen == []
+    assert _bot(adapter).answers == [
+        {
+            "callback_query_id": "cq-1",
+            "text": _UI_CARD_FORGOTTEN,
+            "show_alert": True,
+        }
+    ]
+
+
+async def test_a_settled_press_says_who_chose_and_drops_its_row() -> None:
+    adapter = _adapter()
+    spec = _spec(
+        {
+            "a1": _el("Actions", ["go"]),
+            "go": _el("Button", id="go", label="Go"),
+            "a2": _el("Actions", ["no"]),
+            "no": _el("Button", id="no", label="No"),
+        },
+        ["a1", "a2"],
+        title="Pick",
+    )
+    ref = await _send(adapter, spec)
+    assert ref is not None
+    posted = _bot(adapter).messages[0]
+
+    await adapter.settle_card_press(
+        InboundInteraction(
+            channel_id=CHANNEL,
+            sender_id="9",
+            sender_name="a<b>&c",
+            action_id="switch.ui:go",
+            value="go",
+            message_ref=ref,
+        ),
+        "Go",
+    )
+
+    [edit] = _bot(adapter).edits
+    assert edit["chat_id"] == CHAT_ID and edit["message_id"] == 501
+    assert edit["text"] == posted["text"] + "\n✅ a&lt;b&gt;&amp;c chose Go"
+    assert [[b.text for b in r] for r in _buttons(edit)] == [["No"]]
+
+
+async def test_settling_a_card_the_bridge_does_not_know_edits_nothing() -> None:
+    adapter = _adapter()
+
+    await adapter.settle_card_press(
+        InboundInteraction(
+            channel_id=CHANNEL,
+            sender_id="9",
+            sender_name="alice",
+            action_id="switch.ui:go",
+            value="go",
+            message_ref=f"{CHAT_ID}:77",
+        ),
+        "Go",
+    )
+
+    assert _bot(adapter).edits == []
