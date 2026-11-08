@@ -363,6 +363,67 @@ The slice is done when:
   of the head), and the PR says how;
 - the PR CI time added stays under two minutes.
 
+## Phase 2: breadth
+
+The first slice built the platform on delivery. Phase 2 puts more of the system
+on it, in this order, each checker shown to fail on a planted bug and the phase
+adding under two minutes to PR CI (anything slower runs nightly).
+
+0. **Leftovers from the first slice.**
+   - The Hypothesis `nightly` profile runs on the schedule (`state-machines` in
+     `properties-scheduled.yml`), with `.hypothesis` kept between runs so a
+     failure found one night is replayed first the next.
+   - `properties/run-machine.sh` runs the machines with the server's assertions
+     logged and requires the two `sometimes` the fast lane cannot reach: a reader
+     resuming below a drop mark, and an event not stored for an agent that left.
+   - `retention.erasure-complete` gets a history check (no identity an erasure
+     named is left, and no message from its senders was sent before it finished)
+     and the `member-erasure` scenario is tagged for it.
+   - The gate reads `@property` tags on the fast lane's exports, so
+     `api.no-5xx` (`client-mistakes`) and `tenancy.no-cross-tenant-ids` (the
+     cross-tenant probe) count as system-level checks they already were.
+1. **Leases and ownership**, the main piece. `process_lease.py` and
+   `ownership.py` keep each piece of run-once work in one process: rendezvous
+   hashing, ownership rows whose token rises on every claim, a process stopping
+   its work at half its lease by its own clock, and writes that name the token.
+   - **Model** (`properties/specs/ownership.qnt`): processes with drifting local
+     clocks, leases on the database clock, claim, release before claim, the
+     half-lease stop, fenced writes. Invariants `lease.fenced-takeover` and a new
+     `lease.no-overlap` (no two processes run one key's work at once, which is
+     what the half-lease rule is for); `lease.eventual-owner` as a temporal
+     property under fairness. Mutants: claim without checking the holder's
+     lease, release before stopping, stop at the full lease, write without the
+     token.
+   - **Code**: a Hypothesis machine over `Ownership` with two or three processes
+     on one Postgres. It needs a **clock seam**: the module takes a clock it can
+     be given, defaulting to the real one, so the machine moves time and
+     drifts one process's clock without sleeping. A small production change,
+     agreed.
+   - **System**: an `always` at the fenced write sites. `lease.eventual-owner`
+     in a real run needs two replicas and belongs to phase 3.
+2. **Tasks.** A Hypothesis machine over delegate, accept, update and finalise
+   through the operation definitions, in any order and by the wrong agent;
+   `task.lifecycle` and who may do what. A history check over `tasks` (status
+   consistent with `accepted_at` and `finalised_at`). `task.lifecycle` drops its
+   model level: a three-state lifecycle gives a model little the machine does
+   not already cover by trying every order, and no property is lost.
+3. **HTTP surface.** Schemathesis against the FastAPI app, with two tenants: no
+   5xx, responses that match their schema, and no id from the other tenant.
+   Nightly only, at many examples; not in PR CI yet. Ids are recognised from the
+   schema's naming (`id`, `*_id`) first, to see how noisy that is.
+4. **UI tied to the API.** One or two Bombadil properties that read the API from
+   the page: a list page that has settled shows what the API returns. The
+   "renamed in one tab, renamed in another" property waits until Bombadil can
+   drive two pages.
+5. **Sessions.** `session.addressed-eventually-started` waits for auto-start,
+   which core does not have yet.
+
+Not in this phase, and why: `bus.room-seq-dense` and `delivery.decided-at-write`
+at the system level (they need the commit order or the room's state at write
+time), `bus.lost-wakeup-only-delays` (needs injected faults), and
+`lease.eventual-owner` in a real run (two replicas). These are phase 3, with the
+workload generator and trace validation.
+
 ## Open questions
 
 - Whether the Hypothesis state machine can interleave real concurrent
