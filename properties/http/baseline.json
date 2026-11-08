@@ -1,0 +1,168 @@
+{
+  "format_version": 1,
+  "schemathesis_version": "4.33.1",
+  "entries": [
+    {
+      "id": "b5d8a3",
+      "operation": "DELETE /messaging-apps/installs/{install_id}",
+      "check": "not_a_server_error",
+      "failure": "ServerError",
+      "signature": "500",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "0568c5",
+      "operation": "GET /hosted-controller/machines",
+      "check": "not_a_server_error",
+      "failure": "ServerError",
+      "signature": "503",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "447ada",
+      "operation": "POST /agent-sessions/{agent_id}/{session_id}/approvals/{request_id}/answer",
+      "check": "not_a_server_error",
+      "failure": "ServerError",
+      "signature": "500",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "a6f2d8",
+      "operation": "POST /chats",
+      "check": "response_schema_conformance",
+      "failure": "JsonSchemaError",
+      "signature": "x-bundled/schema000001/properties/detail/type",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "2e1cf3",
+      "operation": "POST /chats/{room_id}/attachments",
+      "check": "response_schema_conformance",
+      "failure": "JsonSchemaError",
+      "signature": "x-bundled/schema000001/properties/detail/type",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "ddf53f",
+      "operation": "POST /chats/{room_id}/controls",
+      "check": "response_schema_conformance",
+      "failure": "JsonSchemaError",
+      "signature": "x-bundled/schema000001/properties/detail/type",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "f26d32",
+      "operation": "POST /chats/{room_id}/members",
+      "check": "response_schema_conformance",
+      "failure": "JsonSchemaError",
+      "signature": "x-bundled/schema000001/properties/detail/type",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "9427d4",
+      "operation": "POST /chats/{room_id}/messages",
+      "check": "response_schema_conformance",
+      "failure": "JsonSchemaError",
+      "signature": "x-bundled/schema000001/properties/detail/type",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "b85de2",
+      "operation": "POST /chats/{room_id}/warm",
+      "check": "response_schema_conformance",
+      "failure": "JsonSchemaError",
+      "signature": "x-bundled/schema000001/properties/detail/type",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "bb5fbd",
+      "operation": "POST /collaborations/setup/slack/check",
+      "check": "response_schema_conformance",
+      "failure": "JsonSchemaError",
+      "signature": "x-bundled/schema000001/properties/detail/type",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "d70772",
+      "operation": "POST /hosted-controller/machines/{machine_id}/observation",
+      "check": "not_a_server_error",
+      "failure": "ServerError",
+      "signature": "503",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "711a45",
+      "operation": "POST /hosted-controller/machines/{machine_id}/prepare",
+      "check": "not_a_server_error",
+      "failure": "ServerError",
+      "signature": "503",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "2eabbd",
+      "operation": "POST /hosted-machines/ensure",
+      "check": "not_a_server_error",
+      "failure": "ServerError",
+      "signature": "503",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "a3d86f",
+      "operation": "POST /invitations/mine/accept",
+      "check": "not_a_server_error",
+      "failure": "ServerError",
+      "signature": "500",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "10c14f",
+      "operation": "POST /provider-connections/github/flows",
+      "check": "not_a_server_error",
+      "failure": "ServerError",
+      "signature": "503",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "b07551",
+      "operation": "POST /rooms",
+      "check": "not_a_server_error",
+      "failure": "ServerError",
+      "signature": "500",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "a7e892",
+      "operation": "POST /templates",
+      "check": "response_schema_conformance",
+      "failure": "JsonSchemaError",
+      "signature": "x-bundled/schema000001/properties/detail/type",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    },
+    {
+      "id": "86e588",
+      "operation": "PUT /chats/{room_id}/read",
+      "check": "response_schema_conformance",
+      "failure": "JsonSchemaError",
+      "signature": "x-bundled/schema000001/properties/detail/type",
+      "first_seen": "2026-11-08",
+      "last_seen": "2026-11-08"
+    }
+  ]
+}

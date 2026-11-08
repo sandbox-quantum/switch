@@ -6,4 +6,9 @@ properties:
     formality: semi-formal
     levels: [code, system]
     owner: platform
-    status: proposed
+    status: checked
+    notes: >
+      The gateway is fuzzed from its OpenAPI schema every night
+      (`properties/http`). The routes known to answer 500 or 503 are listed in
+      `properties/http/baseline.json`; a route not in it fails the run. A NUL
+      in a string is not generated, because it makes many routes answer 500.

@@ -8,4 +8,9 @@ properties:
     formality: semi-formal
     levels: [code, system]
     owner: platform
-    status: proposed
+    status: checked
+    notes: >
+      The nightly fuzz of the gateway asks as a person in one workspace with
+      the ids of another's objects in its path and query parameters, as the
+      database role row-level security applies to, and fails any response that
+      names one the request did not. Ids in request bodies are not tried yet.
