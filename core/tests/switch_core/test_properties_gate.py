@@ -538,3 +538,18 @@ def test_a_fast_lane_export_is_a_system_tag(gate: ModuleType, tmp_path: Path) ->
     tags, problems = gate.find_tags(tmp_path)
     assert problems == []
     assert [(t.level, t.target) for t in tags["area.thing"]] == [("system", "probe")]
+
+
+def test_a_jsdoc_property_tag_and_other_export_forms(
+    gate: ModuleType, tmp_path: Path
+) -> None:
+    catalog(tmp_path, entry(levels="[system]"))
+    write(
+        tmp_path,
+        "console/tooling-e2e/src/fast/s.ts",
+        "/**\n * @property {string} name\n */\nexport const a = 1;\n"
+        "/**\n * @property area.thing\n */\nexport default class Probe {}\n",
+    )
+    tags, problems = gate.find_tags(tmp_path)
+    assert problems == []
+    assert [(t.level, t.target) for t in tags["area.thing"]] == [("system", "Probe")]

@@ -85,10 +85,10 @@ QUINT_DOC = re.compile(
 QUINT_TAG = re.compile(r"^[ \t]*///[ \t]*@property[ \t]+(?P<id>\S+)", re.MULTILINE)
 QUINT_NAME = re.compile(rf"^[ \t]*{QUINT_DEFINITION}", re.MULTILINE)
 TS_DOC_COMMENT = re.compile(
-    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*(?:export\s+(?:async\s+)?(?:const|function)\s+(?P<name>\w+))?",
+    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*(?:export\s+(?:default\s+)?(?:async\s+)?(?:const|let|function\*?|class|interface|type|enum)\s+(?P<name>\w+))?",
     re.DOTALL,
 )
-TS_TAG = re.compile(r"^\s*\*\s*@property\s+(?P<id>\S+)", re.MULTILINE)
+TS_TAG = re.compile(r"^\s*\*\s*@property\s+(?P<id>[^\s{]\S*)", re.MULTILINE)
 
 NOT_RUN = {"pytest.mark.skip", "pytest.mark.xfail"}
 
