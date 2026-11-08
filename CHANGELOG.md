@@ -45,6 +45,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Kiro CLI agents.** The provider table has Kiro CLI (`kiro`), so a
+  managed agent definition, the gateway's provider list and an agent's
+  registration accept it. It has no advanced settings.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
