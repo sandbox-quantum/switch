@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import re
 
 # Characters that may appear inside an agent / role / alias name (e.g.
@@ -24,9 +25,12 @@ def strip_emphasis(text: str) -> str:
     return _EMPHASIS.sub("", text)
 
 
+@functools.lru_cache(maxsize=16384)
 def mention_regex(name: str) -> re.Pattern[str]:
     """Compile a case-insensitive regex matching `@name` only at a full-token
-    boundary, so a prefix name is never matched inside a longer name."""
+    boundary, so a prefix name is never matched inside a longer name. Kept
+    per name: `re`'s own cache holds 512 patterns, fewer than the names a
+    large deployment tags."""
     return re.compile(re.escape(f"@{name}") + rf"(?!{NAME_CHAR})", re.IGNORECASE)
 
 

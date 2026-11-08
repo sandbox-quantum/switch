@@ -1,4 +1,6 @@
-"""Reporting an agent session, which is not the same as a connection.
+"""Reporting an agent coming online and going offline (`agent_connected` /
+`agent_disconnected`), which is not the same as a connection, and not a
+coding-agent session either: hosts report those (`telemetry/session_start.py`).
 
 Two ordinary things make an agent hold a succession of short connections while
 being continuously present: a stream rejected at the room claim and retried,
@@ -24,6 +26,7 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.db.models import Agent
 from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry.catalogue import PropertyValue
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 
 logger = logging.getLogger(__name__)
@@ -81,12 +84,18 @@ class SessionReporter:
 
         runtime = normalise_known_agent_type(agent.metadata_)
         self._sessions[conn.agent_id] = _Session(time.monotonic(), runtime)
+        # Both names until the old ones are retired: `agent_session_*` and
+        # `first_session_started` are connections, which the new names say.
         emit_safely(
             self._telemetry, "agent_session_started", {"known_agent_type": runtime}
         )
+        emit_safely(self._telemetry, "agent_connected", {"known_agent_type": runtime})
         if self._telemetry is not None:
             await self._telemetry.emit_milestone(
                 "first_session_started", known_agent_type=runtime
+            )
+            await self._telemetry.emit_milestone(
+                "first_agent_connected", known_agent_type=runtime
             )
 
     def on_close(self, conn: AgentConnection) -> None:
@@ -131,14 +140,12 @@ class SessionReporter:
         session = self._sessions.pop(agent_id, None)
         if session is None:
             return
-        emit_safely(
-            self._telemetry,
-            "agent_session_ended",
-            {
-                "duration_seconds": max(time.monotonic() - session.started_at, 0.0),
-                "reason": reason,
-            },
-        )
+        properties: dict[str, PropertyValue] = {
+            "duration_seconds": max(time.monotonic() - session.started_at, 0.0),
+            "reason": reason,
+        }
+        emit_safely(self._telemetry, "agent_session_ended", properties)
+        emit_safely(self._telemetry, "agent_disconnected", properties)
 
     async def aclose(self) -> None:
         """Cancel any pending ends at shutdown, without reporting them: every

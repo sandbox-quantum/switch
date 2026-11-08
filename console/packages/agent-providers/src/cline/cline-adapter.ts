@@ -1,12 +1,11 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acpInitialize, createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
+import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpLaunch, AcpLaunchInput, AcpProviderHooks } from '../acp/hooks';
 import { stdioMcpServerEnv } from '../acp/mcp';
 import type { McpServerSpec } from '../adapter';
 import { readiness, signInWith } from '../readiness';
-import { noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 
 const CLINE_LOGIN = 'cline auth';
 const CLINE_SIGN_IN = `${signInWith(CLINE_LOGIN)} Over ACP, Cline reads only its own account sign-ins (Cline, ClinePass, ChatGPT); for a provider's API key, set CLINE_PROVIDER and CLINE_API_KEY on that machine.`;
@@ -81,38 +80,20 @@ export const clineAcp: AcpProviderHooks = {
   // `initialize` reads the same signed in or out, and `authenticate` would
   // sign in. `session/new` is refused when Cline holds no sign-in, and
   // otherwise only opens a session in this process, which nothing prompts.
-  checkSignIn: async ({ binaryPath, cwd, env }) => {
+  checkSignIn: async ({ cwd, env, handshake, request }) => {
     if (env.CLINE_API_KEY?.trim())
       return readiness(
         'authenticated',
         `Signs in with the API key it was given, on ${env.CLINE_PROVIDER?.trim() || 'Cline'}.`
       );
-    const {
-      mcpServersInLaunch: _,
-      release,
-      ...launch
-    } = await clineLaunch({
-      binaryPath,
-      cwd,
-      env,
-      mcpServers: {},
-    });
-    const client = new StdioJsonRpcClient({
-      ...launch,
-      cwd,
-      logger: noopLogger,
-      onExit: () => void release?.(),
-    });
+    await handshake();
     try {
-      await acpInitialize(client);
-      await client.request('session/new', { cwd, mcpServers: [] });
+      await request('session/new', { cwd, mcpServers: [] });
       return readiness('authenticated', 'Signed in to Cline.');
     } catch (error) {
       if (/authentication required/i.test(String(error)))
         return readiness('unauthenticated', CLINE_SIGN_IN);
       throw error;
-    } finally {
-      await client.dispose();
     }
   },
   // Cline's Plan and Act modes are workflows, not permission levels, so the

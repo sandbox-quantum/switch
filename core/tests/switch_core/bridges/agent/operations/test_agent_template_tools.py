@@ -552,27 +552,22 @@ def test_a_team_template_with_a_group_fills_every_room():
 
 
 @pytest.mark.asyncio
-async def test_run_a_team_template_that_makes_a_group(tools):
+async def test_a_team_template_that_makes_a_group_is_refused(tools):
     template_id = await _stored(
         tools, tools["user_id"], "blue team", GROUP_TEAM_TEMPLATE, kind="group"
     )
 
-    result = await _as(
-        tools["agent_id"],
-        run_template,
-        template_id=template_id,
-        inputs={"team": "blue"},
-        agents={"blue-lead": "claude-code.alice", "blue-helper": "claude-code.bob"},
-    )
+    with pytest.raises(PermissionError, match="workspace admin"):
+        await _as(
+            tools["agent_id"],
+            run_template,
+            template_id=template_id,
+            inputs={"team": "blue"},
+            agents={"blue-lead": "claude-code.alice", "blue-helper": "claude-code.bob"},
+        )
 
-    assert result["errors"] == []
-    assert {r["room_name"] for r in result["rooms"]} == {"blue-lobby", "blue-work"}
     async with tools["session_factory"]() as session:
-        names = {
-            r.template_name
-            for r in (await session.execute(select(Room))).scalars().all()
-        }
-    assert names == {"blue team"}
+        assert (await session.execute(select(Room))).scalars().all() == []
 
 
 def test_a_slot_reached_through_a_param_is_swapped_too():

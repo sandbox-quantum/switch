@@ -1,11 +1,13 @@
 import { SshExecutionContext } from '@main/core/execution-context/ssh-execution-context';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
 import { forceSshReconnect } from '@main/core/ssh/connect/connect-agent-ssh';
+import { sshConnectionManager } from '@main/core/ssh/lifecycle/production-ssh-connection-manager';
 import { SshAuthError } from '@main/core/ssh/lifecycle/ssh-connection-manager';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { hostReachabilityEventChannel } from '@shared/core/remote-hosts/reachability';
 import { HostReachabilityService } from './host-reachability-service';
+import { listSshHostsInUse } from './reachability-store';
 
 /**
  * The reachability probe: rebuild the host's transport and run a trivial
@@ -24,3 +26,13 @@ export const hostReachabilityService = new HostReachabilityService({
   publish: (reachability) => events.emit(hostReachabilityEventChannel, reachability),
   log,
 });
+
+/**
+ * Once nothing uses a host, stop probing it, drop its saved reachability and
+ * close its pooled connection so nothing goes on redialling it.
+ */
+export async function releaseHostIfUnused(sshHost: string): Promise<void> {
+  if ((await listSshHostsInUse()).has(sshHost)) return;
+  await hostReachabilityService.forget(sshHost);
+  await sshConnectionManager.disconnect(sshConnectionIdForHost(sshHost));
+}

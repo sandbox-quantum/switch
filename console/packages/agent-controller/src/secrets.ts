@@ -189,6 +189,24 @@ function account(dataDir: string, name: string): string {
   return `${name}@${dataDir}`;
 }
 
+const ENCODED = 'b64:';
+
+/**
+ * `security -i` reads its commands as quoted words, so a value holding a
+ * quote, backslash or newline (the sealing key pair is JSON) is stored
+ * base64-encoded behind a marker. Anything else is stored as it is, so
+ * entries written before keep reading back unchanged.
+ */
+function toKeychain(value: string): string {
+  if (!/["\\\n]/.test(value) && !value.startsWith(ENCODED)) return value;
+  return ENCODED + Buffer.from(value, 'utf8').toString('base64');
+}
+
+function fromKeychain(stored: string): string {
+  if (!stored.startsWith(ENCODED)) return stored;
+  return Buffer.from(stored.slice(ENCODED.length), 'base64').toString('utf8');
+}
+
 /**
  * The macOS login keychain, through `security`. The value is written through
  * `security -i` on stdin, never on the command line, where other processes
@@ -214,7 +232,7 @@ export class KeychainSecretStore implements SecretStore {
         ['find-generic-password', '-s', SERVICE, '-a', account(this.dataDir, name), '-w'],
         null
       );
-      return stdout.trim();
+      return fromKeychain(stdout.trim());
     } catch (error) {
       // 44: errSecItemNotFound.
       if (error instanceof CommandFailure && error.code === 44) return null;
@@ -223,8 +241,7 @@ export class KeychainSecretStore implements SecretStore {
   }
 
   async set(name: string, value: string): Promise<void> {
-    if (/["\\\n]/.test(value)) throw new Error('This secret cannot be stored in the keychain.');
-    const command = `add-generic-password -U -s ${SERVICE} -a "${account(this.dataDir, name)}" -w "${value}"\n`;
+    const command = `add-generic-password -U -s ${SERVICE} -a "${account(this.dataDir, name)}" -w "${toKeychain(value)}"\n`;
     await this.run('security', ['-i'], command);
   }
 

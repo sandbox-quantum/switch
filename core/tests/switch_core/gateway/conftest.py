@@ -53,6 +53,7 @@ from switch_core.session_activity.listener import (
 )
 from switch_core.signals import SignalBus
 from switch_core.transport.invites import InviteBus
+from switch_core.trust.client import NullTrustClient
 from tests.conftest import TEST_KEYRING
 from tests.routing import router_on
 from tests.switch_core.gateway.agent_route_harness import add_agent
@@ -75,6 +76,9 @@ class _FakeLifecycle:
     def get_by_type(self, client_type: str, tenant_id: str) -> list[Any]:
         return []
 
+    def get(self, client_id: str) -> None:
+        return None
+
 
 class _FakeListener:
     """Records subscriptions; a test rings a room by hand, or deliberately not."""
@@ -82,7 +86,13 @@ class _FakeListener:
     def __init__(self) -> None:
         self.wakers: dict[str, set[Callable[[str], Awaitable[None]]]] = {}
 
-    def subscribe(self, room_id: str, waker: Callable[[str], Awaitable[None]]) -> None:
+    def subscribe(
+        self,
+        room_id: str,
+        waker: Callable[[str], Awaitable[None]],
+        *,
+        types: frozenset[str] | None = None,
+    ) -> None:
         self.wakers.setdefault(room_id, set()).add(waker)
 
     def unsubscribe(
@@ -95,24 +105,66 @@ class _FakeListener:
             await waker(room_id)
 
 
+class _FakeRoomSubscription:
+    def __init__(
+        self,
+        listener: _FakeActivityListener,
+        tenant_id: str,
+        rooms: Any,
+        on_change: Any,
+        on_resync: Any,
+    ) -> None:
+        self.listener = listener
+        self.tenant_id = tenant_id
+        self.rooms = set(rooms)
+        self.on_change = on_change
+        self.on_resync = on_resync
+        self.delivered = 0
+
+    def set_rooms(self, rooms: Any) -> None:
+        self.rooms = set(rooms)
+
+    def close(self) -> None:
+        self.listener.room_subscriptions.remove(self)
+
+
 class _FakeActivityListener:
     """The session-activity listener; a test delivers changes by hand."""
 
     def __init__(self) -> None:
         self.subscribers: list[tuple[Any, Any]] = []
+        self.room_subscriptions: list[_FakeRoomSubscription] = []
 
     def subscribe(self, tenant_id: str, on_change: Any, on_resync: Any) -> Any:
         entry = (on_change, on_resync)
         self.subscribers.append(entry)
         return lambda: self.subscribers.remove(entry)
 
+    def subscribe_rooms(
+        self, tenant_id: str, rooms: Any, on_change: Any, on_resync: Any
+    ) -> _FakeRoomSubscription:
+        subscription = _FakeRoomSubscription(
+            self, tenant_id, rooms, on_change, on_resync
+        )
+        self.room_subscriptions.append(subscription)
+        return subscription
+
     async def change(self, change: Change) -> None:
         for on_change, _ in list(self.subscribers):
             await on_change(change)
+        for subscription in list(self.room_subscriptions):
+            if (
+                subscription.tenant_id == change.tenant_id
+                and change.room_id in subscription.rooms
+            ):
+                subscription.delivered += 1
+                await subscription.on_change(change)
 
     async def resync(self) -> None:
         for _, on_resync in list(self.subscribers):
             await on_resync()
+        for subscription in list(self.room_subscriptions):
+            await subscription.on_resync()
 
 
 class _Harness(SimpleNamespace):
@@ -208,6 +260,7 @@ async def _user(session: AsyncSession, name: str, role: str | None) -> User:
             tenant_id="00000000-0000-0000-0000-000000000000",
             user_id=user.id,
             role=role,
+            organization_role="org_admin" if role == "admin" else "member",
         )
     return user
 
@@ -258,7 +311,10 @@ def _chat_service(
         id_server_name="switch.test",
         media_max_bytes=1024,
         agent_chats_enabled=True,
+        group_chats_enabled=True,
+        buddy_slack_handoff_enabled=True,
         connections=connections,
+        trust_client=NullTrustClient(),
     )
     room_service.on_room_agents_changed(service.sync_room)
     return service, room_service

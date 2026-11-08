@@ -18,7 +18,14 @@ import type {
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
-import { readiness, type ProviderReadiness, type SignInCheckInput } from '../readiness';
+import {
+  loginCommandOf,
+  readiness,
+  SIGNED_OUT_ERROR,
+  signInWith,
+  type ProviderReadiness,
+  type SignInCheckInput,
+} from '../readiness';
 import {
   JsonRpcError,
   noopLogger,
@@ -49,11 +56,18 @@ import {
 export const ACP_CLIENT_INFO = { name: 'switch-console', version: '0.1.0' } as const;
 
 /** The `initialize` request every ACP session and sign-in check opens with. */
-export async function acpInitialize(client: StdioJsonRpcClient): Promise<AcpInitializeResult> {
+export async function acpInitialize(
+  client: StdioJsonRpcClient,
+  hooks: Pick<AcpProviderHooks, 'clientCapabilities'>
+): Promise<AcpInitializeResult> {
   return await client.request<AcpInitializeResult>('initialize', {
     protocolVersion: 1,
     clientInfo: ACP_CLIENT_INFO,
-    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+    clientCapabilities: {
+      fs: { readTextFile: false, writeTextFile: false },
+      terminal: false,
+      ...hooks.clientCapabilities,
+    },
   });
 }
 
@@ -78,14 +92,18 @@ export async function checkAcpSignIn(
       logger: noopLogger,
       onExit: () => void release?.(),
     });
-    return await acpInitialize(client);
+    return await acpInitialize(client, hooks);
+  };
+  const request = async <T>(method: string, params: unknown): Promise<T> => {
+    if (!client) throw new Error(`${hooks.label} was asked ${method} before its handshake.`);
+    return await client.request<T>(method, params);
   };
   try {
-    if (hooks.checkSignIn) return await hooks.checkSignIn({ ...input, handshake });
+    if (hooks.checkSignIn) return await hooks.checkSignIn({ ...input, handshake, request });
     await handshake();
     return readiness(
       'unknown',
-      `${hooks.label} started but has no sign-in check. If its sessions fail, sign in on the execution machine with ${hooks.loginCommand}.`
+      `${hooks.label} started but has no sign-in check. If its sessions fail, sign in on the execution machine with ${loginCommandOf(hooks, input.binaryPath)}.`
     );
   } finally {
     await client?.dispose();
@@ -171,8 +189,9 @@ export class AcpAdapter implements ProviderAdapter {
         input.sessionId,
         prefix.legacyMessage
       );
+    const binaryPath = this.options.binaryPath ?? hooks.defaultBinary;
     const { mcpServersInLaunch, release, ...launch } = await hooks.launch({
-      binaryPath: this.options.binaryPath ?? hooks.defaultBinary,
+      binaryPath,
       cwd,
       env: input.env,
       mcpServers: input.mcpServers,
@@ -225,7 +244,7 @@ export class AcpAdapter implements ProviderAdapter {
     });
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
     try {
-      const initialized = await acpInitialize(client);
+      const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
       if (!mcpServersInLaunch)
         requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
@@ -239,8 +258,16 @@ export class AcpAdapter implements ProviderAdapter {
       // Signing in belongs here: starting a session is work the user asked
       // for, so a browser opening is an answer to something they did. Sign-in
       // checks stop at the handshake above.
-      const authMethodId = hooks.authMethodId?.(input.env);
-      if (authMethodId) await client.request('authenticate', { methodId: authMethodId });
+      const authMethodId = hooks.authMethodId?.(input.env, binaryPath);
+      if (
+        authMethodId &&
+        !(await hooks.alreadySignedIn?.({
+          binaryPath,
+          env: input.env,
+          request: <T>(method: string, params: unknown) => client.request<T>(method, params),
+        }))
+      )
+        await client.request('authenticate', { methodId: authMethodId });
       const mcpServers = mcpServersInLaunch ? [] : acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
       if (input.resume) {
@@ -268,7 +295,7 @@ export class AcpAdapter implements ProviderAdapter {
       state.models = modelConfigOption(state.configOptions)
         ? modelsFromConfig(state.configOptions)
         : modelsFromList(result.models);
-      const mode = hooks.sessionMode?.(input.runtimeMode);
+      const mode = hooks.sessionMode?.(input.runtimeMode, result.modes);
       if (mode)
         await client.request('session/set_mode', { sessionId: state.nativeId, modeId: mode });
       if (input.model) await this.setModel(state.id, input.model);
@@ -287,10 +314,16 @@ export class AcpAdapter implements ProviderAdapter {
         'details' in cause.data
           ? String(cause.data.details)
           : '';
+      const signIn =
+        cause instanceof JsonRpcError &&
+        cause.code === -32000 &&
+        SIGNED_OUT_ERROR.test(cause.message)
+          ? `. ${signInWith(loginCommandOf(hooks, binaryPath))}`
+          : '';
       throw new ProviderSessionError(
         hooks.provider,
         state.id,
-        `Could not start ${hooks.label}: ${String(cause)}${details ? `: ${details}` : ''}${client.stderr ? `\n${client.stderr}` : ''}`,
+        `Could not start ${hooks.label}: ${String(cause)}${details ? `: ${details}` : ''}${signIn}${client.stderr ? `\n${client.stderr}` : ''}`,
         { cause }
       );
     }
@@ -434,20 +467,23 @@ export class AcpAdapter implements ProviderAdapter {
     const pending = state.questions.get(requestId);
     if (!pending)
       throw new ProviderSessionError(this.provider, id, `No pending question ${requestId}`);
-    const selected = pending.questions.map((question) => {
+    const selected = pending.questions.map((question): AcpSelectedAnswer => {
       const answer = answers[question.id];
-      const values = Array.isArray(answer) ? answer : typeof answer === 'string' ? [answer] : [];
+      const given = Array.isArray(answer) ? answer : typeof answer === 'string' ? [answer] : [];
+      const offered = (value: string) => question.options.some((option) => option.value === value);
+      const values = given.filter(offered);
+      const typed = given.filter((value) => !offered(value));
       if (
-        !values.length ||
-        (!question.multiSelect && values.length !== 1) ||
-        values.some((value) => !question.options.some((option) => option.value === value))
+        !given.length ||
+        (!question.multiSelect && given.length !== 1) ||
+        typed.length > (question.allowCustomAnswer ? 1 : 0)
       )
         throw new ProviderSessionError(
           this.provider,
           id,
           `Invalid answer for ${question.id}: choose one of the offered answers.`
         );
-      return { questionId: question.id, values };
+      return { questionId: question.id, values, ...(typed.length ? { custom: typed[0]! } : {}) };
     });
     state.questions.delete(requestId);
     pending.settle(pending.answer(selected));

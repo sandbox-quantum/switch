@@ -43,3 +43,21 @@ def test_an_unknown_flag_is_a_startup_error(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("FEATURE_FLAGS_ENABLED", "ecosystem.show_ownres")
     with pytest.raises(ValidationError, match="ecosystem.show_ownres"):
         SwitchConfig(**_BASE_KWARGS)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("flags", "managed_by_console", "kind"),
+    [
+        ("", False, "self_hosted"),
+        ("", True, "managed_by_console"),
+        ("switch_cloud", False, "switch_cloud"),
+        # The Cloud flag decides even if the managed setting is stray.
+        ("switch_cloud", True, "switch_cloud"),
+    ],
+)
+def test_the_deployment_kind_follows_the_cloud_flag_then_console(
+    monkeypatch: pytest.MonkeyPatch, flags: str, managed_by_console: bool, kind: str
+) -> None:
+    monkeypatch.setenv("FEATURE_FLAGS_ENABLED", flags)
+    config = SwitchConfig(**_BASE_KWARGS, managed_by_console=managed_by_console)  # type: ignore[arg-type]
+    assert config.deployment_kind == kind

@@ -277,6 +277,31 @@ class TestCreateLinkedRoomWriteAuthz:
             links = await svc.list_linked_rooms_for_room(session, source.id)
             assert [link["target_room_id"] for link in links] == [target.id]
 
+    async def test_cannot_link_to_a_private_room_one_cannot_read(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            other = await _add_user(session, name="other")
+            source = await _add_room(session, name="src", owner_id=other.id)
+            target = await _add_room(session, name="tgt", owner_id=owner.id)
+            svc = _resource_service(session_factory)
+            req = LinkedRoomCreateRequest(target_room_id=target.id, label="rel")
+
+            with pytest.raises(HTTPException) as exc:
+                await create_linked_room(
+                    source.id,
+                    req,
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    other,
+                    await _is_admin(session, other),
+                )
+
+            assert exc.value.status_code == 403
+            assert await svc.list_linked_rooms_for_room(session, source.id) == []
+
 
 class TestDeleteLinkedRoomWriteAuthz:
     async def test_non_owner_cannot_delete_link(

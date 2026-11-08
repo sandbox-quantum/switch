@@ -7,9 +7,13 @@ import {
   type RemoteAgentRoom,
   type RemoteRoomSummary,
   type RetireOutcome,
+  type RoomVisibility,
 } from '@shared/core/switch-servers/switch-servers';
+import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
+import { type RoomPermissions, roomPermissionsFor } from './room-permissions';
 import { serverAvailability } from './server-availability';
+import { servesWebGateway } from './server-gateway';
 import { switchServersStore } from './switch-servers-store';
 
 /** Cache key for an agent's room membership: workspace + Switch agent id. */
@@ -117,6 +121,20 @@ export class SwitchRoomsStore {
     return this.channelUrlByRoom.get(roomId) ?? null;
   }
 
+  /**
+   * Remember rooms read outside the room list — archived ones, which the list
+   * leaves out — so a room page opened on one can still say where it lives and
+   * address calls about it. They are not added to any list.
+   */
+  noteRooms(workspaceId: string, rooms: RemoteRoomSummary[]): void {
+    for (const room of rooms) {
+      this.roomNames.set(room.id, room.name);
+      this.roomWorkspaceById.set(room.id, workspaceId);
+      if (room.bridgeType) this.bridgeTypeByRoom.set(room.id, room.bridgeType);
+      if (room.externalChannelUrl) this.channelUrlByRoom.set(room.id, room.externalChannelUrl);
+    }
+  }
+
   /** Id of the workspace a room belongs to, or null if not yet loaded. This is
    * what a call about the room is addressed with. */
   roomWorkspaceId(roomId: string): string | null {
@@ -133,25 +151,26 @@ export class SwitchRoomsStore {
 
   /**
    * URL of a room's detail page in the gateway web app, or null if the room's
-   * owning server isn't known yet (names/workspaces are loaded by loadRoomNames).
+   * owning server isn't known yet (names/workspaces are loaded by loadRoomNames)
+   * or serves no web gateway (a native local server started without its pages).
    */
   gatewayRoomUrl(roomId: string): string | null {
     const serverId = this.roomServerId(roomId);
     if (!serverId) return null;
     const server = switchServersStore.servers.find((s) => s.id === serverId);
-    if (!server) return null;
+    if (!server || !servesWebGateway(server)) return null;
     const base = dashboardOrigin(server).replace(/\/+$/, '');
     return `${base}/rooms/${roomId}`;
   }
 
   /**
    * URL of an agent's detail page in the gateway web app, or null if the server
-   * isn't known. Unlike rooms, the caller supplies the server id directly (an
-   * agent carries its owning server on its config).
+   * isn't known or serves no web gateway. Unlike rooms, the caller supplies
+   * the server id directly (an agent carries its owning server on its config).
    */
   gatewayAgentUrl(serverId: string, switchAgentId: string): string | null {
     const server = switchServersStore.servers.find((s) => s.id === serverId);
-    if (!server) return null;
+    if (!server || !servesWebGateway(server)) return null;
     const base = dashboardOrigin(server).replace(/\/+$/, '');
     return `${base}/agents/${switchAgentId}`;
   }
@@ -163,8 +182,9 @@ export class SwitchRoomsStore {
    *
    * In a workspace on a server this install manages, that is **every** room: you
    * run the deployment, so there is nothing on it you should have to go
-   * elsewhere to see. Anywhere else it is the rooms you created, which would
-   * otherwise disappear the moment you made one and put no agent in it.
+   * elsewhere to see. Anywhere else it is the rooms you created (which would
+   * otherwise disappear the moment you made one and put no agent in it), the
+   * rooms you are a member of, and the rooms your agents are in.
    *
    * The sidebar tree shows one workspace at a time, so these follow the same
    * scope rule as locations do — including that no active workspace hides
@@ -183,11 +203,14 @@ export class SwitchRoomsStore {
   listedRoomsInWorkspace(workspaceId: string): RemoteRoomSummary[] {
     const serverId = workspacesStore.serverIdFor(workspaceId);
     const managed = switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false;
-    return (
-      (managed
-        ? this.allRoomsByWorkspace.get(workspaceId)
-        : this.ownedRoomsByWorkspace.get(workspaceId)) ?? []
+    if (managed) return this.allRoomsByWorkspace.get(workspaceId) ?? [];
+    const own = this.ownedRoomsByWorkspace.get(workspaceId) ?? [];
+    const ownIds = new Set(own.map((room) => room.id));
+    // And the rooms the user's agents are in, managed ones included, by their membership.
+    const ofAgents = (this.allRoomsByWorkspace.get(workspaceId) ?? []).filter(
+      (room) => !ownIds.has(room.id) && this.localMemberIdsByRoom.has(room.id)
     );
+    return [...own, ...ofAgents];
   }
 
   /**
@@ -227,20 +250,36 @@ export class SwitchRoomsStore {
   }
 
   /**
-   * Whether the signed-in user may delete a room: they own it, or they are an
-   * admin on the server hosting its workspace.
+   * What the signed-in user may do with a room, by the gateway's own rules:
+   * its owner and the workspace's admins manage it — delete it, change who may
+   * see it, name it after its channel — and anyone may also write to a room
+   * whose write access is public.
    *
-   * This mirrors the gateway's own rule so the action is not offered where it
-   * would only be refused. It is not the check that protects anything — the
-   * server's is — and where ownership is unknown the answer is no, since
-   * showing a delete that fails is worse than not showing one.
+   * This mirrors the server so actions are not offered where they would only be
+   * refused. It is not the check that protects anything — the server's is — and
+   * where the viewer is unknown the answer is no, since showing an action that
+   * fails is worse than not showing one.
    */
-  canDeleteRoom(workspaceId: string, room: RemoteRoomSummary): boolean {
+  roomPermissions(
+    workspaceId: string,
+    room: {
+      ownerId: string | null;
+      writeVisibility?: RoomVisibility;
+      serverPermissions?: RoomPermissions;
+    }
+  ): RoomPermissions {
     const serverId = workspacesStore.serverIdFor(workspaceId);
-    if (!serverId) return false;
-    const user = switchServersStore.statusFor(serverId)?.user ?? null;
-    if (!user) return false;
-    return room.ownerId === user.id || user.role === 'admin';
+    const user = serverId ? (switchServersStore.statusFor(serverId)?.user ?? null) : null;
+    const workspace = workspacesStore.workspaces.find((each) => each.id === workspaceId) ?? null;
+    return roomPermissionsFor(room, {
+      userId: user?.id ?? null,
+      isAdmin: user?.role === 'admin' || (workspace !== null && administersWorkspace(workspace)),
+    });
+  }
+
+  /** Whether the signed-in user may delete a room (see `roomPermissions`). */
+  canDeleteRoom(workspaceId: string, room: RemoteRoomSummary): boolean {
+    return this.roomPermissions(workspaceId, room).canManage;
   }
 
   /**
@@ -340,7 +379,9 @@ export class SwitchRoomsStore {
             this.allRoomsByWorkspace.set(workspace.id, active);
             this.ownedRoomsByWorkspace.set(
               workspace.id,
-              signedInUserId ? active.filter((r) => r.ownerId === signedInUserId) : []
+              signedInUserId
+                ? active.filter((r) => r.ownerId === signedInUserId || r.viewerIsMember)
+                : []
             );
           });
         } catch (cause) {
@@ -439,7 +480,14 @@ export class SwitchRoomsStore {
    */
   get localMemberIdsByRoom(): Map<string, string[]> {
     const byRoom = new Map<string, string[]>();
+    // Only agents tracked or on screen now: a deleted agent's, or another
+    // account's, memberships stay in the cache but claim no room.
+    const current = new Set([
+      ...this.trackedIdentities.map((a) => key(a.workspaceId, a.switchAgentId)),
+      ...this.watchedIdentities.keys(),
+    ]);
     for (const [cacheKey, memberships] of this.roomsByAgent) {
+      if (!current.has(cacheKey)) continue;
       const switchAgentId = cacheKey.slice(cacheKey.indexOf(':') + 1);
       for (const membership of memberships) {
         if (membership.archived) continue;

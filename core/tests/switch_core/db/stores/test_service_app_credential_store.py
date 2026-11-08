@@ -12,8 +12,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import ServiceAppCredential, User
+from switch_core.db.stores.app_secrets import MissingSecretsError
 from switch_core.db.stores.service_app_credential_store import (
-    MissingSecretsError,
     ServiceAppCredentialStore,
 )
 from switch_core.keys import Keyring, UndecryptableError

@@ -29,6 +29,7 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
+const { checkAcpSignIn } = await import('../acp/acp-adapter');
 const { clineAcp, clineLaunch, clineMcpSettings } = await import('./cline-adapter');
 
 beforeEach(() => {
@@ -36,9 +37,8 @@ beforeEach(() => {
   spawned.length = 0;
 });
 
-const handshake = () => Promise.reject(new Error('not used'));
 const check = (env: Record<string, string>) =>
-  clineAcp.checkSignIn!({ binaryPath: 'cline', cwd: process.cwd(), env, handshake });
+  checkAcpSignIn(clineAcp, { binaryPath: 'cline', cwd: process.cwd(), env });
 
 it('writes stdio and HTTP servers the way Cline reads them, filling envVars from the session', () => {
   expect(

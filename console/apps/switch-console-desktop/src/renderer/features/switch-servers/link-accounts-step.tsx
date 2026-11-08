@@ -1,5 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
-import { Check, Link2, MessageSquare, TriangleAlert } from 'lucide-react';
+import {
+  Check,
+  Clock,
+  KeyRound,
+  Link2,
+  MessageSquare,
+  ShieldCheck,
+  TriangleAlert,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -11,11 +19,18 @@ import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { WizardFrame } from '@renderer/lib/ui/wizard-frame';
-import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
+import type {
+  LinkCode,
+  LinkedIdentity,
+  PendingIdentity,
+  RemoteBridge,
+} from '@shared/core/switch-servers/switch-servers';
+import { AccountLinkConfirmation, type AccountLinkTarget } from './account-link-confirmation';
 import { BridgeIdentitySearch } from './bridge-identity-search';
-import { connectedAppsSummary, LINK_ACCOUNTS_LATER } from './link-accounts-prose';
+import { accountHandle, connectedAppsSummary, LINK_ACCOUNTS_LATER } from './link-accounts-prose';
 import { orderBridges } from './messaging-apps-order';
-import { useMyIdentities } from './use-my-identities';
+import { linkedIdentityOn } from './messaging-apps-warning';
+import { useMyIdentities, useMyPendingIdentities } from './use-my-identities';
 
 /**
  * The last step of connecting to a server someone else runs: say which account
@@ -36,8 +51,12 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
 }) {
   // Which app's directory is open, or null while the list is. Linking happens
   // in place: a second dialog on top of this one would bury the step it belongs
-  // to and give the user two Backs meaning different things.
-  const [linking, setLinking] = useState<RemoteBridge | null>(null);
+  // to and give the user two Backs meaning different things. `waiting` is set
+  // while a link waits for its code to be posted, which happens in place too.
+  const [linking, setLinking] = useState<{
+    bridge: RemoteBridge;
+    waiting: { target: AccountLinkTarget; code: LinkCode | null } | null;
+  } | null>(null);
 
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const bridgesQuery = useQuery({
@@ -54,18 +73,21 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
       ? new Error(`Your account has no workspace on ${serverName} to link accounts in.`)
       : null;
   const { identities } = useMyIdentities(workspaceId);
+  const { pending } = useMyPendingIdentities(workspaceId);
 
   // The footer's Back and the pager's back arrow are the same move, so they
   // read one const.
   const goBack = () => setLinking(null);
 
   if (linking && workspaceId !== null) {
+    const { bridge, waiting } = linking;
+    const platform = bridgePlatformLabel(bridge.type);
     return (
       <WizardFrame
-        title={`Link your ${bridgePlatformLabel(linking.type)} account`}
+        title={waiting ? `Confirm your ${platform} account` : `Link your ${platform} account`}
         subtitle={null}
         pager={{
-          pageName: `Link ${bridgePlatformLabel(linking.type)}`,
+          pageName: `Link ${platform}`,
           onBack: goBack,
           onNext: null,
         }}
@@ -75,20 +97,37 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
           </Button>
         }
       >
-        <div className="flex w-full flex-col gap-4">
-          <p className="text-sm text-foreground-muted">
-            Find yourself in {linking.displayName} and tell Switch that account is you.
-          </p>
-          <BridgeIdentitySearch
+        {waiting ? (
+          <AccountLinkConfirmation
+            key={waiting.target.identityId}
             workspaceId={workspaceId}
-            bridgeId={linking.id}
-            bridgeDisplayName={linking.displayName}
-            platform={bridgePlatformLabel(linking.type)}
-            directorySearchSupported={linking.directorySearchSupported}
-            autoFocus
-            onClaimed={() => setLinking(null)}
+            bridgeId={bridge.id}
+            bridgeDisplayName={bridge.displayName}
+            target={waiting.target}
+            initialCode={waiting.code}
+            onConfirmed={goBack}
+            onCancelled={() => setLinking({ bridge, waiting: null })}
+            onStartAgain={() => setLinking({ bridge, waiting: null })}
           />
-        </div>
+        ) : (
+          <div className="flex w-full flex-col gap-4">
+            <p className="text-sm text-foreground-muted">
+              Find yourself in {bridge.displayName} and tell Switch that account is you.
+            </p>
+            <BridgeIdentitySearch
+              workspaceId={workspaceId}
+              bridgeId={bridge.id}
+              bridgeDisplayName={bridge.displayName}
+              platform={platform}
+              directorySearchSupported={bridge.directorySearchSupported}
+              autoFocus
+              onClaimed={goBack}
+              onConfirmationNeeded={(target, code) =>
+                setLinking({ bridge, waiting: { target, code } })
+              }
+            />
+          </div>
+        )}
       </WizardFrame>
     );
   }
@@ -106,12 +145,13 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
         serverName={serverName}
         bridges={bridgesQuery.isSuccess ? orderBridges(bridgesQuery.data) : null}
         identities={identities}
+        pending={pending}
         isPending={noWorkspace === null && bridgesQuery.isPending}
         error={noWorkspace ?? (bridgesQuery.isError ? bridgesQuery.error : null)}
         onRetry={() =>
           void (noWorkspace === null ? bridgesQuery.refetch() : workspacesStore.refresh())
         }
-        onLink={setLinking}
+        onLink={(bridge, waiting) => setLinking({ bridge, waiting })}
       />
     </WizardFrame>
   );
@@ -121,6 +161,7 @@ function BridgeList({
   serverName,
   bridges,
   identities,
+  pending,
   isPending,
   error,
   onRetry,
@@ -131,10 +172,15 @@ function BridgeList({
    * below, so this never stands in for either. */
   bridges: RemoteBridge[] | null;
   identities: LinkedIdentity[] | null;
+  pending: PendingIdentity[] | null;
   isPending: boolean;
   error: unknown;
   onRetry: () => void;
-  onLink: (bridge: RemoteBridge) => void;
+  /** Opens the app's search, or — with a link waiting for its code — the code. */
+  onLink: (
+    bridge: RemoteBridge,
+    waiting: { target: AccountLinkTarget; code: LinkCode | null } | null
+  ) => void;
 }) {
   if (isPending) {
     return (
@@ -180,7 +226,9 @@ function BridgeList({
                 key={bridge.id}
                 bridge={bridge}
                 identities={identities}
-                onLink={() => onLink(bridge)}
+                pending={pending}
+                onLink={() => onLink(bridge, null)}
+                onConfirm={(target) => onLink(bridge, { target, code: null })}
               />
             ))}
           </ul>
@@ -194,15 +242,22 @@ function BridgeList({
 function BridgeLinkRow({
   bridge,
   identities,
+  pending,
   onLink,
+  onConfirm,
 }: {
   bridge: RemoteBridge;
   /** Null while unknown — which is not the same as none, so the row shows
    * neither a handle nor a Link button until the answer arrives. */
   identities: LinkedIdentity[] | null;
+  /** Links waiting for a code; null while unknown. */
+  pending: PendingIdentity[] | null;
   onLink: () => void;
+  onConfirm: (target: AccountLinkTarget) => void;
 }) {
-  const identity = identities?.find((i) => i.bridgeId === bridge.id) ?? null;
+  const identity = identities === null ? null : linkedIdentityOn(bridge.id, identities);
+  const waiting =
+    identity === null ? (pending?.find((p) => p.bridgeId === bridge.id) ?? null) : null;
 
   return (
     <li className="flex items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] px-3.5 py-3">
@@ -216,35 +271,70 @@ function BridgeLinkRow({
 
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-sm font-medium text-foreground">{bridge.displayName}</span>
-        {identities === null ? null : identity === null ? (
+        {identities === null ? null : identity !== null ? (
+          <span className="truncate font-mono text-xs text-foreground-muted">
+            {accountHandle(identity.externalUsername)}
+          </span>
+        ) : waiting !== null ? (
+          <span className="flex items-center gap-1 truncate text-xs text-foreground-muted">
+            <Clock className="size-3 shrink-0" />
+            <span className="font-mono">{accountHandle(waiting.externalUsername)}</span> · Waiting
+            for confirmation
+          </span>
+        ) : (
           <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
             <TriangleAlert className="size-3 shrink-0" />
             No account linked
-          </span>
-        ) : (
-          <span className="truncate font-mono text-xs text-foreground-muted">
-            {handleOf(identity)}
           </span>
         )}
       </div>
 
       {identities !== null &&
-        (identity === null ? (
+        (identity !== null ? (
+          identity.verified ? (
+            <span className="flex shrink-0 items-center gap-1.5 text-sm text-green-600 dark:text-green-500">
+              <Check className="size-4" />
+              Linked
+            </span>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() =>
+                onConfirm({
+                  identityId: identity.id,
+                  externalUsername: identity.externalUsername,
+                  kind: 'unverified',
+                })
+              }
+            >
+              <ShieldCheck className="size-3.5" />
+              Confirm
+            </Button>
+          )
+        ) : waiting !== null ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={() =>
+              onConfirm({
+                identityId: waiting.id,
+                externalUsername: waiting.externalUsername,
+                kind: 'pending',
+              })
+            }
+          >
+            <KeyRound className="size-3.5" />
+            Show code
+          </Button>
+        ) : (
           <Button variant="outline" size="sm" className="shrink-0" onClick={onLink}>
             <Link2 className="size-3.5" />
             Link account
           </Button>
-        ) : (
-          <span className="flex shrink-0 items-center gap-1.5 text-sm text-green-600 dark:text-green-500">
-            <Check className="size-4" />
-            Linked
-          </span>
         ))}
     </li>
   );
-}
-
-function handleOf(identity: LinkedIdentity): string {
-  const username = identity.externalUsername;
-  return username.startsWith('@') ? username : `@${username}`;
 }

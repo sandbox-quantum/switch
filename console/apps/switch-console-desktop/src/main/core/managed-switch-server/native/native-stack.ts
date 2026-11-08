@@ -12,6 +12,7 @@ import { RELEASE_REPO_NAME, RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
   type DeployedTelemetry,
+  type LocalServerAdminPages,
   type StartLocalServerResult,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
@@ -50,6 +51,7 @@ import {
   waitForCoreHealth,
 } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
+import { checkoutGatewayUi, nativeAdminPages } from './gateway-ui';
 import {
   mattermostCallbackBaseUrl,
   pullMattermostImage,
@@ -74,6 +76,7 @@ import {
   writeClusterConfig,
 } from './postgres-cluster';
 import {
+  downloadedInstallWouldServePages,
   existingSwitchCoreInstall,
   installSwitchCore,
   pruneSwitchCoreInstalls,
@@ -311,6 +314,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
         message:
           'The local server cannot run as root: PostgreSQL refuses to. Start Switch Console as ' +
           'a normal user, then set up the server.',
+        failure: 'running_as_root',
       },
       bringUpMattermost: null,
     };
@@ -362,6 +366,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     owner: RELEASE_REPO_OWNER,
     repo: RELEASE_REPO_NAME,
     checkoutRoot,
+    buildGatewayUiFromSource: import.meta.env.DEV,
     onMessage,
   });
 
@@ -418,6 +423,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       telemetryEnvironment: currentFlintEnv(),
       telemetryInternal: (await currentInternalFlag()) === 'true',
       telemetryEndpoint: nativeServerTelemetryEndpoint(),
+      gatewayUiDir: install.gatewayUiDir,
     });
     await writeDeployedVersion(layout, install.version);
     onMessage('Starting switch-core…');
@@ -445,7 +451,11 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
           ? ''
           : `: ${reason.length > room ? `${reason.slice(0, room - 1)}…` : reason}`;
       return {
-        result: { kind: 'error', message: `${head}${shown}${tail}` },
+        result: {
+          kind: 'error',
+          message: `${head}${shown}${tail}`,
+          failure: alive ? 'health_timeout' : 'core_exited',
+        },
         bringUpMattermost: null,
       };
     }
@@ -577,6 +587,12 @@ export async function nativeStackRunning(layout: NativeLayout): Promise<boolean>
   return (await runningCore(layout)) !== null;
 }
 
+/** The line of switch-core's log that says why it stopped, or null. For a
+ * server that stopped on its own, after it had started. */
+export function nativeCoreFailureLine(layout: NativeLayout): Promise<string | null> {
+  return coreFailureLine(layout);
+}
+
 export async function nativeStartedAt(layout: NativeLayout): Promise<string | null> {
   return (await runningCore(layout))?.startedAt ?? null;
 }
@@ -594,6 +610,36 @@ export function nativeServerTelemetryEndpoint(): string {
     }
   );
   return TELEMETRY_RELAY_ORIGIN;
+}
+
+/**
+ * Whether a start now would hand switch-core the gateway's pages: the
+ * checkout has a build of them, this build's bundle ships them, or (dev
+ * builds) the install a start would use would have them built (see
+ * `downloadedInstallWouldServePages`).
+ */
+export async function nativeAdminPagesOnRestart(
+  layout: NativeLayout,
+  checkoutRoot: string | null,
+  bundleRoot: string | null
+): Promise<boolean> {
+  if (checkoutRoot !== null) return (await checkoutGatewayUi(checkoutRoot)) !== null;
+  const version = managedSwitchVersion();
+  const bundle = await readLocalServerBundle(bundleRoot, version);
+  if (bundle !== null) return bundle.gatewayUi !== null;
+  return import.meta.env.DEV && (await downloadedInstallWouldServePages(layout, version));
+}
+
+/** What the running native server's admin pages are doing, for its page to
+ * show the links to them, or offer the restart that turns them on. */
+export function readNativeAdminPages(
+  layout: NativeLayout,
+  checkoutRoot: string | null,
+  bundleRoot: string | null
+): Promise<LocalServerAdminPages> {
+  return nativeAdminPages(layout, () =>
+    nativeAdminPagesOnRestart(layout, checkoutRoot, bundleRoot)
+  );
 }
 
 export async function readNativeTelemetry(layout: NativeLayout): Promise<DeployedTelemetry> {

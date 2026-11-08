@@ -90,6 +90,27 @@ export async function currentSnapshot(agentId: string, sessionId: string): Promi
   }
 }
 
+/**
+ * Whether the session's running host can run a message's turn again
+ * (`message.retry`): `no` from a host built before it, `unknown` when no host
+ * of this Console answers for the session.
+ */
+export async function sessionRetrySupport(
+  agentId: string,
+  sessionId: string
+): Promise<'yes' | 'no' | 'unknown'> {
+  try {
+    return (await currentSnapshot(agentId, sessionId)).session.capabilities.retry ? 'yes' : 'no';
+  } catch (error) {
+    log.info('Could not ask the session whether it can retry', {
+      agentId,
+      sessionId,
+      error: String(error),
+    });
+    return 'unknown';
+  }
+}
+
 type Place = 'local' | 'remote';
 
 /** The session as last recorded: from its host if it runs, else its journal. */

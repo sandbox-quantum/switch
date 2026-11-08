@@ -26,12 +26,7 @@ export function ProviderIssueIndicator({
   const provider = getProvider(providerId);
   const name = provider?.name ?? providerId;
   const where = sshHost ? `on ${sshHost}` : 'on this computer';
-  const fix =
-    data?.installed === false
-      ? `Install the ${name} CLI ${where}.`
-      : data?.status === 'unauthenticated' && provider
-        ? `Run \`${provider.loginCommand}\` ${where}.`
-        : data?.message;
+  const fix = data?.installed === false ? `Install the ${name} CLI ${where}.` : data?.message;
   return (
     <Tooltip>
       <TooltipTrigger

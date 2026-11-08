@@ -634,6 +634,11 @@ def _addressing_client(
         return None
 
     ns._switch_notice = _no_notice
+
+    async def _still_here(_row: object) -> bool:
+        return True  # still a member of ROOM, so its replies are posted
+
+    ns._still_here = _still_here
     ns._report_addressed = lambda *_a, **_k: None
     ns._triggered_by_auto_reply = AgentRecipient._triggered_by_auto_reply
     ns.actor = SimpleNamespace(send_message=sent)

@@ -131,7 +131,7 @@ class _FakeClientLifecycle:
     def start_client(self, client: Client) -> None:
         return None
 
-    def announce(self, tenant_id: str) -> None:
+    def announce(self, tenant_id: str, client_ids: object = None) -> None:
         return None
 
     def get_by_agent_id(self, agent_id: str) -> None:
@@ -343,7 +343,13 @@ async def add_member(
 def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
     return {
         "switch_auth": create_jwt(
-            user.id, user.email, user.role, TEST_KEYRING, tenant_id
+            user.id,
+            user.email,
+            user.role,
+            TEST_KEYRING,
+            tenant_id,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
     }
 
@@ -372,7 +378,13 @@ def status_report(
     return report
 
 
-def provider(name: str, *, installed: bool = True, auth: str = "ok") -> dict[str, Any]:
+def provider(
+    name: str,
+    *,
+    installed: bool = True,
+    auth: str = "ok",
+    auth_problem: str | None = None,
+) -> dict[str, Any]:
     return {
         "provider": name,
         "installed": installed,
@@ -380,6 +392,7 @@ def provider(name: str, *, installed: bool = True, auth: str = "ok") -> dict[str
         "auth": auth,
         "auth_source": "local" if installed else None,
         "checked_at": "2026-01-01T00:00:00Z",
+        **({"auth_problem": auth_problem} if auth_problem else {}),
     }
 
 
