@@ -66,6 +66,7 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import MessageRouter
+from switch_core.invites import Inviter
 from switch_core.main import (
     _agent_event_retention_loop,
     _connection_sweep_loop,
@@ -294,7 +295,8 @@ class BenchServer:
                 name=name,
                 description="connection-model baseline benchmark room",
                 agent_ids=agent_ids,
-            )
+            ),
+            invited_by=Inviter.switch("test setup"),
         )
         return result.room.id
 

@@ -199,6 +199,9 @@ class InboundAgentJoin(BaseModel):
     channel_type: ChannelType
     agent_name: str
     channel_name: str | None = None
+    # Who added it, by their account on the platform. None when the platform
+    # did not say, which Switch treats as unknown and never as trusted.
+    added_by_external_user_id: str | None
 
 
 class InboundUserJoin(BaseModel):
@@ -207,6 +210,8 @@ class InboundUserJoin(BaseModel):
     external_user_id: str
     external_username: str
     channel_name: str | None = None
+    # An agent's bot can arrive looking like a user, so this travels here too.
+    added_by_external_user_id: str | None
 
 
 class InboundAppJoin(BaseModel):

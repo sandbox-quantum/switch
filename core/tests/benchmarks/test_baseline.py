@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from switch_core.invites import Inviter
 from tests.benchmarks.host import (
     BenchWatcher,
     alive,
@@ -121,7 +122,9 @@ async def _rooms(
 ) -> list[str]:
     return [
         await bench.create_room(
-            f"bench-{slug}-{index}", [member.agent_id for member in members]
+            f"bench-{slug}-{index}",
+            [member.agent_id for member in members],
+            invited_by=Inviter.switch("test setup"),
         )
         for index in range(count)
     ]

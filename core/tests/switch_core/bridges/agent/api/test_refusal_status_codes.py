@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException
@@ -20,11 +21,17 @@ from fastapi.exceptions import RequestValidationError
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import owner_only_policy
 from switch_core.bridges.agent.api import handlers, operations
 from switch_core.bridges.agent.app import log_http_exceptions, log_validation_errors
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.db.models import Agent, Room
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.room_store import RoomStore
+from switch_core.room_service import RoomService
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
     _make_public_room,
     _make_user,
@@ -166,3 +173,98 @@ async def test_history_reads_between_the_first_and_last_moments_of_the_calendar(
 
     assert resp.status_code == 200
     assert resp.json() == {"events": [], "has_more": False}
+
+
+async def _member_inviting(
+    session_factory: async_sessionmaker[AsyncSession], *, target_owner: str
+) -> tuple[_Room, str, str]:
+    """A member agent of a room, about to invite `target`, owned by `target_owner`
+    ("owner", the member's own owner, or "other")."""
+    r = await _room_with_an_outsider(session_factory)
+    r.svc.room_service = RoomService(  # type: ignore[attr-defined]
+        provisioning=SimpleNamespace(invite_to_room=_nothing),  # type: ignore[arg-type]
+        room_store=RoomStore(),
+        agent_store=AgentStore(),
+        client_lifecycle=r.svc.client_lifecycle,
+        collab_lifecycle=SimpleNamespace(get=lambda _bridge_id: None),  # type: ignore[arg-type]
+        collab_bridge_store=CollaborationBridgeStore(),
+        resource_service=None,  # type: ignore[arg-type]
+        session_factory=session_factory,
+        room_cache=MagicMock(),
+    )
+    async with session_factory() as session:
+        room = await session.get(Room, r.room_id)
+        assert room is not None
+        owner_id = room.owner_id
+    owner = (
+        owner_id
+        if target_owner == "owner"
+        else await _make_user(session_factory, "target-owner")
+    )
+    target_id = await _register(r.svc, "target-agent", owner)
+    async with session_factory() as session:
+        clients = {
+            agent.id: SimpleNamespace(
+                client_id=agent.client_id, transport_user_id=f"@{agent.name}:test"
+            )
+            for agent in await AgentStore().get_many(session, [r.member_id, target_id])
+        }
+    # The running clients the room service invites, as the server keeps them.
+    r.svc.room_service._client_lifecycle = SimpleNamespace(  # type: ignore[attr-defined]
+        get_by_agent_id=clients.get, get_by_type=lambda *_args: []
+    )
+    return r, target_id, owner
+
+
+async def _nothing(*_args: object, **_kw: object) -> None:
+    return None
+
+
+async def _roster(
+    session_factory: async_sessionmaker[AsyncSession], room_id: str
+) -> set[str]:
+    async with session_factory() as session:
+        return set(await RoomStore().get_agent_ids(session, room_id))
+
+
+async def test_a_member_inviting_an_agent_whose_owner_said_no_is_403_and_adds_nobody(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The caller may change the room, so this reaches the target's own policy."""
+    r, target_id, _ = await _member_inviting(session_factory, target_owner="other")
+    async with session_factory() as session:
+        target = await session.get(Agent, target_id)
+        assert target is not None
+        target.addressing_policy = owner_only_policy([]).model_dump()
+        await session.commit()
+
+    resp = await _request(
+        r.svc,
+        r.member_id,
+        "POST",
+        f"/agents/{r.member_id}/ops/invite_agent_to_room",
+        json={"room_id": r.room_id, "agent_name": "target-agent"},
+    )
+
+    assert resp.status_code == 403
+    assert "only takes instructions" in resp.json()["detail"]
+    assert "Ask its owner" in resp.json()["detail"]
+    assert await _roster(session_factory, r.room_id) == {r.member_id}
+
+
+async def test_a_member_may_bring_in_another_agent_of_its_own_owner(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """New agents start on owner-and-owner's-agents, which admits a teammate agent."""
+    r, target_id, _ = await _member_inviting(session_factory, target_owner="owner")
+
+    resp = await _request(
+        r.svc,
+        r.member_id,
+        "POST",
+        f"/agents/{r.member_id}/ops/invite_agent_to_room",
+        json={"room_id": r.room_id, "agent_name": "target-agent"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert await _roster(session_factory, r.room_id) == {r.member_id, target_id}

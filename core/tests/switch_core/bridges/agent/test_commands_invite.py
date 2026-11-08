@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_invite
+from switch_core.invites import Inviter, InviteRefused
 
 # Matches a live `@<handle>` mention token (same char class Switch re-parses).
 _MENTION = re.compile(r"@[A-Za-z0-9._-]+")
@@ -57,7 +58,9 @@ def _build_client(
 
 
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent", args=args, thread_id=None, user_id="@asker:x"
+    )
 
 
 def _agent(
@@ -82,6 +85,37 @@ class TestInviteCommand:
         assert len(posted) == 1
         assert "claude-code.alice" in posted[0]
         assert "Added" in posted[0]
+
+    async def test_the_person_who_typed_it_is_who_gets_judged(self) -> None:
+        client, _posted, _added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=[]
+        )
+        asked: list[Inviter] = []
+
+        async def add(_room_id: str, **kw: Any) -> None:
+            asked.append(kw["invited_by"])
+
+        client._room_service.add_agents_to_room = add
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert asked == [Inviter.sender("@asker:x")]
+
+    async def test_a_refusal_tells_the_person_why_and_adds_nobody(self) -> None:
+        client, posted, _added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=[]
+        )
+
+        async def refuse(_room_id: str, **kw: Any) -> None:
+            raise InviteRefused([_ALICE], kw["invited_by"])  # type: ignore[list-item]
+
+        client._room_service.add_agents_to_room = refuse
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert len(posted) == 1
+        assert "only takes instructions" in posted[0]
+        assert "Added" not in posted[0]
 
     async def test_unknown_agent_is_reported(self) -> None:
         client, posted, added = _build_client(registry={}, room_agent_ids=[])

@@ -1088,13 +1088,19 @@ def test_user_join_does_not_fire_on_app_joined() -> None:
 
     _run(
         adapter._handle_member_joined_channel(
-            {"type": "member_joined_channel", "user": "U1", "channel": "C123"}
+            {
+                "type": "member_joined_channel",
+                "user": "U1",
+                "channel": "C123",
+                "inviter": "U2",
+            }
         )
     )
 
     assert app_joins == []
     assert len(user_joins) == 1
     assert user_joins[0].external_user_id == "U1"
+    assert user_joins[0].added_by_external_user_id == "U2"
 
 
 # ── Outbound attachments ─────────────────────────────────────────────────────

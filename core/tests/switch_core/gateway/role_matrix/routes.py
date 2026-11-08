@@ -442,6 +442,7 @@ ROUTES: dict[str, Case] = {
     ),
     # ── Rooms ────────────────────────────────────────────────────────────
     "GET /gateway/rooms": get(f"{G}/rooms", anyone()),
+    "GET /gateway/rooms/invitable-agents": get(f"{G}/rooms/invitable-agents", anyone()),
     "GET /gateway/rooms/template-schema": get(f"{G}/rooms/template-schema", anyone()),
     "POST /gateway/rooms": post(
         f"{G}/rooms",

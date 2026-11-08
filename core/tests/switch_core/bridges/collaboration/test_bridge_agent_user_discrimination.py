@@ -44,6 +44,7 @@ def _join(external_username: str) -> InboundUserJoin:
         external_user_id="ext-id",
         external_username=external_username,
         channel_name="War Room",
+        added_by_external_user_id=None,
     )
 
 
