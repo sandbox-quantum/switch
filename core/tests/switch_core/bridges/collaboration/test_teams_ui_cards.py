@@ -317,9 +317,19 @@ async def test_a_press_not_carrying_a_card_action_is_refused() -> None:
     assert seen == []
 
 
-async def test_a_settled_card_is_redrawn_with_who_chose_and_only_its_links() -> None:
-    """Redrawn from the card as the room holds it, so it needs no record of the
-    post and settles after a restart too."""
+@pytest.mark.parametrize(
+    "conversation",
+    [
+        pytest.param(f"{CHANNEL};messageid=MSG1", id="its-own-post"),
+        pytest.param(CONVERSATION, id="under-a-thread-root"),
+    ],
+)
+async def test_a_settled_card_is_redrawn_with_who_chose_and_only_its_links(
+    conversation: str,
+) -> None:
+    """Redrawn from the card as the room holds it, in the conversation the
+    press came from, so it needs no record of the post and settles after a
+    restart too."""
     spec = _spec(
         {
             "a1": _el("Actions", ["go", "docs"]),
@@ -331,22 +341,27 @@ async def test_a_settled_card_is_redrawn_with_who_chose_and_only_its_links() -> 
         ["a1", "a2"],
         title="Pick",
     )
-    adapter, connector, _ = _handled()
-    press = InboundInteraction(
-        channel_id=CHANNEL,
-        sender_id="aad-kim",
-        sender_name="kim",
-        sender_display_name="@kim",
-        action_id="switch.ui:go",
-        value="g",
-        message_ref="MSG1",
-    )
+    adapter, connector = _teams()
 
-    await adapter.settle_card_press(press, "Go", author=AGENT, spec=spec, body="pick")
+    async def settle(interaction: InboundInteraction) -> None:
+        await adapter.settle_card_press(
+            interaction.model_copy(update={"sender_display_name": "@kim"}),
+            "Go",
+            author=AGENT,
+            spec=spec,
+            body="pick",
+        )
+
+    adapter.set_interaction_handler(settle)
+    press = _press()
+    press["conversation"]["id"] = conversation
+
+    assert await adapter.receive_activity(press) is None
 
     [update] = connector.updates
     assert update["activity_id"] == "MSG1"
-    assert update["conversation_id"] == f"{CHANNEL};messageid=MSG1"
+    assert update["conversation_id"] == conversation
+    assert update["service_url"] == SERVICE_URL
     assert update["activity"]["summary"].endswith(": pick")
     body = _card(update["activity"])["body"]
     assert [e["type"] for e in body[1:]] == ["TextBlock", "ActionSet", "TextBlock"]

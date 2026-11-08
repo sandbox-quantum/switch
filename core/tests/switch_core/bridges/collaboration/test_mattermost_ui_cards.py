@@ -4,6 +4,7 @@ under its text, and its buttons pressed and settled."""
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
 
 import pytest
@@ -98,13 +99,13 @@ async def test_a_card_draws_as_attachments_under_its_body() -> None:
     head, facts, image, data, again = post["props"]["attachments"]
     assert head == {
         "title": "Status",
-        "text": "nightly",
+        "text": "_nightly_",
         "image_url": "https://example.com/logo.png",
         "fallback": head["fallback"],
     }
     assert head["fallback"].startswith("**Status**\nnightly")
     assert facts == {
-        "text": "**All** green\n_checked 5m ago_",
+        "text": "**All** green\n\n_checked 5m ago_",
         "fields": [
             {"title": "Env", "value": "prod", "short": True},
             {"title": "Build", "value": "42", "short": True},
@@ -117,25 +118,44 @@ async def test_a_card_draws_as_attachments_under_its_body() -> None:
         "| :--- | ---: |",
         "| api\\|v2 | 120 |",
         "last hour",
+        "",
         "**Load**",
         "| Day | req |",
         "| --- | --- |",
         "| Mon | 1 |",
         "| Tue | 2.5 |",
+        "",
         "[Docs](https://example.com/docs)",
     ]
     assert [(a["id"], a["name"], a.get("style")) for a in data["actions"]] == [
         ("switchui0", "Go", "primary"),
         ("switchui1", "Stop", "danger"),
     ]
-    # Each Actions is a row of its own, settled on its own.
+    # Each Actions is a row of its own.
     assert again == {"actions": [again["actions"][0]]}
     assert again["actions"][0]["id"] == "switchui2"
-    assert post["props"]["switch_ui_actions"] == {
-        "switchui0": ["switch.ui:go", "g"],
-        "switchui1": ["switch.ui:stop", "stop"],
-        "switchui2": ["switch.ui:again", "again"],
-    }
+
+
+async def test_a_card_button_has_the_shape_mattermost_accepts() -> None:
+    adapter = _adapter()
+    _record(adapter)
+    await _send(adapter)
+
+    attachments = _posts(adapter).created[-1]["props"]["attachments"]
+    go = attachments[3]["actions"][0]
+    assert set(go) == {"id", "type", "name", "style", "integration"}
+    assert go["type"] == "button"
+    assert re.fullmatch(r"[A-Za-z0-9]+", go["id"])
+    assert go["name"] == "Go"
+    assert go["style"] == "primary"
+    assert go["integration"]["url"].endswith("/callback")
+    context = go["integration"]["context"]["switch"]
+    assert (context["channel"], context["action"], context["value"]) == (
+        CHANNEL,
+        "switch.ui:go",
+        "g",
+    )
+    assert context["signature"]
 
 
 async def test_card_text_mentions_nobody() -> None:
@@ -231,7 +251,7 @@ async def test_a_press_with_an_edited_value_or_moved_channel_is_refused() -> Non
     assert seen == []
 
 
-async def test_settling_a_press_replaces_its_buttons_with_the_choice() -> None:
+async def test_settling_takes_every_button_off_and_says_once_who_chose() -> None:
     adapter = _adapter()
     _record(adapter)
     ref = await _send(adapter)
@@ -245,7 +265,7 @@ async def test_settling_a_press_replaces_its_buttons_with_the_choice() -> None:
         InboundInteraction(
             channel_id=CHANNEL,
             sender_id=USER,
-            sender_name="@alice",
+            sender_name="alice",
             sender_display_name="@alice",
             action_id="switch.ui:go",
             value="g",
@@ -260,58 +280,14 @@ async def test_settling_a_press_replaces_its_buttons_with_the_choice() -> None:
     patched_ref, patch = posts.patched[-1]
     assert patched_ref == ref
     assert patch["props"]["from_bot"] == "true"
-    head, *_, data, again = patch["props"]["attachments"]
+    # The row that held only a button is gone; the links stay, as text.
+    head, _facts, _image, data = patch["props"]["attachments"]
     assert head["title"] == "Status"
-    assert "actions" not in data
-    assert again["actions"][0]["integration"]["url"].endswith("/callback")
-    assert data["footer"] == f"✅ @{ZERO_WIDTH_SPACE}alice chose Go"
-
-
-async def test_settling_keeps_other_button_rows_pressable() -> None:
-    adapter = _adapter()
-    seen = _record(adapter)
-    spec = _spec(
-        {
-            "a1": _el("Actions", ["yes"]),
-            "yes": _el("Button", id="yes", label="Yes"),
-            "d": _el("Divider"),
-            "a2": _el("Actions", ["no"]),
-            "no": _el("Button", id="no", label="No"),
-        },
-        ["a1", "d", "a2"],
-        title="Pick",
-    )
-    ref = await _send(adapter, spec)
-    posts = _posts(adapter)
-    for att in posts.stored["post-1"]["props"]["attachments"]:
-        for action in att.get("actions", []):
-            action.pop("integration")
-
-    await adapter.settle_card_press(
-        InboundInteraction(
-            channel_id=CHANNEL,
-            sender_id=USER,
-            sender_name=HANDLE,
-            sender_display_name=HANDLE,
-            action_id="switch.ui:yes",
-            value="yes",
-            message_ref=ref,
-        ),
-        "Yes",
-        author="worker",
-        spec=spec,
-        body="the body",
-    )
-
-    first, second = posts.patched[-1][1]["props"]["attachments"]
-    assert "actions" not in first and first["footer"] == "✅ alice chose Yes"
-    (no,) = second["actions"]
-    await adapter._handle_callback(
-        {
-            "user_id": USER,
-            "post_id": ref,
-            "channel_id": CHANNEL,
-            "context": no["integration"]["context"],
-        }
-    )
-    assert [(i.action_id, i.value) for i in seen] == [("switch.ui:no", "no")]
+    assert not any("actions" in a for a in patch["props"]["attachments"])
+    assert data["text"].endswith("[Docs](https://example.com/docs)")
+    assert [a.get("footer") for a in patch["props"]["attachments"]] == [
+        None,
+        None,
+        None,
+        f"✅ @{ZERO_WIDTH_SPACE}alice chose Go",
+    ]

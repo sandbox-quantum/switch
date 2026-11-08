@@ -825,9 +825,10 @@ class SlackAdapter(PlatformAdapter):
         spec: UISpec,
         body: str,
     ) -> None:
-        """Replace the buttons that were pressed with who chose what, so the
-        same choice cannot be made twice. Edits the message as the press saw it
-        (`_pressed_cards`), leaving the rest of the card as it was."""
+        """Take every answering button off the card and say under it who chose
+        what; a card takes one answer, so only link buttons stay. Edits the
+        message as the press saw it (`_pressed_cards`), leaving the rest of the
+        card as it was."""
         ref = interaction.message_ref
         pressed = self._pressed_cards.get(ref) if ref is not None else None
         message = pressed[-1] if pressed else None
@@ -848,16 +849,15 @@ class SlackAdapter(PlatformAdapter):
                 }
             ],
         }
-        blocks = [
-            chosen
-            if block.get("type") == "actions"
-            and any(
-                e.get("action_id") == interaction.action_id
-                for e in block.get("elements") or []
-            )
-            else block
-            for block in message.get("blocks") or []
-        ]
+        blocks: list[dict[str, Any]] = []
+        for block in message.get("blocks") or []:
+            if block.get("type") == "actions":
+                links = [e for e in block.get("elements") or [] if e.get("url")]
+                if not links:
+                    continue
+                block = {**block, "elements": links}
+            blocks.append(block)
+        blocks.append(chosen)
         await self._write_blocks(
             interaction.channel_id, ref, message.get("text") or "", blocks, {}
         )

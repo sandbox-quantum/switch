@@ -163,11 +163,6 @@ _PUBLICATION_PROP = "switch_publication"
 # client.
 _ATTACHMENTS_PROP = "attachments"
 
-# A card button's Switch action id and value by its Mattermost action id, kept
-# on the post so a settle can sign again the buttons a read hands back stripped
-# of their integration.
-_UI_ACTIONS_PROP = "switch_ui_actions"
-
 # Mattermost's `PostPropsMaxUserRunes`: the JSON of a post's props, in runes,
 # less the room the server keeps for its own additions.
 _MAX_PROPS = 760_000
@@ -1049,11 +1044,9 @@ class MattermostAdapter(PlatformAdapter):
         """The card as message attachments under `fallback_text`, which stays
         the post's message: it is what a Mattermost notification shows. Raises
         before posting a card the post cannot carry, so core sends the text."""
-        attachments, ui_actions = self._card_attachments(channel_id, spec)
+        attachments = self._card_attachments(channel_id, spec)
         attachments[0]["fallback"] = self._card_text(to_text(spec))
         props: dict[str, Any] = {_ATTACHMENTS_PROP: attachments}
-        if ui_actions:
-            props[_UI_ACTIONS_PROP] = ui_actions
         size = len(json.dumps(props, ensure_ascii=False))
         if size > _MAX_PROPS:
             raise ValueError(
@@ -1073,16 +1066,13 @@ class MattermostAdapter(PlatformAdapter):
     def _card_cell(self, text: str) -> str:
         return self._card_text(text.replace("\n", " ")).replace("|", "\\|")
 
-    def _card_attachments(
-        self, channel_id: str, spec: UISpec
-    ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
-        """The attachments a card draws as, and its buttons' Switch action id
-        and value by Mattermost action id. Buttons are drawn only where a press
-        can reach this bridge; elsewhere they are listed as text."""
+    def _card_attachments(self, channel_id: str, spec: UISpec) -> list[dict[str, Any]]:
+        """The attachments a card draws as. Buttons are drawn only where a
+        press can reach this bridge; elsewhere they are listed as text."""
         address = self._button_address()
         text, cell = self._card_text, self._card_cell
         attachments: list[dict[str, Any]] = []
-        ui_actions: dict[str, list[str]] = {}
+        buttons_drawn = 0
         stage = _CLOSED
 
         def at(part: int) -> dict[str, Any]:
@@ -1095,11 +1085,11 @@ class MattermostAdapter(PlatformAdapter):
         def add_text(line: str) -> None:
             attachment = at(_TEXT)
             attachment["text"] = (
-                f"{attachment['text']}\n{line}" if "text" in attachment else line
+                f"{attachment['text']}\n\n{line}" if "text" in attachment else line
             )
 
         def walk(key: str) -> None:
-            nonlocal stage
+            nonlocal stage, buttons_drawn
             element = spec.elements[key]
             p = element.props
             children = [spec.elements[c].props for c in element.children]
@@ -1107,7 +1097,7 @@ class MattermostAdapter(PlatformAdapter):
                 if p.title:
                     at(_TITLE)["title"] = text(p.title)
                 if p.subtitle:
-                    add_text(text(p.subtitle))
+                    add_text(f"_{text(p.subtitle)}_")
                 if p.imageUrl:
                     at(_IMAGE)["image_url"] = p.imageUrl
             elif isinstance(p, TextProps):
@@ -1168,31 +1158,28 @@ class MattermostAdapter(PlatformAdapter):
                     add_text(" · ".join(f"**{cell(b.label)}**" for b in buttons))
                 elif buttons and address is not None:
                     url, key = address
-                    # A row of its own, so a press settles that row alone.
+                    # A row of its own, as the card groups its buttons.
                     if stage == _ACTIONS:
                         stage = _CLOSED
                     actions = at(_ACTIONS).setdefault("actions", [])
                     for b in buttons:
-                        mm_id = f"switchui{len(ui_actions)}"
-                        action_id, value = button_action(b)
-                        ui_actions[mm_id] = [action_id, value]
                         actions.append(
                             card_action(
                                 key,
                                 url,
                                 channel_id,
-                                mm_id,
+                                f"switchui{buttons_drawn}",
                                 b.label,
                                 b.style,
-                                action_id,
-                                value,
+                                *button_action(b),
                             )
                         )
+                        buttons_drawn += 1
             for child in element.children:
                 walk(child)
 
         walk(spec.root)
-        return attachments or [{}], ui_actions
+        return attachments or [{}]
 
     async def settle_card_press(
         self,
@@ -1203,9 +1190,8 @@ class MattermostAdapter(PlatformAdapter):
         spec: UISpec,
         body: str,
     ) -> None:
-        """Replace the row of buttons that was pressed with who chose what.
-        The buttons left are signed again from `_UI_ACTIONS_PROP`, since
-        Mattermost hands a post back with its actions' integrations stripped."""
+        """Take every button off the card and say under it who chose what: a
+        card takes one answer, and its links are text, not buttons."""
         driver, loop = self._admin_driver, self._main_loop
         ref = interaction.message_ref
         if driver is None or loop is None or ref is None:
@@ -1215,36 +1201,16 @@ class MattermostAdapter(PlatformAdapter):
                 interaction.channel_id,
             )
             return
-        pressed = [interaction.action_id, interaction.value]
         chosen = _defuse_at(f"✅ {interaction.sender_display_name} chose {label}")
-        address = self._button_address()
         try:
             post = await loop.run_in_executor(None, driver.posts.get_post, ref)
             props = dict(post.get("props") or {})
-            ui_actions: dict[str, list[str]] = props.get(_UI_ACTIONS_PROP) or {}
-            attachments = []
-            for attachment in props.get(_ATTACHMENTS_PROP) or []:
-                actions = attachment.get("actions") or []
-                if actions:
-                    attachment = dict(attachment)
-                    del attachment["actions"]
-                    if any(ui_actions.get(a.get("id")) == pressed for a in actions):
-                        attachment["footer"] = chosen
-                    elif address is not None:
-                        url, key = address
-                        attachment["actions"] = [
-                            card_action(
-                                key,
-                                url,
-                                interaction.channel_id,
-                                a["id"],
-                                a["name"],
-                                a.get("style"),
-                                *ui_actions[a["id"]],
-                            )
-                            for a in actions
-                        ]
-                attachments.append(attachment)
+            attachments = [
+                {k: v for k, v in attachment.items() if k != "actions"}
+                for attachment in props.get(_ATTACHMENTS_PROP) or []
+            ]
+            attachments = [a for a in attachments if a] or [{}]
+            attachments[-1]["footer"] = chosen
             props[_ATTACHMENTS_PROP] = attachments
             await loop.run_in_executor(
                 None, driver.posts.patch_post, ref, {"props": props}

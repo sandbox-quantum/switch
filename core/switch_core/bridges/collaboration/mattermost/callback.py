@@ -207,6 +207,7 @@ def card_action(
     the stop control's turn is, so a leaked context presses nothing elsewhere."""
     action: dict[str, Any] = {
         "id": mm_id,
+        "type": "button",
         "name": name,
         "integration": {
             "url": url,

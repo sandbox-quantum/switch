@@ -48,6 +48,12 @@ CUSTOM_ID_MAX = 100
 LINK_URL_MAX = 512
 
 _STYLES = {"primary": discord.ButtonStyle.primary, "danger": discord.ButtonStyle.danger}
+_RULE = "─────"
+# What may follow a Fields group for it to draw as embed fields, which Discord
+# always puts under the description: nothing that is itself drawn in the text.
+_AFTER_EMBED_FIELDS = frozenset(
+    {"Field", "Section", "Divider", "Actions", "Button", "LinkButton"}
+)
 
 
 def escape_card_text(text: str) -> str:
@@ -120,19 +126,50 @@ def _chart(props: ChartProps) -> str:
     return f"**{escape_card_text(props.title)}**{y_label}\n{grid}"
 
 
+def _embed_fields(spec: UISpec) -> str | None:
+    """The Fields group that may draw as embed fields: the last one, when
+    nothing drawn in the description comes after it."""
+    order: list[str] = []
+
+    def visit(key: str) -> None:
+        order.append(key)
+        for child in spec.elements[key].children:
+            visit(child)
+
+    visit(spec.root)
+    fields = [i for i, k in enumerate(order) if spec.elements[k].type == "Fields"]
+    if not fields or any(
+        spec.elements[k].type not in _AFTER_EMBED_FIELDS
+        for k in order[fields[-1] + 1 :]
+    ):
+        return None
+    return order[fields[-1]]
+
+
+def _description(parts: list[str]) -> str | None:
+    """The parts a blank line apart, but a Divider only a line break from its
+    neighbours."""
+    out = parts[:1]
+    for before, part in zip(parts, parts[1:], strict=False):
+        out.append(("\n" if _RULE in (before, part) else "\n\n") + part)
+    return "".join(out) or None
+
+
 def ui_spec_to_message(
     spec: UISpec, *, interactive: bool
 ) -> tuple[list[discord.Embed], discord.ui.View | None]:
-    """The embeds and buttons a card draws as. Its Text, Table, Chart and
-    Divider go into the first embed's description in order, its Fields after
-    them as inline fields, the first image under them and any more as embeds
-    of their own. Each Actions starts a row of buttons. A Button needs
+    """The embeds and buttons a card draws as. Its Text, Fields, Table, Chart
+    and Divider go into the first embed's description in order, except that
+    a Fields group with nothing drawn there after it is drawn as inline
+    fields, which Discord shows under the description; the first image goes
+    under them and any more as embeds of their own. Each Actions starts a row of buttons. A Button needs
     `interactive` (a message this application owns); raises `ValueError` for a
     card that has one without it, or that is over a Discord limit."""
     embed = discord.Embed()
     parts: list[str] = []
     images: list[str] = []
     groups: list[list[ButtonProps | LinkButtonProps]] = []
+    embed_fields = _embed_fields(spec)
 
     def walk(key: str) -> None:
         element = spec.elements[key]
@@ -154,8 +191,17 @@ def ui_spec_to_message(
                 else text
             )
         elif isinstance(p, FieldsProps):
-            for child in element.children:
-                f = spec.elements[child].props
+            fields = [spec.elements[c].props for c in element.children]
+            if key != embed_fields:
+                parts.append(
+                    "\n".join(
+                        f"**{escape_card_text(f.label)}:** {escape_card_text(f.value)}"
+                        for f in fields
+                        if isinstance(f, FieldProps)
+                    )
+                )
+                return
+            for f in fields:
                 assert isinstance(f, FieldProps)
                 embed.add_field(
                     name=escape_card_text(f.label),
@@ -170,7 +216,7 @@ def ui_spec_to_message(
         elif isinstance(p, ChartProps):
             parts.append(_chart(p))
         elif isinstance(p, DividerProps):
-            parts.append("─" * 20)
+            parts.append(_RULE)
         elif isinstance(p, ImageProps):
             images.append(p.url)
         elif isinstance(p, ActionsProps):
@@ -188,7 +234,7 @@ def ui_spec_to_message(
             walk(child)
 
     walk(spec.root)
-    embed.description = "\n\n".join(parts) or None
+    embed.description = _description(parts)
     if images:
         embed.set_image(url=images[0])
     embeds = [embed] if len(embed) or images else []

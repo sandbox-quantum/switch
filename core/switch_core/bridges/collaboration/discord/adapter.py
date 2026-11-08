@@ -49,7 +49,6 @@ from switch_core.bridges.collaboration.discord.slash import (
     reassemble_args,
 )
 from switch_core.bridges.collaboration.discord.ui_embeds import (
-    card_custom_id,
     escape_card_text,
     parse_card_custom_id,
     ui_spec_to_message,
@@ -1047,9 +1046,9 @@ class DiscordAdapter(PlatformAdapter):
         spec: UISpec,
         body: str,
     ) -> None:
-        """Take the pressed button's row off the card and say who chose what,
-        so the same choice cannot be made twice. Edited through the press
-        itself, which reaches a webhook's message and the bot's alike."""
+        """Take every answering button off the card and say who chose what; a
+        card takes one answer, so only link buttons stay. Edited through the
+        press itself, which reaches a webhook's message and the bot's alike."""
         ref = interaction.message_ref
         press = self._pressed_cards.get(ref) if ref is not None else None
         if press is None or press.message is None:
@@ -1061,15 +1060,9 @@ class DiscordAdapter(PlatformAdapter):
             )
             return
         message = press.message
-        pressed = card_custom_id(interaction.action_id, interaction.value)
         view = discord.ui.View.from_message(message, timeout=None)
-        rows = {
-            item.row
-            for item in view.children
-            if getattr(item, "custom_id", None) == pressed
-        }
         for item in list(view.children):
-            if item.row in rows:
+            if getattr(item, "url", None) is None:
                 view.remove_item(item)
         view.stop()
         chosen = discord.utils.escape_markdown(

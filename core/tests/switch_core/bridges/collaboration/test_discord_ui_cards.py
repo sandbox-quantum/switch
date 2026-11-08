@@ -113,8 +113,10 @@ def test_every_component_draws_into_the_embeds() -> None:
         ("Took", "4", True),
     ]
     description = main.description or ""
-    assert description.startswith("prod\n\n**All** green\n\n*checked 5m ago*\n\n")
-    assert "─" in description
+    # A Divider is a short rule a line break from its neighbours.
+    assert description.startswith(
+        "prod\n\n**All** green\n\n*checked 5m ago*\n─────\n```"
+    )
     assert (
         "```\nService  p95\n-------  ---\napi      120\nweb       80\n```"
         in description
@@ -130,6 +132,32 @@ def test_every_component_draws_into_the_embeds() -> None:
         ("Stop", "switch.ui:stop halt now", discord.ButtonStyle.danger),
         ("Docs", "https://example.com/docs", discord.ButtonStyle.link),
     ]
+
+
+def test_fields_before_other_text_stay_in_order_in_the_description() -> None:
+    spec = _spec(
+        {
+            "f": _el("Fields", ["f1", "f2"]),
+            "f1": _el("Field", label="Status", value="<@1> ok"),
+            "f2": _el("Field", label="Took", value=4),
+            "t": _el("Text", content="after"),
+            "g": _el("Fields", ["g1"]),
+            "g1": _el("Field", label="Last", value="here"),
+            "d": _el("Divider"),
+            "a": _el("Actions", ["b"]),
+            "b": _el("Button", id="go", label="Go"),
+        },
+        ["f", "t", "g", "d", "a"],
+        title="Pick",
+    )
+
+    [embed], _ = ui_spec_to_message(spec, interactive=True)
+
+    assert embed.description == (
+        "**Status:** <\u200b@1> ok\n**Took:** 4\n\nafter\n─────"
+    )
+    # The last Fields, with nothing drawn in the text after it, are fields.
+    assert [(f.name, f.value) for f in embed.fields] == [("Last", "here")]
 
 
 def test_a_buttons_custom_id_gives_back_the_action_core_matches() -> None:
@@ -449,11 +477,15 @@ async def test_a_press_carries_the_button_and_the_card_it_was_on() -> None:
     assert press.redraws == []
 
 
-async def test_a_settled_press_takes_off_its_row_and_says_who_chose() -> None:
+async def test_a_settled_press_takes_off_every_button_but_links_and_says_who_chose() -> (
+    None
+):
     press, _ = await _pressed(settle=True)
 
     redraw = press.redraws[0]
-    assert redraw["view"].children == []
+    assert [(b.label, b.url) for b in redraw["view"].children] == [
+        ("Docs", "https://example.com/docs")
+    ]
     assert redraw["view"].is_finished()
     assert redraw["embeds"][-1].description == "✅ Kim Lee chose Stop"
     assert redraw["embeds"][0].title == "Deploy 1.4.2"

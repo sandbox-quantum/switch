@@ -201,6 +201,13 @@ context each, and the same person pressing twice is two presses rather than one
 notice overwriting another.
 """
 
+_PRESS_CONVERSATION: ContextVar[tuple[str, str] | None] = ContextVar(
+    "switch_teams_press_conversation", default=None
+)
+"""The (service URL, conversation) the press being handled came from, as the
+authenticated invoke names them: where its card is redrawn. After a restart
+`_locate` can only guess, and guesses wrong for a card posted in a thread."""
+
 
 def _invoke_error(status: int, code: str, message: str) -> dict[str, Any]:
     """An invoke answered with a failure the presser alone is shown.
@@ -1935,7 +1942,9 @@ class TeamsAdapter(PlatformAdapter):
         activity["attachments"] = [
             card_attachment(settle_card(activity["attachments"][0]["content"], line))
         ]
-        service_url, conversation_id = self._locate(interaction.channel_id, ref)
+        service_url, conversation_id = _PRESS_CONVERSATION.get() or self._locate(
+            interaction.channel_id, ref
+        )
         try:
             async with self._writes_to(conversation_id):
                 await self._connector.update_activity(
@@ -3759,6 +3768,11 @@ class TeamsAdapter(PlatformAdapter):
 
         notices: list[str] = []
         held = _PRESS_NOTICE.set(notices)
+        conversation_id = str((activity.get("conversation") or {}).get("id", ""))
+        service_url = str(activity.get("serviceUrl", "")).strip()
+        located = _PRESS_CONVERSATION.set(
+            (service_url, conversation_id) if service_url and conversation_id else None
+        )
         try:
             await self._on_interaction(
                 InboundInteraction(
@@ -3778,6 +3792,7 @@ class TeamsAdapter(PlatformAdapter):
             )
         finally:
             _PRESS_NOTICE.reset(held)
+            _PRESS_CONVERSATION.reset(located)
         if notices:
             return {"statusCode": 200, "type": _MESSAGE_RESPONSE, "value": notices[0]}
         return None

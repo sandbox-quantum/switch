@@ -321,18 +321,27 @@ def _press(adapter: SlackAdapter, payload: dict[str, Any], settle: bool) -> None
     )
 
 
-def test_a_settled_press_replaces_only_its_buttons_with_who_chose() -> None:
+def test_a_settled_press_takes_off_every_button_but_links_and_says_who_chose() -> None:
     adapter, client = _adapter()
-    blocks = _blocks(FULL)
-    adapter._resolve_user_name = _named("a<b>&c")  # type: ignore[method-assign]
+    more = {
+        "type": "actions",
+        "elements": [
+            {"type": "button", "action_id": "switch.ui:again", "value": "again"}
+        ],
+    }
+    blocks = [*_blocks(FULL), more]
+    adapter._resolve_user_name = _named("alice", "a<b>&c")  # type: ignore[method-assign]
 
     _press(adapter, _press_payload(blocks), settle=True)
 
     update = client.updated[0]
     assert update["channel"] == "C1" and update["ts"] == "1.0"
     assert update["text"] == "fallback"
-    assert update["blocks"][:-1] == blocks[:-1]
-    assert update["blocks"][-1] == {
+    *kept, links, chosen = update["blocks"]
+    assert kept == blocks[:-2]
+    assert links["elements"] == [blocks[-2]["elements"][-1]]
+    assert links["elements"][0]["url"] == "https://example.com/docs"
+    assert chosen == {
         "type": "context",
         "elements": [{"type": "mrkdwn", "text": "✅ a&lt;b&gt;&amp;c chose Go"}],
     }
@@ -348,9 +357,9 @@ def test_a_press_that_is_not_settled_leaves_the_card_alone() -> None:
     assert adapter._pressed_cards == {}
 
 
-def _named(name: str) -> Any:
+def _named(name: str, display_name: str) -> Any:
     async def resolve(_user_id: str) -> Any:
-        return type("User", (), {"name": name, "display_name": name})()
+        return type("User", (), {"name": name, "display_name": display_name})()
 
     return resolve
 
