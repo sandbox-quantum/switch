@@ -416,11 +416,11 @@ adding under two minutes to PR CI (anything slower runs nightly).
    gateway is served over HTTP as the role row-level security applies to (as the
    owner, the run reported leaks that row-level security prevents), a second
    workspace is fuzzed first so it has objects, and the first is then asked with
-   its ids in path and query parameters, recognised from the schema's naming
+   its ids in path, query and body parameters, recognised from the schema's naming
    (`id`, `*_id`). No leak was found. It did find about twenty routes that answer
    500 on generated input, a NUL in a string being the commonest cause, and
    error bodies that do not match the schema; the ones found are in an accepted
-   baseline, and a new one fails the run. Ids in request bodies are next.
+   baseline, and a new one fails the run. Ids in the body are replaced too.
 4. **UI tied to the API.** One or two Bombadil properties that read the API from
    the page: a list page that has settled shows what the API returns. The
    "renamed in one tab, renamed in another" property waits until Bombadil can

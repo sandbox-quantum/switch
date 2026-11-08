@@ -6,7 +6,8 @@ app (the role matrix's, whose stand-ins answer 418 where a route reaches a
 platform or a vendor) over HTTP, as the database role row-level security applies
 to, and runs the Schemathesis CLI twice: as an admin of a second workspace, so it
 has objects, then as an admin of the first, whose path and query parameters that
-look like ids (`id`, `*_id`) are often ids of the second's objects (`hooks.py`).
+look like ids (`id`, `*_id`, `*_ids`), in the path, query or body, are often ids
+of the second's objects (`hooks.py`).
 
 ```bash
 just properties-http                      # 25 examples a route; two runs of ten minutes at most
@@ -43,5 +44,6 @@ shape is not the one the schema documents.
 - Routes that would end the session it asks as (`ENDS_THE_SESSION` in the test).
 - A NUL in a string: many routes answer 500 on one, so every run would be that
   one bug on route after route. Remove `--generation-allow-x00 false` once fixed.
-- Ids in request bodies; only path and query parameters carry the other
-  workspace's ids so far.
+- Ids that are not named like one: only parameters called `id`, `*_id` or
+  `*_ids`, in the path, the query and the request body, carry the other
+  workspace's ids.
