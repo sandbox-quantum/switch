@@ -138,6 +138,11 @@ async def load(connection: asyncpg.Connection, tag: str | None) -> History:
                 tag,
             )
         }
+        erasure_rows = await connection.fetch(
+            "SELECT external_user_ids, former_sender_ids, member_client_ids, "
+            "completed_at FROM person_erasures "
+            "WHERE state = 'done' AND completed_at IS NOT NULL"
+        )
         history.erasures = [
             Erasure(
                 json.loads(row["external_user_ids"]),
@@ -145,12 +150,10 @@ async def load(connection: asyncpg.Connection, tag: str | None) -> History:
                 json.loads(row["member_client_ids"]),
                 row["completed_at"],
             )
-            for row in await connection.fetch(
-                "SELECT external_user_ids, former_sender_ids, member_client_ids, "
-                "completed_at FROM person_erasures "
-                "WHERE state = 'done' AND completed_at IS NOT NULL"
-            )
+            for row in erasure_rows
         ]
+        if not history.erasures:
+            return history
         external = [i for e in history.erasures for i in e.external_user_ids]
         clients = [i for e in history.erasures for i in e.member_client_ids]
         senders = [i for e in history.erasures for i in e.former_sender_ids]

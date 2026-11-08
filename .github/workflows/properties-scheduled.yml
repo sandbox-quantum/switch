@@ -47,10 +47,11 @@ jobs:
       - name: Sync dependencies
         run: uv sync --project core
 
-      # Saved on every run, passing or not: restore finds the newest, and the
-      # run id makes each key new.
+      # The run id makes each saved key new and the prefix restores the newest.
+      # Entries are small and the cache evicts the least recently used past its
+      # quota, so they are not pruned here.
       - name: Restore what Hypothesis found before
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .hypothesis
           key: hypothesis-${{ github.run_id }}
@@ -58,3 +59,11 @@ jobs:
 
       - name: Run the machines, then check their assertions
         run: properties/run-machine.sh nightly
+
+      # Saved even when the run failed: a counterexample is what to replay first.
+      - name: Save what Hypothesis found
+        if: ${{ always() }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .hypothesis
+          key: hypothesis-${{ github.run_id }}
