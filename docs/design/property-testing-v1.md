@@ -410,10 +410,17 @@ adding under two minutes to PR CI (anything slower runs nightly).
    Nothing writes a task, so there is nothing to check, and `task.lifecycle` is
    retired in the catalog rather than left proposed. The published agent-protocol
    page still lists the task events and tools, which is for the docs repository.
-3. **HTTP surface.** Schemathesis against the FastAPI app, with two tenants: no
-   5xx, responses that match their schema, and no id from the other tenant.
-   Nightly only, at many examples; not in PR CI yet. Ids are recognised from the
-   schema's naming (`id`, `*_id`) first, to see how noisy that is.
+3. **HTTP surface.** Schemathesis against the gateway with two workspaces: no
+   5xx, responses that match their schema, and no id from the other workspace.
+   Nightly only, at many examples; not in PR CI. Built (`properties/http`): the
+   gateway is served over HTTP as the role row-level security applies to (as the
+   owner, the run reported leaks that row-level security prevents), a second
+   workspace is fuzzed first so it has objects, and the first is then asked with
+   its ids in path and query parameters, recognised from the schema's naming
+   (`id`, `*_id`). No leak was found. It did find about twenty routes that answer
+   500 on generated input, a NUL in a string being the commonest cause, and
+   error bodies that do not match the schema; the ones found are in an accepted
+   baseline, and a new one fails the run. Ids in request bodies are next.
 4. **UI tied to the API.** One or two Bombadil properties that read the API from
    the page: a list page that has settled shows what the API returns. The
    "renamed in one tab, renamed in another" property waits until Bombadil can

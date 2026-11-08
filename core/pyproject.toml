@@ -82,6 +82,9 @@ dev = [
     "pytest-timeout>=2.3",
     "hypothesis>=6.170.15",
 ]
+schemathesis = [
+    "schemathesis>=4.33.1",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -99,8 +102,9 @@ known-first-party = ["switch_core"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-m 'not integration and not benchmark'"
+addopts = "-m 'not integration and not benchmark and not schemathesis'"
 markers = [
+    "schemathesis: fuzzes the gateway from its OpenAPI schema (minutes; excluded from the default run, run it with -m schemathesis)",
     "integration: boots real Postgres + Tuwunel via testcontainers (slow; excluded from the default run — use `just test-integration`)",
     "benchmark: boots real Postgres and serves the agent bridge on a socket to measure it (slow, and reports numbers rather than asserting them; excluded from the default run — use `just bench`)",
     "no_ambient_tenant: opt out of session_factory's default tenant-zero binding, for tests asserting what is or is not bound",

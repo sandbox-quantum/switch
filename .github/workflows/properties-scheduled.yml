@@ -1,7 +1,8 @@
 name: Properties scheduled
 
 # The checks that take too long for a pull request: the Quint models at their
-# larger bounds (`properties/specs/configs.qnt`, `recipients_deep`), and the
+# larger bounds (`properties/specs/configs.qnt`, `recipients_deep`), the gateway
+# fuzzed from its OpenAPI schema (`properties/http`), and the
 # Hypothesis state machines at a thousand examples, whose database of what they
 # found is kept between runs so a failure found one night is replayed first the
 # next. The bounds and sizes a PR runs are pr-ci.yml's. A failure fails the
@@ -29,6 +30,31 @@ jobs:
 
       - name: Every invariant holds in the larger bounds
         run: python3 properties/specs/run.py verify --deep
+
+  http-fuzz:
+    name: Gateway fuzzed from its OpenAPI schema
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --project core --group schemathesis
+
+      # A failure not in properties/http/baseline.json fails the run; the
+      # report names each operation and shows the request that did it.
+      - name: Fuzz the gateway as two workspaces
+        env:
+          SCHEMATHESIS_EXAMPLES: '100'
+          SCHEMATHESIS_MAX_SECONDS: '1200'
+        run: just properties-http
 
   state-machines:
     name: State machines, nightly profile

@@ -215,6 +215,14 @@ properties-model *args:
 properties-mutants:
     python3 properties/specs/run.py mutants
 
+# `just properties-http` fuzzes the gateway from its OpenAPI schema with
+# Schemathesis, as people in two workspaces (minutes; needs Docker). The
+# failures accepted for now are in properties/http/baseline.json.
+properties-http *args:
+    uv run --project core --group schemathesis pytest -c core/pyproject.toml \
+      core/tests/switch_core/properties/test_http_surface.py -m schemathesis \
+      -p no:cacheprovider {{ args }}
+
 # ── End-to-end proof for "follow the conversation" ─────────────────────────────
 # Plays every journey as two people in a fresh local Mattermost against
 # switch-core from this checkout, then writes a report with the server's log
