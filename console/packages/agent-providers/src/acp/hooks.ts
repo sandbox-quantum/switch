@@ -10,6 +10,7 @@ import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 import type {
   AcpInitializeResult,
+  AcpPermissionOption,
   AcpPermissionRequest,
   AcpPromptCapabilities,
   AcpSessionModes,
@@ -166,6 +167,8 @@ export interface AcpProviderHooks {
    * undefined means no request-level identity was supplied.
    */
   permissionMcpServerOf?(request: AcpPermissionRequest): string | null | undefined;
+  /** Exclude vendor choices whose effects exceed the session UI's promise. */
+  allowPermissionOption?(option: AcpPermissionOption): boolean;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**

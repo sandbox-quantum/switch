@@ -179,6 +179,14 @@ it('answers Kiro permission requests with the options it offered', async () => {
   await flush();
   const opened = events.filter((e) => e.type === 'request.opened');
   expect(opened).toHaveLength(2);
+  for (const event of opened) {
+    if (event.type !== 'request.opened') throw new Error('No approval');
+    expect(event.options.map((option) => option.decision)).toEqual(['accept', 'decline', 'cancel']);
+  }
+  if (opened[0]?.type !== 'request.opened') throw new Error('No approval');
+  await expect(
+    adapter.respondToRequest('s', opened[0].requestId, 'acceptForSession')
+  ).rejects.toThrow('Decision acceptForSession is not offered');
   for (const [event, decision] of [
     [opened[0], 'accept'],
     [opened[1], 'decline'],
@@ -191,6 +199,29 @@ it('answers Kiro permission requests with the options it offered', async () => {
     { outcome: { outcome: 'selected', optionId: 'accept' } },
     { outcome: { outcome: 'selected', optionId: 'reject' } },
   ]);
+});
+
+it('does not offer a persistent Kiro permission when it is the only allow option', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send({
+    id: 72,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'call-72', title: 'Run tests', status: 'pending' },
+      options: [{ optionId: 'always', name: 'Always allow', kind: 'allow_always' }],
+    },
+  });
+  await flush();
+  const opened = events.find((e) => e.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  expect(opened.options.map((option) => option.decision)).toEqual(['cancel']);
+  await adapter.respondToRequest('s', opened.requestId, 'cancel');
+  await flush();
+  expect(server.received.find((m) => m.id === 72)?.result).toEqual({
+    outcome: { outcome: 'cancelled' },
+  });
 });
 
 it('runs the session’s own MCP tools without asking, named by Kiro’s mcpTool identity', async () => {

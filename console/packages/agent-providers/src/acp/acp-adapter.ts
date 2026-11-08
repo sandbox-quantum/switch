@@ -559,6 +559,7 @@ export class AcpAdapter implements ProviderAdapter {
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
     for (const option of request.options) {
+      if (this.hooks.allowPermissionOption?.(option) === false) continue;
       const decision =
         option.kind === 'allow_once'
           ? 'accept'

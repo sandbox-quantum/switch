@@ -103,6 +103,9 @@ export const kiroAcp: AcpProviderHooks = {
   mcpServerOf: (toolCall) => kiroMetadataMcpServer(toolCall._meta),
   // Kiro V3 also supplies the resolved identity on permission params.
   permissionMcpServerOf: (request) => kiroMetadataMcpServer(request._meta),
+  // Kiro's allow_always persists a policy beyond this session, so it cannot
+  // be represented by Switch's session-only approval decision.
+  allowPermissionOption: (option) => option.kind !== 'allow_always',
   // The top-level task is a subagent; child tool calls carry agentSubtaskId
   // but are still ordinary tool calls of their own.
   itemType: (toolCall) => {
