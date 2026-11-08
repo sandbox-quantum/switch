@@ -1,13 +1,10 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { acpInitialize, createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
+import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
 import { readiness, signInWith } from '../readiness';
-import { JsonRpcError, noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
+import { JsonRpcError } from '../transport/stdio-json-rpc';
 
 const KIRO_LOGIN = 'kiro-cli login';
-// ACP's `auth_required`, which an agent answers `session/new` with when signed out.
+// ACP's `auth_required`, which Kiro answers every request after `initialize` with while signed out.
 const AUTH_REQUIRED = -32000;
 
 /** Kiro CLI's `kiro-cli acp`. Its extra methods are read from what it advertises. */
@@ -24,39 +21,24 @@ export const kiroAcp: AcpProviderHooks = {
   },
   launch: ({ binaryPath, env }) => ({ command: binaryPath, args: ['acp'], env }),
   loginCommand: KIRO_LOGIN,
-  // The handshake does not say whether Kiro is signed in; a session opened in
-  // an empty directory of its own does, and is closed again. Nothing signs in
-  // and no model is called.
-  checkSignIn: async (input) => {
-    const cwd = await mkdtemp(join(tmpdir(), 'switch-kiro-'));
-    const client = new StdioJsonRpcClient({
-      ...(await kiroAcp.launch(input)),
-      cwd,
-      logger: noopLogger,
-      onExit: () => {},
-    });
+  // Kiro reads its saved login first, then KIRO_API_KEY.
+  inheritEnv: ['KIRO_API_KEY'],
+  // `initialize` lists `kiro-login` signed in or out, and that method only
+  // tells a person to run `kiro-cli login`. A read-only `session/list` is
+  // refused with `auth_required` while Kiro holds no login.
+  checkSignIn: async ({ handshake, request }) => {
+    await handshake();
     try {
-      await acpInitialize(client, {});
-      try {
-        await client.request('session/new', { cwd, mcpServers: [] });
-      } catch (error) {
-        if (error instanceof JsonRpcError && error.code === AUTH_REQUIRED)
-          return readiness('unauthenticated', signInWith(KIRO_LOGIN));
-        throw error;
-      }
-      return readiness('authenticated', 'Signed in to Kiro.');
-    } finally {
-      await client.dispose();
-      await rm(cwd, { recursive: true, force: true });
+      await request('session/list', {});
+    } catch (error) {
+      if (error instanceof JsonRpcError && error.code === AUTH_REQUIRED)
+        return readiness('unauthenticated', signInWith(KIRO_LOGIN));
+      throw error;
     }
+    return readiness('authenticated', 'Signed in to Kiro.');
   },
-  // Kiro's modes are taken from what its session advertises: full access asks
-  // for one that trusts every tool where Kiro offers it.
-  sessionMode: (mode, modes) => {
-    if (mode !== 'full-access') return undefined;
-    const ids = modes?.availableModes?.map((m) => m.id) ?? [];
-    return ids.find((id) => /trust|yolo|always/i.test(id));
-  },
+  // Kiro's modes are agent configurations, not permission levels, so none is
+  // set: the runtime mode is enforced on its permission requests.
   mcpServerOf: (toolCall) => /^mcp__(.+?)__/.exec(toolCall.title ?? '')?.[1],
 };
 
