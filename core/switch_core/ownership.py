@@ -48,7 +48,6 @@ import asyncio
 import contextlib
 import hashlib
 import logging
-import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -339,10 +338,10 @@ class Ownership:
         while not self._stopped:
             timeout = BALANCE_INTERVAL_SECONDS
             held_until = self._lease.held_until()
-            if held_until is not None and held_until > time.monotonic():
+            if held_until is not None and held_until > self._lease.monotonic():
                 # Wake as the lease stops being sure, not up to an interval
                 # after: that is the moment this process's work has to stop.
-                timeout = min(timeout, held_until - time.monotonic())
+                timeout = min(timeout, held_until - self._lease.monotonic())
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._nudged.wait(), timeout)
             self._nudged.clear()
@@ -432,7 +431,7 @@ class Ownership:
                 await kind._balance(live)
 
     async def _prune_now_and_then(self) -> None:
-        now = time.monotonic()
+        now = self._lease.monotonic()
         if self._pruned_at is not None and now - self._pruned_at < PRUNE_EVERY_SECONDS:
             return
         self._pruned_at = now
