@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.accounts.transfer import kind_refusal
+from switch_core.agent_display_name import agent_label_with_identifier
+from switch_core.agent_invites import invite_refusal, person_may_invite
 from switch_core.agent_templates import plan_template
 from switch_core.authz import (
     Action,
@@ -119,6 +121,45 @@ def _refuse_fixed_membership(room: Room) -> None:
         require_membership_changeable_from_outside(room)
     except MembershipFixed as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+async def _refuse_uninvited_agents(
+    session: AsyncSession,
+    room_store: RoomStore,
+    protocol: AgentCore,
+    room: Room,
+    user: User,
+    agent_ids: list[str],
+) -> None:
+    """403 when `user` may not bring one of `agent_ids` into `room`: someone
+    the agent doesn't take instructions from (`switch_core.agent_invites`).
+    Agents already in the room are not invites, and pass.
+
+    Ends its read's transaction before returning, as `_require_room_released`
+    does: the route goes on to `RoomService`, which opens sessions of its own.
+    """
+    present = set(await room_store.get_agent_ids(session, room.id))
+    for agent_id in agent_ids:
+        if agent_id in present:
+            continue
+        agent = await protocol.agent_store.get(session, agent_id)
+        if agent is None:
+            # `add_agents_to_room` reports an unknown agent as it always has.
+            continue
+        if not person_may_invite(
+            agent,
+            room_id=room.id,
+            group_id=room.group_id,
+            user_id=user.id,
+            external_user_ids=[],
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=invite_refusal(
+                    agent_label_with_identifier(agent.display_name, agent.name)
+                ),
+            )
+    await session.commit()
 
 
 async def _require_room_released(
@@ -1217,8 +1258,12 @@ async def post_room_agents(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     principal = Principal(user.id, is_admin)
-    _refuse_fixed_membership(
-        await _require_room_released(session, room_store, room_id, principal, "write")
+    target_room = await _require_room_released(
+        session, room_store, room_id, principal, "write"
+    )
+    _refuse_fixed_membership(target_room)
+    await _refuse_uninvited_agents(
+        session, room_store, protocol, target_room, user, req.agent_ids
     )
     try:
         await room_service.add_agents_to_room(
