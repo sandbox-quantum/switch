@@ -31,6 +31,9 @@ from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
 UI_CONTENT_KEY = "com.switch.ui"
 # A press on a card button reaches the bridge under this action id prefix.
 UI_ACTION_PREFIX = "switch.ui:"
+# Or names its button by position in `card_buttons`, from 1, under this prefix,
+# where the platform cannot carry the button's action and value.
+UI_POSITION_PREFIX = f"{UI_ACTION_PREFIX}#"
 # The room message a press becomes carries what was pressed under this key.
 UI_PRESS_KEY = "com.switch.ui_press"
 
@@ -532,6 +535,27 @@ def button_action(button: ButtonProps) -> tuple[str, str]:
     matched back to it. The value is never empty: Slack drops a press that
     carries none."""
     return f"{UI_ACTION_PREFIX}{button.id}", button.value or button.id
+
+
+def card_buttons(spec: UISpec) -> list[ButtonProps]:
+    """The card's Buttons in the order it draws them, depth first from the root."""
+
+    def walk(key: str) -> list[ButtonProps]:
+        element = spec.elements[key]
+        own = [element.props] if isinstance(element.props, ButtonProps) else []
+        return own + [b for child in element.children for b in walk(child)]
+
+    return walk(spec.root)
+
+
+def pressed_button(spec: UISpec, action_id: str, value: str) -> ButtonProps | None:
+    """The button on the card a press names, by its `button_action` or by its
+    position (`UI_POSITION_PREFIX`); None if the card drew no such button."""
+    buttons = card_buttons(spec)
+    if action_id.startswith(UI_POSITION_PREFIX):
+        by_position = {str(i): b for i, b in enumerate(buttons, 1)}
+        return by_position.get(action_id.removeprefix(UI_POSITION_PREFIX))
+    return next((b for b in buttons if button_action(b) == (action_id, value)), None)
 
 
 def estimated_block_count(spec: UISpec) -> int:

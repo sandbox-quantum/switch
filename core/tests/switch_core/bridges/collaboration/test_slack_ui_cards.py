@@ -308,7 +308,9 @@ class _Socket:
 def _press(adapter: SlackAdapter, payload: dict[str, Any], settle: bool) -> None:
     async def on_press(interaction: InboundInteraction) -> None:
         if settle:
-            await adapter.settle_card_press(interaction, "Go")
+            await adapter.settle_card_press(
+                interaction, "Go", author="my-agent", spec=FULL, body="text"
+            )
 
     adapter.set_interaction_handler(on_press)
     _run(
@@ -365,7 +367,9 @@ def test_a_press_settles_though_another_on_its_card_finished_first() -> None:
             presses.append(interaction)
             if len(presses) == 1:
                 await release.wait()
-                await adapter.settle_card_press(interaction, "Go")
+                await adapter.settle_card_press(
+                    interaction, "Go", author="my-agent", spec=FULL, body="text"
+                )
 
         adapter.set_interaction_handler(on_press)
         first = asyncio.create_task(

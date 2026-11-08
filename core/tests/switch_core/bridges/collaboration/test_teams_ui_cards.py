@@ -317,41 +317,37 @@ async def test_a_press_not_carrying_a_card_action_is_refused() -> None:
     assert seen == []
 
 
-async def test_a_settled_press_replaces_only_its_buttons_with_who_chose() -> None:
-    adapter, connector, _ = _handled()
-    ref = await adapter.send_ui_message(
-        CHANNEL, AGENT, BUTTONS, "pick", ROOT, room_wide_mention=False
+async def test_a_settled_card_is_redrawn_with_who_chose_and_only_its_links() -> None:
+    """Redrawn from the card as the room holds it, so it needs no record of the
+    post and settles after a restart too."""
+    spec = _spec(
+        {
+            "a1": _el("Actions", ["go", "docs"]),
+            "go": _el("Button", id="go", label="Go", value="g"),
+            "docs": _el("LinkButton", label="Docs", url="https://example.com/docs"),
+            "a2": _el("Actions", ["no"]),
+            "no": _el("Button", id="no", label="No"),
+        },
+        ["a1", "a2"],
+        title="Pick",
     )
+    adapter, connector, _ = _handled()
     press = InboundInteraction(
         channel_id=CHANNEL,
         sender_id="aad-kim",
         sender_name="@kim",
         action_id="switch.ui:go",
         value="g",
-        message_ref=ref,
+        message_ref="MSG1",
     )
 
-    await adapter.settle_card_press(press, "Go")
+    await adapter.settle_card_press(press, "Go", author=AGENT, spec=spec, body="pick")
 
     [update] = connector.updates
     assert update["activity_id"] == "MSG1"
+    assert update["conversation_id"] == f"{CHANNEL};messageid=MSG1"
+    assert update["activity"]["summary"].endswith(": pick")
     body = _card(update["activity"])["body"]
-    assert [e["type"] for e in body[1:]] == ["TextBlock", "TextBlock", "ActionSet"]
-    assert body[2]["text"] == "✅ @​kim chose Go"
-    assert body[3]["actions"][0]["data"]["switchCard"]["action"] == "switch.ui:no"
-
-
-async def test_a_card_this_process_did_not_post_is_not_settled() -> None:
-    adapter, connector, _ = _handled()
-    press = InboundInteraction(
-        channel_id=CHANNEL,
-        sender_id="aad-kim",
-        sender_name="kim",
-        action_id="switch.ui:go",
-        value="g",
-        message_ref="MSG9",
-    )
-
-    await adapter.settle_card_press(press, "Go")
-
-    assert connector.updates == []
+    assert [e["type"] for e in body[1:]] == ["TextBlock", "ActionSet", "TextBlock"]
+    assert [a["type"] for a in body[2]["actions"]] == ["Action.OpenUrl"]
+    assert body[3]["text"] == "✅ @​kim chose Go"

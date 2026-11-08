@@ -727,22 +727,20 @@ def ui_spec_elements(spec: UISpec, text: Callable[[str], str]) -> list[dict[str,
     return out
 
 
-def settle_card(card: dict[str, Any], action_id: str, line: str) -> dict[str, Any]:
-    """The card with the action set holding the pressed button replaced by
-    `line`, so the same choice cannot be made twice."""
-
-    def pressed(element: dict[str, Any]) -> bool:
-        return element.get("type") == "ActionSet" and any(
-            (a.get("data") or {}).get(_CARD_BUTTON_DATA, {}).get("action") == action_id
-            for a in element.get("actions") or []
-        )
-
-    return {
-        **card,
-        "body": [
-            {"type": "TextBlock", "text": line, "wrap": True, "isSubtle": True}
-            if pressed(element)
-            else element
-            for element in card["body"]
-        ],
-    }
+def settle_card(card: dict[str, Any], line: str) -> dict[str, Any]:
+    """The card with every button that answers it taken off and `line` under
+    it, so it cannot be answered twice. Link buttons stay."""
+    body: list[dict[str, Any]] = []
+    for element in card["body"]:
+        if element.get("type") == "ActionSet":
+            links = [
+                a
+                for a in element.get("actions") or []
+                if a.get("type") == "Action.OpenUrl"
+            ]
+            if not links:
+                continue
+            element = {**element, "actions": links}
+        body.append(element)
+    body.append({"type": "TextBlock", "text": line, "wrap": True, "isSubtle": True})
+    return {**card, "body": body}

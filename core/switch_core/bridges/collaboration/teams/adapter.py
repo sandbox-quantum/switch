@@ -127,8 +127,6 @@ _HANDLE_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _MENTION_END = r"(?![A-Za-z0-9._-])"
 _AT_TAG = re.compile(r"<at>(.*?)</at>", re.DOTALL)
 _ZERO_WIDTH_SPACE = "\u200b"
-# How many posted agent cards (`ui_spec`) are kept to redraw after a press.
-_MAX_UI_CARDS = 256
 
 _PUBLICATION_LIMIT = 2000
 """How many characters a status or a card may spend on its body.
@@ -996,9 +994,6 @@ class TeamsAdapter(PlatformAdapter):
         self._channel_layouts: dict[str, str] = {}
         # message id -> (service_url, conversation_id) for later edit/delete.
         self._sent: dict[str, tuple[str, str]] = {}
-        # message id -> the activity an agent card (`ui_spec`) was posted as,
-        # to redraw it once a button on it is pressed.
-        self._ui_cards: OrderedDict[str, dict[str, Any]] = OrderedDict()
         # conversation id -> the lock ordering this bridge's writes to it.
         self._conversation_writes: OrderedDict[str, _ConversationWrites] = OrderedDict()
         # Inbound de-duplication — the Bot Framework and Graph capture paths can
@@ -1876,21 +1871,7 @@ class TeamsAdapter(PlatformAdapter):
         """
         if self._connector is None:
             raise RuntimeError("Cannot send card: Teams adapter not started")
-        agent = await self.agent_rendering(sender_name)
-        activity = {
-            "type": "message",
-            "summary": f"{agent.field_label}: {fallback_text}",
-            "attachments": [
-                card_attachment(
-                    agent_card(
-                        agent,
-                        fallback_text,
-                        [],
-                        ui_spec_elements(spec, self._card_text),
-                    )
-                )
-            ],
-        }
+        activity = await self._ui_activity(sender_name, spec, fallback_text)
         thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
         try:
             msg_id = await self._relay(
@@ -1906,28 +1887,42 @@ class TeamsAdapter(PlatformAdapter):
                 exc_info=True,
             )
             return None
-        self._ui_cards[msg_id] = activity
-        while len(self._ui_cards) > _MAX_UI_CARDS:
-            self._ui_cards.popitem(last=False)
         return msg_id
+
+    async def _ui_activity(
+        self, sender_name: str, spec: UISpec, body: str
+    ) -> dict[str, Any]:
+        agent = await self.agent_rendering(sender_name)
+        return {
+            "type": "message",
+            "summary": f"{agent.field_label}: {body}",
+            "attachments": [
+                card_attachment(
+                    agent_card(agent, body, [], ui_spec_elements(spec, self._card_text))
+                )
+            ],
+        }
 
     def _card_text(self, text: str) -> str:
         """Card text with any `<at>` tag broken, so it renders as text."""
         return self.defuse_mass_mentions(text.replace("<", "<" + _ZERO_WIDTH_SPACE))
 
     async def settle_card_press(
-        self, interaction: InboundInteraction, label: str
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
     ) -> None:
-        """Replace the buttons that were pressed with who chose what. Only a
-        card this process posted can be redrawn (`_ui_cards`)."""
+        """Redraw the card from its room message with who chose what in place
+        of its buttons; a card takes one answer, so only link buttons stay."""
         ref = interaction.message_ref
-        activity = self._ui_cards.get(ref) if ref is not None else None
-        if ref is None or activity is None or self._connector is None:
-            # shortcut: the posted card is kept in memory only, so after a restart
-            # its buttons stay pressable; rebuild it from the room event if that matters.
+        if ref is None or self._connector is None:
             logger.warning(
-                "Cannot mark the card press on %s in %s as done: this bridge has "
-                "no record of the card, so its buttons stay pressable",
+                "Cannot mark the card press on %s in %s as done: no message or "
+                "adapter not started, so its buttons stay pressable",
                 ref,
                 interaction.channel_id,
             )
@@ -1936,18 +1931,10 @@ class TeamsAdapter(PlatformAdapter):
             f"✅ {self.escape_label_for_body(interaction.sender_name)} chose "
             f"{self._card_text(label)}"
         )
-        settled = {
-            **activity,
-            "attachments": [
-                card_attachment(
-                    settle_card(
-                        activity["attachments"][0]["content"],
-                        interaction.action_id,
-                        line,
-                    )
-                )
-            ],
-        }
+        activity = await self._ui_activity(author, spec, body)
+        activity["attachments"] = [
+            card_attachment(settle_card(activity["attachments"][0]["content"], line))
+        ]
         service_url, conversation_id = self._locate(interaction.channel_id, ref)
         try:
             async with self._writes_to(conversation_id):
@@ -1955,7 +1942,7 @@ class TeamsAdapter(PlatformAdapter):
                     service_url=service_url,
                     conversation_id=conversation_id,
                     activity_id=ref,
-                    activity=settled,
+                    activity=activity,
                 )
         except BotConnectorError:
             logger.warning(
@@ -1964,8 +1951,6 @@ class TeamsAdapter(PlatformAdapter):
                 ref,
                 exc_info=True,
             )
-            return
-        self._ui_cards[ref] = settled
 
     async def _relay(
         self,

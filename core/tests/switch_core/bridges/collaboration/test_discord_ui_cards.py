@@ -416,7 +416,9 @@ async def _pressed(settle: bool) -> tuple[_CardPress, list[InboundInteraction]]:
     async def took(interaction: InboundInteraction) -> None:
         seen.append(interaction)
         if settle:
-            await adapter.settle_card_press(interaction, "Stop")
+            await adapter.settle_card_press(
+                interaction, "Stop", author="my-agent", spec=FULL, body="text"
+            )
 
     adapter.set_interaction_handler(took)
     ref = await adapter.send_ui_message(
@@ -470,4 +472,7 @@ async def test_settling_with_no_press_held_leaves_the_card_alone() -> None:
             message_ref=f"{CHANNEL_ID}:901",
         ),
         "Stop",
+        author="my-agent",
+        spec=FULL,
+        body="text",
     )

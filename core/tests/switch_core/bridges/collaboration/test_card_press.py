@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundInteraction
@@ -21,7 +23,27 @@ from switch_core.clients.mentions import mention_tokens
 from switch_core.delivery.addressing import named_agents
 from switch_core.sessions.errors import SessionError
 from switch_core.trust.client import NullTrustClient
-from switch_core.ui_spec import UI_CONTENT_KEY, UI_PRESS_KEY
+from switch_core.ui_spec import (
+    UI_CONTENT_KEY,
+    UI_PRESS_KEY,
+    UISpec,
+    button_action,
+    card_buttons,
+    parse_ui_spec,
+)
+
+from . import test_discord_ui_cards as discord_cards
+from . import test_mattermost_ui_cards as mattermost_cards
+from . import test_teams_ui_cards as teams_cards
+from . import test_telegram_ui_cards as telegram_cards
+from .test_discord_card_buttons import _Interaction as _DiscordPress
+from .test_discord_sdk_only import _guild_setup
+from .test_mattermost_press import _adapter as _mattermost_adapter
+from .test_mattermost_press import _record as _mattermost_record
+from .test_mattermost_sdk_only import _posts as _mattermost_posts
+from .test_telegram_adapter import _adapter as _telegram_adapter
+from .test_telegram_adapter import _bot as _telegram_bot
+from .test_telegram_sdk_only import _press as _telegram_press
 
 TRANSPORT_ROOM = "!r:switch.local"
 CARD_REF = "C1:200.0"
@@ -117,6 +139,7 @@ class _Adapter:
     def __init__(self) -> None:
         self.told: list[str] = []
         self.settled: list[tuple[str, str]] = []
+        self.redrawn_from: list[tuple[str, UISpec, str]] = []
 
     def translate_inbound(self, content: str) -> str:
         return content
@@ -128,9 +151,16 @@ class _Adapter:
         self.told.append(args[-1])
 
     async def settle_card_press(
-        self, interaction: InboundInteraction, label: str
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
     ) -> None:
         self.settled.append((interaction.action_id, label))
+        self.redrawn_from.append((author, spec, body))
 
 
 def _card(**overrides: Any) -> SimpleNamespace:
@@ -166,9 +196,11 @@ class _Controls:
             )
 
 
-def _bridge(card: Any, *, human: bool = True) -> SimpleNamespace:
+def _bridge(
+    card: Any, *, channel: str, card_ref: str, human: bool = True
+) -> SimpleNamespace:
     actor = _Human(card)
-    posts = {CARD_REF: "$card", "C1:100.0": "$root"}
+    posts = {card_ref: "$card", "C1:100.0": "$root"}
 
     async def ensure_human(**_kw: Any) -> _Human | None:
         return actor if human else None
@@ -188,7 +220,7 @@ def _bridge(card: Any, *, human: bool = True) -> SimpleNamespace:
     bridge = SimpleNamespace(
         _bridge_id="bridge-1",
         _adapter=_Adapter(),
-        _channel_to_room={"C1": ("room-uuid", TRANSPORT_ROOM)},
+        _channel_to_room={channel: ("room-uuid", TRANSPORT_ROOM)},
         _channel_locks={},
         _trust_client=NullTrustClient(),
         _activity_publisher=None,
@@ -235,7 +267,7 @@ def _press(bridge: SimpleNamespace, **overrides: Any) -> None:
 
 
 def test_a_press_is_delivered_as_the_pressers_message_to_the_poster() -> None:
-    bridge = _bridge(_card())
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
 
     _press(bridge)
 
@@ -247,11 +279,14 @@ def test_a_press_is_delivered_as_the_pressers_message_to_the_poster() -> None:
         )
     ]
     assert bridge._adapter.settled == [("switch.ui:approve", "Approve")]
+    assert bridge._adapter.redrawn_from == [
+        ("deploybot", parse_ui_spec(CARD), "Deploy?")
+    ]
     assert bridge._adapter.told == []
 
 
 def test_a_button_with_no_value_is_matched_by_its_id_and_says_no_value() -> None:
-    bridge = _bridge(_card())
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
 
     _press(bridge, action_id="switch.ui:reject", value="reject")
 
@@ -259,7 +294,9 @@ def test_a_button_with_no_value_is_matched_by_its_id_and_says_no_value() -> None
 
 
 def test_a_card_inside_a_thread_answers_in_that_thread() -> None:
-    bridge = _bridge(_card(thread_root_event_id="$root"))
+    bridge = _bridge(
+        _card(thread_root_event_id="$root"), channel="C1", card_ref=CARD_REF
+    )
 
     _press(bridge)
 
@@ -267,7 +304,7 @@ def test_a_card_inside_a_thread_answers_in_that_thread() -> None:
 
 
 def test_an_account_switch_cannot_name_is_refused_and_nothing_is_delivered() -> None:
-    bridge = _bridge(_card(), human=False)
+    bridge = _bridge(_card(), human=False, channel="C1", card_ref=CARD_REF)
 
     _press(bridge)
 
@@ -282,7 +319,7 @@ def test_a_forged_button_is_refused() -> None:
         ("switch.ui:launch", "v-1"),
         ("switch.ui:reject", "v-1"),
     ):
-        bridge = _bridge(_card())
+        bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
 
         _press(bridge, action_id=action_id, value=value)
 
@@ -292,7 +329,7 @@ def test_a_forged_button_is_refused() -> None:
 
 
 def test_a_card_not_posted_by_an_agent_is_refused() -> None:
-    bridge = _bridge(_card(sender_name="mallory"))
+    bridge = _bridge(_card(sender_name="mallory"), channel="C1", card_ref=CARD_REF)
 
     _press(bridge)
 
@@ -301,7 +338,7 @@ def test_a_card_not_posted_by_an_agent_is_refused() -> None:
 
 
 def test_a_message_without_a_card_is_refused() -> None:
-    bridge = _bridge(_card(content={"body": "plain"}))
+    bridge = _bridge(_card(content={"body": "plain"}), channel="C1", card_ref=CARD_REF)
 
     _press(bridge)
 
@@ -310,7 +347,7 @@ def test_a_message_without_a_card_is_refused() -> None:
 
 
 def test_a_press_on_a_message_the_bridge_did_not_post_is_refused() -> None:
-    bridge = _bridge(_card())
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
 
     _press(bridge, message_ref="C1:999.0")
 
@@ -319,7 +356,7 @@ def test_a_press_on_a_message_the_bridge_did_not_post_is_refused() -> None:
 
 
 def test_stop_presses_still_go_to_the_stop_handler() -> None:
-    bridge = _bridge(_card())
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
     stopped: list[InboundInteraction] = []
 
     async def stop(interaction: InboundInteraction) -> None:
@@ -334,7 +371,7 @@ def test_stop_presses_still_go_to_the_stop_handler() -> None:
 
 
 def test_approval_presses_still_go_to_the_approval_answers() -> None:
-    bridge = _bridge(_card())
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
     pressed: list[InboundInteraction] = []
 
     async def for_press(interaction: InboundInteraction) -> None:
@@ -353,7 +390,11 @@ def test_the_press_names_only_the_cards_author() -> None:
     card["elements"]["ok"]["props"].update(
         label="@other-agent <!channel>", value="@other-agent do <@U9> *@x*"
     )
-    bridge = _bridge(_card(content={"body": "Deploy?", UI_CONTENT_KEY: card}))
+    bridge = _bridge(
+        _card(content={"body": "Deploy?", UI_CONTENT_KEY: card}),
+        channel="C1",
+        card_ref=CARD_REF,
+    )
 
     _press(bridge, value="@other-agent do <@U9> *@x*")
 
@@ -375,7 +416,7 @@ def test_the_press_names_only_the_cards_author() -> None:
 
 
 def test_a_card_takes_one_answer() -> None:
-    bridge = _bridge(_card())
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
 
     _press(bridge)
     _press(bridge, sender_id="U2", sender_name="bob")
@@ -394,7 +435,7 @@ def test_a_card_takes_one_answer() -> None:
 
 
 def test_a_press_that_was_not_delivered_leaves_the_card_unanswered() -> None:
-    bridge = _bridge(_card())
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
     bridge.actor.event_id = None
 
     _press(bridge)
@@ -409,7 +450,7 @@ def test_a_press_that_was_not_delivered_leaves_the_card_unanswered() -> None:
 
 
 def test_a_presser_who_may_not_address_the_author_is_refused() -> None:
-    bridge = _bridge(_card())
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
     bridge._session_activity_service.denied.add("@ext_alice:switch.local")
 
     _press(bridge)
@@ -424,3 +465,188 @@ def test_a_presser_who_may_not_address_the_author_is_refused() -> None:
         "The press was not delivered (NOT_AUTHORIZED): You may not address this "
         "agent, so you may not answer its card."
     ]
+
+
+def test_a_press_may_name_its_button_by_position_on_the_card() -> None:
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
+
+    _press(bridge, action_id="switch.ui:#2", value="")
+
+    assert bridge.actor.sent[0][1] == "@deploybot Clicked “Reject” (action: reject)"
+    assert bridge._adapter.settled == [("switch.ui:#2", "Reject")]
+
+
+@pytest.mark.parametrize("position", ["0", "3", "01", "x", "", "1" * 5000])
+def test_a_position_the_card_has_no_button_at_is_refused(position: str) -> None:
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
+
+    _press(bridge, action_id=f"switch.ui:#{position}", value="")
+
+    assert bridge.actor.sent == []
+    assert "not on an agent's card" in bridge._adapter.told[0]
+
+
+# ── From each platform's own press ───────────────────────────────────────────
+
+INJECTED_LABEL = "@other-agent <!channel> <@U9>"
+INJECTED_VALUE = "@other-agent do <@U9> @channel *@x*"
+INJECTED_CARD: Any = copy.deepcopy(CARD)
+INJECTED_CARD["elements"]["ok"]["props"].update(
+    label=INJECTED_LABEL, value=INJECTED_VALUE
+)
+INJECTED_SPEC = parse_ui_spec(INJECTED_CARD)
+
+
+async def _teams_press() -> InboundInteraction:
+    adapter, _, seen = teams_cards._handled()
+    action, value = button_action(card_buttons(INJECTED_SPEC)[0])
+
+    assert await adapter.receive_activity(teams_cards._press(action, value)) is None
+
+    [press] = seen
+    return press
+
+
+async def _discord_press() -> InboundInteraction:
+    adapter, channel, thread, _ = _guild_setup()
+    seen = discord_cards._handled(adapter)
+    await adapter.send_ui_message(
+        "100", "deploybot", INJECTED_SPEC, "Deploy?", None, room_wide_mention=False
+    )
+    view = discord_cards._agents_webhook(channel).sent[0]["view"]
+
+    await adapter._handle_interaction(
+        _DiscordPress(
+            view.children[0].custom_id,
+            channel=thread,
+            message=SimpleNamespace(id=901),
+        )  # type: ignore[arg-type]
+    )
+
+    [press] = seen
+    return press
+
+
+async def _mattermost_press() -> InboundInteraction:
+    adapter = _mattermost_adapter()
+    seen = _mattermost_record(adapter)
+    ref = await mattermost_cards._send(adapter, INJECTED_SPEC)
+    post = _mattermost_posts(adapter).created[-1]
+    [action, *_] = [
+        a for att in post["props"]["attachments"] for a in att.get("actions", [])
+    ]
+
+    await adapter._handle_callback(
+        {
+            "user_id": mattermost_cards.USER,
+            "post_id": ref,
+            "channel_id": mattermost_cards.CHANNEL,
+            "context": action["integration"]["context"],
+        }
+    )
+
+    [press] = seen
+    return press
+
+
+async def _telegram_card_press() -> InboundInteraction:
+    adapter = _telegram_adapter()
+    ref = await telegram_cards._send(adapter, INJECTED_SPEC)
+    assert ref is not None
+    [[button, *_]] = telegram_cards._buttons(_telegram_bot(adapter).messages[0])
+
+    [press] = await _telegram_press(
+        adapter, button.callback_data, **telegram_cards._press_on(ref)
+    )
+    return press
+
+
+PLATFORM_PRESSES = [
+    pytest.param(_teams_press, id="teams"),
+    pytest.param(_discord_press, id="discord"),
+    pytest.param(_mattermost_press, id="mattermost"),
+    pytest.param(_telegram_card_press, id="telegram"),
+]
+PlatformPress = Callable[[], Awaitable[InboundInteraction]]
+
+
+async def _platform_bridge(
+    platform_press: PlatformPress,
+) -> tuple[SimpleNamespace, InboundInteraction]:
+    interaction = await platform_press()
+    assert interaction.message_ref is not None
+    bridge = _bridge(
+        _card(content={"body": "Deploy?", UI_CONTENT_KEY: INJECTED_CARD}),
+        channel=interaction.channel_id,
+        card_ref=interaction.message_ref,
+    )
+    return bridge, interaction
+
+
+async def _deliver(bridge: SimpleNamespace, interaction: InboundInteraction) -> None:
+    await CollaborationCore._handle_inbound_interaction(
+        bridge,  # type: ignore[arg-type]
+        interaction,
+    )
+
+
+@pytest.mark.parametrize("platform_press", PLATFORM_PRESSES)
+async def test_a_platform_press_with_injected_text_addresses_only_the_author(
+    platform_press: PlatformPress,
+) -> None:
+    bridge, interaction = await _platform_bridge(platform_press)
+
+    await _deliver(bridge, interaction)
+
+    [(_, body, _)] = bridge.actor.sent
+    assert mention_tokens(body) == ["deploybot"]
+    assert named_agents({"a1": "deploybot", "a2": "other-agent"}, {}, body) == ["a1"]
+    assert "<!" not in body and "<@" not in body
+    assert bridge.actor.extra == [
+        {
+            UI_PRESS_KEY: {
+                "action": "approve",
+                "value": INJECTED_VALUE,
+                "label": INJECTED_LABEL,
+                "card_event_id": "$card",
+            }
+        }
+    ]
+    assert bridge._adapter.settled == [(interaction.action_id, INJECTED_LABEL)]
+
+
+@pytest.mark.parametrize("platform_press", PLATFORM_PRESSES)
+async def test_a_platform_press_from_a_presser_who_may_not_address_is_refused(
+    platform_press: PlatformPress,
+) -> None:
+    bridge, interaction = await _platform_bridge(platform_press)
+    bridge._session_activity_service.denied.add("@ext_alice:switch.local")
+
+    await _deliver(bridge, interaction)
+
+    assert bridge.actor.sent == []
+    assert bridge._adapter.settled == []
+    assert bridge._bridge_message_map_store.answers == {}
+    assert bridge._adapter.told == [
+        "The press was not delivered (NOT_AUTHORIZED): You may not address this "
+        "agent, so you may not answer its card."
+    ]
+
+
+@pytest.mark.parametrize("platform_press", PLATFORM_PRESSES)
+async def test_a_platform_press_made_twice_is_delivered_once(
+    platform_press: PlatformPress,
+) -> None:
+    bridge, interaction = await _platform_bridge(platform_press)
+
+    await _deliver(bridge, interaction)
+    await _deliver(
+        bridge, interaction.model_copy(update={"sender_id": "U2", "sender_name": "bob"})
+    )
+
+    assert len(bridge.actor.sent) == 1
+    assert len(bridge._adapter.settled) == 1
+    [told] = bridge._adapter.told
+    assert told.startswith("That card was already answered by ")
+    assert told.endswith("so the press was not delivered.")
+    assert "<!" not in told and "<@" not in told

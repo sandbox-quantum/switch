@@ -250,6 +250,9 @@ async def test_settling_a_press_replaces_its_buttons_with_the_choice() -> None:
             message_ref=ref,
         ),
         "Go",
+        author="worker",
+        spec=FULL,
+        body="the body",
     )
 
     patched_ref, patch = posts.patched[-1]
@@ -292,6 +295,9 @@ async def test_settling_keeps_other_button_rows_pressable() -> None:
             message_ref=ref,
         ),
         "Yes",
+        author="worker",
+        spec=spec,
+        body="the body",
     )
 
     first, second = posts.patched[-1][1]["props"]["attachments"]

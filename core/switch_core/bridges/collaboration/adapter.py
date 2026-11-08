@@ -1106,11 +1106,18 @@ class PlatformAdapter(ABC):
         )
 
     async def settle_card_press(
-        self, interaction: InboundInteraction, label: str
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
     ) -> None:
         """Show on the card that its button `label` was pressed and the press
-        delivered, so it is not pressed again. Only a platform that draws card
-        buttons has anything to do."""
+        delivered, so it is not pressed again. `author`, `spec` and `body` are
+        the card as its room message holds it, to redraw it from. Only a
+        platform that draws card buttons has anything to do."""
         return None
 
     async def admin_message(

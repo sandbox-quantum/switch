@@ -817,7 +817,13 @@ class SlackAdapter(PlatformAdapter):
         return self.translate_outbound(escape_mrkdwn(text))
 
     async def settle_card_press(
-        self, interaction: InboundInteraction, label: str
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
     ) -> None:
         """Replace the buttons that were pressed with who chose what, so the
         same choice cannot be made twice. Edits the message as the press saw it

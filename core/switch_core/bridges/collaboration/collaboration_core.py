@@ -111,9 +111,10 @@ from switch_core.ui_spec import (
     UI_CONTENT_KEY,
     UI_PRESS_KEY,
     ButtonProps,
+    UISpec,
     UISpecError,
-    button_action,
     parse_ui_spec,
+    pressed_button,
 )
 
 if TYPE_CHECKING:
@@ -2241,6 +2242,7 @@ class CollaborationCore:
             )
             return
         card = await human_actor.transport.get_event(transport_room_id, card_event_id)
+        spec: UISpec | None = None
         button: ButtonProps | None = None
         author: Agent | None = None
         if card is not None and card.sender_name:
@@ -2254,17 +2256,8 @@ class CollaborationCore:
                         session, card.sender_name
                     )
             if spec is not None and author is not None:
-                button = next(
-                    (
-                        e.props
-                        for e in spec.elements.values()
-                        if isinstance(e.props, ButtonProps)
-                        and button_action(e.props)
-                        == (interaction.action_id, interaction.value)
-                    ),
-                    None,
-                )
-        if card is None or author is None or button is None:
+                button = pressed_button(spec, interaction.action_id, interaction.value)
+        if card is None or spec is None or author is None or button is None:
             logger.warning(
                 "Ignoring a card press on %s: %s/%s is not a button an agent's "
                 "card drew there",
@@ -2342,7 +2335,13 @@ class CollaborationCore:
                     )
                     await session.commit()
         if delivered is not None:
-            await self._adapter.settle_card_press(interaction, button.label)
+            await self._adapter.settle_card_press(
+                interaction,
+                button.label,
+                author=card.sender_name,
+                spec=spec,
+                body=card.content["body"],
+            )
 
     async def _handle_text_answer(self, msg: InboundMessage) -> None:
         """An answer to an approval card, typed rather than pressed.

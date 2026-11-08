@@ -1039,7 +1039,13 @@ class DiscordAdapter(PlatformAdapter):
         return f"{sent.channel.id}:{sent.id}"
 
     async def settle_card_press(
-        self, interaction: InboundInteraction, label: str
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
     ) -> None:
         """Take the pressed button's row off the card and say who chose what,
         so the same choice cannot be made twice. Edited through the press

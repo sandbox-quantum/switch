@@ -11,7 +11,6 @@ from telegram.error import BadRequest
 from switch_core.bridges.collaboration.models import InboundInteraction
 from switch_core.bridges.collaboration.telegram.adapter import (
     _MAX_CALLBACK_BYTES,
-    _UI_CARD_FORGOTTEN,
     TelegramAdapter,
 )
 from switch_core.bridges.collaboration.telegram.chunking import MAX_MESSAGE
@@ -206,7 +205,6 @@ async def test_a_card_telegram_refuses_raises_so_the_text_is_sent() -> None:
 
     with pytest.raises(BadRequest):
         await _send(adapter, FULL)
-    assert adapter._ui_cards == {}
 
 
 def _press_on(ref: str) -> dict[str, Any]:
@@ -217,20 +215,26 @@ def _press_on(ref: str) -> dict[str, Any]:
     }
 
 
-async def test_a_press_resolves_its_button_from_the_posted_card() -> None:
+@pytest.mark.parametrize(
+    ("data", "action_id"), [("su:1", "switch.ui:#1"), ("su:x", "switch.ui:#x")]
+)
+async def test_a_press_names_its_button_by_position_for_core_to_resolve(
+    data: str, action_id: str
+) -> None:
+    """No record of the card is needed, so a card posted before a restart
+    still takes presses."""
     adapter = _adapter()
-    ref = await _send(adapter, FULL)
-    assert ref is not None
+    ref = f"{CHAT_ID}:501"
 
-    seen = await _press(adapter, "su:1", **_press_on(ref))
+    seen = await _press(adapter, data, **_press_on(ref))
 
     assert seen == [
         InboundInteraction(
             channel_id=CHANNEL,
             sender_id="9",
             sender_name="a<b>&c",
-            action_id="switch.ui:go",
-            value="g",
+            action_id=action_id,
+            value="",
             message_ref=ref,
         )
     ]
@@ -239,80 +243,40 @@ async def test_a_press_resolves_its_button_from_the_posted_card() -> None:
     ]
 
 
-@pytest.mark.parametrize("data", ["su:3", "su:0", "su:x"])
-async def test_a_press_naming_no_button_on_the_card_goes_nowhere(data: str) -> None:
-    adapter = _adapter()
-    ref = await _send(adapter, FULL)
-    assert ref is not None
-
-    seen = await _press(adapter, data, **_press_on(ref))
-
-    assert seen == []
-    assert len(_bot(adapter).answers) == 1
-
-
-async def test_a_press_on_a_card_the_bridge_does_not_know_says_so() -> None:
-    adapter = _adapter()
-
-    seen = await _press(adapter, "su:1")
-
-    assert seen == []
-    assert _bot(adapter).answers == [
-        {
-            "callback_query_id": "cq-1",
-            "text": _UI_CARD_FORGOTTEN,
-            "show_alert": True,
-        }
-    ]
-
-
-async def test_a_settled_press_says_who_chose_and_drops_its_row() -> None:
-    adapter = _adapter()
+async def test_a_settled_card_is_redrawn_with_who_chose_and_only_its_links() -> None:
     spec = _spec(
         {
-            "a1": _el("Actions", ["go"]),
+            "a1": _el("Actions", ["go", "docs"]),
             "go": _el("Button", id="go", label="Go"),
+            "docs": _el("LinkButton", label="Docs", url="https://example.com/docs"),
             "a2": _el("Actions", ["no"]),
             "no": _el("Button", id="no", label="No"),
         },
         ["a1", "a2"],
         title="Pick",
     )
-    ref = await _send(adapter, spec)
+    sender = _adapter()
+    ref = await _send(sender, spec)
     assert ref is not None
-    posted = _bot(adapter).messages[0]
-
-    await adapter.settle_card_press(
-        InboundInteraction(
-            channel_id=CHANNEL,
-            sender_id="9",
-            sender_name="a<b>&c",
-            action_id="switch.ui:go",
-            value="go",
-            message_ref=ref,
-        ),
-        "Go",
-    )
-
-    [edit] = _bot(adapter).edits
-    assert edit["chat_id"] == CHAT_ID and edit["message_id"] == 501
-    assert edit["text"] == posted["text"] + "\n✅ a&lt;b&gt;&amp;c chose Go"
-    assert [[b.text for b in r] for r in _buttons(edit)] == [["No"]]
-
-
-async def test_settling_a_card_the_bridge_does_not_know_edits_nothing() -> None:
+    posted = _bot(sender).messages[0]
     adapter = _adapter()
 
     await adapter.settle_card_press(
         InboundInteraction(
             channel_id=CHANNEL,
             sender_id="9",
-            sender_name="alice",
-            action_id="switch.ui:go",
-            value="go",
-            message_ref=f"{CHAT_ID}:77",
+            sender_name="a<b>&c",
+            action_id="switch.ui:#1",
+            value="",
+            message_ref=ref,
         ),
         "Go",
+        author="scout",
+        spec=spec,
+        body="fallback",
     )
 
-    assert _bot(adapter).edits == []
+    [edit] = _bot(adapter).edits
+    assert edit["chat_id"] == CHAT_ID and edit["message_id"] == 501
+    assert edit["text"] == posted["text"] + "\n✅ a&lt;b&gt;&amp;c chose Go"
+    assert [[b.text for b in r] for r in _buttons(edit)] == [["Docs"]]

@@ -1194,7 +1194,13 @@ class MattermostAdapter(PlatformAdapter):
         return attachments or [{}], ui_actions
 
     async def settle_card_press(
-        self, interaction: InboundInteraction, label: str
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
     ) -> None:
         """Replace the row of buttons that was pressed with who chose what.
         The buttons left are signed again from `_UI_ACTIONS_PROP`, since
