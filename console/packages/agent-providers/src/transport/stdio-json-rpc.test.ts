@@ -6,6 +6,48 @@ afterEach(async () => {
   await client?.dispose();
   client = null;
 });
+
+it.each(['result', 'error'])(
+  'observes a %s response before a following notification',
+  async (kind) => {
+    const response =
+      kind === 'result'
+        ? { jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } }
+        : { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'test error' } };
+    const line = `${JSON.stringify(response)}\n${JSON.stringify({ jsonrpc: '2.0', method: 'next', params: {} })}\n`;
+    client = new StdioJsonRpcClient({
+      command: process.execPath,
+      args: ['-e', `process.stdout.write(${JSON.stringify(line)}); setInterval(() => {}, 1000)`],
+      cwd: process.cwd(),
+      env: {},
+      logger: noopLogger,
+      onExit: () => {},
+    });
+    const order: string[] = [];
+    client.onNotification('next', () => order.push('notification'));
+    const pending = client.request('session/prompt', {}, () => order.push('response'));
+    if (kind === 'result') await expect(pending).resolves.toEqual({ stopReason: 'end_turn' });
+    else await expect(pending).rejects.toThrow('test error');
+    expect(order).toEqual(['response', 'notification']);
+  }
+);
+
+it('rejects a request if its response observer fails', async () => {
+  const line = `${JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} })}\n`;
+  client = new StdioJsonRpcClient({
+    command: process.execPath,
+    args: ['-e', `process.stdout.write(${JSON.stringify(line)}); setInterval(() => {}, 1000)`],
+    cwd: process.cwd(),
+    env: {},
+    logger: noopLogger,
+    onExit: () => {},
+  });
+  await expect(
+    client.request('session/prompt', {}, () => {
+      throw new Error('observer failed');
+    })
+  ).rejects.toThrow('observer failed');
+});
 it('times out an unacknowledged startup request without resending it', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   client = new StdioJsonRpcClient({

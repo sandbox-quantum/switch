@@ -163,6 +163,8 @@ export interface AcpProviderHooks {
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /** Subagent calls can complete after ACP reports the turn's end. */
   backgroundSubagents?: boolean;
+  /** Unfinished tools make further prompt attribution unsafe on this connection. */
+  guardPendingToolOnTurnEnd?: boolean;
   /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.

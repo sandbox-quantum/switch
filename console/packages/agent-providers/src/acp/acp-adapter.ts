@@ -118,10 +118,17 @@ interface State {
   turn: string | null;
   queue: ProviderSendTurnInput[];
   items: Map<string, ProviderItem>;
-  /** Subagents which outlived the turn that started them. */
+  /** Tools which outlived the turn that started them. */
   backgroundItems: Map<string, { turnId: string; item: ProviderItem }>;
   /** Ignore duplicate late updates, including while a subsequent turn is running. */
   finishedBackgroundItems: Set<string>;
+  /** A completed prompt left work that may emit output without a turn identity. */
+  quarantineReason: string | null;
+  /** Pending at the wire response, even if later updates arrive before its promise settles. */
+  pendingToolAtPromptResponse: boolean;
+  /** The wire response arrived and later output has no reliable turn identity. */
+  promptResponseSeen: boolean;
+  postResponseActivity: boolean;
   decisions: Map<string, PendingDecision>;
   questions: Map<string, PendingQuestion>;
   messageId: string;
@@ -209,6 +216,10 @@ export class AcpAdapter implements ProviderAdapter {
       items: new Map(),
       backgroundItems: new Map(),
       finishedBackgroundItems: new Set(),
+      quarantineReason: null,
+      pendingToolAtPromptResponse: false,
+      promptResponseSeen: false,
+      postResponseActivity: false,
       decisions: new Map(),
       questions: new Map(),
       messageId: '',
@@ -327,6 +338,10 @@ export class AcpAdapter implements ProviderAdapter {
 
   async sendTurn(input: ProviderSendTurnInput) {
     const state = this.require(input.sessionId);
+    if (state.quarantineReason) {
+      this.failQuarantinedTurn(state, input);
+      return { turnId: input.turnId };
+    }
     state.queue.push(input);
     if (!state.turn) this.drain(state);
     return { turnId: input.turnId };
@@ -334,10 +349,17 @@ export class AcpAdapter implements ProviderAdapter {
 
   private drain(state: State): void {
     if (state.turn || state.stopping || !this.hasSession(state.id)) return;
+    if (state.quarantineReason) {
+      for (const input of state.queue.splice(0)) this.failQuarantinedTurn(state, input);
+      return;
+    }
     const input = state.queue.shift();
     if (!input) return;
     state.turn = input.turnId;
     state.interrupted = false;
+    state.pendingToolAtPromptResponse = false;
+    state.promptResponseSeen = false;
+    state.postResponseActivity = false;
     state.messageId = randomUUID();
     state.items.clear();
     state.toolServers.clear();
@@ -404,10 +426,20 @@ export class AcpAdapter implements ProviderAdapter {
       }
     }
     return (
-      await state.client.request<{ stopReason: string }>('session/prompt', {
-        sessionId: state.nativeId,
-        prompt,
-      })
+      await state.client.request<{ stopReason: string }>(
+        'session/prompt',
+        { sessionId: state.nativeId, prompt },
+        this.hooks.guardPendingToolOnTurnEnd
+          ? () => {
+              if (state.turn === input.turnId) {
+                state.promptResponseSeen = true;
+                state.pendingToolAtPromptResponse = [...state.items.values()].some(
+                  (item) => item.status === 'in_progress'
+                );
+              }
+            }
+          : undefined
+      )
     ).stopReason;
   }
 
@@ -599,6 +631,18 @@ export class AcpAdapter implements ProviderAdapter {
   }
 
   private update(state: State, update: AcpSessionUpdate): void {
+    if (
+      this.hooks.guardPendingToolOnTurnEnd &&
+      state.promptResponseSeen &&
+      !state.stopping &&
+      ['agent_message_chunk', 'tool_call', 'tool_call_update'].includes(update.sessionUpdate)
+    ) {
+      if (state.turn) state.postResponseActivity = true;
+      else if (!state.quarantineReason) {
+        this.quarantine(state);
+        this.emit(state, { type: 'session.state.changed', status: 'error' });
+      }
+    }
     if (update.sessionUpdate === 'config_option_update' && update.configOptions) {
       this.applyConfigOptions(state, update.configOptions);
       return;
@@ -752,6 +796,17 @@ export class AcpAdapter implements ProviderAdapter {
   ): void {
     if (!state.turn) return;
     const turnId = state.turn;
+    const ambiguousTool =
+      !state.stopping &&
+      this.hooks.guardPendingToolOnTurnEnd &&
+      (state.pendingToolAtPromptResponse ||
+        state.postResponseActivity ||
+        [...state.items.values()].some((item) => item.status === 'in_progress'));
+    if (ambiguousTool) {
+      this.quarantine(state);
+      if (outcome === 'completed') outcome = 'error';
+      message = state.quarantineReason ?? undefined;
+    }
     this.finishMessage(state, outcome === 'completed' ? 'completed' : 'failed');
     if (
       outcome === 'completed' &&
@@ -766,7 +821,10 @@ export class AcpAdapter implements ProviderAdapter {
     }
     for (const item of state.items.values())
       if (item.status === 'in_progress') {
-        if (outcome === 'completed' && this.hooks.backgroundSubagents && item.type === 'subagent') {
+        if (
+          ambiguousTool ||
+          (outcome === 'completed' && this.hooks.backgroundSubagents && item.type === 'subagent')
+        ) {
           state.backgroundItems.set(item.id, { turnId, item });
           continue;
         }
@@ -794,7 +852,11 @@ export class AcpAdapter implements ProviderAdapter {
     if (!state.turn)
       this.emit(state, {
         type: 'session.state.changed',
-        status: state.stopping ? 'stopped' : outcome === 'error' ? 'error' : 'ready',
+        status: state.stopping
+          ? 'stopped'
+          : state.quarantineReason || outcome === 'error'
+            ? 'error'
+            : 'ready',
       });
     this.drain(state);
   }
@@ -803,6 +865,22 @@ export class AcpAdapter implements ProviderAdapter {
     state.finishedBackgroundItems.add(id);
     if (state.finishedBackgroundItems.size > 1024)
       state.finishedBackgroundItems.delete(state.finishedBackgroundItems.values().next().value!);
+  }
+
+  private quarantine(state: State): void {
+    if (state.quarantineReason) return;
+    state.quarantineReason = `${this.hooks.label} ended the turn with unconfirmed work or late output. The final response and task outcome are uncertain. Further messages will not be sent. Stop this session and inspect the task before starting a new one; it may still be running.`;
+    this.emit(state, { type: 'runtime.error', message: state.quarantineReason });
+  }
+
+  private failQuarantinedTurn(state: State, input: ProviderSendTurnInput): void {
+    this.emit(state, {
+      type: 'turn.completed',
+      turnId: input.turnId,
+      outcome: 'error',
+      message: state.quarantineReason ?? undefined,
+      usage: [],
+    });
   }
 
   private cancelPending(state: State): void {
@@ -839,7 +917,18 @@ export class AcpAdapter implements ProviderAdapter {
       this.emit(state, {
         type: 'item.completed',
         turnId,
-        item: { ...item, status: 'failed', text: [item.text, reason].filter(Boolean).join('\n') },
+        item: {
+          ...item,
+          status: 'failed',
+          text: [
+            item.text,
+            state.quarantineReason
+              ? 'The connection ended before this tool reported its outcome. It may still be running.'
+              : reason,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        },
       });
     state.backgroundItems.clear();
     this.cancelPending(state);

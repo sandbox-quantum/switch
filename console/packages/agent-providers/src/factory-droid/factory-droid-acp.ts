@@ -103,6 +103,9 @@ export const factoryDroidAcp: AcpProviderHooks = {
   sessionMode: (runtimeMode) => DROID_MODES[runtimeMode],
   itemType: (toolCall) => (isDroidSubagent(toolCall) ? 'subagent' : undefined),
   backgroundSubagents: true,
+  // Droid may emit untagged parent text after ending a turn with a Task active.
+  // No later prompt can be attributed safely on that connection.
+  guardPendingToolOnTurnEnd: true,
   // Droid exposes AskUser through ACP form elicitation.
   clientCapabilities: { elicitation: { form: {} } },
   extensions: (context, on) => {

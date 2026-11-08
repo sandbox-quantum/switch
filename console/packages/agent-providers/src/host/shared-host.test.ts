@@ -379,6 +379,68 @@ function relayed(epoch: string, commandId: string, body: Command['body']): Comma
   };
 }
 
+it('journals a provider-rejected queued turn as finished and does not resend it on restart', async () => {
+  const host = await start({ provider: 'factory-droid' });
+  const body = {
+    type: 'message.send' as const,
+    delivery: 'queue' as const,
+    text: 'work',
+    attachments: [],
+  };
+  try {
+    const epoch = await host.snapshotEpoch();
+    const first = relayed(epoch, 'first', body);
+    const queued = relayed(epoch, 'queued', body);
+    await host.parent.ask({ type: 'command', command: first, requesterName: null });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'command', command: queued, requesterName: null });
+    vi.mocked(host.adapter.sendTurn).mockImplementationOnce(async ({ turnId }) => {
+      host.emit({
+        type: 'turn.completed',
+        turnId,
+        outcome: 'error',
+        message: 'The previous outcome is uncertain. Stop this session.',
+        usage: [],
+      });
+      return { turnId };
+    });
+    host.emit({ type: 'runtime.error', message: 'The previous outcome is uncertain.' });
+    host.emit({ type: 'turn.completed', turnId: 'first', outcome: 'error', usage: [] });
+    await poll(async () => {
+      const inbox = (await readFile(join(host.root, 'inbox.jsonl'), 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      expect(
+        inbox.filter((record) => record.type === 'finished' && record.commandId === 'queued')
+      ).toHaveLength(1);
+    });
+    expect(host.turns).toHaveLength(1);
+    await host.parent.ask({ type: 'command', command: queued, requesterName: null });
+    expect(vi.mocked(host.adapter.sendTurn)).toHaveBeenCalledTimes(2);
+    expect(await host.stop()).toBeNull();
+    await rm(join(host.root, 'shared-owner.lock'));
+    const restarted = await start({ provider: 'factory-droid', base: host.base });
+    try {
+      expect(restarted.turns).toHaveLength(0);
+      const journal = (await readFile(join(host.root, 'events.jsonl'), 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      expect(journal.filter((event) => event.body.code === 'TURN_INTERRUPTED')).toHaveLength(0);
+      expect(
+        journal.some(
+          (event) => event.body.type === 'notice' && event.body.code === 'PROVIDER_NOTICE'
+        )
+      ).toBe(true);
+    } finally {
+      expect(await restarted.stop()).toBeNull();
+    }
+  } finally {
+    await host.stop();
+  }
+});
+
 const roomMessage = (sequence: number, body: string, attachments: unknown[] = []) => ({
   sequence,
   roomId: 'room',

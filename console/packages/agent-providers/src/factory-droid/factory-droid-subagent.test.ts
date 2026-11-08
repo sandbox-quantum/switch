@@ -13,8 +13,15 @@ const servers: FakeAppServer[] = [];
 vi.mock('node:child_process', () => ({
   spawn: () => {
     const server = new FakeAppServer();
-    server.replyAlways('initialize', () => ({ agentCapabilities: {} }));
+    server.replyAlways('initialize', () => ({ agentCapabilities: { loadSession: true } }));
     server.replyAlways('session/new', () => ({ sessionId: 'native' }));
+    server.replyAlways('session/load', () => {
+      server.notify('session/update', {
+        sessionId: 'native',
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replay' } },
+      });
+      return {};
+    });
     server.replyAlways('session/set_mode', () => ({}));
     servers.push(server);
     return server;
@@ -94,8 +101,15 @@ it('emits one subagent lifecycle for a Droid Task across sparse updates, not its
   await adapter.stopAll();
 });
 
-async function withTask(backgroundSubagents = true) {
-  const adapter = createAcpAdapter({ ...factoryDroidAcp, backgroundSubagents }, {});
+async function withTask(
+  backgroundSubagents = true,
+  taskUpdate: Record<string, unknown> | null = task,
+  guardPendingToolOnTurnEnd = backgroundSubagents
+) {
+  const adapter = createAcpAdapter(
+    { ...factoryDroidAcp, backgroundSubagents, guardPendingToolOnTurnEnd },
+    {}
+  );
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((event) => events.push(event));
   await adapter.startSession({
@@ -111,21 +125,86 @@ async function withTask(backgroundSubagents = true) {
     server.notify('session/update', { sessionId: 'native', update: value });
   await adapter.sendTurn({ sessionId: 's', turnId: 'first', text: 'delegate' });
   const prompt = await server.waitFor('session/prompt');
-  update({ sessionUpdate: 'tool_call', ...task, status: 'pending' });
+  if (taskUpdate) update({ sessionUpdate: 'tool_call', ...taskUpdate, status: 'pending' });
   return { adapter, events, server, update, prompt };
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-it('keeps the originating turn and running assistant text when a subagent finishes after the prompt and during the next turn', async () => {
+it.each([false, true])(
+  'does not quarantine startup or replay before the first prompt (resume=%s)',
+  async (resume) => {
+    const adapter = createFactoryDroidAdapter();
+    const events: ProviderRuntimeEvent[] = [];
+    adapter.subscribe((event) => events.push(event));
+    await adapter.startSession({
+      sessionId: 's',
+      cwd: '/work',
+      runtimeMode: 'full-access',
+      env: {},
+      mcpServers: {},
+      connectorMcpServers: [],
+      ...(resume ? { resume: { nativeSessionId: 'native' } } : {}),
+    });
+    const server = servers.at(-1)!;
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'startup' } },
+    });
+    await adapter.sendTurn({ sessionId: 's', turnId: 'first', text: 'continue' });
+    expect(server.received.filter((message) => message.method === 'session/prompt')).toHaveLength(
+      1
+    );
+    expect(events.filter((event) => event.type === 'runtime.error')).toHaveLength(0);
+    await adapter.stopAll();
+  }
+);
+
+it('fails a queued turn exactly once when the provider disconnects', async () => {
+  const { adapter, events, server } = await withTask();
+  await adapter.sendTurn({ sessionId: 's', turnId: 'second', text: 'continue' });
+  server.kill('SIGKILL');
+  await flush();
+  expect(
+    events.filter((event) => event.type === 'turn.completed' && event.turnId === 'first')
+  ).toMatchObject([{ outcome: 'error' }]);
+  expect(
+    events.filter((event) => event.type === 'turn.completed' && event.turnId === 'second')
+  ).toMatchObject([{ outcome: 'error' }]);
+  expect(server.received.filter((message) => message.method === 'session/prompt')).toHaveLength(1);
+  expect(adapter.hasSession('s')).toBe(false);
+});
+
+async function expectQuarantined(
+  adapter: ReturnType<typeof createAcpAdapter>,
+  events: ProviderRuntimeEvent[],
+  turnId: string
+) {
+  await expect(adapter.sendTurn({ sessionId: 's', turnId, text: 'continue' })).resolves.toEqual({
+    turnId,
+  });
+  expect(
+    events.filter((event) => event.type === 'turn.completed' && event.turnId === turnId)
+  ).toMatchObject([{ outcome: 'error', message: expect.stringContaining('uncertain') }]);
+}
+
+it('quarantines unfinished Tasks before draining the queue and never assigns late text to a new turn', async () => {
   const { adapter, events, server, update, prompt } = await withTask();
+  await adapter.sendTurn({ sessionId: 's', turnId: 'second', text: 'continue' });
   server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
   await flush();
   expect(
     events.find((event) => event.type === 'turn.completed' && event.turnId === 'first')
-  ).toMatchObject({ outcome: 'completed' });
+  ).toMatchObject({ outcome: 'error', message: expect.stringContaining('uncertain') });
+  expect(events.filter((event) => event.type === 'runtime.error')).toMatchObject([
+    { message: expect.stringContaining('Stop this session') },
+  ]);
+  expect(
+    events.filter((event) => event.type === 'turn.completed' && event.turnId === 'second')
+  ).toMatchObject([{ outcome: 'error', message: expect.stringContaining('Further messages') }]);
+  expect(server.received.filter((message) => message.method === 'session/prompt')).toHaveLength(1);
   expect(adapter.hasBackgroundWork('s')).toBe(true);
-  await adapter.sendTurn({ sessionId: 's', turnId: 'second', text: 'continue' });
+  await expectQuarantined(adapter, events, 'third');
   update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'before ' } });
   update({ sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId, status: 'completed' });
   update({ sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId, status: 'completed' });
@@ -139,16 +218,141 @@ it('keeps the originating turn and running assistant text when a subagent finish
     item: { type: 'subagent', status: 'completed' },
   });
   expect(adapter.hasBackgroundWork('s')).toBe(false);
-  const secondPrompt = server.received
-    .filter((message) => message.method === 'session/prompt')
-    .at(-1)!;
-  server.send({ id: secondPrompt.id, result: { stopReason: 'end_turn' } });
+  await expectQuarantined(adapter, events, 'fourth');
+  expect(
+    events.filter((event) => event.type === 'content.delta' && event.turnId !== 'first')
+  ).toHaveLength(0);
+  await adapter.stopAll();
+});
+
+it('quarantines an explicitly background Task, but continues tracking it until completion', async () => {
+  const { adapter, events, server, update, prompt } = await withTask(true, {
+    ...task,
+    rawInput: { ...task.rawInput, run_in_background: true },
+  });
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
   await flush();
   expect(
-    events.filter(
-      (event) => event.type === 'item.completed' && event.item.type === 'assistant_message'
-    )
-  ).toMatchObject([{ turnId: 'second', item: { text: 'before after' } }]);
+    events.find((event) => event.type === 'turn.completed' && event.turnId === 'first')
+  ).toMatchObject({ outcome: 'error', message: expect.stringContaining('uncertain') });
+  expect(adapter.hasBackgroundWork('s')).toBe(true);
+  await expectQuarantined(adapter, events, 'second');
+  update({ sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId, status: 'completed' });
+  expect(adapter.hasBackgroundWork('s')).toBe(false);
+  await adapter.stopAll();
+});
+
+it('quarantines an unfinished tool even when missing metadata prevents Task classification', async () => {
+  const { adapter, events, server, update, prompt } = await withTask(true, {
+    toolCallId: task.toolCallId,
+    kind: 'other',
+    title: 'Task',
+    rawInput: {},
+  });
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  await flush();
+  expect(
+    events.find((event) => event.type === 'turn.completed' && event.turnId === 'first')
+  ).toMatchObject({ outcome: 'error', message: expect.stringContaining('uncertain') });
+  await expectQuarantined(adapter, events, 'second');
+  expect(adapter.hasBackgroundWork('s')).toBe(true);
+  update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late' } });
+  update({ sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId, status: 'completed' });
+  expect(
+    events.find((event) => event.type === 'item.completed' && event.item.id === task.toolCallId)
+  ).toMatchObject({ turnId: 'first', item: { status: 'completed' } });
+  expect(adapter.hasBackgroundWork('s')).toBe(false);
+  expect(events.filter((event) => event.type === 'content.delta')).toHaveLength(0);
+  expect(server.received.filter((message) => message.method === 'session/prompt')).toHaveLength(1);
+  await adapter.stopAll();
+});
+
+it('accepts the next turn when the Task finished before the prompt response', async () => {
+  const { adapter, events, server, update, prompt } = await withTask();
+  update({ sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId, status: 'completed' });
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  await flush();
+  expect(
+    events.find((event) => event.type === 'turn.completed' && event.turnId === 'first')
+  ).toMatchObject({ outcome: 'completed' });
+  await expect(
+    adapter.sendTurn({ sessionId: 's', turnId: 'second', text: 'continue' })
+  ).resolves.toEqual({
+    turnId: 'second',
+  });
+  expect(server.received.filter((message) => message.method === 'session/prompt')).toHaveLength(2);
+  await adapter.stopAll();
+});
+
+it('quarantines when Task completion follows the prompt response in the same read', async () => {
+  const { adapter, events, server, update, prompt } = await withTask();
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  update({ sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId, status: 'completed' });
+  await flush();
+  expect(
+    events.find((event) => event.type === 'turn.completed' && event.turnId === 'first')
+  ).toMatchObject({ outcome: 'error', message: expect.stringContaining('uncertain') });
+  await expectQuarantined(adapter, events, 'second');
+  expect(server.received.filter((message) => message.method === 'session/prompt')).toHaveLength(1);
+  await adapter.stopAll();
+});
+
+it('quarantines a tool that starts and ends after the response in the same read', async () => {
+  const { adapter, events, server, update, prompt } = await withTask(true, null);
+  await adapter.sendTurn({ sessionId: 's', turnId: 'second', text: 'continue' });
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  update({ sessionUpdate: 'tool_call', ...task, status: 'pending' });
+  update({ sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId, status: 'completed' });
+  await flush();
+  expect(
+    events.find((event) => event.type === 'turn.completed' && event.turnId === 'first')
+  ).toMatchObject({ outcome: 'error', message: expect.stringContaining('uncertain') });
+  expect(
+    events.filter((event) => event.type === 'turn.completed' && event.turnId === 'second')
+  ).toMatchObject([{ outcome: 'error' }]);
+  expect(server.received.filter((message) => message.method === 'session/prompt')).toHaveLength(1);
+  await adapter.stopAll();
+});
+
+it('quarantines untagged text received after the response in the same read', async () => {
+  const { adapter, events, server, update, prompt } = await withTask(true, null);
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late' } });
+  await flush();
+  expect(
+    events.find((event) => event.type === 'turn.completed' && event.turnId === 'first')
+  ).toMatchObject({ outcome: 'error', message: expect.stringContaining('uncertain') });
+  await expectQuarantined(adapter, events, 'second');
+  await adapter.stopAll();
+});
+
+it('quarantines late untagged text while idle before accepting another turn', async () => {
+  const { adapter, events, server, update, prompt } = await withTask(true, null);
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  await flush();
+  expect(
+    events.find((event) => event.type === 'turn.completed' && event.turnId === 'first')
+  ).toMatchObject({ outcome: 'completed' });
+  update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late' } });
+  expect(events.filter((event) => event.type === 'runtime.error')).toMatchObject([
+    { message: expect.stringContaining('uncertain') },
+  ]);
+  await expectQuarantined(adapter, events, 'second');
+  expect(server.received.filter((message) => message.method === 'session/prompt')).toHaveLength(1);
+  await adapter.stopAll();
+});
+
+it('leaves opted-out providers able to continue while their tracked background Task runs', async () => {
+  const { adapter, events, server, update, prompt } = await withTask(true, task, false);
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  await flush();
+  expect(
+    events.find((event) => event.type === 'turn.completed' && event.turnId === 'first')
+  ).toMatchObject({ outcome: 'completed' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 'second', text: 'continue' });
+  update({ sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId, status: 'completed' });
+  expect(adapter.hasBackgroundWork('s')).toBe(false);
+  expect(server.received.filter((message) => message.method === 'session/prompt')).toHaveLength(2);
   await adapter.stopAll();
 });
 
@@ -161,7 +365,12 @@ it('fails a pending background subagent once when the session stops', async () =
   expect(adapter.hasBackgroundWork('s')).toBe(false);
   expect(
     events.filter((event) => event.type === 'item.completed' && event.item.id === task.toolCallId)
-  ).toMatchObject([{ turnId: 'first', item: { status: 'failed' } }]);
+  ).toMatchObject([
+    {
+      turnId: 'first',
+      item: { status: 'failed', text: expect.stringContaining('may still be running') },
+    },
+  ]);
 });
 
 it('records a late failed subagent under its original turn while no turn is active', async () => {
@@ -176,7 +385,7 @@ it('records a late failed subagent under its original turn while no turn is acti
   await adapter.stopAll();
 });
 
-it('does not leave a background task running when another pending tool makes the turn fail', async () => {
+it('continues tracking an uncertain Task when another pending tool also makes the turn fail', async () => {
   const { adapter, events, server, update, prompt } = await withTask();
   update({
     sessionUpdate: 'tool_call',
@@ -190,23 +399,30 @@ it('does not leave a background task running when another pending tool makes the
   expect(
     events.find((event) => event.type === 'turn.completed' && event.turnId === 'first')
   ).toMatchObject({ outcome: 'error' });
+  expect(adapter.hasBackgroundWork('s')).toBe(true);
+  update({ sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId, status: 'completed' });
   expect(
     events.find((event) => event.type === 'item.completed' && event.item.id === task.toolCallId)
-  ).toMatchObject({ item: { status: 'failed' } });
+  ).toMatchObject({ turnId: 'first', item: { status: 'completed' } });
+  expect(adapter.hasBackgroundWork('s')).toBe(true);
+  update({ sessionUpdate: 'tool_call_update', toolCallId: 'ordinary', status: 'completed' });
   expect(adapter.hasBackgroundWork('s')).toBe(false);
   await adapter.stopAll();
 });
 
-it('fails an interrupted subagent and ignores its late completion during the next turn', async () => {
+it('quarantines an interrupted turn with an unfinished Task and tracks its late completion', async () => {
   const { adapter, events, server, update, prompt } = await withTask();
   await adapter.interruptTurn('s');
   server.send({ id: prompt.id, result: { stopReason: 'cancelled' } });
   await flush();
-  await adapter.sendTurn({ sessionId: 's', turnId: 'second', text: 'continue' });
+  expect(events.filter((event) => event.type === 'session.state.changed').at(-1)).toMatchObject({
+    status: 'error',
+  });
+  await expectQuarantined(adapter, events, 'second');
   update({ sessionUpdate: 'tool_call_update', toolCallId: task.toolCallId, status: 'completed' });
   expect(
     events.filter((event) => event.type === 'item.completed' && event.item.id === task.toolCallId)
-  ).toMatchObject([{ turnId: 'first', item: { status: 'failed' } }]);
+  ).toMatchObject([{ turnId: 'first', item: { status: 'completed' } }]);
   expect(adapter.hasBackgroundWork('s')).toBe(false);
   await adapter.stopAll();
 });

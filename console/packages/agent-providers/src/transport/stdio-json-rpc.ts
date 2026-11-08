@@ -43,6 +43,8 @@ interface PendingRequest {
   reject: (error: Error) => void;
   method: string;
   timer: ReturnType<typeof setTimeout>;
+  /** Runs synchronously at the wire response, before later notifications. */
+  onResponse?: () => void;
 }
 
 type NotificationHandler = (params: unknown) => void;
@@ -147,7 +149,7 @@ export class StdioJsonRpcClient {
     return !this.exited;
   }
 
-  request<T>(method: string, params: unknown): Promise<T> {
+  request<T>(method: string, params: unknown, onResponse?: () => void): Promise<T> {
     if (this.exited) {
       return Promise.reject(new Error(`provider process is gone; cannot call ${method}`));
     }
@@ -168,6 +170,7 @@ export class StdioJsonRpcClient {
         reject,
         method,
         timer,
+        onResponse,
       });
       try {
         this.write({ jsonrpc: '2.0', id, method, params });
@@ -264,6 +267,12 @@ export class StdioJsonRpcClient {
     if (!pending) return;
     this.pending.delete(id);
     clearTimeout(pending.timer);
+    try {
+      pending.onResponse?.();
+    } catch (error) {
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
     if (message.error) {
       pending.reject(
         new JsonRpcError(message.error.code, message.error.message, message.error.data)
