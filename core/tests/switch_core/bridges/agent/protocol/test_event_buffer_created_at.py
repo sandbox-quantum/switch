@@ -39,23 +39,24 @@ def _message(room: str) -> AgentEvent:
     )
 
 
-async def _until_a_statement_waits_for_a_lock(
-    session_factory: async_sessionmaker[AsyncSession],
+async def _until_a_connection_waits_for_a_lock(
+    session_factory: async_sessionmaker[AsyncSession], pid: int
 ) -> None:
-    """Return once some statement in this database is waiting for a lock."""
+    """Return once the connection with backend `pid` is waiting for a lock."""
     deadline = time.monotonic() + 10
     async with session_factory() as session:
         while time.monotonic() < deadline:
             waiting = await session.scalar(
                 text(
                     "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
-                )
+                    "WHERE pid = :pid AND wait_event_type = 'Lock'"
+                ),
+                {"pid": pid},
             )
             if waiting:
                 return
             await asyncio.sleep(0.01)
-    raise AssertionError("no statement waited for the agent's head row")
+    raise AssertionError("the first transaction never waited for the agent's head row")
 
 
 async def test_a_transaction_that_began_earlier_does_not_make_a_higher_number_older(
@@ -90,10 +91,12 @@ async def test_a_transaction_that_began_earlier_does_not_make_a_higher_number_ol
         first_began = await began_first.scalar(text("SELECT now()"))
         second_began = await began_second.scalar(text("SELECT now()"))
         assert first_began < second_began
+        first_pid = await began_first.scalar(text("SELECT pg_backend_pid()"))
+        assert isinstance(first_pid, int)
 
         lower = await store(began_second, ROOM_B)
         waiting = asyncio.create_task(store(began_first, ROOM_A))
-        await _until_a_statement_waits_for_a_lock(session_factory)
+        await _until_a_connection_waits_for_a_lock(session_factory, first_pid)
         assert not waiting.done()
         await began_second.commit()
         higher = await waiting
