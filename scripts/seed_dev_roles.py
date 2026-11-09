@@ -186,6 +186,15 @@ def seed(operator_email: str, operator_password: str) -> None:
     operator = Client()
     operator.sign_in(operator_email, operator_password)
     operator.call("POST", f"/tenants/{DEFAULT_WORKSPACE_ID}/switch")
+    # Only an org admin may give out organization roles. A new server makes
+    # the gateway admin one when it seeds the account.
+    tenant = operator.call("GET", "/auth/session")["tenant"]
+    if tenant["organization_role"] != "org_admin":
+        sys.exit(
+            f"{operator_email} is not an org admin of the default workspace's "
+            "organization, so it cannot give the test accounts their roles. "
+            "A server started on a new database (`just reset`) makes it one."
+        )
 
     password = saved_password() or secrets.token_hex(16)
     users = {user["email"]: user for user in operator.call("GET", "/users")}
