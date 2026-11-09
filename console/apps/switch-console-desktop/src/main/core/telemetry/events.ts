@@ -546,7 +546,7 @@ export type TelemetryEventMap = {
     agent_type: TelemetryAgentType;
     location: TelemetryLocationKind;
     delete_in_switch: boolean;
-    trigger: TelemetryAgentRemoveTrigger;
+    trigger: TelemetryAgentRemoveTrigger | 'unknown';
     outcome: TelemetryOutcome;
     failure_reason: TelemetryAgentRemoveFailure;
   };
@@ -636,7 +636,7 @@ export type TelemetryEventMap = {
   };
   room_agents_added: {
     agent_count: number;
-    direction: TelemetryRoomAgentsDirection;
+    direction: TelemetryRoomAgentsDirection | 'unknown';
     outcome: TelemetryOutcome;
     failure_reason: TelemetryRoomAgentsAddFailure;
   };

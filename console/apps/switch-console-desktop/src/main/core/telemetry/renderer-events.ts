@@ -89,7 +89,7 @@ const RENDERER_TELEMETRY_SCHEMAS = {
  * What this gate lets through is exactly what the catalogue declares.
  *
  * Comparing `RendererTelemetryEvents` to `TelemetryEventMap` would prove
- * nothing — the catalogue *defines* those eight events as the shared shapes
+ * nothing — the catalogue *defines* those events as the shared shapes
  * (see `./events`), so the two sides are the same type by construction and any
  * such assertion is a tautology. The pair that can genuinely disagree is the
  * schema and the shape: a schema is hand-written, and one that forgets a

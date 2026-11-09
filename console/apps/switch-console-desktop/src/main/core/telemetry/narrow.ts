@@ -62,12 +62,13 @@ export function provisionTriggerOf(value: unknown): SessionProvisionTrigger {
   return oneOf(SESSION_PROVISION_TRIGGERS, value, 'initial');
 }
 
-export function agentRemoveTriggerOf(value: unknown): TelemetryAgentRemoveTrigger {
-  return oneOf(AGENT_REMOVE_TRIGGERS, value, 'user');
+/** `unknown` rather than a cause nobody stated: see `updateTriggerOf`. */
+export function agentRemoveTriggerOf(value: unknown): TelemetryAgentRemoveTrigger | 'unknown' {
+  return oneOf<TelemetryAgentRemoveTrigger | 'unknown'>(AGENT_REMOVE_TRIGGERS, value, 'unknown');
 }
 
-export function roomAgentsDirectionOf(value: unknown): TelemetryRoomAgentsDirection {
-  return oneOf(ROOM_AGENTS_DIRECTIONS, value, 'agents_to_room');
+export function roomAgentsDirectionOf(value: unknown): TelemetryRoomAgentsDirection | 'unknown' {
+  return oneOf<TelemetryRoomAgentsDirection | 'unknown'>(ROOM_AGENTS_DIRECTIONS, value, 'unknown');
 }
 
 /**
