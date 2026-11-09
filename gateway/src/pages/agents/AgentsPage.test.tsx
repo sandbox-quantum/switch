@@ -326,6 +326,20 @@ describe("AgentsPage with hosted agents v2", () => {
     expect(cell.getAttribute("title")).toMatch(/^Back in a moment · Starting your cloud \(last reply .+\)$/);
   });
 
+  it("keeps main's header button with v2 off, and groups it only with v2 on", async () => {
+    vi.mocked(hooks.useHostedV2).mockReturnValue(false);
+    const { unmount } = render(<AgentsPage />);
+    const heading = screen.getByRole("heading", { name: "Agents" });
+    // Main: the button sits straight in the header row, beside the heading.
+    expect(screen.getByRole("button", { name: "Register Agent" }).parentElement).toBe(heading.parentElement);
+    unmount();
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    await screen.findByText("Your cloud");
+    const button = screen.getByRole("button", { name: "Register Agent" });
+    expect(button.parentElement).not.toBe(screen.getByRole("heading", { name: "Agents" }).parentElement);
+  });
+
   it("while the flag is still loading, shows and asks nothing", async () => {
     vi.mocked(hooks.useHostedV2).mockReturnValue(null);
     render(<AgentsPage />);

@@ -129,7 +129,10 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
             disabled={budget !== null || dailyCap}
             // The whole-workspace choice is the empty value, which a select
             // otherwise shows as blank (designer's fix list, item 6).
-            slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
+            // With v2 off, the picker is as on main.
+            slotProps={
+              flags?.hosted_v2 === true ? { select: { displayEmpty: true }, inputLabel: { shrink: true } } : undefined
+            }
             helperText={
               dailyCap
                 ? "The daily AI cap covers every person's agents."

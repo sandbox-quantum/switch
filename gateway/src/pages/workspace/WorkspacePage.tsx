@@ -1,11 +1,14 @@
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useAuth } from "../../data/AuthContext";
+import { useHostedV2 } from "../../data/hooks";
 import { ownsTenant } from "../../data/sessionState";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
 
 export default function WorkspacePage() {
   const { session, canAdminTenant } = useAuth();
+  // With v2 off (or not read yet) the line reads as on main.
+  const hostedV2 = useHostedV2() === true;
   const tenant = session?.tenant;
   if (!tenant) return <CircularProgress />;
   const isOwner = ownsTenant(session);
@@ -15,7 +18,14 @@ export default function WorkspacePage() {
       <Stack spacing={0.5} mb={3}>
         <Typography variant="h5">{tenant.name}</Typography>
         <Typography variant="body2" sx={{ color: "text.secondary" }}>
-          You are {/^[aeiou]/i.test(tenant.role) ? "an" : "a"} {tenant.role} of this workspace.
+          {/* The a/an fix is v2's: with v2 off the line reads as on main. */}
+          {hostedV2 ? (
+            <>
+              You are {/^[aeiou]/i.test(tenant.role) ? "an" : "a"} {tenant.role} of this workspace.
+            </>
+          ) : (
+            <>You are {tenant.role === "admin" ? "an admin" : `a ${tenant.role}`} of this workspace.</>
+          )}
         </Typography>
       </Stack>
       <Stack spacing={4}>

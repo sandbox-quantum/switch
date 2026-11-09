@@ -129,14 +129,25 @@ describe("adding a budget on hosted metrics", () => {
         onSaved={() => {}}
       />,
     );
-    const appliesTo = screen.getByLabelText("Applies to");
-    expect(appliesTo.textContent).toBe("Every agent in the workspace");
+    // The v2 look waits for Core's flags, so give them a moment to arrive.
+    await waitFor(() => expect(screen.getByLabelText("Applies to").textContent).toBe("Every agent in the workspace"));
     expect(screen.getByText("The daily AI cap covers every person's agents.")).toBeTruthy();
+  });
+
+  it("leaves the Applies to picker as on main while hosted agents v2 is off (no raised label)", async () => {
+    const fetchMock = serve({ hosted_v2: false });
+    renderDialog();
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/feature-flags"))).toBe(true));
+    const label = screen.getByText("Applies to", { selector: "label" });
+    // Give the flags read a moment to land, then check nothing changed.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(label.className).not.toMatch(/MuiInputLabel-shrink/);
+    expect(screen.getByLabelText("Applies to").textContent).not.toBe("Every agent in the workspace");
   });
 
   it("shows the whole-workspace choice by default when adding", async () => {
     serve();
     renderDialog();
-    expect(screen.getByLabelText("Applies to").textContent).toBe("Every agent in the workspace");
+    await waitFor(() => expect(screen.getByLabelText("Applies to").textContent).toBe("Every agent in the workspace"));
   });
 });

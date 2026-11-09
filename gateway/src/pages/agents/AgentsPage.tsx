@@ -384,24 +384,35 @@ export default function AgentsPage() {
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
         <Typography variant="h5">Agents</Typography>
-        <Stack direction="row" spacing={1}>
-          {cloudAgents && (
+        {hostedV2 ? (
+          <Stack direction="row" spacing={1}>
+            {cloudAgents && (
+              <Button
+                variant="contained"
+                startIcon={<AddCircleOutline />}
+                onClick={() => setCloudOpen(true)}
+              >
+                Add agent on Switch cloud
+              </Button>
+            )}
             <Button
-              variant="contained"
+              variant={cloudAgents ? "outlined" : "contained"}
               startIcon={<AddCircleOutline />}
-              onClick={() => setCloudOpen(true)}
+              onClick={() => setRegisterOpen(true)}
             >
-              Add agent on Switch cloud
+              Register Agent
             </Button>
-          )}
+          </Stack>
+        ) : (
+          // With v2 off, exactly main's header button.
           <Button
-            variant={cloudAgents ? "outlined" : "contained"}
+            variant="contained"
             startIcon={<AddCircleOutline />}
             onClick={() => setRegisterOpen(true)}
           >
             Register Agent
           </Button>
-        </Stack>
+        )}
       </Stack>
 
       {hostedV2 && cloud.machine && (

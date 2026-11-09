@@ -72,6 +72,22 @@ describe("the Usage page and the hosted agents v2 switch", () => {
     expect(asked(fetchMock, "/hosted-usage")).toBe(true);
   });
 
+  it("wraps the budget type cell only while v2 is on; with v2 off it's main's plain cell", async () => {
+    serve();
+    const { unmount } = render(<UsagePage />);
+    const wrapped = (await screen.findAllByText("Output tokens")).some((node) =>
+      node.classList.contains("MuiTypography-root"),
+    );
+    expect(wrapped).toBe(true);
+    unmount();
+    vi.unstubAllGlobals();
+    hostedV2.value = false;
+    serve();
+    render(<UsagePage />);
+    const cells = await screen.findAllByText("Output tokens");
+    expect(cells.some((node) => node.classList.contains("MuiTypography-root"))).toBe(false);
+  });
+
   for (const [what, value] of [
     ["off", false],
     ["still being read", null],

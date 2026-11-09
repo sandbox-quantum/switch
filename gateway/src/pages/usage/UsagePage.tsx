@@ -137,15 +137,20 @@ function BudgetsSection({ tenantId, hostedV2 }: { tenantId: string; hostedV2: bo
         field: "metric",
         headerName: "Metric",
         width: 170,
-        valueFormatter: (value) => budgetMetricLabel(value),
-        // Wraps rather than cutting off "Daily AI calls per person" (tech lead, on the fix list).
-        renderCell: ({ formattedValue }) => (
-          <Stack justifyContent="center" sx={{ height: "100%" }}>
-            <Typography variant="body2" sx={{ whiteSpace: "normal", lineHeight: 1.3 }}>
-              {formattedValue}
-            </Typography>
-          </Stack>
-        ),
+        // With v2 off, the column is as on main: the plain label, cut off if long.
+        valueFormatter: (value) => (hostedV2 ? budgetMetricLabel(value) : metricLabel(value)),
+        ...(hostedV2
+          ? {
+              // Wraps rather than cutting off "Daily AI calls per person" (tech lead, on the fix list).
+              renderCell: ({ formattedValue }: { formattedValue?: unknown }) => (
+                <Stack justifyContent="center" sx={{ height: "100%" }}>
+                  <Typography variant="body2" sx={{ whiteSpace: "normal", lineHeight: 1.3 }}>
+                    {String(formattedValue ?? "")}
+                  </Typography>
+                </Stack>
+              ),
+            }
+          : {}),
       },
       {
         field: "model",
@@ -224,7 +229,7 @@ function BudgetsSection({ tenantId, hostedV2 }: { tenantId: string; hostedV2: bo
         ),
       },
     ],
-    [openEditor],
+    [openEditor, hostedV2],
   );
 
   return (
@@ -270,7 +275,7 @@ function BudgetsSection({ tenantId, hostedV2 }: { tenantId: string; hostedV2: bo
             </Alert>
           )}
           <DialogContentText>
-            Remove the {deleteTarget ? budgetMetricLabel(deleteTarget.metric).toLowerCase() : ""} budget
+            Remove the {deleteTarget ? (hostedV2 ? budgetMetricLabel : metricLabel)(deleteTarget.metric).toLowerCase() : ""} budget
             for {deleteTarget?.agent_id === null ? "every agent" : deleteTarget?.agent_name}? What
             it covers will no longer be limited.
           </DialogContentText>

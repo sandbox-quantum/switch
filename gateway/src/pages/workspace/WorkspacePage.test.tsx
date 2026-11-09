@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WorkspacePage from "./WorkspacePage";
 
 let role = "owner";
+let hostedV2: boolean | null = false;
+vi.mock("../../data/hooks", () => ({ useHostedV2: () => hostedV2 }));
 vi.mock("../../data/AuthContext", () => ({
   useAuth: () => ({
     session: {
@@ -24,8 +26,20 @@ describe("WorkspacePage", () => {
     ["owner", "You are an owner of this workspace."],
     ["admin", "You are an admin of this workspace."],
     ["member", "You are a member of this workspace."],
-  ])("says the right article for a %s (designer's fix list, item 11)", (r, line) => {
+  ])("with hosted agents v2 on, says the right article for a %s (designer's fix list, item 11)", (r, line) => {
     role = r;
+    hostedV2 = true;
+    render(<WorkspacePage />);
+    expect(screen.getByText(line)).toBeTruthy();
+  });
+
+  it.each([
+    ["owner", "You are a owner of this workspace."],
+    ["admin", "You are an admin of this workspace."],
+    ["member", "You are a member of this workspace."],
+  ])("with v2 off, reads exactly as on main for a %s", (r, line) => {
+    role = r;
+    hostedV2 = false;
     render(<WorkspacePage />);
     expect(screen.getByText(line)).toBeTruthy();
   });
