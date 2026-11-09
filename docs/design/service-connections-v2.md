@@ -653,6 +653,25 @@ with every key, it now signs in instead (see [Datadog](#datadog)), and no
 shipped entry is connected with a key; the key tests run against an entry of
 their own.
 
+### Zendesk
+
+Zendesk's entry is complete but stays off ("Coming soon"): a key entry's
+tools are the vendor's MCP server or command-line tool, Zendesk has neither for
+its Support API, and Switch points no entry at a community server. A person
+types the account's subdomain (one DNS label, the host label of
+`https://{subdomain}.zendesk.com`), their email and an API token; Zendesk takes
+the token as Basic credentials, `{email}/token` and the token.
+
+The identity call is `GET /api/v2/users/me.json`, which answers in three ways
+that matter here, checked against a live Zendesk instance: 401 ("Couldn't
+authenticate you") for a wrong token; 200 with an anonymous user whose `id` is
+null for a call it did not authenticate, which Switch refuses because it names
+no account; and 404 ("No help desk at ...") for a subdomain no account holds.
+A token has no scopes and acts as its user, with that user's role, so there is
+one level. Zendesk is retiring API tokens: none can be made from 2026-10-27,
+and every remaining one stops working on 2027-04-30, so a connection that
+lasts past then needs Zendesk's OAuth.
+
 ## Adding a connector
 
 A connector is a catalog entry and a skill, with no code, when the vendor fits

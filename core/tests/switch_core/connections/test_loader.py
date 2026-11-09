@@ -39,6 +39,8 @@ def test_shipped_catalog_enables_its_live_connectors():
         "notion",
         "sentry",
         "linear",
+        # Signs in with a key, but stays off: Zendesk has no MCP server or CLI.
+        "zendesk",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -1785,6 +1787,32 @@ def test_the_shipped_datadog_entry_signs_in_at_the_site_people_pick():
     assert (access.consent.read, access.consent.write) == ("mcp_read", "mcp_write")
     assert definition.tools is not None and definition.tools.mode == "pass_through"
     assert "SKILL.md" in CATALOG["datadog"].skill_files
+
+
+def test_the_shipped_zendesk_entry_is_off_and_sends_its_token_as_basic():
+    definition = CATALOG["zendesk"].definition
+    # No official MCP server or CLI yet, so it shows as "Coming soon".
+    assert definition.enabled is False
+    assert definition.adapter == "api_key"
+    assert definition.mcp is None and definition.cli is None
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert sign_in.pattern_names() == {"subdomain", "email"}
+    assert sign_in.choice_names() == set()
+    identity = sign_in.identity
+    assert identity.url == "https://{subdomain}.zendesk.com/api/v2/users/me.json"
+    assert url_placements(identity.url) == {"subdomain": {"host"}}
+    assert identity.headers == {}
+    assert identity.basic is not None
+    assert (identity.basic.username, identity.basic.password) == (
+        "{email}/token",
+        "{api_token}",
+    )
+    # The anonymous user Zendesk answers with has a null id: no account.
+    assert (identity.account_id, identity.label) == ("user.id", "user.email")
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.access is None
 
 
 def test_loads_an_api_key_entry(catalog_copy):
