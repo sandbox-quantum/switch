@@ -21,9 +21,10 @@ let pending: Promise<string> | null = null;
  * account, the network, or any Switch identity, and it is never sent anywhere
  * but Amplitude, alongside the events in `./events`.
  *
- * Because it makes the data pseudonymous rather than anonymous, it is the
- * reason consent is opt-in. Deleting the app's data directory produces a new
- * one; there is deliberately no way to correlate the two.
+ * It makes the data pseudonymous rather than anonymous, which is why it is sent
+ * only while sharing is on — on by default, and turned off in the first-run
+ * notice or in Settings (`./consent`). Deleting the app's data directory
+ * produces a new one; there is deliberately no way to correlate the two.
  */
 export async function getInstallId(): Promise<string> {
   pending ??= load().catch((error: unknown) => {

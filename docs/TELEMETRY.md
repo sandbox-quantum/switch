@@ -27,8 +27,9 @@ used*, never *what is done with it*.
 
 ## 2. A real event, in full
 
-This is the complete wire payload for one event — nothing is omitted or
-abbreviated:
+These are all the fields one event carries, flattened out of the OTLP log
+record it travels in (which also repeats the event's name as the record's own
+name and body). Nothing else is sent with it:
 
 ```json
 {
@@ -41,7 +42,7 @@ abbreviated:
     "os.type": "darwin",
     "os.version": "23.6.0"
   },
-  "event.name": "session_started",
+  "event.name": "switch_console.session_started",
   "timeUnixNano": "1789572278158000000",
   "severityText": "INFO",
   "attributes": {
@@ -83,7 +84,7 @@ machine, in what repository, or what the prompt said.
 | `flint.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
 | `flint.insert_id` | a random UUID made for this one event, so that two events alike in every field and sent in the same millisecond are not taken for one. A new one every event; kept nowhere | `9d0c5e7a-41b2-4f3e-8a6d-2b7c1e94f0a3` |
 | `flint.session_id` | which visit to the app the event belongs to: the time, in milliseconds, of the first thing someone did in it. A visit ends after 30 minutes with nothing done, and is kept only in memory. `-1` on the events nobody caused — `session_discovered`, `session_reopened`, `subagent_adopted`, `agent_pruned`, `update_install_started`, `telemetry_consent_changed`, `renderer_crashed` — which neither start nor prolong a visit | `1789571950042`, `-1` |
-| `event.name` | the event | `session_started` |
+| `event.name` | the event, prefixed with the product | `switch_console.session_started` |
 | timestamp | event time | `1789572278158000000` |
 
 That is the entire ambient set. No hostname, no username, no account, no machine
@@ -94,12 +95,12 @@ id, no IP field, no Switch identity.
 | Field | Complete set of possible values |
 |---|---|
 | `outcome` | `success`, `failure` (on `session_ended`, always `normal`; on `update_install_started`, always `failure`; on `bridge_identity_claimed`, also `pending`) |
-| `agent_type` | the AI provider, from a fixed registry: `claude`, `codex`, `gemini`, `cursor`, `copilot`, `opencode`, `grok`, `devin`, `qwen`, `droid`, `amp`, `goose`, `cline`, `continue`, `mistral`, `kiro`, `junie`, … and `unknown`. **Never an agent's name.** |
+| `agent_type` | the AI provider, one of those the app has registered — today `claude`, `codex`, `opencode`, `cursor`, `antigravity` — or `unknown` for any value that is not one of them (on `agent_cli_action` and `host_setup_step`, also a tool that is not an agent's CLI). **Never an agent's name.** |
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
 | `server_kind` | `local`, `remote_managed`, `external`, `cloud` (Switch Cloud, the server this build offers by name), `unknown` (a server added by address while this build's own Switch Cloud address cannot be read). **Never a server name or URL.** |
 | `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
-| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `template`, `switch_buddy`, `unknown` |
-| `target` | `local`, `remote`, `unknown` |
+| `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `machine_page`, `session_list`, `room_row`, `link`, `template`, `switch_buddy`, `unknown` |
+| `target` | `local`, `remote` |
 
 ### 3.3 Every event and its fields
 
@@ -113,7 +114,7 @@ id, no IP field, no Switch identity.
 | `update_download_started` | *(no fields)* — Download was pressed for an available update |
 | `update_downloaded` | `outcome`: `success` / `failure` |
 | `update_install_started` | `outcome`: `failure` — an update install that was started and did not finish (the app never went down for the installer, or came back on the old version). One that worked is the next `app_launched`, with `install_kind` `updated` |
-| `telemetry_consent_changed` | `source`: `first_run` / `settings` · `install_kind`: as on `app_launched`, or `unknown` if the launch could not be recorded |
+| `telemetry_consent_changed` | sharing was turned on · `source`: `first_run` (the first-run notice, which records sharing as on as soon as it is shown) / `settings` (turned on later, in Settings) · `install_kind`: as on `app_launched`, or `unknown` if the launch could not be recorded |
 | `setting_changed` | `setting_key`, one of exactly 10: `localLocation`, `sessions`, `defaultAgent`, `notifications`, `theme`, `openIn`, `interface`, `browserPreview`, `browser`, `changesViewMode`. Sent only when the stored value actually changed. **The new value is never sent** — we learn that someone changed their theme, not to what. |
 | `search_performed` | `status`: `ok` / `recents` / `query-too-short` / `failed` · `result_count`: `0`, `3`, `17`. **The query is never sent.** |
 
@@ -121,7 +122,7 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `view_opened` | a screen someone opened (not the one a launch resumes on) · `view_id`, one of exactly 21: `home`, `location`, `session`, `chat`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `connectors`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `templates`, `templateDetail`, `templateUse`, `templateCapture`, `switchBuddy`, `admin` |
+| `view_opened` | a screen someone opened (not the one a launch resumes on) · `view_id`, one of exactly 24: `home`, `location`, `session`, `chat`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `machine`, `connectors`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `library`, `libraryItem`, `templates`, `templateDetail`, `templateUse`, `templateCapture`, `switchBuddy`, `admin` |
 | `command_executed` | `command_id`, one of exactly 9: `app.settings`, `app.newLocation`, `app.addServer`, `app.toggleTheme`, `app.navigateBack`, `app.navigateForward`, `session.pin`, `session.nextSession`, `session.prevSession` · `invoked_by`: `palette` / `shortcut` |
 | `deeplink_opened` | `resolved`: `true` / `false` · `cold_start`: `true` / `false`. **The URL is never sent.** |
 | `add_server_step` | `step`: `choose` / `managedGitHub` / `managedAgent` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` / `cloud` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
@@ -173,8 +174,8 @@ sign-in records `invalid_credentials` — not the username tried, not the server
 
 | Event | Fields, with example values |
 |---|---|
-| `bridge_connected` | `bridge`: `collaboration` · `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
-| `bridge_disconnected` | `bridge`: `collaboration` · `bridge_platform`: `mattermost` · `outcome` |
+| `bridge_connected` | `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
+| `bridge_disconnected` | `bridge_platform`: `mattermost` · `outcome` |
 | `bridge_identity_claimed` | `bridge_platform` · `outcome`: `success` (linked) / `pending` (waiting for a one-time code to be posted from the account, which is what confirms the link) / `failure` |
 | `bridge_identity_confirmed` | `bridge_platform` · `link_kind`: `new` (a link that was waiting on its code) / `existing` (a link made before links had to be confirmed, which worked all along) / `unknown` — sent when the code is posted and the link confirmed, after asking the server that it is |
 | `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `network` / `forbidden` / `not_found` / `conflict` / `server_error` / `error` · `source`: `dialog` / `template` |
@@ -242,13 +243,17 @@ the instructions; `agent_count` not the agents; `result_count` not the query;
 `setting_key` not the value; `resolved`/`cold_start` not the link;
 `picked_from_ssh_config` not the host.
 
-**Consent.** Opt-out: telemetry is on by default. A non-dismissible notice on
-first run states what is shared and what never is, and carries the off switch;
-the same toggle lives in Settings → General. The setting is re-read before every
-single event rather than cached, so turning it off stops transmission
-immediately, with no further requests and no queued backlog. Dev builds never
-transmit regardless of the setting. Opting out is itself not reported — the one
-thing we do not measure is someone asking not to be measured.
+**Consent.** Opt-out: telemetry is on by default. The first-run welcome page
+carries one line saying that anonymous usage data is shared, with a link to this
+document and a Turn off link beside it; the page that starts a Switch server on
+this machine carries the same switch, and the toggle lives in Settings →
+Preferences. Because the default is on, events are sent from the first launch,
+before anyone has read that line, and the line records sharing as on as soon as
+it is shown. The setting is re-read before every single event rather than
+cached, so turning it off stops transmission immediately, with no further
+requests and no queued backlog. Dev builds never transmit regardless of the
+setting. Opting out is itself not reported — the one thing we do not measure is
+someone asking not to be measured.
 
 ### 4.1 The same answer governs a server the Console runs
 
@@ -418,10 +423,11 @@ this document is verified against the Console source directly.
   workspace and channel names, error text — are precisely the ones replaced by
   enums, counts and booleans. §3 lists every permitted value; none of them is
   user-supplied.
-- **No join key exists.** The only stable value is a locally generated random
+- **No join key exists.** The only lasting value is a locally generated random
   UUID present in no other system (§5).
-- **Field entropy is very low.** Every field is drawn from a short fixed
-  vocabulary — 2 to 30 possible values — so any event is one of a small number of
+- **Field entropy is very low.** Apart from the install id, the event's own
+  random id and the time its visit began (§5), every field is drawn from a short
+  fixed vocabulary — 2 to 30 possible values — so any event is one of a small number of
   shapes. Fingerprinting by field combination fails because the combinations are
   not distinctive.
 - **The IP is controlled at a single point** and is neither logged, forwarded,
