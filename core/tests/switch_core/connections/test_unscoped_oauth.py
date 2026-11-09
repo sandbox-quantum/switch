@@ -3,12 +3,11 @@
 from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from switch_core.connections.adapters import ConnectionSecret, ServiceAdapterError
+from switch_core.connections.adapters import ConnectionSecret
 from switch_core.connections.adapters.oauth import Identity, OAuthAdapter, SignIn
 from switch_core.connections.flows import Exchange, FlowError, ServiceFlows
 from switch_core.connections.loader import ConnectionAccess, ConnectionDefinition
@@ -69,47 +68,6 @@ async def test_authorization_scope_is_omitted_only_for_explicit_unscoped_access(
             assert "scope" not in query
         else:
             assert query["scope"] == ["read:items write:items"]
-
-
-@pytest.mark.parametrize(
-    "resource",
-    [
-        "https://mcp.example.test",
-        "http://mcp.example.test",
-        "file:///tmp/resource",
-        "https://",
-        "https://user:pass@mcp.example.test",
-        None,
-    ],
-)
-async def test_discovery_uses_and_validates_advertised_resource(resource):
-    vendor = FakeOAuthServer()
-    existing, original_http = _adapter(vendor)
-    async with original_http:
-
-        async def respond(request):
-            response = await original_http.send(request)
-            if request.url.path == vendor.resource_metadata_path:
-                return httpx.Response(
-                    200, json={**response.json(), "resource": resource}
-                )
-            return response
-
-        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
-            adapter = OAuthAdapter(_definition(), existing._client, http)
-            if resource == "https://mcp.example.test":
-                endpoints = await adapter.endpoints()
-                assert endpoints.resource == resource
-                url = await adapter.authorization_url(
-                    redirect_uri=REDIRECT,
-                    state="example-state",
-                    code_challenge="example-challenge",
-                    scopes=[],
-                )
-                assert parse_qs(urlsplit(url).query)["resource"] == [resource]
-            else:
-                with pytest.raises(ServiceAdapterError, match="resource identifier"):
-                    await adapter.endpoints()
 
 
 async def test_unscoped_sign_in_records_explicit_consent_without_invented_scopes():

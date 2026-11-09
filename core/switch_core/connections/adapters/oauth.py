@@ -92,9 +92,9 @@ class AuthorizationEndpoints:
     registration: str | None
     # Where a sign-in is revoked (RFC 7009), as the metadata advertises it.
     revocation: str | None
-    # The MCP server the endpoints were discovered from, named as the
-    # `resource` of every authorization and token request (RFC 8707). None
-    # where the catalog names the endpoints.
+    # The resource the MCP server's metadata names (its URL where it names
+    # none), sent as the `resource` of every authorization and token request
+    # (RFC 8707). None where the catalog names the endpoints.
     resource: str | None
     client_authentication: ClientAuthentication
 
@@ -187,6 +187,26 @@ def _https(url: object, what: str) -> str:
         raise ServiceAdapterError(f"The vendor's {what} is not an https URL.")
     assert isinstance(url, str)
     return url
+
+
+def _resource_covers(resource: str, url: str) -> bool:
+    """Whether `resource` is the MCP server at `url` or a parent path of it
+    on the same origin.
+
+    RFC 9728 §3.3 wants an exact match for metadata found through
+    WWW-Authenticate, but Airtable advertises its origin for its `/mcp`
+    server. So this takes the MCP Python SDK's rule: same origin, and a path
+    prefix on a segment boundary. A live test on 2026-11-09 showed that
+    Airtable ignores `resource`, so the origin works for it.
+    """
+    advertised = urlsplit(resource)
+    server = urlsplit(url)
+    if (advertised.scheme.lower(), advertised.netloc.lower()) != (
+        server.scheme.lower(),
+        server.netloc.lower(),
+    ):
+        return False
+    return f"{server.path.rstrip('/')}/".startswith(f"{advertised.path.rstrip('/')}/")
 
 
 def _mcp_http_client(
@@ -325,6 +345,13 @@ class OAuthAdapter:
             ],
             "protected resource metadata",
         )
+        # Checked before its authorization servers are trusted: metadata for
+        # another server names that server's.
+        advertised = _https(resource.get("resource", mcp_url), "resource identifier")
+        if not _resource_covers(advertised, mcp_url):
+            raise ServiceAdapterError(
+                f"{self._name}'s MCP server names another server as its resource."
+            )
         servers = resource.get("authorization_servers")
         if not isinstance(servers, list) or not servers:
             raise ServiceAdapterError(
@@ -380,7 +407,7 @@ class OAuthAdapter:
                 if revocation is None
                 else _https(revocation, "revocation endpoint")
             ),
-            resource=_https(resource.get("resource", mcp_url), "resource identifier"),
+            resource=advertised,
             client_authentication=(
                 "client_secret_basic" if basic_only else "client_secret_post"
             ),
