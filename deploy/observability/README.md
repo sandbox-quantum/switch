@@ -51,6 +51,10 @@ it (`switch.bridges.crashed`), and "the morning report didn't post" fires when
 the 09:00 report has been silent for 25 hours, so a quiet channel can be
 trusted.
 
+Priority follows what a user loses: P1 when Switch is down or messages are
+lost, P2 when some people or one platform are affected, P3 when it is slow but
+nothing is lost, P4 when only our own visibility is.
+
 What isn't urgent stays out of them on purpose. Causes (slow queries, CPU,
 garbage collection) belong on the dashboards, and a monitor that fires without
 anyone needing to act teaches people to skim the channel. If one fires and the

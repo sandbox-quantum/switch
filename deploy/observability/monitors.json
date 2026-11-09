@@ -20,7 +20,7 @@
       },
       "no_data_timeframe": 15
     },
-    "priority": 2
+    "priority": 1
   },
   {
     "name": "[Switch] the database is unreachable",
@@ -42,7 +42,7 @@
         "critical": 1
       }
     },
-    "priority": 2
+    "priority": 1
   },
   {
     "name": "[Switch] the database is refusing connections",
@@ -108,7 +108,7 @@
         "critical": 1
       }
     },
-    "priority": 2
+    "priority": 1
   },
   {
     "name": "[Switch] messages are failing to deliver",
@@ -152,7 +152,7 @@
         "critical": 5
       }
     },
-    "priority": 2
+    "priority": 1
   },
   {
     "name": "[Switch] a messaging app bridge is down",
@@ -240,7 +240,7 @@
         "critical": 2000
       }
     },
-    "priority": 2
+    "priority": 3
   },
   {
     "name": "[Switch] messages are arriving late",
@@ -262,7 +262,7 @@
         "critical": 10000
       }
     },
-    "priority": 2
+    "priority": 3
   },
   {
     "name": "[Switch] the server is stalling",
@@ -284,7 +284,7 @@
         "critical": 1000
       }
     },
-    "priority": 2
+    "priority": 3
   },
   {
     "name": "[Switch] agent connections are dropping en masse",
@@ -329,6 +329,6 @@
         "critical": 1
       }
     },
-    "priority": 3
+    "priority": 4
   }
 ]
