@@ -67,6 +67,9 @@ describe("DataTable toolbar", () => {
 
     expect(getComputedStyle(grid).height).toBe("320px");
     expect(getComputedStyle(grid.parentElement!).display).not.toBe("flex");
+    // The height is the content's, as pages size a table to its rows; the
+    // border goes outside it.
+    expect(getComputedStyle(grid).boxSizing).toBe("content-box");
   });
 
   it("gives the header an opaque fill, so rows scrolling under it are hidden", () => {

@@ -45,7 +45,9 @@ export function filterOptions<T>(column: FilterableColumn<T>, rows: readonly T[]
   if (!filter) throw new Error(`column "${column.field}" has no filter`);
   if (filter.options) return [...filter.options];
   const distinct = new Set(rows.flatMap((row) => valuesOf(filter, row)));
-  return [...distinct].sort((a, b) => a.localeCompare(b)).map((value) => ({ value, label: value }));
+  return [...distinct]
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    .map((value) => ({ value, label: value }));
 }
 
 /** The rows that pass the search and every column's picked values. */

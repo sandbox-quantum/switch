@@ -29,7 +29,7 @@ import {
   ToggleButton,
   Typography,
 } from "@mui/material";
-import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useId, useMemo, useState } from "react";
 import {
   applyFilters,
   type ColumnFilter,
@@ -90,6 +90,12 @@ interface DataTableProps<T extends { id: string | number }> {
   emptyState?: ReactNode;
 }
 
+/** A hovered or selected row is a lighter wash than Hoot's muted fill, which
+ *  is also a grey chip's, so a chip in the row keeps its edge. Opaque, so a
+ *  pinned cell can take it too. */
+const ROW_HOVER = "color-mix(in oklch, var(--hoot-muted) 50%, var(--hoot-card))";
+const ROW_SELECTED = "color-mix(in oklch, var(--hoot-muted) 75%, var(--hoot-card))";
+
 /** Hoot's grid treatment: a bordered 16px-radius surface with a cream header
  *  band, generous 52px rows, and tabular figures so numeric columns line up.
  *  Ported from the Hoot design system's DataTable. */
@@ -114,11 +120,16 @@ const HOOT_GRID_SX: SxProps<Theme> = {
     letterSpacing: "-0.01em",
   },
   "& .MuiDataGrid-columnHeaderTitle": { fontWeight: 500, opacity: 0.7 },
+  // The sort and menu buttons paint the grid's own header fill, which shows
+  // as a solid square on the cream band.
+  "& .MuiDataGrid-sortButton:not(:hover), & .MuiDataGrid-menuIconButton:not(:hover)": {
+    backgroundColor: "transparent",
+  },
   "& .MuiDataGrid-row": { minHeight: "52px !important" },
-  "& .MuiDataGrid-row:hover": { backgroundColor: "var(--hoot-accent)" },
+  "& .MuiDataGrid-row:hover": { backgroundColor: ROW_HOVER },
   "& .MuiDataGrid-row.Mui-selected": {
-    backgroundColor: "var(--hoot-muted)",
-    "&:hover": { backgroundColor: "var(--hoot-muted)" },
+    backgroundColor: ROW_SELECTED,
+    "&:hover": { backgroundColor: ROW_SELECTED },
   },
   "& .MuiDataGrid-cell": {
     minHeight: 52,
@@ -128,7 +139,10 @@ const HOOT_GRID_SX: SxProps<Theme> = {
   },
   "& .MuiDataGrid-footerContainer": {
     backgroundColor: "var(--hoot-cream)",
-    borderTopColor: "var(--hoot-border)",
+    // The hairline is drawn inside the footer, so it stays the 52px pages
+    // count rather than 52px plus a border.
+    borderTop: "none",
+    boxShadow: "inset 0 1px 0 var(--hoot-border)",
     borderBottomLeftRadius: "16px",
     borderBottomRightRadius: "16px",
   },
@@ -142,11 +156,14 @@ const HOOT_GRID_SX: SxProps<Theme> = {
   },
 };
 
-/** A table that filters its own rows keeps each header's menu button in view,
- *  faintly, since that menu is where its columns are filtered. */
+const FILTERABLE = "hoot-filterable";
+
+/** A table that filters its own rows keeps a filterable column's menu button
+ *  in view, faintly, since that menu is where the column is filtered. Other
+ *  columns show theirs on hover, as the grid does. */
 const OWN_FILTERING_SX: SxProps<Theme> = {
-  "& .MuiDataGrid-menuIcon": { visibility: "visible", width: "auto", opacity: 0.5 },
-  "& .MuiDataGrid-columnHeader:hover .MuiDataGrid-menuIcon": { opacity: 1 },
+  [`& .${FILTERABLE} .MuiDataGrid-menuIcon`]: { visibility: "visible", width: "auto", opacity: 0.5 },
+  [`& .${FILTERABLE}:hover .MuiDataGrid-menuIcon`]: { opacity: 1 },
 };
 
 /** The least a table with no rows to show is given: its header, two rows
@@ -156,6 +173,11 @@ const OWN_FILTERING_SX: SxProps<Theme> = {
 const EMPTY_TABLE_HEIGHT = 56 + 2 * 52 + 52;
 
 const PINNED = "hoot-pinned-right";
+
+/** The default for `pinnedRight`, kept stable: a fresh `[]` on every render
+ *  would rebuild the grid's columns, and the grid would rebuild its whole
+ *  column model, on each keystroke in the search box. */
+const NOT_PINNED: string[] = [];
 
 /** The free grid has no column pinning, so a pinned column is a sticky one:
  *  the scrolling columns pass under it, which needs an opaque fill that
@@ -172,8 +194,8 @@ const PINNED_SX: SxProps<Theme> = {
   [`& .MuiDataGrid-columnHeader.${PINNED}`]: {
     background: "linear-gradient(var(--hoot-cream), var(--hoot-cream)), var(--hoot-card)",
   },
-  [`& .MuiDataGrid-row:hover .${PINNED}`]: { backgroundColor: "var(--hoot-accent)" },
-  [`& .MuiDataGrid-row.Mui-selected .${PINNED}`]: { backgroundColor: "var(--hoot-muted)" },
+  [`& .MuiDataGrid-row:hover .${PINNED}`]: { backgroundColor: ROW_HOVER },
+  [`& .MuiDataGrid-row.Mui-selected .${PINNED}`]: { backgroundColor: ROW_SELECTED },
 };
 
 const appendClass = <T extends GridValidRowModel>(
@@ -194,7 +216,7 @@ function gridColumns<T extends GridValidRowModel>(
   columns: TableColumn<T>[],
   pinnedRight: string[],
   ownFiltering: boolean,
-): { columns: GridColDef<T>[]; offsets: Record<string, number> } {
+): { columns: GridColDef<T>[]; offsets: Record<string, number>; pinnedWidth: number } {
   const byField = new Map(columns.map((column) => [column.field, column]));
   const pinned = pinnedRight.map((field) => {
     const column = byField.get(field);
@@ -211,12 +233,21 @@ function gridColumns<T extends GridValidRowModel>(
   }
 
   const toGrid = ({ filter, ...column }: TableColumn<T>): GridColDef<T> => {
-    const base = (ownFiltering ? { ...column, filterable: Boolean(filter) } : column) as GridColDef<T>;
+    const base = (
+      ownFiltering
+        ? {
+            ...column,
+            filterable: Boolean(filter),
+            ...(filter && { headerClassName: appendClass(column.headerClassName, FILTERABLE) }),
+          }
+        : column
+    ) as GridColDef<T>;
     if (!(column.field in offsets)) return base;
     return {
       ...base,
       resizable: false,
-      headerClassName: appendClass(column.headerClassName, PINNED),
+      hideable: false,
+      headerClassName: appendClass(base.headerClassName, PINNED),
       cellClassName: appendClass(column.cellClassName, PINNED),
     } as GridColDef<T>;
   };
@@ -224,6 +255,7 @@ function gridColumns<T extends GridValidRowModel>(
   return {
     columns: [...columns.filter((column) => !(column.field in offsets)), ...pinned].map(toGrid),
     offsets,
+    pinnedWidth: right,
   };
 }
 
@@ -283,7 +315,7 @@ export default function DataTable<T extends { id: string | number }>({
   noun,
   search,
   quickFilters = [],
-  pinnedRight = [],
+  pinnedRight = NOT_PINNED,
   emptyState,
 }: DataTableProps<T>) {
   const apiRef = useGridApiRef();
@@ -369,6 +401,25 @@ export default function DataTable<T extends { id: string | number }>({
   const pinnedSx = pinnedRight.length > 0 ? [PINNED_SX, pinnedOffsetsSx(grid.offsets)] : [];
   const extraSx = Array.isArray(sx) ? sx : sx ? [sx] : [];
 
+  // The grid scrolls a focused cell to the edge of its viewport, which a
+  // pinned column covers, so a cell reached by keyboard would sit under it.
+  // Scroll it the rest of the way out from under the pinned columns.
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!api || grid.pinnedWidth === 0) return;
+    return api.subscribeEvent("cellFocusIn", ({ id, field }) => {
+      if (field in grid.offsets) return;
+      requestAnimationFrame(() => {
+        const cell = api.getCellElement(id, field);
+        const scroller = cell?.closest(".MuiDataGrid-virtualScroller");
+        if (!cell || !scroller) return;
+        const visibleRight = scroller.getBoundingClientRect().left + scroller.clientWidth - grid.pinnedWidth;
+        const hidden = cell.getBoundingClientRect().right - visibleRight;
+        if (hidden > 0) scroller.scrollLeft += hidden;
+      });
+    });
+  }, [apiRef, grid]);
+
   const table = (
     <DataGrid
       apiRef={apiRef}
@@ -390,21 +441,34 @@ export default function DataTable<T extends { id: string | number }>({
       }
       onRowClick={onRowClick}
       disableRowSelectionOnClick
-      // A sticky column only sticks while it is rendered, so with one pinned
-      // every column renders rather than only those scrolled into view. Fine
-      // for the tables that pin their actions; costly for a very wide one.
-      columnBufferPx={pinnedRight.length > 0 ? 1_000_000 : undefined}
+      // A sticky column only sticks while it is rendered, and the grid drops
+      // a column once it scrolls out of view, so with one pinned every cell
+      // renders. A page holds at most 50 rows, so that stays cheap.
+      disableVirtualization={pinnedRight.length > 0}
       disableColumnFilter={ownFiltering}
       slots={tableOverlay ? { noRowsOverlay: TableOverlay } : undefined}
       slotProps={{
         ...(tableOverlay && { noRowsOverlay: { tableEmpty: empty } }),
         ...(ownFiltering && { columnMenu: TABLE_COLUMN_MENU }),
+        // A pinned column is the row's actions, not a column to hide.
+        columnsManagement: {
+          getTogglableColumns: (all: GridColDef[]) =>
+            all.filter((column) => !(column.field in grid.offsets)).map((column) => column.field),
+        },
       }}
       sx={[
         HOOT_GRID_SX,
         ...(ownFiltering ? [OWN_FILTERING_SX] : []),
         ...pinnedSx,
-        { height: fillHeight ? "100%" : shown.length === 0 ? Math.max(height, EMPTY_TABLE_HEIGHT) : height },
+        fillHeight
+          ? { height: "100%" }
+          : {
+              // A fixed `height` is the table's content: header, rows and
+              // footer, as pages size a table to its rows. The border goes
+              // outside it, or each such table would be 2px short and scroll.
+              boxSizing: "content-box",
+              height: shown.length === 0 ? Math.max(height, EMPTY_TABLE_HEIGHT) : height,
+            },
         ...extraSx,
       ]}
     />
@@ -479,7 +543,11 @@ export default function DataTable<T extends { id: string | number }>({
           onClose={() => setPicker(null)}
           anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
           slotProps={{
-            paper: { role: "dialog", "aria-labelledby": filterHeadingId, sx: { p: 1.5, minWidth: 220, maxHeight: 360 } },
+            paper: {
+              role: "dialog",
+              "aria-labelledby": filterHeadingId,
+              sx: { p: 1.5, minWidth: 220, maxWidth: 320, maxHeight: 360 },
+            },
           }}
         >
           <Typography id={filterHeadingId} variant="overline" color="text.secondary" component="p" sx={{ px: 1 }}>
@@ -499,7 +567,11 @@ export default function DataTable<T extends { id: string | number }>({
                     }
                   />
                 }
-                label={<Typography variant="body2">{option.label}</Typography>}
+                label={
+                  <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+                    {option.label}
+                  </Typography>
+                }
               />
             ))}
           </Stack>

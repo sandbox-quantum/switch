@@ -58,6 +58,13 @@ describe("filterOptions", () => {
     ]);
   });
 
+  it("sorts numbers within values as numbers", () => {
+    const column = { field: "device", filter: { value: (row: { device: string }) => row.device } };
+    const devices = ["box-10", "box-2", "box-1"].map((device) => ({ device }));
+
+    expect(filterOptions(column, devices).map((option) => option.value)).toEqual(["box-1", "box-2", "box-10"]);
+  });
+
   it("keeps the column's own options and their order", () => {
     const column: FilterableColumn<Row> = {
       field: "status",
