@@ -137,6 +137,8 @@ async function start(
     /** The provider reports work, such as subagents, still running outside any turn. */
     backgroundWork?: { running: boolean };
     resettable?: boolean;
+    /** The provider compacts its conversation natively. */
+    compactable?: boolean;
     /**
      * Stopping a conversation reports it stopped and exited, as every provider
      * adapter does, and returns only after the host has had time to look.
@@ -273,6 +275,7 @@ async function start(
       };
     },
   };
+  if (opts.compactable) adapter.compactSession = vi.fn(async () => {});
   const continuing = opts.continuing;
   if (continuing) adapter.conversationHistory = vi.fn(async () => structuredClone(continuing));
   if (opts.conversationLost)
@@ -1071,6 +1074,36 @@ it('owes no follow-up for a reset asked for in a direct chat', async () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(host.turns).toHaveLength(0);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('still owes the follow-up for a compaction asked for in a direct chat', async () => {
+  const host = await start({ compactable: true });
+  try {
+    const compact: Command = {
+      ...relayed('current', 'room-compact', { type: 'session.compact' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'console',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: compact,
+      requesterName: 'louisa',
+      direct: true,
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-compact', status: 'applied' },
+    });
+    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
   } finally {
     expect(await host.stop()).toBeNull();
   }

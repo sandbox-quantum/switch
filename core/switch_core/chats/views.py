@@ -349,11 +349,16 @@ def _command_text(message: Message) -> str:
         return ""
     command = message.content.get("command")
     args = message.content.get("args")
-    target = args.split()[0] if isinstance(args, str) and args.split() else ""
+    text_args = args if isinstance(args, str) else ""
+    target = text_args.split()[0] if text_args.split() else ""
     line = _COMMAND_LINES.get(command) if isinstance(command, str) else None
-    if line is None or not target.startswith("@"):
+    if line is not None and target.startswith("@"):
+        text = line.format(agent=target[1:])
+    elif line is not None and "@" not in text_args:
+        # Without an `@` the command addresses every agent in the room.
+        text = line.format(agent="everyone")
+    else:
         return f"!{command} {args}".strip() if args else f"!{command}"
-    text = line.format(agent=target[1:])
     return f"{text} by {message.sender_name}" if message.sender_name else text
 
 

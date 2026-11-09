@@ -588,7 +588,7 @@ export async function runSharedHost(
       direct: boolean
     ): Followup | null => {
       // A direct chat's reset is meant to forget the conversation; its placement survives, so nothing is owed.
-      if (direct) return null;
+      if (direct && command.body.type === 'session.reset') return null;
       const action =
         command.body.type === 'session.reset'
           ? 'reset'

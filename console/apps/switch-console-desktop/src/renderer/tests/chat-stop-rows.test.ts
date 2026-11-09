@@ -28,6 +28,15 @@ describe('hiddenStopRows', () => {
     expect(hiddenStopRows(messages)).toEqual(new Set(['$stop', '$ack']));
   });
 
+  it('hides a Stop asked of everyone and each acknowledgement', () => {
+    const messages = [
+      row('$stop', 'Stop requested for everyone by ana', system),
+      row('$ack1', 'Interrupted my current turn.', agent, '$stop'),
+      row('$ack2', 'Interrupted my current turn.', agent, '$stop'),
+    ];
+    expect(hiddenStopRows(messages)).toEqual(new Set(['$stop', '$ack1', '$ack2']));
+  });
+
   it('hides a Stop still waiting for its answer', () => {
     expect(hiddenStopRows([row('$stop', 'Stop requested for coder by ana', system)])).toEqual(
       new Set(['$stop'])
