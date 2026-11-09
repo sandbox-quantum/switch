@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `qwen` | `qwen --acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model catalogue, stdio and HTTP MCP registration, approvals and questions, on whichever model provider the owner signed Qwen Code in to. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -68,11 +69,12 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| qwen (ACP) | 0.26.9 | not recorded | No model provider key was available (checked 2026-11-07), so no real-model turn ran; the 10 scenarios skip with that reason. Set `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` in the shell to run the suite; the test passes them through. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and Qwen Code run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -102,6 +104,25 @@ naming a permanent or future policy are never offered.
 `update_todos`, `task` and `generate_image`, each with and without the ACP `_`
 prefix. The CLI and default model used for verification did not expose its
 AskQuestion tool, so `user-input` is skipped in its conformance run.
+
+**Qwen Code** runs `qwen --acp` on the model provider it is signed in to
+(`/auth`, or `OPENAI_API_KEY` with `OPENAI_BASE_URL` and `OPENAI_MODEL`); its
+`initialize` lists the same `openai` sign-in method whether or not one is set,
+so the sign-in check starts a session, which it refuses with `Authentication
+required` when signed out, and never calls `authenticate`. A session is
+stored only once it has had a prompt, so the check leaves nothing behind. A new
+session starts in `auto`, where Qwen's own classifier approves actions, so
+every session is put in `default`, `auto-edit`, `auto` or `yolo` for its
+runtime mode, and one whose mode Qwen does not offer is refused. Qwen reaches
+the session's MCP servers through `tool_search` and `tool_call`: the server is
+read from the `mcp__<server>__<tool>` name of a permission request, and from
+`serverId` in the last update. Its `agent` tool is typed as a subagent from the
+update that names it. A question arrives as a permission request tagged
+`qwenInteractionKind: user_question` and is answered next to the outcome as
+`answers`, keyed by question number. "Always Allow in project" and "Always
+Allow for user" write a permanent rule to `.qwen/settings.json`, so the
+`permission` hook offers only Allow and Reject (and "Allow All Edits", which
+lasts for the session).
 
 **Antigravity** runs Google's `agy` as `agy acp`, with the user's own profile
 and sign-in (the OS keychain), so the launch sets nothing up. `agy` signs
