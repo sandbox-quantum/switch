@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { h } = vi.hoisted(() => ({
   h: {
     trackEvent: vi.fn(),
+    trackBackgroundEvent: vi.fn(),
     launchInstallKind: vi.fn(),
     get: vi.fn(),
     getWithMeta: vi.fn(),
@@ -17,7 +18,10 @@ const { h } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEvent }));
+vi.mock('@main/core/telemetry/telemetry-service', () => ({
+  trackEvent: h.trackEvent,
+  trackBackgroundEvent: h.trackBackgroundEvent,
+}));
 vi.mock('@main/core/telemetry/launch-history', () => ({
   launchInstallKind: h.launchInstallKind,
 }));
@@ -167,14 +171,16 @@ describe('putting a setting back to its default', () => {
 });
 
 describe('agreeing to share usage data', () => {
-  it('reports an agreement given at the first-run prompt', async () => {
+  it('reports an agreement given at the first-run prompt, as nobody using the app', async () => {
     await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
     await settled();
 
-    expect(h.trackEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
+    // The notice records it as it is shown, so it is in no session.
+    expect(h.trackBackgroundEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
       source: 'first_run',
       install_kind: 'new',
     });
+    expect(h.trackEvent).not.toHaveBeenCalledWith('telemetry_consent_changed', expect.anything());
   });
 
   it('reports one given later, in settings, as that', async () => {
@@ -187,6 +193,7 @@ describe('agreeing to share usage data', () => {
       source: 'settings',
       install_kind: 'new',
     });
+    expect(h.trackBackgroundEvent).not.toHaveBeenCalled();
   });
 
   it('says nothing when someone declines', async () => {
@@ -196,7 +203,9 @@ describe('agreeing to share usage data', () => {
     await appSettingsController.update('telemetry', { enabled: false, askedAt: 1 } as never);
     await settled();
 
-    const names = h.trackEvent.mock.calls.map(([name]) => name);
+    const names = [...h.trackEvent.mock.calls, ...h.trackBackgroundEvent.mock.calls].map(
+      ([name]) => name
+    );
     expect(names).not.toContain('telemetry_consent_changed');
   });
 
@@ -206,7 +215,9 @@ describe('agreeing to share usage data', () => {
     await appSettingsController.update('telemetry', { enabled: false, askedAt: 1 } as never);
     await settled();
 
-    const names = h.trackEvent.mock.calls.map(([name]) => name);
+    const names = [...h.trackEvent.mock.calls, ...h.trackBackgroundEvent.mock.calls].map(
+      ([name]) => name
+    );
     expect(names).not.toContain('telemetry_consent_changed');
   });
 
@@ -218,14 +229,16 @@ describe('agreeing to share usage data', () => {
     await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
     await settled();
 
-    const names = h.trackEvent.mock.calls.map(([name]) => name);
+    const names = [...h.trackEvent.mock.calls, ...h.trackBackgroundEvent.mock.calls].map(
+      ([name]) => name
+    );
     expect(names).not.toContain('telemetry_consent_changed');
   });
 
   it('writes the setting before reporting, since the gate is read on the way out', async () => {
     const order: string[] = [];
     h.update.mockImplementation(async () => void order.push('write'));
-    h.trackEvent.mockImplementation((name: string) => {
+    h.trackBackgroundEvent.mockImplementation((name: string) => {
       if (name === 'telemetry_consent_changed') order.push('report');
     });
 
@@ -246,6 +259,7 @@ describe('agreeing to share usage data', () => {
 
     expect(h.update).toHaveBeenCalledTimes(2);
     expect(h.trackEvent).not.toHaveBeenCalled();
+    expect(h.trackBackgroundEvent).not.toHaveBeenCalled();
   });
 
   it('waits for the launch kind when the first-run notice is answered before boot records it', async () => {
@@ -259,14 +273,12 @@ describe('agreeing to share usage data', () => {
     await settled();
 
     expect(h.update).toHaveBeenCalled();
-    expect(h.trackEvent.mock.calls.map(([name]) => name)).not.toContain(
-      'telemetry_consent_changed'
-    );
+    expect(h.trackBackgroundEvent).not.toHaveBeenCalled();
 
     recorded('new');
     await settled();
 
-    expect(h.trackEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
+    expect(h.trackBackgroundEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
       source: 'first_run',
       install_kind: 'new',
     });
@@ -278,7 +290,7 @@ describe('agreeing to share usage data', () => {
     await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
     await settled();
 
-    expect(h.trackEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
+    expect(h.trackBackgroundEvent).toHaveBeenCalledWith('telemetry_consent_changed', {
       source: 'first_run',
       install_kind: 'unknown',
     });

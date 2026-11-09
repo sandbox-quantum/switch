@@ -758,13 +758,13 @@ export type TelemetryEventName = keyof TelemetryEventMap;
 
 /**
  * The events that are not someone using the app: the app noticing, retrying or
- * tidying up on its own, an update that did not install, a screen that failed,
- * and the usage-data answer, which the first-run notice records by itself.
- * Amplitude counts activity per event name, and these are the names to count
- * as inactive. They carry no session (`flint.session_id` is -1, `./session`)
- * and never start or prolong one. One occurrence of another event that nobody
- * caused, such as a session ending because a pass pruned its agent, is sent
- * the same way with `trackBackgroundEvent`.
+ * tidying up on its own, an update that did not install, and a screen that
+ * failed. Amplitude counts activity per event name, and these are the names to
+ * count as inactive. They carry no session (`flint.session_id` is -1,
+ * `./session`) and never start or prolong one. One occurrence of another event
+ * that nobody caused is sent the same way with `trackBackgroundEvent`: a
+ * session ending because a pass pruned its agent, or the usage-data answer the
+ * first-run notice records by itself.
  */
 export const BACKGROUND_EVENTS: ReadonlySet<TelemetryEventName> = new Set<TelemetryEventName>([
   'session_discovered',
@@ -773,7 +773,6 @@ export const BACKGROUND_EVENTS: ReadonlySet<TelemetryEventName> = new Set<Teleme
   'agent_pruned',
   'update_checked',
   'update_install_started',
-  'telemetry_consent_changed',
   'renderer_crashed',
 ]);
 

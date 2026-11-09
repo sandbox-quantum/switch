@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { TelemetrySettingKey } from '@main/core/telemetry/events';
 import { launchInstallKind } from '@main/core/telemetry/launch-history';
-import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { trackBackgroundEvent, trackEvent } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import type { TelemetrySettings } from '@shared/core/app-settings';
 import { createRPCController } from '@shared/lib/ipc/rpc';
@@ -27,8 +27,17 @@ async function reportConsent(previous: TelemetrySettings, next: TelemetrySetting
   if (!next.enabled || next.askedAt === null) return;
   if (previous.enabled && previous.askedAt !== null) return;
 
-  const source = previous.askedAt === null ? 'first_run' : 'settings';
-  trackEvent('telemetry_consent_changed', { source, install_kind: await launchInstallKind() });
+  const properties = {
+    source: previous.askedAt === null ? ('first_run' as const) : ('settings' as const),
+    install_kind: await launchInstallKind(),
+  };
+  // The first-run notice records the answer as it is shown, which nobody did;
+  // turning sharing on in Settings is someone using the app.
+  if (properties.source === 'first_run') {
+    trackBackgroundEvent('telemetry_consent_changed', properties);
+  } else {
+    trackEvent('telemetry_consent_changed', properties);
+  }
 }
 
 /**
@@ -54,7 +63,15 @@ const UNREAD = Symbol('unread');
  */
 async function valueBefore(key: AppSettingsKey): Promise<unknown> {
   if (!isReportedSetting(key)) return UNREAD;
-  return appSettingsService.get(key).catch(() => UNREAD);
+  return appSettingsService.get(key).catch((error: unknown) => {
+    log.warn(
+      'telemetry: could not read a setting before writing it, so its change is not reported',
+      {
+        error,
+      }
+    );
+    return UNREAD;
+  });
 }
 
 /**
