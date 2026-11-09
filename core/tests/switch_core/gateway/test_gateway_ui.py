@@ -455,7 +455,10 @@ def test_the_gateway_nginx_sends_core_s_page_headers(config: Path) -> None:
     text = config.read_text()
     page = text[text.index("location / {") :]
     page = page[: page.index("}")]
-    assert f'add_header Content-Security-Policy "{CONTENT_SECURITY_POLICY}" always;' in page
+    assert (
+        f'add_header Content-Security-Policy "{CONTENT_SECURITY_POLICY}" always;'
+        in page
+    )
     assert 'add_header X-Frame-Options "DENY" always;' in page
     assert 'add_header X-Content-Type-Options "nosniff" always;' in page
     # Core's own routes set their own headers; nginx adds none there, so no
