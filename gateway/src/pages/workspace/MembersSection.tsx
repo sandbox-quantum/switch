@@ -13,7 +13,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { lazy, type ReactNode, Suspense, useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import {
@@ -31,10 +31,16 @@ import {
   updateMemberRole,
 } from "../../data/api";
 import { formatDate, sentenceCase } from "../../theme/hootFormat";
-import HostedSwitchDialog from "./HostedSwitchDialog";
 import { useLoad } from "./useLoad";
 
 type MemberRow = Member & { id: string; hosted?: HostedPerson };
+
+// Only ever opened from the hosted columns (hosted agents v2), so it loads on
+// first use and a v1 visitor downloads none of it.
+const HostedSwitchDialog = lazy(() => import("./HostedSwitchDialog"));
+
+/** What the admin-only flag read found: whether v2 is on, and the hosted list. */
+type HostedView = { hostedV2: boolean; hosted: HostedPeople | null };
 
 const BOX_STATE: Record<NonNullable<HostedPerson["box_state"]>, string> = {
   running: "Running",
@@ -126,16 +132,21 @@ export default function MembersSection({ tenantId, selfId }: Props) {
   const { refresh, canAdminTenant: canAdmin } = useAuth();
   // Core's `hosted_v2` flag is read only for an admin, so everyone else
   // makes exactly the requests main does.
-  const loadHostedPeople = useCallback(async () => {
-    if (!canAdmin) return null;
+  // The same read decides v2's column layout, so with v2 off (and for anyone
+  // but an admin) the columns are main's exactly.
+  const loadHostedPeople = useCallback(async (): Promise<HostedView> => {
+    if (!canAdmin) return { hostedV2: false, hosted: null };
     const flags = await fetchFeatureFlagMap().catch((): Record<string, boolean> => ({}));
-    return loadHosted(tenantId, true, flags.hosted_v2 === true);
+    const hostedV2 = flags.hosted_v2 === true;
+    return { hostedV2, hosted: await loadHosted(tenantId, true, hostedV2) };
   }, [tenantId, canAdmin]);
   const {
-    data: hosted,
+    data: hostedView,
     error: hostedError,
     refetch: refetchHosted,
   } = useLoad(loadHostedPeople);
+  const hosted = hostedView?.hosted ?? null;
+  const v2Layout = hostedView?.hostedV2 === true;
   const [switching, setSwitching] = useState<{
     userId: string;
     name: string;
@@ -172,17 +183,26 @@ export default function MembersSection({ tenantId, selfId }: Props) {
   const columns = useMemo<GridColDef<MemberRow>[]>(() => {
     const roles: TenantRole[] = ["admin", "member"];
     return [
-      {
-        field: "name",
-        headerName: "Name",
-        flex: 1,
-        minWidth: 150,
-        // Wraps rather than cutting off "(you)" (designer's fix list, item 7).
-        renderCell: ({ row }) => (
-          <WrappedCell>{row.user_id === selfId ? `${row.name} (you)` : row.name}</WrappedCell>
-        ),
-      },
-      { field: "email", headerName: "Email", flex: 1.5, minWidth: 190 },
+      v2Layout
+        ? {
+            field: "name",
+            headerName: "Name",
+            flex: 1,
+            minWidth: 150,
+            // Wraps rather than cutting off "(you)" (designer's fix list, item 7).
+            renderCell: ({ row }) => (
+              <WrappedCell>{row.user_id === selfId ? `${row.name} (you)` : row.name}</WrappedCell>
+            ),
+          }
+        : {
+            // With v2 off, main's column exactly.
+            field: "name",
+            headerName: "Name",
+            flex: 1,
+            minWidth: 140,
+            renderCell: ({ row }) => (row.user_id === selfId ? `${row.name} (you)` : row.name),
+          },
+      { field: "email", headerName: "Email", flex: 1.5, minWidth: v2Layout ? 190 : 200 },
       {
         field: "role",
         headerName: "Role",
@@ -237,7 +257,7 @@ export default function MembersSection({ tenantId, selfId }: Props) {
       {
         field: "created_at",
         headerName: "Joined",
-        width: 120,
+        width: v2Layout ? 120 : 140,
         valueFormatter: (value) => formatDate(value as string),
       },
       ...(hosted
@@ -279,7 +299,7 @@ export default function MembersSection({ tenantId, selfId }: Props) {
           ) : null,
       },
     ];
-  }, [act, busy, hosted, selfId, tenantId]);
+  }, [act, busy, hosted, v2Layout, selfId, tenantId]);
 
   const confirmSwitch = useCallback(
     async (reason: string) => {
@@ -339,16 +359,20 @@ export default function MembersSection({ tenantId, selfId }: Props) {
         )}
         </>
       )}
-      <HostedSwitchDialog
-        key={switching ? `${switching.userId}-${switching.enabling}` : "closed"}
-        open={switching !== null}
-        enabling={switching?.enabling ?? false}
-        personName={switching?.name ?? ""}
-        busy={busy !== null}
-        error={switchError}
-        onCancel={() => setSwitching(null)}
-        onConfirm={(reason) => void confirmSwitch(reason)}
-      />
+      {hosted && (
+        <Suspense fallback={null}>
+          <HostedSwitchDialog
+            key={switching ? `${switching.userId}-${switching.enabling}` : "closed"}
+            open={switching !== null}
+            enabling={switching?.enabling ?? false}
+            personName={switching?.name ?? ""}
+            busy={busy !== null}
+            error={switchError}
+            onCancel={() => setSwitching(null)}
+            onConfirm={(reason) => void confirmSwitch(reason)}
+          />
+        </Suspense>
+      )}
     </Stack>
   );
 }

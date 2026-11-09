@@ -27,6 +27,7 @@ import { fetchProviders, type ProviderInfo } from "../../../data/management";
 import { cloudProviders } from "../cloudAgent";
 import CloudLoginDialog from "./CloudLoginDialog";
 import { EMPTY, type LoginTick, loginTick } from "./peopleWords";
+import { AI_LOGINS_ID } from "./ids";
 
 /** Words for how a withdraw went: fixed here. */
 export const WITHDRAW_TEXT = {
@@ -51,7 +52,7 @@ export const STATUS_TEXT: Record<LoginStatus, string> = {
  * it's waiting, and reads again every few seconds.
  */
 /** The section's id: the setup checklist's and a status line's Give login bring it into view. */
-export const AI_LOGINS_ID = "cloud-ai-logins";
+export { AI_LOGINS_ID };
 
 export default function CloudLoginsSection({
   controllerId,

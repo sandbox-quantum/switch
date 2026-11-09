@@ -32,7 +32,7 @@ vi.mock("../../data/hostedCloud", async (importOriginal) => {
 vi.mock("./AddressingPolicySection", () => ({ default: () => null }));
 vi.mock("./AgentManagementSection", () => ({ default: () => null }));
 vi.mock("./ServiceAccessSection", () => ({ default: () => null }));
-vi.mock("./cloud/CloudAgentControls", () => ({
+vi.mock("./cloud/lazyCloudAgentControls", () => ({
   CloudAgentSection: ({ controllerId }: { controllerId: string }) => (
     <div>{`cloud controls on ${controllerId}`}</div>
   ),

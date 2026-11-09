@@ -42,7 +42,8 @@ import { useAuth } from "../../data/AuthContext";
 import { useCloudFilesBox } from "../files/useCloudFiles";
 import AddressingPolicySection from "./AddressingPolicySection";
 import AgentManagementSection from "./AgentManagementSection";
-import { CloudAgentSection, CloudRenameDialog } from "./cloud/CloudAgentControls";
+// Loaded on first use (hosted agents v2 only), so v1 downloads none of it.
+import { CloudAgentSection, CloudRenameDialog } from "./cloud/lazyCloudAgentControls";
 import ServiceAccessSection from "./ServiceAccessSection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 import { sessionPlace, sessionRunner } from "./sessionLabels";

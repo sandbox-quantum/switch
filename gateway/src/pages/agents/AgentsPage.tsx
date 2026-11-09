@@ -22,7 +22,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
-import { useCallback, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import DataTable from "../../components/DataTable";
 import { type AgentSummary, deleteAgent } from "../../data/api";
@@ -31,13 +31,17 @@ import { useCloudView } from "../../data/hostedCloud";
 import { EM_DASH, formatDate, sentenceCase } from "../../theme/hootFormat";
 import { type CloudPresentation, cloudStatusFor } from "./cloud/cloudAgentState";
 import { boxShowsStopped } from "./cloud/yourCloud";
-import CloudDeleteDialog from "./cloud/CloudDeleteDialog";
-import CloudLoginsSection, { AI_LOGINS_ID } from "./cloud/CloudLoginsSection";
+import { AI_LOGINS_ID } from "./cloud/ids";
 import { type LoginTick, type NextAction, agentProvider } from "./cloud/peopleWords";
 import StateFade from "./cloud/StateFade";
-import YourCloudPanel from "./cloud/YourCloudPanel";
-import CloudAgentDialog from "./CloudAgentDialog";
 import RegisterAgentDialog from "./RegisterAgentDialog";
+
+// Hosted agents v2's parts of this page load on first use, only with v2 on, so
+// a v1 visitor downloads none of them.
+const CloudDeleteDialog = lazy(() => import("./cloud/CloudDeleteDialog"));
+const CloudLoginsSection = lazy(() => import("./cloud/CloudLoginsSection"));
+const YourCloudPanel = lazy(() => import("./cloud/YourCloudPanel"));
+const CloudAgentDialog = lazy(() => import("./CloudAgentDialog"));
 
 // Connector type is a category, not a status. Colour here would compete with
 // the status hues for the reader's attention and mean nothing, so the tag is
@@ -412,29 +416,33 @@ export default function AgentsPage() {
         )}
       </Stack>
 
-      {hostedV2 && cloud.machine && (
-        <YourCloudPanel
-          machine={cloud.machine}
-          onChanged={cloud.refresh}
-          loginSet={loginSet}
-          onGiveLogin={() => {
-            goToStep("give_login");
-            if (loginRead?.missing) setAskLogin({ provider: loginRead.missing });
-          }}
-          onAddAgent={cloudAgents ? () => setCloudOpen(true) : undefined}
-        />
-      )}
-      {hostedV2 && cloud.machine?.controller_id && (
-        <CloudLoginsSection
-          controllerId={cloud.machine.controller_id}
-          machine={cloud.machine}
-          onCloudChanged={cloud.refresh}
-          onLoginSet={setLoginRead}
-          onHurry={cloud.hurry}
-          agentProviders={agentProviders}
-          ask={askLogin}
-        />
-      )}
+      <Suspense fallback={null}>
+        {hostedV2 && cloud.machine && (
+          <YourCloudPanel
+            machine={cloud.machine}
+            onChanged={cloud.refresh}
+            loginSet={loginSet}
+            onGiveLogin={() => {
+              goToStep("give_login");
+              if (loginRead?.missing) setAskLogin({ provider: loginRead.missing });
+            }}
+            onAddAgent={cloudAgents ? () => setCloudOpen(true) : undefined}
+          />
+        )}
+      </Suspense>
+      <Suspense fallback={null}>
+        {hostedV2 && cloud.machine?.controller_id && (
+          <CloudLoginsSection
+            controllerId={cloud.machine.controller_id}
+            machine={cloud.machine}
+            onCloudChanged={cloud.refresh}
+            onLoginSet={setLoginRead}
+            onHurry={cloud.hurry}
+            agentProviders={agentProviders}
+            ask={askLogin}
+          />
+        )}
+      </Suspense>
 
       {deleteNotice && (
         <Alert
@@ -528,27 +536,29 @@ export default function AgentsPage() {
         />
       )}
 
-      {hostedV2 && cloud.machine?.controller_id && (
-        <CloudDeleteDialog
-          agent={cloudDeleteTarget}
-          controllerId={cloud.machine.controller_id}
-          onClose={() => setCloudDeleteTarget(null)}
-          onDeleted={(result) => {
-            setDeleteNotice(
-              result.bridge_cleanup_failures.length > 0
-                ? {
-                    severity: "warning",
-                    text:
-                      `Deleted, but its chat platform clean-up did not finish (` +
-                      `${result.bridge_cleanup_failures.join("; ")}). It will be finished when that bridge next starts.`,
-                  }
-                : null,
-            );
-            refetch();
-            cloud.refresh();
-          }}
-        />
-      )}
+      <Suspense fallback={null}>
+        {hostedV2 && cloud.machine?.controller_id && (
+          <CloudDeleteDialog
+            agent={cloudDeleteTarget}
+            controllerId={cloud.machine.controller_id}
+            onClose={() => setCloudDeleteTarget(null)}
+            onDeleted={(result) => {
+              setDeleteNotice(
+                result.bridge_cleanup_failures.length > 0
+                  ? {
+                      severity: "warning",
+                      text:
+                        `Deleted, but its chat platform clean-up did not finish (` +
+                        `${result.bridge_cleanup_failures.join("; ")}). It will be finished when that bridge next starts.`,
+                    }
+                  : null,
+              );
+              refetch();
+              cloud.refresh();
+            }}
+          />
+        )}
+      </Suspense>
 
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
         <DialogTitle>Delete agent</DialogTitle>
@@ -577,16 +587,18 @@ export default function AgentsPage() {
         onClose={() => setRegisterOpen(false)}
         onRegistered={refetch}
       />
-      {cloudAgents && (
-        <CloudAgentDialog
-          open={cloudOpen}
-          onClose={() => setCloudOpen(false)}
-          onCreated={() => {
-            refetch();
-            cloud.refresh();
-          }}
-        />
-      )}
+      <Suspense fallback={null}>
+        {cloudAgents && (
+          <CloudAgentDialog
+            open={cloudOpen}
+            onClose={() => setCloudOpen(false)}
+            onCreated={() => {
+              refetch();
+              cloud.refresh();
+            }}
+          />
+        )}
+      </Suspense>
     </Box>
   );
 }

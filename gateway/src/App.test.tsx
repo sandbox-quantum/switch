@@ -220,17 +220,32 @@ describe("AppRoutes", () => {
       };
     };
     const v2 = (on: boolean) => [{ key: "hosted_v2", enabled: on }];
+    // With v2 off, both addresses read as main's not-found page, exactly as an
+    // address main doesn't know, with no spinner left behind.
+    const notFound = async () => {
+      expect(await screen.findByRole("heading", { name: "There's no page here" })).toBeTruthy();
+      expect(screen.getByRole("link", { name: "Go to the start page" })).toBeTruthy();
+      expect(screen.queryByRole("progressbar")).toBeNull();
+      expect(screen.queryByRole("heading", { name: HOSTED_HEADING })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "Your cloud files" })).toBeNull();
+      expect(screen.queryByText(/once you have an agent in your cloud/)).toBeNull();
+    };
     const unreadable = async () => {
       expect(await screen.findByRole("alert")).toBeTruthy();
       expect(screen.queryByRole("heading", { name: HOSTED_HEADING })).toBeNull();
       expect(screen.queryByRole("heading", { name: "Your cloud files" })).toBeNull();
     };
 
-    it("sends /hosted home when Core says v2 is off", async () => {
+    it("shows main's not-found page at an address main doesn't know, the yardstick for v2 off", async () => {
+      mockFetch(asOperator(v2(false)));
+      renderAt("/no-such-page");
+      await notFound();
+    });
+
+    it("shows /hosted as not found when Core says v2 is off, as main does", async () => {
       mockFetch(asOperator(v2(false)));
       renderAt("/hosted/overview");
-      expect(await screen.findByRole("heading", { name: "Rooms" })).toBeTruthy();
-      expect(screen.queryByRole("heading", { name: HOSTED_HEADING })).toBeNull();
+      await notFound();
       expect(screen.queryByRole("link", { name: /Hosted/ })).toBeNull();
     });
 
@@ -245,21 +260,16 @@ describe("AppRoutes", () => {
         { key: "hosted_v2", enabled: on },
         { key: "hosted_cloud_files", enabled: files },
       ];
-      const goesHome = async () => {
-        renderAt("/files");
-        expect(await screen.findByRole("heading", { name: "Rooms" })).toBeTruthy();
-        expect(screen.queryByRole("heading", { name: "Your cloud files" })).toBeNull();
-        expect(screen.queryByText(/once you have an agent in your cloud/)).toBeNull();
-      };
-
-      it("goes home with v2 off", async () => {
+      it("is not found with v2 off, as on main", async () => {
         mockFetch(asOperator(both(false, true)));
-        await goesHome();
+        renderAt("/files");
+        await notFound();
       });
 
-      it("goes home with Your cloud files off, even with v2 on", async () => {
+      it("is not found with Your cloud files off, even with v2 on", async () => {
         mockFetch(asOperator(both(true, false)));
-        await goesHome();
+        renderAt("/files");
+        await notFound();
       });
 
       it("never opens when Core's flags can't be read", async () => {
