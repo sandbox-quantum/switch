@@ -15,7 +15,7 @@ export const MIN_NODE = [22, 13] as const;
 const EXPAND = String.raw`
 const os = require('node:os'), path = require('node:path'), fs = require('node:fs'), cp = require('node:child_process'), crypto = require('node:crypto');
 const expand = (p) => p === '~' ? os.homedir() : p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p;
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { if (e.code === 'ESRCH') return false; if (e.code === 'EPERM') return true; throw e; } };
 const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 const put = (file, text, mode) => {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });

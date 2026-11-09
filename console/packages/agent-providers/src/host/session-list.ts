@@ -55,14 +55,24 @@ export function readHostSessions(
     }
   };
   const alive = (root: string): boolean => {
+    let pid: unknown;
     try {
-      const owner = JSON.parse(
+      pid = JSON.parse(
         nodeFs.readFileSync(nodePath.join(root, 'supervisor', 'owner.json'), 'utf8')
-      );
-      process.kill(owner.pid, 0);
-      return true;
+      ).pid;
     } catch {
       return false;
+    }
+    if (!Number.isSafeInteger(pid) || (pid as number) <= 0) return false;
+    // `isProcessAlive`, written out: this function runs on its own as a script.
+    try {
+      process.kill(pid as number, 0);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ESRCH') return false;
+      if (code === 'EPERM') return true;
+      throw error;
     }
   };
   let names: string[] = [];

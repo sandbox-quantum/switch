@@ -53,12 +53,20 @@ const pump = () => {
     if (line) process.stdout.write('{"event":' + line + '}\n');
 };
 const alive = () => {
+  let pid;
   try {
-    const owner = JSON.parse(fs.readFileSync(path.join(root, 'supervisor', 'owner.json'), 'utf8'));
-    process.kill(owner.pid, 0);
-    return true;
+    pid = JSON.parse(fs.readFileSync(path.join(root, 'supervisor', 'owner.json'), 'utf8')).pid;
   } catch {
     return false;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    if (e.code === 'ESRCH') return false;
+    if (e.code === 'EPERM') return true;
+    throw e;
   }
 };
 const lease = () => {

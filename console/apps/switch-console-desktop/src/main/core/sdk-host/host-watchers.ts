@@ -32,7 +32,7 @@ const path = require('node:path');
 const [baseArg] = process.argv.slice(1);
 const base = baseArg || path.join(os.homedir(), '.local', 'state', 'switch', 'sdk-watchers');
 const alive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); return true; } catch (e) { if (e.code === 'ESRCH') return false; if (e.code === 'EPERM') return true; throw e; }
 };
 let names = [];
 try { names = fs.readdirSync(base).filter(isStateRoot); } catch {}

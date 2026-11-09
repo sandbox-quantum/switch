@@ -10,12 +10,15 @@ const ticketSchema = z.strictObject({
 });
 type Ticket = z.infer<typeof ticketSchema>;
 
+/** `isProcessAlive` from `process-alive`, written out: this module takes no relative import. */
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return false;
+    if (code === 'EPERM') return true;
     throw error;
   }
 }

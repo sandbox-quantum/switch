@@ -34,7 +34,7 @@ const alive = (file) => {
   const saved = read(file);
   if (!saved) return false;
   if (!Number.isSafeInteger(saved.pid) || saved.pid <= 0) throw new Error('Invalid owner record ' + file);
-  try { process.kill(saved.pid, 0); return true; } catch (e) { if (e.code === 'ESRCH') return false; throw e; }
+  try { process.kill(saved.pid, 0); return true; } catch (e) { if (e.code === 'ESRCH') return false; if (e.code === 'EPERM') return true; throw e; }
 };
 const running = (root) => alive(path.join(root, 'shared-owner.lock')) || alive(path.join(root, 'supervisor', 'owner.json'));
 const journal = (root) => path.join(root, 'assignments.jsonl');
