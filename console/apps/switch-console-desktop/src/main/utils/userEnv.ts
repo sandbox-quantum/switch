@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getWindowsEnvValue } from '@switch-console/core/exec';
-import { withWindowsAgyBinDir } from '@switch-console/plugins/agents';
+import { withWindowsAgyBinDir, withWindowsGitBashDir } from '@switch-console/plugins/agents';
 import { log } from '@main/lib/logger';
 import { buildExternalToolEnv } from './childProcessEnv';
 import { detectSshAuthSock } from './shellEnv';
@@ -116,6 +116,31 @@ export function ensureWindowsUserBinDirsInPath(env: NodeJS.ProcessEnv = process.
 }
 
 /**
+ * Puts Git Bash on PATH for the provider CLIs that run shell commands through
+ * it (`withWindowsGitBashDir`), as the agent controller does. Returns the
+ * folder added, or null.
+ */
+export function ensureWindowsGitBashInPath(
+  env: NodeJS.ProcessEnv,
+  fileExists: (file: string) => boolean
+): string | null {
+  const pathKey = getWindowsPathEnvKey(env);
+  const before = env[pathKey] ?? '';
+  const after = withWindowsGitBashDir(
+    before,
+    {
+      localAppData: getWindowsEnvValue(env, 'LOCALAPPDATA'),
+      programFiles: getWindowsEnvValue(env, 'ProgramFiles'),
+      programFilesX86: getWindowsEnvValue(env, 'ProgramFiles(x86)'),
+    },
+    fileExists
+  );
+  if (after === before) return null;
+  env[pathKey] = after;
+  return after.split(path.win32.delimiter).at(-1)!;
+}
+
+/**
  * Windows OpenSSH's agent is a named pipe and never sets `SSH_AUTH_SOCK`, so
  * everything that looks for an agent there (SSH auth, agent forwarding, child
  * processes) would find none. Points it at the pipe when the agent is running.
@@ -145,6 +170,7 @@ export async function resolveUserEnv(): Promise<void> {
     // Windows PATH is managed differently; no login-shell capture needed.
     ensureWindowsNpmGlobalBinInPath();
     ensureWindowsUserBinDirsInPath();
+    ensureWindowsGitBashInPath(process.env, fs.existsSync);
     ensureWindowsSshAuthSock(process.env, detectSshAuthSock);
     return;
   }
