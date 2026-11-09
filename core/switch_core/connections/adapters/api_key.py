@@ -41,11 +41,16 @@ from switch_core.connections.loader import (
     ApiKeySignIn,
     ConnectionDefinition,
     render,
+    url_placements,
 )
 
 # A key may carry any printable character but a space, which keeps it a
 # single header value or argument; longer than this is not a key.
 FIELD_VALUE_RE = re.compile(r"^[\x21-\x7e]{1,1024}$")
+# What a pattern field may hold where a URL puts it, whatever its pattern
+# allows: one DNS label in a host, one unreserved segment in a path.
+HOST_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+PATH_SEGMENT_RE = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9._~-]{1,255}$")
 MAX_IDENTITY_BYTES = 256 * 1024
 
 
@@ -78,11 +83,15 @@ def key_token(sign_in: ApiKeySignIn, values: dict[str, str]) -> str:
 
 
 def checked_fields(
-    name: str, fields: list[ApiKeyField], submitted: Mapping[str, str]
+    name: str,
+    fields: list[ApiKeyField],
+    submitted: Mapping[str, str],
+    placements: Mapping[str, set[str]],
 ) -> dict[str, str]:
     """The submitted fields, each as `fields` allows, and nothing else: a
-    choice among its choices, a secret one line of printable characters.
-    `name` is the service's, for the refusal."""
+    choice among its choices, a pattern field to its pattern and to where
+    `placements` says the entry's URLs put it, a secret one line of printable
+    characters. `name` is the service's, for the refusal."""
     expected = {field.name: field for field in fields}
     unknown = sorted(set(submitted) - set(expected))
     if unknown:
@@ -97,6 +106,15 @@ def checked_fields(
                 raise InvalidKeyError(
                     f"{field.label} must be one of {', '.join(field.choices)}."
                 )
+        elif field.pattern is not None:
+            places = placements.get(field_name, set())
+            if (
+                not FIELD_VALUE_RE.fullmatch(value)
+                or not re.fullmatch(field.pattern, value)
+                or ("host" in places and not HOST_LABEL_RE.fullmatch(value))
+                or ("path" in places and not PATH_SEGMENT_RE.fullmatch(value))
+            ):
+                raise InvalidKeyError(f"{field.label} is not in the form {name} uses.")
         elif not FIELD_VALUE_RE.fullmatch(value):
             raise InvalidKeyError(
                 f"{field.label} must be one line of printable characters, "
@@ -132,13 +150,23 @@ class ApiKeyAdapter:
         self._name = definition.name
         self._sign_in = sign_in
         self._http = http
+        # Where each pattern field lands in the entry's URLs.
+        self._placements: dict[str, set[str]] = {}
+        urls = [sign_in.identity.url]
+        if definition.mcp is not None:
+            urls += [server.url for server in definition.mcp.servers]
+        for url in urls:
+            for name, places in url_placements(url).items():
+                self._placements.setdefault(name, set()).update(places)
 
     def current_client_id(self, choices: Mapping[str, str]) -> str | None:
         return None
 
     def checked_fields(self, submitted: dict[str, str]) -> dict[str, str]:
         """The submitted fields, each as the entry allows, and nothing else."""
-        return checked_fields(self._name, self._sign_in.fields, submitted)
+        return checked_fields(
+            self._name, self._sign_in.fields, submitted, self._placements
+        )
 
     async def identify(self, values: dict[str, str]) -> KeyIdentity:
         """Check the key with the vendor and say whose it is.

@@ -126,6 +126,79 @@ def test_the_connection_keeps_the_fields_picked_from_a_list_as_its_choices() -> 
     assert adapter.choices(FIELDS) == {"region": "eu.example.test"}
 
 
+ACCOUNT_ENTRY = {
+    **ENTRY,
+    "auth": {
+        **ENTRY["auth"],
+        "api_key": {
+            "fields": [
+                {"name": "api_key", "label": "User key", "secret": True},
+                {
+                    "name": "account",
+                    "label": "Account",
+                    "secret": False,
+                    # Looser than a DNS label, so the adapter's own check shows.
+                    "pattern": "[A-Za-z0-9._@/-]+",
+                },
+            ],
+            "identity": {
+                "method": "GET",
+                "url": "https://{account}.example.test/api/me",
+                "headers": {"API-Key": "{api_key}"},
+                "account_id": "id",
+            },
+        },
+    },
+    "mcp": {
+        "servers": [
+            {
+                "name": "example",
+                "url": "https://mcp.example.test/{account}/mcp",
+                "headers": {"API-Key": "{api_key}"},
+            }
+        ]
+    },
+}
+
+
+def _account_adapter() -> ApiKeyAdapter:
+    definition = ConnectionDefinition.model_validate(ACCOUNT_ENTRY)
+    return ApiKeyAdapter(
+        definition,
+        httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, json={}))
+        ),
+    )
+
+
+def test_a_pattern_field_takes_a_value_that_fits_its_place() -> None:
+    values = _account_adapter().checked_fields(
+        {"api_key": "SYNTHETIC-USER-KEY", "account": "acme-eu"}
+    )
+    assert values["account"] == "acme-eu"
+
+
+@pytest.mark.parametrize(
+    "account",
+    [
+        "acme corp",  # not one token
+        "evil.test",  # a second host label
+        "evil.test/x",
+        "a@evil.test",
+        "-acme",
+        "acme!",  # outside the pattern
+        "..",
+    ],
+)
+def test_a_pattern_field_never_takes_a_value_that_moves_the_request(
+    account: str,
+) -> None:
+    with pytest.raises(InvalidKeyError, match="not in the form Example uses"):
+        _account_adapter().checked_fields(
+            {"api_key": "SYNTHETIC-USER-KEY", "account": account}
+        )
+
+
 async def test_disconnecting_says_only_the_vendor_can_revoke_a_key() -> None:
     adapter = _adapter(lambda request: httpx.Response(200))
     with pytest.raises(ConnectionNotRevocable, match="Revoke it in Example"):
