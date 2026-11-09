@@ -4,6 +4,7 @@ a chat is reported."""
 
 from __future__ import annotations
 
+from switch_core.room_service import RoleSpec, RoomCreateConfig
 from tests.switch_core.gateway.conftest import _Harness
 from tests.telemetry_records import recording_telemetry
 
@@ -87,4 +88,33 @@ async def test_removing_agents_counts_those_that_were_in_the_room(
 
     assert sink.events("room_agents_removed") == [
         {"agent_count": 1, "removed_by_kind": "user"}
+    ]
+
+
+# ── What a room is made with ─────────────────────────────────────────────────
+
+
+async def test_roles_a_room_is_made_with_are_reported(chats: _Harness) -> None:
+    """As a role defined afterwards is: `room_role_defined` counted only the
+    gateway's before."""
+    telemetry, sink = recording_telemetry()
+    chats.room_service._telemetry = telemetry
+
+    await chats.room_service.create_room(
+        RoomCreateConfig(
+            name="with roles",
+            description="",
+            internal_only=True,
+            created_by=chats.alice.id,
+            owner_id=chats.alice.id,
+            roles=[
+                RoleSpec(name="lead", instructions="lead", exclusive=True),
+                RoleSpec(name="scribe", instructions="write it down"),
+            ],
+        )
+    )
+
+    assert sink.events("room_role_defined") == [
+        {"exclusive": True},
+        {"exclusive": False},
     ]

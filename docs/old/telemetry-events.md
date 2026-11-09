@@ -1260,7 +1260,8 @@ gateway routes under `/gateway`
 - `api_key_created` / `api_key_revoked` — mint and delete a key. The label is
   never sent, only what the key is *for*.
 - `room_group_created` / `room_group_deleted` — the delete carries how many
-  rooms were filed under it, read before the delete.
+  rooms were filed under it, read before the delete. A group an agent makes
+  with its tool, or a group template makes, is created too.
 - `invitation_sent` / `invitation_accepted` — invite someone to a tenant and
   accept it. Accepting an invitation you already hold reports nothing, because
   nobody joined.
@@ -1276,13 +1277,17 @@ reason.
 - `reference_type_created` / `reference_type_deleted` — registering a *type*,
   which is an owner extending what Switch can point at, not making a reference.
 - `template_created` / `template_deleted` — `template_kind` names the three the
-  product uses and reports anything an operator invents as `other`.
+  product uses and reports anything an operator invents as `other`. Saved or
+  deleted in the gateway or by an agent's `save_template` / `delete_template`.
 - `agent_request_refused`: an agent asked for something a rule says no to:
   a template it did not save, a run that would need a new agent, a room in a
   paused or stopped run. `operation` and `reason` are fixed lists; which agent
   and which template stay in the server log.
 - `room_link_created` / `room_link_removed`, `room_role_defined` /
-  `room_role_deleted`, `room_users_added`.
+  `room_role_deleted`, `room_users_added`. A role is defined in the gateway, by
+  an agent's `define_role`, or with the room it belongs to (an agent's
+  `create_room`, or a template); one per role. An agent's `delete_role` is a
+  `room_role_deleted` too.
 - `reference_detached_from_room` / `document_detached_from_room` /
   `package_detached_from_room` — the inverse of the attach events, so a
   resource tried and dropped is distinguishable from one never used.

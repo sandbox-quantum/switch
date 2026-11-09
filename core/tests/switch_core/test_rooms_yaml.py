@@ -209,6 +209,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_role_store=RoomRoleStore(),
         session_factory=session_factory,
         room_group_store=RoomGroupStore(),
+        telemetry=None,
     )
 
     async with session_factory() as session:
@@ -2373,6 +2374,17 @@ async def test_provision_group_two_rooms_linked(env):
         )
         assert link is not None
         assert link.label == "workroom"
+
+
+async def test_a_template_group_is_reported(env):
+    """`room_group_created` counted only the gateway's before."""
+    svc = _svc(env)
+    svc._telemetry, sink = recording_telemetry()
+    spec = _group(env, GROUP_TEMPLATE, {"newcomer": "dana"})
+
+    await svc.provision_group(spec, user_id=env["user_id"], is_admin=True)
+
+    assert sink.events("room_group_created") == [{"has_parent": False}]
 
 
 @pytest.mark.asyncio

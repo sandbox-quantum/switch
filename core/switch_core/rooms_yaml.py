@@ -46,6 +46,7 @@ from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.room_service import RoleSpec, RoomCreateConfig
+from switch_core.telemetry import TelemetryService, emit_after_commit
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -585,8 +586,10 @@ class RoomYamlService:
         session_factory: async_sessionmaker[AsyncSession],
         room_group_store: RoomGroupStore,
         client_lifecycle: ClientLifecycleService | None = None,
+        telemetry: TelemetryService | None,
     ) -> None:
         self._rooms = room_service
+        self._telemetry = telemetry
         self._resources = resource_service
         self._room_store = room_store
         self._agent_store = agent_store
@@ -1172,6 +1175,9 @@ class RoomYamlService:
                 description=spec.group.description,
                 color=spec.group.color,
                 parent_group_id=None,
+            )
+            emit_after_commit(
+                session, self._telemetry, "room_group_created", {"has_parent": False}
             )
             await session.commit()
             group_id = group.id

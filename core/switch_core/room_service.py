@@ -803,6 +803,10 @@ class RoomService:
                 "from_template": config.from_template,
             },
         )
+        for spec in config.roles or []:
+            emit_safely(
+                self._telemetry, "room_role_defined", {"exclusive": spec.exclusive}
+            )
 
         # Only a room a person made counts as activation. Guarded like the
         # emit above it: this runs ahead of the invite, the agent adds and the

@@ -1467,6 +1467,15 @@ def normalise_platform(platform: str | None) -> str:
     return platform
 
 
+def normalise_template_kind(kind: str | None) -> str:
+    """A template's kind as the catalogue spells it.
+
+    The column is free text, so only the three the product uses are named and
+    an operator's own kind reports as `other`.
+    """
+    return kind if kind in ("room", "group", "agent") else "other"
+
+
 def normalise_known_agent_type(metadata: dict | None) -> str:
     """The runtime behind an agent, as the catalogue spells it."""
     if not metadata:
