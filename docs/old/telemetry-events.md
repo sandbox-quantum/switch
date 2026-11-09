@@ -310,7 +310,9 @@ written down because most of them have a plausible alternative reading, and a
 metric whose definition drifts is worse than no metric.
 
 **Interaction** — a human sent a message in a room that has at least one agent
-in it, or an agent replied to one. This is the unit "active" is built on
+in it, or an agent replied to one. A post the platform marked as an
+integration's (an alerting or CI app, another Switch server's agent) is not a
+human's. This is the unit "active" is built on
 throughout: mere membership is not activity, and two agents talking to each
 other is not a human using the product.
 
@@ -371,26 +373,20 @@ never invisible.
 | `duration_ms` | number | wall time to collect the pass, on a monotonic clock. Roughly twenty queries per tenant against the database that is also serving rooms, and a background task is invisible to `switch.http.request.duration` — so this is the only place "what does the snapshot cost at scale" can be answered from |
 | `user_count` | number | user accounts that exist |
 | `user_internal_count` | number | of those, accounts on the company's own email domains — see "Internal usage" |
-| `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account. Superseded by `account_active_1d`, the same figure; sent for one more stable release |
-| `user_active_7d` | number | same over 7 days. Superseded by `account_active_7d` |
+| `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account. The period events' `account_active` is the same figure per period |
+| `user_active_7d` | number | same over 7 days |
 | `user_internal_active_1d` | number | of `user_active_1d`, accounts on the company's own email domains |
 | `user_internal_active_7d` | number | same over 7 days |
 | `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
-| `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d`. Counts integrations as well as people; superseded by `person_identity_active_1d` plus `bot_identity_active_1d`, and sent for one more stable release |
-| `chat_identity_active_7d` | number | same over 7 days. Superseded likewise |
-| `person_identity_active_1d` | number | **the headline count of people** — distinct chat identities that used a room with an agent in 24h and never posted as an app in that window, linked to a Switch account or not. One person on two platforms is two identities. See "People, bots and accounts" |
-| `person_identity_active_7d` | number | same over 7 days |
-| `bot_identity_active_1d` | number | distinct chat identities that posted as an app in a room with an agent in 24h: an integration such as an alerting or CI app, or another Switch server's agent. See "People, bots and accounts" |
-| `bot_identity_active_7d` | number | same over 7 days |
-| `account_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h, the same figure as `user_active_1d` under the name it keeps. The floor of the people count: an account exists only for someone who linked one |
-| `account_active_7d` | number | same over 7 days |
+| `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before 0.30 reported this figure as `user_active_1d`. Counts integrations as well as people; the period events split the two (see "People, bots and accounts") |
+| `chat_identity_active_7d` | number | same over 7 days |
 | `chat_identity_posted_1d` | number | distinct chat identities that said anything in any room in 24h, agent or no agent |
 | `chat_identity_posted_7d` | number | same over 7 days |
 | `chat_identity_in_room_count` | number | distinct chat identities Switch has seen in a room: a member of at least one unarchived room of any origin, or anyone who said anything in the last 7 days. Not a channel's whole audience — see "Tiers of activity" |
 | `room_count` | number | **the headline figure** — unarchived rooms a *person* created |
 | `room_agent_created_count` | number | unarchived rooms an agent created for itself |
 | `room_system_created_count` | number | unarchived channels Switch adopted after being invited to them on a platform |
-| `room_active_1d` | number | rooms of any origin with an interaction in 24h |
+| `room_active_1d` | number | rooms of any origin with an interaction in 24h. A post the bridge marked as an integration's is not one |
 | `room_active_7d` | number | same over 7 days |
 | `room_archived_count` | number | archived rooms, both kinds |
 | `room_internal_only_count` | number | rooms with no external channel |
@@ -431,17 +427,19 @@ whether or not each is currently connected — which is up is process state, and
 than people: an alerting or CI integration, a workflow, and another Switch
 server's agents sharing the channel all post there. Switch relays them into
 the room like any post, through the same kind of chat identity a person gets,
-so `chat_identity_active_*` counted them as people. Where the platform says a
+so `chat_identity_active_*` counts them as people. Where the platform says a
 post came from an app (a Slack app, a Discord bot or a webhook that is not
 Switch's own, a Mattermost bot account or incoming webhook), the bridge marks
-it, and that identity counts in `bot_identity_active_*` rather than
-`person_identity_active_*` for the whole window. Telegram never delivers
-another bot's posts and Teams does not mark them, so nothing there is counted
-as a bot. A post relayed before its bridge marked app posts carries no mark,
-so for the first week after upgrading, an integration that has not posted
-since can still count as a person. `account_active_*` is the floor:
-integrations never link a Switch account, and most people never link one
-either.
+it. On the period events that identity counts in `bot_identity_active` rather
+than `person_identity_active` for the whole period, and in every count a
+marked post does not make a room active: `room_active_*`, `room_active`,
+`room_became_active`, `first_room_active` and `was_ever_active` leave it out.
+Telegram never delivers another bot's posts and Teams does not mark them, so
+nothing there is counted as a bot. A post relayed before its bridge marked app
+posts carries no mark, so for the first week after upgrading, an integration
+that has not posted since can still count as a person. `account_active` and
+`user_active_*` are the floor: integrations never link a Switch account, and
+most people never link one either.
 
 **What counts as a message.** Every durable event is a row in the message log:
 arrivals, tool- and LLM-call reports and task transitions sit beside the

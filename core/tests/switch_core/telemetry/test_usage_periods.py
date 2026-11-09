@@ -188,7 +188,7 @@ class TestCountingAPeriod:
         assert counts.person_identity_active == 2
         assert counts.tenant_failed_count == 0
 
-    async def test_a_bot_uses_a_room_but_is_not_a_person(
+    async def test_a_bot_is_counted_as_a_bot_and_does_not_make_a_room_active(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         start, end = _at("2026-11-02T00:00:00"), _at("2026-11-03T00:00:00")
@@ -198,8 +198,9 @@ class TestCountingAPeriod:
 
         counts = await collect_period_counts(session_factory, start=start, end=end)
 
-        assert counts.room_active == 1
+        assert counts.room_active == 0
         assert counts.person_identity_active == 0
+        assert counts.bot_identity_active == 1
 
 
 class _RecordingSink:

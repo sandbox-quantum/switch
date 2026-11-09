@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from switch_core import messaging_platforms
+from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG, SENDER_IS_APP_MARKER
 from switch_core.db.models import (
     Agent,
@@ -65,10 +66,19 @@ from switch_core.telemetry.internal import internal_email_condition
 
 logger = logging.getLogger(__name__)
 
-# `clients.type` for a human: one human actor per external user per bridge, and the
-# only row in the schema that stands for "a person did something".
+# `clients.type` for a human on a messaging platform: one human actor per
+# external user per bridge.
 HUMAN_CLIENT_TYPE = "user"
 AGENT_CLIENT_TYPE = "agent"
+
+# Who counts as a person in the snapshot: people on messaging platforms. Its
+# figures were defined before Switch Console chat existed and keep that
+# definition.
+SNAPSHOT_PERSON_TYPES = (HUMAN_CLIENT_TYPE,)
+# Who counts as a person in the period counts: a person on a messaging
+# platform, or in Switch Console through their `member` client. Someone who
+# uses both is two people, as someone on two platforms already is.
+PERSON_CLIENT_TYPES = (HUMAN_CLIENT_TYPE, MEMBER_CLIENT_TYPE)
 
 
 # What a participant said, as opposed to everything else the transport stores in
@@ -113,7 +123,8 @@ class UsageCounts:
     # Switch accounts that used a room with an agent: an account counts when a
     # chat account it has claimed spoke. Counted from the ids below once every
     # tenant is in, since one account can be active in several tenants and a
-    # per-tenant count would add it once for each.
+    # per-tenant count would add it once for each. Bots never link an account,
+    # so it needs no bot rule.
     user_active_1d: int = 0
     user_active_7d: int = 0
     # Of those, accounts on the company's own email domains, so active staff
@@ -127,23 +138,11 @@ class UsageCounts:
     # person on two platforms is two identities, and most identities belong to
     # no Switch account, which is why this runs above `user_active_*`.
     # `chat_identity_count` is the whole population they are drawn from.
+    # Integrations posting on a platform count here as well as people; the
+    # period counts (`PeriodCounts`) split the two.
     chat_identity_count: int = 0
     chat_identity_active_1d: int = 0
     chat_identity_active_7d: int = 0
-    # The same chat identities split by who is behind them. An identity whose
-    # posts the platform marked as an app's (a Slack app, a Discord bot or
-    # webhook, a Mattermost bot account: alerts, CI, another Switch server's
-    # agents) is a bot. Every other identity is a person, linked to a Switch
-    # account or not. `chat_identity_active_*` counted both, which is why these
-    # are new names rather than a new meaning for the old ones.
-    person_identity_active_1d: int = 0
-    person_identity_active_7d: int = 0
-    bot_identity_active_1d: int = 0
-    bot_identity_active_7d: int = 0
-    # `user_active_*` under the name it should have had: Switch accounts, from
-    # the same ids. Bots never link an account, so it needs no bot rule.
-    account_active_1d: int = 0
-    account_active_7d: int = 0
     # The other tiers, as chat identities like `chat_identity_active_*`:
     # anyone who said anything in any room, and anyone Switch has seen in a
     # room — see `_activity_tiers` for what that can and cannot see.
@@ -202,12 +201,6 @@ class UsageCounts:
             "chat_identity_count": self.chat_identity_count,
             "chat_identity_active_1d": self.chat_identity_active_1d,
             "chat_identity_active_7d": self.chat_identity_active_7d,
-            "person_identity_active_1d": self.person_identity_active_1d,
-            "person_identity_active_7d": self.person_identity_active_7d,
-            "bot_identity_active_1d": self.bot_identity_active_1d,
-            "bot_identity_active_7d": self.bot_identity_active_7d,
-            "account_active_1d": self.account_active_1d,
-            "account_active_7d": self.account_active_7d,
             "chat_identity_posted_1d": self.chat_identity_posted_1d,
             "chat_identity_posted_7d": self.chat_identity_posted_7d,
             "chat_identity_in_room_count": self.chat_identity_in_room_count,
@@ -302,13 +295,13 @@ def _rooms_with_an_agent(tenant_id: str) -> CompoundSelect:
     )
 
 
-def _human_activity_conditions(tenant_id: str) -> tuple[Any, ...]:
-    """The one definition of "a human used this room", shared by all four paths
-    that ask it: the two room-activity gauges, the once-per-room activation
-    event, and the "was this room ever active" check on deletion and archival.
-    They must agree, or the same room reads as active in one figure and
-    never-active in another. Assumes the caller has already joined `Client` on
-    `Message.sender_client_id`.
+def _human_activity_conditions(
+    tenant_id: str, person_types: tuple[str, ...]
+) -> tuple[Any, ...]:
+    """A person said something in a room with an agent: the activity the
+    identity and account counts are built on, and, less integrations
+    (`_room_activity_conditions`), the room counts. Assumes the caller has
+    already joined `Client` on `Message.sender_client_id`.
 
     Both conditions are kept:
 
@@ -331,8 +324,29 @@ def _human_activity_conditions(tenant_id: str) -> tuple[Any, ...]:
       the inconsistent choice.
     """
     return (
-        *_human_message_conditions(tenant_id),
+        *_human_message_conditions(tenant_id, person_types),
         Message.room_id.in_(_rooms_with_an_agent(tenant_id)),
+    )
+
+
+def _room_activity_conditions(
+    tenant_id: str, person_types: tuple[str, ...]
+) -> tuple[Any, ...]:
+    """The one definition of "a person used this room", shared by every path
+    that asks it: the room-activity gauges, the period counts, the
+    once-per-room activation event, and the "was this room ever active" check
+    on deletion and archival. They must agree, or the same room reads as
+    active in one figure and never-active in another.
+
+    `_human_activity_conditions`, less a post the bridge marked as an
+    integration's (`SENDER_IS_APP_MARKER`): an alerting app posting into a
+    room with an agent is not anyone using it. By post rather than by
+    identity, so an integration's posts relayed before its bridge marked them
+    still count, as they did.
+    """
+    return (
+        *_human_activity_conditions(tenant_id, person_types),
+        ~Message.content.has_key(SENDER_IS_APP_MARKER),
     )
 
 
@@ -351,11 +365,13 @@ def _spoken() -> tuple[Any, ...]:
     )
 
 
-def _human_message_conditions(tenant_id: str) -> tuple[Any, ...]:
+def _human_message_conditions(
+    tenant_id: str, person_types: tuple[str, ...]
+) -> tuple[Any, ...]:
     """The message half of `_human_activity_conditions`: a person said it, and
     it is live traffic rather than a backfill."""
     return (
-        Client.type == HUMAN_CLIENT_TYPE,
+        Client.type.in_(person_types),
         Client.tenant_id == tenant_id,
         Message.seq > 0,
         *_spoken(),
@@ -363,10 +379,10 @@ def _human_message_conditions(tenant_id: str) -> tuple[Any, ...]:
 
 
 def _human_interaction(
-    tenant_id: str, since: datetime, until: datetime
+    tenant_id: str, since: datetime, until: datetime, person_types: tuple[str, ...]
 ) -> Select[tuple[str]]:
-    """Room ids a human used in `[since, until)`. See
-    `_human_activity_conditions`."""
+    """Room ids a person used in `[since, until)`. See
+    `_room_activity_conditions`."""
     return (
         select(distinct(Message.room_id))
         .join(Client, Client.id == Message.sender_client_id)
@@ -374,7 +390,7 @@ def _human_interaction(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
             Message.sent_at < until,
-            *_human_activity_conditions(tenant_id),
+            *_room_activity_conditions(tenant_id, person_types),
         )
     )
 
@@ -406,7 +422,7 @@ def _active_accounts(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
             Message.sent_at < until,
-            *_human_activity_conditions(tenant_id),
+            *_human_activity_conditions(tenant_id, SNAPSHOT_PERSON_TYPES),
         )
     )
 
@@ -414,8 +430,8 @@ def _active_accounts(
 def _active_humans(
     tenant_id: str, since: datetime, until: datetime
 ) -> Select[tuple[str | None]]:
-    """Distinct human clients who used a room in `[since, until)`. See
-    `_human_activity_conditions`."""
+    """Distinct chat identities who used a room in `[since, until)`,
+    integrations included. See `_human_activity_conditions`."""
     return (
         select(distinct(Message.sender_client_id))
         .join(Client, Client.id == Message.sender_client_id)
@@ -423,55 +439,43 @@ def _active_humans(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
             Message.sent_at < until,
-            *_human_activity_conditions(tenant_id),
+            *_human_activity_conditions(tenant_id, SNAPSHOT_PERSON_TYPES),
         )
     )
 
 
-def _active_bots(
+def _identity_activity(
     tenant_id: str, since: datetime, until: datetime
-) -> Select[tuple[str | None]]:
-    """The identities among `_active_humans` that posted as an app in
-    `[since, until)`: a post the bridge marked `SENDER_IS_APP_MARKER` because
-    its platform said an integration, not a person, sent it."""
-    return (
-        select(distinct(Message.sender_client_id))
-        .join(Client, Client.id == Message.sender_client_id)
-        .where(
-            Message.tenant_id == tenant_id,
-            Message.sent_at >= since,
-            Message.sent_at < until,
-            *_human_activity_conditions(tenant_id),
-            Message.content.has_key(SENDER_IS_APP_MARKER),
-        )
-    )
+) -> Select[tuple[int, int]]:
+    """How many people, and how many integrations, used a room in
+    `[since, until)`, in one read of the window's messages.
 
-
-def _active_people(
-    tenant_id: str, since: datetime, until: datetime
-) -> Select[tuple[str | None]]:
-    """`_active_humans` less every identity that posted as an app in the same
-    window, not just its marked posts.
-
-    By identity rather than by post, because a bot's posts from before its
-    bridge marked them carry no marker: once it has posted once with one, the
-    rest of its window is a bot's too, rather than a person who is counted
-    until the old posts age out.
+    An identity that posted as an app at least once in the window (a post the
+    bridge marked `SENDER_IS_APP_MARKER` because its platform said an
+    integration sent it) is an integration for the whole window, not only for
+    its marked posts: a bot's posts from before its bridge marked them carry
+    no marker, and counting those as a person's would keep it in the people
+    count until they age out. Every other identity is a person, on a messaging
+    platform or in Switch Console.
     """
-    return (
-        select(distinct(Message.sender_client_id))
+    per_identity = (
+        select(
+            func.bool_or(Message.content.has_key(SENDER_IS_APP_MARKER)).label("is_bot")
+        )
         .join(Client, Client.id == Message.sender_client_id)
         .where(
             Message.tenant_id == tenant_id,
             Message.sent_at >= since,
             Message.sent_at < until,
-            *_human_activity_conditions(tenant_id),
-            ~Message.content.has_key(SENDER_IS_APP_MARKER),
-            Message.sender_client_id.not_in(
-                _active_bots(tenant_id, since, until).scalar_subquery()
-            ),
+            *_human_activity_conditions(tenant_id, PERSON_CLIENT_TYPES),
         )
+        .group_by(Message.sender_client_id)
+        .subquery()
     )
+    return select(
+        func.count().filter(~per_identity.c.is_bot),
+        func.count().filter(per_identity.c.is_bot),
+    ).select_from(per_identity)
 
 
 def _activity_tiers(
@@ -506,7 +510,7 @@ def _activity_tiers(
         .where(
             Message.tenant_id == tenant_id,
             Message.sent_at >= week_ago,
-            *_human_message_conditions(tenant_id),
+            *_human_message_conditions(tenant_id, SNAPSHOT_PERSON_TYPES),
         )
         .group_by(Message.sender_client_id)
         .cte("posters")
@@ -578,18 +582,6 @@ async def collect_tenant_counts(
     counts.chat_identity_active_7d += await _count(
         session, _active_humans(tenant_id, week_ago, now)
     )
-    counts.person_identity_active_1d += await _count(
-        session, _active_people(tenant_id, day_ago, now)
-    )
-    counts.person_identity_active_7d += await _count(
-        session, _active_people(tenant_id, week_ago, now)
-    )
-    counts.bot_identity_active_1d += await _count(
-        session, _active_bots(tenant_id, day_ago, now)
-    )
-    counts.bot_identity_active_7d += await _count(
-        session, _active_bots(tenant_id, week_ago, now)
-    )
     posted_1d, posted_7d, in_room = (
         await session.execute(_activity_tiers(tenant_id, day_ago, week_ago))
     ).one()
@@ -597,10 +589,10 @@ async def collect_tenant_counts(
     counts.chat_identity_posted_7d += posted_7d
     counts.chat_identity_in_room_count += in_room
     counts.room_active_1d += await _count(
-        session, _human_interaction(tenant_id, day_ago, now)
+        session, _human_interaction(tenant_id, day_ago, now, SNAPSHOT_PERSON_TYPES)
     )
     counts.room_active_7d += await _count(
-        session, _human_interaction(tenant_id, week_ago, now)
+        session, _human_interaction(tenant_id, week_ago, now, SNAPSHOT_PERSON_TYPES)
     )
 
     # A room predating the stamp reads as user-created, the conservative
@@ -881,8 +873,8 @@ async def _collect_turns(
 async def room_had_human_activity(
     session: AsyncSession, tenant_id: str, room_id: str
 ) -> bool:
-    """Whether this room has ever seen human activity. See
-    `_human_activity_conditions`.
+    """Whether this room has ever seen a person use it. See
+    `_room_activity_conditions`.
 
     The session must already be bound to `tenant_id`; the predicate is named
     anyway, for the reason `collect_tenant_counts` gives.
@@ -899,7 +891,8 @@ async def room_had_human_activity(
         .where(
             Message.tenant_id == tenant_id,
             Message.room_id == room_id,
-            *_human_message_conditions(tenant_id),
+            *_human_message_conditions(tenant_id, SNAPSHOT_PERSON_TYPES),
+            ~Message.content.has_key(SENDER_IS_APP_MARKER),
             exists(
                 select(agent_rooms.c.room_id).where(agent_rooms.c.room_id == room_id)
             ),
@@ -927,8 +920,6 @@ def _merge_tenant_counts(total: UsageCounts, tenant: UsageCounts) -> None:
         "user_internal_count",
         "user_active_1d",
         "user_active_7d",
-        "account_active_1d",
-        "account_active_7d",
         "user_internal_active_1d",
         "user_internal_active_7d",
         "active_user_ids_1d",
@@ -1025,21 +1016,20 @@ async def collect_usage(
         )
     counts.user_active_1d = len(counts.active_user_ids_1d)
     counts.user_active_7d = len(counts.active_user_ids_7d)
-    counts.account_active_1d = counts.user_active_1d
-    counts.account_active_7d = counts.user_active_7d
     counts.duration_ms = round((time.monotonic() - started) * 1000)
     return counts
 
 
 @dataclass
 class PeriodCounts:
-    """Distinct use over one finished period (`periods.Period`), by the same
-    definitions as the snapshot's `room_active_*`, `person_identity_active_*`
-    and `account_active_*`, so a period and a trailing window agree on what
-    counts."""
+    """Distinct use over one finished period (`periods.Period`). Rooms and
+    accounts by the snapshot's definitions of `room_active_*` and
+    `user_active_*`; `chat_identity_active_*` split into people and
+    integrations (`_identity_activity`)."""
 
     room_active: int = 0
     person_identity_active: int = 0
+    bot_identity_active: int = 0
     account_ids: set[str] = field(default_factory=set)
     tenant_failed_count: int = 0
 
@@ -1064,8 +1054,13 @@ async def collect_period_counts(
     for tenant_id in tenant_ids:
         try:
             async with tenant_session(session_factory, tenant_id) as session:
-                rooms = await _count(session, _human_interaction(tenant_id, start, end))
-                people = await _count(session, _active_people(tenant_id, start, end))
+                rooms = await _count(
+                    session,
+                    _human_interaction(tenant_id, start, end, SNAPSHOT_PERSON_TYPES),
+                )
+                people, bots = (
+                    await session.execute(_identity_activity(tenant_id, start, end))
+                ).one()
                 accounts = set(
                     (
                         await session.execute(_active_accounts(tenant_id, start, end))
@@ -1079,6 +1074,7 @@ async def collect_period_counts(
             continue
         counts.room_active += rooms
         counts.person_identity_active += people
+        counts.bot_identity_active += bots
         counts.account_ids |= accounts
     if failed_tenants:
         logger.error(
@@ -1146,7 +1142,7 @@ async def newly_active_rooms(
                     .join(Client, Client.id == Message.sender_client_id)
                     .where(
                         Message.tenant_id == tenant_id,
-                        *_human_activity_conditions(tenant_id),
+                        *_room_activity_conditions(tenant_id, SNAPSHOT_PERSON_TYPES),
                     )
                     .group_by(Message.room_id)
                     .subquery()

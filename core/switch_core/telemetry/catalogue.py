@@ -256,28 +256,16 @@ _SNAPSHOT_COUNTS = (
     "user_count",
     "user_internal_count",
     # Switch accounts, not chat identities — see `chat_identity_*` for those.
-    # Superseded by `account_active_*`, which is the same count; kept for one
-    # stable release so charts can move across.
+    # The period events' `account_active` is the same count per period.
     "user_active_1d",
     "user_active_7d",
     "user_internal_active_1d",
     "user_internal_active_7d",
     "chat_identity_count",
-    # Superseded by `person_identity_active_*` plus `bot_identity_active_*`:
-    # this counts an integration's identity as a person. Kept for one stable
-    # release.
+    # Counts an integration's identity as a person; the period events'
+    # `person_identity_active` and `bot_identity_active` split the two.
     "chat_identity_active_1d",
     "chat_identity_active_7d",
-    # Who used a room with an agent, split three ways. People: chat identities
-    # that never posted as an app, linked to a Switch account or not (the
-    # headline). Bots: identities whose platform marked their posts as an
-    # app's. Accounts: Switch accounts whose linked identity spoke (the floor).
-    "person_identity_active_1d",
-    "person_identity_active_7d",
-    "bot_identity_active_1d",
-    "bot_identity_active_7d",
-    "account_active_1d",
-    "account_active_7d",
     # `room_count` is the headline: rooms a *person* made. The other two keep
     # agent scratch rooms and adopted channels out of it.
     "room_count",
