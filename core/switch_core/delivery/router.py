@@ -251,7 +251,6 @@ def decision_record_fields(
     decision_id: str | None,
     asked: AskedBackend | None,
     agent: str | None,
-    settled_at: datetime,
 ) -> dict[str, StructuredValue]:
     """The fields of one message's decision record. Names and numbers only:
     the message's text, the room's instructions and any key never reach it."""
@@ -261,9 +260,7 @@ def decision_record_fields(
         "outcome": outcome,
         "choice": agent,
         "reason": reason,
-        "wait_ms": max(
-            0, round((settled_at - pending.created_at).total_seconds() * 1000)
-        ),
+        "wait_ms": round(pending.waited_seconds() * 1000),
     }
     if asked is None:
         return fields
@@ -1520,7 +1517,7 @@ class MessageRouter:
             )
             await session.commit()
         for pending in expired:
-            with log_context(room_id=pending.room_id):
+            with tenant_scope(tenant_id), log_context(room_id=pending.room_id):
                 self._record_settled(
                     pending,
                     outcome="expired",
@@ -1732,7 +1729,6 @@ class MessageRouter:
             decision_id=decision_id,
             asked=asked,
             agent=agent,
-            settled_at=datetime.now(UTC),
         )
         wait_ms = fields["wait_ms"]
         assert isinstance(wait_ms, int)

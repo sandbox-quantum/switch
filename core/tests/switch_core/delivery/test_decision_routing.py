@@ -1324,9 +1324,66 @@ class TestTheDecisionRecord:
         assert line.levelno == logging.WARNING
         assert record["message_key"] == told
         assert record["decision_id"] is None
-        # The row's age is on the database's clock and the record's on this
-        # process's; they agree to within a second or so.
-        assert record["wait_ms"] >= 590_000
+        assert record["wait_ms"] >= 600_000
+
+    async def test_an_expired_record_names_the_workspace(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _stop_waking(room)
+        await room.say("bob", "can someone check the deploy?", at=10)
+        async with world.session_factory() as session:
+            await session.execute(
+                update(PendingDecision).values(
+                    created_at=func.now() - timedelta(minutes=10)
+                )
+            )
+            await session.commit()
+        caplog.handler.addFilter(LogContextFilter("placeholder-tenant"))
+
+        with caplog.at_level(logging.INFO):
+            await room.process.router.decide_pending(TENANT_ZERO_ID)
+
+        [line] = [
+            r
+            for r in caplog.records
+            if isinstance(getattr(r, STRUCTURED_FIELDS, None), dict)
+        ]
+        rendered = json.loads(
+            JsonFormatter(
+                service="switch-core", environment=None, version=None, process_id="p"
+            ).format(line)
+        )
+        assert rendered["tenant_id"] == TENANT_ZERO_ID
+        assert rendered["room_id"] == world.room_id
+
+    async def test_the_wait_is_measured_on_the_databases_clock(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        _stop_waking(room)
+        service.pick = "helper"
+        await room.say("bob", "can someone check the deploy?", at=10)
+        async with world.session_factory() as session:
+            await session.execute(
+                update(PendingDecision).values(
+                    created_at=func.now() - timedelta(seconds=30)
+                )
+            )
+            await session.commit()
+
+        with caplog.at_level(logging.INFO):
+            await room.process.router.decide_pending(TENANT_ZERO_ID)
+
+        [record] = decision_records(caplog)
+        assert record["outcome"] == "delivered"
+        assert 30_000 <= record["wait_ms"] < 40_000
 
     async def test_settled_elsewhere(
         self,

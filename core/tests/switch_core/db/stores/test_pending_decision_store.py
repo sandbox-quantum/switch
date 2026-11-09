@@ -4,8 +4,9 @@ and kept apart by workspace."""
 
 from __future__ import annotations
 
+import time
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -64,7 +65,7 @@ async def _claim(
 
 
 def _pending(room_id: str, seq: int) -> Pending:
-    return Pending(room_id, seq, f"$m{seq}", datetime.now(UTC))
+    return Pending(room_id, seq, f"$m{seq}", 0.0, time.monotonic())
 
 
 def _keys(pendings: list[Pending]) -> list[tuple[str, int, str]]:
@@ -149,6 +150,8 @@ async def test_old_rows_expire_and_young_ones_stay(
         left = (await session.scalars(select(PendingDecision.room_seq))).all()
 
     assert _keys(expired) == [(room, 1, "$m1")]
+    # The age is the database's own: the row was stamped three minutes back.
+    assert 179 <= expired[0].age_seconds <= 190
     assert left == [2]
 
 
