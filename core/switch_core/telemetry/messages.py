@@ -99,17 +99,16 @@ _UNKNOWN_RUNTIME = "unknown"
 class _RoomFacts:
     bridge_platform: str
     channel_type: str
-    user_count: int
-    agent_count: int
+    user_count: int | None
+    agent_count: int | None
 
 
 # A room whose lookup failed. Reported rather than dropped, so a lookup
-# problem shows as `unknown` in the charts instead of as fewer messages; -1
-# rather than 0 so it cannot be read as an empty room. The catalogue has no
-# empty value, so an average of the counts has to filter on
-# `bridge_platform != unknown` — the docs say so.
+# problem shows as `unknown` in the charts instead of as fewer messages. Its
+# sizes are left off the event rather than reported as 0, which would read as
+# an empty room, so an average of them skips it.
 _UNKNOWN_ROOM = _RoomFacts(
-    bridge_platform="unknown", channel_type="unknown", user_count=-1, agent_count=-1
+    bridge_platform="unknown", channel_type="unknown", user_count=None, agent_count=None
 )
 
 

@@ -354,7 +354,10 @@ person created" read as "channels this workspace happens to have".
 Event names are `snake_case`, past tense, prefixed `switch_core.` on the wire.
 Every event of a given name always carries exactly the same property keys —
 where a property does not apply, it carries an explicit `none` rather than being
-omitted, so a missing key always means a bug rather than a case.
+omitted, so a missing key always means a bug rather than a case. The one
+exception is a number that cannot be known, such as an age whose timestamp
+could not be read: the catalogue declares those properties optional, and they
+are left off the event (see the end of [Closed value sets](#closed-value-sets)).
 
 Every event that can fail carries `outcome`, so that the failure population is
 never invisible.
@@ -546,7 +549,7 @@ then rolls back is never reported.
 | `signup_refused` | `reason`: `disabled` / `rate_limited` (the hourly cap) / `email_taken` | the sign-up page was refused |
 | `workspace_created` | `new_organization` (boolean): an organization was created with it | a workspace and its owner's membership exist |
 | `cloud_machine_requested` | `change`: `new` / `joined_workspace` (the owner's machine now serves another workspace) / `unretained` (a machine kept after its agents left, running again) / `restarted` (a stopped machine started by a claim) | a claim changed something; a claim on a machine already running is not reported. One event per claim, naming the first of these that applies, so a retained machine joined from another workspace is `joined_workspace` though it also runs again |
-| `cloud_machine_ready` | `new_machine` (boolean) · `provisioning_seconds`: from the claim to the first controller report for a new machine, `-1` for a later start | the machine's controller reported at its current revision |
+| `cloud_machine_ready` | `new_machine` (boolean) · `provisioning_seconds`: from the claim to the first controller report for a new machine, left out for a later start | the machine's controller reported at its current revision |
 | `cloud_machine_failed` | `reason`: `not_scheduled` / `never_started` / `never_connected` (each after 10 minutes) / `owner_left` (its owner is in none of its workspaces) / `needs_attention` / `reported` (any other error the machine reported) | the machine went into error; not again while it stays there |
 | `cloud_machine_woken` | `trigger`: `message` (its agent was addressed) / `agent_placed` / `owner` · `stopped_by`: `idle` / `owner` / `unknown` | a stopped machine was started again |
 | `cloud_machine_stopped` | `reason`: `idle` / `owner` | a running machine was told to stop |
@@ -599,8 +602,8 @@ telemetry is switched off does not emit it later as though it had just happened.
 | Property | Type |
 |---|---|
 | `bridge_platform` | platform |
-| `seconds_since_install` | number |
-| `seconds_since_configured` | number — configuration saved to first connect |
+| `seconds_since_install` | number — left out where the deployment has no install clock |
+| `seconds_since_configured` | number — configuration saved to first connect; left out if the configuration time could not be read |
 | `is_preconfigured` | boolean — registered by the deployment's setup step, not a person |
 | `is_first_connector` | boolean — the first connector a person added |
 | `failed_attempts_before_success` | number |
@@ -766,8 +769,8 @@ monotonic clock, spanning both halves of it: the synchronous setup and the task
 that actually reaches the platform. Nothing else times this — a bridge comes up
 on a background task rather than inside a request the server serves — and the
 failure half is the more interesting one, because a timeout and a refusal carry
-the same `failure_reason` and nothing alike in the time. `-1` if no reading was
-taken, following the convention below.
+the same `failure_reason` and nothing alike in the time. Left out if no reading
+was taken, following the convention below.
 
 **`bridge_disconnected`** — `bridge` (as above), `bridge_platform`, `reason`
 (`shutdown` \| `restart` \| `auth_failed` \| `network` \| `platform_error` \|
@@ -811,17 +814,15 @@ the person said.
 | `sender_kind` | `user` \| `bot` \| `agent` — only participants are metered, so `platform` does not occur here. `bot` is an integration's post (see "People, bots and accounts"); before that value existed those were `user` |
 | `bridge_platform` | platform, `none` for an internal room, `unknown` if the room could not be read |
 | `channel_type` | channel type, or `unknown` if the room could not be read |
-| `room_user_count` | number — human members of the room, `-1` if it could not be read |
-| `room_agent_count` | number — agent members, `-1` if it could not be read |
+| `room_user_count` | number — human members of the room; left out if it could not be read |
+| `room_agent_count` | number — agent members; left out if it could not be read |
 | `has_attachment` | boolean |
 | `in_thread` | boolean |
 
 The average of `room_user_count` over these events is the room size a typical
-message is said to — weighted by messages, not by rooms. **Filter out
-`bridge_platform = unknown` before averaging**: those are rooms that could not
-be read, and their `-1` would pull the mean down. Every property is required on
-every event and the catalogue has no empty value, so `-1` is the marker. The
-snapshot's `room_users_mean` is the per-room figure.
+message is said to — weighted by messages, not by rooms. A room that could not
+be read leaves both sizes out, so an average skips it. The snapshot's
+`room_users_mean` is the per-room figure.
 
 **`agent_message_received`** — a message an agent was asked to act on:
 addressed to it (by name, alias, role, or a direct room) *and* let through its
@@ -855,7 +856,7 @@ separates an agent answering people from agents talking among themselves.
 | `known_agent_type` | the sending agent's runtime, or `unknown` if the agent could not be looked up |
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
-| `room_user_count` | number, `-1` if the room could not be read |
+| `room_user_count` | number; left out if the room could not be read |
 | `has_attachment` | boolean |
 | `in_thread` | boolean |
 
@@ -965,11 +966,17 @@ server can fail to establish (`room_archived`/`room_deleted`.`was_ever_active`,
 property that can be unknown is a three-valued fact, and collapsing the failed
 case into `false` reports a guess as a claim the code has no evidence for.
 
-Where a duration or an age cannot be known — a deployment with no install
-clock, a bridge whose configuration timestamp is unreadable, a row whose
-`created_at` could not be read — the property carries `-1` rather than `0`, so
-"we could not tell" is distinguishable from "it happened instantly" or
-"created just now".
+Where a duration, an age or a size cannot be known — a deployment with no
+install clock, a bridge whose configuration timestamp is unreadable, a row
+whose `created_at` could not be read, a room that could not be looked up — the
+property is left off the event rather than sent as `0` or `-1`. `0` would read
+as "it happened instantly" or "created just now", and a sentinel such as `-1`
+is summed and averaged like any other value unless every chart filters it,
+where an absent property is skipped by every aggregation. These are the only
+properties that may be missing: `age_days`, `age_hours`,
+`seconds_since_install` and `seconds_since_configured` on `connector_added`,
+`duration_ms` on `bridge_connected`, `provisioning_seconds`, and the room sizes
+on the message events. Servers released before this sent `-1` instead.
 
 Any property whose value is not in its declared set is a bug. It should raise
 where the event is built rather than be coerced, dropped, or silently widened

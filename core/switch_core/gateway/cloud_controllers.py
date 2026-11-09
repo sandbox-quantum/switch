@@ -227,7 +227,7 @@ async def record_controller_status(
                 "provisioning_seconds": (
                     max((now - machine.created_at).total_seconds(), 0.0)
                     if new_machine
-                    else -1
+                    else None
                 ),
             },
         )

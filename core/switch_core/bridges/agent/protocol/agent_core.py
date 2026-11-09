@@ -1442,7 +1442,7 @@ class AgentCore:
         # Captured before the row goes: afterwards there is nothing left to
         # describe what was removed, and "an agent was deleted" without its
         # runtime or its age says almost nothing.
-        removed: dict[str, str | int | float | bool] = {
+        removed: dict[str, str | int | float | bool | None] = {
             "known_agent_type": normalise_known_agent_type(agent.metadata_),
             "age_days": age_days(agent.created_at),
             "had_parent": agent.parent_agent_id is not None,

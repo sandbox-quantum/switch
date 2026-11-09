@@ -329,8 +329,8 @@ class TestRoomMessageSent:
         [(_, properties)] = await _reported(messages, service, sink)
         assert properties["bridge_platform"] == "unknown"
         assert properties["channel_type"] == "unknown"
-        assert properties["room_user_count"] == -1
-        assert properties["room_agent_count"] == -1
+        assert "room_user_count" not in properties
+        assert "room_agent_count" not in properties
 
 
 class TestAgentMessageSent:

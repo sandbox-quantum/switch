@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session, SessionTransaction
 from switch_core.config import DeploymentKind
 from switch_core.telemetry.catalogue import (
     DEPLOYMENT_KIND_PROPERTY,
-    PropertyValue,
+    EmittedValue,
     validate,
     wire_name,
 )
@@ -92,18 +92,18 @@ class TelemetryService:
         """When this deployment was installed, or None if that is unknown."""
         return self._installed_at
 
-    def emit(self, event: str, **properties: PropertyValue) -> None:
+    def emit(self, event: str, **properties: EmittedValue) -> None:
         """Report one event. Never blocks; raises only on a malformed event."""
         self._emit(event, time.time_ns(), properties)
 
-    def emit_at(self, event: str, at: datetime, **properties: PropertyValue) -> None:
+    def emit_at(self, event: str, at: datetime, **properties: EmittedValue) -> None:
         """`emit`, dated `at` rather than now: for an event about a time that
         has passed, which a chart must place where it happened."""
         microseconds = (at - _EPOCH) // timedelta(microseconds=1)
         self._emit(event, microseconds * 1_000, properties)
 
     def _emit(
-        self, event: str, timestamp_ns: int, properties: dict[str, PropertyValue]
+        self, event: str, timestamp_ns: int, properties: dict[str, EmittedValue]
     ) -> None:
         # Validated even when disabled, so a mistake in a rarely-taken branch
         # is caught by whichever test exercises it rather than lying dormant
@@ -115,7 +115,11 @@ class TelemetryService:
             TelemetryRecord(
                 name=wire_name(event),
                 properties={
-                    **properties,
+                    **{
+                        name: value
+                        for name, value in properties.items()
+                        if value is not None
+                    },
                     DEPLOYMENT_KIND_PROPERTY: self._deployment_kind,
                 },
                 resource=dict(self._resource),
@@ -132,7 +136,7 @@ class TelemetryService:
             return
         await settle_superseded_milestones(self._session_factory)
 
-    async def emit_milestone(self, event: str, **properties: PropertyValue) -> None:
+    async def emit_milestone(self, event: str, **properties: EmittedValue) -> None:
         """Report a once-ever activation milestone, if it has not been reported.
 
         Adds `seconds_since_install` and takes the claim that makes it
@@ -187,7 +191,7 @@ class TelemetryService:
 def emit_safely(
     telemetry: TelemetryService | None,
     event: str,
-    properties: Mapping[str, PropertyValue],
+    properties: Mapping[str, EmittedValue],
 ) -> None:
     """Report an event from a path that must not fail because of telemetry.
 
@@ -218,7 +222,7 @@ def emit_after_commit(
     session: AsyncSession,
     telemetry: TelemetryService | None,
     event: str,
-    properties: Mapping[str, PropertyValue],
+    properties: Mapping[str, EmittedValue],
 ) -> None:
     """`emit_safely` once `session` commits, and never if it rolls back.
 

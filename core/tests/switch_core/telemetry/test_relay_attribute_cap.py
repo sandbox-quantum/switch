@@ -22,6 +22,7 @@ from switch_core.telemetry.catalogue import (
     CATALOGUE,
     NUMBER,
     PropertyType,
+    _Optional,
     event_spec,
 )
 from switch_core.telemetry.service import TelemetryService
@@ -52,6 +53,8 @@ class _Capture:
 
 def _example(kind: PropertyType) -> Any:
     """A value the catalogue accepts for a property of this kind."""
+    if isinstance(kind, _Optional):
+        return _example(kind.kind)
     if kind is NUMBER:
         return 1
     if kind is BOOLEAN:
@@ -61,6 +64,8 @@ def _example(kind: PropertyType) -> Any:
 
 def _largest(kind: PropertyType) -> Any:
     """The longest value the catalogue accepts for a property of this kind."""
+    if isinstance(kind, _Optional):
+        return _largest(kind.kind)
     if kind is NUMBER:
         return -123456789012345.67
     if kind is BOOLEAN:

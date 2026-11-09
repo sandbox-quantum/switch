@@ -70,7 +70,7 @@ from switch_core.deeplinks import gateway_url_warning
 from switch_core.outbound import OutboundURLRefused
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
-from switch_core.telemetry.ages import UNKNOWN_AGE, age_days, seconds_since
+from switch_core.telemetry.ages import age_days, seconds_since
 from switch_core.telemetry.deployment import (
     claim_milestone,
     milestone_claimed,
@@ -1500,7 +1500,7 @@ class CollaborationBridgeLifecycleService:
         """
         self._connect_failures[bridge_id] = self._connect_failures.get(bridge_id, 0) + 1
 
-    def _connect_duration_ms(self, bridge_id: str) -> float:
+    def _connect_duration_ms(self, bridge_id: str) -> float | None:
         """How long this bridge's connect attempt took, in whole milliseconds.
 
         Spent on read: an attempt has exactly one outcome, and the next one
@@ -1508,13 +1508,14 @@ class CollaborationBridgeLifecycleService:
         clock, so an NTP step mid-connect cannot produce a negative number or
         an hour that never passed.
 
-        `-1` when no reading was taken, which should not happen — every path to
-        an outcome goes through `start()` — but reporting `0` would assert the
-        connect was instantaneous, which is the one thing it certainly was not.
+        None, which leaves the property off the event, when no reading was
+        taken. That should not happen — every path to an outcome goes through
+        `start()` — but reporting `0` would assert the connect was
+        instantaneous, which is the one thing it certainly was not.
         """
         started = self._connect_started.pop(bridge_id, None)
         if started is None:
-            return UNKNOWN_AGE
+            return None
         return round((time.monotonic() - started) * 1000)
 
     async def _report_connector_up(
@@ -1565,16 +1566,13 @@ class CollaborationBridgeLifecycleService:
                 )
             return
 
-        elapsed_since_install = seconds_since_install(self._telemetry.installed_at)
         emit_safely(
             self._telemetry,
             "connector_added",
             {
                 "bridge_platform": normalise_platform(platform),
-                # -1 where the deployment has no install clock, which is
-                # distinguishable from "took no time" in a way that 0 is not.
-                "seconds_since_install": (
-                    elapsed_since_install if elapsed_since_install is not None else -1.0
+                "seconds_since_install": seconds_since_install(
+                    self._telemetry.installed_at
                 ),
                 "seconds_since_configured": seconds_since(configured_at),
                 "is_preconfigured": preconfigured,
