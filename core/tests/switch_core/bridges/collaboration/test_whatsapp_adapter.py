@@ -42,6 +42,7 @@ from switch_core.bridges.collaboration.whatsapp.adapter import (
     WhatsAppConnectionConfig,
     WhatsAppError,
     appsecret_proof,
+    from_whatsapp,
     sign,
     to_whatsapp,
 )
@@ -68,10 +69,13 @@ class FakeGraph:
         self.media: dict[str, dict[str, Any]] = {}
         self.files: dict[str, bytes] = {}
         self.token_valid = True
+        self.proofs: list[str | None] = []
         self.scopes = ["whatsapp_business_messaging"]
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url).split("?")[0]
+        if url.startswith(GRAPH):
+            self.proofs.append(request.url.params.get("appsecret_proof"))
         if request.headers.get("authorization") not in (None, f"Bearer {TOKEN}"):
             return _graph_error(
                 400, 190, "Invalid OAuth access token - Cannot parse access token"
@@ -145,8 +149,9 @@ async def adapter(graph: FakeGraph) -> WhatsAppAdapter:
     return adapter
 
 
-def _change(message: dict[str, Any]) -> bytes:
+def _change(message: dict[str, Any], number: str = NUMBER_ID) -> bytes:
     value = {
+        "metadata": {"phone_number_id": number},
         "contacts": [{"wa_id": ADA, "profile": {"name": "Ada"}}],
         "messages": [{"from": ADA, "id": "wamid.in1", **message}],
     }
@@ -294,6 +299,44 @@ async def test_a_text_is_a_direct_room_and_a_quote_reply_its_thread(
     assert (message.content, message.root_id) == ("@coder hi", "wamid.root")
 
 
+async def test_an_event_for_another_number_is_dropped(
+    adapter: WhatsAppAdapter,
+) -> None:
+    await _deliver(
+        adapter, _change({"type": "text", "text": {"body": "hi"}}, "999999999")
+    )
+    assert adapter.received == []  # type: ignore[attr-defined]
+
+
+async def test_a_group_message_is_not_relayed(adapter: WhatsAppAdapter) -> None:
+    await _deliver(
+        adapter, _change({"type": "text", "text": {"body": "hi"}, "group_id": "g1"})
+    )
+    assert adapter.received == []  # type: ignore[attr-defined]
+
+
+async def test_a_person_known_by_username_is_their_scoped_id(
+    adapter: WhatsAppAdapter,
+) -> None:
+    value = {
+        "metadata": {"phone_number_id": NUMBER_ID},
+        "contacts": [{"user_id": "US.ada", "profile": {"name": "Ada"}}],
+        "messages": [
+            {
+                "from_user_id": "US.ada",
+                "id": "wamid.in2",
+                "type": "text",
+                "text": {"body": "hi"},
+            }
+        ],
+    }
+    await _deliver(
+        adapter, json.dumps({"entry": [{"changes": [{"value": value}]}]}).encode()
+    )
+    [message] = adapter.received  # type: ignore[attr-defined]
+    assert (message.channel_id, message.sender_name) == ("US.ada", "Ada")
+
+
 async def test_a_bang_command(adapter: WhatsAppAdapter) -> None:
     await _deliver(adapter, _change({"type": "text", "text": {"body": "!help"}}))
     [command] = adapter.received  # type: ignore[attr-defined]
@@ -348,6 +391,20 @@ async def test_an_oversized_file_is_told_to_the_room_not_dropped(
     assert message.attachments == []
     [failure] = message.attachment_failures
     assert "exceeds the 10 byte limit" in failure.reason
+
+
+async def test_a_download_stops_at_the_limit_when_meta_names_no_size(
+    adapter: WhatsAppAdapter, graph: FakeGraph
+) -> None:
+    adapter.set_max_attachment_bytes(10)
+    graph.media["m5"] = {"url": CDN, "mime_type": "application/pdf"}
+    graph.files[CDN] = b"x" * 1000
+    document = {"id": "m5", "mime_type": "application/pdf", "filename": "big.pdf"}
+    await _deliver(adapter, _change({"type": "document", "document": document}))
+    [message] = adapter.received  # type: ignore[attr-defined]
+    assert message.attachments == []
+    [failure] = message.attachment_failures
+    assert "attachment limit" in failure.reason
 
 
 async def test_a_file_that_will_not_download_is_a_failure(
@@ -612,10 +669,24 @@ async def test_the_working_reaction_goes_on_and_comes_off(
     await adapter.mark_activity(
         ADA, "wamid.in1", agent_name="coder", mark="working", on=False
     )
-    on, off = graph.sent
+    on, typing, off = graph.sent
     assert on["type"] == "reaction"
     assert on["reaction"] == {"message_id": "wamid.in1", "emoji": "\N{EYES}"}
+    assert typing == {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": "wamid.in1",
+        "typing_indicator": {"type": "text"},
+    }
     assert off["reaction"] == {"message_id": "wamid.in1", "emoji": ""}
+
+
+async def test_every_graph_call_carries_the_app_secret_proof(
+    adapter: WhatsAppAdapter, graph: FakeGraph
+) -> None:
+    await adapter.send_message(ADA, "coder", "hi")
+    await adapter.send_attachment(ADA, "coder", "a.png", "image/png", b"png")
+    assert graph.proofs and set(graph.proofs) == {appsecret_proof(TOKEN, SECRET)}
 
 
 async def test_a_refused_reaction_is_raised_as_refused(
@@ -640,6 +711,13 @@ def test_what_whatsapp_cannot_do_is_declared() -> None:
     assert WhatsAppAdapter.draws_session_activity is True
     assert WhatsAppAdapter.supports_queue_reaction is False
     assert WhatsAppAdapter.outbound_urls(_config().model_dump()) == []
+
+
+def test_whatsapps_marks_back_into_markdown() -> None:
+    assert (
+        from_whatsapp("*bold* _it_ ~old~ `*code*` 2*3*4 @support")
+        == "**bold** _it_ ~~old~~ `*code*` 2*3*4 @support"
+    )
 
 
 def test_markdown_in_whatsapps_marks() -> None:

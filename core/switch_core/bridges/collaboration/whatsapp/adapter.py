@@ -234,7 +234,12 @@ class WhatsAppAdapter(PlatformAdapter):
             try:
                 debug = await http.get(
                     f"{GRAPH}/debug_token",
-                    params={"input_token": config.access_token},
+                    params={
+                        "input_token": config.access_token,
+                        "appsecret_proof": appsecret_proof(
+                            config.access_token, config.app_secret
+                        ),
+                    },
                     headers=auth,
                 )
                 number = await http.get(
@@ -353,9 +358,20 @@ class WhatsAppAdapter(PlatformAdapter):
             return
         if envelope_type != "message":
             return
+        number = str((payload.get("metadata") or {}).get("phone_number_id") or "")
+        if number and number != self.config.phone_number_id:
+            # A Meta app has one webhook address for all its numbers.
+            logger.warning(
+                "Dropped a WhatsApp event for number %s: this connection is %s",
+                number,
+                self.config.phone_number_id,
+            )
+            return
         names = {
-            str(c.get("wa_id")): str(
-                (c.get("profile") or {}).get("name") or c.get("wa_id")
+            str(c.get("wa_id") or c.get("user_id")): str(
+                (c.get("profile") or {}).get("name")
+                or c.get("wa_id")
+                or c.get("user_id")
             )
             for c in payload.get("contacts") or []
         }
@@ -384,7 +400,18 @@ class WhatsAppAdapter(PlatformAdapter):
     async def _on_whatsapp_message(
         self, message: dict[str, Any], names: dict[str, str]
     ) -> None:
-        sender = str(message.get("from") or "")
+        # A person's number where Meta gives one; one who hides it behind a
+        # username has only the business-scoped id.
+        sender = str(message.get("from") or message.get("from_user_id") or "")
+        if not sender:
+            return
+        if message.get("group_id"):
+            logger.warning(
+                "A WhatsApp group message (%s) was not relayed: only chats with "
+                "the business number are",
+                message.get("id"),
+            )
+            return
         name = names.get(sender, sender)
         root_id = (message.get("context") or {}).get("id")
         kind = message.get("type")
@@ -491,7 +518,7 @@ class WhatsAppAdapter(PlatformAdapter):
         cap = self._max_attachment_bytes
         try:
             described = await self._http.get(
-                f"{GRAPH}/{media_id}", headers=self._auth()
+                f"{GRAPH}/{media_id}", params=self._proof(), headers=self._auth()
             )
             if described.status_code != 200:
                 raise BridgeOperationError(_error(described).message)
@@ -511,12 +538,16 @@ class WhatsAppAdapter(PlatformAdapter):
                 _MEDIA_HOSTS
             ):
                 raise BridgeOperationError("WhatsApp named no Meta address for it")
-            downloaded = await self._http.get(
-                url, headers=self._auth(), timeout=_MEDIA_TIMEOUT
-            )
-            if downloaded.status_code != 200:
-                raise BridgeOperationError(f"HTTP {downloaded.status_code}")
-            data = downloaded.content
+            data = b""
+            async with self._http.stream(
+                "GET", url, headers=self._auth(), timeout=_MEDIA_TIMEOUT
+            ) as downloaded:
+                if downloaded.status_code != 200:
+                    raise BridgeOperationError(f"HTTP {downloaded.status_code}")
+                async for chunk in downloaded.aiter_bytes():
+                    data += chunk
+                    if len(data) > cap:
+                        break
         except (BridgeOperationError, httpx.HTTPError, ValueError) as error:
             logger.warning(
                 "Could not download WhatsApp %s %s: %s", kind, media_id, error
@@ -529,7 +560,7 @@ class WhatsAppAdapter(PlatformAdapter):
             failures.append(
                 AttachmentFailure(
                     filename=filename,
-                    reason=f"{len(data)} bytes exceeds the {cap} byte limit",
+                    reason=f"over {cap} bytes, the server's attachment limit",
                 )
             )
             return
@@ -591,6 +622,7 @@ class WhatsAppAdapter(PlatformAdapter):
             f"{GRAPH}/{self.config.phone_number_id}/media",
             data={"messaging_product": "whatsapp", "type": mimetype},
             files={"file": (filename, data, mimetype)},
+            params=self._proof(),
             headers=self._auth(),
             timeout=_MEDIA_TIMEOUT,
         )
@@ -605,10 +637,20 @@ class WhatsAppAdapter(PlatformAdapter):
     def _auth(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.config.access_token}"}
 
+    def _proof(self) -> dict[str, str]:
+        """Sent with every Graph call, so the app may require it (App
+        settings → Advanced → Require app secret)."""
+        return {
+            "appsecret_proof": appsecret_proof(
+                self.config.access_token, self.config.app_secret
+            )
+        }
+
     async def _send(self, body: dict[str, Any]) -> str:
         response = await self._http.post(
             f"{GRAPH}/{self.config.phone_number_id}/messages",
             json={"messaging_product": "whatsapp", **body},
+            params=self._proof(),
             headers=self._auth(),
         )
         if response.status_code != 200:
@@ -788,6 +830,21 @@ class WhatsAppAdapter(PlatformAdapter):
                 f"WhatsApp will not {'add' if on else 'remove'} the working "
                 f"reaction on {message_ref}: {error}"
             ) from error
+        if on:
+            # Read receipts and "typing…" for up to 25 seconds; best effort,
+            # since the reaction already says an agent is on it.
+            try:
+                await self._send(
+                    {
+                        "status": "read",
+                        "message_id": message_ref,
+                        "typing_indicator": {"type": "text"},
+                    }
+                )
+            except BridgeOperationError as error:
+                logger.warning(
+                    "WhatsApp showed no typing indicator on %s: %s", message_ref, error
+                )
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
@@ -835,7 +892,7 @@ class WhatsAppAdapter(PlatformAdapter):
         return to_whatsapp(content)
 
     def translate_inbound(self, raw_message: str) -> str:
-        return raw_message
+        return from_whatsapp(raw_message)
 
 
 def to_whatsapp(markdown: str) -> str:
@@ -845,6 +902,20 @@ def to_whatsapp(markdown: str) -> str:
     text = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", text, flags=re.M)
     text = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1 (\2)", text)
     return text
+
+
+def from_whatsapp(text: str) -> str:
+    """WhatsApp's marks as Markdown: *bold* and ~strike~ (its _italic_ is
+    already Markdown's). Code spans and blocks are left alone."""
+    parts = re.split(r"(```.*?```|`[^`\n]*`)", text, flags=re.S)
+    for i in range(0, len(parts), 2):
+        part = re.sub(
+            r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])", r"**\1**", parts[i]
+        )
+        parts[i] = re.sub(
+            r"(?<![\w~])~(?=\S)([^~\n]+?)(?<=\S)~(?![\w~])", r"~~\1~~", part
+        )
+    return "".join(parts)
 
 
 def _chunk(text: str, limit: int = MAX_MESSAGE) -> list[str]:
