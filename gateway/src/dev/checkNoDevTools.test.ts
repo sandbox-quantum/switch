@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEV_MARKERS, devToolsIn } from "../../scripts/check-no-dev-tools.mjs";
+import { DEV_MARKERS, devToolsIn } from "../../scripts/dev-tools.mjs";
 
 describe("the build's dev-tools check", () => {
   it("passes a build without them", () => {

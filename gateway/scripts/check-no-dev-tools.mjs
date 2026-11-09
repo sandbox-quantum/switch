@@ -4,7 +4,7 @@
  * which drops the only import of them (`src/App.tsx`). That holds only while
  * nothing imports them another way, so every build checks it: `npm run build`
  * runs this after `vite build`, and so does everything that builds the
- * dashboard through it (the image, Switch Console's bundled copy, CI). A role
+ * dashboard through it (the images, Switch Console's bundled copy, CI). A role
  * switcher that shipped would let whoever opens the page pick who they are.
  *
  * Run: npm run build (or node scripts/check-no-dev-tools.mjs after one)
@@ -12,35 +12,22 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { devToolsIn } from "./dev-tools.mjs";
 
-/** Strings each dev tool cannot work without, so minifying keeps them. */
-export const DEV_MARKERS = ["/__dev/role-accounts", "dev-role-switcher"];
-
-/** Every `[path, marker]` where a built file names a marker. Throws when
- * there are no files, rather than passing a build with nothing in it. */
-export function devToolsIn(files) {
-  if (files.length === 0) throw new Error("the build holds no files to check");
-  return files.flatMap(([path, text]) =>
-    DEV_MARKERS.filter((marker) => text.includes(marker)).map((marker) => [path, marker]),
+const dist = fileURLToPath(new URL("../dist", import.meta.url));
+const files = [];
+for (const name of await readdir(dist, { recursive: true })) {
+  const path = join(dist, name);
+  if (!(await stat(path)).isFile()) continue;
+  files.push([relative(process.cwd(), path), await readFile(path, "utf8")]);
+}
+const found = devToolsIn(files);
+for (const [path, marker] of found) console.error(`${path} carries "${marker}"`);
+if (found.length > 0) {
+  console.error(
+    "This build carries dev-only tools from src/dev/, which must never ship. " +
+      "Import them only behind import.meta.env.DEV, as src/App.tsx does.",
   );
+  process.exit(1);
 }
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const dist = fileURLToPath(new URL("../dist", import.meta.url));
-  const paths = (await readdir(dist, { recursive: true })).map((name) => join(dist, name));
-  const files = [];
-  for (const path of paths) {
-    if (!(await stat(path)).isFile()) continue;
-    files.push([relative(process.cwd(), path), await readFile(path, "utf8")]);
-  }
-  const found = devToolsIn(files);
-  for (const [path, marker] of found) console.error(`${path} carries "${marker}"`);
-  if (found.length > 0) {
-    console.error(
-      "This build carries dev-only tools from src/dev/, which must never ship. " +
-        "Import them only behind import.meta.env.DEV, as src/App.tsx does.",
-    );
-    process.exit(1);
-  }
-  console.log("no dev-only tools in the build");
-}
+console.log("no dev-only tools in the build");
