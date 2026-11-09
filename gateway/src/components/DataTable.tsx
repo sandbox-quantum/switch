@@ -99,7 +99,12 @@ const HOOT_GRID_SX: SxProps<Theme> = {
   "--DataGrid-rowBorderColor": "var(--hoot-border)",
   // The band is painted on the header row and the cells let it through: the
   // grid paints each header cell with its own opaque background otherwise.
-  "& .MuiDataGrid-columnHeaders": { backgroundColor: "var(--hoot-cream)" },
+  // Cream is a wash, so it is laid over the card fill: the header stays put
+  // while the rows scroll under it, and must hide them.
+  "& .MuiDataGrid-columnHeaders": {
+    backgroundColor: "var(--hoot-card)",
+    backgroundImage: "linear-gradient(var(--hoot-cream), var(--hoot-cream))",
+  },
   "& .MuiDataGrid-columnHeader, & .MuiDataGrid-columnHeaders .MuiDataGrid-filler": {
     backgroundColor: "transparent",
   },

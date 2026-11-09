@@ -69,6 +69,14 @@ describe("DataTable toolbar", () => {
     expect(getComputedStyle(grid.parentElement!).display).not.toBe("flex");
   });
 
+  it("gives the header an opaque fill, so rows scrolling under it are hidden", () => {
+    const { container } = render(table());
+    const header = getComputedStyle(container.querySelector(".MuiDataGrid-columnHeaders") as HTMLElement);
+
+    expect(header.backgroundColor).toBe("var(--hoot-card)");
+    expect(header.backgroundImage).toContain("var(--hoot-cream)");
+  });
+
   it("gives a table sized to its rows room to say it has none", () => {
     const heightOf = (props: Partial<Parameters<typeof DataTable<Row>>[0]>) => {
       const { container, unmount } = render(<DataTable rows={rows} columns={columns} {...props} />);

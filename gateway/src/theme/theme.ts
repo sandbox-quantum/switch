@@ -31,7 +31,9 @@ const RADIUS_XL = 16;
  *  MUI's 25 elevation slots so nothing can stack heavier shadows to fake importance. */
 const SURFACE = "0 0 12px 0 rgb(0 0 0 / 0.04)";
 const CARD = "0 1px 2px 0 rgb(0 0 0 / 0.04)";
-const POPOVER = "0 0 4px 0 rgb(0 0 0 / 0.1), 0 1px 10px 0 rgb(0 0 0 / 0.06)";
+/** Firmer than Hoot's own popover glow: a menu shares the card's fill, so
+ *  over a table of the same colour only its shadow sets it apart. */
+const POPOVER = "0 2px 6px 0 rgb(0 0 0 / 0.08), 0 10px 28px 0 rgb(0 0 0 / 0.14)";
 const MODAL = "0 0 8px 0 rgb(0 0 0 / 0.12), 0 8px 32px 0 rgb(0 0 0 / 0.12)";
 
 const HOOT_SHADOWS = [
@@ -268,9 +270,20 @@ export const APP_THEME = () =>
           rounded: { borderRadius: RADIUS },
         },
       },
+      // Menus and popovers float over cards of the same fill, so their edge is
+      // the field's firmer hairline, and in dark mode, where a shadow barely
+      // shows, they take the lifted fill fields use.
       MuiPopover: {
         defaultProps: { elevation: 4 },
-        styleOverrides: { paper: { borderRadius: RADIUS_LG, boxShadow: POPOVER } },
+        styleOverrides: {
+          paper: ({ theme }) => ({
+            borderRadius: RADIUS_LG,
+            boxShadow: POPOVER,
+            borderColor: hootVar("field-border"),
+            backgroundColor: hootVar("popover"),
+            ...theme.applyStyles("dark", { backgroundColor: hootVar("field") }),
+          }),
+        },
       },
       // Hoot's field chrome: a white field on a hairline with one soft shadow,
       // and on focus a full-strength border with a soft ring hugging it.

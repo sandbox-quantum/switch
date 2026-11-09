@@ -462,7 +462,7 @@
      rail item are upstream's elevation steps; a floating panel has none. */
   --hoot-shadow-surface: var(--hoot-elevation-2);
   --hoot-shadow-rail-active: var(--hoot-elevation-3);
-  --hoot-shadow-popover: 0 0 4px 0 rgb(0 0 0 / 0.1), 0 1px 10px 0 rgb(0 0 0 / 0.06);
+  --hoot-shadow-popover: 0 2px 6px 0 rgb(0 0 0 / 0.08), 0 10px 28px 0 rgb(0 0 0 / 0.14);
 }
 
 /* Gateway overrides of upstream values, the same in both schemes. Last in the
