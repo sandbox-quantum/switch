@@ -137,6 +137,7 @@ import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from '
 import { consoleIdentityHeaders } from './console-identity';
 import { NoManagementApiError } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
+import { noteSessionEnded } from './session-ended';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
 function gatewayUrl(server: SwitchServer, path: string): string {
@@ -427,6 +428,9 @@ export async function gatewayRequest(
   }
 
   if (response.status === 401) {
+    // Only a call that sent a session can say the session is gone; a 401 to an
+    // unauthenticated call is about something else.
+    if (options.authenticated) noteSessionEnded(server.id);
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
   if (answeredWithPage(response)) {
@@ -778,14 +782,23 @@ export async function updateMyName(server: SwitchServer, name: string): Promise<
  * with the server's reason, such as a wrong current password. An account made
  * through single sign-on has no password to change; the server says so on the
  * user (`hasPassword`), and Settings offers no change for one.
+ *
+ * The server ends every session on a password change, the one that made it
+ * included, and answers with a new session cookie for this caller. Keeping it
+ * is what leaves Console signed in: the stored cookie is now refused. A server
+ * that sends none leaves the old one, and the next call finds it signed out.
+ *
+ * Failing to keep the new cookie is not a failed change: the password has
+ * changed by then, so it is reported as what it is, with what to do next.
  */
 export async function changeMyPassword(
   server: SwitchServer,
   currentPassword: string,
   newPassword: string
 ): Promise<void> {
+  let res: Response;
   try {
-    await gatewayFetch(server, '/auth/me/password', {
+    res = await gatewayFetch(server, '/auth/me/password', {
       authenticated: true,
       method: 'PUT',
       body: { current_password: currentPassword, new_password: newPassword },
@@ -793,6 +806,29 @@ export async function changeMyPassword(
   } catch (error) {
     if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
     throw error;
+  }
+  const cookie = extractAuthCookie(res.headers.getSetCookie());
+  if (!cookie) return;
+  try {
+    await setSessionCookie(server.id, cookie);
+  } catch (cause) {
+    throw new PasswordChangedSessionNotSavedError(cause);
+  }
+}
+
+/**
+ * The password changed, but Console could not keep the session the server
+ * answered with. Named, so the window says it as it is rather than leading
+ * with "Could not change your password", which would leave the person
+ * believing the old password still works.
+ */
+export class PasswordChangedSessionNotSavedError extends Error {
+  constructor(cause: unknown) {
+    super(
+      'Your password was changed, but Console couldn’t save its new session. Sign in again with your new password.',
+      { cause }
+    );
+    this.name = 'PasswordChangedSessionNotSavedError';
   }
 }
 

@@ -1,17 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getSessionCookie = vi.hoisted(() => vi.fn());
+const setSessionCookie = vi.hoisted(() => vi.fn());
 
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   managedServerHostBlocked: () => null,
   managedServerStoppedPhase: () => null,
   noteManagedServerUnanswered: () => undefined,
 }));
-vi.mock('./servers-store', () => ({ getSessionCookie, setSessionCookie: vi.fn() }));
+vi.mock('./servers-store', () => ({ getSessionCookie, setSessionCookie }));
 vi.mock('./auth', () => ({
   refreshSession: vi.fn(),
   reauthenticateManagedServer: vi.fn(),
-  extractAuthCookie: () => null,
+  extractAuthCookie: (setCookies: string[]) =>
+    setCookies.map((c) => /^switch_auth=([^;]*)/.exec(c)?.[1]).find(Boolean) ?? null,
 }));
 vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) }));
 
@@ -23,6 +25,7 @@ const {
   revealApiKey,
   updateMyName,
 } = await import('./gateway-client');
+const { onSessionEnded } = await import('./session-ended');
 
 const SERVER = {
   id: 'srv-1',
@@ -39,12 +42,12 @@ function makeJwt(secondsFromNow: number): string {
   return `${header}.${payload}.sig`;
 }
 
-function response(status: number, body: unknown): Response {
+function response(status: number, body: unknown, setCookies: string[] = []): Response {
   return {
     status,
     ok: status < 400,
     json: async () => body,
-    headers: { get: () => null, getSetCookie: () => [] },
+    headers: { get: () => null, getSetCookie: () => setCookies },
     text: async () => JSON.stringify(body),
   } as unknown as Response;
 }
@@ -106,6 +109,35 @@ describe('account', () => {
       body: { current_password: 'old-pass', new_password: 'new-password-1' },
     });
     expect(lastCall().url).toMatch(/\/auth\/me\/password$/);
+  });
+
+  it('keeps the new session the server answers a password change with', async () => {
+    // The change ends every session, this one included; the cookie it sends
+    // back is the only one that still works, so it has to replace the old.
+    fetchMock.mockImplementation(async () =>
+      response(200, { ok: true }, ['switch_auth=fresh-session; HttpOnly; Path=/; SameSite=Lax'])
+    );
+    await changeMyPassword(SERVER, 'old-pass', 'new-password-1');
+    expect(setSessionCookie).toHaveBeenCalledWith('srv-1', 'fresh-session');
+  });
+
+  it('says the password changed when only keeping its new session failed', async () => {
+    fetchMock.mockImplementation(async () =>
+      response(200, { ok: true }, ['switch_auth=fresh-session; HttpOnly; Path=/'])
+    );
+    setSessionCookie.mockRejectedValueOnce(new Error('disk full'));
+    const failure = await changeMyPassword(SERVER, 'old-pass', 'new-password-1').catch(
+      (error: unknown) => error
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).name).toBe('PasswordChangedSessionNotSavedError');
+    expect((failure as Error).message).toMatch(/^Your password was changed/);
+  });
+
+  it('leaves the stored session alone when the server sends no new one', async () => {
+    fetchMock.mockImplementation(async () => response(200, { ok: true }));
+    await changeMyPassword(SERVER, 'old-pass', 'new-password-1');
+    expect(setSessionCookie).not.toHaveBeenCalled();
   });
 
   it('passes on the server’s reason when the current password is wrong', async () => {
@@ -195,5 +227,31 @@ describe('API keys', () => {
     await deleteApiKey(SERVER, 'k1');
     expect(lastCall()).toMatchObject({ method: 'DELETE' });
     expect(lastCall().url).toMatch(/\/api-keys\/k1$/);
+  });
+});
+
+describe('a session the server has ended', () => {
+  it('says so when a signed-in call is refused with 401', async () => {
+    const ended: string[] = [];
+    const stop = onSessionEnded((serverId) => ended.push(serverId));
+    try {
+      fetchMock.mockImplementation(async () => response(401, { detail: 'Session ended' }));
+      await expect(updateMyName(SERVER, 'Ada')).rejects.toThrow();
+      expect(ended).toEqual(['srv-1']);
+    } finally {
+      stop();
+    }
+  });
+
+  it('says nothing for any other refusal', async () => {
+    const ended: string[] = [];
+    const stop = onSessionEnded((serverId) => ended.push(serverId));
+    try {
+      fetchMock.mockImplementation(async () => response(403, { detail: 'Forbidden' }));
+      await expect(updateMyName(SERVER, 'Ada')).rejects.toThrow();
+      expect(ended).toEqual([]);
+    } finally {
+      stop();
+    }
   });
 });

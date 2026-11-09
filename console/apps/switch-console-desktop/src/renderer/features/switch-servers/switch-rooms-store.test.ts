@@ -297,6 +297,26 @@ describe('listed rooms', () => {
     serversStore.isConnected = () => true;
   });
 
+  it('asks for a sign-in, not a retry, once a session the server ended reads as signed out', async () => {
+    // A password change elsewhere revokes the session: the next room load is
+    // refused, then the server's status is re-checked and reads signed out.
+    // "Rooms may be out of date" with a Retry would be the wrong thing to say.
+    workspaces.activeId = 'ws-a';
+    listRooms.mockImplementation(async () => {
+      throw new Error('Switch session expired — please sign in again.');
+    });
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+    expect(store.workspacesThatFailedToLoad.map((w) => w.name)).toEqual(['Alpha']);
+
+    serversStore.isConnected = (serverId: string) => serverId !== 'srv-a';
+    await store.loadRoomNames();
+
+    expect(store.workspacesNotSignedIn.map((w) => w.name)).toEqual(['Alpha']);
+    expect(store.workspacesThatFailedToLoad).toEqual([]);
+    serversStore.isConnected = () => true;
+  });
+
   it('names the server to sign in to, not the workspace', async () => {
     // The sidebar's "Sign in" link opens this server's page; handed the
     // workspace id instead, it opened nothing.
