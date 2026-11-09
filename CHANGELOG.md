@@ -358,11 +358,14 @@ version of their own to them without also giving them a release of their own.
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
 - **OAuth catalog entries can opt into MCP identity and unscoped consent.**
-  Identity tools must be read-only, take no arguments and identify one account;
-  ambiguous results fail sign-in. `account_id` may list several paths, joined
-  into one id, so a person in two accounts is two connections. Vendors with
-  documented absence of scopes can explicitly omit scope and are always shown
-  as read and write.
+  An entry can name a read-only MCP tool that identifies the account. The
+  tool takes no arguments and must name one account. Otherwise sign-in fails
+  with a fixed reason. `account_id` can list 2 to 8 paths, joined into one
+  id, so a person in two accounts has two connections. An entry whose vendor
+  has no OAuth scopes can leave out `scope`. Its sign-ins are always read and
+  write, and it has no access profiles. For a discovered server, Core now
+  sends the `resource` that the server advertises. Core accepts it only if it
+  is the server's URL, or a parent path on the same origin.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
