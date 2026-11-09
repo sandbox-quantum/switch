@@ -218,9 +218,10 @@ async def check_oauth_client(
     redirect_uri: str,
 ) -> CheckResult:
     name = definition.name
-    client = OAuthClientCredentials(
-        values.client_id, values.secrets["client_secret"], authentication=None
-    )
+    # A public client has no secret to send: the probe still tells a right
+    # client id (`invalid_grant`) from a wrong one (`invalid_client`).
+    secret = values.secrets.get("client_secret")
+    client = OAuthClientCredentials(values.client_id, secret, authentication=None)
     try:
         endpoints = await OAuthAdapter(
             definition, StaticClient(client), http
@@ -248,12 +249,17 @@ async def check_oauth_client(
     if error == "invalid_grant":
         oauth = definition.auth.oauth
         assert oauth is not None
+        accepted = (
+            f"{name} accepts this client ID and secret."
+            if secret is not None
+            else f"{name} accepts this client ID."
+        )
         return CheckResult(
             [
                 Check(
                     "client",
                     True,
-                    f"{name} accepts this client ID and secret.",
+                    accepted,
                     None,
                     oauth.unchecked,
                 )
@@ -275,6 +281,20 @@ async def check_oauth_client(
             settings={},
         )
     if error in ("invalid_client", "unauthorized_client"):
+        if secret is None:
+            return CheckResult(
+                [
+                    Check(
+                        "client",
+                        False,
+                        f"{name} doesn't recognise this client ID. "
+                        "Copy it again from where you created the client.",
+                        "client_id",
+                        None,
+                    )
+                ],
+                settings={},
+            )
         return CheckResult(
             [
                 Check(

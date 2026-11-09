@@ -63,7 +63,9 @@ AdapterName = Literal["github", "oauth", "api_key"]
 RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
 # authorization request is Core's to set.
-AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+AuthorizationParam = Literal[
+    "access_type", "include_granted_scopes", "token_access_type"
+]
 
 
 class OAuthClient(BaseModel):
@@ -105,6 +107,7 @@ class OAuthClient(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     registration: Literal["dynamic", "static"]
     client_settings: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{0,62}$")
+    public_client: bool = False
     redirect: list[RedirectMode] = Field(min_length=1)
     loopback_ports: list[Annotated[int, Field(ge=1024, le=65535)]] | None = Field(
         default=None, min_length=1, max_length=10
@@ -122,6 +125,7 @@ class OAuthClient(BaseModel):
     revocation_discovered: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
+    revocation_auth: Literal["client", "bearer_access_token"] = "client"
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
 
     @model_validator(mode="after")
@@ -134,6 +138,8 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "client_settings names a static client's settings, and only one's"
             )
+        if self.public_client and self.registration != "static":
+            raise ValueError("public_client names a static client, and only one's")
         if len(set(self.redirect)) != len(self.redirect):
             raise ValueError("a redirect mode is listed twice")
         if (self.authorization_url is None) != (self.token_url is None):
@@ -158,6 +164,13 @@ class OAuthClient(BaseModel):
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
             )
+        if (
+            self.revocation_auth == "bearer_access_token"
+            and self.revocation_url is None
+        ):
+            raise ValueError(
+                "bearer access-token revocation needs a fixed revocation_url"
+            )
         if self.revocation_ends_grant and (
             self.revocation_url is None and not self.revocation_discovered
         ):
@@ -179,14 +192,24 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Where the account's stable id is read: a `method` call to `url` with
+    the access token, and the dotted paths in its JSON answer to the id and
+    to a label people recognise (an email, a login). The default GET takes
+    no body; POST is for APIs that ask for one, and sends `body` as JSON (a
+    JSON `null` when it is omitted, as Dropbox's parameterless calls want)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"] = "GET"
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    body: dict[str, object] | None = None
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _body_only_for_post(self) -> "ConnectionIdentity":
+        if self.method == "GET" and self.body is not None:
+            raise ValueError("a GET identity call sends no body")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"

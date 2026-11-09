@@ -351,6 +351,7 @@ class FakeOAuthServer:
         self.spent_refresh: set[str] = set()
         self.token_requests: list[dict[str, str]] = []
         self.revoked: list[dict[str, str]] = []
+        self.identity_methods: list[str] = []
         self.mcp_calls: list[dict[str, Any]] = []
         self.paths: list[str] = []
         self.fail: dict[str, tuple[int, Any]] = {}
@@ -441,7 +442,8 @@ class FakeOAuthServer:
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
-        if where == IDENTITY_URL and request.method == "GET":
+        if where == IDENTITY_URL and request.method in ("GET", "POST"):
+            self.identity_methods.append(request.method)
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
             return _json(200, {"account": self.account})

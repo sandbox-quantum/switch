@@ -17,6 +17,8 @@ from switch_core.connections.loader import CATALOG
 
 REDIRECT = "https://switch.example.test/gateway/service-connections/google-workspace/flows/callback"
 GOOGLE = CATALOG["google-workspace"].definition
+SALESFORCE = CATALOG["salesforce"].definition
+LOOPBACK_REDIRECT = "http://localhost:39251/switch-services/callback"
 
 
 def _http(status: int, body: object) -> httpx.AsyncClient:
@@ -50,6 +52,38 @@ class TestOAuthClient:
         [check] = result.checks
         assert (check.ok, check.field) == (ok, field)
         assert says in check.message
+
+    async def test_a_public_client_proves_its_id_alone(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(400, json={"error": "invalid_grant"})
+
+        result = await check_oauth_client(
+            httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+            CATALOG["dropbox"].definition,
+            AppValues("example-client-id", {}, {}),
+            LOOPBACK_REDIRECT,
+        )
+        [check] = result.checks
+        assert check.ok
+        assert "accepts this client ID." in check.message
+        [request] = seen
+        assert str(request.url) == ("https://api.dropboxapi.com/oauth2/token")
+        body = request.content.decode()
+        assert "client_id=example-client-id" in body
+        assert "client_secret" not in body
+
+    async def test_a_public_clients_wrong_id_is_refused(self) -> None:
+        result = await check_oauth_client(
+            _http(401, {"error": "invalid_client"}),
+            CATALOG["dropbox"].definition,
+            AppValues("example-client-id", {}, {}),
+            LOOPBACK_REDIRECT,
+        )
+        [check] = result.checks
+        assert (check.ok, check.field) == (False, "client_id")
 
     async def test_unreachable_is_its_own_answer(self) -> None:
         def handle(request: httpx.Request) -> httpx.Response:
