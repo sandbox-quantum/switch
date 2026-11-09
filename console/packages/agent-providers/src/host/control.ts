@@ -6,6 +6,7 @@ import type { Duplex } from 'node:stream';
 import { serverEventSchema, type ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import {
+  type AttachmentChunk,
   type AttachmentTransfers,
   attachmentChunkSchema,
   ControlError,
@@ -559,6 +560,16 @@ export class ControlClient {
       .string()
       .nullable()
       .parse(await this.call({ warm: { roomId } }));
+  }
+
+  /** Stage one Console attachment chunk on the session host. */
+  uploadAttachment(chunk: AttachmentChunk): Promise<unknown> {
+    return this.call({ attachment: chunk });
+  }
+
+  /** Discard a partial Console attachment transfer. */
+  async cancelAttachment(transferId: string): Promise<void> {
+    await this.call({ attachmentCancel: transferId });
   }
 
   /** The sidecar's room watcher: its connection state and placements. */

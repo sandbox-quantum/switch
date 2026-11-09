@@ -301,7 +301,7 @@ async function start(
   switchCore.state.startRefused = opts.startRefused ?? false;
   switchCore.state.unavailable = opts.unavailable ?? false;
   const session = structuredClone(SESSION);
-  if (opts.rooms) session.capabilities.attachmentMimeTypes = ['text/plain'];
+  if (opts.rooms) session.capabilities.attachmentMimeTypes = ['text/plain', 'application/pdf'];
   if (opts.resettable) session.capabilities.reset = true;
   const channel = connectParent(parent.port);
   const running = runSharedHost(
@@ -658,6 +658,60 @@ it('fetches a room attachment from the room, and says which ones it could not ta
     ).toBe(createHash('sha256').update(bytes).digest('hex'));
     expect(turn!.text).toContain(
       'Attachment "photo.png" was not delivered: It could not be fetched'
+    );
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('stages a room PDF inside the provider workspace so its sandbox can open the bytes', async () => {
+  const host = await start({ rooms: true });
+  const bytes = new Uint8Array(153_770);
+  bytes.set(new TextEncoder().encode('%PDF-1.7 synthetic fixture'));
+  host.media.set('mxc://switch/synthetic-pdf', bytes);
+  try {
+    await host.parent.ask({
+      type: 'room',
+      handoff: roomMessage(1, 'Review the attached document', [
+        {
+          filename: 'synthetic.pdf',
+          mimetype: 'application/pdf',
+          size: bytes.byteLength,
+          mxc: 'mxc://switch/synthetic-pdf',
+          msgtype: 'm.file',
+        },
+      ]),
+    });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const [attachment] = host.turns[0]!.attachments;
+    expect(attachment).toBeDefined();
+    expect(attachment!.path.startsWith(join(host.base, 'attachments') + '/')).toBe(true);
+    expect(await readFile(attachment!.path)).toEqual(Buffer.from(bytes));
+    expect(host.turns[0]!.text).toContain('Review the attached document');
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('tells the agent when a room PDF exceeds the supported attachment size', async () => {
+  const host = await start({ rooms: true });
+  try {
+    await host.parent.ask({
+      type: 'room',
+      handoff: roomMessage(1, 'Review this', [
+        {
+          filename: 'too-large.pdf',
+          mimetype: 'application/pdf',
+          size: 10 * 1024 * 1024 + 1,
+          mxc: 'mxc://switch/oversized-pdf',
+          msgtype: 'm.file',
+        },
+      ]),
+    });
+    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.turns[0]!.attachments).toHaveLength(0);
+    expect(host.turns[0]!.text).toContain(
+      'Attachment "too-large.pdf" was not delivered: Unsupported attachment type or size.'
     );
   } finally {
     expect(await host.stop()).toBeNull();

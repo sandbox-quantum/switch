@@ -4,9 +4,16 @@ import asyncio
 import uuid
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, CollaborationBridge, Tenant
+from switch_core.db.models import (
+    Client,
+    CollaborationBridge,
+    OwnershipLease,
+    SwitchCoreProcess,
+    Tenant,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.tenant_context import tenant_scope
@@ -69,6 +76,66 @@ async def test_set_agent_greetings_enabled_unknown_bridge_raises(
     async with session_factory() as session:
         with pytest.raises(ValueError):
             await store.set_agent_greetings_enabled(session, "does-not-exist", False)
+
+
+@pytest.mark.asyncio
+async def test_adapter_state_write_requires_the_current_ownership_token(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    process_id = f"process-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        bridge.adapter_state = {"sync_token": "saved"}
+        session.add(SwitchCoreProcess(id=process_id))
+        await session.flush()
+        session.add(
+            OwnershipLease(
+                kind="bridge",
+                key=bridge_id,
+                process_id=process_id,
+                token=2,
+            )
+        )
+        await session.flush()
+
+        assert (
+            await store.merge_adapter_state_while_owned(
+                session,
+                bridge_id,
+                {"sync_token": "stale"},
+                kind="bridge",
+                key=bridge_id,
+                process_id=process_id,
+                token=1,
+            )
+            is False
+        )
+        assert (
+            await session.execute(
+                select(CollaborationBridge.adapter_state).where(
+                    CollaborationBridge.id == bridge_id
+                )
+            )
+        ).scalar_one() == {"sync_token": "saved"}
+
+        assert await store.merge_adapter_state_while_owned(
+            session,
+            bridge_id,
+            {"sync_token": "current"},
+            kind="bridge",
+            key=bridge_id,
+            process_id=process_id,
+            token=2,
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.adapter_state == {"sync_token": "current"}
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,9 @@
-import type { ClientCommand } from '@switch-console/shared/session-v1';
+import type { AttachmentUpload, ClientCommand } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { remoteSessionReconciler } from '@main/core/agents/remote-session-reconciler';
 import { createRPCController } from '@shared/lib/ipc/rpc';
+import { uploadSessionAttachment } from './attachment-upload';
 import { connectionHealth } from './connection-health';
 import { sharedAgentDiagnostics, sharedAgentLogs } from './diagnostics';
 import { sessionIssue, sessionStartupStatus } from './host-failures';
@@ -40,6 +41,8 @@ export const sdkHostController = createRPCController({
   transcriptClose: (sessionId: string) => closeTranscript(sessionId),
   sessionSubmit: (agentId: string, command: ClientCommand) =>
     submitSessionCommand(agentId, command),
+  sessionUploadAttachment: (agentId: string, sessionId: string, file: AttachmentUpload) =>
+    uploadSessionAttachment(agentId, sessionId, file),
   sessionReconcile: (agentId: string, command: ClientCommand) =>
     reconcileSessionCommand(agentId, command),
   sessionCommandStatus: (agentId: string, sessionId: string, commandId: string) =>
