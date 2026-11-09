@@ -23,6 +23,7 @@ PLACEHOLDERS = {
     "box",
     "canva",
     "vercel",
+    "monday",
 }
 
 
@@ -46,6 +47,17 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+
+
+def test_the_shipped_monday_entry_is_cataloged_with_probe_results_and_disabled():
+    assert "monday" in CATALOG
+    entry = CATALOG["monday"]
+    assert entry.definition.slug == "monday"
+    assert entry.definition.name == "Monday.com"
+    assert entry.definition.category == "Project management"
+    assert entry.definition.enabled is False
+    assert entry.definition.auth.type == "oauth"
+    assert not entry.skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
