@@ -298,7 +298,7 @@ class TestWhichMessagesAreAsked:
 
         assert await room.reached(told) == set()
         assert await room.reached(in_thread) == {"helper"}
-        assert "isn't switched on for this Switch server" in reply
+        assert "isn't switched on" in reply
 
 
 class TestWhatTheServiceIsSent:
@@ -1114,7 +1114,7 @@ class TestAWorkspaceWithNoBackend:
         assert service.requests == []
         assert await room.reached(told) == set()
         assert room.room_notices == [DECISION_NOTICE]
-        assert "refused by the server's outbound policy" in caplog.text
+        assert "refused by Switch's outbound policy" in caplog.text
 
 
 def test_a_claim_lasts_the_decision_timeout_plus_a_margin():

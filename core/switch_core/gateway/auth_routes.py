@@ -227,7 +227,7 @@ async def _refuse_signup(
         emit_safely(current_telemetry(), "signup_refused", {"reason": "rate_limited"})
         raise HTTPException(
             status_code=429,
-            detail="Too many sign-ups on this server in the last hour. Try again later.",
+            detail="Too many sign-ups in the last hour. Try again later.",
             headers={"Retry-After": str(retry_after)},
         )
     if await user_store.get_by_email(session, email) is not None:
@@ -257,9 +257,7 @@ async def signup(
     """
     if not config.gateway_signup_open:
         emit_safely(current_telemetry(), "signup_refused", {"reason": "disabled"})
-        raise HTTPException(
-            status_code=403, detail="Sign-up is disabled on this server"
-        )
+        raise HTTPException(status_code=403, detail="Sign-up is turned off here")
 
     with tenant_scope(TENANT_ZERO_ID):
         # Checked before the hash so a refusal stays cheap, and again under the

@@ -259,7 +259,7 @@ def refuse_third_party_avatar(
     """
     if url is not None and not third_party_avatars and is_third_party_avatar(url):
         _reject(
-            "this server has third-party avatars turned off, so an icon from "
+            "third-party avatars are turned off here, so an icon from "
             "dicebear.com or ui-avatars.com would never be shown; link an image "
             "on another host"
         )

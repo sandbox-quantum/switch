@@ -274,14 +274,14 @@ describe("ServiceAccessSection", () => {
       onOff("active", {
         slug: "other",
         name: "Other",
-        unavailable_reason: "Coming to this server soon.",
+        unavailable_reason: "Coming here soon.",
       }),
     ]);
     render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const example = await screen.findByLabelText("Example for helper");
     expect((example as HTMLInputElement).disabled).toBe(true);
     expect(screen.getByText(/first connect it in Switch Console/)).toBeTruthy();
-    expect(screen.getByText("Coming to this server soon.")).toBeTruthy();
+    expect(screen.getByText("Coming here soon.")).toBeTruthy();
     expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
   });
 
@@ -302,7 +302,7 @@ describe("ServiceAccessSection", () => {
   });
 
   const NOT_SET_UP =
-    "Example is not set up on this server. Ask whoever runs your Switch server to add it under Connectors in the Switch dashboard.";
+    "Example is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.";
 
   it("offers the operator Set up for a service waiting on its app, and nobody else", async () => {
     const services = [
@@ -351,7 +351,7 @@ describe("ServiceAccessSection", () => {
 
   it("says GitHub is not set up, rather than an error, when its App is not", async () => {
     const reason =
-      "GitHub is not set up on this server. Ask whoever runs your Switch server to add it under Connectors in the Switch dashboard.";
+      "GitHub is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.";
     mockServer(NONE, [
       onOff("not_connected", {
         slug: "github",

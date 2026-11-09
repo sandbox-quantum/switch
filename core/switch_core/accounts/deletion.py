@@ -317,8 +317,8 @@ class AccountDeletion:
         """Why the account cannot be deleted now, or None when it can."""
         if is_server_administrator(user, self.admin_email):
             return (
-                "This is the server's administrator account, which can't be "
-                "deleted. The server recreates it every time it starts."
+                "This is Switch's administrator account, which can't be "
+                "deleted. Switch recreates it every time it starts."
             )
         machine = await session.scalar(
             select(CloudMachine.id).where(
@@ -357,7 +357,7 @@ class AccountDeletion:
             ):
                 return (
                     f"You're the only admin of {workspace.name}, which has other "
-                    "members. Make one of them an admin first."
+                    "users. Make one of them an admin first."
                 )
             if alone:
                 platform = await session.scalar(
@@ -399,7 +399,7 @@ class AccountDeletion:
             return None
         return (
             f"You're the only organization admin of {organization.name}, which "
-            "has other members. Make one of them an organization admin first."
+            "has other users. Make one of them an organization admin first."
         )
 
     async def delete(
@@ -493,7 +493,7 @@ class AccountDeletion:
                     assert organization is not None
                     raise AccountDeletionRefused(
                         f"You're the only organization admin of {organization.name}, "
-                        "which has other members. Make one of them an "
+                        "which has other users. Make one of them an "
                         "organization admin first."
                     )
             for organization_id, session in held:

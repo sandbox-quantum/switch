@@ -479,6 +479,20 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **The dashboard, and what Switch tells people, use Switch's own words.** A
+  computer that runs agents is a device, not a machine; an outside service is
+  a connector, and a chat app a messaging app, not a connection; a person is a
+  user, with "member" kept for the role; and nothing calls Switch a server.
+  Dashboard labels are in sentence case. **Register Agent** is now **Add
+  agent**, **Register messaging app** is **Add messaging app**, and the API
+  keys page lists **Keys for adding agents** and **Agent keys**. The same
+  words reach the errors, refusals and status the server sends to the
+  dashboard, Switch Console and chat, and messages that sent people to
+  "Settings, Connections" in Switch Console now point to **Connectors**, where
+  that page is. Text written for agents still names their tools, such as
+  `list_machines`, and Switch Console's own cloud-machine messages are
+  unchanged for now. A dashboard test fails on the old words, naming what to
+  write instead.
 - **Admins step down and leave from their own row.** The workspace and
   organization members pages offer changing your own role and leaving, while
   another admin remains; the last one is refused, as before. Leaving the
