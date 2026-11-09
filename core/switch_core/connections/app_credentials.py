@@ -164,9 +164,9 @@ def reads_only(name: str, *, organization: bool) -> str:
             "that under Organization, Connectors."
         )
     return (
-        f"This server's {name} App lets agents read only, so {name} can't be "
-        "granted for writing. Whoever runs your Switch server can change that "
-        "in Switch Console, under Admin → Connector apps."
+        f"Switch's {name} App lets agents read only, so {name} can't be "
+        "granted for writing. Whoever runs Switch can change that in Switch "
+        "Console, under Admin → Connector apps."
     )
 
 

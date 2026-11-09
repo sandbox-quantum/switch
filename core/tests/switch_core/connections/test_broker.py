@@ -369,7 +369,7 @@ class TestIssue:
         assert again.code == "connector_revoked"
         assert again.message == (
             "The GitHub sign-in was revoked or has lapsed. The agent's owner must "
-            "reconnect GitHub from Connectors in Switch Console."
+            "reconnect GitHub in Switch Console, under Connectors."
         )
         assert vendor.refreshes == 1
         assert vendor.issued == []
@@ -809,9 +809,9 @@ class TestConnectOnly:
 
 
 READ_ONLY = (
-    "This server's GitHub App lets agents read only, so GitHub can't be granted "
-    "for writing. Whoever runs your Switch server can change that in Switch "
-    "Console, under Admin → Connector apps."
+    "Switch's GitHub App lets agents read only, so GitHub can't be granted "
+    "for writing. Whoever runs Switch can change that in Switch Console, under "
+    "Admin → Connector apps."
 )
 
 
@@ -2085,8 +2085,8 @@ class TestReplacedClient:
         assert refused.code == CONNECTOR_REVOKED
         assert refused.message == (
             "GitHub was connected through an app Switch no longer uses. "
-            "The agent's owner must reconnect GitHub from Connectors in Switch "
-            "Console."
+            "The agent's owner must reconnect GitHub in Switch Console, under "
+            "Connectors."
         )
         assert vendor.refreshes == 0 and vendor.issued == []
         connection = await _connection(session_factory, world.owner.id)
@@ -2108,8 +2108,8 @@ class TestReplacedClient:
             assert refused.code == CONNECTOR_REVOKED
             assert refused.message == (
                 "GitHub was connected through an app Switch no longer uses. "
-                "The agent's owner must reconnect GitHub from Connectors in Switch "
-                "Console."
+                "The agent's owner must reconnect GitHub in Switch Console, under "
+                "Connectors."
             )
 
     async def test_the_owner_is_told_to_reconnect_it_themselves(
@@ -2134,7 +2134,7 @@ class TestReplacedClient:
             )
             assert caught.value.message == (
                 "GitHub was connected through an app Switch no longer "
-                "uses. Reconnect GitHub from Connectors in Switch Console."
+                "uses. Reconnect GitHub in Switch Console, under Connectors."
             )
         assert vendor.refreshes == 0
 
@@ -2151,8 +2151,8 @@ class TestReplacedClient:
                 await broker.connection_access_token(session, world.owner.id, "github")
 
         assert caught.value.message == (
-            "GitHub refused the sign-in. Reconnect GitHub from Connectors in "
-            "Switch Console."
+            "GitHub refused the sign-in. Reconnect GitHub in Switch Console, "
+            "under Connectors."
         )
         connection = await _connection(session_factory, world.owner.id)
         assert connection is not None
@@ -2247,22 +2247,22 @@ class TestWithdrawnMethod:
             await standing(broker, connection.service), connection
         ) == (
             "method_not_offered",
-            "GitHub was connected in a way this server no longer offers.",
+            "GitHub was connected in a way Switch no longer offers.",
         )
 
         refused = await _refused(broker, session_factory, world.agent.id)
 
         assert refused.code == CONNECTOR_REVOKED
         assert refused.message == (
-            "GitHub was connected in a way this server no longer offers. The "
-            "agent's owner must reconnect GitHub from Connectors in Switch Console."
+            "GitHub was connected in a way Switch no longer offers. The "
+            "agent's owner must reconnect GitHub in Switch Console, under Connectors."
         )
         with pytest.raises(ServiceError) as caught:
             async with session_factory() as session:
                 await broker.connection_access_token(session, world.owner.id, "github")
         assert caught.value.message == (
-            "GitHub was connected in a way this server no longer offers. "
-            "Reconnect GitHub from Connectors in Switch Console."
+            "GitHub was connected in a way Switch no longer offers. "
+            "Reconnect GitHub in Switch Console, under Connectors."
         )
         assert vendor.refreshes == 0 and vendor.issued == []
         # Nothing is recorded: the entry may offer that way again.

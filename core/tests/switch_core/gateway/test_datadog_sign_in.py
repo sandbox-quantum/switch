@@ -605,7 +605,8 @@ class TestKeysConnectedBefore:
                 )
         assert (regranted.value.status_code, regranted.value.message) == (
             409,
-            f"{CONNECTED_BEFORE} Reconnect Datadog under Connectors first.",
+            f"{CONNECTED_BEFORE} Reconnect Datadog in Switch Console, under "
+            "Connectors, first.",
         )
         async with world.harness.client() as client:
             listed = next(
@@ -640,14 +641,14 @@ class TestKeysConnectedBefore:
             "connector_revoked",
         )
         assert refused.value.message == (
-            f"{CONNECTED_BEFORE} The agent's owner must reconnect Datadog from "
-            "Connectors in Switch Console."
+            f"{CONNECTED_BEFORE} The agent's owner must reconnect Datadog in "
+            "Switch Console, under Connectors."
         )
         async with session_factory() as session:
             with pytest.raises(ServiceError) as owners:
                 await world.broker.connection_access_token(session, ada.id, "datadog")
         assert owners.value.message == (
-            f"{CONNECTED_BEFORE} Reconnect Datadog from Connectors in Switch Console."
+            f"{CONNECTED_BEFORE} Reconnect Datadog in Switch Console, under Connectors."
         )
         connection = await _connection(session_factory, ada.id)
         assert connection is not None

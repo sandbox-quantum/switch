@@ -338,7 +338,7 @@ def _reconnect(name: str, why: str, reader: Reader) -> ServiceError:
     return ServiceError(
         409,
         CONNECTOR_REVOKED,
-        f"{why} {who} {name} from Connectors in Switch Console.",
+        f"{why} {who} {name} in Switch Console, under Connectors.",
         retryable=False,
     )
 
@@ -357,7 +357,7 @@ def _through_replaced_client(name: str) -> str:
 
 
 def _through_withdrawn_method(name: str) -> str:
-    return f"{name} was connected in a way this server no longer offers."
+    return f"{name} was connected in a way Switch no longer offers."
 
 
 def _connected_before_choices(name: str, missing: list[str]) -> str:
@@ -1442,8 +1442,8 @@ class ServiceBroker:
             raise ServiceError(
                 500,
                 INTERNAL,
-                f"The {name} connection holds a pasted credential that nothing "
-                "on this server checks.",
+                f"The {name} connector holds a pasted credential that nothing "
+                "here checks.",
                 retryable=False,
             )
         token = secret.access_token
@@ -1451,7 +1451,7 @@ class ServiceBroker:
             pasted = adapter.pasted(secret)
             if pasted is None or token is None:
                 raise ServiceAdapterError(
-                    f"The {name} connection holds no pasted credential."
+                    f"The {name} connector holds no pasted credential."
                 )
             async with asyncio.timeout(VENDOR_CALL_SECONDS):
                 await adapter.check_pasted(pasted.method, pasted.values, pasted.choices)
@@ -1812,8 +1812,7 @@ class ServiceBroker:
                 return METHOD_NOT_OFFERED, refusal
             if self.scopes_changed(connection):
                 return SCOPES_CHANGED, (
-                    f"This server now asks for other {name} access than the "
-                    "sign-in granted."
+                    f"Switch now asks for other {name} access than the sign-in granted."
                 )
             return CLIENT_REPLACED, _through_replaced_client(name)
         code = connection.error_code or "sign_in_refused"
@@ -1975,7 +1974,7 @@ class ServiceBroker:
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
-                f"{missing} Reconnect {name} under Connectors first.",
+                f"{missing} Reconnect {name} in Switch Console, under Connectors, first.",
                 retryable=False,
             )
         refusal = self._method_refusal(entry.definition, connection.method)

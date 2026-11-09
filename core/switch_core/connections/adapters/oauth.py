@@ -298,8 +298,8 @@ class OAuthAdapter:
             )
         except ChoicesError as error:
             raise ReauthorizationRequiredError(
-                f"The {self._name} connection was made for a choice this server "
-                f"no longer offers. {error}"
+                f"The {self._name} connector was made for a choice Switch no "
+                f"longer offers. {error}"
             ) from None
 
     async def endpoints(self, choices: Mapping[str, str]) -> AuthorizationEndpoints:
@@ -653,8 +653,8 @@ class OAuthAdapter:
         )
         if method is None:
             raise ReauthorizationRequiredError(
-                f"The {self._name} connection was made with a credential this "
-                "server no longer takes."
+                f"The {self._name} connector was made with a credential Switch "
+                "no longer takes."
             )
         try:
             values = json.loads(secret.access_token or "")["secret"]
@@ -667,8 +667,8 @@ class OAuthAdapter:
         ):
             words, _ = credential_words(method.name)
             raise ReauthorizationRequiredError(
-                f"The {self._name} connection's pasted {words} no longer fit what "
-                "this server asks for."
+                f"The {self._name} connector's pasted {words} no longer fit what "
+                "Switch asks for."
             )
         return Pasted(method, values, self._choices_of(secret))
 

@@ -260,7 +260,7 @@ async def test_a_connection_through_a_client_registered_anew_must_reconnect(
     assert caught.value.code == CONNECTOR_REVOKED
     assert caught.value.message == (
         "Example was connected through an app Switch no longer uses. The "
-        "agent's owner must reconnect Example from Connectors in Switch Console."
+        "agent's owner must reconnect Example in Switch Console, under Connectors."
     )
     assert len(vendor.registrations) == 2
     async with session_factory() as session:
