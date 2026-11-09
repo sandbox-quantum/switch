@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from datetime import UTC, datetime
 
 import httpx
@@ -283,6 +284,45 @@ class TestTheWireFormat:
         assert record["eventName"] == "switch_core.usage_snapshot"
         attributes = {a["key"]: a["value"] for a in record["attributes"]}
         assert attributes["event.name"] == {"stringValue": "switch_core.usage_snapshot"}
+
+    async def test_identical_events_in_the_same_instant_stay_distinct(self) -> None:
+        """The relay derives Amplitude's dedup key from the attributes, so two
+        identical events with one timestamp would arrive as one without an id
+        of their own."""
+        captured: dict = {}
+
+        def _handle(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content))
+            return httpx.Response(200)
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
+        sink = _relay_sink(http)
+        for _ in range(2):
+            sink.send(
+                TelemetryRecord(
+                    name="switch_core.document_attached_to_room",
+                    properties={},
+                    resource={
+                        "flint.client_id": "deployment-uuid",
+                        "flint_env": "dev",
+                        "flint_internal": "false",
+                    },
+                    timestamp_ns=1_700_000_000_000_000_000,
+                )
+            )
+        await sink.aclose()
+        await http.aclose()
+
+        records = captured["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+        ids = [
+            {a["key"]: a["value"] for a in record["attributes"]}[
+                sink_module.INSERT_ID_ATTRIBUTE
+            ]["stringValue"]
+            for record in records
+        ]
+        assert len(ids) == 2
+        assert ids[0] != ids[1]
+        assert all(len(str(uuid.UUID(each))) == 36 for each in ids)
 
     async def test_a_count_is_a_number_not_a_string(self) -> None:
         """OTLP renders `intValue` as a JSON string, which arrives in analytics

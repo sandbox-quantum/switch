@@ -54,6 +54,12 @@ choices are load-bearing rather than incidental:
   and as an `event.name` attribute. The relay filters on the attribute and the
   exporter reads the field. Sending only one is dropped silently, with a 200 at
   every hop.
+- **A random id on every record**, the `flint.insert_id` attribute: a fresh
+  UUID per event, meaning nothing and joining nothing. The relay derives
+  Amplitude's dedup key from the record's attributes, so without it two
+  identical events from one deployment in the same millisecond (a message
+  addressed to two agents of the same runtime, a template attaching two
+  documents) would arrive as one.
 - **A name prefix per product**, because one Amplitude project holds several.
   The Console sends `switch_console.<event>`; the server sends
   `switch_core.<event>`.
