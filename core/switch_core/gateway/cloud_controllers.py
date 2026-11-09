@@ -367,6 +367,12 @@ async def wake_controller_machine(
         store = CloudMachineStore()
         if idle_sleeping(machine):
             store.start(machine, now)
+            emit_after_commit(
+                session,
+                current_telemetry(),
+                "cloud_machine_woken",
+                {"trigger": trigger, "stopped_by": "idle"},
+            )
         elif machine.desired_state == "running":
             machine.active_at = now
         return machine
