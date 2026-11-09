@@ -1610,6 +1610,13 @@ class ChatService:
                 )
                 await session.commit()
         self._memberships_changed(tenant_id, [user.id, *member_user_ids], [room.id])
+        # The people the creator named, never the creator: once, by the
+        # attempt that finished the chat, since a finished request returns
+        # above before reaching here again.
+        if members:
+            emit_safely(
+                self._telemetry, "room_users_added", {"user_count": len(members)}
+            )
         if len(agents) == 1:
             self._start_session(agents[0].id, room.id)
         return room

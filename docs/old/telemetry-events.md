@@ -979,7 +979,7 @@ only when there was something to detach or remove.
 | `room_link_removed` | none |
 | `room_role_defined` | `exclusive` (boolean) |
 | `room_role_deleted` | none |
-| `room_users_added` | `user_count` (number): people added to a bridged room who are now in it, or the one person added to a Switch Console chat, including an owner an agent puts in a room it made. Not sent when nobody was added |
+| `room_users_added` | `user_count` (number): people added to a bridged room who are now in it; the one person added to a Switch Console chat, including an owner an agent puts in a room it made; or the people a Console chat is created with, not counting the person who created it. Not sent when nobody was added |
 | `connector_configured` | `bridge_platform`; `is_preconfigured` (boolean) |
 | `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
 | `invitation_accepted` | `age_hours` (number) |

@@ -57,6 +57,37 @@ async def test_adding_a_person_is_reported_once(chats: _Harness) -> None:
     assert chats.telemetry_sink.events("room_users_added") == [{"user_count": 1}]
 
 
+async def test_people_a_chat_is_created_with_are_reported_once(
+    chats: _Harness,
+) -> None:
+    """The people named, not the creator, who is in it as its owner rather
+    than added; and not again for the same request retried."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    body = {
+        "agentId": agent.id,
+        "memberUserIds": [chats.alice.id, chats.bob.id, chats.admin.id],
+        "requestId": "c1",
+    }
+
+    for _ in range(2):
+        created = await chats.client.post(
+            "/chats", json=body, headers=chats.as_user(chats.alice)
+        )
+        assert created.status_code == 200, created.text
+
+    assert chats.telemetry_sink.events("room_users_added") == [{"user_count": 2}]
+
+
+async def test_a_chat_created_with_nobody_else_reports_no_one_added(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+
+    await chats.new_chat(chats.alice, agent, "c1")
+
+    assert chats.telemetry_sink.events("room_users_added") == []
+
+
 # ── Only real changes ────────────────────────────────────────────────────────
 
 
