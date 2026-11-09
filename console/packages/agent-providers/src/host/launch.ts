@@ -243,27 +243,45 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
  * as different from whatever is asking — so it is replaced.
  */
 export async function liveSupervisor(root: string): Promise<{ build: unknown } | null> {
+  let owner: { pid: number; build: unknown };
   try {
-    const owner = JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'));
-    if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
-      throw new Error('Invalid shared host supervisor owner.');
-    process.kill(owner.pid, 0);
-    return { build: owner.build };
+    owner = JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'));
   } catch (error) {
-    if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-    return null;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
   }
+  if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
+    throw new Error('Invalid shared host supervisor owner.');
+  try {
+    process.kill(owner.pid, 0);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return null;
+    // EPERM on Windows means the supervisor is alive at an elevation or session
+    // this process cannot signal, not that it is gone.
+    if (code !== 'EPERM') throw error;
+  }
+  return { build: owner.build };
 }
 
 async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> {
   let pid: number;
   try {
     pid = JSON.parse(await readFile(ownerPath, 'utf8')).pid;
-    if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK process owner.');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK process owner.');
+  try {
     process.kill(pid, 0);
   } catch (error) {
-    if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return;
-    throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return;
+    // EPERM on Windows means the process exists at an elevation or session this
+    // one cannot signal; fall through to the command-line check below, which
+    // still refuses to stop a process that is not this SDK host.
+    if (code !== 'EPERM') throw error;
   }
   const commandLine = await processCommandLine(pid);
   if (commandLine === null) return;
@@ -293,8 +311,11 @@ async function exitsWithin(pid: number, ms: number): Promise<boolean> {
     try {
       process.kill(pid, 0);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
-      throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ESRCH') return true;
+      // EPERM on Windows means it is still there, at an elevation or session
+      // this process cannot signal; keep waiting rather than reporting it gone.
+      if (code !== 'EPERM') throw error;
     }
     if (waited >= ms) return false;
     await delay(200);
