@@ -127,6 +127,8 @@ export class HostedSession {
   private readonly roomReplies = new Set<string>();
   private historyImported = false;
   private readonly postedTurns = new Set<string>();
+  /** Turns started by a room message nobody tagged, which Switch routed here. */
+  private readonly routedTurns = new Set<string>();
   /** Turns whose posts to the room were refused, with the last refusal. */
   private readonly failedPosts = new Map<string, string>();
   private readonly usage = new Map<string, TokenUsage[]>();
@@ -751,6 +753,15 @@ export class HostedSession {
     if (this.activeTurn) this.postedTurns.add(this.activeTurn);
   }
 
+  /**
+   * `commandId` carries a room message nobody tagged, which Switch routed to
+   * this agent: the agent may rightly stay silent on it, so a turn it finishes
+   * without posting tells the room nothing.
+   */
+  routedRoomTurn(commandId: string): void {
+    this.routedTurns.add(commandId);
+  }
+
   /** A post to the room in the running turn was refused: why, the last one kept. */
   agentPostFailed(reason: string): void {
     if (this.activeTurn) this.failedPosts.set(this.activeTurn, reason);
@@ -1249,11 +1260,14 @@ export class HostedSession {
   }
 
   /**
-   * Tells the room when a turn a room message started failed without the
-   * agent posting anywhere — a provider that ended on a quota or sign-in
-   * error — since the room would otherwise hear nothing about it. A turn that
-   * simply ended without a post says nothing (`unpostedReply`), and one the
-   * host cut short on purpose (stopping, parking, a reset) is left alone.
+   * Tells the room when a turn a room message started ended without the agent
+   * posting anywhere — a provider that failed on a quota or sign-in error, or
+   * an agent that finished with its answer, or a usage-limit notice, in its
+   * final text — since the room would otherwise hear nothing about it
+   * (`unpostedReply`). A turn someone stopped says nothing, nor does one that
+   * finished on a message Switch routed here untagged, which the agent may
+   * rightly leave alone; one the host cut short on purpose (stopping,
+   * parking, a reset) is left alone too.
    *
    * Decided once per turn and recorded before the post, so a restart never
    * posts it twice. The post runs beside the session; one that fails is
@@ -1265,6 +1279,7 @@ export class HostedSession {
     detail: string | null
   ): Promise<void> {
     const posted = this.postedTurns.delete(turnId);
+    const routed = this.routedTurns.delete(turnId);
     const failedPost = this.failedPosts.get(turnId) ?? null;
     this.failedPosts.delete(turnId);
     const reply = this.config.replyToRoom;
@@ -1276,7 +1291,11 @@ export class HostedSession {
     // A turn whose every post was refused ended in silence as far as the room
     // could tell: it is told that, once, unless the turn failed and says so already.
     const body =
-      unpostedReply(outcome, detail) ?? (failedPost !== null ? postFailedReply(failedPost) : null);
+      failedPost !== null && outcome !== 'error'
+        ? postFailedReply(failedPost)
+        : routed && outcome === 'completed'
+          ? null
+          : unpostedReply(outcome, detail, lastAssistantText(this.replica.snapshot(), turnId));
     if (body === null) return;
     await this.inbox.append({ type: 'room-reply', commandId: turnId });
     this.roomReplies.add(turnId);
@@ -1595,14 +1614,44 @@ export function recentTurns(
   return kept.reverse();
 }
 
+/** The text of the last thing the agent said in `turnId`, trimmed; empty when it said nothing. */
+export function lastAssistantText(snapshot: Pick<Snapshot, 'items'>, turnId: string): string {
+  // A long message is published in parts, `<itemId>:part:<n>` after the first.
+  const messages = new Map<string, string[]>();
+  for (const item of snapshot.items) {
+    if (item.turnId !== turnId || item.kind !== 'assistant-message') continue;
+    const part = /^(.*):part:(\d+)$/.exec(item.itemId);
+    const id = part ? part[1]! : item.itemId;
+    const parts = messages.get(id) ?? [];
+    parts[part ? Number(part[2]) : 0] = item.text;
+    messages.set(id, parts);
+  }
+  for (const parts of [...messages.values()].reverse()) {
+    const text = parts.join('').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
 /**
- * What the host posts for a room turn that ended without the agent posting:
- * only that it failed, and why, so a crash is not silent. A turn that
- * finished, or that someone stopped, posts nothing: the agent chose not to
- * answer, and its final text was never meant for the room.
+ * What the host posts for a room turn that ended without the agent posting.
+ * A failed turn says why, so a crash is not silent. A finished one says so,
+ * with the agent's last words when it had any: an answer it gave as its final
+ * text instead of posting it, or a provider's usage-limit notice. A turn
+ * someone stopped posts nothing: they know why it ended.
  */
-export function unpostedReply(outcome: TurnOutcome, detail: string | null): string | null {
-  if (outcome !== 'error') return null;
+export function unpostedReply(
+  outcome: TurnOutcome,
+  detail: string | null,
+  lastWords: string
+): string | null {
+  if (outcome === 'interrupted') return null;
+  if (outcome === 'completed') {
+    const said = lastWords.trim();
+    return said
+      ? `I finished without replying. My last message was:\n\n${cap(said, 1000)}`
+      : 'I finished without replying.';
+  }
   const hint = REQUEST_TOO_LARGE.test(detail ?? '')
     ? 'Use !reset to start a fresh session, then send your message again. '
     : '';

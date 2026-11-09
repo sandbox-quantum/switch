@@ -1506,6 +1506,45 @@ it('posts for a room turn that ended without the agent posting, and not for one 
   }
 });
 
+it('posts for a room turn that finished silently, but not for a message Switch routed here', async () => {
+  const host = await start({ rooms: true });
+  const replies = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type === 'room-reply'
+    );
+  const turn = async (handoff: object) => {
+    const before = host.turns.length;
+    expect(await host.parent.ask({ type: 'room', handoff })).toMatchObject({ ok: true });
+    await until(() => expect(host.turns).toHaveLength(before + 1));
+    return host.turns.at(-1)!.turnId;
+  };
+  try {
+    const routed = roomMessage(1, 'anyone?');
+    const untagged = await turn({
+      ...routed,
+      event: { ...routed.event, payload: { ...routed.event.payload, routed: true } },
+    });
+    host.emit({ type: 'turn.completed', turnId: untagged, outcome: 'completed', usage: [] });
+
+    const addressed = await turn(roomMessage(2, 'hi'));
+    host.emit({ type: 'turn.completed', turnId: addressed, outcome: 'completed', usage: [] });
+    await until(() => expect(replies().length).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(replies().map((message) => message.ask)).toEqual([
+      { type: 'room-reply', roomId: 'room', threadId: null, body: 'I finished without replying.' },
+    ]);
+    host.parent.port.emit('message', {
+      kind: 'answer',
+      id: replies()[0]!.id,
+      ok: true,
+      value: null,
+    });
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
 it('reports the turn a fault ended, and the fault, before it stops', async () => {
   const host = await start({ rooms: true });
   await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') });

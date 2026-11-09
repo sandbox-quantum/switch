@@ -857,6 +857,7 @@ export async function runSharedHost(
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
         });
+        if (message.data.payload.routed) host!.routedRoomTurn(command.commandId);
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
