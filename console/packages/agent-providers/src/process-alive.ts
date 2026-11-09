@@ -27,3 +27,11 @@ export function isProcessAlive(pid: number, origin: PidOrigin): boolean {
     throw error;
   }
 }
+
+/**
+ * `isProcessAlive` as source for a script run with `node -e` on a host, where
+ * no package is installed: declares `const isProcessAlive` in the scope it is
+ * placed in. The function reads nothing but `process`, so its own source runs
+ * there unchanged.
+ */
+export const IS_PROCESS_ALIVE = `const isProcessAlive = ${isProcessAlive.toString()};\n`;

@@ -1,4 +1,8 @@
-import { JournalUnavailableError, replayJournal } from '@switch-console/agent-providers';
+import {
+  IS_PROCESS_ALIVE,
+  JournalUnavailableError,
+  replayJournal,
+} from '@switch-console/agent-providers';
 import {
   serverEventSchema,
   type CommandStatus,
@@ -22,8 +26,7 @@ import { log } from '@main/lib/logger';
  * the last lease said about the session's rooms. The same script runs locally
  * and remotely, so there is one reader to keep right.
  */
-export const TAIL_SCRIPT = String.raw`
-const { createHash } = require('node:crypto');
+export const TAIL_SCRIPT = String.raw`${IS_PROCESS_ALIVE}const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -60,14 +63,7 @@ const alive = () => {
     return false;
   }
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    if (e.code === 'ESRCH') return false;
-    if (e.code === 'EPERM') return process.platform === 'win32';
-    throw e;
-  }
+  return isProcessAlive(pid, 'recorded');
 };
 const lease = () => {
   try {

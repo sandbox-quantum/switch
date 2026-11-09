@@ -1,5 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { isProcessAlive, type PidOrigin } from './process-alive';
+import { IS_PROCESS_ALIVE, isProcessAlive, type PidOrigin } from './process-alive';
 
 const realPlatform = process.platform;
 
@@ -69,4 +70,21 @@ const foreignPidAvailable = process.platform !== 'win32' && process.getuid?.() !
 it.skipIf(!foreignPidAvailable)('takes pid 1, owned by root, as stale when recorded', () => {
   expect(isProcessAlive(1, 'recorded')).toBe(false);
   expect(isProcessAlive(1, 'any-user')).toBe(true);
+});
+
+it('runs as source in a script on its own', () => {
+  const script = `${IS_PROCESS_ALIVE}
+const [own, gone] = process.argv.slice(1).map(Number);
+console.log(JSON.stringify([isProcessAlive(own, 'recorded'), isProcessAlive(gone, 'any-user')]));`;
+  const stdout = execFileSync(
+    process.execPath,
+    ['-e', script, String(process.pid), String(2 ** 22 + 12345)],
+    { encoding: 'utf8' }
+  );
+  expect(JSON.parse(stdout)).toEqual([true, false]);
+});
+
+it.skipIf(!foreignPidAvailable)('applies the recorded rule in a script on its own', () => {
+  const script = `${IS_PROCESS_ALIVE}console.log(isProcessAlive(1, 'recorded'));`;
+  expect(execFileSync(process.execPath, ['-e', script], { encoding: 'utf8' }).trim()).toBe('false');
 });
