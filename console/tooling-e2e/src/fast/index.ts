@@ -2,6 +2,8 @@ import { accountLifecycle } from "./account-lifecycle.ts";
 import { agentIdentity } from "./agent-identity.ts";
 import { attachmentNames } from "./attachments.ts";
 import { clientMistakes } from "./client-mistakes.ts";
+import { endSessions, memberErasure, retentionWindow } from "./data-protection.ts";
+import { decisionSettings } from "./decision-settings.ts";
 import { followUps } from "./follow-ups.ts";
 import { addressedDelivery, unaddressedHistory } from "./agent-messaging.ts";
 import { mattermostRoundtrip } from "./mattermost-roundtrip.ts";
@@ -27,4 +29,8 @@ export const FAST_SCENARIOS: readonly FastScenario[] = [
   organizationMembers,
   organizations,
   accountLifecycle,
+  retentionWindow,
+  memberErasure,
+  endSessions,
+  decisionSettings,
 ];

@@ -16,6 +16,7 @@ import {
   isRoomNameKnown,
   isRoomViewActive,
   deleteRoomAction,
+  mayChangeRoomMembers,
   openRoomInMessagingApp,
   openRoomView,
   RoomRow,
@@ -166,7 +167,11 @@ export const RoomTree = observer(function RoomTree() {
                     ? () => openRoomInMessagingApp(roomKey)
                     : null
                 }
-                onAddAgent={() => showAddAgentsToRoomModal({ roomId: roomKey })}
+                onAddAgent={
+                  mayChangeRoomMembers(roomKey)
+                    ? () => showAddAgentsToRoomModal({ roomId: roomKey })
+                    : null
+                }
                 onDelete={deleteRoomAction(roomKey, showDeleteRoomModal)}
               />
             }

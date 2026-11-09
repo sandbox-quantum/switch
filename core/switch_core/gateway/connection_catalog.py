@@ -51,6 +51,9 @@ async def catalog(
                     if definition.slug in connected
                     else "not_connected"
                 ),
+                # The caller's own connection, while they have one and the
+                # route that ends it is on.
+                "can_revoke": enabled and definition.slug in connected,
             }
         )
     return {"connections": entries}

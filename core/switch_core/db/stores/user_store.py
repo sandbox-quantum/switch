@@ -5,7 +5,7 @@ from collections.abc import Collection
 from datetime import timedelta
 from typing import NamedTuple
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -183,6 +183,25 @@ class UserStore:
         """
         result = await session.execute(select(User.id).where(User.id == user_id))
         return result.first() is not None
+
+    async def session_version(self, session: AsyncSession, user_id: str) -> int | None:
+        """The account's current session version, or None if there is no
+        such account. Read without loading the row, for the reason `exists`
+        gives."""
+        result = await session.execute(
+            select(User.session_version).where(User.id == user_id)
+        )
+        version: int | None = result.scalar_one_or_none()
+        return version
+
+    async def end_sessions(self, session: AsyncSession, user_id: str) -> None:
+        """Invalidate every session cookie the account holds by moving its
+        session version on. Lands when the caller commits."""
+        await session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(session_version=User.session_version + 1)
+        )
 
     async def created_in_last_hour(self, session: AsyncSession) -> tuple[int, int]:
         """Users created in the last hour, and whole seconds until the oldest

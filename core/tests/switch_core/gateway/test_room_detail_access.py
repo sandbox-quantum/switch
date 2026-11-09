@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Room, User
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
@@ -24,6 +25,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.gateway.rooms import get_room
 
 _ROOM_STORE = RoomStore()
@@ -79,6 +81,13 @@ async def _add_room(
     return room
 
 
+_NO_DECISIONS = DecisionAvailability(
+    enabled=False,
+    server=ServerDefault(endpoint_url=None, api_key=None, bedrock_enabled=False),
+    store=DecisionSettingsStore(),
+)
+
+
 class TestRoomDetailOwner:
     async def test_detail_names_the_owner(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -94,6 +103,7 @@ class TestRoomDetailOwner:
                 None,  # type: ignore[arg-type]  # bridge_store: the room has no bridge
                 None,  # type: ignore[arg-type]  # external_user_store
                 _protocol(),
+                _NO_DECISIONS,
                 owner,
                 await _USER_STORE.administers(session, owner),
             )
