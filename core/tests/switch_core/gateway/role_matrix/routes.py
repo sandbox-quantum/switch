@@ -505,6 +505,20 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/rooms/{room_id}/roles/{name}": delete(
         f"{G}/rooms/{{room_role}}/roles/reviewer", owner_or_admins()
     ),
+    "GET /gateway/decision-settings": get(f"{G}/decision-settings", admins()),
+    "PUT /gateway/decision-settings": put(
+        f"{G}/decision-settings", admins(), json={"backend": "none"}
+    ),
+    "DELETE /gateway/decision-settings": delete(f"{G}/decision-settings", admins()),
+    "POST /gateway/decision-settings/test": post(
+        f"{G}/decision-settings/test", admins(), json={"backend": "none"}
+    ),
+    "PUT /gateway/rooms/{room_id}/auto-route": put(
+        f"{G}/rooms/{{room}}/auto-route",
+        owner_or_admins(),
+        json={"on": False},
+        why="Write access to the room; this room's write access is private.",
+    ),
     "PUT /gateway/rooms/{room_id}/protection": put(
         f"{G}/rooms/{{room}}/protection",
         owner_or_admins(),
