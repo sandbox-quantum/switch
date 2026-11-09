@@ -73,12 +73,15 @@ version of their own to them without also giving them a release of their own.
 #### Changed
 - **The operator dashboard follows the current Hoot design.** Form fields
   have a white fill and a firm border and ring when focused; switches are
-  Hoot's pill; errors and delete buttons use Hoot's softer red; captions,
+  Hoot's pill, and one that is off can be seen; errors and delete buttons
+  use Hoot's softer red, with red text kept readable in dark mode; captions,
   section labels and tooltips are 13px; the backdrop behind a dialog is
-  Hoot's warm black; and table headers show the cream band they were always
-  meant to. Warnings stay amber, so they remain easy to tell from errors,
-  and a warning chip ("device offline", "Archived") is now readable: dark
-  text on its amber wash, where the text used to be amber too.
+  Hoot's warm black, and black in dark mode; menus, popovers and dropdown
+  lists have a firm edge and shadow, so they stand out from the page under
+  them; and table headers show the cream band they were always meant to.
+  Warnings stay amber, so they remain easy to tell from errors, and a
+  warning chip ("device offline", "Archived") is now readable: dark text on
+  its amber wash, where the text used to be amber too.
 - **Disabled controls in the operator dashboard look disabled.** A disabled
   field, its label, and a disabled checkbox or switch looked almost the same
   as enabled ones; they are now greyed out, so an action you may not take
