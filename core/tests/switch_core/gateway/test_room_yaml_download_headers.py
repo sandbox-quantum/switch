@@ -34,7 +34,7 @@ async def test_the_room_export_is_a_sandboxed_download_named_after_the_room(
         session=cast(Any, None),
         room_store=cast(Any, None),
         rooms_yaml=cast(Any, _Export()),
-        user=cast(Any, None),
+        user=cast(Any, SimpleNamespace(id="user-1")),
         is_admin=True,
     )
 

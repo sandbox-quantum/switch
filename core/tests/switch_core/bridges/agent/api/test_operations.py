@@ -31,6 +31,7 @@ from switch_core.bridges.agent.operations.callctx import (
     reset_call_context,
     set_call_context,
 )
+from switch_core.bridges.agent.protocol.types import SendTargetedResult, SentMessage
 from switch_core.logging_context import current_log_context
 
 AGENT = "agent-1"
@@ -322,13 +323,13 @@ async def test_a_post_is_sent_under_the_hosts_key(
     sent: list[dict[str, object]] = []
 
     class _Protocol:
-        async def send_message(self, *args: object, **kwargs: object) -> str:
+        async def send_message(self, *args: object, **kwargs: object) -> Any:
             sent.append(kwargs)
-            return "$event"
+            return SentMessage(event_id="$event", trust=None)
 
         async def send_targeted_message(self, *args: object, **kwargs: object) -> Any:
             sent.append(kwargs)
-            return type("Sent", (), {"event_id": "$event", "target_statuses": {}})()
+            return SendTargetedResult(event_id="$event", target_statuses={}, trust=None)
 
     async def _room() -> str:
         return "room-1"

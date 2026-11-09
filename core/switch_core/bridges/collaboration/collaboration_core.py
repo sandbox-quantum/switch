@@ -60,6 +60,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
@@ -1168,10 +1169,11 @@ class CollaborationCore:
             # and routing the message. Only Slack im/mpim map to "lobby".
             await self._handle_lobby_message(msg)
             return
-        if await self._already_handed_in(msg):
+        if process_hosted_v2() and await self._already_handed_in(msg):
             # A second copy of a post already in its room (a bridge that hears
             # each post on several connections, or fetches missed posts after
-            # a reconnect) is not a second message.
+            # a reconnect) is not a second message. Hosted agents v2 only: with
+            # it off the inbound path is main's, with no extra read.
             return
         # An answer typed in words. Almost no message is one, and the check is a
         # parse before it is a query, so this costs a channel nothing. It does

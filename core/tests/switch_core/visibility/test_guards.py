@@ -115,9 +115,10 @@ class _Session:
         pass
 
 
-@pytest.mark.parametrize("role", ["owner", "admin"])
-async def test_workspace_admins_pass_by_membership(role: str) -> None:
-    store = _Store({("ws-a", "u1"): role})
+async def test_workspace_admins_pass_by_membership() -> None:
+    # Main merged the workspace `owner` role into `admin` (a3c5e7f9b1d2), so
+    # `admin` is the one role that administers a workspace.
+    store = _Store({("ws-a", "u1"): "admin"})
     with tenant_scope("ws-a"):
         user = _user("u1")
         assert await guards.require_workspace_admin(_Session(), user, store) is user  # type: ignore[arg-type]
@@ -133,7 +134,7 @@ async def test_the_operator_bit_does_not_open_a_workspace_admin_route() -> None:
 
 
 async def test_members_and_other_workspaces_admins_are_refused() -> None:
-    store = _Store({("ws-a", "u1"): "member", ("ws-b", "u2"): "owner"})
+    store = _Store({("ws-a", "u1"): "member", ("ws-b", "u2"): "admin"})
     with tenant_scope("ws-a"):
         for user_id in ("u1", "u2"):
             with pytest.raises(HTTPException):

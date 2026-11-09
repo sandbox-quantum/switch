@@ -28,9 +28,9 @@ def _core(already: str | None) -> tuple[Any, list[str]]:
         seen.append(f"send {kwargs.get('client_txn_id')}")
         return "$new"
 
-    async def trust(_room: Any, content: str, *_args: Any) -> tuple[str, None]:
+    async def trust(_room: Any, content: str, *_args: Any) -> tuple[str, None, str]:
         seen.append("trust")
-        return content, None
+        return content, None, "ok"
 
     async def typing(*_args: Any) -> None:
         return None
@@ -48,10 +48,12 @@ def _core(already: str | None) -> tuple[Any, list[str]]:
 @pytest.mark.asyncio
 async def test_a_resend_of_a_post_already_made_skips_trust_and_sends_nothing() -> None:
     core, seen = _core(already="$first")
-    event_id = await AgentCore.send_message(
+    sent = await AgentCore.send_message(
         core, "agent-1", "room-1", "the reply", client_txn_id="reply:k"
     )
-    assert event_id == "$first"
+    assert sent.event_id == "$first"
+    # Answered before Trust, so there is nothing for Trust to report.
+    assert sent.trust is None
     assert seen == ["lookup !room reply:k"]
 
 
@@ -60,15 +62,16 @@ async def test_a_first_keyed_post_goes_through_trust_and_is_sent_under_its_key()
     None
 ):
     core, seen = _core(already=None)
-    event_id = await AgentCore.send_message(
+    sent = await AgentCore.send_message(
         core, "agent-1", "room-1", "the reply", client_txn_id="reply:k"
     )
-    assert event_id == "$new"
+    assert sent.event_id == "$new"
     assert seen == ["lookup !room reply:k", "trust", "send reply:k"]
 
 
 @pytest.mark.asyncio
 async def test_an_unkeyed_post_is_unchanged() -> None:
     core, seen = _core(already="$first")
-    assert await AgentCore.send_message(core, "agent-1", "room-1", "hi") == "$new"
+    sent = await AgentCore.send_message(core, "agent-1", "room-1", "hi")
+    assert sent.event_id == "$new"
     assert seen == ["trust", "send None"]
