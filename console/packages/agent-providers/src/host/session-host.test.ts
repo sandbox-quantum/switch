@@ -1741,10 +1741,10 @@ it('tells the room a room turn that finished silently, without words, finished',
   expect(reply.mock.calls[0]![0].body).toBe('I finished without replying.');
 });
 
-it('posts nothing when a message Switch routed here untagged finished without a post', async () => {
+it('posts nothing when a message nobody tagged finished without a post', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, root, adapter } = await startReplying(reply);
-  host.routedRoomTurn('routed');
+  host.unaskedRoomTurn('routed');
   await host.command(roomMessage('routed', null));
   await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   said(emit, 'routed', 'last', 'Not mine to answer.');

@@ -1506,7 +1506,7 @@ it('posts for a room turn that ended without the agent posting, and not for one 
   }
 });
 
-it('posts for a room turn that finished silently, but not for a message Switch routed here', async () => {
+it('posts for a silent room turn that named the agent, not for a routed message or a follow-up', async () => {
   const host = await start({ rooms: true });
   const replies = () =>
     host.parent.sent.filter(
@@ -1519,15 +1519,25 @@ it('posts for a room turn that finished silently, but not for a message Switch r
     await until(() => expect(host.turns).toHaveLength(before + 1));
     return host.turns.at(-1)!.turnId;
   };
+  const untagged = (sequence: number, fields: Record<string, unknown>) => {
+    const message = roomMessage(sequence, 'anyone?');
+    return {
+      ...message,
+      event: { ...message.event, payload: { ...message.event.payload, ...fields } },
+    };
+  };
   try {
-    const routed = roomMessage(1, 'anyone?');
-    const untagged = await turn({
-      ...routed,
-      event: { ...routed.event, payload: { ...routed.event.payload, routed: true } },
-    });
-    host.emit({ type: 'turn.completed', turnId: untagged, outcome: 'completed', usage: [] });
+    for (const [sequence, fields] of [
+      [1, { routed: true }],
+      [2, { follow_up: 'thread_follow_up' }],
+      [3, { follow_up: 'channel_follow_up' }],
+      [4, { follow_up: 'main_agent' }],
+    ] as const) {
+      const silent = await turn(untagged(sequence, fields));
+      host.emit({ type: 'turn.completed', turnId: silent, outcome: 'completed', usage: [] });
+    }
 
-    const addressed = await turn(roomMessage(2, 'hi'));
+    const addressed = await turn(roomMessage(5, 'hi'));
     host.emit({ type: 'turn.completed', turnId: addressed, outcome: 'completed', usage: [] });
     await until(() => expect(replies().length).toBeGreaterThan(0));
     await new Promise((resolve) => setTimeout(resolve, 300));

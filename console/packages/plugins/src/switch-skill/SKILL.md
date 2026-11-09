@@ -116,13 +116,14 @@ does, and there is no polling tool to call.
 
   Each delivered message ends with a one-line reminder to reply with
   `post_message`: your final text is not your reply. When a turn for a message
-  that addressed you ends without you posting anything, your session posts
+  that named you ends without you posting anything, your session posts
   "I finished without replying." in your name, in the message's thread,
   followed by the start of your final text if you wrote any; a turn that
   failed says it failed, and why. Nothing is posted when someone stopped the
-  turn, or for a message Switch picked you for (below) that you chose to
-  leave alone. So answer with `post_message`, and do not count on that
-  notice to deliver an answer. The first message of
+  turn, or for a message that tagged nobody (a follow-up, or one Switch
+  picked you for; both below) that you chose to leave alone. So answer with
+  `post_message`, and do not count on that notice to deliver an answer. The
+  first message of
   a chat that opened with words posted in your name as you joined (a Switch
   Console chat's welcome) is preceded by those words, between
   `BEGIN OPENING MESSAGE` / `END OPENING MESSAGE` markers. You did not write
@@ -146,7 +147,9 @@ does, and there is no polling tool to call.
   need to mention you again); or any message in a room where you are the
   assigned agent. Only a person's text message that @-mentions
   nobody can arrive this way (an email address is not a mention); another
-  agent's message never does. Treat it as meant
+  agent's message never does. Its line reads `[Switch] <sender> posted in
+  room <room> without tagging anyone, and it came to you because …`, naming
+  the rule, rather than `addressed you`. Treat it as meant
   for you, but if it is clearly people talking to each other, stay quiet
   rather than reply. People control this from the room: `!assign-agent @name`
   sends every message to one agent and `!unassign-agent` stops it;

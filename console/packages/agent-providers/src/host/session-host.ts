@@ -127,8 +127,11 @@ export class HostedSession {
   private readonly roomReplies = new Set<string>();
   private historyImported = false;
   private readonly postedTurns = new Set<string>();
-  /** Turns started by a room message nobody tagged, which Switch routed here. */
-  private readonly routedTurns = new Set<string>();
+  /**
+   * Turns started by a room message nobody tagged, which Switch routed here
+   * or following the conversation brought here.
+   */
+  private readonly unaskedTurns = new Set<string>();
   /** Turns whose posts to the room were refused, with the last refusal. */
   private readonly failedPosts = new Map<string, string>();
   private readonly usage = new Map<string, TokenUsage[]>();
@@ -755,11 +758,12 @@ export class HostedSession {
 
   /**
    * `commandId` carries a room message nobody tagged, which Switch routed to
-   * this agent: the agent may rightly stay silent on it, so a turn it finishes
-   * without posting tells the room nothing.
+   * this agent or following the conversation brought to it: the agent may
+   * rightly stay silent on it, so a turn it finishes without posting tells
+   * the room nothing.
    */
-  routedRoomTurn(commandId: string): void {
-    this.routedTurns.add(commandId);
+  unaskedRoomTurn(commandId: string): void {
+    this.unaskedTurns.add(commandId);
   }
 
   /** A post to the room in the running turn was refused: why, the last one kept. */
@@ -1265,9 +1269,9 @@ export class HostedSession {
    * an agent that finished with its answer, or a usage-limit notice, in its
    * final text — since the room would otherwise hear nothing about it
    * (`unpostedReply`). A turn someone stopped says nothing, nor does one that
-   * finished on a message Switch routed here untagged, which the agent may
-   * rightly leave alone; one the host cut short on purpose (stopping,
-   * parking, a reset) is left alone too.
+   * finished on a message nobody tagged (Switch routed it here, or following
+   * the conversation did), which the agent may rightly leave alone; one the
+   * host cut short on purpose (stopping, parking, a reset) is left alone too.
    *
    * Decided once per turn and recorded before the post, so a restart never
    * posts it twice. The post runs beside the session; one that fails is
@@ -1279,7 +1283,7 @@ export class HostedSession {
     detail: string | null
   ): Promise<void> {
     const posted = this.postedTurns.delete(turnId);
-    const routed = this.routedTurns.delete(turnId);
+    const unasked = this.unaskedTurns.delete(turnId);
     const failedPost = this.failedPosts.get(turnId) ?? null;
     this.failedPosts.delete(turnId);
     const reply = this.config.replyToRoom;
@@ -1293,7 +1297,7 @@ export class HostedSession {
     const body =
       failedPost !== null && outcome !== 'error'
         ? postFailedReply(failedPost)
-        : routed && outcome === 'completed'
+        : unasked && outcome === 'completed'
           ? null
           : unpostedReply(outcome, detail, lastAssistantText(this.replica.snapshot(), turnId));
     if (body === null) return;
