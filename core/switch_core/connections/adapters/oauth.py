@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -153,9 +154,16 @@ def _https(url: object, what: str) -> str:
 def _path_value(document: Any, path: str) -> Any:
     value = document
     for part in path.split("."):
-        if not isinstance(value, dict):
+        if isinstance(value, list):
+            # Only exactly one item in a list can name an account;
+            # zero or multiple items fails loudly without guessing.
+            if len(value) != 1 or not isinstance(value[0], dict):
+                return None
+            value = value[0].get(part)
+        elif isinstance(value, dict):
+            value = value.get(part)
+        else:
             return None
-        value = value.get(part)
     return value
 
 
@@ -488,35 +496,146 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
-        response = await self._send(
-            self._http.build_request(
-                "GET",
-                self._identity.url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json",
-                },
+        if self._identity.mcp_tool is not None:
+            body = await self._identity_from_tool(access_token)
+        else:
+            assert self._identity.url is not None
+            response = await self._send(
+                self._http.build_request(
+                    "GET",
+                    self._identity.url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                    },
+                )
             )
-        )
-        if response.status_code == 401:
-            raise ReauthorizationRequiredError(
-                f"{self._name} refused the new sign-in when asked whose it is."
-            )
-        if response.status_code != 200:
-            raise ServiceAdapterError(
-                f"{self._name} would not say whose sign-in this is "
-                f"(HTTP {response.status_code})."
-            )
-        body = self._json(response, "account")
-        account_id = _path_value(body, self._identity.account_id)
-        label = _path_value(body, self._identity.label)
-        if type(account_id) is int:
-            account_id = str(account_id)
-        if not isinstance(account_id, str) or not account_id:
+            if response.status_code == 401:
+                raise ReauthorizationRequiredError(
+                    f"{self._name} refused the new sign-in when asked whose it is."
+                )
+            if response.status_code != 200:
+                raise ServiceAdapterError(
+                    f"{self._name} would not say whose sign-in this is "
+                    f"(HTTP {response.status_code})."
+                )
+            body = self._json(response, "account")
+        return self._identity_of(body)
+
+    def _identity_of(self, body: dict[str, Any]) -> Identity:
+        paths = self._identity.account_id
+        parts = [
+            _path_value(body, path)
+            for path in (paths if isinstance(paths, list) else [paths])
+        ]
+        if not all(
+            type(part) is int or (isinstance(part, str) and part.strip())
+            for part in parts
+        ):
             raise ServiceAdapterError(f"{self._name} did not name the account's id.")
+        account_id = (
+            ":".join(quote(str(part), safe="") for part in parts)
+            if isinstance(paths, list)
+            else str(parts[0])
+        )
+        label = _path_value(body, self._identity.label)
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
         )
+
+    async def _identity_from_tool(self, access_token: str) -> dict[str, Any]:
+        """The structured result of the identity tool, called on the entry's
+        own MCP server in a session of its own."""
+        server_url = self._identity.url or self._mcp_url
+        if server_url is None or self._identity.mcp_tool is None:
+            raise ServiceAdapterError(f"{self._name} has no MCP identity source.")
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        }
+
+        async def call(payload: dict[str, Any], session: str | None) -> httpx.Response:
+            if session is not None:
+                headers["Mcp-Session-Id"] = session
+            response = await self._send(
+                self._http.build_request(
+                    "POST",
+                    server_url,
+                    headers=headers,
+                    content=json.dumps(payload),
+                )
+            )
+            if response.status_code == 401:
+                raise ReauthorizationRequiredError(
+                    f"{self._name} refused the new sign-in when asked whose it is."
+                )
+            if response.status_code not in (200, 202):
+                raise ServiceAdapterError(
+                    f"{self._name} would not say whose sign-in this is "
+                    f"(HTTP {response.status_code})."
+                )
+            return response
+
+        opened = await call(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "switch", "version": "1"},
+                },
+            },
+            None,
+        )
+        session = opened.headers.get("mcp-session-id")
+        await call({"jsonrpc": "2.0", "method": "notifications/initialized"}, session)
+        answered = await call(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": self._identity.mcp_tool, "arguments": {}},
+            },
+            session,
+        )
+        if len(answered.content) > MAX_METADATA_BYTES:
+            raise ServiceAdapterError(f"{self._name}'s account is too large.")
+        text = answered.text
+        if answered.headers.get("content-type", "").startswith("text/event-stream"):
+            text = "\n".join(
+                line[5:].strip()
+                for line in text.splitlines()
+                if line.startswith("data:")
+            )
+        for candidate in [text, *text.splitlines()]:
+            try:
+                message = json.loads(candidate)
+            except ValueError:
+                continue
+            if isinstance(message, dict) and message.get("id") == 2:
+                result = message.get("result")
+                if isinstance(result, dict) and not result.get("isError"):
+                    content = result.get("structuredContent")
+                    if isinstance(content, dict):
+                        return content
+                    items = result.get("content")
+                    if (
+                        isinstance(items, list)
+                        and len(items) == 1
+                        and isinstance(items[0], dict)
+                        and items[0].get("type") == "text"
+                    ):
+                        try:
+                            parsed = json.loads(items[0].get("text", ""))
+                            if isinstance(parsed, dict):
+                                return parsed
+                        except ValueError:
+                            pass
+                break
+        raise ServiceAdapterError(f"{self._name} did not say whose sign-in this is.")
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 
