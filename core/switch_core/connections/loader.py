@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -369,9 +370,25 @@ class McpServer(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     name: str = Field(pattern=SLUG_PATTERN)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    read_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] | None = (
         Field(default=None, min_length=1)
     )
+
+    @model_validator(mode="after")
+    def _read_url_shares_origin(self) -> "McpServer":
+        if self.read_url is not None:
+            parsed_main = urlparse(self.url)
+            parsed_read = urlparse(self.read_url)
+            if (parsed_main.scheme, parsed_main.netloc, parsed_main.path) != (
+                parsed_read.scheme,
+                parsed_read.netloc,
+                parsed_read.path,
+            ):
+                raise ValueError(
+                    f"read_url must share origin and path with url for server {self.name}"
+                )
+        return self
 
 
 class ConnectionMcp(BaseModel):

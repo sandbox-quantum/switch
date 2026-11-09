@@ -1352,10 +1352,21 @@ class ServiceBroker:
             skill = None if entry is None else entry.skill_files.get("SKILL.md")
             mcp = None if entry is None else entry.definition.mcp
             cli = None if entry is None else entry.definition.cli
+            effective_access: AccessLevel = grant.access
+            if (
+                entry is not None
+                and _passes_through(entry)
+                and agent.owner_id is not None
+            ):
+                connection = await self._store.get_connection(
+                    session, agent.owner_id, grant.service
+                )
+                if connection is not None:
+                    effective_access = _consent(connection)
             grants.append(
                 {
                     "service": grant.service,
-                    "access": grant.access,
+                    "access": effective_access,
                     "tool_mode": grant.tool_mode,
                     "tools": list(grant.tools),
                     "resources": dict(grant.resources),
@@ -1376,7 +1387,12 @@ class ServiceBroker:
                         else [
                             {
                                 "name": server.name,
-                                "url": server.url,
+                                "url": (
+                                    server.read_url
+                                    if effective_access == "read"
+                                    and server.read_url is not None
+                                    else server.url
+                                ),
                                 "headers": server.headers
                                 or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
                             }
