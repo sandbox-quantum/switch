@@ -1168,6 +1168,9 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `deployment_started` — every boot. Same place.
 - `usage_snapshot` — 60s after boot, then each interval.
   `telemetry/reporter.py` → `run_once`.
+- `usage_day_counted`, `usage_week_counted`, `usage_month_counted` — with the
+  snapshot, from its second pass, for each day, week and month that ended
+  since the pass before.
 
 **Rooms** — `room_service.py` throughout; gateway routes under `/gateway/rooms`
 
