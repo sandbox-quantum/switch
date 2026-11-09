@@ -194,7 +194,7 @@ function sessionHosts() {
   return hosts;
 }
 
-it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'])(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'pi'])(
   'keeps %s room assignments across a crash before launch and duplicate delivery',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), 'shared-watch-test-'));
