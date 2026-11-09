@@ -435,6 +435,26 @@ def _active_accounts(
     )
 
 
+def _active_console_accounts(
+    tenant_id: str, since: datetime, until: datetime
+) -> Select[tuple[str | None]]:
+    """Distinct Switch accounts that used a room from Switch Console chat in
+    `[since, until)`. A `member` client speaks for its account directly
+    (`Client.user_id`), with no chat identity to claim. See
+    `_human_activity_conditions`."""
+    return (
+        select(distinct(Client.user_id))
+        .select_from(Message)
+        .join(Client, Client.id == Message.sender_client_id)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= since,
+            Message.sent_at < until,
+            *_human_activity_conditions(tenant_id, (MEMBER_CLIENT_TYPE,)),
+        )
+    )
+
+
 def _active_humans(
     tenant_id: str, since: datetime, until: datetime
 ) -> Select[tuple[str | None]]:
@@ -1068,8 +1088,10 @@ class PeriodCounts:
     By the snapshot's definitions, with two differences. People are anyone
     who said something in a room with an agent, on a messaging platform or in
     Switch Console (`PERSON_CLIENT_TYPES`), where the snapshot counts only the
-    first; the rooms and turns follow. And `chat_identity_active_*` is split
-    into people and integrations (`_identity_activity`)."""
+    first; the rooms, turns and accounts follow, so an account counts when a
+    chat identity it claimed spoke or when it spoke in Console chat itself.
+    And `chat_identity_active_*` is split into people and integrations
+    (`_identity_activity`)."""
 
     room_active: int = 0
     person_identity_active: int = 0
@@ -1116,6 +1138,15 @@ async def collect_period_counts(
                         await session.execute(_active_accounts(tenant_id, start, end))
                     ).scalars()
                 )
+                accounts |= {
+                    user_id
+                    for user_id in (
+                        await session.execute(
+                            _active_console_accounts(tenant_id, start, end)
+                        )
+                    ).scalars()
+                    if user_id is not None
+                }
                 agents = await _count(session, _active_agents(tenant_id, start, end))
                 messages = await _scalar(session, _message_count(tenant_id, start, end))
                 turns = await _turns(

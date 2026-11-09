@@ -620,8 +620,8 @@ version of their own to them without also giving them a release of their own.
   over a week counted a room once for every day it was active. New
   `usage_day_counted`, `usage_week_counted` and `usage_month_counted` events
   are sent once per finished UTC day, ISO week and calendar month, with that
-  period's distinct active rooms, people (Switch Console chat included),
-  accounts, integrations and agents, and its messages and turns, dated to the
+  period's distinct active rooms, people and accounts (Switch Console chat
+  included), integrations and agents, and its messages and turns, dated to the
   period's middle. Summed at the matching interval each is the real figure.
   None is dated before the server was installed or telemetry was switched on:
   a period that ended before then isn't sent, and one that began before is

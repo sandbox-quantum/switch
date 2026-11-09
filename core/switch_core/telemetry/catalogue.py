@@ -256,7 +256,8 @@ _SNAPSHOT_COUNTS = (
     "user_count",
     "user_internal_count",
     # Switch accounts, not chat identities — see `chat_identity_*` for those.
-    # The period events' `account_active` is the same count per period.
+    # The period events' `account_active` counts these per period, and adds
+    # accounts that used Switch Console chat.
     "user_active_1d",
     "user_active_7d",
     "user_internal_active_1d",

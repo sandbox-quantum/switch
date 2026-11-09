@@ -29,7 +29,11 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.telemetry import snapshot as snapshot_module
-from switch_core.telemetry.snapshot import UsageCounts, collect_usage
+from switch_core.telemetry.snapshot import (
+    UsageCounts,
+    collect_period_counts,
+    collect_usage,
+)
 
 OTHER_TENANT = "22222222-2222-2222-2222-222222222222"
 
@@ -122,6 +126,88 @@ async def _chat_account_speaks(
             )
         )
         await session.commit()
+
+
+async def _speaks_in_console_chat(
+    session_factory: async_sessionmaker[AsyncSession], *, user_id: str
+) -> None:
+    """The account says something in a Switch Console chat with an agent, as
+    itself through its `member` client: no chat identity, nothing claimed."""
+    suffix = uuid.uuid4().hex[:8]
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        member = Client(
+            transport_user_id=f"@switch-member-{suffix}:test",
+            display_name="member",
+            type="member",
+            user_id=user_id,
+        )
+        agent = Client(
+            transport_user_id=f"@agent-{suffix}:test",
+            display_name="agent",
+            type="agent",
+        )
+        room = Room(
+            transport_room_id=f"!{suffix}:test",
+            name=f"chat-{suffix}",
+            description="",
+            channel_type="direct",
+            metadata_={"created_by_kind": "user"},
+        )
+        session.add_all([member, agent, room])
+        await session.flush()
+        session.add(ClientRoom(client_id=agent.id, room_id=room.id))
+        session.add(ClientRoom(client_id=member.id, room_id=room.id))
+        session.add(
+            Message(
+                room_id=room.id,
+                seq=1,
+                transport_event_id=f"$evt-{suffix}",
+                sender_id=member.transport_user_id,
+                sender_client_id=member.id,
+                event_type="m.room.message",
+                msgtype="m.text",
+                body="hello",
+                content={"body": "hello"},
+                sent_at=datetime.now(UTC) - timedelta(hours=1),
+            )
+        )
+        await session.commit()
+
+
+async def _accounts_active_today(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> int:
+    now = datetime.now(UTC)
+    counts = await collect_period_counts(
+        session_factory,
+        tenant_ids=[TENANT_ZERO_ID],
+        start=now - timedelta(days=1),
+        end=now,
+    )
+    return counts.account_active
+
+
+async def test_an_account_using_switch_console_chat_is_active_in_the_period_counts(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A Console member client is its account, so the period counts need no
+    claim to count it. The snapshot's released `user_active_*` keep counting
+    claimed chat identities only."""
+    someone = await _account(session_factory, f"{uuid.uuid4().hex[:6]}@example.com")
+    await _speaks_in_console_chat(session_factory, user_id=someone)
+
+    assert await _accounts_active_today(session_factory) == 1
+    assert (await collect_usage(session_factory)).user_active_1d == 0
+
+
+async def test_an_account_on_a_platform_and_in_switch_console_is_one_account(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    someone = await _account(session_factory, f"{uuid.uuid4().hex[:6]}@example.com")
+    await _chat_account_speaks(session_factory, claimed_by=[someone])
+    await _speaks_in_console_chat(session_factory, user_id=someone)
+
+    assert await _accounts_active_today(session_factory) == 1
 
 
 async def test_a_claimed_chat_account_makes_its_switch_account_active(
