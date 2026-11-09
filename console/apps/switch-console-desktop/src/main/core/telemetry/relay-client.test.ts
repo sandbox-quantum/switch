@@ -65,13 +65,21 @@ const SESSION_STARTED = {
 describe('the record that gets built', () => {
   it('carries the client id the relay requires, as a resource attribute', () => {
     // Without it the relay drops the whole payload — and still answers 200.
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'same', from_version: 'none', trigger: 'none' },
+      CONTEXT
+    );
 
     expect(resourceAttributes(payload)['flint.client_id']).toBe(CONTEXT.clientId);
   });
 
   it('says which app and version it is, for both destinations', () => {
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'same', from_version: 'none', trigger: 'none' },
+      CONTEXT
+    );
 
     expect(resourceAttributes(payload)).toEqual({
       'service.name': 'switch-console',
@@ -94,7 +102,11 @@ describe('the record that gets built', () => {
     // The attribute alone gets a record past the relay's "is it named?" filter
     // and then dropped by an exporter that only reads the field — silently, and
     // with a 200 at every step. Both, or nothing arrives and nothing says so.
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'same', from_version: 'none', trigger: 'none' },
+      CONTEXT
+    );
 
     expect(logRecord(payload).eventName).toBe('switch_console.app_launched');
   });
@@ -133,19 +145,29 @@ describe('the record that gets built', () => {
   });
 
   it('sends an event as its name, its build and its own properties, and nothing else', () => {
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'new' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'new', from_version: 'none', trigger: 'none' },
+      CONTEXT
+    );
 
     expect(logAttributes(payload)).toEqual({
       'event.name': 'switch_console.app_launched',
       build: 'stable',
       install_kind: 'new',
+      from_version: 'none',
+      trigger: 'none',
     });
   });
 
   it('carries a body, so the event is not a blank line in the log sink', () => {
     // The relay forwards the same record to Datadog, which reads the body as
     // the message. It repeats the name rather than adding anything new.
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'same', from_version: 'none', trigger: 'none' },
+      CONTEXT
+    );
 
     expect(logRecord(payload).body).toEqual({ stringValue: 'switch_console.app_launched' });
   });
@@ -174,7 +196,7 @@ describe('the record that gets built', () => {
     (internal) => {
       const payload = buildOtlpPayload(
         'app_launched',
-        { install_kind: 'same' },
+        { install_kind: 'same', from_version: 'none', trigger: 'none' },
         { ...CONTEXT, internal }
       );
 
@@ -190,7 +212,7 @@ describe('the record that gets built', () => {
       // requires on the resource.
       const payload = buildOtlpPayload(
         'app_launched',
-        { install_kind: 'same' },
+        { install_kind: 'same', from_version: 'none', trigger: 'none' },
         { ...CONTEXT, flintEnv }
       );
 
@@ -242,7 +264,11 @@ describe('the record that gets built', () => {
   );
 
   it('stamps the time in nanoseconds, which is what OTLP counts in', () => {
-    const payload = buildOtlpPayload('app_launched', { install_kind: 'same' }, CONTEXT);
+    const payload = buildOtlpPayload(
+      'app_launched',
+      { install_kind: 'same', from_version: 'none', trigger: 'none' },
+      CONTEXT
+    );
 
     const record = logRecord(payload);
     expect(record.timeUnixNano).toBe('1700000000000000000');

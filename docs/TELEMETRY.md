@@ -103,13 +103,12 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `app_launched` | `install_kind`: `new` (the installation's very first launch) / `updated` (the first launch after its version changed) / `same` |
+| `app_launched` | `install_kind`: `new` (the installation's very first launch) / `updated` (the first launch on a newer version; switching between the canary and stable builds, or going back to an older version, is `same`) / `same` · `from_version`: `0.40.1`, or `unknown` when the previous launch did not record one · `trigger`: `restart_button` (the app restarted itself to install the update) / `other` (installed on quit, or by hand) / `unknown` (that could not be read) — both are `none` unless `install_kind` is `updated` |
 | `renderer_crashed` | *(no fields)* |
 | `update_checked` | `trigger`: `user` / `startup` / `scheduled` · `result`: `available` / `up_to_date` / `failed` |
 | `update_download_started` | *(no fields)* — Download was pressed for an available update |
 | `update_downloaded` | `outcome`: `success` / `failure` |
 | `update_install_started` | `outcome`: `success` / `failure` |
-| `update_installed` | `from_version`: `0.40.1`, or `unknown` when the previous launch did not record one · `trigger`: `restart_button` (the app restarted itself to install it) / `other` (installed on quit, or by hand) — sent on the first launch after the version changed |
 | `telemetry_consent_changed` | `source`: `first_run` / `settings` · `install_kind`: as on `app_launched`, or `unknown` if the launch could not be recorded |
 | `setting_changed` | `setting_key`, one of exactly 12: `localLocation`, `sessions`, `defaultAgent`, `notifications`, `theme`, `openIn`, `interface`, `browserPreview`, `browser`, `changesViewMode`, `onboarding`, `telemetry`. **The new value is never sent** — we learn that someone changed their theme, not to what. |
 | `search_performed` | `status`: `ok` / `recents` / `query-too-short` / `failed` · `result_count`: `0`, `3`, `17`. **The query is never sent.** |

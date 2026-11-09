@@ -356,9 +356,22 @@ export type TelemetryHostSetupStepKind = HostSetupStepKind | 'unknown';
  * depend on it.
  */
 export type TelemetryEventMap = {
-  /** The app started, and which kind of launch it was. */
+  /**
+   * The app started, and which kind of launch it was.
+   *
+   * A launch on a new version after an update is the end of that update, and
+   * says so. `from_version` is the version the previous launch ran; `unknown`
+   * for an install from before launches were recorded, or a stored value that
+   * is not a version. `trigger` is `restart_button` when the previous run handed
+   * the update to the installer from Restart to update, `other` when the version
+   * changed without that (installed when the app quit, or by hand), and
+   * `unknown` when that record could not be read. Both are `none` on any launch
+   * that is not an upgrade's.
+   */
   app_launched: {
     install_kind: TelemetryInstallKind;
+    from_version: TelemetryAppVersion | 'unknown' | 'none';
+    trigger: 'restart_button' | 'other' | 'unknown' | 'none';
   };
   agent_created: {
     agent_type: TelemetryAgentType;
@@ -433,25 +446,11 @@ export type TelemetryEventMap = {
    * Deliberately named for what it can actually observe. A successful install
    * quits the app, so there is no moment afterwards in which to report one; what
    * this counts is the point the update was handed to the installer. Whether it
-   * worked is answered by `update_installed` on the next launch. A launch that
+   * worked is answered by `app_launched` on the next launch. A launch that
    * comes back on the old version reports this event again, as a failure.
    */
   update_install_started: {
     outcome: TelemetryOutcome;
-  };
-  /**
-   * The first launch on a new version after an update: the end of the update.
-   * The new version is the event's own app version, which every event carries.
-   *
-   * `from_version` is the version the previous launch ran; `unknown` for an
-   * install from before launches were recorded, or a stored value that is not a
-   * version. `trigger` is `restart_button` when the previous run handed the update
-   * to the installer from Restart to update, and `other` when the version changed
-   * without that: installed when the app quit, or by hand.
-   */
-  update_installed: {
-    from_version: TelemetryAppVersion | 'unknown';
-    trigger: 'restart_button' | 'other';
   };
   /** A messaging platform was connected to a server. */
   bridge_connected: {
@@ -697,7 +696,7 @@ export type TelemetryEvent = {
  * checking does not apply — cannot ride along into a payload unnoticed.
  */
 export const TELEMETRY_EVENT_PROPERTIES = {
-  app_launched: ['install_kind'],
+  app_launched: ['install_kind', 'from_version', 'trigger'],
   agent_created: ['agent_type', 'location', 'outcome', 'failure_reason', 'entry_point'],
   session_started: [
     'agent_type',
@@ -715,7 +714,6 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   update_download_started: [],
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],
-  update_installed: ['from_version', 'trigger'],
   bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
   bridge_disconnected: ['bridge_platform', 'outcome'],
   bridge_identity_claimed: ['bridge_platform', 'outcome'],
