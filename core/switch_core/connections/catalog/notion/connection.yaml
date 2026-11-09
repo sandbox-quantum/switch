@@ -16,11 +16,15 @@ auth:
     redirect: [loopback]
     loopback_ports: [39231, 39232, 39233, 39234, 39235]
     revocation_discovered: true
-  # A Notion MCP token works only with Notion MCP, so the account is read
-  # from the sign-in's token answer, which names the person and workspace.
+  # A Notion MCP token works only with Notion MCP (Notion's API answers it
+  # 401), so the account is Notion's introspection answer for the token, at
+  # the introspection_endpoint its metadata advertises. Measured, that answer
+  # names the user and the workspace by id only, so a person in two
+  # workspaces is two connections, each labelled with its workspace's id.
   identity:
-    account_id: user_id
-    label: workspace_name
+    introspection: true
+    account_id: [workspace_id, user_id]
+    label: workspace_id
 # Notion's access tokens lived 28,800 s when measured, and none can be asked
 # for shorter, so an agent's copy may outlive its grant by up to that long.
 # Agents still ask again hourly.

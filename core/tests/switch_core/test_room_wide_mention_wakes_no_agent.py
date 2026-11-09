@@ -27,6 +27,7 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import (
     AgentStatus,
     RoomWideMentionStatus,
+    SentMessage,
 )
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -148,9 +149,9 @@ def _service(
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
-    ) -> str:
+    ) -> SentMessage:
         sent.append(_Sent(body, extra_content))
-        return f"evt-{len(sent)}"
+        return SentMessage(event_id=f"evt-{len(sent)}", trust=None)
 
     svc.list_participants = _participants  # type: ignore[assignment]
     svc.send_message = _send_message  # type: ignore[assignment]

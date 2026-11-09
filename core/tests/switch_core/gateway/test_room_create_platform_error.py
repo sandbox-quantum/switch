@@ -61,6 +61,7 @@ async def _call(exc: Exception) -> HTTPException:
             external_user_store=None,  # type: ignore[arg-type]
             protocol=None,  # type: ignore[arg-type]
             user=type("U", (), {"id": "u1"})(),  # type: ignore[arg-type]
+            is_admin=False,
         )
     return excinfo.value
 
@@ -98,4 +99,5 @@ async def test_an_ordinary_bug_is_not_dressed_up_as_a_platform_refusal() -> None
             external_user_store=None,  # type: ignore[arg-type]
             protocol=None,  # type: ignore[arg-type]
             user=type("U", (), {"id": "u1"})(),  # type: ignore[arg-type]
+            is_admin=False,
         )

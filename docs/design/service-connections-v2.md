@@ -46,6 +46,9 @@ auth:
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
+    # or introspection: true, in place of url: the RFC 7662 answer for the
+    #   token at the introspection_endpoint the discovered metadata
+    #   advertises; account_id may list paths, joined into one id
 token: { kind: pass_through, max_lifetime: 28800 }
 mcp:
   servers:
@@ -283,7 +286,7 @@ disconnecting still works. A slug outside the catalog stops the server.
 ## Switching a service on for a workspace
 
 A workspace admin switches each catalog service on or off for the workspace
-(`GET` and `PUT /gateway/workspace/services[/{service}]`, admins and owners,
+(`GET` and `PUT /gateway/workspace/services[/{service}]`, admins only,
 and the operator in a workspace they belong to). A service with no setting
 takes the workspace's default, `tenants.services_on_by_default`: off for every
 workspace made since services started off, so a new workspace has none until
@@ -550,9 +553,14 @@ Built from a sign-in run against a test Notion workspace:
   level. Notion also lists `ema_issuer:manage`, for enterprise identity
   providers, which is not asked for.
 - A Notion MCP token works only with Notion MCP: Notion's REST API refuses it
-  (401). The code's token answer names the person (`user_id`) and the
-  workspace (`workspace_name`), and a refresh's does not, so the entry's
-  identity has no `url` and the adapter reads both from that first answer.
+  (401). So the account is read by token introspection (RFC 7662): Notion's
+  metadata advertises an `introspection_endpoint`, Core asks it as its
+  client asks at the token endpoint, and the answer must say `active: true`. Measured, the answer
+  names the workspace and the user by id only (`workspace_id`, `user_id`),
+  so the account id is both, each escaped and joined with `:`, and the
+  connection is labelled with the workspace's id. A person in two workspaces
+  has two connections. The token answer is never trusted for identity, since
+  nothing checks it against the token later.
 - Access tokens live 8 hours (28,800 s measured); every refresh rotates the
   refresh token, and revoking it ends the sign-in.
 - The server's tools pass through unchanged: 65 at the first run, 64 a week

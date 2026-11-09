@@ -35,7 +35,6 @@ from switch_core.connections.adapters.oauth import (
     Identity,
     OAuthAdapter,
     OAuthClientCredentials,
-    SignIn,
     StaticClient,
 )
 from switch_core.connections.broker import Principal, ServiceBroker
@@ -55,8 +54,8 @@ from tests.switch_core.connections.fake_vendor import (
 from tests.switch_core.connections.test_broker import _user, pass_through_catalog
 from tests.switch_core.connections.test_loader import (
     CLI_ENTRY,
+    INTROSPECTION_ENTRY,
     OAUTH_ENTRY,
-    TOKEN_IDENTITY_ENTRY,
 )
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
@@ -64,7 +63,7 @@ STATIC = OAUTH_ENTRY.replace(
     "    registration: dynamic\n",
     "    registration: static\n    client_settings: EXAMPLE\n",
 )
-TOKEN_IDENTITY = TOKEN_IDENTITY_ENTRY.replace(
+INTROSPECTION = INTROSPECTION_ENTRY.replace(
     "    registration: dynamic\n",
     "    registration: static\n    client_settings: EXAMPLE\n",
 )
@@ -98,10 +97,6 @@ def _request(resources: dict | None = None) -> IssueRequest:
 
 
 async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> ConnectionSecret:
-    return (await _exchange(adapter, vendor)).secret
-
-
-async def _exchange(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> SignIn:
     verifier = secrets.token_urlsafe(48)
     url = await adapter.authorization_url(
         redirect_uri=REDIRECT,
@@ -110,12 +105,13 @@ async def _exchange(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> SignIn:
         scopes=["read:items", "write:items"],
     )
     back = parse_qs(urlsplit(vendor.authorize(url)).query)
-    return await adapter.exchange_code(
+    signed_in = await adapter.exchange_code(
         code=back["code"][0],
         verifier=verifier,
         redirect_uri=REDIRECT,
         scopes=["read:items", "write:items"],
     )
+    return signed_in.secret
 
 
 @pytest.fixture
@@ -240,32 +236,105 @@ class TestSignIn:
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
             await adapter.identify(secret.access_token or "")
 
-    async def test_reads_the_account_from_the_codes_token_answer(self, vendor) -> None:
-        vendor.code_answer = {"user_id": "user-1", "workspace_name": "Ada's notes"}
-        adapter, _ = _adapter(vendor, TOKEN_IDENTITY)
-        signed_in = await _exchange(adapter, vendor)
-        assert signed_in.account == Identity("user-1", "Ada's notes")
+
+class TestIntrospectedIdentity:
+    async def test_reads_the_account_from_the_vendors_introspection(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTION)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity == Identity("ws-1:user-1", "ws-1")
+        # Asked as the client asks at the token endpoint, never with a GET.
+        [asked] = vendor.introspections
+        assert asked["token"] == secret.access_token
+        assert asked["token_type_hint"] == "access_token"
+        assert asked["client_id"] == STATIC_CLIENT_ID
         assert IDENTITY_URL not in vendor.paths
 
-    async def test_a_token_answer_without_the_account_is_refused(self, vendor) -> None:
-        adapter, _ = _adapter(vendor, TOKEN_IDENTITY)
+    async def test_a_public_client_introspects_with_its_id_alone(self, vendor) -> None:
+        # As Core's client registered at Notion is: it has no secret.
+        vendor.clients["public-1"] = None
+        adapter = OAuthAdapter(
+            _definition(INTROSPECTION),
+            StaticClient(OAuthClientCredentials("public-1", None, authentication=None)),
+            vendor.client(),
+        )
+        secret = await _sign_in(adapter, vendor)
+        assert (await adapter.identify(secret.access_token or "")).account_id == (
+            "ws-1:user-1"
+        )
+        [asked] = vendor.introspections
+        assert asked["client_id"] == "public-1"
+        assert "client_secret" not in asked
+
+    async def test_escapes_each_part_so_no_two_accounts_share_an_id(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTION)
+        secret = await _sign_in(adapter, vendor)
+        vendor.introspected = {"workspace_id": "ws:1", "user_id": 7}
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "ws%3A1:7"
+
+    @pytest.mark.parametrize(
+        "introspected",
+        [
+            {"workspace_id": "ws-1"},
+            {"user_id": "user-1"},
+            {"workspace_id": " ", "user_id": "user-1"},
+            {"workspace_id": ["ws-1"], "user_id": "user-1"},
+        ],
+    )
+    async def test_an_answer_missing_part_of_the_account_is_refused(
+        self, vendor, introspected
+    ) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTION)
+        secret = await _sign_in(adapter, vendor)
+        vendor.introspected = introspected
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
-            await _exchange(adapter, vendor)
+            await adapter.identify(secret.access_token or "")
 
-    async def test_an_account_read_by_url_is_not_taken_from_the_answer(
-        self, vendor
-    ) -> None:
-        vendor.code_answer = {"user_id": "user-1"}
-        adapter, _ = _adapter(vendor)
-        assert (await _exchange(adapter, vendor)).account is None
+    async def test_a_token_the_vendor_calls_inactive_is_refused(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTION)
+        await _sign_in(adapter, vendor)
+        with pytest.raises(ReauthorizationRequiredError, match="not active"):
+            await adapter.identify("vendor_access_unknown")
 
-    async def test_an_account_from_the_token_answer_is_never_asked_for(
-        self, vendor
-    ) -> None:
-        adapter, _ = _adapter(vendor, TOKEN_IDENTITY)
-        with pytest.raises(ServiceAdapterError, match="only in its token answer"):
-            await adapter.identify("any-token")
+    async def test_without_an_advertised_endpoint_nothing_is_sent(self, vendor) -> None:
+        del vendor.metadata["introspection_endpoint"]
+        adapter, _ = _adapter(vendor, INTROSPECTION)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(
+            ServiceAdapterError, match="advertises no token introspection"
+        ):
+            await adapter.identify(secret.access_token or "")
+        assert vendor.introspections == []
         assert IDENTITY_URL not in vendor.paths
+
+    async def test_an_introspection_endpoint_that_is_not_https_is_refused(
+        self, vendor
+    ) -> None:
+        vendor.metadata["introspection_endpoint"] = (
+            "http://auth.example.test/introspect"
+        )
+        adapter, _ = _adapter(vendor, INTROSPECTION)
+        with pytest.raises(ServiceAdapterError, match="introspection endpoint"):
+            await adapter.endpoints()
+
+    async def test_a_refused_introspection_is_an_error(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, INTROSPECTION)
+        secret = await _sign_in(adapter, vendor)
+        vendor.fail[f"{ISSUER}/introspect"] = (401, {"error": "invalid_client"})
+        with pytest.raises(ServiceAdapterError, match="HTTP 401"):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_an_identity_read_by_url_never_introspects(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, STATIC)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity == Identity("acct-1", "ada@example.test")
+        assert vendor.introspections == []
 
 
 class TestRefresh:
@@ -567,6 +636,7 @@ class TestThroughTheBroker:
             keyring=TEST_KEYRING,
             catalog=pass_through_catalog(tmp_path / "catalog"),
             adapters={"example": adapter},
+            organization_apps=None,
             disabled={},
             store=STORE,
             token_retention=timedelta(days=30),
@@ -648,6 +718,7 @@ class TestThroughTheBroker:
             keyring=TEST_KEYRING,
             catalog=pass_through_catalog(tmp_path / "catalog"),
             adapters={"example": adapter},
+            organization_apps=None,
             disabled={},
             store=STORE,
             token_retention=timedelta(days=30),

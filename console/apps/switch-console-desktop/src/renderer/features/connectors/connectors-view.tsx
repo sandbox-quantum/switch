@@ -10,6 +10,7 @@ import {
   operatesServer,
 } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { LIST_PAGE_WIDTH, ListToolbar } from '@renderer/lib/components/list-toolbar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -78,7 +79,7 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
 
   if (access !== 'shown' || workspaceId === null)
     return (
-      <ServerPage width={880} title="Connectors" description={DESCRIPTION}>
+      <ServerPage width={LIST_PAGE_WIDTH} title="Connectors" description={DESCRIPTION}>
         <Spinner />
       </ServerPage>
     );
@@ -186,7 +187,7 @@ function Connectors({
 
   return (
     <ServerPage
-      width={880}
+      width={LIST_PAGE_WIDTH}
       title="Connectors"
       description={DESCRIPTION}
       action={
@@ -206,16 +207,20 @@ function Connectors({
     >
       {/* Which tab opens depends on the catalog, so the tabs wait for it rather than flick over. */}
       {catalog.data && (
-        <div className="flex items-center gap-3">
-          <SegmentedControl ariaLabel="Connectors" value={tab} onChange={setTab} options={tabs} />
-          <SearchInput
-            containerClassName="flex-1"
-            aria-label="Search connectors"
-            placeholder="Search by name, category or description"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
+        <ListToolbar
+          scope={
+            <SegmentedControl ariaLabel="Connectors" value={tab} onChange={setTab} options={tabs} />
+          }
+          search={
+            <SearchInput
+              containerClassName="w-full"
+              aria-label="Search connectors"
+              placeholder="Search by name, category or description"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          }
+        />
       )}
       {catalog.isError ? (
         <CatalogError error={catalog.error} onRetry={() => void catalog.refetch()} />

@@ -18,6 +18,7 @@ function fakeFs(seed: Record<string, string>): PluginFs {
       files.delete(p);
       return Promise.resolve();
     },
+    protectSecret: (p) => Promise.resolve(files.has(p)),
     exists: (p) => Promise.resolve(files.has(p)),
     list: (dir) =>
       Promise.resolve(
@@ -106,7 +107,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchAgentDetail: v
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('./agent-storage-migration-marker', () => ({
-  AGENT_STORAGE_MIGRATION_GENERATION: 3,
+  AGENT_STORAGE_MIGRATION_GENERATION: 4,
   completedAgentStorageMigrationGeneration: h.completedGeneration,
   markAgentStorageMigrationComplete: h.markComplete,
 }));
@@ -185,7 +186,7 @@ describe('migrateAgentStorage', () => {
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it('never reads .claude/settings.local.json for a provider without repo-agents', async () => {
+  it('never adopts .claude/settings.local.json for a provider without repo-agents', async () => {
     // The shared settings file is written only by provisionAgent /
     // provisionRemoteAgent, always as the Claude "main" agent, so for any other
     // provider it is a different agent's identity and token. Adopting it would
@@ -201,7 +202,9 @@ describe('migrateAgentStorage', () => {
 
     await migrateAgentStorage();
 
-    expect(read).not.toHaveBeenCalledWith('.claude/settings.local.json');
+    // One read, by the step that protects a token it finds there; the
+    // credential step, which would adopt it, never looks.
+    expect(read.mock.calls.filter(([p]) => p === '.claude/settings.local.json')).toHaveLength(1);
     expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(false);
   });
 
@@ -250,12 +253,15 @@ describe('migrateAgentStorage', () => {
     h.state.agents = [{ ...baseAgent, providerId: 'codex', name: 'codex-hoot' }];
     h.state.repoAgents = null;
     const ws = fakeFs({ '.switch/agents/agent-id-1.json': credsJson('sw-other') });
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
     h.state.workdir = ws;
 
     await migrateAgentStorage();
 
     expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(false);
     expect(await ws.read('.switch/agents/agent-id-1.json')).toBe(credsJson('sw-other'));
+    // Kept, so made private: the token in it is no less live for being refused.
+    expect(protectSecret).toHaveBeenCalledWith('.switch/agents/agent-id-1.json', undefined);
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('different Switch agent'),
       expect.objectContaining({ foundSwitchAgentId: 'sw-other', providerId: 'codex' })
@@ -291,7 +297,7 @@ describe('migrateAgentStorage', () => {
   });
 
   it('skips the whole pass (no workdir opened) once the current generation is latched', async () => {
-    h.completedGeneration.mockResolvedValueOnce(3);
+    h.completedGeneration.mockResolvedValueOnce(4);
     const resolveWorkdirFsFor = (await import('./agent-workdir-fs')).resolveWorkdirFsFor;
 
     await migrateAgentStorage();
@@ -357,6 +363,167 @@ describe('migrateAgentStorage', () => {
     await migrateAgentStorage();
 
     expect(await ws.exists('.switch/agents/codex-hoot.json')).toBe(true);
+  });
+
+  it('re-running after generation 3 protects existing credentials without rewriting them', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-hoot-main.json': credsJson('sw-1') });
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
+    const write = vi.spyOn(ws, 'write');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    // A rewrite could undo a rename or endpoint change landing at the same
+    // moment; changing permissions alone cannot.
+    expect(protectSecret.mock.calls).toEqual([['.switch/agents/cc-hoot-main.json', undefined]]);
+    expect(write).not.toHaveBeenCalled();
+    expect(await ws.read('.switch/agents/cc-hoot-main.json')).toBe(credsJson('sw-1'));
+    expect(h.readLaunchEnv).not.toHaveBeenCalled();
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('protects every credential in the working directory, leaving .claude/ itself alone', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({
+      '.switch/agents/cc-hoot-main.json': credsJson('sw-1'),
+      // A stale id-keyed file the credential step refused, and another agent's.
+      '.switch/agents/agent-id-1.json': credsJson('sw-other'),
+      '.switch/agents/colleague.json': credsJson('sw-2'),
+      '.switch/agents/.gitignore': '*\n',
+      '.claude/switch-subagents/legacy.settings.json': credsJson('sw-3'),
+      '.claude/settings.local.json': credsJson('sw-4'),
+    });
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(protectSecret.mock.calls).toEqual(
+      expect.arrayContaining([
+        ['.switch/agents/cc-hoot-main.json', undefined],
+        ['.switch/agents/agent-id-1.json', undefined],
+        ['.switch/agents/colleague.json', undefined],
+        ['.claude/switch-subagents/legacy.settings.json', { fileOnly: true }],
+        ['.claude/settings.local.json', { fileOnly: true }],
+      ])
+    );
+    expect(protectSecret).toHaveBeenCalledTimes(5);
+  });
+
+  it('leaves a .claude/settings.local.json that holds no token alone', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({
+      '.claude/settings.local.json': JSON.stringify({
+        env: { SWITCH_API_ENDPOINT: 'http://switch.example', SWITCH_AGENT_ID: 'sw-1' },
+      }),
+    });
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(protectSecret.mock.calls).toEqual([['.switch/agents/cc-hoot-main.json', undefined]]);
+  });
+
+  it('latches generation 4 for an agent with no credentials to protect', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({});
+    const write = vi.spyOn(ws, 'write');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(write).not.toHaveBeenCalled();
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a credential it is refused as done, with a warning, and protects the rest', async () => {
+    // Another account's file: no retry changes that, and an unlatched
+    // generation would re-open every working directory on every boot.
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({
+      '.switch/agents/cc-hoot-main.json': credsJson('sw-1'),
+      '.switch/agents/colleague.json': credsJson('sw-2'),
+    });
+    const protectSecret = vi.spyOn(ws, 'protectSecret').mockImplementation(async (p) => {
+      if (p === '.switch/agents/colleague.json')
+        throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      return true;
+    });
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(protectSecret).toHaveBeenCalledWith('.switch/agents/cc-hoot-main.json', undefined);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('cannot make a credentials file private'),
+      expect.objectContaining({ path: '.switch/agents/colleague.json' })
+    );
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a settings file it may not read as done too', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-hoot-main.json': credsJson('sw-1') });
+    const read = ws.read.bind(ws);
+    vi.spyOn(ws, 'read').mockImplementation(async (p) => {
+      if (p === '.claude/settings.local.json')
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      return read(p);
+    });
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries next boot when the credentials directory cannot be listed for a reason that may pass', async () => {
+    // A listing that failed must not read as an empty directory: the files in
+    // it would go unprotected and the generation would latch over them.
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-hoot-main.json': credsJson('sw-1') });
+    const list = vi.spyOn(ws, 'list');
+    list.mockRejectedValueOnce(new Error('SSH connection is not available'));
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(list).toHaveBeenCalledWith('.switch/agents', { strict: true });
+    expect(h.markComplete).not.toHaveBeenCalled();
+  });
+
+  it('counts a credentials directory it may not list as done, still protecting the agent’s own file', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-hoot-main.json': credsJson('sw-1') });
+    vi.spyOn(ws, 'list').mockRejectedValueOnce(
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    );
+    const protectSecret = vi.spyOn(ws, 'protectSecret');
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(protectSecret).toHaveBeenCalledWith('.switch/agents/cc-hoot-main.json', undefined);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('cannot make a credentials file private'),
+      expect.objectContaining({ path: '.switch/agents' })
+    );
+    expect(h.markComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries next boot when credentials cannot be protected for a reason that may pass', async () => {
+    h.completedGeneration.mockResolvedValueOnce(3);
+    const ws = fakeFs({ '.switch/agents/cc-hoot-main.json': credsJson('sw-1') });
+    vi.spyOn(ws, 'protectSecret').mockRejectedValueOnce(
+      new Error('SSH connection is not available')
+    );
+    h.state.workdir = ws;
+
+    await migrateAgentStorage();
+
+    expect(h.markComplete).not.toHaveBeenCalled();
   });
 
   it('latches the marker after a clean pass', async () => {

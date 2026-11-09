@@ -335,7 +335,7 @@ class TestTenantIsolation:
             await session.flush()
             session.add(
                 TenantMember(
-                    tenant_id=f"tenant-{suffix}", user_id=user.id, role="owner"
+                    tenant_id=f"tenant-{suffix}", user_id=user.id, role="admin"
                 )
             )
             await session.commit()

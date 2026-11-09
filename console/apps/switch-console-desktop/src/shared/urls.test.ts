@@ -15,8 +15,9 @@ describe('switchConsoleReleaseTag', () => {
     expect(switchConsoleReleaseTag('v0.18.2')).toBe('switch-console-v0.18.2');
   });
 
-  it('keeps a prerelease identifier intact', () => {
-    expect(switchConsoleReleaseTag('0.19.0-canary.4')).toBe('switch-console-v0.19.0-canary.4');
+  it('tags a canary bare, as the release workflow does', () => {
+    expect(switchConsoleReleaseTag('0.19.0-canary.4')).toBe('v0.19.0-canary.4');
+    expect(switchConsoleReleaseTag('v0.19.0-canary.rc.1')).toBe('v0.19.0-canary.rc.1');
   });
 });
 

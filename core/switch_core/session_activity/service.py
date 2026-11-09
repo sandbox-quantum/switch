@@ -30,6 +30,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
@@ -42,6 +43,7 @@ from switch_core.db.stores.session_activity_store import (
 )
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.addressing import AddressingResolver
+from switch_core.process_lease import LEASE_TTL
 from switch_core.sessions.contract import (
     TURN_ENDED,
     ApprovalResult,
@@ -71,6 +73,17 @@ _OPTION_DESCRIPTION_CHARS = 1000
 # outlives a working day is no longer the question anyone is looking at.
 MAX_APPROVAL_LIFETIME = timedelta(hours=24)
 NOTICE_PREFIX = "notice:"
+# A turn left queued or running by a host that went away (it crashed, or its
+# provider failed before it reported the turn's end) is ended once its agent is
+# offline and nothing in it has moved for this long, so no one is shown it as
+# still working. A live session's turn is never ended here.
+ORPHANED_TURN_QUIET = timedelta(minutes=10)
+# Longer when the agent is still connected and only the turn's own session
+# went quiet: a tool can run that long without a step to report.
+ORPHANED_SESSION_QUIET = timedelta(minutes=30)
+ORPHANED_TURN_TEXT = (
+    "Ended by Switch: the agent's session went away before this turn finished."
+)
 
 ITEM_STATUSES: dict[str, frozenset[str]] = {
     "turn": frozenset({"queued", "running", "completed", "interrupted", "error"}),
@@ -548,6 +561,22 @@ class AgentSessionActivityService:
             if row.delivered_at is None:
                 row.delivered_at = datetime.now(UTC)
             return row
+
+    async def end_orphaned_turns(self) -> list[tuple[str, str, str]]:
+        """End the bound tenant's turns whose session is gone
+        (`end_orphaned_turns` on the store). Run on a timer."""
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            return await self._activity.end_orphaned_turns(
+                db,
+                offline_quiet=ORPHANED_TURN_QUIET,
+                session_quiet=ORPHANED_SESSION_QUIET,
+                lease_ttl=LEASE_TTL,
+                heartbeat_ttl=AgentSessionStore.ALWAYS_ON_TTL,
+                text=ORPHANED_TURN_TEXT,
+            )
 
     async def expire_due(self) -> list[ApprovalRequest]:
         """Expire the bound tenant's overdue requests. Run on a timer."""

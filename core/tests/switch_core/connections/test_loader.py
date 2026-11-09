@@ -8,6 +8,7 @@ from switch_core.connections.loader import (
     MAX_SKILL_BYTES,
     CatalogError,
     load_catalog,
+    with_access_profiles,
 )
 
 PLACEHOLDERS = {
@@ -67,6 +68,8 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
     assert oauth.authorization_params == {"access_type": "offline"}
     assert oauth.prompt == "consent select_account"
     assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
+    # Google revokes the whole grant, so a reconnect keeps the old sign-in.
+    assert oauth.revocation_ends_grant is True
     # Google refuses a made-up code before comparing the redirect URI.
     assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
     assert definition.auth.refresh == "reusable"
@@ -229,7 +232,7 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity.account_id == "id"
 
 
-def test_the_shipped_notion_entry_reads_its_account_from_the_token_answer():
+def test_the_shipped_notion_entry_reads_its_account_by_introspection():
     definition = CATALOG["notion"].definition
     oauth = definition.auth.oauth
     assert oauth is not None
@@ -254,14 +257,99 @@ def test_the_shipped_notion_entry_reads_its_account_from_the_token_answer():
     assert definition.access is not None and definition.access.write is not None
     assert definition.access.read.scopes == ["default"]
     assert definition.access.write.scopes == ["default"]
-    # A Notion MCP token works only with Notion MCP: no identity call is made.
+    # A Notion MCP token works only with Notion MCP, so the account is what
+    # Notion's introspection says of the token: its workspace and user.
     identity = definition.auth.identity
     assert identity is not None
-    assert (identity.url, identity.account_id, identity.label) == (
-        None,
-        "user_id",
-        "workspace_name",
+    assert (
+        identity.url,
+        identity.introspection,
+        identity.account_id,
+        identity.label,
+    ) == (None, True, ["workspace_id", "user_id"], "workspace_id")
+
+
+RESTRICTED_DRIVE = {
+    "drive",
+    "drive.readonly",
+    "drive.metadata",
+    "drive.metadata.readonly",
+    "drive.activity",
+    "drive.activity.readonly",
+    "drive.meet.readonly",
+    "drive.scripts",
+}
+
+
+def test_the_shipped_google_entry_offers_drive_file_without_restricted_scopes():
+    entry = CATALOG["google-workspace"]
+    full = entry.definition.access
+    profile = entry.definition.access_profiles["drive-file"]
+    assert full is not None and full.write is not None
+    assert profile.access.write is not None
+    read = set(profile.access.read.scopes or [])
+    write = set(profile.access.write.scopes or [])
+    assert {"openid", f"{GOOGLE}userinfo.email"} <= read < write
+    # Google reviews drive and drive.readonly with a yearly security
+    # assessment; this profile asks for neither.
+    assert not {scope.removeprefix(GOOGLE) for scope in write} & RESTRICTED_DRIVE
+    assert {scope.removeprefix(GOOGLE) for scope in write - read} == {
+        "drive.file",
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "calendar.events",
+    }
+    # The rest is what the full levels ask for.
+    assert read == set(full.read.scopes or []) - {f"{GOOGLE}drive.readonly"}
+    assert write - {f"{GOOGLE}drive.file"} == set(full.write.scopes or []) - {
+        f"{GOOGLE}drive.readonly",
+        f"{GOOGLE}drive",
+    }
+    skill = entry.skill_files[profile.skill]
+    assert skill.startswith("---\nname: google-workspace\n")
+    assert "drive files list` finds only the files created" in skill
+
+
+def test_a_server_choosing_a_profile_offers_its_levels_and_skill():
+    offered = with_access_profiles(CATALOG, {"google-workspace": "drive-file"})
+    entry = offered["google-workspace"]
+    profile = CATALOG["google-workspace"].definition.access_profiles["drive-file"]
+    assert entry.definition.access == profile.access
+    assert (
+        entry.skill_files["SKILL.md"]
+        == CATALOG["google-workspace"].skill_files["drive-file/SKILL.md"]
     )
+    assert entry.definition.cli == CATALOG["google-workspace"].definition.cli
+    # Every other entry, and the shipped catalog, are as they were.
+    assert all(
+        offered[slug] is CATALOG[slug] for slug in CATALOG if slug != "google-workspace"
+    )
+    assert CATALOG["google-workspace"].skill_files["SKILL.md"].count("Find files") == 1
+
+
+def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
+    assert with_access_profiles(CATALOG, {}) == CATALOG
+
+
+@pytest.mark.parametrize(
+    ("chosen", "message"),
+    [
+        ({"jira": "drive-file"}, "names a service not in the catalog: jira"),
+        (
+            {"google-workspace": "gmail"},
+            r"does not have: 'gmail' \(it has: drive-file\)",
+        ),
+        ({"github": "drive-file"}, r"does not have: 'drive-file' \(it has: none\)"),
+        (
+            {"microsoft-365": "drive-file"},
+            r"does not have: 'drive-file' \(it has: none\)",
+        ),
+    ],
+)
+def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
+    with pytest.raises(CatalogError, match=message):
+        with_access_profiles(CATALOG, chosen)
 
 
 @pytest.fixture
@@ -512,11 +600,13 @@ tools: { mode: pass_through }
 """
 
 
-TOKEN_IDENTITY_ENTRY = OAUTH_ENTRY.replace(
+INTROSPECTION_ENTRY = OAUTH_ENTRY.replace(
     "    url: https://api.example.test/me\n"
     "    account_id: account.id\n"
     "    label: account.email\n",
-    "    account_id: user_id\n    label: workspace_name\n",
+    "    introspection: true\n"
+    "    account_id: [workspace_id, user_id]\n"
+    "    label: workspace_id\n",
 )
 
 
@@ -548,15 +638,32 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.level_tools("write") == []
 
 
-def test_loads_an_identity_read_from_the_token_answer(catalog_copy):
-    _write_example(catalog_copy, TOKEN_IDENTITY_ENTRY)
+def test_loads_an_identity_read_by_introspection(catalog_copy):
+    _write_example(catalog_copy, INTROSPECTION_ENTRY)
     identity = load_catalog(catalog_copy)["example"].definition.auth.identity
     assert identity is not None
-    assert (identity.url, identity.account_id, identity.label) == (
-        None,
-        "user_id",
-        "workspace_name",
+    assert (
+        identity.url,
+        identity.introspection,
+        identity.account_id,
+        identity.label,
+    ) == (None, True, ["workspace_id", "user_id"], "workspace_id")
+
+
+def test_introspection_needs_the_endpoints_discovered(catalog_copy):
+    _write_example(
+        catalog_copy,
+        INTROSPECTION_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: static\n    client_settings: EXAMPLE\n"
+            "    authorization_url: https://auth.example.test/authorize\n"
+            "    token_url: https://auth.example.test/token\n",
+        ),
     )
+    with pytest.raises(
+        CatalogError, match="(?s)example is invalid.*names its endpoints"
+    ):
+        load_catalog(catalog_copy)
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
@@ -617,6 +724,11 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "client_settings",
         ),
         ("redirect: [loopback, core]", "redirect: [core, core]", "listed twice"),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_ends_grant: true\n",
+            "revocation_ends_grant",
+        ),
         ("redirect: [loopback, core]", "redirect: []", "redirect"),
         ("redirect: [loopback, core]", "redirect: [browser]", "redirect"),
         (
@@ -711,6 +823,22 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n    unchecked: Publish it.\n",
             "unchecked is for a static client",
         ),
+        (
+            "    url: https://api.example.test/me\n",
+            "",
+            "exactly one of url or introspection",
+        ),
+        (
+            "    url: https://api.example.test/me\n",
+            "    url: https://api.example.test/me\n    introspection: true\n",
+            "exactly one of url or introspection",
+        ),
+        (
+            "    account_id: account.id\n",
+            "    account_id: [account.id, account.id]\n",
+            "each account_id path once",
+        ),
+        ("    account_id: account.id\n", "    account_id: []\n", "account_id"),
     ],
 )
 def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
@@ -1101,4 +1229,67 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
         ),
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
+        load_catalog(catalog_copy)
+
+
+def _rewrite_google(catalog_copy, old, new):
+    path = catalog_copy / "google-workspace" / "connection.yaml"
+    text = path.read_text()
+    assert text.count(old) == 1
+    path.write_text(text.replace(old, new))
+
+
+def test_rejects_a_profile_whose_skill_file_is_not_shipped(catalog_copy):
+    _rewrite_google(
+        catalog_copy, "skill: drive-file/SKILL.md", "skill: elsewhere/SKILL.md"
+    )
+    with pytest.raises(CatalogError, match="does not ship: elsewhere/SKILL.md"):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_profile_skill_named_for_another_entry(catalog_copy):
+    path = catalog_copy / "google-workspace" / "skill" / "drive-file" / "SKILL.md"
+    path.write_text(
+        path.read_text().replace("name: google-workspace", "name: github", 1)
+    )
+    with pytest.raises(
+        CatalogError,
+        match="drive-file/SKILL.md needs frontmatter with name: google-workspace",
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_profile_without_the_entrys_levels(catalog_copy):
+    path = catalog_copy / "google-workspace" / "connection.yaml"
+    text = path.read_text()
+    start = text.index("      write:\n", text.index("access_profiles:"))
+    path.write_text(text[:start] + "tools: { mode: pass_through }\n")
+    with pytest.raises(
+        CatalogError,
+        match="(?s)google-workspace is invalid.*must name the levels the entry does",
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_profile_on_a_disabled_entry(catalog_copy):
+    _rewrite_google(catalog_copy, "enabled: true", "enabled: false")
+    shutil.rmtree(catalog_copy / "google-workspace" / "skill")
+    with pytest.raises(
+        CatalogError,
+        match="(?s)google-workspace is invalid.*only an enabled entry has access profiles",
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
+    path = catalog_copy / "datadog" / "connection.yaml"
+    path.write_text(
+        path.read_text()
+        + "access_profiles:\n  less:\n    skill: SKILL.md\n"
+        + "    access: { read: { scopes: [a] } }\n"
+    )
+    with pytest.raises(
+        CatalogError,
+        match="(?s)datadog is invalid.*only an oauth entry with access levels",
+    ):
         load_catalog(catalog_copy)

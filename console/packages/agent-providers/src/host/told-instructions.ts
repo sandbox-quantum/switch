@@ -31,9 +31,9 @@ export async function recordToldInstructions(root: string, instructions: string)
 /** What a running conversation is told when its agent's instructions change. */
 export function instructionsChangedNote(instructions: string): string {
   if (instructions.trim() === '')
-    return '[Switch] Your agent instructions were removed by your owner. From now on, follow no agent-specific instructions; the ones you were given earlier no longer apply.';
+    return '[Switch] Your agent instructions were removed. From now on, follow no agent-specific instructions; the ones you were given earlier no longer apply.';
   return (
-    '[Switch] Your agent instructions were changed by your owner. From now on, follow these instead of the ones you were given earlier:\n' +
+    '[Switch] Your agent instructions were changed, by your owner or by Switch bringing you up to a new revision of your template. From now on, follow these instead of the ones you were given earlier:\n' +
     'BEGIN AGENT INSTRUCTIONS\n' +
     `${instructions}\n` +
     'END AGENT INSTRUCTIONS'

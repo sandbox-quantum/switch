@@ -227,6 +227,25 @@ describe('ClaudeAdapter session lifecycle', () => {
     expect(native.options().settings).toBeUndefined();
   });
 
+  it('excludes connector MCP servers from session settings allow permissions', async () => {
+    const sdk = createFakeSdk();
+    const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
+    await adapter.startSession(
+      startInput({
+        mcpServers: {
+          switch: { transport: 'stdio', command: 'node', args: ['server.mjs'] },
+          atlassian: { transport: 'http', url: 'http://127.0.0.1:4100/mcp' },
+          other: { transport: 'stdio', command: 'node', args: ['other.mjs'] },
+        },
+        connectorMcpServers: ['atlassian'],
+      })
+    );
+    expect(sdk.options().settings).toEqual({
+      enabledPlugins: { 'switch-connector@switch-plugins': false },
+      permissions: { allow: ['mcp__switch', 'mcp__other'] },
+    });
+  });
+
   it('runs as a named agent definition, and as none when the caller names none', async () => {
     const sdk = createFakeSdk();
     const adapter = new ClaudeAdapter({ query: sdk.query, claudeExecutablePath: '/bin/claude' });
@@ -720,6 +739,28 @@ describe('ClaudeAdapter turn attribution', () => {
     expect(done.outcome).toBe('error');
     expect(done.message).toBe('Reached the turn limit');
     expect(recorder.ofType('runtime.error')[0]?.message).toBe('Reached the turn limit');
+  });
+
+  it('reports a success result with is_error as an error turn with the error text', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'large request' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(
+      resultMessage([String(sent?.uuid)], {
+        subtype: 'success',
+        is_error: true,
+        result: 'API Error: 400 ... The message size (30296644 bytes) exceeds 30.000MB limit.',
+      })
+    );
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe(
+      'API Error: 400 ... The message size (30296644 bytes) exceeds 30.000MB limit.'
+    );
+    expect(recorder.ofType('runtime.error')[0]?.message).toBe(
+      'API Error: 400 ... The message size (30296644 bytes) exceeds 30.000MB limit.'
+    );
   });
 
   it('ignores a result for sends this adapter never made', async () => {

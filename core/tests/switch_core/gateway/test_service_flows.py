@@ -11,6 +11,7 @@ import json
 import secrets
 import shutil
 from datetime import UTC, datetime, timedelta
+from html import escape
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -19,6 +20,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters.oauth import OAuthAdapter
+from switch_core.connections.app_credentials import UNREADABLE
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG_ROOT, load_catalog
@@ -27,6 +29,7 @@ from switch_core.connections.oauth_clients import (
     RegisteredClient,
     redirect_uris,
 )
+from switch_core.connections.organization_apps import OrganizationApp
 from switch_core.connections.sign_in_flows import MAX_FLOWS, SignInFlows
 from switch_core.db.models import ServiceConnection, SignInFlow, User
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
@@ -38,8 +41,8 @@ from switch_core.gateway.service_flows import router as service_flows_router
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import IDENTITY_URL, FakeOAuthServer
 from tests.switch_core.connections.test_loader import (
+    INTROSPECTION_ENTRY,
     OAUTH_ENTRY,
-    TOKEN_IDENTITY_ENTRY,
     _write_example,
 )
 from tests.switch_core.management.harness import (
@@ -78,6 +81,7 @@ def _world(
     disabled: dict[str, str] | None = None,
     workspace_gate: bool = False,
     entry: str = OAUTH_ENTRY,
+    organization_apps: object = None,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
@@ -111,12 +115,13 @@ def _world(
                 catalog["example"].definition, client, vendor.client()
             )
         },
+        organization_apps=organization_apps,  # type: ignore[arg-type]
         disabled=disabled or {},
         store=STORE,
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
-        public_url=None,
+        public_url=public_url,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
@@ -271,23 +276,22 @@ class TestLoopback:
         assert secret["refresh_token"] in world.vendor.live_refresh
         assert await _flow_ids(session_factory) == set()
 
-    async def test_takes_the_account_from_the_token_answer_where_the_entry_says(
+    async def test_takes_the_account_from_introspection_where_the_entry_says(
         self, session_factory, tmp_path
     ) -> None:
-        world = _world(
-            session_factory, tmp_path / "catalog", entry=TOKEN_IDENTITY_ENTRY
-        )
-        world.vendor.code_answer = {"user_id": "user-1", "workspace_name": "Notes"}
+        world = _world(session_factory, tmp_path / "catalog", entry=INTROSPECTION_ENTRY)
         ada = await add_member(session_factory, "ada")
         async with world.harness.client() as client:
             completed = await _loopback_connect(world, Console(client, ada))
-            assert completed.json()["account"] == "Notes"
+            assert completed.json()["account"] == "ws-1"
         connection = await _connection(session_factory, ada.id)
         assert connection is not None
         assert (connection.account_id, connection.external_identity) == (
-            "user-1",
-            "Notes",
+            "ws-1:user-1",
+            "ws-1",
         )
+        [asked] = world.vendor.introspections
+        assert asked["token_type_hint"] == "access_token"
         assert IDENTITY_URL not in world.vendor.paths
 
     async def test_a_code_is_completed_once(self, session_factory, tmp_path) -> None:
@@ -502,7 +506,88 @@ class TestLoopbackPorts:
         assert await _flow_ids(session_factory) == set()
 
 
+class _AskedOrganizationApps:
+    """Organizations' apps on, none saved: which workspace each lookup is for."""
+
+    def __init__(self) -> None:
+        self.tenants: list[str] = []
+
+    async def for_workspace(
+        self, session: AsyncSession, tenant_id: str, service: str
+    ) -> None:
+        self.tenants.append(tenant_id)
+
+
+class _UnreadableLater:
+    """Organizations' apps on: none saved, until `now`, when the
+    organization's app is one whose secrets Switch can't read."""
+
+    def __init__(self) -> None:
+        self.now = False
+
+    async def for_workspace(
+        self, session: AsyncSession, tenant_id: str, service: str
+    ) -> OrganizationApp | None:
+        if not self.now:
+            return None
+        return OrganizationApp(
+            organization_id="organization",
+            adapter=None,
+            github_app=None,
+            problem=UNREADABLE,
+            changed_at=datetime.now(UTC),
+        )
+
+
 class TestCoreCallback:
+    async def test_with_organizations_apps_the_browser_leaves_through_the_flows_workspace(
+        self, session_factory, tmp_path
+    ) -> None:
+        asked = _AskedOrganizationApps()
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[core]",
+            public_url=PUBLIC,
+            organization_apps=asked,
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            started = await Console(client, ada).start()
+            assert started.status_code == 200, started.text
+            # The browser, signed in to nothing: the flow names the workspace.
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+        assert left.status_code == 307, left.text
+        flow_tenant = (await _flow_row(session_factory, started.json()["id"])).tenant_id
+        assert asked.tenants == [flow_tenant, flow_tenant]
+
+    async def test_an_app_unusable_by_then_ends_the_flow_with_why(
+        self, session_factory, tmp_path
+    ) -> None:
+        """The organization's app was usable when the sign-in started and is
+        not when the browser leaves: the page says why, and so does the flow
+        Console is waiting on."""
+        unreadable = _UnreadableLater()
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[core]",
+            public_url=PUBLIC,
+            organization_apps=unreadable,
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            started = await Console(client, ada).start()
+            assert started.status_code == 200, started.text
+            unreadable.now = True
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+
+        assert left.status_code == 503
+        assert escape(UNREADABLE) in left.text
+        row = await _flow_row(session_factory, started.json()["id"])
+        assert row.status == "failed"
+        assert row.error == UNREADABLE
+
     async def test_returns_through_core_straight_to_console(
         self, session_factory, tmp_path
     ) -> None:

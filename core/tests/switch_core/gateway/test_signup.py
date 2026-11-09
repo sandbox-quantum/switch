@@ -10,6 +10,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from switch_core.config import SwitchConfig
 from switch_core.db.models import TENANT_ZERO_ID, CloudMachine, TenantMember, User
@@ -21,6 +22,7 @@ from switch_core.db.stores.hosted_machine_store import (
     workspace_on,
 )
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway import auth_routes, hosted_machines
 from switch_core.gateway.auth import decode_jwt, get_current_user, verify_password
 from switch_core.gateway.auth_routes import MACHINE_OWNER_STOPPED, _prewarm
 from switch_core.gateway.auth_routes import router as auth_router
@@ -35,6 +37,7 @@ from switch_core.gateway.hosted_machines import MACHINES_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
 from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
+from tests.telemetry_records import recording_telemetry
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
@@ -238,6 +241,26 @@ async def test_duplicate_email_is_a_conflict(signup_app):
     assert again.status_code == 409
     assert again.json()["detail"] == "Email already registered"
     assert len(await _machines(app)) == 1
+
+
+class _NamelessUserStore(UserStore):
+    """Writes the user with no name, which `users.name` refuses: an integrity
+    failure that is not the email being taken."""
+
+    async def create(self, session, user: User) -> None:
+        user.name = None  # type: ignore[assignment]
+        await super().create(session, user)
+
+
+async def test_an_integrity_failure_other_than_the_email_is_not_a_conflict(
+    signup_app,
+):
+    app = signup_app
+    app.app.dependency_overrides[get_user_store] = _NamelessUserStore
+    with pytest.raises(IntegrityError, match='null value in column "name"'):
+        await _signup(app)
+    async with app.factory() as session:
+        assert await UserStore().get_by_email(session, "new.person@example.com") is None
 
 
 @pytest.mark.parametrize(
@@ -509,3 +532,96 @@ async def test_concurrent_signups_cannot_overrun_the_cap(signup_app):
     )
     assert sorted(r.status_code for r in responses) == [201, 429]
     assert await _user_count(app) == 1
+
+
+@pytest.fixture
+def reported(monkeypatch):
+    """What sign-up and the cloud machine routes report."""
+    service, sink = recording_telemetry()
+    monkeypatch.setattr(auth_routes, "current_telemetry", lambda: service)
+    monkeypatch.setattr(hosted_machines, "current_telemetry", lambda: service)
+    return sink
+
+
+async def test_a_sign_up_reports_the_account_and_the_new_machine(signup_app, reported):
+    assert (await _signup(signup_app)).status_code == 201
+
+    assert reported.events("account_created") == [{"method": "signup"}]
+    assert reported.events("cloud_machine_requested") == [{"change": "new"}]
+
+
+async def test_a_claim_that_changes_nothing_is_not_reported(signup_app, reported):
+    await _signup(signup_app)
+    assert (await _ensure(signup_app, "new.person@example.com")).status_code == 200
+
+    assert reported.events("cloud_machine_requested") == [{"change": "new"}]
+
+
+async def test_a_claim_that_starts_a_sleeping_machine_says_so(signup_app, reported):
+    app = signup_app
+    await _signup(app)
+    (machine,) = await _machines(app)
+    with tenant_scope(TENANT_ZERO_ID):
+        async with app.factory() as session:
+            row = await session.get(CloudMachine, machine.id)
+            assert row is not None
+            row.desired_state = "stopped"
+            row.stop_reason = "idle"
+            await session.commit()
+
+    assert (await _ensure(app, "new.person@example.com")).status_code == 200
+
+    assert reported.events("cloud_machine_requested") == [
+        {"change": "new"},
+        {"change": "restarted"},
+    ]
+
+
+async def test_refused_sign_ups_say_why(signup_app, reported):
+    app = signup_app
+    assert (await _signup(app)).status_code == 201
+    assert (await _signup(app)).status_code == 409
+    app.config.gateway_signup_open = False
+    assert (await _signup(app, email="later@example.com")).status_code == 403
+
+    assert reported.events("signup_refused") == [
+        {"reason": "email_taken"},
+        {"reason": "disabled"},
+    ]
+    assert reported.events("account_created") == [{"method": "signup"}]
+
+
+async def test_a_sign_up_over_the_hourly_cap_is_reported_as_rate_limited(
+    signup_app, reported
+):
+    signup_app.config.gateway_signup_max_per_hour = 1
+    assert (await _signup(signup_app, email="first@example.com")).status_code == 201
+    assert (await _signup(signup_app, email="second@example.com")).status_code == 429
+
+    assert reported.events("signup_refused") == [{"reason": "rate_limited"}]
+
+
+async def test_the_owner_stopping_and_starting_their_machine_is_reported(
+    signup_app, reported
+):
+    app = signup_app
+    await _signup(app)
+    app.identity["user"] = await _user(app, "new.person@example.com")
+    (machine,) = await _machines(app)
+
+    with tenant_scope(TENANT_ZERO_ID):
+        stopped = await app.client.post(
+            f"/hosted-machines/{machine.id}/lifecycle",
+            json={"action": "stop", "revision": machine.revision},
+        )
+        assert stopped.status_code == 200, stopped.text
+        started = await app.client.post(
+            f"/hosted-machines/{machine.id}/lifecycle",
+            json={"action": "start", "revision": stopped.json()["machine"]["revision"]},
+        )
+        assert started.status_code == 200, started.text
+
+    assert reported.events("cloud_machine_stopped") == [{"reason": "owner"}]
+    assert reported.events("cloud_machine_woken") == [
+        {"trigger": "owner", "stopped_by": "owner"}
+    ]

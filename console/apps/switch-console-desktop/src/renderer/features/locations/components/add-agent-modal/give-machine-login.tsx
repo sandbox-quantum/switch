@@ -23,8 +23,8 @@ const VERTEX_SOURCES: { value: VertexSource; label: string }[] = [
   { value: 'this-computer', label: "This computer's Google sign-in" },
 ];
 
-/** What Claude Code on Vertex AI is set up with at SandboxAQ (`cg-claude-code-starter`). */
-const VERTEX_DEFAULTS = { project: 'cg-vertexai', region: 'global' };
+/** Claude on Vertex AI is served from the global endpoint unless the project pins a region. */
+const VERTEX_DEFAULT_REGION = 'global';
 
 /** The ways a machine can be given each provider's login. */
 export function loginKindsFor(provider: AgentProviderId): { value: LoginKind; label: string }[] {
@@ -84,8 +84,8 @@ export function GiveMachineLogin({
   const [kind, setKind] = useState<LoginKind>(kinds[0]!.value);
   const [credential, setCredential] = useState('');
   const [vertexSource, setVertexSource] = useState<VertexSource>('key');
-  const [project, setProject] = useState(VERTEX_DEFAULTS.project);
-  const [region, setRegion] = useState(VERTEX_DEFAULTS.region);
+  const [project, setProject] = useState('');
+  const [region, setRegion] = useState(VERTEX_DEFAULT_REGION);
   const [pickedFile, setPickedFile] = useState<string | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -254,6 +254,7 @@ export function GiveMachineLogin({
             <span>Google Cloud project</span>
             <Input
               aria-label="Google Cloud project"
+              placeholder="my-gcp-project"
               value={project}
               onChange={(event) => setProject(event.target.value)}
               disabled={waiting}

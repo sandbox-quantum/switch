@@ -95,6 +95,27 @@ export interface ProviderSessionStartInput {
   /** The definition of {@link agentName}, handed to the vendor directly instead
    * of read from its own files. */
   agentDefinition?: AgentLaunchDefinition;
+  /**
+   * Codex only: the execution machine's Codex home has no auth.json, so a
+   * session with no login of its own is handed the API key that Codex keeps
+   * in the OS keyring as it starts.
+   */
+  codexKeyringLogin?: CodexKeyringLogin;
+}
+
+/**
+ * Where a Codex session's keyring login comes from (`codex/keyring-login.ts`).
+ * It lives only in the session host's memory: `redact` is a function, so it
+ * never reaches a configuration file, and the key itself is read anew each
+ * time the session's Codex starts.
+ */
+export interface CodexKeyringLogin {
+  /** The execution machine's own Codex home, whose login is in the keyring. */
+  home: string;
+  /** The environment Codex reads that login with. */
+  env: Record<string, string>;
+  /** Called with the key as soon as it is read, so everything the host records scrubs it. */
+  redact: (secret: string) => void;
 }
 
 export interface ProviderSession {
@@ -124,6 +145,21 @@ export interface ProviderTurnStartResult {
    * is that turn's id, not the requested one.
    */
   steeredInto?: string;
+}
+
+/** One turn of a saved native conversation, as a transcript that starts with it shows it. */
+export interface ConversationHistoryTurn {
+  /** The same every time the same conversation is read, so reading it twice adds nothing. */
+  turnId: string;
+  items: ConversationHistoryItem[];
+}
+
+export interface ConversationHistoryItem {
+  itemId: string;
+  kind: 'user-message' | 'assistant-message' | 'tool-activity';
+  status: 'completed' | 'failed';
+  title: string;
+  text: string;
 }
 
 export interface ProviderCapabilities {
@@ -174,6 +210,17 @@ export interface ProviderAdapter {
    * has no such channel; a caller says it in the next user message instead.
    */
   addDeveloperMessage?(sessionId: string, text: string): Promise<void>;
+  /**
+   * The turns of a saved native conversation, oldest first: what a session
+   * that continues a conversation started outside Switch shows before its own.
+   * Read without starting the session, from where a session with `env` would
+   * find it. Absent means the provider cannot read its saved conversations.
+   */
+  conversationHistory?(
+    nativeSessionId: string,
+    cwd: string,
+    env: Record<string, string>
+  ): Promise<ConversationHistoryTurn[]>;
   stopSession(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;
   hasSession(sessionId: string): boolean;

@@ -46,9 +46,29 @@ describe('a room command', () => {
     expect(text(opened, false)).not.toContain('Hi, I am your buddy.');
   });
 
+  it('tells what Switch has to say before the message, outside its markers, on every message', () => {
+    const noticed = {
+      ...event,
+      payload: { ...event.payload, switch_notice: 'Your template has a new revision.' },
+    };
+    for (const first of [true, false]) {
+      const said = text(noticed, first);
+      expect(said).toContain('[Switch] Your template has a new revision.');
+      expect(said.indexOf('Your template has a new revision.')).toBeLessThan(
+        said.indexOf('BEGIN SWITCH MESSAGE')
+      );
+    }
+    expect(text(event)).not.toContain('new revision');
+  });
+
   it("says the sender's role in the workspace, as the server read it", () => {
     const fromMember = { ...event, payload: { ...event.payload, sender_role: 'member' } };
     expect(text(fromMember)).toContain('[Switch] Owner (workspace member) addressed you');
     expect(text(event)).toContain('[Switch] Owner addressed you');
+  });
+
+  it('reads a workspace owner from a server before the merge as an admin', () => {
+    const fromOwner = { ...event, payload: { ...event.payload, sender_role: 'owner' } };
+    expect(text(fromOwner)).toContain('[Switch] Owner (workspace admin) addressed you');
   });
 });

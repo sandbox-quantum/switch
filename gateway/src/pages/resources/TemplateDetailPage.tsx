@@ -1,4 +1,5 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import ContentCopy from "@mui/icons-material/ContentCopy";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import Download from "@mui/icons-material/Download";
@@ -118,6 +119,14 @@ export default function TemplateDetailPage() {
         />
         {canManage && (
           <>
+            <Divider />
+            <TransferOwnershipSection
+              kind="template"
+              resourceId={id}
+              resourceLabel={template.name || id}
+              ownerId={template.owner_id}
+              onTransferred={() => navigate(0)}
+            />
             <Divider />
             <DangerSection onDelete={() => setDeleteOpen(true)} />
           </>
