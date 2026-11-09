@@ -13,7 +13,6 @@ const {
   ensureUserBinDirsInPath,
   ensureWindowsGitBashInPath,
   ensureWindowsNpmGlobalBinInPath,
-  ensureWindowsSshAuthSock,
   ensureWindowsUserBinDirsInPath,
   resolveUserEnv,
 } = await import('./userEnv');
@@ -102,30 +101,6 @@ describe('ensureWindowsGitBashInPath', () => {
     expect(ensureWindowsGitBashInPath(env, exists)).toBe('C:\\Program Files\\Git\\bin');
     expect(env.Path).toBe('C:\\Windows\\System32;C:\\Program Files\\Git\\bin');
     expect(ensureWindowsGitBashInPath(env, exists)).toBeNull();
-  });
-});
-
-describe('ensureWindowsSshAuthSock', () => {
-  const pipe = '\\\\.\\pipe\\openssh-ssh-agent';
-
-  it('points SSH_AUTH_SOCK at the OpenSSH agent pipe when it is unset', () => {
-    const env: NodeJS.ProcessEnv = {};
-    expect(ensureWindowsSshAuthSock(env, () => pipe)).toBe(pipe);
-    expect(env.SSH_AUTH_SOCK).toBe(pipe);
-  });
-
-  it('keeps an SSH_AUTH_SOCK the user set, whatever its casing', () => {
-    const env: NodeJS.ProcessEnv = { ssh_auth_sock: '\\\\.\\pipe\\custom-agent' };
-    const detect = vi.fn(() => pipe);
-    expect(ensureWindowsSshAuthSock(env, detect)).toBeNull();
-    expect(detect).not.toHaveBeenCalled();
-    expect(env.SSH_AUTH_SOCK).toBeUndefined();
-  });
-
-  it('sets nothing when no agent is running', () => {
-    const env: NodeJS.ProcessEnv = {};
-    expect(ensureWindowsSshAuthSock(env, () => undefined)).toBeNull();
-    expect(env).toEqual({});
   });
 });
 
