@@ -20,7 +20,7 @@ from switch_core.connections.adapters.api_key import (
     key_token,
     render,
 )
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import CATALOG, ConnectionDefinition
 
 ENTRY = {
     "slug": "example",
@@ -137,3 +137,28 @@ async def test_a_key_is_never_issued_to_an_agent() -> None:
             AccessToken(key, datetime.now(UTC) + timedelta(hours=1)),
             IssueRequest(service="example", access="write", reach={}, resources={}),
         )
+
+
+async def test_pagerduty_asks_the_chosen_region_whose_key_it_is() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200, json={"user": {"id": "PSYNTH1", "email": "oncall@example.test"}}
+        )
+
+    adapter = ApiKeyAdapter(
+        CATALOG["pagerduty"].definition,
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    fields = {"api_key": "SYNTHETIC-USER-KEY", "region": "eu.pagerduty.com"}
+    identity = await adapter.identify(fields)
+
+    assert (identity.account_id, identity.label) == ("PSYNTH1", "oncall@example.test")
+    [request] = seen
+    assert (request.method, str(request.url)) == (
+        "GET",
+        "https://api.eu.pagerduty.com/users/me",
+    )
+    assert request.headers["Authorization"] == "Token token=SYNTHETIC-USER-KEY"
