@@ -74,7 +74,6 @@ export type RendererTelemetryEvents = {
       | 'install'
       | 'sign_in'
       | 'check_again'
-      | 'created'
       | 'create_failed'
       | 'opened_existing'
       | 'intro_opened'

@@ -32,7 +32,11 @@ export const UI_ENTRY_POINTS = [
   'link',
   /** The template Use page, which can create agents along with its rooms. */
   'template',
-  /** switch-buddy's own chat, which offers to set the buddy up after onboarding skipped it. */
+  /**
+   * Setting up switch-buddy, from the first run or from its own chat after the
+   * first run skipped it: the buddy's `agent_created`, which is how a new buddy
+   * is counted.
+   */
   'switch_buddy',
   'unknown',
 ] as const;

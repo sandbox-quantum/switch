@@ -1,6 +1,5 @@
 import { CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { ComputerNote, ProviderCard, SelectedPanel } from './provider-cards';
 import { useProviderSetup } from './use-provider-setup';
 import type { ThisComputer } from './use-this-computer';
@@ -15,14 +14,11 @@ import type { ThisComputer } from './use-this-computer';
 export const ProviderSetup = observer(function ProviderSetup({
   serverId,
   workspaceId,
-  entryPoint,
   onCreated,
   thisComputer,
 }: {
   serverId: string;
   workspaceId: string;
-  /** Where this card is shown: the first run, or the buddy's chat later. */
-  entryPoint: UiEntryPoint;
   onCreated: (agent: { agentId: string; name: string }) => void;
   thisComputer: { state: ThisComputer; recheck: () => Promise<string | null> };
 }) {
@@ -30,7 +26,6 @@ export const ProviderSetup = observer(function ProviderSetup({
   const setup = useProviderSetup({
     serverId,
     workspaceId,
-    entryPoint,
     onCreated,
     computer,
     recheck: thisComputer.recheck,

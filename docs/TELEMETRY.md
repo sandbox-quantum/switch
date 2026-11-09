@@ -128,7 +128,7 @@ id, no IP field, no Switch identity.
 | `deeplink_opened` | `resolved`: `true` / `false` · `cold_start`: `true` / `false`. **The URL is never sent.** |
 | `add_server_step` | `step`: `choose` / `managedGitHub` / `managedAgent` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` / `cloud` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
 | `onboarding_page` | `page`: `welcome` / `how_to_run` / `local_setup` / `server_address` / `sign_in` / `choose_workspace` / `create_workspace` / `meet_buddy` / `provider_setup` · `path`: `none` / `cloud` / `local` / `external` — which page of the first run opened, and how the install is running Switch once chosen |
-| `buddy_step` | `action`: `start` / `skip` / `setup_opened` / `install` / `sign_in` / `check_again` / `created` (not sent when the person's existing buddy is opened instead) / `create_failed` / `opened_existing` / `intro_opened` / `intro_dismissed` · `provider`: `claude` / `codex` / `opencode` / `cursor` / `antigravity` / `none` — a step on the way to switch-buddy, the first agent, from the first run or from the pop-up that introduces it to people who have none |
+| `buddy_step` | `action`: `start` / `skip` / `setup_opened` / `install` / `sign_in` / `check_again` / `create_failed` / `opened_existing` / `intro_opened` / `intro_dismissed` · `provider`: `claude` / `codex` / `opencode` / `cursor` / `antigravity` / `none` — a step on the way to switch-buddy, the first agent, from the first run or from the pop-up that introduces it to people who have none. A new buddy is reported once, as `agent_created` with `entry_point` `switch_buddy` |
 
 **Agents and sessions**
 
@@ -189,8 +189,9 @@ agents.
 
 `source` says whether the room came from the Create room dialog or from a
 template. A template run reports each room it made, and each agent as
-`agent_created` with `entry_point` `template` — or, for switch-buddy, `onboarding`
-from the first run and `switch_buddy` from its chat later. What a run does not
+`agent_created` with `entry_point` `template` — or, for switch-buddy,
+`switch_buddy`, whether it was set up in the first run or from its chat later.
+What a run does not
 already say — a room's platform, agent count and whether it has instructions, the
 provider of an agent the server chose — is read back from the server once it
 exists, only when sharing is on, and only while the run's workspace is still the

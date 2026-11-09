@@ -92,7 +92,6 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
     serverId,
     workspaceId,
     computer,
-    entryPoint: 'onboarding',
     onCreated,
   });
   const firstName = firstNameOf(buddyPerson(serverId).name);
@@ -137,7 +136,6 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         <ProviderSetup
           serverId={serverId}
           workspaceId={workspaceId}
-          entryPoint="onboarding"
           onCreated={onCreated}
           thisComputer={thisComputer}
         />

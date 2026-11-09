@@ -169,7 +169,7 @@ describe('MeetBuddyPage', () => {
     await render();
 
     expect(state.createBuddy).toHaveBeenCalledWith(
-      expect.objectContaining({ machineId: 'm-1', provider: 'claude', entryPoint: 'onboarding' })
+      expect.objectContaining({ machineId: 'm-1', provider: 'claude' })
     );
     expect(onCreated).toHaveBeenCalledWith({ agentId: 'a-1', name: 'switch-buddy-max-tam' });
   });

@@ -72,7 +72,6 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'install',
       'sign_in',
       'check_again',
-      'created',
       'create_failed',
       'opened_existing',
       'intro_opened',

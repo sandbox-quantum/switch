@@ -3017,8 +3017,6 @@ version of their own to them without also giving them a release of their own.
   rather than a guess.
 - **A first launch of the other release channel, or of an older version, is no
   longer reported as an update.**
-- **`buddy_step` no longer reports `created` when the person's existing buddy
-  is opened instead.**
 - **`docs/TELEMETRY.md` matches what is sent.** It no longer lists a `bridge`
   property, a `target` value, providers or screens that do not exist, and it
   describes the first-run notice and Settings toggle that actually ship.
@@ -3138,6 +3136,10 @@ version of their own to them without also giving them a release of their own.
   `onboarding_completed` (the checklist is no longer shown), and
   `session_attached` and `session_ended`'s `failed` outcome, which nothing had
   sent since 0.35.
+- **`buddy_step` no longer reports `created`.** A new buddy was reported twice,
+  as that step and as the `agent_created` its template run sends. It is now
+  only `agent_created`, whose `entry_point` is `switch_buddy` wherever the
+  buddy was set up: one set up in the first run said `onboarding`.
 - **The fallback to the agent event stream.** The agent runtime connects only
   over the WebSocket, so it can no longer reach a Switch server older than the
   socket (agent-protocol 7 and older), and it stops sending its own heartbeat
