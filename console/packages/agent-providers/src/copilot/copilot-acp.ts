@@ -2,6 +2,7 @@ import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks, AcpSignInInput } from '../acp/hooks';
 import type { AcpToolCall } from '../acp/protocol';
 import { readiness, signInWith, type ProviderReadiness } from '../readiness';
+import { JsonRpcError } from '../transport/stdio-json-rpc';
 
 export const COPILOT_LOGIN = 'copilot login';
 
@@ -130,6 +131,12 @@ export const copilotAcp: AcpProviderHooks = {
       : undefined,
   launch: ({ binaryPath, env }) => ({ command: binaryPath, args: ['--acp', '--stdio'], env }),
   loginCommand: COPILOT_LOGIN,
+  // Copilot 1.0.107 reports a missing native session this way on session/load.
+  // Other missing resources and errors from other requests must stay ordinary failures.
+  sessionLoadUnavailable: (error, nativeSessionId) =>
+    error instanceof JsonRpcError &&
+    error.code === -32002 &&
+    error.message === `Resource not found: Session ${nativeSessionId} not found`,
   // Copilot's own token, its home, and its bring-your-own-key provider. GH_TOKEN
   // and GITHUB_TOKEN are not passed through: they would reach every agent, and
   // they override a saved `copilot login`. The sign-in check asks the CLI about

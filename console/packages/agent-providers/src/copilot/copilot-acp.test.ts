@@ -1,6 +1,10 @@
 import type * as fs from 'node:fs/promises';
 import { beforeEach, expect, it, vi } from 'vitest';
-import type { RuntimeMode } from '../adapter';
+import {
+  ProviderConversationUnavailableError,
+  ProviderSessionError,
+  type RuntimeMode,
+} from '../adapter';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
 
@@ -40,38 +44,70 @@ const copilotSession = {
   },
 };
 /** Whether the fake CLI is signed in; signed out, `session/new` is refused as 1.0.107 refuses it. */
-const state = { signedIn: true };
+const state: {
+  signedIn: boolean;
+  resumeOnly?: boolean;
+  failure?: { method: string; code: number; message: string };
+} = {
+  signedIn: true,
+};
 vi.mock('node:child_process', () => ({
   spawn: (command: string, args: string[]) => {
     spawned.push({ command, args });
     const server = new FakeAppServer();
-    server.replyAlways('initialize', () => copilotInitialize);
     server.on('message', (message: { id?: number; method?: string }) => {
-      if (message.method !== 'session/new' || message.id === undefined) return;
-      server.send(
-        state.signedIn
-          ? { id: message.id, result: copilotSession }
-          : { id: message.id, error: { code: -32000, message: 'Authentication required' } }
-      );
+      if (message.id === undefined) return;
+      const failure = state.failure;
+      if (failure && message.method === failure.method) {
+        server.send({ id: message.id, error: { code: failure.code, message: failure.message } });
+      } else if (message.method === 'initialize') {
+        server.send({
+          id: message.id,
+          result: state.resumeOnly
+            ? {
+                ...copilotInitialize,
+                agentCapabilities: {
+                  ...copilotInitialize.agentCapabilities,
+                  loadSession: false,
+                  sessionCapabilities: { resume: {} },
+                },
+              }
+            : copilotInitialize,
+        });
+      } else if (message.method === 'session/new') {
+        server.send(
+          state.signedIn
+            ? { id: message.id, result: copilotSession }
+            : { id: message.id, error: { code: -32000, message: 'Authentication required' } }
+        );
+      } else if (message.method === 'session/load') {
+        server.send({ id: message.id, result: { models: copilotSession.models } });
+      } else if (
+        ['authenticate', 'session/set_model', 'session/close'].includes(message.method ?? '')
+      ) {
+        server.send({ id: message.id, result: {} });
+      }
     });
-    server.replyAlways('session/load', () => ({ models: copilotSession.models }));
-    server.replyAlways('session/set_model', () => ({}));
-    server.replyAlways('session/close', () => ({}));
     servers.push(server);
     return server;
   },
 }));
 const { checkAcpSignIn } = await import('../acp/acp-adapter');
 const { copilotAcp, copilotEnvSignIn, createCopilotAdapter } = await import('./copilot-acp');
+const { createCursorAdapter } = await import('../cursor/cursor-adapter');
 
 beforeEach(() => {
   servers.length = 0;
   spawned.length = 0;
   state.signedIn = true;
+  state.failure = undefined;
+  state.resumeOnly = false;
 });
 
-async function setup(input: { runtimeMode?: RuntimeMode; resume?: string; model?: string } = {}) {
-  const adapter = createCopilotAdapter();
+async function setup(
+  input: { runtimeMode?: RuntimeMode; resume?: string; model?: string } = {},
+  adapter = createCopilotAdapter()
+) {
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((e) => events.push(e));
   const session = await adapter.startSession({
@@ -111,6 +147,83 @@ it('resumes the exact native session through session/load', async () => {
     sessionId: 'saved',
     cwd: '/work',
   });
+});
+
+it('classifies Copilot’s missing saved session without creating a replacement', async () => {
+  state.failure = {
+    method: 'session/load',
+    code: -32002,
+    message: 'Resource not found: Session saved not found',
+  };
+  const adapter = createCopilotAdapter();
+  const start = setup({ resume: 'saved' }, adapter);
+  await expect(start).rejects.toBeInstanceOf(ProviderConversationUnavailableError);
+  await expect(start).rejects.toMatchObject({
+    provider: 'copilot',
+    sessionId: 's',
+    cause: { code: -32002, message: 'Resource not found: Session saved not found' },
+  });
+  expect(adapter.hasSession('s')).toBe(false);
+  expect(servers.at(-1)?.received.map((message) => message.method)).toEqual([
+    'initialize',
+    'session/load',
+  ]);
+});
+
+it.each([
+  { code: -32002, message: 'Resource not found: Session another not found' },
+  { code: -32002, message: 'Resource not found: Working directory not found' },
+  { code: -32000, message: 'Resource not found: Session saved not found' },
+])(
+  'does not classify a different session/load error as a lost conversation: $message',
+  async (failure) => {
+    state.failure = { method: 'session/load', ...failure };
+    const error = await setup({ resume: 'saved' }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ProviderSessionError);
+    expect(error).not.toBeInstanceOf(ProviderConversationUnavailableError);
+  }
+);
+
+it.each(['initialize', 'session/new', 'session/set_model'])(
+  'does not classify the same error from %s as a lost conversation',
+  async (method) => {
+    state.failure = {
+      method,
+      code: -32002,
+      message: 'Resource not found: Session saved not found',
+    };
+    const error = await setup({ model: 'claude-sonnet-4.6' }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ProviderSessionError);
+    expect(error).not.toBeInstanceOf(ProviderConversationUnavailableError);
+  }
+);
+
+it('does not classify the same error from session/resume', async () => {
+  state.resumeOnly = true;
+  state.failure = {
+    method: 'session/resume',
+    code: -32002,
+    message: 'Resource not found: Session saved not found',
+  };
+  const error = await setup({ resume: 'saved' }).catch((cause: unknown) => cause);
+  expect(error).toBeInstanceOf(ProviderSessionError);
+  expect(error).not.toBeInstanceOf(ProviderConversationUnavailableError);
+  expect(servers.at(-1)?.received.some((message) => message.method === 'session/resume')).toBe(
+    true
+  );
+});
+
+it('does not classify the same session/load error from another ACP provider', async () => {
+  state.failure = {
+    method: 'session/load',
+    code: -32002,
+    message: 'Resource not found: Session saved not found',
+  };
+  const error = await setup({ resume: 'saved' }, createCursorAdapter()).catch(
+    (cause: unknown) => cause
+  );
+  expect(error).toBeInstanceOf(ProviderSessionError);
+  expect(error).not.toBeInstanceOf(ProviderConversationUnavailableError);
 });
 
 it('lists the session’s models and selects the chosen one', async () => {

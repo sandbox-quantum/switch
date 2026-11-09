@@ -271,11 +271,27 @@ export class AcpAdapter implements ProviderAdapter {
           );
         state.nativeId = input.resume.nativeSessionId.slice(prefix?.prefix.length ?? 0);
       }
-      const result = await client.request<AcpSessionResult>(method, {
-        cwd,
-        mcpServers,
-        ...(input.resume ? { sessionId: state.nativeId } : {}),
-      });
+      let result: AcpSessionResult;
+      try {
+        result = await client.request<AcpSessionResult>(method, {
+          cwd,
+          mcpServers,
+          ...(input.resume ? { sessionId: state.nativeId } : {}),
+        });
+      } catch (cause) {
+        if (
+          method === 'session/load' &&
+          input.resume &&
+          hooks.sessionLoadUnavailable?.(cause, state.nativeId)
+        )
+          throw new ProviderConversationUnavailableError(
+            hooks.provider,
+            input.sessionId,
+            `${hooks.label} could not find the saved conversation.`,
+            { cause }
+          );
+        throw cause;
+      }
       state.nativeId = result.sessionId ?? state.nativeId;
       if (!state.nativeId) throw new Error(`${hooks.label} returned no session ID.`);
       state.configOptions = result.configOptions ?? [];
