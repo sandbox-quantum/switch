@@ -5,7 +5,7 @@ import { checkDshSignIn, createDeepseekHarnessAdapter } from './deepseek-harness
 // The harness hands the CLI a minimal environment, so a key or a dsh home in
 // the shell would not reach it otherwise.
 const env = Object.fromEntries(
-  (['DEEPSEEK_API_KEY', 'DSH_HOME'] as const).flatMap((key) =>
+  (['DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'DSH_HOME'] as const).flatMap((key) =>
     process.env[key] ? [[key, process.env[key]!]] : []
   )
 );
@@ -19,9 +19,13 @@ describeConformance('deepseek-harness', {
       cwd: process.cwd(),
       env: { HOME: process.env.HOME ?? '', ...env },
     });
-    return signIn.status === 'authenticated'
-      ? null
-      : 'DeepSeek Harness has no DeepSeek API key (set DEEPSEEK_API_KEY, or save one with dsh web)';
+    if (signIn.status === 'authenticated') return null;
+    // Opt in only after configuring the OpenRouter route and model in the
+    // isolated ACP profile; readiness alone cannot verify that configuration.
+    if (signIn.status === 'unknown' && process.env.DSH_OPENROUTER_CONFORMANCE === '1') return null;
+    return signIn.status === 'unknown'
+      ? 'OpenRouter configuration is unverified (configure the ACP profile and set DSH_OPENROUTER_CONFORMANCE=1 to run)'
+      : 'DeepSeek Harness has no recognized provider key (configure a provider and set DEEPSEEK_API_KEY or OPENROUTER_API_KEY, or save one with dsh web)';
   },
   skip: {
     'user-input':

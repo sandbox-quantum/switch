@@ -1,18 +1,23 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { parseEnv } from 'node:util';
+import { parseDocument } from 'yaml';
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
 import { readiness, signInWith, type ProviderReadiness } from '../readiness';
 
 /**
  * DeepSeek Harness has no login command: its Web app's Models page saves the
- * key to `$DSH_HOME/.credentials.yaml`, or `DEEPSEEK_API_KEY` is exported.
+ * key to `$DSH_HOME/.credentials.yaml`, or a provider API key is exported.
  */
 export const DSH_LOGIN = 'dsh web';
 export const DSH_KEY = 'DEEPSEEK_API_KEY';
+export const DSH_OPENROUTER_KEY = 'OPENROUTER_API_KEY';
+const DSH_KEYS = [DSH_KEY, DSH_OPENROUTER_KEY] as const;
+type DshKey = (typeof DSH_KEYS)[number];
 
-const SIGN_IN_HINT = `${signInWith(DSH_LOGIN)} Save a DeepSeek API key on its Models page, or set ${DSH_KEY}.`;
+const SIGN_IN_HINT = `${signInWith(DSH_LOGIN)} Configure a model provider and save its key on the Models page, or set ${DSH_KEY} or ${DSH_OPENROUTER_KEY}.`;
 
 /** `$DSH_HOME`, else `~/.dsh`, as dsh resolves it. */
 export function dshHome(env: Record<string, string>): string {
@@ -29,38 +34,34 @@ async function readText(path: string): Promise<string | undefined> {
   }
 }
 
-/** Whether a `.credentials.yaml` stores a non-empty `DEEPSEEK_API_KEY` under `refs:`. */
-export function credentialsHaveKey(text: string): boolean {
-  let inRefs = false;
-  for (const line of text.split(/\r?\n/)) {
-    if (/^\S/.test(line)) inRefs = /^refs\s*:\s*$/.test(line);
-    else if (inRefs) {
-      const match = /^\s+DEEPSEEK_API_KEY\s*:\s*(.*?)\s*$/.exec(line);
-      if (match) return !/^(|''|""|~|null)$/.test(match[1]!);
-    }
+/** Whether the credential store contains a non-empty string at `refs[key]`.
+ * An invalid or ambiguous document returns undefined, never a false login result.
+ */
+export function credentialsHaveKey(text: string, key: DshKey = DSH_KEY): boolean | undefined {
+  try {
+    const document = parseDocument(text, { uniqueKeys: true });
+    if (document.errors.length) return undefined;
+    const value: unknown = document.toJS({ maxAliasCount: 0 });
+    if (value == null) return false;
+    if (typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const refs: unknown = (value as Record<string, unknown>).refs;
+    if (refs == null) return false;
+    if (typeof refs !== 'object' || Array.isArray(refs)) return undefined;
+    const credential = (refs as Record<string, unknown>)[key];
+    return typeof credential === 'string' && credential.trim() !== '';
+  } catch {
+    return undefined;
   }
-  return false;
 }
 
-/** Whether a dotenv file sets a non-empty `DEEPSEEK_API_KEY`. */
-export function dotenvHasKey(text: string): boolean {
-  return text.split(/\r?\n/).some((line) => {
-    const value = /^\s*(?:export\s+)?DEEPSEEK_API_KEY\s*=(.*)$/.exec(line)?.[1];
-    return (
-      value !== undefined &&
-      value
-        .trim()
-        .replace(/^(['"])(.*)\1$/, '$2')
-        .trim() !== ''
-    );
-  });
+/** Whether a dotenv file sets the named non-empty key. */
+export function dotenvHasKey(text: string, key: DshKey = DSH_KEY): boolean {
+  return !!parseEnv(text)[key]?.trim();
 }
 
 /**
- * Whether dsh has a DeepSeek key where it looks for one, in its own order:
- * the credentials file, the environment, the project's `.env`, then
- * `$DSH_HOME/.env`. Nothing is started and no request is spent, so a key
- * found is not proven valid until a turn runs.
+ * Detect known provider keys without starting dsh. Key presence does not
+ * establish that the provider route is configured or the key is valid.
  */
 export async function checkDshSignIn({
   cwd,
@@ -71,11 +72,34 @@ export async function checkDshSignIn({
 }): Promise<ProviderReadiness> {
   const home = dshHome(env);
   const credentials = await readText(join(home, '.credentials.yaml'));
-  if (credentials !== undefined && credentialsHaveKey(credentials))
+  const files = [join(isAbsolute(cwd) ? cwd : resolve(cwd), '.env'), join(home, '.env')];
+  const savedOpenRouter =
+    credentials === undefined ? false : credentialsHaveKey(credentials, DSH_OPENROUTER_KEY);
+  const savedDeepSeek = credentials === undefined ? false : credentialsHaveKey(credentials);
+
+  // An OpenRouter key can belong to another app or an unselected route, even
+  // if a DeepSeek key is present. We cannot know the active route without dsh.
+  const openRouterHint = `Found ${DSH_OPENROUTER_KEY}; configure and select an OpenRouter model in the dsh ACP profile. The route and key have not been verified.`;
+  if (savedOpenRouter) return readiness('unknown', openRouterHint);
+  if (env[DSH_OPENROUTER_KEY]?.trim()) return readiness('unknown', openRouterHint);
+  for (const file of files) {
+    const text = await readText(file);
+    if (text !== undefined && dotenvHasKey(text, DSH_OPENROUTER_KEY))
+      return readiness('unknown', openRouterHint);
+  }
+
+  if (savedOpenRouter === undefined || savedDeepSeek === undefined)
+    return readiness(
+      'unknown',
+      'Could not parse the DeepSeek Harness credential store. Check the provider setup and retry.'
+    );
+
+  // Keep the legacy DeepSeek-only check when no OpenRouter key is present.
+  if (savedDeepSeek)
     return readiness('authenticated', 'Signed in with the DeepSeek key saved in DeepSeek Harness.');
   if (env[DSH_KEY]?.trim())
     return readiness('authenticated', `Signs in with the ${DSH_KEY} it was given.`);
-  for (const file of [join(isAbsolute(cwd) ? cwd : resolve(cwd), '.env'), join(home, '.env')]) {
+  for (const file of files) {
     const text = await readText(file);
     if (text !== undefined && dotenvHasKey(text))
       return readiness('authenticated', `Signs in with the ${DSH_KEY} in ${file}.`);

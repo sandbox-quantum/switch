@@ -224,6 +224,74 @@ describe('sign-in check', () => {
     expect((await check()).status).toBe('authenticated');
   });
 
+  it('detects an OpenRouter environment key without exposing it', async () => {
+    const result = await check({ OPENROUTER_API_KEY: 'synthetic-openrouter-secret' });
+    expect(result.status).toBe('unknown');
+    expect(result.message).toContain('OPENROUTER_API_KEY');
+    expect(result.message).toContain('have not been verified');
+    expect(result.message).not.toContain('synthetic-openrouter-secret');
+    expect(spawned).toEqual([]);
+    expect((await check({ OPENROUTER_API_KEY: '  ' })).status).toBe('unauthenticated');
+  });
+
+  it('detects an OpenRouter credential reference without exposing it', async () => {
+    await writeFile(
+      join(root, 'home', '.credentials.yaml'),
+      'version: 1\nrefs:\n  OPENROUTER_API_KEY: synthetic-saved-secret\n'
+    );
+    const result = await check();
+    expect(result.status).toBe('unknown');
+    expect(result.message).toContain('OPENROUTER_API_KEY');
+    expect(result.message).toContain('have not been verified');
+    expect(result.message).not.toContain('synthetic-saved-secret');
+  });
+
+  it('detects OpenRouter keys in the project or dsh home dotenv', async () => {
+    await writeFile(join(root, 'project', '.env'), 'OPENROUTER_API_KEY=synthetic-project-key\n');
+    expect((await check()).status).toBe('unknown');
+    await rm(join(root, 'project', '.env'));
+    await writeFile(join(root, 'home', '.env'), 'export OPENROUTER_API_KEY="synthetic-home-key"\n');
+    expect((await check()).status).toBe('unknown');
+  });
+
+  it('reports an unknown route when both DeepSeek and OpenRouter keys are present', async () => {
+    await writeFile(
+      join(root, 'home', '.credentials.yaml'),
+      'version: 1\nrefs:\n  OPENROUTER_API_KEY: synthetic-router\n'
+    );
+    const result = await check({ DEEPSEEK_API_KEY: 'synthetic-deepseek' });
+    expect(result.status).toBe('unknown');
+    expect(result.message).toContain('OPENROUTER_API_KEY');
+    expect(result.message).not.toContain('synthetic-router');
+    expect(result.message).not.toContain('synthetic-deepseek');
+  });
+
+  it('keeps DeepSeek-only detection when OpenRouter is empty', async () => {
+    const result = await check({ DEEPSEEK_API_KEY: 'synthetic-deepseek', OPENROUTER_API_KEY: ' ' });
+    expect(result.status).toBe('authenticated');
+    expect(result.message).not.toContain('synthetic-deepseek');
+  });
+
+  it('does not treat comment-only or empty values as keys', async () => {
+    await writeFile(
+      join(root, 'home', '.credentials.yaml'),
+      'refs:\n  OPENROUTER_API_KEY: # no key\n'
+    );
+    await writeFile(join(root, 'project', '.env'), 'OPENROUTER_API_KEY= # no key\n');
+    expect((await check()).status).toBe('unauthenticated');
+  });
+
+  it('reports an unreadable credential document as unknown without exposing its content', async () => {
+    await writeFile(
+      join(root, 'home', '.credentials.yaml'),
+      'refs: [unterminated synthetic-secret'
+    );
+    const result = await check({ DEEPSEEK_API_KEY: 'synthetic-env-secret' });
+    expect(result.status).toBe('unknown');
+    expect(result.message).toContain('credential store');
+    expect(result.message).not.toContain('synthetic');
+  });
+
   it('is wired as the provider check without a handshake', async () => {
     const handshake = vi.fn();
     const result = await deepseekHarnessAcp.checkSignIn!({
@@ -247,6 +315,52 @@ it('parses only a non-empty key under refs', () => {
   expect(dotenvHasKey("DEEPSEEK_API_KEY=''\n")).toBe(false);
   expect(dotenvHasKey('# DEEPSEEK_API_KEY=sk-x\n')).toBe(false);
   expect(dotenvHasKey('DEEPSEEK_API_KEY = sk-x\n')).toBe(true);
+  expect(dotenvHasKey('OPENROUTER_API_KEY= # comment\n', 'OPENROUTER_API_KEY')).toBe(false);
+  expect(dotenvHasKey('OPENROUTER_API_KEY=synthetic # comment\n', 'OPENROUTER_API_KEY')).toBe(true);
+  expect(dotenvHasKey('OPENROUTER_API_KEY="#not-a-comment"\n', 'OPENROUTER_API_KEY')).toBe(true);
+  expect(credentialsHaveKey('refs:\n  OPENROUTER_API_KEY: # comment\n', 'OPENROUTER_API_KEY')).toBe(
+    false
+  );
+  expect(
+    credentialsHaveKey('refs:\n  OPENROUTER_API_KEY: "" # comment\n', 'OPENROUTER_API_KEY')
+  ).toBe(false);
+  expect(
+    credentialsHaveKey('refs:\n  OPENROUTER_API_KEY: synthetic # comment\n', 'OPENROUTER_API_KEY')
+  ).toBe(true);
+  expect(
+    credentialsHaveKey('refs:\n  OTHER:\n    OPENROUTER_API_KEY: synthetic\n', 'OPENROUTER_API_KEY')
+  ).toBe(false);
+  expect(
+    credentialsHaveKey('refs:\n  OPENROUTER_API_KEY: {nested: value}\n', 'OPENROUTER_API_KEY')
+  ).toBe(false);
+
+  expect(credentialsHaveKey('refs:\n  OPENROUTER_API_KEY: synthetic\n', 'OPENROUTER_API_KEY')).toBe(
+    true
+  );
+  expect(credentialsHaveKey('refs:\n  OPENROUTER_API_KEY: null\n', 'OPENROUTER_API_KEY')).toBe(
+    false
+  );
+  expect(
+    credentialsHaveKey('records:\n  OPENROUTER_API_KEY: synthetic\n', 'OPENROUTER_API_KEY')
+  ).toBe(false);
+  expect(dotenvHasKey('OPENROUTER_API_KEY=""\n', 'OPENROUTER_API_KEY')).toBe(false);
+  expect(dotenvHasKey('# OPENROUTER_API_KEY=synthetic\n', 'OPENROUTER_API_KEY')).toBe(false);
+});
+
+it('parses YAML scalars and refuses malformed or ambiguous credential documents', () => {
+  expect(
+    credentialsHaveKey('refs: { OPENROUTER_API_KEY: "synthetic" }', 'OPENROUTER_API_KEY')
+  ).toBe(true);
+  expect(credentialsHaveKey('refs:\n  OPENROUTER_API_KEY: 42', 'OPENROUTER_API_KEY')).toBe(false);
+  expect(credentialsHaveKey('refs:\n  OPENROUTER_API_KEY: true', 'OPENROUTER_API_KEY')).toBe(false);
+  expect(credentialsHaveKey('refs:\n  OPENROUTER_API_KEY: "42"', 'OPENROUTER_API_KEY')).toBe(true);
+  expect(credentialsHaveKey('refs: [unterminated', 'OPENROUTER_API_KEY')).toBeUndefined();
+  expect(
+    credentialsHaveKey(
+      'refs:\n  OPENROUTER_API_KEY: first\n  OPENROUTER_API_KEY: second',
+      'OPENROUTER_API_KEY'
+    )
+  ).toBeUndefined();
 });
 
 it('types tool items by the tool name, dsh-acp reporting every kind as other', () => {

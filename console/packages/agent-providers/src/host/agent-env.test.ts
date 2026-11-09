@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { codexKeyringReaderEnvironment } from './agent-env';
+import { codexKeyringReaderEnvironment, EXECUTION_INHERIT_ENV } from './agent-env';
+import { executionEnvironment } from './shared-config';
 
 describe('codexKeyringReaderEnvironment', () => {
   const session = {
@@ -43,4 +44,18 @@ describe('codexKeyringReaderEnvironment', () => {
     });
     expect(codexKeyringReaderEnvironment(windows, {}, 'linux')).toEqual({});
   });
+});
+
+it('passes an OpenRouter key through the existing controller environment', async () => {
+  const previous = process.env.OPENROUTER_API_KEY;
+  try {
+    process.env.OPENROUTER_API_KEY = 'synthetic-openrouter-secret';
+    const env = await executionEnvironment(process.cwd(), {}, undefined, [
+      ...EXECUTION_INHERIT_ENV,
+    ]);
+    expect(env.OPENROUTER_API_KEY).toBe('synthetic-openrouter-secret');
+  } finally {
+    if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = previous;
+  }
 });

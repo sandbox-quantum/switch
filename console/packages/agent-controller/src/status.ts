@@ -373,7 +373,15 @@ export class ProviderStatuses {
         }
       } else if (given) {
         problem = given.problem;
-        if (problem) status = { ...status, auth_problem: problem.message.slice(0, 300) };
+        if (
+          problem &&
+          !(
+            provider === 'deepseek-harness' &&
+            readiness?.status === 'unknown' &&
+            problem.code === 'provider_login_missing'
+          )
+        )
+          status = { ...status, auth_problem: problem.message.slice(0, 300) };
       } else {
         const held = this.entries.get(provider);
         login = held?.login ?? null;
