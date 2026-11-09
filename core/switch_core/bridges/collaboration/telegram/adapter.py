@@ -43,6 +43,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     AgentIdentity,
+    CardRejectedError,
     ChannelNotBindable,
     PlatformAdapter,
     PrivateNoticeRefused,
@@ -1213,7 +1214,8 @@ class TelegramAdapter(PlatformAdapter):
         preview starts with the agent's name and the card's title either way.
 
         A card that does not fit one message, or that Telegram refuses, raises
-        before anything is posted, so the caller sends `fallback_text`.
+        `CardRejectedError` before anything is posted, so the caller sends
+        `fallback_text`.
         """
         text, groups = await self._ui_card(sender_name, spec)
         # A card with Buttons gains a line naming who answered it.
@@ -1225,7 +1227,7 @@ class TelegramAdapter(PlatformAdapter):
             default=0,
         )
         if len(text) + answer > MAX_MESSAGE:
-            raise ValueError(
+            raise CardRejectedError(
                 f"The card is {len(text)} characters of Telegram HTML, and "
                 f"{answer} more kept for its answer, over {MAX_MESSAGE}"
             )
@@ -1256,8 +1258,8 @@ class TelegramAdapter(PlatformAdapter):
                 reply_markup=_ui_card_keyboard(rows),
                 **anchor,
             )
-        except (BadRequest, Forbidden, ChatMigrated):
-            raise
+        except (BadRequest, Forbidden, ChatMigrated) as error:
+            raise CardRejectedError(str(error)) from error
         except TelegramError as error:
             # Not raised: the post may have landed, and a retry as text would
             # then post the message twice.

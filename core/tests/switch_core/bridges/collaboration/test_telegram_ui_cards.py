@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from telegram.error import BadRequest
 
+from switch_core.bridges.collaboration.adapter import CardRejectedError
 from switch_core.bridges.collaboration.models import InboundInteraction
 from switch_core.bridges.collaboration.telegram.adapter import (
     _MAX_CALLBACK_BYTES,
@@ -194,7 +195,7 @@ async def test_a_card_too_long_for_one_message_raises_before_posting() -> None:
     adapter = _adapter()
     spec = _spec({k: _el("Text", content="x" * 3000) for k in ("a", "b")}, ["a", "b"])
 
-    with pytest.raises(ValueError, match=str(MAX_MESSAGE)):
+    with pytest.raises(CardRejectedError, match=str(MAX_MESSAGE)):
         await _send(adapter, spec)
     assert _bot(adapter).messages == []
 
@@ -203,7 +204,7 @@ async def test_a_card_telegram_refuses_raises_so_the_text_is_sent() -> None:
     adapter = _adapter()
     _bot(adapter).send_message_error = BadRequest("can't parse entities")
 
-    with pytest.raises(BadRequest):
+    with pytest.raises(CardRejectedError, match="parse entities"):
         await _send(adapter, FULL)
 
 
@@ -300,7 +301,7 @@ async def test_a_card_at_the_length_limit_still_fits_once_answered() -> None:
     async def fits(n: int) -> bool:
         try:
             await _send(_adapter(), card(n))
-        except ValueError:
+        except CardRejectedError:
             return False
         return True
 

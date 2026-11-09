@@ -491,6 +491,28 @@ def test_a_press_that_failed_after_its_send_keeps_the_card_answered() -> None:
     ]
 
 
+def test_a_press_that_failed_before_its_send_leaves_the_card_unanswered() -> None:
+    bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
+    is_agent = bridge._is_registered_agent
+
+    async def lookup_down(name: str) -> bool:
+        raise RuntimeError("database is down")
+
+    bridge._is_registered_agent = lookup_down
+
+    with pytest.raises(RuntimeError):
+        _press(bridge)
+
+    assert bridge.actor.sent == []
+    assert bridge._bridge_message_map_store.answers == {}
+
+    bridge._is_registered_agent = is_agent
+    _press(bridge)
+
+    assert len(bridge.actor.sent) == 1
+    assert bridge._adapter.settled == [("switch.ui:approve", "Approve")]
+
+
 class _RedactingTrust:
     async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
         return TrustCheckResult(

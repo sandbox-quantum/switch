@@ -265,6 +265,12 @@ class PrivateNoticeRefused(Exception):
     it without a traceback and posts the notice in the channel instead."""
 
 
+class CardRejectedError(Exception):
+    """The platform refused a card, or it could not be drawn there, before
+    anything was posted: the caller posts the message's text instead. Any other
+    failure leaves it unknown whether the card landed."""
+
+
 class ChannelNotBindable(ValueError):
     """A room was asked to bind to a channel that is not this bridge's to bind.
 
@@ -1093,9 +1099,10 @@ class PlatformAdapter(ABC):
         `send_message` would have posted; a platform with no card rendering
         posts just that, which is the default.
 
-        Raise only when nothing was posted: the caller falls back to
-        `send_message` on an exception, so raising after a post would post
-        the message twice.
+        Raise `CardRejectedError` when the card was refused before anything
+        was posted; the caller then posts `fallback_text` alone. Any other
+        exception is handled as a send that may have landed, and is never
+        followed by the text.
         """
         return await self.send_message(
             channel_id,

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.bridges.collaboration.adapter import CardRejectedError
 from switch_core.bridges.collaboration.models import InboundInteraction
 from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
 from switch_core.bridges.collaboration.teams.cards import (
@@ -242,7 +243,7 @@ async def test_a_refused_card_raises_so_the_body_is_posted_instead() -> None:
     adapter, connector = _teams()
     connector.fail_send = BotConnectorRefused("too big", status=None, retry_after=None)
 
-    with pytest.raises(BotConnectorRefused):
+    with pytest.raises(CardRejectedError, match="too big"):
         await adapter.send_ui_message(
             CHANNEL, AGENT, FULL, "body", ROOT, room_wide_mention=False
         )
@@ -394,7 +395,7 @@ async def test_a_card_at_the_size_limit_still_fits_once_answered() -> None:
             await adapter.send_ui_message(
                 CHANNEL, AGENT, card(n), "pick", ROOT, room_wide_mention=False
             )
-        except BotConnectorRefused:
+        except CardRejectedError:
             return False
         return True
 

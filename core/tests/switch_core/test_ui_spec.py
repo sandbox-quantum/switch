@@ -20,6 +20,7 @@ from switch_core.ui_spec import (
     estimated_block_count,
     parse_ui_spec,
     to_text,
+    trust_text,
 )
 
 
@@ -575,3 +576,26 @@ def test_subtitle_and_caption_are_measured_as_sent() -> None:
         "elements.c.props.subtitle: 3004 " + _AS_SENT.format(limit=3000),
         "elements.tbl.props.caption: 3004 " + _AS_SENT.format(limit=3000),
     ]
+
+
+def test_trust_text_carries_every_string_a_card_sends() -> None:
+    raw = _full()
+    leaves: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                add(item)
+        elif isinstance(value, list):
+            for item in value:
+                add(item)
+        elif isinstance(value, int | float):
+            leaves.append(f"{value:g}")
+        else:
+            leaves.append(str(value))
+
+    for element in raw["elements"].values():
+        add(element["props"])
+    assert {"approve", "rel-42", "https://dash.example/x", "Graph"} <= set(leaves)
+
+    assert set(leaves) <= set(trust_text(parse_ui_spec(raw)).split("\n"))

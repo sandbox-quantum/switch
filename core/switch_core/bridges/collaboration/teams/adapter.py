@@ -24,6 +24,7 @@ from pydantic.json_schema import SkipJsonSchema
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
+    CardRejectedError,
     ChannelNotBindable,
     ConfigEditRefused,
     PlatformAdapter,
@@ -1889,7 +1890,8 @@ class TeamsAdapter(PlatformAdapter):
         shows. Card text mentions nobody: it gets no mention entities.
 
         A card Teams refuses, or that is over the activity size limit, raises
-        before anything was posted, so the caller posts the body instead. An
+        `CardRejectedError` before anything was posted, so the caller posts the
+        body instead. An
         unknown outcome is not raised, since the card may be in the channel.
         """
         if self._connector is None:
@@ -1899,23 +1901,26 @@ class TeamsAdapter(PlatformAdapter):
         if labels:
             # Refused now, as an over-size card is, if the redraw naming who
             # answered could not be sent.
-            checked_payload(
-                "A card",
-                _settled(
-                    activity,
-                    self._settled_line(
-                        "@" * ANSWERER_NAME_MAX,
-                        max(labels, key=lambda label: len(self._card_text(label))),
+            try:
+                checked_payload(
+                    "A card",
+                    _settled(
+                        activity,
+                        self._settled_line(
+                            "@" * ANSWERER_NAME_MAX,
+                            max(labels, key=lambda label: len(self._card_text(label))),
+                        ),
                     ),
-                ),
-            )
+                )
+            except BotConnectorRefused as error:
+                raise CardRejectedError(str(error)) from error
         thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
         try:
             msg_id = await self._relay(
                 self._connector, channel_id, thread_root_id, activity
             )
-        except BotConnectorRefused:
-            raise
+        except BotConnectorRefused as error:
+            raise CardRejectedError(str(error)) from error
         except BotConnectorError:
             logger.error(
                 "Teams did not confirm the card in %s; it may have been posted, so "

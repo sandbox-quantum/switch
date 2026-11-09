@@ -603,6 +603,29 @@ def _number(value: float) -> str:
     return f"{value:g}"
 
 
+def trust_text(spec: UISpec) -> str:
+    """Every string and number the card can send out, one per line: what
+    Switch Trust checks. Read off every prop generically, so a prop added later
+    is checked too, button ids included; `to_text` is the readable version."""
+    out: list[str] = []
+
+    def add(value: object) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                add(item)
+        elif isinstance(value, list):
+            for item in value:
+                add(item)
+        elif isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, int | float) and not isinstance(value, bool):
+            out.append(_number(value))
+
+    for element in spec.elements.values():
+        add(element.props.model_dump())
+    return "\n".join(out)
+
+
 def to_text(spec: UISpec) -> str:
     """The card as plain markdown text, carrying every string in it."""
 

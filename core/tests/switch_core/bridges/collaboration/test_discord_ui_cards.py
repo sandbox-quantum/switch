@@ -4,11 +4,13 @@ under its text, and its buttons pressed and settled."""
 from __future__ import annotations
 
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import discord
 import pytest
 
+from switch_core.bridges.collaboration.adapter import CardRejectedError
 from switch_core.bridges.collaboration.discord.adapter import (
     _WEBHOOK_NAME,
     DiscordAdapter,
@@ -376,7 +378,7 @@ async def test_buttons_on_a_webhook_somebody_else_made_fall_back_to_text() -> No
     _handled(adapter)
     channel.existing_webhooks[0] = _Webhook(_WEBHOOK_NAME, creator=None)
 
-    with pytest.raises(ValueError, match="does not own"):
+    with pytest.raises(CardRejectedError, match="does not own"):
         await adapter.send_ui_message(
             str(CHANNEL_ID), "my-agent", FULL, "text", None, room_wide_mention=False
         )
@@ -384,10 +386,30 @@ async def test_buttons_on_a_webhook_somebody_else_made_fall_back_to_text() -> No
     assert channel.existing_webhooks[0].sent == []
 
 
+@pytest.mark.parametrize(
+    ("status", "raised"),
+    [(400, CardRejectedError), (403, CardRejectedError), (500, discord.HTTPException)],
+)
+async def test_only_a_card_discord_refuses_falls_back_to_text(
+    status: int, raised: type[Exception]
+) -> None:
+    adapter, channel, _thread, _ = _guild_setup()
+    _handled(adapter)
+    _agents_webhook(channel).send_error = discord.HTTPException(
+        SimpleNamespace(status=status, reason="refused"),  # type: ignore[arg-type]
+        "refused",
+    )
+
+    with pytest.raises(raised):
+        await adapter.send_ui_message(
+            str(CHANNEL_ID), "my-agent", FULL, "text", None, room_wide_mention=False
+        )
+
+
 async def test_text_too_long_for_one_message_falls_back_before_posting() -> None:
     adapter, channel, _thread, _ = _guild_setup()
 
-    with pytest.raises(ValueError, match="2000"):
+    with pytest.raises(CardRejectedError, match="2000"):
         await adapter.send_ui_message(
             str(CHANNEL_ID),
             "my-agent",

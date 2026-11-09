@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, TypeVar
@@ -23,6 +24,7 @@ from switch_core.bridges.agent.commands import link_account_reply, stop_control_
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
+    CardRejectedError,
     PlatformAdapter,
     PrivateNoticeRefused,
     SupportsSharedConnection,
@@ -211,6 +213,19 @@ def _no_agents_notice(slash_hint: str | None) -> str:
         "Once an agent is in the room, @-mention it here and it'll pick up the "
         "conversation."
     )
+
+
+# Held while a card press is relayed: a mark goes in once its message reaches
+# the send, after which a failure may still have delivered it.
+_PRESS_SENDING: ContextVar[list[bool] | None] = ContextVar(
+    "press_sending", default=None
+)
+
+
+def _mark_sending() -> None:
+    sending = _PRESS_SENDING.get()
+    if sending is not None:
+        sending.append(True)
 
 
 def _inert(text: str) -> str:
@@ -1256,6 +1271,7 @@ class CollaborationCore:
             annotation = trust_annotation(check)
             if annotation is not None:
                 content = f"{content}\n\n{annotation}"
+            _mark_sending()
             with writes_derived_from(
                 human_actor.client_id,
                 _post_source(self._bridge_id, msg.channel_id, msg.message_ref),
@@ -1387,6 +1403,7 @@ class CollaborationCore:
         # into the same group, which then completes.
         source = _post_source(self._bridge_id, msg.channel_id, msg.message_ref)
         group_id = str(uuid.uuid5(uuid.NAMESPACE_URL, source)) if total > 1 else None
+        _mark_sending()
         for index, attachment in enumerate(msg.attachments):
             media_uri = await human_actor.upload_media(
                 attachment.data, attachment.mimetype, attachment.filename
@@ -2324,40 +2341,53 @@ class CollaborationCore:
         details = f"action: {button.id}" + (
             f", value: {button.value}" if button.value else ""
         )
-        # Raises when the send may have happened, leaving the card answered:
-        # the claim is released only when nothing reached the room.
-        delivered = await self._handle_inbound_message(
-            InboundMessage(
-                channel_id=interaction.channel_id,
-                channel_type=channel_type,
-                sender_id=interaction.sender_id,
-                sender_name=interaction.sender_name,
-                content=(
-                    f"@{card.sender_name} Clicked “{_inert(button.label)}” "
-                    f"({_inert(details)})"
-                ),
-                # Its own post, never the card's, and the same on a retry so the
-                # room writes it once (`_post_source`).
-                message_ref=(
-                    f"{card_event_id}#press:{button.id}:{interaction.sender_id}"
-                ),
-                root_id=root_id,
-                extra_content={
-                    UI_PRESS_KEY: {
-                        "action": button.id,
-                        "value": button.value,
-                        "label": button.label,
-                        "card_event_id": card_event_id,
-                    }
-                },
-            )
-        )
-        if delivered is None:
+
+        async def release() -> None:
             async with self._session_factory() as session:
                 await self._bridge_message_map_store.clear_card_answer(
                     session, bridge_id=self._bridge_id, external_post_id=card_ref
                 )
                 await session.commit()
+
+        # A failure before the send releases the claim; once the send may have
+        # happened the card stays answered, however the relay ends.
+        sending: list[bool] = []
+        held = _PRESS_SENDING.set(sending)
+        try:
+            delivered = await self._handle_inbound_message(
+                InboundMessage(
+                    channel_id=interaction.channel_id,
+                    channel_type=channel_type,
+                    sender_id=interaction.sender_id,
+                    sender_name=interaction.sender_name,
+                    content=(
+                        f"@{card.sender_name} Clicked “{_inert(button.label)}” "
+                        f"({_inert(details)})"
+                    ),
+                    # Its own post, never the card's, and the same on a retry so the
+                    # room writes it once (`_post_source`).
+                    message_ref=(
+                        f"{card_event_id}#press:{button.id}:{interaction.sender_id}"
+                    ),
+                    root_id=root_id,
+                    extra_content={
+                        UI_PRESS_KEY: {
+                            "action": button.id,
+                            "value": button.value,
+                            "label": button.label,
+                            "card_event_id": card_event_id,
+                        }
+                    },
+                )
+            )
+        except (Exception, asyncio.CancelledError):
+            if not sending:
+                await asyncio.shield(release())
+            raise
+        finally:
+            _PRESS_SENDING.reset(held)
+        if delivered is None:
+            await release()
             await tell(f"Your answer could not be delivered to {agent_name}.")
             return
         await self._adapter.settle_card_press(
@@ -3000,16 +3030,11 @@ class CollaborationCore:
                     thread_root_ref,
                     room_wide_mention=room_wide,
                 )
-            except UISpecError as error:
+            except (UISpecError, CardRejectedError) as error:
                 logger.error(
-                    "[BRIDGE-OUT] card on %s is invalid; posting its text only: %s",
+                    "[BRIDGE-OUT] card on %s was not posted; posting its text only: %s",
                     event.event_id,
                     error,
-                )
-            except Exception:
-                logger.exception(
-                    "[BRIDGE-OUT] card on %s failed to post; posting its text only",
-                    event.event_id,
                 )
         return await self._adapter.send_message(
             channel_id,

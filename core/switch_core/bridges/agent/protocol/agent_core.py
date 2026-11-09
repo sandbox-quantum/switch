@@ -161,7 +161,7 @@ from switch_core.trust.client import (
     trust_annotation,
     trust_is_active,
 )
-from switch_core.ui_spec import UI_CONTENT_KEY, UISpec, to_text
+from switch_core.ui_spec import UI_CONTENT_KEY, UISpec, trust_text
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -1790,7 +1790,7 @@ class AgentCore:
         client: AgentActor,
     ) -> tuple[str, tuple[str, TrustOutcome] | None, TrustOutcome, UISpec | None]:
         """`_enforce_trust` for a message carrying a card: every string in the
-        card (`to_text`) is checked alongside the body. A card Switch Trust
+        card (`trust_text`) is checked alongside the body. A card Switch Trust
         blocks, or redacts with nothing to redact with, blocks the whole send
         as the body would. A card it redacts is dropped (returned as None) —
         a card has no redacted form, and its words must not reach the room —
@@ -1802,7 +1802,7 @@ class AgentCore:
             check_message(
                 self.trust_client,
                 role="assistant",
-                content=to_text(ui),
+                content=trust_text(ui),
                 room_id=room.id,
             ),
         )

@@ -9,8 +9,10 @@ import re
 from typing import Any
 
 import pytest
+from mattermostdriver.exceptions import InvalidOrMissingParameters
 
 from switch_core.agent_display_name import ZERO_WIDTH_SPACE
+from switch_core.bridges.collaboration.adapter import CardRejectedError
 from switch_core.bridges.collaboration.ingress import CallbackRefused
 from switch_core.bridges.collaboration.mattermost import adapter as mm_adapter
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
@@ -191,13 +193,29 @@ async def test_without_a_callback_address_buttons_are_listed_as_text() -> None:
     assert "**Go** · **Stop**" in props["attachments"][-1]["text"]
 
 
+async def test_a_card_mattermost_refuses_raises_so_the_text_is_sent() -> None:
+    adapter = _adapter()
+    _posts(adapter).create_error = InvalidOrMissingParameters("400 invalid action")
+
+    with pytest.raises(CardRejectedError, match="invalid action"):
+        await _send(adapter)
+
+
+async def test_a_card_whose_answer_was_lost_is_not_called_refused() -> None:
+    adapter = _adapter()
+    _posts(adapter).create_error = TimeoutError("response lost")
+
+    with pytest.raises(TimeoutError):
+        await _send(adapter)
+
+
 async def test_a_card_too_big_for_the_post_raises_before_posting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _adapter()
     monkeypatch.setattr(mm_adapter, "_MAX_PROPS", 100)
 
-    with pytest.raises(ValueError, match="post props"):
+    with pytest.raises(CardRejectedError, match="post props"):
         await _send(adapter)
     assert _posts(adapter).created == []
 

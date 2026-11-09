@@ -1,7 +1,9 @@
 """An agent message carrying a card goes out through `send_ui_message`, with
 the same text `send_message` would have posted as its fallback. A card that
-does not parse once it has crossed the transport, or that fails to post, is
-reported and the text is posted instead."""
+does not parse once it has crossed the transport, or that the platform refused
+before posting it, is reported and the text is posted instead. Any other
+failure may have left the card posted, so it takes the path a plain send's
+failure takes and the text is never posted after it."""
 
 from __future__ import annotations
 
@@ -9,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from switch_core.bridges.collaboration.adapter import CardRejectedError
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.transport import InboundMessage, RoomRef
 from switch_core.ui_spec import UI_CONTENT_KEY, UISpec, parse_ui_spec
@@ -56,9 +59,9 @@ class _Adapter:
         *,
         room_wide_mention: bool,
     ) -> str | None:
+        self.ui_sent.append((spec, fallback_text))
         if self.ui_error is not None:
             raise self.ui_error
-        self.ui_sent.append((spec, fallback_text))
         return "card-ref"
 
 
@@ -85,8 +88,17 @@ def _bridge(adapter: _Adapter) -> tuple[CollaborationCore, list[dict[str, str]]]
     return core, recorded
 
 
-async def _relay(adapter: _Adapter, content: dict[str, Any]) -> list[dict[str, str]]:
+async def _relay(
+    adapter: _Adapter, content: dict[str, Any], released: list[str]
+) -> list[dict[str, str]]:
     core, recorded = _bridge(adapter)
+    release = core._release_outbound
+
+    async def recording_release(transport_event_id: str) -> None:
+        released.append(transport_event_id)
+        await release(transport_event_id)
+
+    core._release_outbound = recording_release  # type: ignore[method-assign]
     await core.handle_outbound_message(
         RoomRef("!r:switch.local"),
         InboundMessage(
@@ -105,7 +117,7 @@ async def _relay(adapter: _Adapter, content: dict[str, Any]) -> list[dict[str, s
 async def test_a_card_goes_through_send_ui_message() -> None:
     adapter = _Adapter()
 
-    recorded = await _relay(adapter, {UI_CONTENT_KEY: _CARD})
+    recorded = await _relay(adapter, {UI_CONTENT_KEY: _CARD}, [])
 
     assert adapter.ui_sent == [(parse_ui_spec(_CARD), "<hi>")]
     assert adapter.sent == []
@@ -115,7 +127,7 @@ async def test_a_card_goes_through_send_ui_message() -> None:
 async def test_no_card_goes_through_send_message() -> None:
     adapter = _Adapter()
 
-    await _relay(adapter, {})
+    await _relay(adapter, {}, [])
 
     assert adapter.sent == ["<hi>"]
     assert adapter.ui_sent == []
@@ -126,21 +138,36 @@ async def test_an_invalid_card_falls_back_to_text(
 ) -> None:
     adapter = _Adapter()
 
-    recorded = await _relay(adapter, {UI_CONTENT_KEY: {"root": "c"}})
+    recorded = await _relay(adapter, {UI_CONTENT_KEY: {"root": "c"}}, [])
 
     assert adapter.sent == ["<hi>"]
     assert adapter.ui_sent == []
     assert recorded[0]["external_post_id"] == "text-ref"
-    assert "card on $e1 is invalid" in caplog.text
+    assert "card on $e1 was not posted" in caplog.text
 
 
-async def test_a_card_that_fails_to_post_falls_back_to_text(
+async def test_a_card_the_platform_refused_falls_back_to_text(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    adapter = _Adapter(ui_error=RuntimeError("invalid_blocks"))
+    adapter = _Adapter(ui_error=CardRejectedError("invalid_blocks"))
 
-    await _relay(adapter, {UI_CONTENT_KEY: _CARD})
+    recorded = await _relay(adapter, {UI_CONTENT_KEY: _CARD}, [])
 
     assert adapter.sent == ["<hi>"]
-    assert "card on $e1 failed to post" in caplog.text
+    assert recorded[0]["external_post_id"] == "text-ref"
+    assert "card on $e1 was not posted" in caplog.text
     assert "invalid_blocks" in caplog.text
+
+
+async def test_a_card_whose_answer_was_lost_is_not_posted_again_as_text() -> None:
+    """The platform may have posted it, so this is a plain send's failure: the
+    claim is let go and the error raised, and no text follows."""
+    adapter = _Adapter(ui_error=TimeoutError("no response"))
+    released: list[str] = []
+
+    with pytest.raises(TimeoutError):
+        await _relay(adapter, {UI_CONTENT_KEY: _CARD}, released)
+
+    assert len(adapter.ui_sent) == 1
+    assert adapter.sent == []
+    assert released == ["$e1"]

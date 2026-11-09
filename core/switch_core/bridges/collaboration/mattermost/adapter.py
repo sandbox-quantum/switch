@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivitySnapshot,
     AgentIdentity,
     AgentIdentityConflict,
+    CardRejectedError,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -166,6 +167,17 @@ _ATTACHMENTS_PROP = "attachments"
 # Mattermost's `PostPropsMaxUserRunes`: the JSON of a post's props, in runes,
 # less the room the server keeps for its own additions.
 _MAX_PROPS = 760_000
+
+# What Mattermost answers a post it did not create with: each a 4xx, so the
+# post was not made and its text may be sent instead.
+_MATTERMOST_REFUSALS = (
+    InvalidOrMissingParameters,
+    NoAccessTokenProvided,
+    NotEnoughPermissions,
+    ResourceNotFound,
+    MethodNotAllowed,
+    ContentTooLarge,
+)
 
 # How far an attachment has got, in the order Mattermost draws its parts. A
 # part that would draw above one already there goes in a new attachment.
@@ -1042,23 +1054,27 @@ class MattermostAdapter(PlatformAdapter):
         room_wide_mention: bool,
     ) -> str | None:
         """The card as message attachments under `fallback_text`, which stays
-        the post's message: it is what a Mattermost notification shows. Raises
-        before posting a card the post cannot carry, so core sends the text."""
+        the post's message: it is what a Mattermost notification shows. A card
+        the post cannot carry, or that Mattermost refuses, raises
+        `CardRejectedError` before anything is posted, so core sends the text."""
         attachments = self._card_attachments(channel_id, spec)
         attachments[0]["fallback"] = self._card_text(to_text(spec))
         props: dict[str, Any] = {_ATTACHMENTS_PROP: attachments}
         size = len(json.dumps(props, ensure_ascii=False))
         if size > _MAX_PROPS:
-            raise ValueError(
+            raise CardRejectedError(
                 f"The card is {size} characters of post props, over Mattermost's "
                 f"{_MAX_PROPS}."
             )
         driver = self._bot_drivers.get(sender_name) or self._admin_driver
         if driver is None:
             raise RuntimeError("Mattermost is not connected.")
-        return await self._post_or_raise(
-            driver, channel_id, fallback_text, thread_root_id, props
-        )
+        try:
+            return await self._post_or_raise(
+                driver, channel_id, fallback_text, thread_root_id, props
+            )
+        except _MATTERMOST_REFUSALS as error:
+            raise CardRejectedError(str(error)) from error
 
     def _card_text(self, text: str) -> str:
         return self.translate_outbound(_defuse_at(text))

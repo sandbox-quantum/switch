@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -24,6 +25,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
     AgentIdentity,
+    CardRejectedError,
     ChannelNotBindable,
     PlatformAdapter,
     PrivateNoticeRefused,
@@ -279,6 +281,20 @@ def _parse_interrupt_id(custom_id: str) -> str | None:
     if prefix != _INTERRUPT_PREFIX or not separator or not turn_id:
         return None
     return turn_id
+
+
+@contextlib.contextmanager
+def _card_refusals() -> Iterator[None]:
+    """A card that does not fit Discord's limits, or that Discord answers with
+    a 4xx, was not posted: `CardRejectedError`, so the text goes instead."""
+    try:
+        yield
+    except ValueError as error:
+        raise CardRejectedError(str(error)) from error
+    except discord.HTTPException as error:
+        if 400 <= error.status < 500 and error.status != 429:
+            raise CardRejectedError(str(error)) from error
+        raise
 
 
 def _press_action(custom_id: str) -> tuple[str, str] | None:
@@ -981,61 +997,65 @@ class DiscordAdapter(PlatformAdapter):
         `fallback_text` as the message's content: the content is what a
         notification previews and the only part of a message whose mentions
         notify, so it stays even where it repeats the card. Raises before
-        posting when the card or the text does not fit one Discord message, so
-        the caller posts the text alone."""
-        target = await self._get_channel(int(channel_id))
-        lobby = self._channel_type_of(target) == "lobby"
-        content = (
-            f"**{await self.agent_label_for_body(sender_name)}**: {fallback_text}"
-            if lobby
-            else fallback_text
-        )
-        if len(content) > MAX_MESSAGE:
-            raise ValueError(
-                f"the card's text is {len(content)} characters, over Discord's "
-                f"{MAX_MESSAGE}"
+        posting (`CardRejectedError`) when the card or the text does not fit
+        one Discord message, or Discord refuses it, so the caller posts the
+        text alone."""
+        with _card_refusals():
+            target = await self._get_channel(int(channel_id))
+            lobby = self._channel_type_of(target) == "lobby"
+            content = (
+                f"**{await self.agent_label_for_body(sender_name)}**: {fallback_text}"
+                if lobby
+                else fallback_text
             )
-        allowed_mentions = _ROOM_WIDE_MENTION if room_wide_mention else NO_MASS_MENTIONS
-        presses = self._on_interaction is not None
-        if lobby:
-            # The bot's own message, which may always carry buttons.
-            embeds, view = ui_spec_to_message(spec, interactive=presses)
-            sent = await target.send(
-                content,
-                embeds=embeds,
-                allowed_mentions=allowed_mentions,
-                **({} if view is None else {"view": view}),
+            if len(content) > MAX_MESSAGE:
+                raise ValueError(
+                    f"the card's text is {len(content)} characters, over Discord's "
+                    f"{MAX_MESSAGE}"
+                )
+            allowed_mentions = (
+                _ROOM_WIDE_MENTION if room_wide_mention else NO_MASS_MENTIONS
+            )
+            presses = self._on_interaction is not None
+            if lobby:
+                # The bot's own message, which may always carry buttons.
+                embeds, view = ui_spec_to_message(spec, interactive=presses)
+                sent = await target.send(
+                    content,
+                    embeds=embeds,
+                    allowed_mentions=allowed_mentions,
+                    **({} if view is None else {"view": view}),
+                )
+                return f"{sent.channel.id}:{sent.id}"
+
+            webhook = await self._get_webhook(int(channel_id))
+            embeds, view = ui_spec_to_message(
+                spec, interactive=presses and webhook.id in self._owned_webhooks
+            )
+            payload: dict[str, Any] = {
+                "content": content,
+                "embeds": embeds,
+                "allowed_mentions": allowed_mentions,
+                "wait": True,
+            }
+            if view is not None:
+                payload["view"] = view
+            if thread_root_id:
+                try:
+                    payload["thread"] = await self._ensure_thread(
+                        int(channel_id), thread_root_id
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to resolve Discord thread for root %s — posting at channel root",
+                        thread_root_id,
+                    )
+            agent = await self.agent_rendering(sender_name)
+            payload["avatar_url"] = agent.icon_url
+            sent = await _WebhookIdentity(agent.field_label, sender_name).send(
+                webhook, payload
             )
             return f"{sent.channel.id}:{sent.id}"
-
-        webhook = await self._get_webhook(int(channel_id))
-        embeds, view = ui_spec_to_message(
-            spec, interactive=presses and webhook.id in self._owned_webhooks
-        )
-        payload: dict[str, Any] = {
-            "content": content,
-            "embeds": embeds,
-            "allowed_mentions": allowed_mentions,
-            "wait": True,
-        }
-        if view is not None:
-            payload["view"] = view
-        if thread_root_id:
-            try:
-                payload["thread"] = await self._ensure_thread(
-                    int(channel_id), thread_root_id
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to resolve Discord thread for root %s — posting at channel root",
-                    thread_root_id,
-                )
-        agent = await self.agent_rendering(sender_name)
-        payload["avatar_url"] = agent.icon_url
-        sent = await _WebhookIdentity(agent.field_label, sender_name).send(
-            webhook, payload
-        )
-        return f"{sent.channel.id}:{sent.id}"
 
     async def settle_card_press(
         self,

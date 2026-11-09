@@ -408,6 +408,50 @@ async def test_a_redacted_card_is_dropped_and_the_body_sent_alone() -> None:
     }
 
 
+def _button_card(button_id: str) -> dict[str, Any]:
+    return {
+        "root": "c",
+        "elements": {
+            "c": {"type": "Card", "props": {"title": "Status"}, "children": ["a"]},
+            "a": {"type": "Actions", "props": {}, "children": ["b"]},
+            "b": {
+                "type": "Button",
+                "props": {"id": button_id, "label": "Approve"},
+                "children": [],
+            },
+        },
+    }
+
+
+async def test_a_card_redacted_only_in_a_button_id_is_dropped() -> None:
+    """A button's id goes out as its action, and as its value when it has none."""
+    svc, client, _ = _build()
+
+    sent = await svc.send_message(
+        "agent-1", "room-1", "status", ui=parse_ui_spec(_button_card("token-123"))
+    )
+
+    assert client.extra == [None]
+    assert sent.trust is not None
+    assert sent.trust.to_result()["card"] == "dropped"
+
+
+async def test_a_card_blocked_only_in_a_button_id_blocks_the_send() -> None:
+    svc, client, _ = _build()
+
+    async def _blocked_notice(*args: Any) -> None:
+        return None
+
+    svc._post_trust_blocked_notice = _blocked_notice  # type: ignore[method-assign]
+
+    with pytest.raises(GuardrailBlockedError):
+        await svc.send_message(
+            "agent-1", "room-1", "status", ui=parse_ui_spec(_button_card("forbidden"))
+        )
+
+    assert client.sent == []
+
+
 async def test_a_flagged_card_is_sent_with_a_notice() -> None:
     svc, client, notices = _build()
 
