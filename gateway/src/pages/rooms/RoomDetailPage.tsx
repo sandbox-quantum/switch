@@ -855,8 +855,9 @@ function ParticipantsSection({
             People ({room.connected_user_names.length})
           </Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
-            {room.connected_user_names.map((name) => (
-              <Chip key={name} label={name} size="small" />
+            {/* Two people may share a name, so a name alone does not key a chip. */}
+            {room.connected_user_names.map((name, index) => (
+              <Chip key={`${index}:${name}`} label={name} size="small" />
             ))}
           </Stack>
           <Typography variant="caption" color="text.secondary">
