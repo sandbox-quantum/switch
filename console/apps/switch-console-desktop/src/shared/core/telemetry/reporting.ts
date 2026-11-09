@@ -48,11 +48,11 @@ export type UiEntryPoint = (typeof UI_ENTRY_POINTS)[number];
  * including one the room watcher started because the agent was addressed in a
  * room. `unknown` is a caller that did not say.
  *
- * None of the four are comparable, so they are kept apart rather than summed. An
- * adopted session is stamped when the app *noticed* it — which is when the app
- * next ran, not when the agent started — and two installs watching one host each
- * adopt and report the same session. Room-started sessions arrive as `adopted`
- * for that reason, and only while the app is running; the Switch server's own
+ * An adopted session is reported as `session_discovered` rather than as a start:
+ * it is stamped when the app *noticed* it — which is when the app next ran, not
+ * when the agent started — and two installs watching one host each adopt and
+ * report the same session. Room-started sessions arrive as `adopted` for that
+ * reason, and only while the app is running; the Switch server's own
  * `session_started`, reported by each session's host, counts them directly.
  */
 export const SESSION_START_SOURCES = ['user', 'auto', 'adopted', 'unknown'] as const;

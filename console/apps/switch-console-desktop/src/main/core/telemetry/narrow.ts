@@ -1,5 +1,6 @@
 import { INSTALL_METHODS } from '@switch-console/core/deps';
 import {
+  type SessionStartSource,
   AGENT_REMOVE_TRIGGERS,
   ROOM_AGENTS_DIRECTIONS,
   SESSION_PROVISION_TRIGGERS,
@@ -14,7 +15,6 @@ import type {
   TelemetryInstallMethod,
   TelemetryRoomAgentsDirection,
   TelemetrySessionProvisionTrigger,
-  TelemetrySessionStartSource,
   TelemetryUpdateTrigger,
 } from './events';
 
@@ -50,7 +50,7 @@ export function entryPointOf(value: unknown): TelemetryEntryPoint {
  * a claim, and `user` would report the presence of one — asserting a person was
  * behind a session on the strength of a caller that said nothing.
  */
-export function startSourceOf(value: unknown): TelemetrySessionStartSource {
+export function startSourceOf(value: unknown): SessionStartSource {
   return oneOf(SESSION_START_SOURCES, value, 'unknown');
 }
 

@@ -181,17 +181,16 @@ describe('a session start that fails', () => {
     );
   });
 
-  it('reports a session it only adopted apart from one started here', async () => {
+  it('reports nothing when the poll fails to adopt a session, which nobody started', async () => {
+    // Nearly always the poll finding a session it already took on: counting
+    // that as a failed start would count a race no person was part of.
     failWith('already-exists');
 
     await sessionService.createSession({ ...PARAMS, startSource: 'adopted' });
 
     await settle();
 
-    expect(hoisted.trackEvent).toHaveBeenCalledWith(
-      'session_started',
-      expect.objectContaining({ start_source: 'adopted' })
-    );
+    expect(hoisted.trackEvent).not.toHaveBeenCalled();
   });
 
   it('reports nothing itself when the session starts', async () => {

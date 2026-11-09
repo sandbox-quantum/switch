@@ -293,10 +293,11 @@ export type TelemetryRoomAgentsDirection = 'agents_to_room' | 'room_to_agents';
  * Which control the user reached the action from, and who started a session.
  *
  * Both are declared in `@shared` because the renderer names them and the main
- * process reports them; see that module for what the variants mean.
+ * process reports them; see that module for what the variants mean. A session
+ * the app adopted rather than started is `session_discovered`, never a start.
  */
 export type TelemetryEntryPoint = UiEntryPoint;
-export type TelemetrySessionStartSource = SessionStartSource;
+export type TelemetrySessionStartSource = Exclude<SessionStartSource, 'adopted'>;
 
 /** A retry's trigger, minus `initial`, which is not a retry and is not sent. */
 export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 'initial'>;
@@ -391,6 +392,18 @@ export type TelemetryEventMap = {
     has_initial_prompt: boolean;
     /** Whether a Switch room was chosen before the session was created. */
     connected_to_room: boolean;
+  };
+  /**
+   * A session this app found on a host rather than started: the poll that
+   * watches each agent's host noticed it, and took it on. That includes a
+   * session the room watcher started because the agent was addressed in a
+   * room, which the Switch server's own `session_started` counts as it happens.
+   * Stamped when the app noticed it, which is when the app next ran, and two
+   * installs watching one host each report it. Nobody did anything in the app.
+   */
+  session_discovered: {
+    agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
   };
   /**
    * A session finished. `normal` is a session the user ended (deleted or
@@ -708,6 +721,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'has_initial_prompt',
     'connected_to_room',
   ],
+  session_discovered: ['agent_type', 'location'],
   session_ended: ['agent_type', 'location', 'outcome'],
   server_added: ['server_kind', 'outcome', 'failure_reason'],
   update_checked: ['trigger', 'result'],

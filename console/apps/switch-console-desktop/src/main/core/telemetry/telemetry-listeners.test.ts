@@ -169,6 +169,26 @@ describe('a session started in a room', () => {
   });
 });
 
+describe('a session the app adopted rather than started', () => {
+  it('is reported as discovered, never as a start, and still ends', async () => {
+    onLocation('remote');
+    vi.mocked(getAgentById).mockResolvedValue({ id: 'agent', locationId: 'loc' } as never);
+
+    await emit(
+      'sessionService',
+      'session:created',
+      { id: 's-adopted', agentId: 'agent', providerId: 'codex' },
+      { id: 's-adopted', agentId: 'agent', title: 'Shared session', startSource: 'adopted' }
+    );
+    await emit('sessionService', 'session:deleted', 's-adopted');
+
+    expect(vi.mocked(trackEvent).mock.calls).toEqual([
+      ['session_discovered', { agent_type: 'codex', location: 'remote' }],
+      ['session_ended', { agent_type: 'codex', location: 'remote', outcome: 'normal' }],
+    ]);
+  });
+});
+
 describe('a session ending', () => {
   it('reports a deliberate end as normal', async () => {
     onLocation('local');

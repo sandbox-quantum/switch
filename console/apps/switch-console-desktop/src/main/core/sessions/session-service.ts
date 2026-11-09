@@ -78,6 +78,11 @@ const SESSION_START_FAILURE_REASON: Record<
  * the shape is honestly `unknown` rather than guessed.
  */
 function reportFailedSessionStart(params: CreateSessionParams, error: CreateSessionError): void {
+  // A session the app could not adopt is not a start anybody asked for: it is
+  // nearly always the poll finding one it had already taken on, and the poll
+  // logs anything else.
+  const startSource = startSourceOf(params.startSource);
+  if (startSource === 'adopted') return;
   // Not awaited: the reads that describe the attempt are ours, not the caller's,
   // and the person whose session failed should hear about it no later for our
   // having asked what kind it was.
@@ -90,7 +95,7 @@ function reportFailedSessionStart(params: CreateSessionParams, error: CreateSess
       outcome: 'failure',
       failure_reason: SESSION_START_FAILURE_REASON[error.type],
       entry_point: entryPointOf(params.entryPoint),
-      start_source: startSourceOf(params.startSource),
+      start_source: startSource,
       has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
       connected_to_room: params.connectedToRoom === true,
     });

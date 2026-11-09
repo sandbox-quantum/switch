@@ -88,7 +88,7 @@ async function rememberSession(sessionId: string, locationId: string): Promise<v
 }
 
 /**
- * Subscribe the telemetry emitter to the six product moments it reports.
+ * Subscribe the telemetry emitter to the product moments it reports.
  *
  * Deliberately one place rather than a `trackEvent` sprinkled through each
  * domain: what the app reports about itself should be readable in a single
@@ -121,12 +121,17 @@ export function registerTelemetryListeners(): void {
     if (endedSessions.has(session.id)) return;
 
     liveSessions.set(session.id, shape);
+    const startSource = startSourceOf(params.startSource);
+    if (startSource === 'adopted') {
+      trackEvent('session_discovered', shape);
+      return;
+    }
     trackEvent('session_started', {
       ...shape,
       outcome: 'success',
       failure_reason: 'none',
       entry_point: entryPointOf(params.entryPoint),
-      start_source: startSourceOf(params.startSource),
+      start_source: startSource,
       // The same test `createSession` itself applies, so the reported flag and
       // the prompt the session actually launched with cannot disagree.
       has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
