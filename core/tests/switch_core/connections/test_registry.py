@@ -66,7 +66,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, oauth_clients={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian", "datadog"}
+    assert set(adapters) == {"github", "atlassian", "datadog", "pagerduty"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
@@ -83,6 +83,7 @@ def test_a_key_service_needs_nothing_set_up_on_the_server() -> None:
         CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
     assert isinstance(adapters["datadog"], ApiKeyAdapter)
+    assert isinstance(adapters["pagerduty"], ApiKeyAdapter)
 
 
 def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
@@ -292,23 +293,26 @@ async def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
     assert asana is not None and asana.code == "coming_soon"
 
 
+@pytest.mark.parametrize(
+    "service,name", [("datadog", "Datadog"), ("pagerduty", "PagerDuty")]
+)
 async def test_a_key_that_never_expires_is_neither_connected_nor_granted(
-    tmp_path: Path, session_factory
+    tmp_path: Path, session_factory, service: str, name: str
 ) -> None:
     catalog = _catalog(tmp_path, STATIC)
     adapters = build_adapters(
         catalog, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
     broker = _broker(catalog, session_factory, adapters, None)
-    datadog = (await standing(broker, "datadog")).unavailable
-    assert datadog is not None
-    assert (datadog.code, datadog.reason) == (
+    unavailable = (await standing(broker, service)).unavailable
+    assert unavailable is not None
+    assert (unavailable.code, unavailable.reason) == (
         "key_never_expires",
-        "Datadog keys do not expire and only Datadog can revoke them, so Switch "
+        f"{name} keys do not expire and only {name} can revoke them, so Switch "
         "does not hand them to agents.",
     )
-    assert await connectable(broker, "datadog") is False
-    assert (await standing(broker, "datadog")).server_setup_needed is False
+    assert await connectable(broker, service) is False
+    assert (await standing(broker, service)).server_setup_needed is False
 
 
 async def test_a_replaced_adapter_is_used_at_once(
