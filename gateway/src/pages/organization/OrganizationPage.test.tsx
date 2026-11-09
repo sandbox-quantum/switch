@@ -155,6 +155,7 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/services": { workspaces: 1, services: [] },
       "GET /organizations/current/connector-apps": {
         public_url: "https://switch.example.test",
         apps: [
@@ -211,6 +212,7 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/connector-apps": { public_url: null, apps: [] },
       "GET /organizations/current/services": { workspaces: 3, services: [github] },
       "PUT /organizations/current/services/github": { warning: null },
     });
@@ -248,9 +250,10 @@ describe("OrganizationPage", () => {
     expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
     expect(screen.queryByRole("heading", { name: "Connectors" })).toBeNull();
-    expect(screen.queryByText(/unmocked/)).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Services" })).toBeNull();
     const asked = fetchMock.mock.calls.map(([input]) => String(input));
-    expect(asked.filter((path) => /connector-apps|\/services/.test(path))).toEqual([]);
+    expect(asked.filter((url) => /current\/(services|connector-apps)|feature-flags/.test(url))).toEqual([]);
+    expect(screen.queryByText(/unmocked/)).toBeNull();
   });
 
   it("shows what a demotion could not revoke at a vendor", async () => {

@@ -293,7 +293,7 @@ async def signup(
                 status_code=409, detail="Email already registered"
             ) from None
         await session.commit()
-        logger.info("Signed up user: %s (%s)", user.email, user.id)
+        logger.info("Signed up user %s", user.id)
         emit_safely(current_telemetry(), "account_created", {"method": "signup"})
 
         set_session_cookie(
@@ -744,7 +744,7 @@ async def create_user(
         ) from None
     await session.commit()
 
-    logger.info("Created user: %s (%s)", user.email, user.id)
+    logger.info("Created user %s", user.id)
     emit_safely(current_telemetry(), "account_created", {"method": "admin"})
     return OperatorUserResponse(
         id=user.id,

@@ -45,6 +45,19 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A one-screen Datadog board and alerts that say what to do.**
+  `deploy/observability/signal-board.json` shows the four golden signals
+  (latency, traffic, errors, saturation) plus whether agents are connected and
+  messaging apps are up, grey while normal and red only past a limit. The
+  monitors are rewritten to what a user would notice: each says what users see
+  and what to check, posts when it fires, every hour while it stays firing and
+  once on recovery, and error
+  alerts count failures instead of taking a percentage, so low traffic doesn't
+  page on noise. Causes such as slow queries stay on the dashboards.
+  `deploy/observability/apply.sh` creates or updates them in Datadog by name.
+- **switch-core reports which bridge crashed.** `switch.bridges.crashed` is 1
+  per crashed collaboration bridge, tagged with its platform and display name,
+  and 0 once it runs again, so the bridge alert can name it.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
@@ -58,6 +71,15 @@ version of their own to them without also giving them a release of their own.
   redacted had no way to know.
 
 #### Changed
+- **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
+  `GATEWAY_PASSWORD_LOGIN_ENABLED=false` the admin account is seeded without a
+  password, and the first OIDC sign-in with `GATEWAY_ADMIN_EMAIL` links to it.
+  A password set anyway is logged as unused at startup. While password login
+  is on it is still required, and the server now says so at startup instead
+  of failing on a missing setting. The Helm chart follows: with
+  `switchCore.oidc.passwordLoginEnabled: false` (and Mattermost off),
+  `secrets.gatewayAdminPassword` may be left empty, and the Secret key becomes
+  optional.
 - **Switch Trust notices about a person's own message reach only that
   person.** When someone's message is blocked, redacted, flagged or not fully
   checked, the notice used to be posted in the channel, where everyone could
@@ -140,6 +162,10 @@ version of their own to them without also giving them a release of their own.
   anything past that reaches agents unchecked, and the message carries a note
   saying the rest was not checked. switch-core now depends on `pypdf` to read
   PDFs.
+- **Logs no longer carry email addresses.** Signing up, creating a user,
+  creating or deleting an API key, seeding the admin account and finding two
+  accounts with the same address each logged the person's email. They now log
+  the user id. A test fails if a log call passes an email again.
 - **Counts and replies no longer name private rooms either.** Beyond the
   room listings below, a reference, document or package's attached-rooms count
   took in every room it was attached to, an agent's detail named every room
@@ -1017,6 +1043,12 @@ version of their own to them without also giving them a release of their own.
   through. Slack apps that list `/run-cmd` in their manifest keep showing it,
   answering "Unknown command", until an admin deletes it; Discord and Telegram
   drop it from their command lists by themselves (#730).
+- **The agent event stream and `POST /connection/beat`.** Agents connect over
+  the WebSocket at `/agents/{id}/connection/ws`, which Switch Console has used
+  since 0.39.0. A client still asking for the Server-Sent Events stream is
+  refused with 410 `transport_removed` and told to update, and agent-protocol
+  `accepts` rises to 8, so Consoles 0.38.2 and older can no longer connect
+  their agents (#673).
 - **Deleting your account now also clears workspaces you were removed from.**
   Removing a member leaves what they own in that workspace, and deleting their
   account afterwards failed on it. Those rows are now deleted or handed over as
@@ -2960,6 +2992,12 @@ version of their own to them without also giving them a release of their own.
   which cannot be given to another machine, and gives the workaround for a
   machine whose organization does not enforce the keyring: switch Codex to file
   storage, which keeps the login in plaintext, and sign in again (#1048).
+
+#### Removed
+- **The fallback to the agent event stream.** The agent runtime connects only
+  over the WebSocket, so it can no longer reach a Switch server older than the
+  socket (agent-protocol 7 and older), and it stops sending its own heartbeat
+  requests (#673).
 
 ### [0.40.1] - 2026-10-21
 

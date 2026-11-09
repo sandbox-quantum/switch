@@ -87,6 +87,7 @@ async def _patch(
         None,  # type: ignore[arg-type]  # bridge_store — unused before the gate
         None,  # type: ignore[arg-type]  # external_user_store
         None,  # type: ignore[arg-type]  # protocol
+        None,  # type: ignore[arg-type]  # decisions
         user,
         await _is_admin(session, user),
     )
