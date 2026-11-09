@@ -111,9 +111,14 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     queryFn: () => rpc.chats.workspaceMembers({ serverId, tenantId: tenantId as string }),
     enabled: tenantId !== null,
   });
+  // Only an admin files a room in a group; for anyone else it is made with none.
+  const administers = workspaceId !== null && administersWorkspaceById(workspaceId);
+  // A group's rules can admit an agent there and nowhere else, so the agents
+  // offered follow the group chosen.
+  const candidateGroupId = administers ? options.groupId : null;
   const allowedQuery = useQuery({
-    queryKey: ['chat-agent-candidates', serverId, workspaceId, null],
-    queryFn: () => rpc.chats.agentCandidates({ serverId, roomId: null }),
+    queryKey: ['chat-agent-candidates', serverId, workspaceId, null, candidateGroupId],
+    queryFn: () => rpc.chats.agentCandidates({ serverId, roomId: null, groupId: candidateGroupId }),
     enabled: serverId !== '',
   });
   const managedQuery = useManagedAgents(serverId || null);
@@ -183,8 +188,6 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   };
   // A choice the chosen app does not offer (a private channel on Teams, say)
   // falls back to a new public channel rather than being sent and refused.
-  const administers = workspaceId !== null && administersWorkspaceById(workspaceId);
-  // Only an admin files a room in a group; for anyone else it is made with none.
   const bridgeOptions = optionsForBridge(options, selectedBridge);
   const roomOptions = administers ? bridgeOptions : { ...bridgeOptions, groupId: null };
   const agentIds = shownPicked.filter((each) => each.kind === 'agent').map((each) => each.id);

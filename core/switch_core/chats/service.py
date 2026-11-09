@@ -1349,13 +1349,20 @@ class ChatService:
         return agent
 
     async def agent_candidates(
-        self, session: AsyncSession, tenant_id: str, user: User, room_id: str | None
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        user: User,
+        room_id: str | None,
+        new_group_id: str | None = None,
     ) -> list[str]:
         """The ids of the agents the user could add: to a new chat when
-        `room_id` is None, else to that room, which they must manage, less
-        the agents already in it. The rule `_require_may_use_agent` applies."""
+        `room_id` is None, filed in `new_group_id` if given, else to that
+        room, which they must manage, less the agents already in it. The rule
+        `_require_may_use_agent` applies."""
         self._require_group_chats()
-        target_room_id, group_id, present = "", None, set[str]()
+        target_room_id, present = "", set[str]()
+        group_id = new_group_id if room_id is None else None
         if room_id is not None:
             room = await self._room(session, tenant_id, room_id)
             await self._require_manager(session, tenant_id, user, room)

@@ -402,13 +402,16 @@ async def agent_candidates(
     user: CurrentUser,
     service: Service,
     room_id: Annotated[str | None, Query(alias="roomId")] = None,
+    group_id: Annotated[str | None, Query(alias="groupId")] = None,
 ) -> AgentCandidates:
-    """The agents the caller could add to a new chat, or with `roomId` to
-    that chat, which they must manage."""
+    """The agents the caller could add to a new chat, filed in `groupId` if
+    given, or with `roomId` to that chat, which they must manage."""
     tenant_id = require_tenant_id()
     async with tenant_session(service.session_factory, tenant_id) as session:
         return AgentCandidates(
-            agent_ids=await service.agent_candidates(session, tenant_id, user, room_id)
+            agent_ids=await service.agent_candidates(
+                session, tenant_id, user, room_id, new_group_id=group_id
+            )
         )
 
 

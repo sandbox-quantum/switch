@@ -461,4 +461,15 @@ describe('listAgentCandidates', () => {
       authenticated: true,
     });
   });
+
+  it('names the group a new chat will be filed in', async () => {
+    const server = { id: 'server-1' } as SwitchServer;
+    vi.mocked(gatewayFetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ agentIds: ['a1'] }), { status: 200 })
+    );
+    expect(await listAgentCandidates(server, null, 'g 1')).toEqual(['a1']);
+    expect(gatewayFetch).toHaveBeenCalledWith(server, '/chats/agent-candidates?groupId=g%201', {
+      authenticated: true,
+    });
+  });
 });

@@ -244,11 +244,18 @@ export async function listWorkspaceMembers(
 }
 
 /** The ids of the agents the viewer may add to a new chat (`roomId` null) or to that chat. */
+/** `groupId`: for a new chat, the group it will be filed in, whose rules then apply. */
 export async function listAgentCandidates(
   server: SwitchServer,
-  roomId: string | null
+  roomId: string | null,
+  groupId: string | null = null
 ): Promise<string[]> {
-  const query = roomId === null ? '' : `?roomId=${encodeURIComponent(roomId)}`;
+  const query =
+    roomId !== null
+      ? `?roomId=${encodeURIComponent(roomId)}`
+      : groupId !== null
+        ? `?groupId=${encodeURIComponent(groupId)}`
+        : '';
   return (await json(server, `/chats/agent-candidates${query}`, agentCandidatesSchema)).agentIds;
 }
 

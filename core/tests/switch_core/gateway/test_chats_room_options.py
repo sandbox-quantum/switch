@@ -171,3 +171,24 @@ async def test_the_settings_are_part_of_what_a_retry_must_repeat(
     changed = await _create(chats, chats.alice, agentIds=[agent.id], description="B")
     assert changed.status_code == 409
     assert _code(changed) == "REQUEST_REUSED"
+
+
+async def test_the_agents_offered_for_a_new_chat_follow_its_group(
+    chats: _Harness,
+) -> None:
+    group_id = await _group(chats)
+    agent = await chats.agent(
+        "grouped",
+        owner=chats.alice,
+        policy={"rules": [{"room_groups": [group_id], "users": "*"}]},
+    )
+
+    async def offered(query: str) -> list[str]:
+        response = await chats.client.get(
+            f"/chats/agent-candidates{query}", headers=chats.as_user(chats.admin)
+        )
+        assert response.status_code == 200, response.text
+        return list(response.json()["agentIds"])
+
+    assert agent.id not in await offered("")
+    assert agent.id in await offered(f"?groupId={group_id}")
