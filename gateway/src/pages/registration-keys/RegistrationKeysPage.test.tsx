@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiKeyDetail } from "../../data/api";
 import RegistrationKeysPage from "./RegistrationKeysPage";
@@ -55,5 +55,40 @@ describe("RegistrationKeysPage", () => {
     expect(leftover.getByRole("button", { name: "Delete deleted-helper" })).toBeTruthy();
 
     expect(within(screen.getByTestId("row-hidden")).queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("lists retired keys on their own, deletable only where the server allows", async () => {
+    serve([
+      key("mine", {}),
+      key("gone", {
+        type: "retired",
+        label: "server-connector:gone (retired)",
+        can_reveal: false,
+      }),
+      key("held", {
+        type: "retired",
+        label: "stranded (retired)",
+        can_reveal: false,
+        can_delete: false,
+      }),
+    ]);
+    render(<RegistrationKeysPage />);
+
+    expect(await screen.findByText("Retired keys")).toBeTruthy();
+    const gone = within(screen.getByTestId("row-gone"));
+    expect(gone.getAllByRole("button")).toHaveLength(1);
+    expect(gone.getByRole("button", { name: "Delete server-connector:gone (retired)" })).toBeTruthy();
+    expect(within(screen.getByTestId("row-held")).queryAllByRole("button")).toHaveLength(0);
+
+    fireEvent.click(gone.getByRole("button"));
+    expect(screen.getByText(/It no longer authenticates/)).toBeTruthy();
+  });
+
+  it("shows no retired section when nothing is retired", async () => {
+    serve([key("mine", {})]);
+    render(<RegistrationKeysPage />);
+
+    await screen.findByTestId("row-mine");
+    expect(screen.queryByText("Retired keys")).toBeNull();
   });
 });

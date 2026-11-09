@@ -68,10 +68,17 @@ export default function RegistrationKeysPage() {
   }, []);
 
   const registrationKeys = useMemo(
-    // Everything that isn't an agent's own key is a way to register more
-    // agents — a personal "registration" key or the deployment-wide
-    // "bootstrap" key seeded from AGENT_REGISTRATION_TOKEN.
-    () => keys?.filter((k) => k.type !== "agent") ?? [],
+    // Everything that isn't an agent's own key or a retired one is a way to
+    // register more agents — a personal "registration" key or the
+    // deployment-wide "bootstrap" key seeded from AGENT_REGISTRATION_TOKEN.
+    () => keys?.filter((k) => k.type !== "agent" && k.type !== "retired") ?? [],
+    [keys],
+  );
+
+  const retiredKeys = useMemo(
+    // Kept for a person to see and remove rather than deleted by the server.
+    // None of them authenticates any more.
+    () => keys?.filter((k) => k.type === "retired") ?? [],
     [keys],
   );
 
@@ -145,6 +152,48 @@ export default function RegistrationKeysPage() {
       },
     ],
     [copiedId, handleCopy],
+  );
+
+  const retiredColumns = useMemo<GridColDef<ApiKeyDetail>[]>(
+    () => [
+      { field: "label", headerName: "Label", flex: 1, minWidth: 200 },
+      {
+        field: "key_prefix",
+        headerName: "Key prefix",
+        width: 180,
+        renderCell: ({ value }) => (
+          <Typography component="span" sx={MONO_SX}>
+            {value}...
+          </Typography>
+        ),
+      },
+      {
+        field: "created_at",
+        headerName: "Created",
+        flex: 1,
+        minWidth: 140,
+        valueFormatter: (value) => formatDate(value as string),
+      },
+      {
+        field: "actions",
+        headerName: "",
+        width: 60,
+        sortable: false,
+        filterable: false,
+        // One an agent still holds goes once the agent is deleted.
+        renderCell: ({ row }) =>
+          row.can_delete && (
+            <IconButton
+              size="small"
+              onClick={() => setDeleteTarget(row)}
+              aria-label={`Delete ${row.label}`}
+            >
+              <DeleteOutline fontSize="small" />
+            </IconButton>
+          ),
+      },
+    ],
+    [],
   );
 
   const agentColumns = useMemo<GridColDef<ApiKeyDetail>[]>(
@@ -252,6 +301,29 @@ export default function RegistrationKeysPage() {
         </Box>
       )}
 
+      {!loading && retiredKeys.length > 0 && (
+        <>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600, mt: 3, mb: 1 }}>
+            Retired keys
+          </Typography>
+          <Box
+            sx={{
+              flexShrink: 0,
+              display: "flex",
+              flexDirection: "column",
+              height: Math.min(400, 108 + retiredKeys.length * 52),
+            }}
+          >
+            <DataTable
+              rows={retiredKeys}
+              columns={retiredColumns}
+              fillHeight
+              pageSize={10}
+            />
+          </Box>
+        </>
+      )}
+
       <Stack
         direction="row"
         alignItems="center"
@@ -303,7 +375,9 @@ export default function RegistrationKeysPage() {
             Are you sure you want to delete key &quot;{deleteTarget?.label}&quot;?{" "}
             {deleteTarget?.type === "agent"
               ? "Its agent has been deleted, so nothing signs in with it."
-              : "Agents using this key will no longer be able to register."}
+              : deleteTarget?.type === "retired"
+                ? "It no longer authenticates, so nothing depends on it."
+                : "Agents using this key will no longer be able to register."}
           </DialogContentText>
         </DialogContent>
         <DialogActions>

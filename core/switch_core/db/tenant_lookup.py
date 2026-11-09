@@ -161,7 +161,7 @@ those are, so each row is read with its own tenant bound. It discloses which
 workspaces a machine, and so its owner, belongs to: what `tenants_of_user`
 already discloses about the same person.
 
-**`tenants_bindable_by_user` is the fourteenth**, and `tenants_of_user`
+**`tenants_bindable_by_user` is the thirteenth**, and `tenants_of_user`
 widened to the organization above the workspace. An organization's
 `org_admin` administers every workspace in it, and may bind one without
 holding a membership row there, so resolving a request's workspace has to
@@ -171,13 +171,13 @@ two. It discloses which workspaces a person belongs to or administers
 through an organization; the gateway asks it only about the signed-in
 caller.
 
-**`all_organization_ids` is the fifteenth**, and `all_tenant_ids` one level
+**`all_organization_ids` is the fourteenth**, and `all_tenant_ids` one level
 up. A few tables belong to an organization rather than a workspace, and a
 boot pass over them (rewriting an organization's connector-app secrets under
 the current key) has to visit every organization, including one with no
 workspace to reach it through. It discloses which organizations exist.
 
-**`directory_organizations_of_user` is the sixteenth**, and the one that
+**`directory_organizations_of_user` is the fifteenth**, and the one that
 answers with organizations rather than workspaces. Under the WorkOS directory
 (`workos_directory.py`) a sign-in names the WorkOS organizations the person
 belongs to; which Switch organizations follow those, and which ones the
@@ -189,13 +189,13 @@ organization, and which linked organizations a person belongs to; the
 gateway asks it only about the signed-in person and the organizations WorkOS
 says they belong to.
 
-**`directory_organizations` is the seventeenth**: every organization that
+**`directory_organizations` is the sixteenth**: every organization that
 follows one in the WorkOS directory. The directory mirror acts for no tenant
 and no person: it reads the directory's changes and has to know which
 organizations they may reach before it binds any of them. It discloses which
 organizations are linked; the mirror is its only caller.
 
-**`tenants_of_organization` is the eighteenth**: the workspaces of one
+**`tenants_of_organization` is the seventeenth**: the workspaces of one
 organization. The platform operator may bind any workspace and holds no
 membership to narrow by, so listing an organization's workspaces for them, or
 reading what needs attention in each, would otherwise mean binding every
@@ -203,7 +203,7 @@ tenant on the server in turn to find the few that belong to it. It discloses
 which workspaces an organization has, what `all_tenant_ids` already
 discloses, narrowed; the gateway asks it only for the platform operator.
 
-**`tenants_with_pending_decisions` is the nineteenth**: the workspaces with
+**`tenants_with_pending_decisions` is the eighteenth**: the workspaces with
 a message waiting for the decision service (`pending_decisions`). Every
 process sweeps those messages every few seconds so that one whose process
 stopped is still decided; binding every tenant in turn to find the few with
