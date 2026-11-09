@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import (
+    ORGANIZATION_ADMIN_ROLE,
     TENANT_ADMIN_ROLES,
     administers_tenant,
     effective_tenant_role,
@@ -647,6 +648,26 @@ class UserStore:
             )
         )
         return [(row[0], row[1]) for row in result.all()]
+
+    async def count_people(self, session: AsyncSession, tenant: Tenant) -> int:
+        """How many people `tenant`'s roster lists: its members, and the
+        `org_admin`s of its organization who are not one, each once."""
+        members = select(TenantMember.user_id).where(
+            TenantMember.tenant_id == tenant.id
+        )
+        people = (
+            members
+            if tenant.organization_id is None
+            else members.union(
+                select(OrganizationMember.user_id).where(
+                    OrganizationMember.organization_id == tenant.organization_id,
+                    OrganizationMember.role == ORGANIZATION_ADMIN_ROLE,
+                )
+            )
+        )
+        return (
+            await session.scalar(select(func.count()).select_from(people.subquery()))
+        ) or 0
 
     async def count_admins(self, session: AsyncSession) -> int:
         """How many `admin` memberships the session's bound tenant has, locking
