@@ -67,6 +67,10 @@ function call(
     const req = request(`${base}${path}`, {
       method: options.method ?? 'POST',
       headers: { 'content-type': 'application/json', ...options.headers },
+      // A fresh connection for every call. With Node's shared keep-alive agent, a call could
+      // be sent on a socket the gateway had just closed after the last one, which under load
+      // (as in CI) surfaces as a one-off "socket hang up" rather than the answer under test.
+      agent: false,
     });
     req.on('response', (res) => {
       const chunks: Buffer[] = [];
