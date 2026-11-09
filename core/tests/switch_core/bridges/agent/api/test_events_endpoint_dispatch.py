@@ -602,10 +602,7 @@ class TestOpeningAStreamReportsASession:
         await _call(protocol, accept="text/event-stream", connection_id="c1")
         await service.aclose()
 
-        assert [r.name for r in sink.sent] == [
-            "switch_core.agent_session_started",
-            "switch_core.agent_connected",
-        ]
+        assert [r.name for r in sink.sent] == ["switch_core.agent_connected"]
 
     async def test_a_reattach_to_the_same_connection_is_not_another_start(
         self, db_buffer: EventBuffer
@@ -616,10 +613,7 @@ class TestOpeningAStreamReportsASession:
         await _call(protocol, accept="text/event-stream", connection_id="c1")
         await service.aclose()
 
-        assert [r.name for r in sink.sent] == [
-            "switch_core.agent_session_started",
-            "switch_core.agent_connected",
-        ]
+        assert [r.name for r in sink.sent] == ["switch_core.agent_connected"]
 
     async def test_a_refused_open_then_a_retry_is_one_start(
         self, db_buffer: EventBuffer
@@ -644,10 +638,7 @@ class TestOpeningAStreamReportsASession:
         )
         await service.aclose()
 
-        assert [r.name for r in sink.sent] == [
-            "switch_core.agent_session_started",
-            "switch_core.agent_connected",
-        ]
+        assert [r.name for r in sink.sent] == ["switch_core.agent_connected"]
 
     async def test_an_open_that_failed_after_registering_is_counted_on_retry(
         self, db_buffer: EventBuffer
@@ -674,10 +665,7 @@ class TestOpeningAStreamReportsASession:
         )
         await service.aclose()
 
-        assert [r.name for r in sink.sent] == [
-            "switch_core.agent_session_started",
-            "switch_core.agent_connected",
-        ]
+        assert [r.name for r in sink.sent] == ["switch_core.agent_connected"]
 
     async def test_closing_the_only_connection_ends_the_session(
         self, monkeypatch: pytest.MonkeyPatch, db_buffer: EventBuffer
@@ -693,8 +681,6 @@ class TestOpeningAStreamReportsASession:
         await service.aclose()
 
         assert [r.name for r in sink.sent] == [
-            "switch_core.agent_session_started",
             "switch_core.agent_connected",
-            "switch_core.agent_session_ended",
             "switch_core.agent_disconnected",
         ]

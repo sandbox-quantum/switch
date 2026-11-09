@@ -289,6 +289,26 @@ def emit_safely(
         )
 
 
+def emit_safely_at(
+    telemetry: TelemetryService | None,
+    event: str,
+    at: datetime,
+    properties: Mapping[str, EmittedValue],
+) -> None:
+    """`emit_safely`, dated `at`: for an event about a moment that has passed,
+    reported from a path that must not fail because of telemetry."""
+    if telemetry is None:
+        return
+    try:
+        telemetry.emit_at(event, at, **dict(properties))
+    except Exception:
+        logger.exception(
+            "Telemetry event %s could not be reported; continuing. This is a "
+            "bug in the event, not a relay problem.",
+            event,
+        )
+
+
 def emit_after_commit(
     session: AsyncSession,
     telemetry: TelemetryService | None,

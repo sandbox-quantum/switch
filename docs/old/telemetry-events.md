@@ -483,7 +483,7 @@ bridge relay or the admin client.
 **No count of sessions started.** Nothing durable records a session opening, so
 the snapshot could only report an in-process tally that a restart silently
 resets — a number that looks like a count and is not one.
-`agent_session_started` is emitted per occurrence instead.
+`session_started` is emitted per occurrence instead.
 
 The three `message_*_1d` figures come from the message table, which is
 deliberately a *parallel* record of the bus rather than the authoritative one: a
@@ -588,7 +588,7 @@ deployments installed after this ships — see
 | `first_room_created` | the first **user-created** room is created | `channel_type`, `bridge_platform` |
 | `first_room_active` | that room sees its first interaction; dated to the interaction, not to the snapshot pass that noticed it | `bridge_platform`, `seconds_since_room_created` |
 | `first_agent_registered` | the first agent registers | `known_agent_type` |
-| `first_session_started` | the first agent comes online: its first live connection. Superseded by `first_agent_connected`, the same moment; sent for one more stable release | `known_agent_type` |
+| `first_session_started` | no longer sent; released servers sent it for the first agent coming online, the moment `first_agent_connected` now reports | `known_agent_type` |
 | `first_agent_connected` | the first agent comes online | `known_agent_type` |
 | `first_agent_session` | a host reports the first coding-agent session (`session_started`): an agent doing work | `known_agent_type`, `start_source` |
 
@@ -749,17 +749,14 @@ that as `false` would misfile a lookup failure as a failed setup.
 | `registration_path` | `bootstrap` \| `personal_key` \| `gateway` \| `other` |
 | `has_parent` | boolean — a subagent rather than a top-level agent |
 
-**`agent_connected`** — `known_agent_type`, and **`agent_disconnected`** —
-the properties of `agent_session_ended` below. The same two events as
-`agent_session_started` and `agent_session_ended`, under names that say what
-they measure. Both pairs are sent for one more stable release.
-
-**`agent_session_started`** — `known_agent_type`. An agent *coming online*: its
+**`agent_connected`** — `known_agent_type`. An agent *coming online*: its
 first live connection, not a session a person began. Sessions share their
 agent's one connection, held by Switch Console or a remote host's sidecar, so
 this fires when that connection opens and not again when a session starts on
 it. Deliberately nothing about *how*: the server cannot tell, and a property
-that takes the same value on every emission cannot segment anything.
+that takes the same value on every emission cannot segment anything. Released
+servers sent it as `agent_session_started`. An agent run by an agent
+controller, which holds no connection of its own, does not send it.
 
 **`session_started`** — `start_source` (`user` \| `room` \| `automation` \|
 `unknown`), `known_agent_type`. A coding-agent session starting, reported once
@@ -778,12 +775,23 @@ retried report count once is a row in `telemetry_milestones`, pruned after 7
 days by the daily snapshot pass; a report retried later than that, whose first
 attempt did arrive, counts twice.
 
-**`agent_session_ended`** — `duration_seconds` (number), `reason` (`normal` \|
-`heartbeat_lapsed` \| `replaced` \| `room_claimed` \| `error`). No runtime: the
-connection registry is the only thing that knows a session ended and it holds
-none, the client's self-declared artifact is free text and may not be sent, and
-looking the agent up would put a query on the connection sweep. Session starts
-carry the runtime, so the mix is available from those.
+**`agent_disconnected`** — `duration_seconds` (number), `reason` (`normal` \|
+`heartbeat_lapsed` \| `replaced` \| `room_claimed` \| `error`). An agent going
+offline: its last connection closed and it did not come back within two
+minutes. It is dated to that last close, and `duration_seconds` runs from
+coming online to it, so the two minutes of waiting are in neither. `normal` is
+a close Switch made on purpose (the agent deleted, its key re-issued, the agent
+moved onto an agent controller, the controller revoked); `room_claimed` a
+stream closed because a room it declared could not be served to it; `replaced`
+another stream taking the connection over; `heartbeat_lapsed` a client that
+stopped beating; `error` a connection that could not be recorded. Released
+servers sent it as `agent_session_ended`, which reported every deliberate close
+as `error` and was dated, with its duration counted, to the end of the two
+minutes. No runtime: the connection registry is the only thing that
+knows a session ended and it holds none, the client's self-declared artifact is
+free text and may not be sent, and looking the agent up would put a query on
+the connection sweep. Starts carry the runtime, so the mix is available from
+those.
 
 The connection registry already records a reason on every close, which is where
 these values come from; the set is closed here so a new reason string added in
@@ -1186,14 +1194,13 @@ Two things to set up first, or a third of the list cannot fire at all:
 
 **Sessions** — `bridges/agent/api/handlers.py`, and the connection registry
 
-- `agent_session_started` and `agent_connected` — an agent opening its event
-  stream; both are sent. A supervisor reattaching to a connection it already
-  had correctly emits nothing.
-- `first_session_started` and `first_agent_connected` — the same, once ever.
-  On a deployment that claimed `first_session_started` before this release,
-  `first_agent_connected` is claimed at boot and never sent.
-- `agent_session_ended` and `agent_disconnected` — kill an agent and wait for
-  the heartbeat sweep (a few seconds). Reported through a listener on the
+- `agent_connected` — an agent opening its event stream. A supervisor
+  reattaching to a connection it already had correctly emits nothing.
+- `first_agent_connected` — the same, once ever. On a deployment that claimed
+  `first_session_started` before this release, it is claimed at boot and never
+  sent.
+- `agent_disconnected` — kill an agent and wait for the heartbeat sweep (a few
+  seconds) and then the two-minute grace. Reported through a listener on the
   registry, so every path that closes a connection reports, not just the sweep.
 - `session_started` — `POST /agent-sessions/{id}/started` from a session host
   (`bridges/agent/api/activity_routes.py`), with a UUID id. A repeat for the

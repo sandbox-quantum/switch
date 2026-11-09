@@ -420,10 +420,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         **_SINCE_INSTALL,
         "known_agent_type": KNOWN_AGENT_TYPE,
     },
-    # An agent's first live connection, which is all this ever measured.
-    # Superseded by `first_agent_connected`, the same moment under an honest
-    # name; kept for one stable release.
-    "first_session_started": {**_SINCE_INSTALL, "known_agent_type": KNOWN_AGENT_TYPE},
+    # An agent's first live connection. Released servers sent the same moment
+    # as `first_session_started`, which is still claimed but no longer sent.
     "first_agent_connected": {**_SINCE_INSTALL, "known_agent_type": KNOWN_AGENT_TYPE},
     # The first coding-agent session a host reported (`session_started`): an
     # agent doing work, not just coming online. A deployment that had already
@@ -498,9 +496,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # An agent coming online: its first live connection. No "start source": the
     # server sees an authenticated connection whether a person launched the
     # session or Console spawned it. `session_started` is the one that says.
-    # Superseded by `agent_connected`, the same event under a name that says
-    # what it is; kept for one stable release.
-    "agent_session_started": {"known_agent_type": KNOWN_AGENT_TYPE},
+    # Released servers sent it as `agent_session_started`.
     "agent_connected": {"known_agent_type": KNOWN_AGENT_TYPE},
     # A coding-agent session starting, as its host reports it once, when the
     # session is new. `start_source` is what the launcher stamped on it: `user`
@@ -513,15 +509,9 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "known_agent_type": KNOWN_AGENT_TYPE,
     },
     # No runtime: the connection registry is the only thing that knows a
-    # session ended and it holds none. Starts carry it.
-    # Superseded by `agent_disconnected`, the same event renamed; kept for one
-    # stable release.
-    "agent_session_ended": {
-        "duration_seconds": NUMBER,
-        "reason": one_of(
-            "normal", "heartbeat_lapsed", "replaced", "room_claimed", "error"
-        ),
-    },
+    # session ended and it holds none. Starts carry it. Dated to the last
+    # connection closing, not to the end of the grace that confirmed it.
+    # Released servers sent it as `agent_session_ended`.
     "agent_disconnected": {
         "duration_seconds": NUMBER,
         "reason": one_of(

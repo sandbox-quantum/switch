@@ -246,11 +246,10 @@ class TestTheFirstRealSession:
 
 
 class TestComingOnline:
-    async def test_the_first_connection_reports_both_names_once(
+    async def test_the_first_connection_reports_the_milestone_once(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Until `first_session_started` is retired, a new deployment reports the
-        moment under both names, and each only once."""
+        """Under its one name: `first_session_started` is no longer sent."""
         registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         service = _service(sink, session_factory)
@@ -282,4 +281,4 @@ class TestComingOnline:
             for record in sink.sent
             if record.name.removeprefix("switch_core.").startswith("first_")
         ]
-        assert milestones == ["first_session_started", "first_agent_connected"]
+        assert milestones == ["first_agent_connected"]

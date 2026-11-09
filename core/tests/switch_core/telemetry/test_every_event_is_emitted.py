@@ -32,10 +32,17 @@ def _emitted_names() -> set[str]:
     only in a comment, a docstring or a reason map does not count as an
     emitter. The shapes in the tree are `telemetry.emit("x", ...)`,
     `telemetry.emit_at("x", at, ...)`, `await telemetry.emit_milestone("x",
-    ...)`, `emit_safely(target, "x", {...})` and
-    `emit_after_commit(session, target, "x", {...})`.
+    ...)`, `emit_safely(target, "x", {...})`, `emit_safely_at(target, "x",
+    at, {...})` and `emit_after_commit(session, target, "x", {...})`.
     """
-    emitters = {"emit", "emit_at", "emit_milestone", "emit_safely", "emit_after_commit"}
+    emitters = {
+        "emit",
+        "emit_at",
+        "emit_milestone",
+        "emit_safely",
+        "emit_safely_at",
+        "emit_after_commit",
+    }
     found: set[str] = set()
     for path in _PACKAGE_ROOT.rglob("*.py"):
         if path == _CATALOGUE:
