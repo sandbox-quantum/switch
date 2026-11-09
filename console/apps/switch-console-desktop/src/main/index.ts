@@ -9,6 +9,7 @@ import dockIcon from '@/assets/images/switch-console/icon-dock.png?asset';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
 import { deeplinkFromArgv, flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
+import { linuxPasswordStoreFallback } from './app/linux-password-store';
 import { setupApplicationMenu } from './app/menu';
 import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
 import { LaunchesWhileQuitting } from './app/relaunch-on-quit';
@@ -77,6 +78,11 @@ const LOCAL_HOST_SHUTDOWN_MS = 5000;
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
+  const passwordStore = linuxPasswordStoreFallback(
+    process.env,
+    app.commandLine.hasSwitch('password-store')
+  );
+  if (passwordStore) app.commandLine.appendSwitch('password-store', passwordStore);
 }
 
 registerAppScheme();
