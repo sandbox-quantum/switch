@@ -448,14 +448,14 @@ export type TelemetryEventMap = {
     location: TelemetryLocationKind;
   };
   /**
-   * A session finished. `normal` is a session the user ended (deleted or
-   * archived); `failed` is one whose agent process died and could not be
-   * recovered. A session still running when the app quits reports neither.
+   * A session finished: deleted or archived here, or gone from its host when the
+   * app next looked. `outcome` is always `normal`. A session still running when
+   * the app quits reports nothing.
    */
   session_ended: {
     agent_type: TelemetryAgentType;
     location: TelemetryLocationKind;
-    outcome: 'normal' | 'failed';
+    outcome: 'normal';
   };
   /**
    * A server was added to this install.
@@ -591,17 +591,6 @@ export type TelemetryEventMap = {
   session_reopened: {
     agent_type: TelemetryAgentType;
     location: TelemetryLocationKind;
-    outcome: TelemetryOutcome;
-  };
-  /**
-   * A remote session's terminal was attached, or could not be.
-   *
-   * Reported only for an attach a person waited on. A transport drop cancels
-   * every queued attach at once, which is one failure rather than a host's
-   * worth, so a cancelled attach is not reported as one.
-   */
-  session_attached: {
-    agent_type: TelemetryAgentType;
     outcome: TelemetryOutcome;
   };
   /**
@@ -859,7 +848,6 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   buddy_step: ['action', 'provider'],
   renderer_crashed: [],
   telemetry_consent_changed: ['source', 'install_kind'],
-  session_attached: ['agent_type', 'outcome'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };
 
 /**

@@ -306,7 +306,7 @@ describe('the payload', () => {
     await telemetryService.track('session_ended', {
       agent_type: 'codex',
       location: 'remote',
-      outcome: 'failed',
+      outcome: 'normal',
     });
 
     expect(Object.keys(sentResource()).sort()).toEqual([

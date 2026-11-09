@@ -117,7 +117,7 @@ describe('the record that gets built', () => {
   it('carries the catalogued properties, plus which build sent it', () => {
     const payload = buildOtlpPayload(
       'session_ended',
-      { agent_type: 'codex', location: 'remote', outcome: 'failed' },
+      { agent_type: 'codex', location: 'remote', outcome: 'normal' },
       CONTEXT
     );
 
@@ -125,7 +125,7 @@ describe('the record that gets built', () => {
       'event.name': 'switch_console.session_ended',
       agent_type: 'codex',
       location: 'remote',
-      outcome: 'failed',
+      outcome: 'normal',
       build: 'stable',
       'flint.insert_id': expect.stringMatching(UUID),
     });
@@ -177,7 +177,7 @@ describe('the record that gets built', () => {
     const smuggled = {
       agent_type: 'codex',
       location: 'remote',
-      outcome: 'failed',
+      outcome: 'normal',
       working_dir: '/Users/someone/secret-project',
     } as never;
 

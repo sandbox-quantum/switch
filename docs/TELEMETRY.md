@@ -93,7 +93,7 @@ id, no IP field, no Switch identity.
 
 | Field | Complete set of possible values |
 |---|---|
-| `outcome` | `success`, `failure` (on `session_ended`: `normal`, `failed`; on `bridge_identity_claimed`, also `pending`) |
+| `outcome` | `success`, `failure` (on `session_ended`, always `normal`; on `update_install_started`, always `failure`; on `bridge_identity_claimed`, also `pending`) |
 | `agent_type` | the AI provider, from a fixed registry: `claude`, `codex`, `gemini`, `cursor`, `copilot`, `opencode`, `grok`, `devin`, `qwen`, `droid`, `amp`, `goose`, `cline`, `continue`, `mistral`, `kiro`, `junie`, … and `unknown`. **Never an agent's name.** |
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
 | `server_kind` | `local`, `remote_managed`, `external`, `cloud` (Switch Cloud, the server this build offers by name), `unknown` (a server added by address while this build's own Switch Cloud address cannot be read). **Never a server name or URL.** |
@@ -140,8 +140,7 @@ id, no IP field, no Switch identity.
 | `agent_cli_action` | `agent_type` · `target`: `local` / `remote` · `install_method`: `homebrew` / `npm` / `winget` / `powershell` / `apt` / `curl` / `pip` / `cargo` / `installer-macos` / `installer-windows` / `installer-linux` / `other` / `unspecified` · `action`: `install` / `update` / `uninstall` · `outcome` · `failure_reason`: `none` / `unknown_dependency` / `no_install_command` / `no_update_strategy` / `no_uninstall_strategy` / `no_uninstall_command` / `permission_denied` / `command_failed` / `process_open_failed` / `not_detected_after_install` / `not_detected_after_update` / `still_present` / `error` · `duration_ms`: `8421` |
 | `session_started` | `agent_type`: `claude` · `location`: `local` · `outcome`: `success` · `failure_reason`: `none` / `agent_not_found` / `already_exists` / `spawn_failed` · `entry_point`: `command_palette` · `start_source`: `user` / `auto` (the app's local automation API) / `unknown` · `has_initial_prompt`: `true` (**a boolean — never the prompt**) · `connected_to_room`: `false` |
 | `session_discovered` | `agent_type` · `location` — a session this app found running on a host and took on, rather than started: one started in a room, say, or from another computer |
-| `session_ended` | `agent_type` · `location` · `outcome`: `normal` / `failed` |
-| `session_attached` | `agent_type` · `outcome` |
+| `session_ended` | `agent_type` · `location` · `outcome`: `normal` — a session deleted or archived here, or gone from its host when the app next looked |
 | `session_provision_retried` | `agent_type` · `location` · `trigger`: `retry_button` (Retry pressed) / `session_click` (the session clicked in the sidebar or a session list) · `outcome` — someone asked for a session that was not running to be set up again |
 | `session_reopened` | `agent_type` · `location` · `outcome` — the app set a session up again on its own, typically the one a launch resumes on |
 

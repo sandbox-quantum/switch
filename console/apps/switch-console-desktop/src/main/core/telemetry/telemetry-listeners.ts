@@ -5,7 +5,7 @@ import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { agentTypeOf } from './agent-type';
-import type { TelemetryEventMap, TelemetryLocationKind } from './events';
+import type { TelemetryLocationKind } from './events';
 import { entryPointOf, startSourceOf } from './narrow';
 import { locationKindOf } from './shape';
 import { trackEvent } from './telemetry-service';
@@ -45,7 +45,7 @@ function rememberEnded(sessionId: string): void {
   if (!oldest.done) endedSessions.delete(oldest.value);
 }
 
-function endSession(sessionId: string, outcome: TelemetryEventMap['session_ended']['outcome']) {
+function endSession(sessionId: string) {
   const shape = liveSessions.get(sessionId) ?? UNKNOWN_SESSION;
   // Forget it either way. A second ending reports nothing, but it must still
   // clear the entry, or a session that ends twice stays in the map for good.
@@ -53,7 +53,7 @@ function endSession(sessionId: string, outcome: TelemetryEventMap['session_ended
 
   if (endedSessions.has(sessionId)) return;
   rememberEnded(sessionId);
-  trackEvent('session_ended', { ...shape, outcome });
+  trackEvent('session_ended', { ...shape, outcome: 'normal' });
 }
 
 /**
@@ -158,8 +158,8 @@ export function registerTelemetryListeners(): void {
     await rememberSession(sessionId, result.locationId);
   });
 
-  sessionService.on('session:deleted', (sessionId) => endSession(sessionId, 'normal'));
-  sessionService.on('session:archived', (sessionId) => endSession(sessionId, 'normal'));
+  sessionService.on('session:deleted', (sessionId) => endSession(sessionId));
+  sessionService.on('session:archived', (sessionId) => endSession(sessionId));
 
   // Un-archiving puts a session that has already reported an end back into use.
   // Forgetting that it ended is what lets it report the next one: the record is
@@ -173,5 +173,5 @@ export function registerTelemetryListeners(): void {
   // reconciler pruning a session that has gone from its VM, or one terminated
   // from another client — arrive on the other bus. Subscribing to only one
   // leaves those sessions reporting a start and never an end.
-  sessionHooks.on('session:deleted', (sessionId) => endSession(sessionId, 'normal'));
+  sessionHooks.on('session:deleted', (sessionId) => endSession(sessionId));
 }
