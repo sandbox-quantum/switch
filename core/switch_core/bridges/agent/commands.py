@@ -62,9 +62,13 @@ from switch_core.decision.room import (
     set_auto_route_fallback,
     set_auto_route_on,
 )
-from switch_core.delivery.addressing import AddressingResolver
+from switch_core.delivery.addressing import (
+    ADDRESSING_UNCLAIMED_MESSAGE,
+    AddressingResolver,
+)
 from switch_core.events import CommandEvent
 from switch_core.platform_access import administers_on_record
+from switch_core.room_invites import not_addressable_refusal
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -1422,6 +1426,22 @@ async def _cmd_invite(
                 event,
                 f"**{agent_label_with_identifier(target.display_name, target.name)}** is already in this room.",
             )
+            return
+        # The invite rule every path shares (`room_invites`): whoever posts
+        # here is in the room, linked chat account or not, so what is left is
+        # whether they may address the agent. An unlinked poster passes only
+        # an agent anyone may address.
+        decision = await _command_resolver(cast("CommandConsumer", client)).permitted(
+            session, agent=target, room_id=meta.room_id, sender=event.user_id
+        )
+        if not decision.allowed:
+            refusal = not_addressable_refusal(target)
+            if decision.refusal == ADDRESSING_UNCLAIMED_MESSAGE:
+                refusal += (
+                    " If it's yours, this chat account isn't linked to your "
+                    "Switch user yet: link it in Switch Console and try again."
+                )
+            await _reply(client, room, event, refusal)
             return
 
     # `invite-agent` is admin-owned, so only the always-present admin client
