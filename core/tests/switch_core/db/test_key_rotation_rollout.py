@@ -8,6 +8,7 @@ under that key would be unreadable to the other.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import pytest
@@ -44,6 +45,7 @@ async def _running(
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=key_ids,
+        monotonic=time.monotonic,
     )
     await lease.renew()
     return lease

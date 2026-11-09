@@ -136,6 +136,7 @@ async def _start_process(postgres_url: str, session_factory: SessionFactory) -> 
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in TEST_KEYRING.keys],
+        monotonic=time.monotonic,
     )
     registry = AgentConnectionRegistry()
     shared = SharedConnections(
@@ -1083,6 +1084,7 @@ class TestStartingUp:
                 session_factory=session_factory,
                 processes=SwitchCoreProcessStore(),
                 key_ids=[key.id for key in TEST_KEYRING.keys],
+                monotonic=time.monotonic,
             ),
         )
 

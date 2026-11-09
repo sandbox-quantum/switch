@@ -2736,9 +2736,15 @@ it.each([{ startsOn: true }, { startsOn: false }])(
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await fc.assert(
       fc.asyncProperty(steps, async (run: Step[]) => {
+        // What `afterEach` clears between tests, cleared between runs too: all
+        // of a property's runs, and its shrinking replays, are one test.
         streams.length = 0;
         declarations.length = 0;
         published.length = 0;
+        supervisors.clear();
+        placementsRefusal.error = null;
+        placementsRefusal.refusedRooms = [];
+        grantsNow.shape = null;
         vi.mocked(ensureSharedProcess).mockReset();
         const root = await mkdtemp(join(tmpdir(), 'shared-watch-property-'));
         roots.push(root);

@@ -195,6 +195,7 @@ def _fuzz(
         ),
         "SCHEMATHESIS_HOOKS": "properties.http.hooks",
         "SWITCH_STATUS_COUNTS": str(counts),
+        "SWITCH_LEAK_LOG": str(work / f"{label}-leaks.txt"),
     }
     if foreign_ids is not None:
         env["SWITCH_FOREIGN_IDS"] = str(foreign_ids)
@@ -245,6 +246,8 @@ def _fuzz(
     LOGS.mkdir(parents=True, exist_ok=True)
     (LOGS / f"{label}.txt").write_text(said)
     statuses = json.loads(counts.read_text()) if counts.exists() else {}
+    leaks = work / f"{label}-leaks.txt"
+    said += f"\nleaks recorded by the check: {leaks.read_text() if leaks.exists() else 'none'}"
     return ran.returncode, said, statuses
 
 
@@ -352,7 +355,9 @@ async def test_the_gateway_survives_fuzzing_and_keeps_workspaces_apart(
     print(report)
 
     # The leak first: a failure of the other run must not hide it.
-    assert "`no_foreign_ids`" not in asked_said, report
+    assert "leaks recorded by the check: none" in asked_said, (
+        report + asked_said[asked_said.rfind("leaks recorded") :]
+    )
     if os.environ.get("SCHEMATHESIS_BASELINE_UPDATE"):
         recorded = json.loads(BASELINE.read_text())
         leaks = [e for e in recorded["entries"] if e["check"] == "no_foreign_ids"]

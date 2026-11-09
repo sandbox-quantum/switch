@@ -279,7 +279,12 @@ def no_silent_loss(history: History) -> list[str]:
 def erasure_complete(history: History) -> list[str]:
     """After an erasure is done, no identity it names is left, and no message
     from a sender it names was sent before it finished (a member client may send
-    again afterwards: the client stays)."""
+    again afterwards: the client stays).
+
+    A member client and a former sender are named by what their messages still
+    carry. A platform person is named only by an `external_users` row, which the
+    erasure deletes with their messages' transport id, so what is checked for
+    them is that the row is gone; their messages cannot be found afterwards."""
     found = [
         f"external user {user} is still there after the erasure that named it"
         for user in sorted(history.external_users_left)

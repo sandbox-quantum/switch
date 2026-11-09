@@ -5,6 +5,7 @@ switch-core process beside it for the tests across processes."""
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -405,6 +406,7 @@ def _process(
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in TEST_KEYRING.keys],
+        monotonic=time.monotonic,
     )
     return _Process(
         service=service,

@@ -19,6 +19,7 @@ import contextlib
 import importlib.util
 import json
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -299,6 +300,7 @@ def _management(
             session_factory=session_factory,
             processes=SwitchCoreProcessStore(),
             key_ids=[key.id for key in settings.keyring.keys],
+            monotonic=time.monotonic,
         ),
         user_changes=SignalUserChanges(local=LocalUserChanges(), bus=signal_bus),
     )

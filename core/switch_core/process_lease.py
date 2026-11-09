@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -117,7 +116,7 @@ class ProcessLease:
         session_factory: async_sessionmaker[AsyncSession],
         processes: SwitchCoreProcessStore,
         key_ids: list[str],
-        monotonic: Callable[[], float] = time.monotonic,
+        monotonic: Callable[[], float],
     ) -> None:
         self.process_id = process_id
         # This process's monotonic clock, the one `held_until` is on; a test

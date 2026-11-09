@@ -771,6 +771,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in config.keyring.keys],
+        monotonic=time.monotonic,
     )
     await process_lease.renew()
     logger.info("Claimed switch-core process lease %s", process_id)

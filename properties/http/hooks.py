@@ -32,6 +32,9 @@ from hypothesis import strategies as st
 
 _FILE = os.environ.get("SWITCH_FOREIGN_IDS")
 FOREIGN_IDS: list[str] = json.loads(Path(_FILE).read_text()) if _FILE else []
+# Where a leak is written down, so the test that ran the CLI need not read it
+# out of the CLI's output.
+LEAK_LOG = os.environ.get("SWITCH_LEAK_LOG")
 
 STATUSES: Counter[str] = Counter()
 
@@ -134,7 +137,7 @@ def no_foreign_ids(
     asked = json.dumps(
         [case.path_parameters, case.query, case.body, case.headers], default=str
     )
-    named_in_path = json.dumps(case.path_parameters, default=str)
+    named_in_path = json.dumps([case.path_parameters, case.query], default=str)
     read_succeeded = case.method.upper() == "GET" and 200 <= response.status_code < 300
     found = sorted(
         foreign
@@ -143,6 +146,9 @@ def no_foreign_ids(
         and (foreign not in asked or (read_succeeded and foreign in named_in_path))
     )
     if found:
+        if LEAK_LOG:
+            with open(LEAK_LOG, "a", encoding="utf-8") as log:
+                log.write(f"{case.method} {case.formatted_path}: {found[:5]}\n")
         raise AssertionError(
             f"the {response.status_code} response to {case.method} "
             f"{case.formatted_path} names another workspace's id(s): "

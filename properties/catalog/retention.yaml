@@ -9,3 +9,9 @@ properties:
     status: proposed
     gaps:
       code: core's erasure tests are not tagged for the gate yet
+    notes: >
+      The system checker covers member clients and former senders. The fast
+      lane erases a member client, never a platform person, and a platform
+      person's messages cannot be named once the erasure has deleted their
+      identity row, so for them the history check sees only that the row is
+      gone. Closing that needs the transport ids recorded before the erasure.

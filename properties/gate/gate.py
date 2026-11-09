@@ -88,7 +88,7 @@ QUINT_DOC = re.compile(
 QUINT_TAG = re.compile(r"^[ \t]*///[ \t]*@property[ \t]+(?P<id>\S+)", re.MULTILINE)
 QUINT_NAME = re.compile(rf"^[ \t]*{QUINT_DEFINITION}", re.MULTILINE)
 TS_DOC_COMMENT = re.compile(
-    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*(?:export\s+(?:default\s+)?(?:async\s+)?(?:const|let|function\*?|class|interface|type|enum)\s+(?P<name>\w+))?",
+    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*(?:export\s+(?:default\s+)?(?:async\s+)?(?:const|let|function\*?)\s+(?P<name>\w+))?",
     re.DOTALL,
 )
 TS_TEST_DOC = re.compile(
@@ -97,7 +97,11 @@ TS_TEST_DOC = re.compile(
     r"(?:\((?:(?!\n[ \t]*\n).)*?\)\(|\()\s*(?P<quote>['\"`])(?P<title>.*?)(?P=quote)",
     re.DOTALL,
 )
-TS_NOT_RUN = {"skip", "todo", "skipIf", "fails"}
+TS_NOT_RUN = {"skip", "todo", "skipIf", "runIf", "fails"}
+TS_DESCRIBE_DOC = re.compile(
+    r"/\*\*(?P<body>(?:(?!\*/).)*)\*/\s*describe(?:\.[A-Za-z]+(?:\([^()\n]*\))?)*\(\s*['\"`](?P<title>.*?)['\"`]",
+    re.DOTALL,
+)
 TS_TAG = re.compile(r"^\s*\*\s*@property\s+(?P<id>[^\s{]\S*)", re.MULTILINE)
 
 NOT_RUN = {"pytest.mark.skip", "pytest.mark.xfail"}
@@ -386,7 +390,9 @@ def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
     for path in sorted(root.glob(VITEST_GLOB)):
         label = path.relative_to(root).as_posix()
         for comment in TS_TEST_DOC.finditer(path.read_text(encoding="utf-8")):
-            skipped = TS_NOT_RUN & set(re.sub(r"\([^()]*\)", "", comment["fn"]).split(".")[1:])
+            skipped = TS_NOT_RUN & set(
+                re.sub(r"\([^()]*\)", "", comment["fn"]).split(".")[1:]
+            )
             for tag in TS_TAG.finditer(comment["body"]):
                 if skipped:
                     problems.append(
@@ -394,6 +400,12 @@ def find_tags(root: Path) -> tuple[dict[str, list[Tag]], list[str]]:
                     )
                 else:
                     found[tag["id"]].append(Tag("code", label, comment["title"]))
+        for comment in TS_DESCRIBE_DOC.finditer(path.read_text(encoding="utf-8")):
+            for tag in TS_TAG.finditer(comment["body"]):
+                problems.append(
+                    f"{label}: tag for {tag['id']} is above describe({comment['title']!r}), "
+                    "not above a test"
+                )
     return found, problems
 
 

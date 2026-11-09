@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -251,6 +252,7 @@ def build_harness(
             session_factory=session_factory,
             processes=SwitchCoreProcessStore(),
             key_ids=[key.id for key in TEST_KEYRING.keys],
+            monotonic=time.monotonic,
         ),
         user_changes=SignalUserChanges(local=user_changes, bus=signal_bus),
     )

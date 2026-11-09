@@ -48,7 +48,6 @@ import asyncio
 import contextlib
 import hashlib
 import logging
-import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -432,7 +431,7 @@ class Ownership:
                 await kind._balance(live)
 
     async def _prune_now_and_then(self) -> None:
-        now = time.monotonic()
+        now = self._lease.monotonic()
         if self._pruned_at is not None and now - self._pruned_at < PRUNE_EVERY_SECONDS:
             return
         self._pruned_at = now
