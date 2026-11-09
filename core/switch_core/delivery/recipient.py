@@ -59,7 +59,7 @@ from switch_core.clients.admin_messages import (
     platform_replies_in_channel,
 )
 from switch_core.clients.mentions import (
-    NAME_CHAR as _NAME_CHAR,
+    mention_pattern as _mention_pattern,
 )
 from switch_core.clients.mentions import (
     mention_regex as _mention_regex,
@@ -1940,7 +1940,7 @@ class AgentRecipient:
 
     def _strip_mention(self, text: str) -> str:
         pattern = re.compile(
-            re.escape(f"@{self.agent.name}") + rf"(?!{_NAME_CHAR}):?",
+            _mention_pattern(self.agent.name) + ":?",
             re.IGNORECASE,
         )
         return pattern.sub("", text).strip()
