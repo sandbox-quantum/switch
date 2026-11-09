@@ -840,6 +840,9 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **`!list-documents` and `!list-references` answer again.** Since they began
+  listing what a room's packages bring, both failed on the admin client that
+  runs them, and the channel got no answer at all.
 - **The dashboard's addressing policy editor judges rules as the server
   does.** A rule letting in only the agent's owner, or its owner's agents,
   was taken for one that lets in nobody, and Save was held; the editor now
