@@ -90,7 +90,13 @@ describe('agent_created', () => {
   it('reports where the agent runs', async () => {
     onLocation('remote');
 
-    await emit('agents', 'agent:created', { providerId: 'codex', locationId: 'loc' }, 'sidebar');
+    await emit(
+      'agents',
+      'agent:created',
+      { providerId: 'codex', locationId: 'loc' },
+      'sidebar',
+      'created'
+    );
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
       agent_type: 'codex',
@@ -104,7 +110,13 @@ describe('agent_created', () => {
   it('says unknown rather than guessing when the location has gone', async () => {
     onLocation('missing');
 
-    await emit('agents', 'agent:created', { providerId: 'codex', locationId: 'gone' }, 'sidebar');
+    await emit(
+      'agents',
+      'agent:created',
+      { providerId: 'codex', locationId: 'gone' },
+      'sidebar',
+      'created'
+    );
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
       agent_type: 'codex',
@@ -124,7 +136,8 @@ describe('agent_created', () => {
       'agents',
       'agent:created',
       { providerId: '/Users/someone/custom-agent', locationId: 'loc' },
-      'sidebar'
+      'sidebar',
+      'created'
     );
 
     expect(trackEvent).toHaveBeenCalledWith('agent_created', {
@@ -134,6 +147,32 @@ describe('agent_created', () => {
       failure_reason: 'none',
       entry_point: 'sidebar',
     });
+  });
+});
+
+describe('an agent that was not created here', () => {
+  it('is reported as attached, or as an adopted subagent, never as created', async () => {
+    onLocation('remote');
+
+    await emit(
+      'agents',
+      'agent:created',
+      { providerId: 'codex', locationId: 'loc' },
+      'unknown',
+      'attached'
+    );
+    await emit(
+      'agents',
+      'agent:created',
+      { providerId: 'claude', locationId: 'loc' },
+      'unknown',
+      'adopted'
+    );
+
+    expect(vi.mocked(trackEvent).mock.calls).toEqual([
+      ['agent_attached', { agent_type: 'codex', location: 'remote' }],
+      ['subagent_adopted', { agent_type: 'claude', location: 'remote' }],
+    ]);
   });
 });
 
@@ -166,6 +205,26 @@ describe('a session started in a room', () => {
       connected_to_room: true,
     });
     expect(JSON.stringify(vi.mocked(trackEvent).mock.calls)).not.toContain('alpha');
+  });
+});
+
+describe('a session the app adopted rather than started', () => {
+  it('is reported as discovered, never as a start, and still ends', async () => {
+    onLocation('remote');
+    vi.mocked(getAgentById).mockResolvedValue({ id: 'agent', locationId: 'loc' } as never);
+
+    await emit(
+      'sessionService',
+      'session:created',
+      { id: 's-adopted', agentId: 'agent', providerId: 'codex' },
+      { id: 's-adopted', agentId: 'agent', title: 'Shared session', startSource: 'adopted' }
+    );
+    await emit('sessionService', 'session:deleted', 's-adopted');
+
+    expect(vi.mocked(trackEvent).mock.calls).toEqual([
+      ['session_discovered', { agent_type: 'codex', location: 'remote' }],
+      ['session_ended', { agent_type: 'codex', location: 'remote', outcome: 'normal' }],
+    ]);
   });
 });
 

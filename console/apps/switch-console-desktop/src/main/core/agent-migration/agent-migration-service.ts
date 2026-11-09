@@ -1,3 +1,4 @@
+import type { TelemetryAgentPruneCause } from '@main/core/telemetry/events';
 import type {
   AgentMigrationEvent,
   AgentMigrationState,
@@ -160,10 +161,10 @@ export type AgentMigrationDeps = {
     /** Somebody stopped this agent's watcher by hand. */
     stoppedByHand(agentId: string): Promise<boolean>;
     /**
-     * Removes an agent its server has deleted from this Console. Only the
-     * Console's row: files on its machine are left where they are.
+     * Removes an agent its server has deleted from this Console, saying why.
+     * Only the Console's row: files on its machine are left where they are.
      */
-    forget(agentId: string): Promise<void>;
+    forget(agentId: string, cause: TelemetryAgentPruneCause): Promise<void>;
   };
   definitions: {
     build(agent: MigrationAgent): Promise<BuiltDefinition>;
@@ -361,7 +362,7 @@ export class AgentMigrationService {
   async forgetDeleted(serverId: string, switchAgentId: string): Promise<void> {
     for (const agent of await this.deps.agents.list())
       if (agent.serverId === serverId && agent.switchAgentId === switchAgentId)
-        await this.forgetGone(agent, `gone:${agent.id}`, this.deps.now());
+        await this.forgetGone(agent, `gone:${agent.id}`, this.deps.now(), 'managed_agent_deleted');
   }
 
   /** Why each agent the last automatic passes could not move did not, by agent. */
@@ -452,7 +453,7 @@ export class AgentMigrationService {
         this.leftAlone.delete(agent.id);
         this.unasked.delete(agent.id);
         if (await this.deletedOnServer(agent, now)) {
-          await this.forgetGone(agent, `gone:${agent.id}`, now);
+          await this.forgetGone(agent, `gone:${agent.id}`, now, 'gone_from_server');
           continue;
         }
         candidates.push(agent);
@@ -480,7 +481,7 @@ export class AgentMigrationService {
       if (eligibility.gone) {
         // Deleted on its server: there is nothing to move it to and no way back,
         // and listing it here (and under Legacy) only keeps asking about it.
-        await this.forgetGone(agent, `ask:${agent.id}`, now);
+        await this.forgetGone(agent, `ask:${agent.id}`, now, 'gone_from_server');
         continue;
       }
       if (!eligibility.management || !eligibility.ownedByMe) {
@@ -948,13 +949,18 @@ export class AgentMigrationService {
     return false;
   }
 
-  private async forgetGone(agent: MigrationAgent, retryKey: string, now: number): Promise<void> {
+  private async forgetGone(
+    agent: MigrationAgent,
+    retryKey: string,
+    now: number,
+    cause: TelemetryAgentPruneCause
+  ): Promise<void> {
     this.deps.log.warn('Removing an agent its server no longer has', {
       agentId: agent.id,
       switchAgentId: agent.switchAgentId,
     });
     try {
-      await this.deps.agents.forget(agent.id);
+      await this.deps.agents.forget(agent.id, cause);
       this.retryAt.delete(retryKey);
     } catch (error) {
       this.deps.log.error('Could not remove an agent its server no longer has', {

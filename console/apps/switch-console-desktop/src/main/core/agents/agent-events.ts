@@ -3,12 +3,23 @@ import { log } from '@main/lib/logger';
 import type { Agent } from '@shared/core/agents/agents';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 
+/**
+ * How an agent came to be in this app, for reporting: `created` here by a
+ * person, `attached` when a person loaded one already set up in a directory,
+ * or `adopted` when one of its agents' sessions spawned it as a subagent.
+ */
+export type AgentOrigin = 'created' | 'attached' | 'adopted';
+
 export type AgentCrudHooks = {
   /**
    * `entryPoint` is where the user started from, for reporting. Creators with
    * no user behind them pass `'unknown'` rather than inventing one.
    */
-  'agent:created': (agent: Agent, entryPoint: UiEntryPoint) => void | Promise<void>;
+  'agent:created': (
+    agent: Agent,
+    entryPoint: UiEntryPoint,
+    origin: AgentOrigin
+  ) => void | Promise<void>;
   'agent:updated': (agent: Agent) => void | Promise<void>;
   'agent:deleted': (agentId: string) => void | Promise<void>;
 };

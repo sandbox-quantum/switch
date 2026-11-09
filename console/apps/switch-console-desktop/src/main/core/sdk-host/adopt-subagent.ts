@@ -59,6 +59,6 @@ export async function adoptSubagent(
     ownerName: remote.ownerName,
     providerConfig: parent.providerConfig,
   });
-  agentEvents._emit('agent:created', agent, 'unknown');
+  agentEvents._emit('agent:created', agent, 'unknown', 'adopted');
   remoteSessionReconciler.start(agent.id);
 }

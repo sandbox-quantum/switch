@@ -5,7 +5,7 @@ import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { agentTypeOf } from './agent-type';
-import type { TelemetryEventMap, TelemetryLocationKind } from './events';
+import type { TelemetryLocationKind } from './events';
 import { entryPointOf, startSourceOf } from './narrow';
 import { locationKindOf } from './shape';
 import { trackEvent } from './telemetry-service';
@@ -45,7 +45,7 @@ function rememberEnded(sessionId: string): void {
   if (!oldest.done) endedSessions.delete(oldest.value);
 }
 
-function endSession(sessionId: string, outcome: TelemetryEventMap['session_ended']['outcome']) {
+function endSession(sessionId: string) {
   const shape = liveSessions.get(sessionId) ?? UNKNOWN_SESSION;
   // Forget it either way. A second ending reports nothing, but it must still
   // clear the entry, or a session that ends twice stays in the map for good.
@@ -53,7 +53,7 @@ function endSession(sessionId: string, outcome: TelemetryEventMap['session_ended
 
   if (endedSessions.has(sessionId)) return;
   rememberEnded(sessionId);
-  trackEvent('session_ended', { ...shape, outcome });
+  trackEvent('session_ended', { ...shape, outcome: 'normal' });
 }
 
 /**
@@ -88,7 +88,7 @@ async function rememberSession(sessionId: string, locationId: string): Promise<v
 }
 
 /**
- * Subscribe the telemetry emitter to the six product moments it reports.
+ * Subscribe the telemetry emitter to the product moments it reports.
  *
  * Deliberately one place rather than a `trackEvent` sprinkled through each
  * domain: what the app reports about itself should be readable in a single
@@ -97,10 +97,21 @@ async function rememberSession(sessionId: string, locationId: string): Promise<v
  * `trackEvent` at their own site.
  */
 export function registerTelemetryListeners(): void {
-  agentEvents.on('agent:created', async (agent, entryPoint) => {
-    trackEvent('agent_created', {
+  agentEvents.on('agent:created', async (agent, entryPoint, origin) => {
+    const shape = {
       agent_type: agentTypeOf(agent.providerId),
       location: await locationKindOf(agent.locationId),
+    };
+    if (origin === 'attached') {
+      trackEvent('agent_attached', shape);
+      return;
+    }
+    if (origin === 'adopted') {
+      trackEvent('subagent_adopted', shape);
+      return;
+    }
+    trackEvent('agent_created', {
+      ...shape,
       outcome: 'success',
       failure_reason: 'none',
       entry_point: entryPointOf(entryPoint),
@@ -121,12 +132,17 @@ export function registerTelemetryListeners(): void {
     if (endedSessions.has(session.id)) return;
 
     liveSessions.set(session.id, shape);
+    const startSource = startSourceOf(params.startSource);
+    if (startSource === 'adopted') {
+      trackEvent('session_discovered', shape);
+      return;
+    }
     trackEvent('session_started', {
       ...shape,
       outcome: 'success',
       failure_reason: 'none',
       entry_point: entryPointOf(params.entryPoint),
-      start_source: startSourceOf(params.startSource),
+      start_source: startSource,
       // The same test `createSession` itself applies, so the reported flag and
       // the prompt the session actually launched with cannot disagree.
       has_initial_prompt: (params.initialPrompt?.trim().length ?? 0) > 0,
@@ -142,8 +158,8 @@ export function registerTelemetryListeners(): void {
     await rememberSession(sessionId, result.locationId);
   });
 
-  sessionService.on('session:deleted', (sessionId) => endSession(sessionId, 'normal'));
-  sessionService.on('session:archived', (sessionId) => endSession(sessionId, 'normal'));
+  sessionService.on('session:deleted', (sessionId) => endSession(sessionId));
+  sessionService.on('session:archived', (sessionId) => endSession(sessionId));
 
   // Un-archiving puts a session that has already reported an end back into use.
   // Forgetting that it ended is what lets it report the next one: the record is
@@ -157,5 +173,5 @@ export function registerTelemetryListeners(): void {
   // reconciler pruning a session that has gone from its VM, or one terminated
   // from another client — arrive on the other bus. Subscribing to only one
   // leaves those sessions reporting a start and never an end.
-  sessionHooks.on('session:deleted', (sessionId) => endSession(sessionId, 'normal'));
+  sessionHooks.on('session:deleted', (sessionId) => endSession(sessionId));
 }

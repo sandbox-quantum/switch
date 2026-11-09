@@ -48,11 +48,11 @@ export type UiEntryPoint = (typeof UI_ENTRY_POINTS)[number];
  * including one the room watcher started because the agent was addressed in a
  * room. `unknown` is a caller that did not say.
  *
- * None of the four are comparable, so they are kept apart rather than summed. An
- * adopted session is stamped when the app *noticed* it — which is when the app
- * next ran, not when the agent started — and two installs watching one host each
- * adopt and report the same session. Room-started sessions arrive as `adopted`
- * for that reason, and only while the app is running; the Switch server's own
+ * An adopted session is reported as `session_discovered` rather than as a start:
+ * it is stamped when the app *noticed* it — which is when the app next ran, not
+ * when the agent started — and two installs watching one host each adopt and
+ * report the same session. Room-started sessions arrive as `adopted` for that
+ * reason, and only while the app is running; the Switch server's own
  * `session_started`, reported by each session's host, counts them directly.
  */
 export const SESSION_START_SOURCES = ['user', 'auto', 'adopted', 'unknown'] as const;
@@ -63,12 +63,19 @@ export type SessionStartSource = (typeof SESSION_START_SOURCES)[number];
  * What asked for a session to be provisioned.
  *
  * `initial` is the first attempt for a session and is not reported — only a
- * retry answers "did it work the second time". The other two are both retries
- * of a session that is already sitting there unprovisioned: `retry_button` is
- * someone pressing it, `auto` is the view trying again on its own when the
- * session is opened. They are counted apart because only the first is intent.
+ * retry answers "did it work the second time". The others are all retries of a
+ * session that is already sitting there unprovisioned: `retry_button` is
+ * someone pressing Retry, `session_click` someone clicking the session in the
+ * sidebar or a session list, and `auto` the app trying again on its own — the
+ * session view opening on it, or the screen a launch resumes on. Only the first
+ * two are someone asking, so `auto` is reported as an event of its own.
  */
-export const SESSION_PROVISION_TRIGGERS = ['initial', 'auto', 'retry_button'] as const;
+export const SESSION_PROVISION_TRIGGERS = [
+  'initial',
+  'auto',
+  'retry_button',
+  'session_click',
+] as const;
 
 export type SessionProvisionTrigger = (typeof SESSION_PROVISION_TRIGGERS)[number];
 

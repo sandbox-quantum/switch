@@ -1,5 +1,8 @@
 import { INSTALL_METHODS } from '@switch-console/core/deps';
 import {
+  type SessionProvisionTrigger,
+  type SessionStartSource,
+  type UpdateTrigger,
   AGENT_REMOVE_TRIGGERS,
   ROOM_AGENTS_DIRECTIONS,
   SESSION_PROVISION_TRIGGERS,
@@ -13,9 +16,6 @@ import type {
   TelemetryIdentityLinkKind,
   TelemetryInstallMethod,
   TelemetryRoomAgentsDirection,
-  TelemetrySessionProvisionTrigger,
-  TelemetrySessionStartSource,
-  TelemetryUpdateTrigger,
 } from './events';
 
 /**
@@ -50,7 +50,7 @@ export function entryPointOf(value: unknown): TelemetryEntryPoint {
  * a claim, and `user` would report the presence of one — asserting a person was
  * behind a session on the strength of a caller that said nothing.
  */
-export function startSourceOf(value: unknown): TelemetrySessionStartSource {
+export function startSourceOf(value: unknown): SessionStartSource {
   return oneOf(SESSION_START_SOURCES, value, 'unknown');
 }
 
@@ -58,7 +58,7 @@ export function startSourceOf(value: unknown): TelemetrySessionStartSource {
  * `initial` is the honest fallback: an unrecognised trigger is not evidence
  * anybody retried anything, and `initial` is the value that reports nothing.
  */
-export function provisionTriggerOf(value: unknown): TelemetrySessionProvisionTrigger | 'initial' {
+export function provisionTriggerOf(value: unknown): SessionProvisionTrigger {
   return oneOf(SESSION_PROVISION_TRIGGERS, value, 'initial');
 }
 
@@ -70,8 +70,12 @@ export function roomAgentsDirectionOf(value: unknown): TelemetryRoomAgentsDirect
   return oneOf(ROOM_AGENTS_DIRECTIONS, value, 'agents_to_room');
 }
 
-export function updateTriggerOf(value: unknown): TelemetryUpdateTrigger {
-  return oneOf(UPDATE_TRIGGERS, value, 'user');
+/**
+ * `unknown` rather than `user`: only a check somebody asked for is reported,
+ * and a caller that said nothing is not evidence anybody did.
+ */
+export function updateTriggerOf(value: unknown): UpdateTrigger | 'unknown' {
+  return oneOf<UpdateTrigger | 'unknown'>(UPDATE_TRIGGERS, value, 'unknown');
 }
 
 export function installMethodOf(value: unknown): TelemetryInstallMethod {

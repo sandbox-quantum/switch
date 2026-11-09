@@ -150,7 +150,8 @@ describe('searchService', () => {
         agentEvents._emit(
           'agent:created',
           agentRecord({ id: `agent-crowded-${i}`, name: `crowded-bot-${i}`, locationId: 'loc-1' }),
-          'unknown'
+          'unknown',
+          'created'
         );
       }
       fixture.sqlite
@@ -213,7 +214,8 @@ describe('searchService', () => {
       agentEvents._emit(
         'agent:created',
         agentRecord({ id: 'agent-3', name: 'newcomer-bot', locationId: 'loc-1' }),
-        'unknown'
+        'unknown',
+        'created'
       );
 
       expect(
@@ -364,7 +366,8 @@ describe('searchService', () => {
         agentEvents._emit(
           'agent:created',
           agentRecord({ id, name, locationId: 'loc-1' }),
-          'unknown'
+          'unknown',
+          'created'
         );
       }
 
@@ -380,7 +383,8 @@ describe('searchService', () => {
       agentEvents._emit(
         'agent:created',
         agentRecord({ id: 'a-cc', name: 'reviewer cc', locationId: 'loc-1' }),
-        'unknown'
+        'unknown',
+        'created'
       );
 
       expect(
@@ -402,7 +406,8 @@ describe('searchService', () => {
       agentEvents._emit(
         'agent:created',
         agentRecord({ id: 'agent-4', name: 'codex-runner', locationId: 'loc-1' }),
-        'unknown'
+        'unknown',
+        'created'
       );
 
       // 'codex' is agent-2's provider (a keyword) and agent-4's name.

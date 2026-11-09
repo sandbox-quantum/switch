@@ -29,6 +29,7 @@ const CONTEXT: TelemetryContext = {
   flintEnv: 'prod',
   internal: 'false',
   timeMs: 1_700_000_000_000,
+  sessionId: 1_699_999_000_000,
 };
 
 /**
@@ -104,10 +105,17 @@ describe('the catalogue as a whole', () => {
     // the payload. This is the check that generalises: the record carries the
     // event's own properties, the name it is filed under and the build that sent
     // it, and a search for words a test happened to think of would pass whatever
-    // else arrived alongside them.
+    // else arrived alongside them. The insert id is a random UUID per record,
+    // and the session id a time.
     const carried = recordOf(payload).attributes.map((a) => a.key);
     expect(carried.sort()).toEqual(
-      [...TELEMETRY_EVENT_PROPERTIES[name], 'build', 'event.name'].sort()
+      [
+        ...TELEMETRY_EVENT_PROPERTIES[name],
+        'build',
+        'event.name',
+        'flint.insert_id',
+        'flint.session_id',
+      ].sort()
     );
   });
 
