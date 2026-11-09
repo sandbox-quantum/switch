@@ -9,3 +9,51 @@ f1eaba23f82611562b478aaed85687c1bd99e8e0:core/tests/switch_core/test_migration_h
 # A made-up token in a service-token expiry test, never issued by anything;
 # the test now uses one that is not token-shaped.
 ba77a51d9d28c70e0e37b29031983cf6fff477b5:console/packages/agent-providers/src/host/service-access.test.ts:generic-api-key:17
+
+# Hosted agents v2 (#1360). Every entry below is a false positive; none is a
+# secret. Reviewed by security on 9 Nov (the 4 Nov gitleaks job).
+
+# Git blob ids (40-character hashes of upstream files) in the box runtime's
+# upstream-sync list, which records which upstream file each box copy is from.
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:19
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:20
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:57
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:58
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:70
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:71
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:204
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:205
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:206
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:207
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:213
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:214
+93054f78645f6a36ef3fb1d8ff6e3c4649dc59bd:console/packages/switch-agent-runtime-box/upstream-packages.json:generic-api-key:260
+
+# A made-up "swpg_" proxy token (27 characters, not a real key shape) in the
+# split-runtime test's fake agent environment; it was never issued by anything.
+89deef6c81831585bd2ba37101e60aa2444e3d19:console/packages/agent-controller/src/split-runtime.test.ts:generic-api-key:215
+89deef6c81831585bd2ba37101e60aa2444e3d19:console/packages/agent-controller/src/split-runtime.test.ts:generic-api-key:227
+89deef6c81831585bd2ba37101e60aa2444e3d19:console/packages/agent-controller/src/split-runtime.test.ts:generic-api-key:262
+
+# Made-up keyed ids ("k1-" plus hex) in hosted operator tests: an id format,
+# not a credential.
+89deef6c81831585bd2ba37101e60aa2444e3d19:core/tests/switch_core/visibility/test_read_views_routes.py:generic-api-key:358
+89deef6c81831585bd2ba37101e60aa2444e3d19:deploy/hosted/controller/tests/test_box_operator.py:generic-api-key:279
+89deef6c81831585bd2ba37101e60aa2444e3d19:gateway/src/pages/hosted/OperatorActionDialog.test.tsx:generic-api-key:11
+
+# A plain source label ("cluster OpenAPI v3, …") in the box operator's
+# Kubernetes field fixture.
+89deef6c81831585bd2ba37101e60aa2444e3d19:deploy/hosted/controller/tests/fixtures/k8s-fields.json:generic-api-key:2
+
+# Public values in sealed-login test envelopes: a key id and an X25519
+# ephemeral public key. Public data by design, not a secret.
+4d527d0694187cbc0329bc4e954e2dd9c34ac873:gateway/src/data/sealLogin.test.ts:generic-api-key:400
+a7edd24a1d392e282f5e73357ca40919bee91a88:gateway/src/data/sealLogin.test.ts:generic-api-key:353
+a7edd24a1d392e282f5e73357ca40919bee91a88:gateway/src/data/sealLogin.test.ts:generic-api-key:372
+
+# Fixed test vector: a throwaway X25519 key pair used only by this
+# cross-implementation test (a login sealed in a browser by Switch web opens with
+# the box's real opener); not any controller's key. If this pair is ever used
+# outside this test, replace it rather than ignore it (security, 9 Nov).
+c4975e8550d60ab18020106afc5124d283f97c42:console/packages/agent-providers-box/src/sealed-login.web.test.ts:generic-api-key:13
+c4975e8550d60ab18020106afc5124d283f97c42:console/packages/agent-providers-box/src/sealed-login.web.test.ts:generic-api-key:21
