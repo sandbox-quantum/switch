@@ -223,9 +223,9 @@ class TestAgentRuntimes:
     hand, and `unknown` there would be a bug hiding as a value."""
 
     def test_the_sent_event_may_say_its_runtime_is_unknown(self) -> None:
-        payload = _valid_payload("agent_message_sent")
+        payload = _valid_payload("message_sent")
         payload["known_agent_type"] = "unknown"
-        validate("agent_message_sent", payload)  # type: ignore[arg-type]
+        validate("message_sent", payload)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
         "event", ["agent_message_received", "first_agent_registered"]

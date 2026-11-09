@@ -579,7 +579,7 @@ class TestBatching:
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(_handle))
         sink = _relay_sink(http)
-        for name in ("switch_core.room_message_sent", "switch_core.agent_message_sent"):
+        for name in ("switch_core.message_sent", "switch_core.agent_message_received"):
             sink.send(TelemetryRecord(name, {}, _a_record().resource, 1))
 
         assert bodies == []
@@ -590,8 +590,8 @@ class TestBatching:
         records = bodies[0]["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
         # Each record keeps its own name, in both places the relay reads it.
         assert [r["eventName"] for r in records] == [
-            "switch_core.room_message_sent",
-            "switch_core.agent_message_sent",
+            "switch_core.message_sent",
+            "switch_core.agent_message_received",
         ]
         assert [r["body"]["stringValue"] for r in records] == [
             r["eventName"] for r in records

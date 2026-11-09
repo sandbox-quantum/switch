@@ -168,20 +168,20 @@ AGENT_TYPE = one_of(
 # agent registered without declaring one at all.
 KNOWN_AGENT_TYPE = one_of("claude-code", "codex", "opencode", "other", "none")
 
-# The runtime as `agent_message_sent` reports it. That event looks the sending
-# agent up after the fact, so it has a third answer: `unknown`, for a lookup
-# that failed or found no agent.
+# The runtime as `message_sent` reports it for an agent's message. That event
+# looks the sending agent up after the fact, so it has a third answer:
+# `unknown`, for a lookup that failed or found no agent.
 LOOKED_UP_AGENT_TYPE = one_of(*KNOWN_AGENT_TYPE.values, "unknown")
 
 ACTOR_KIND = one_of("user", "agent", "system")
 
-# Who said a message. `user` is a person on a messaging platform; `bot` is an
-# integration posting there (a Slack app, a Discord bot or webhook, a
-# Mattermost bot account, another Switch server's agent). `platform` is Switch
-# itself speaking — a template's kickoff, or a request it carries on a
-# person's behalf — and `unknown` a sender whose client could not be looked
-# up.
-SENDER_KIND = one_of("user", "bot", "agent", "platform", "unknown")
+# Who said a message. `user` is a person on a messaging platform and `member`
+# a person in Switch Console; `bot` is an integration posting on a platform (a
+# Slack app, a Discord bot or webhook, a Mattermost bot account, another
+# Switch server's agent). `platform` is Switch itself speaking — a template's
+# kickoff, or a request it carries on a person's behalf — and `unknown` a
+# sender whose client could not be looked up.
+SENDER_KIND = one_of("user", "member", "bot", "agent", "platform", "unknown")
 
 OUTCOME = one_of("success", "failure")
 
@@ -552,16 +552,21 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # ── Messages ─────────────────────────────────────────────────────────────
     # One per message, unlike everything above. They carry no identifier, so
     # they answer "how much, and between whom", never "who": distinct people
-    # come from the snapshot's `user_*` and `chat_identity_*` counts. A multi-file post is one
+    # come from the period counts and the snapshot. A multi-file post is one
     # message, not one per file.
     #
-    # Everything a participant chose to say in a room — the population the
-    # tenant is metered for. Notices Switch posts on someone's behalf are not
-    # in it. The room sizes are its members right now, so averaging them over
-    # these events gives the room size a typical message is said to. A room
-    # that could not be read leaves its sizes out.
-    "room_message_sent": {
+    # Everything a participant chose to say in a room, on a messaging
+    # platform or in Switch Console — the population the tenant is metered
+    # for. Notices Switch posts on someone's behalf are not in it.
+    # `known_agent_type` is the sending agent's runtime, carried only when an
+    # agent said it. The room sizes are its members right now, so averaging
+    # them over these events gives the room size a typical message is said to;
+    # `room_user_count` separates an agent answering people from agents
+    # talking among themselves. A room that could not be read leaves its
+    # sizes out.
+    "message_sent": {
         "sender_kind": SENDER_KIND,
+        "known_agent_type": optional(LOOKED_UP_AGENT_TYPE),
         "bridge_platform": BRIDGE_PLATFORM,
         "channel_type": CHANNEL_TYPE,
         "room_user_count": optional(NUMBER),
@@ -572,7 +577,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # A message an agent was asked to act on: addressed to it and let through
     # its addressing policy and budget, whether or not the agent was there to
     # take it. One per agent addressed, so a message naming two agents is two
-    # of these and one `room_message_sent`; a multi-file post delivered in two
+    # of these and one `message_sent`; a multi-file post delivered in two
     # pieces is not counted again. `agent_live` is whether the agent had a live
     # session for the room when it arrived: false for one that was offline or
     # still starting, and always for a session_passive agent, which reads its
@@ -584,18 +589,6 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "channel_type": CHANNEL_TYPE,
         "has_attachment": BOOLEAN,
         "agent_live": BOOLEAN,
-    },
-    # A message an agent posted: its replies, and anything else it chose to
-    # say. Also a `room_message_sent` with `sender_kind = agent`; a separate
-    # event so it can carry the runtime. `room_user_count` separates an agent
-    # answering people from agents talking among themselves.
-    "agent_message_sent": {
-        "known_agent_type": LOOKED_UP_AGENT_TYPE,
-        "bridge_platform": BRIDGE_PLATFORM,
-        "channel_type": CHANNEL_TYPE,
-        "room_user_count": optional(NUMBER),
-        "has_attachment": BOOLEAN,
-        "in_thread": BOOLEAN,
     },
     # ── Decision routing ─────────────────────────────────────────────────────
     # One per message auto-route asked a decision service about. Which agent,

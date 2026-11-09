@@ -297,8 +297,10 @@ reasons. Each is now answered rather than ignored:
 **They count messages, not people.** No user id is ever sent, so in Amplitude
 every event from a deployment belongs to one subject — the deployment — and
 Amplitude's own "active users" counts deployments. How many *people* are active
-comes only from the snapshot, which counts distinct people locally and reports
-the total: `chat_identity_in_room_count` (seen in a room at all),
+comes only from the counts the server makes locally and reports as totals: the
+period events' `person_identity_active` (people who said something in a room
+with an agent, on a platform or in Switch Console, per day, week and month),
+and the snapshot's `chat_identity_in_room_count` (seen in a room at all),
 `chat_identity_posted_*` (said anything) and `chat_identity_active_*` (said
 something in a room with an agent), with `user_active_*` counting the same
 last tier as Switch accounts. The message events say how much those people
@@ -833,7 +835,7 @@ rather than something the product wants to know.
 
 ### Message events — one per message
 
-All three come from `telemetry/messages.py`, reported off the sender's path as
+Both come from `telemetry/messages.py`, reported off the sender's path as
 described [above](#message-events-and-what-they-cannot-tell-you). A post with
 several files is one message. Room facts are cached for fifteen minutes, so a
 member count can be that far behind; who a sender is and an agent's runtime,
@@ -844,34 +846,42 @@ with no lookup succeeding between them, pause every lookup for five seconds.
 Either way a database incident shows in the charts as a burst of `unknown`
 rather than as missing messages.
 
-**`room_message_sent`** — everything a participant chose to say in a room: the
-population the tenant is metered for, reported by the transport after the
-write commits. What Switch posts on a participant's behalf — greetings, command
-replies, offline and refusal notices, a template's kickoff — is not in it.
-Neither is a command a person types (`!reset`, a slash command): commands are
-not metered, although the snapshot's activity counts treat one as something
-the person said.
+**`message_sent`** — everything a participant chose to say in a room, on a
+messaging platform or in Switch Console: the population the tenant is metered
+for, reported after the write commits, by the transport or, for a Switch
+Console chat, by the chat service. What Switch posts on a participant's behalf
+— greetings, command replies, offline and refusal notices, a template's
+kickoff — is not in it. Neither is a command a person types (`!reset`, a slash
+command): commands are not metered, although the snapshot's activity counts
+treat one as something the person said. Released servers sent this as
+`room_message_sent`, beside an `agent_message_sent` for every agent's message
+carrying its runtime, and did not count Switch Console chat at all.
 
 | Property | Type |
 |---|---|
-| `sender_kind` | `user` \| `bot` \| `agent` — only participants are metered, so `platform` does not occur here. `bot` is an integration's post (see "People, bots and accounts"); before that value existed those were `user` |
+| `sender_kind` | `user` \| `member` \| `bot` \| `agent` — only participants are metered, so `platform` does not occur here. `member` is a person in Switch Console; `bot` is an integration's post on a platform (see "People, bots and accounts") |
+| `known_agent_type` | the sending agent's runtime, or `unknown` if the agent could not be looked up; only on an agent's message, left out otherwise |
 | `bridge_platform` | platform, `none` for an internal room, `unknown` if the room could not be read |
 | `channel_type` | channel type, or `unknown` if the room could not be read |
-| `room_user_count` | number — human members of the room; left out if it could not be read |
-| `room_agent_count` | number — agent members; left out if it could not be read |
+| `room_user_count` | number — the room's people, on a messaging platform and in Switch Console (someone who is both counts twice); left out if the room could not be read |
+| `room_agent_count` | number — agent members; left out if the room could not be read |
 | `has_attachment` | boolean |
 | `in_thread` | boolean |
 
 The average of `room_user_count` over these events is the room size a typical
 message is said to — weighted by messages, not by rooms. A room that could not
-be read leaves both sizes out, so an average skips it. The snapshot's
-`room_users_mean` is the per-room figure.
+be read leaves both sizes out, so an average skips it. On an agent's message,
+`room_user_count` separates an agent answering people from agents talking
+among themselves. The snapshot's `room_users_mean` is the per-room figure, and
+each period event's `message_count` is the same messages counted in the
+database, so the two set side by side show how many events were lost on the
+way.
 
 **`agent_message_received`** — a message an agent was asked to act on:
 addressed to it (by name, alias, role, or a direct room) *and* let through its
 addressing policy and budget, whether or not the agent was there to take it.
 Reported by the agent's consumer, where that is decided, so a message naming
-two agents is two of these and one `room_message_sent`. Switch's own
+two agents is two of these and one `message_sent`. Switch's own
 auto-replies are excluded; a request Switch carries on a person's behalf is
 included, as `platform`. A message a hosted agent's mailbox already holds — the
 same message seen again — is not counted twice, and nor is a multi-file post
@@ -882,26 +892,12 @@ the requests an agent could act on as they arrived.
 
 | Property | Type |
 |---|---|
-| `sender_kind` | `user` \| `bot` \| `agent` \| `platform` \| `unknown` — `bot` as for `room_message_sent` |
+| `sender_kind` | `user` \| `member` \| `bot` \| `agent` \| `platform` \| `unknown` — as for `message_sent` |
 | `known_agent_type` | the receiving agent's runtime |
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
 | `has_attachment` | boolean |
 | `agent_live` | boolean — the agent had a live session for the room when the message arrived. False when it was offline, still starting, or its cloud worker refused the message (stopped, broken, or a full mailbox); always false for a `session_passive` agent, which reads its messages later rather than live |
-
-**`agent_message_sent`** — a message an agent posted: its replies, status
-updates, anything it chose to say. Every one is also a `room_message_sent` with
-`sender_kind = agent`; this one carries the runtime as well. `room_user_count`
-separates an agent answering people from agents talking among themselves.
-
-| Property | Type |
-|---|---|
-| `known_agent_type` | the sending agent's runtime, or `unknown` if the agent could not be looked up |
-| `bridge_platform` | platform |
-| `channel_type` | channel type |
-| `room_user_count` | number; left out if the room could not be read |
-| `has_attachment` | boolean |
-| `in_thread` | boolean |
 
 ### Decision routing — one per decision
 
@@ -961,7 +957,7 @@ This is what each carries.
 | `room_link_removed` | none |
 | `room_role_defined` | `exclusive` (boolean) |
 | `room_role_deleted` | none |
-| `room_users_added` | `user_count` (number) |
+| `room_users_added` | `user_count` (number): people added to a bridged room who are now in it, or the one person added to a Switch Console chat, including an owner an agent puts in a room it made. Not sent when nobody was added |
 | `connector_configured` | `bridge_platform`; `is_preconfigured` (boolean) |
 | `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
 | `invitation_accepted` | `age_hours` (number) |
@@ -987,10 +983,11 @@ it today; the room events read the type from a row they already hold.
 four built-in types; a user-defined type's slug is free text, so it reports as
 `other`.
 
-`sender_kind`: `user` | `bot` | `agent` | `platform` | `unknown`. `user` is a
-person on a messaging platform and `bot` an integration posting there (see
-"People, bots and accounts"); `platform` is Switch itself speaking; `unknown` a
-sender whose client could not be looked up.
+`sender_kind`: `user` | `member` | `bot` | `agent` | `platform` | `unknown`.
+`user` is a person on a messaging platform, `member` a person in Switch
+Console, and `bot` an integration posting on a platform (see "People, bots and
+accounts"); `platform` is Switch itself speaking; `unknown` a sender whose
+client could not be looked up.
 
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
@@ -1212,10 +1209,10 @@ Two things to set up first, or a third of the list cannot fire at all:
 **Messages** — `telemetry/messages.py`, fed by `transport/postgres.py` and
 `delivery/recipient.py`
 
-- `room_message_sent` — any person or agent posting in any room. A post with
-  three files is one event. A command reply or an offline notice is none.
-- `agent_message_sent` — an agent posting, through its MCP tool or the HTTP
-  API. Arrives beside a `room_message_sent` for the same message.
+- `message_sent` — any person or agent posting in any room, Switch Console
+  chats included. A post with three files is one event. A command reply or an
+  offline notice is none. An agent posting, through its MCP tool or the HTTP
+  API, carries its runtime.
 - `agent_message_received` — tag an agent, or write in a direct room with one.
   Tag two agents and there are two. Tag an agent whose policy refuses you and
   there are none.
