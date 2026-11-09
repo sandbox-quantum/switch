@@ -145,6 +145,39 @@ does, and there is no polling tool to call.
   sends every message to one agent and `!unassign-agent` stops it;
   `!follow-ups off` turns the two follow-ups off and `!follow-ups on` turns
   them back on. Each command on its own says what is set now.
+
+  In a room where people turned on automatic routing (`!auto-route on`), a
+  message that tags nobody and that no follow-up or assigned agent caught goes
+  to a decision service, which picks the one agent best placed to answer it,
+  or nobody. When it picks you, the person's own message reaches you, and its
+  line reads `[Switch] <sender> posted in room <room> without tagging anyone,
+  and Switch picked you to answer (…)` rather than `addressed you`. Switch can
+  pick wrong: if the message is not really yours to answer (people talking to
+  each other, or something another agent covers), stay silent and post
+  nothing. In such a room, replies in a thread go to the decision service too,
+  rather than to the agent that spoke there last (so while the decision
+  service is down, a reply in your thread that doesn't tag you reaches you
+  only if you are the room's triage agent, and otherwise nobody), and
+  answering a routed message does not make the person's next untagged message
+  a follow-up to you: it is decided again. `!auto-route off` turns it off, and `!auto-route` on its
+  own says which it is and whether it can act. Anyone who can post in the
+  room may turn it on or off, from the room or from its toggle in Switch
+  Console or on the gateway's room page (both need write access to the room).
+
+  Which decision service a room uses is its workspace's choice, made by a
+  workspace admin in Switch Console → Admin → Decision routing: the server's
+  own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
+  With none (or no server default), `!auto-route on` says auto-route needs a
+  decision service and changes nothing, and the room works as it does without
+  it. When the decision service fails, the message goes to nobody and Switch
+  posts "Auto-route is unavailable right now; tag an agent to reach it." in
+  the room, at most once an hour. The room's owner or a workspace admin can
+  name a triage agent for those messages with `!auto-route fallback @agent`
+  (`!auto-route fallback off` clears it; it can't be the room's assigned
+  agent); anyone else who tries is told who can. If you are that agent,
+  such a message reaches you marked as a fallback: auto-route was unavailable,
+  so it came to you as the room's triage agent. Answer it if it is yours, or
+  say briefly which agent to tag.
 - **`room_join`** — `[Switch] <name> joined room <room>`, but only in rooms
   where an operator opted you in (per-room, per-agent, off by default — set via
   the `join_event_listeners` argument on `create_room` / `update_room`, or the
@@ -568,7 +601,9 @@ carrying a display name addresses no one.
   on bridged Slack, Discord and Telegram channels; Telegram registers it as
   `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
   a command tapped from the `/` menu is sent immediately with no argument, so
-  the bot asks for the one it needs and runs when you reply with it.
+  the bot asks for the one it needs and runs when you reply with it. The tool
+  is refused in a direct or group conversation, whose platform fixes who is in
+  it; the command still works there, and is how the people in it add an agent.
 - **`remove_agent_from_room`** — take an agent out of a room by name, the
   opposite of `invite_agent_to_room`; any session it had there is
   disconnected. You need not be in the room. Allowed when you may address
@@ -577,7 +612,8 @@ carrying a display name addresses no one.
   Confirm with the person asking before removing anything. People do the same
   in a room with `!remove-agent @agent-name` (a slash command where
   `/invite-agent` is one, `/remove_agent` on Telegram), which a workspace admin
-  may use on any agent.
+  may use on any agent. As with inviting, the tool is refused in a direct or
+  group conversation, where the command still works.
 - **`add_users_to_room`** — add human users to an existing room, the
   counterpart to `invite_agent_to_room`. Name each person by their username on
   the room's messaging app, or the e-mail address of their account there (not
@@ -585,7 +621,8 @@ carrying a display name addresses no one.
   `get_my_context`; for anyone else, ask. Names that cannot be resolved come
   back in the response rather than failing silently — surface them. The same
   goes for `create_room`'s `user_names`, whose misses come back in
-  `failed_attachments`.
+  `failed_attachments`. Refused in a direct or group conversation, as
+  inviting an agent is.
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
   normal use; confirm with the user first.

@@ -14,6 +14,7 @@ listing installs sees those chats and no OAuth workspace.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -84,7 +85,15 @@ async def _member(
 async def _list_installs(
     session_factory: async_sessionmaker[AsyncSession], user_id: str, name: str
 ) -> httpx.Response:
-    token = create_jwt(user_id, f"{name}@example.invalid", "user", _KEYRING, _TENANT)
+    token = create_jwt(
+        user_id,
+        f"{name}@example.invalid",
+        "user",
+        _KEYRING,
+        _TENANT,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_app(session_factory)),
         base_url="http://test",

@@ -66,10 +66,15 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
   // A Console chat's members may read it but only its managers change it.
   const permissions =
     opensAsConsoleChat(roomId) && chat
-      ? { canWrite: chat.canManage, canManage: chat.canManage, canUnlink: chat.canManage }
+      ? {
+          canWrite: chat.canManage,
+          canChangeMembers: chat.canManage,
+          canManage: chat.canManage,
+          canUnlink: chat.canManage,
+        }
       : room !== null
         ? switchRoomsStore.roomPermissions(workspaceId, room)
-        : { canWrite: false, canManage: false, canUnlink: false };
+        : { canWrite: false, canChangeMembers: false, canManage: false, canUnlink: false };
   const canWrite = permissions.canWrite;
   const canUnlink = permissions.canUnlink;
 
