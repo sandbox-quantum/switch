@@ -3,11 +3,14 @@ import { openExternalUrl } from '@renderer/lib/open-external';
 import { normalizeExternalHttpUrl } from './external-url';
 
 const HTTP_URL_PATTERN = /^https?:\/\//i;
+/** An email link: asked about like a web link, then handed to the mail app. */
+const MAILTO_PATTERN = /^mailto:/i;
 
 export function confirmOpenExternalLink(url: string, onError?: (error: unknown) => void): void {
-  const normalizedUrl = normalizeExternalHttpUrl(url);
+  const trimmed = url.trim();
+  const normalizedUrl = MAILTO_PATTERN.test(trimmed) ? trimmed : normalizeExternalHttpUrl(url);
 
-  if (!HTTP_URL_PATTERN.test(normalizedUrl)) {
+  if (!HTTP_URL_PATTERN.test(normalizedUrl) && !MAILTO_PATTERN.test(normalizedUrl)) {
     return;
   }
 

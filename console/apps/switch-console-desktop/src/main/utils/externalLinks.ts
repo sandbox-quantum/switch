@@ -122,9 +122,9 @@ export function guardLocalContent(contents: WebContents): void {
 /**
  * The main window's link handling: it opens and moves only within the app
  * itself; our own `switchdash://` deeplinks are handled in-process, as for a
- * room-view guest; an external http(s) link goes to the person's browser
- * (after they confirm); and anything else (blob:, data:, javascript:, file:,
- * any other scheme) is refused.
+ * room-view guest; an external http(s) link goes to the person's browser, and
+ * an email (`mailto:`) link to their mail app, both after they confirm; and
+ * anything else (blob:, data:, javascript:, file:, any other scheme) is refused.
  */
 export function registerExternalLinkHandlers(win: BrowserWindow, isDev: boolean) {
   const wc = win.webContents;
@@ -136,13 +136,16 @@ export function registerExternalLinkHandlers(win: BrowserWindow, isDev: boolean)
     return url === APP_ORIGIN || url.startsWith(`${APP_ORIGIN}/`);
   };
   const isExternalWeb = (url: string) => /^https?:\/\//i.test(url);
+  // An email link in a transcript opened the mail app before the lockdown, so it still does
+  // (after the same confirm). Only this exact scheme: everything else stays refused.
+  const isMailto = (url: string) => /^mailto:/i.test(url);
   const isDeeplink = (url: string) => url.startsWith(`${DEEPLINK_SCHEME}://`);
 
   // Handle window.open and target="_blank"
   wc.setWindowOpenHandler(({ url }) => {
     if (isInternalAppUrl(url)) return { action: 'allow' };
     if (isDeeplink(url)) handleDeeplinkUrl(url);
-    else if (isExternalWeb(url)) requestExternalLinkOpen(url);
+    else if (isExternalWeb(url) || isMailto(url)) requestExternalLinkOpen(url);
     else log.warn('Blocked a window on a non-web URL', { scheme: schemeOf(url) });
     return { action: 'deny' };
   });
@@ -152,7 +155,7 @@ export function registerExternalLinkHandlers(win: BrowserWindow, isDev: boolean)
     if (isInternalAppUrl(url)) return;
     event.preventDefault();
     if (isDeeplink(url)) handleDeeplinkUrl(url);
-    else if (isExternalWeb(url)) requestExternalLinkOpen(url);
+    else if (isExternalWeb(url) || isMailto(url)) requestExternalLinkOpen(url);
     else log.warn('Blocked moving the app window to a non-web URL', { scheme: schemeOf(url) });
   });
 }

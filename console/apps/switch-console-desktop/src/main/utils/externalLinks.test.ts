@@ -67,8 +67,8 @@ describe('the main window', () => {
   it.each([
     'app://x/page',
     'foo:bar',
-    'mailto:someone@example.com',
     'ftp://example.com/x',
+    'mailtox:someone@example.com',
     'chrome://settings',
   ])('refuses any other scheme too: %s', (url) => {
     const win = mainWindow();
@@ -116,6 +116,17 @@ describe('the main window', () => {
     expect(win.open('https://example.com/docs')).toBe('deny');
     expect(win.moves('https://example.com/docs')).toBe(false);
     expect(emit).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends an email link to the same confirm (then the mail app), as it opened before the lockdown', () => {
+    emit.mockClear();
+    const win = mainWindow();
+    for (const url of ['mailto:someone@example.com', 'MAILTO:someone@example.com?subject=Hi']) {
+      expect(win.open(url)).toBe('deny');
+      expect(win.moves(url)).toBe(false);
+      expect(emit).toHaveBeenCalledWith(expect.anything(), { url });
+    }
+    expect(emit).toHaveBeenCalledTimes(4);
   });
 
   it('handles our own deeplinks in-process, as for a room-view guest', () => {

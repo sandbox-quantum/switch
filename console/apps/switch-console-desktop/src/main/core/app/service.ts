@@ -166,12 +166,13 @@ class AppService implements IInitializable, IDisposable {
     }
     // http/https plus the messaging-app schemes used by the sidebar "open in
     // Slack/Mattermost" room deeplinks (links the gateway builds from a room's
-    // bridge); other schemes (file:, javascript:, …) stay blocked. Telegram
-    // needs no entry: its links are ordinary https `t.me` URLs.
-    if (!['http:', 'https:', 'slack:', 'mattermost:'].includes(parsedUrl.protocol)) {
+    // bridge), and mailto: for an email link the person confirmed; other
+    // schemes (file:, javascript:, …) stay blocked. Telegram needs no entry:
+    // its links are ordinary https `t.me` URLs.
+    if (!['http:', 'https:', 'slack:', 'mattermost:', 'mailto:'].includes(parsedUrl.protocol)) {
       throw new Error(
         `Protocol "${parsedUrl.protocol}" is not allowed. Only http, https, ` +
-          `slack and mattermost URLs are permitted.`
+          `slack, mattermost and mailto URLs are permitted.`
       );
     }
     await shell.openExternal(url);
