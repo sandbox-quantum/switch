@@ -30,6 +30,7 @@ export default function HostedPage({
   const shown = useMemo(() => orderedTabs(tabs), [tabs]);
   const [access, setAccess] = useState<HostedAccess | null>(null);
   const [overviewStale, setOverviewStale] = useState(false);
+  const [overviewAt, setOverviewAt] = useState<number | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const mounted = useRef(true);
 
@@ -46,6 +47,7 @@ export default function HostedPage({
         return;
       }
       setOverviewStale(false);
+      if (next.kind === "operator") setOverviewAt(Date.now());
       setAccess(next);
     },
     [refreshSession],
@@ -75,8 +77,8 @@ export default function HostedPage({
   );
   const overview = access?.kind === "operator" ? access.overview : null;
   const context: HostedState = useMemo(
-    () => ({ operator, overview, overviewStale, refreshKey, refresh }),
-    [operator, overview, overviewStale, refreshKey, refresh],
+    () => ({ operator, overview, overviewStale, overviewAt, refreshKey, refresh }),
+    [operator, overview, overviewStale, overviewAt, refreshKey, refresh],
   );
 
   const active = shown.find((t) => t.key === tabKey);

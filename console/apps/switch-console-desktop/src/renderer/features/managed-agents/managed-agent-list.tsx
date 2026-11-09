@@ -99,7 +99,14 @@ const ManagedAgentRow = observer(function ManagedAgentRow({
   const box = useCloudMachineFor(agent);
   const resealResult = useResealResult(agent.serverId, box);
   const sharedState =
-    shared ?? sharedCloudFromSession(agent, onSharedBox, box, resealResult !== undefined);
+    shared ??
+    sharedCloudFromSession(
+      agent,
+      onSharedBox,
+      box,
+      resealResult !== undefined,
+      box !== null && boxShowsStopped(box)
+    );
   const machineDown = agent.machine !== null && agent.machine.state !== 'online';
   const providerName = isValidProviderId(provider) ? getProvider(provider)?.name : null;
   // On the shared cloud, a resting, waking or failed agent says so here as on

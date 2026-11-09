@@ -1,6 +1,6 @@
 import { app, clipboard, Menu, shell } from 'electron';
 import { events } from '@main/lib/events';
-import { PRODUCT_NAME } from '@shared/app-identity';
+import { BUILD_LABEL, PRODUCT_NAME } from '@shared/app-identity';
 import {
   menuCheckForUpdatesChannel,
   menuOpenSettingsChannel,
@@ -17,7 +17,7 @@ import { getMainWindow } from './window';
 
 function copyVersionInfo(): void {
   const lines = [
-    `${PRODUCT_NAME} ${app.getVersion()}`,
+    `${PRODUCT_NAME} ${app.getVersion()}${BUILD_LABEL ? ` (${BUILD_LABEL})` : ''}`,
     `Platform: ${process.platform} ${process.arch}`,
     `Electron: ${process.versions.electron}`,
   ];
@@ -42,7 +42,12 @@ export function setupApplicationMenu(): void {
 
   // app.name is the frozen OS name that keys the keychain and data folder (see
   // app-identity.ts), so user-facing labels use PRODUCT_NAME instead.
-  if (isMac) app.setAboutPanelOptions({ applicationName: PRODUCT_NAME });
+  // A labelled test build shows its label beside the version: "Version 1.2.3 (Hosted Agents v2 · 0.0.6)".
+  if (isMac)
+    app.setAboutPanelOptions({
+      applicationName: PRODUCT_NAME,
+      ...(BUILD_LABEL ? { version: BUILD_LABEL } : {}),
+    });
 
   const template: Electron.MenuItemConstructorOptions[] = [
     // macOS app menu

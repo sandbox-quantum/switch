@@ -308,3 +308,40 @@ describe("Close is never disabled (PM rule 3)", () => {
     expect(screen.queryByText(OUTCOME_TEXT.succeeded)).toBeNull();
   });
 });
+
+describe("reading the box faster while it waits", () => {
+  const props = (machine: CloudMachine, onHurry: () => () => void, open = true) => (
+    <CloudLoginDialog
+      open={open}
+      provider="claude"
+      providerLabel="Claude"
+      machine={machine}
+      onCloudChanged={() => {}}
+      onClose={() => {}}
+      onDone={() => {}}
+      onHurry={onHurry}
+    />
+  );
+
+  it("asks for the waking rate in front of a resting box, and lets go once it's up or closed", () => {
+    const release = vi.fn();
+    const onHurry = vi.fn(() => release);
+    const { rerender } = render(props(box({ sleeping: true, state: "stopped" }), onHurry));
+    expect(onHurry).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
+    // The box came up: the key field shows, and the normal rate is back.
+    rerender(props(box(), onHurry));
+    expect(release).toHaveBeenCalledOnce();
+    // Resting again, then closed.
+    rerender(props(box({ sleeping: true, state: "stopped" }), onHurry));
+    expect(onHurry).toHaveBeenCalledTimes(2);
+    rerender(props(box({ sleeping: true, state: "stopped" }), onHurry, false));
+    expect(release).toHaveBeenCalledTimes(2);
+  });
+
+  it("doesn't ask while the box is up", () => {
+    const onHurry = vi.fn(() => () => {});
+    render(props(box(), onHurry));
+    expect(onHurry).not.toHaveBeenCalled();
+  });
+});

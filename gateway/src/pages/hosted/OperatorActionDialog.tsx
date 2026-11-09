@@ -9,6 +9,8 @@ import {
 } from "@mui/material";
 import { useState } from "react";
 import { REASON_HINT, REASON_LIMIT, WORDING, title, type HostedAction } from "./hostedActions";
+import type { PauseReason } from "./w5shared/pauseReason";
+import { shortTime } from "./w5shared/operatorFetch";
 
 interface Props {
   open: boolean;
@@ -20,6 +22,33 @@ interface Props {
   error: string | null;
   onCancel: () => void;
   onConfirm: (reason: string) => void;
+  /** For Resume: why they were paused, read from the audit log. */
+  pausedBecause?: PauseReason;
+}
+
+/** The most of an operator's reason the confirm shows (security's cap). */
+export const REASON_SHOWN = 300;
+
+/** A reason cut to `REASON_SHOWN` characters, with an ellipsis when cut.
+ *  Counted by code point, so an emoji is never split in half. */
+export function capped(reason: string): string {
+  const chars = Array.from(reason.trim());
+  return chars.length <= REASON_SHOWN ? chars.join("") : `${chars.slice(0, REASON_SHOWN).join("")}…`;
+}
+
+/** Resume's "Why they were paused" line. An operator's reason is shown as
+ *  text only, never markup. */
+export function pausedLine(paused: PauseReason): string {
+  switch (paused.kind) {
+    case "loading":
+      return "Checking the audit log…";
+    case "found":
+      return `${capped(paused.reason)} (paused ${shortTime(paused.at)})`;
+    case "none":
+      return "No reason is recorded. Switch may have paused them itself.";
+    case "error":
+      return "Couldn't read the audit log. Check it before resuming.";
+  }
 }
 
 /** The shared confirm pattern (spec rule 7) for an operator's action: what
@@ -35,6 +64,7 @@ export default function OperatorActionDialog({
   error,
   onCancel,
   onConfirm,
+  pausedBecause,
 }: Props) {
   const [reason, setReason] = useState("");
   const words = WORDING[action];
@@ -48,6 +78,16 @@ export default function OperatorActionDialog({
     <Dialog open={open} onClose={busy ? undefined : close} maxWidth="sm" fullWidth>
       <DialogTitle>{title(action, userKeyedId, boxKeyedId)}</DialogTitle>
       <DialogContent>
+        {action === "resume" && pausedBecause && (
+          <>
+            <Typography variant="overline" color="text.secondary">
+              Why they were paused
+            </Typography>
+            <Typography variant="body2" gutterBottom data-testid="paused-because">
+              {pausedLine(pausedBecause)}
+            </Typography>
+          </>
+        )}
         <Typography variant="overline" color="text.secondary">
           What happens
         </Typography>

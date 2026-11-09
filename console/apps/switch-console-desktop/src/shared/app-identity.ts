@@ -1,5 +1,5 @@
 type ImportMetaWithEnv = ImportMeta & {
-  env?: { DEV?: boolean; VITE_BUILD?: string; VITE_RELEASE?: string };
+  env?: { DEV?: boolean; VITE_BUILD?: string; VITE_RELEASE?: string; VITE_BUILD_LABEL?: string };
 };
 
 const env = (import.meta as ImportMetaWithEnv).env;
@@ -49,6 +49,38 @@ export const ARTIFACT_PREFIX = isCanary ? 'switch-console-canary' : 'switch-cons
 export const IS_CANARY = isCanary;
 export const IS_DEV = isDev;
 export const IS_RELEASE_BUILD = isRelease;
+
+// A test build's label, for example "Hosted Agents v2 · 0.0.6", set at build
+// time with VITE_BUILD_LABEL and empty otherwise, so a normal build is
+// unchanged. It is shown only: the window title, the About box and the
+// download file name. It never touches APP_ID, PRODUCT_NAME, OS_APP_NAME or
+// USER_DATA_DIR_NAME above, so a labelled build keeps its sign-ins and data.
+// Read from the Vite build's env, or from the process env when electron-builder
+// loads this file under bare Node (where import.meta.env is absent).
+const processEnvLabel = typeof process === 'undefined' ? undefined : process.env?.VITE_BUILD_LABEL;
+
+/** A label kept to plain characters and a sane length; anything else gives no label at all. */
+export function cleanBuildLabel(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const label = raw.trim();
+  return label.length <= 40 && /^[A-Za-z0-9 .·()_-]*$/.test(label) ? label : '';
+}
+
+/** The label as it appears in a file name: "Hosted Agents v2 · 0.0.6" gives "hosted-agents-v2-0.0.6". */
+export function buildLabelSlug(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/[^a-z0-9.]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+export const BUILD_LABEL = cleanBuildLabel(env?.VITE_BUILD_LABEL ?? processEnvLabel);
+/** The window title: "Switch Console — Hosted Agents v2 · 0.0.6", or just the product name. */
+export const WINDOW_TITLE = BUILD_LABEL ? `${PRODUCT_NAME} — ${BUILD_LABEL}` : PRODUCT_NAME;
+/** The start of the download's file name, before the architecture. */
+export const ARTIFACT_NAME_PREFIX = BUILD_LABEL
+  ? `${ARTIFACT_PREFIX}-${buildLabelSlug(BUILD_LABEL)}`
+  : ARTIFACT_PREFIX;
 
 // GitHub repo the desktop app publishes releases to / reads auto-updates from.
 // The repo is public, so the feed is read unauthenticated. Mirrored in

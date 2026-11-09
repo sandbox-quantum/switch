@@ -1,4 +1,5 @@
 import {
+  Link,
   Box,
   Chip,
   LinearProgress,
@@ -11,6 +12,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useMemo } from "react";
+import { Link as RouterLink } from "react-router";
 import { useHosted } from "../HostedContext";
 import {
   LOAD_ERROR,
@@ -111,7 +113,16 @@ export default function MachinesTab() {
           )}
           {overview.machines.map((m) => (
             <TableRow key={m.name} data-testid="machine-row">
-              <TableCell sx={{ fontWeight: 600 }}>{m.name}</TableCell>
+              <TableCell sx={{ fontWeight: 600 }}>
+                {/* Its detail page, by the node's keyed id (when Core sends it). */}
+                {m.machine ? (
+                  <Link component={RouterLink} to={`/hosted/machines/${encodeURIComponent(m.machine)}`}>
+                    {m.name}
+                  </Link>
+                ) : (
+                  m.name
+                )}
+              </TableCell>
               <TableCell sx={{ color: "text.secondary", fontSize: 12, whiteSpace: "nowrap" }}>
                 {m.zone}
               </TableCell>

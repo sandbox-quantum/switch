@@ -78,11 +78,11 @@ export function fixture(): Record<string, unknown> {
     ],
     nodes: {
       machines: [
-        machineRow("shared-1", "eu-west-3a", 62, 84, "passed", null, 12, 0),
-        machineRow("shared-2", "eu-west-3b", 48, 63, "passed", null, 9, 3),
-        machineRow("shared-3", "eu-west-3c", 87, 84, "passed", null, 12, 0),
-        machineRow("shared-4", "eu-west-3a", 0, 0, "held", 3, 0, 12),
-        machineRow("shared-5", "eu-west-3b", null, null, "failed", null, 0, null),
+        machineRow("shared-1", "zone-a", 62, 84, "passed", null, 12, 0),
+        machineRow("shared-2", "zone-b", 48, 63, "passed", null, 9, 3),
+        machineRow("shared-3", "zone-c", 87, 84, "passed", null, 12, 0),
+        machineRow("shared-4", "zone-a", 0, 0, "held", 3, 0, 12),
+        machineRow("shared-5", "zone-b", null, null, "failed", null, 0, null),
       ],
       services: [{ name: "egress proxy", ready: 2, wanted: 2 }],
       report_at: "2026-10-30T10:50:00+00:00",
@@ -98,6 +98,12 @@ export function fixture(): Record<string, unknown> {
   };
 }
 
+/** A made-up keyed id for a node, from its name. */
+export function machineId(name: string): string {
+  const hex = Array.from(name, (c) => c.charCodeAt(0).toString(16)).join("");
+  return `k1-${hex.padEnd(16, "0").slice(0, 16)}`;
+}
+
 export function machineRow(
   name: string,
   zone: string,
@@ -110,7 +116,8 @@ export function machineRow(
 ) {
   return {
     name,
-    machine: MARKER,
+    // The node's keyed id: the Boxes and Machines lists link to its page.
+    machine: machineId(name),
     instance_type: MARKER,
     kind: "shared",
     zone,

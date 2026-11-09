@@ -1,7 +1,7 @@
 import { cleanup, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LOAD_ERROR, STALE } from "../overview/overview";
-import { fixture } from "../overview/testing";
+import { fixture, machineId } from "../overview/testing";
 import { MARKER, renderTab } from "../w5shared/testing";
 import MachinesTab, { EMPTY, FOOTNOTE, HIGH } from "./MachinesTab";
 
@@ -27,7 +27,7 @@ describe("the Machines tab (W4, p12)", () => {
     renderTab(MachinesTab, { overview: fixture() });
     expect(screen.getAllByTestId("machine-row")).toHaveLength(5);
     const one = rowOf("shared-1");
-    const zone = one.getByText("eu-west-3a");
+    const zone = one.getByText("zone-a");
     expect(getComputedStyle(zone).textTransform).not.toBe("uppercase"); // lower case, as on Boxes
     expect(one.getByText("Used 62%")).toBeTruthy();
     expect(one.getByText("Booked 84%")).toBeTruthy();
@@ -97,5 +97,16 @@ describe("the Machines tab (W4, p12)", () => {
   it("never renders a field W4 doesn't show (the marker search)", () => {
     const { container } = renderTab(MachinesTab, { overview: fixture() });
     expect(container.innerHTML).not.toContain(MARKER);
+  });
+});
+
+
+describe("Machines links each node to its detail page", () => {
+  afterEach(() => cleanup());
+
+  it("links the machine name by its keyed id", () => {
+    renderTab(MachinesTab, { overview: fixture() });
+    const link = screen.getByRole("link", { name: "shared-1" });
+    expect(link.getAttribute("href")).toBe(`/hosted/machines/${machineId("shared-1")}`);
   });
 });

@@ -1,12 +1,18 @@
 import { useQueryClient } from '@tanstack/react-query';
+import { FolderOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useCloudFilesVisible } from '@renderer/features/cloud-files/use-cloud-files';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
 import { Progress } from '@renderer/lib/ui/progress';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import { type MachineAction, machinePresentation } from './cloud-machine-state';
+import { hostedSummary } from './hosted-summary';
+import { HostedCapacityRows } from './hosted-summary-view';
 import { RepairCloud } from './repair-cloud';
+import { BoxSetupChecklist, BoxStatusLine, stoppedStart } from './setup-checklist-view';
 import { CLOUD_MACHINES_KEY } from './use-cloud-agents';
 import { yourCloudView } from './your-cloud';
 
@@ -88,6 +94,10 @@ export function CloudMachineCard({
     }
   };
   const agentCount = machine.agents.length;
+  // A stopped box's Start is the setup checklist's (BoxSetupChecklist), so it isn't shown twice.
+  const checklistStarts = box && stoppedStart(cloud);
+  // Your cloud files (the file explorer): a v2 box only, and only once the flags allow it.
+  const filesShown = useCloudFilesVisible(box ? serverId : null);
   return (
     <div className="mb-[14px] rounded-[11px] bg-[var(--surface-2)] p-[14px]">
       <div className="text-sm font-medium">{box ? 'Your cloud' : 'Cloud machine'}</div>
@@ -95,7 +105,9 @@ export function CloudMachineCard({
         {!box && shown.label}
         {!box && machine.instance_type && ` · ${machine.instance_type}`}
         {!box && ' · '}
-        {agentCount} {agentCount === 1 ? 'agent' : 'agents'}
+        {box
+          ? hostedSummary(machine).agents
+          : `${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}`}
       </div>
       {!box && shown.retainUntil && (
         <p className="mt-2 text-xs">
@@ -103,7 +115,9 @@ export function CloudMachineCard({
           agent before then to keep it.
         </p>
       )}
-      {shown.disk && (
+      {/* A v1 machine's disk. A box's disk is in Your cloud's rows below, and only once
+          it's the workspace disk, never the controller's own small volume. */}
+      {!box && shown.disk && (
         <div className="mt-2 max-w-[360px]">
           <Progress value={shown.disk.usedPercent} aria-label="Disk used" />
           <p className="mt-1 text-xs text-foreground-muted">
@@ -120,8 +134,9 @@ export function CloudMachineCard({
           cloud machine's card stays as upstream. */}
       {!box ? null : cloud.resting ? (
         <div className="mt-2 text-xs text-foreground-muted">
-          <span className="font-medium text-foreground">{cloud.heading}</span> · {cloud.line}
-          {cloud.start && !blocked && (
+          {/* Said once: while the checklist shows these very words, the card doesn't repeat them. */}
+          <BoxStatusLine machine={machine} serverId={serverId} view={cloud} />
+          {cloud.start && !blocked && !checklistStarts && (
             <div className="mt-2">
               <Button
                 variant="outline"
@@ -139,25 +154,39 @@ export function CloudMachineCard({
           )}
         </div>
       ) : (
-        (cloud.room || cloud.awake || cloud.aiCalls) && (
-          <div className="mt-2 max-w-[360px] space-y-1">
-            <p className="text-xs font-medium">{cloud.heading}</p>
-            {cloud.room && (
-              <>
-                <Progress value={cloud.room.usedPercent} aria-label="Room to work" />
-                <p className="text-xs text-foreground-muted">Room to work: {cloud.room.label}</p>
-              </>
-            )}
-            {cloud.awake && <p className="text-xs text-foreground-muted">{cloud.awake.label}</p>}
-            {cloud.aiCalls && (
-              <p
-                className={`text-xs ${cloud.aiCalls.capped ? 'text-foreground-warning' : 'text-foreground-muted'}`}
-              >
-                {cloud.aiCalls.label}
-              </p>
-            )}
-          </div>
-        )
+        <div className="mt-2 max-w-[360px] space-y-2">
+          <p className="text-xs font-medium">{cloud.heading}</p>
+          <HostedCapacityRows machine={machine} />
+          {cloud.aiCalls && (
+            <p
+              className={`text-xs ${cloud.aiCalls.capped ? 'text-foreground-warning' : 'text-foreground-muted'}`}
+            >
+              {cloud.aiCalls.label}
+            </p>
+          )}
+        </div>
+      )}
+      {box && (
+        <BoxSetupChecklist
+          machine={machine}
+          serverId={serverId}
+          view={cloud}
+          pending={pending}
+          blocked={blocked}
+          onStart={(how) => void startBox(how)}
+        />
+      )}
+      {box && filesShown && (
+        <div className="mt-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => appState.navigation.navigate('cloudFiles', { serverId })}
+          >
+            <FolderOpen className="size-4" />
+            Your cloud files
+          </Button>
+        </div>
       )}
       {box && <RepairCloud machine={machine} serverId={serverId} />}
       {shown.problem && (

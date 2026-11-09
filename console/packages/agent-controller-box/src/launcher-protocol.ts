@@ -12,6 +12,11 @@ import { z } from 'zod';
  * file name (security's C6). The controller's orders carry nothing a tool could
  * use beyond its own agent: never the controller's credential, the gateway
  * token or the marker key.
+ *
+ * The file explorer's orders (`files_*`) are the one place names cross from
+ * the launcher: a listing's entry names and a file's bytes, for the owner's
+ * Console. The controller passes them on to Core and never acts on them, opens
+ * them or logs them; each name is checked here as one plain name.
  */
 
 /** The longest line either side reads; a launch, with its template, is the largest. */
@@ -26,6 +31,43 @@ const ticket = z.string().regex(/^[0-9a-f]{32}$/);
 const marker = z.string().regex(/^[0-9a-f]{64}$/);
 const bytes = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const count = z.number().int().nonnegative().max(1_000_000);
+
+// -- The file explorer (`files_*`) -------------------------------------------
+
+/** The most entries one `files_list` page gives. */
+export const FILES_PAGE_MAX = 1000;
+/**
+ * The most bytes one `files_chunk` carries, before base64: base64 makes it
+ * 4/3 bigger, and the line must stay under `LAUNCHER_LINE_MAX`.
+ */
+export const FILES_CHUNK_MAX = 128 * 1024;
+const FILES_CHUNK_BASE64_MAX = Math.ceil(FILES_CHUNK_MAX / 3) * 4;
+/**
+ * One plain name: not empty, not `.` or `..`, no `/`, NUL or backslash, and at
+ * most 255 bytes, as a Linux file name is.
+ */
+export const plainName = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((name) => name !== '.' && name !== '..' && !/[/\\\u0000]/.test(name), 'not a plain name')
+  .refine((name) => Buffer.byteLength(name, 'utf8') <= 255, 'name too long');
+/**
+ * A path under the workspaces folder, relative and made of plain names joined
+ * by `/`, at most 4,096 bytes and 64 parts; the empty string is the folder itself. The launcher checks it again,
+ * with `realpath`, before it opens anything.
+ */
+export const FILES_PATH_BYTES_MAX = 4096;
+export const FILES_PATH_PARTS_MAX = 64;
+export const filesPath = z
+  .string()
+  .max(FILES_PATH_BYTES_MAX)
+  .refine((path) => Buffer.byteLength(path, 'utf8') <= FILES_PATH_BYTES_MAX, 'path too long')
+  .refine((path) => path === '' || path.split('/').length <= FILES_PATH_PARTS_MAX, 'too many parts')
+  .refine(
+    (path) => path === '' || path.split('/').every((part) => plainName.safeParse(part).success),
+    'not a relative path of plain names'
+  );
 
 // -- The controller's orders -------------------------------------------------
 
@@ -102,6 +144,38 @@ export const launcherOrderSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('disk'), id: requestId }).strict(),
   /** A fresh ticket for a living host to reconnect with, pushed over its control channel. */
   z.object({ kind: z.literal('ticket'), id: requestId, agentId, launchId, ticket }).strict(),
+  /** One page of a folder under the workspaces folder, after `cursor` (the last name of the page before). */
+  z
+    .object({
+      kind: z.literal('files_list'),
+      id: requestId,
+      path: filesPath,
+      cursor: plainName.optional(),
+    })
+    .strict(),
+  /** Bytes of one file under the workspaces folder, answered as one `files_chunk`. */
+  z
+    .object({
+      kind: z.literal('files_read'),
+      id: requestId,
+      path: filesPath,
+      offset: bytes,
+      length: z.number().int().min(1).max(FILES_CHUNK_MAX),
+    })
+    .strict(),
+  /** A folder as a zip, one `files_chunk` at a time: the first comes unasked, each next after `files_more`. */
+  z
+    .object({
+      kind: z.literal('files_zip'),
+      id: requestId,
+      path: filesPath,
+      includeCaches: z.boolean(),
+    })
+    .strict(),
+  /** The next chunk of the zip `id`. */
+  z.object({ kind: z.literal('files_more'), id: requestId }).strict(),
+  /** Stop the file request `id` and close what it holds. An unknown id is ignored. */
+  z.object({ kind: z.literal('files_cancel'), id: requestId }).strict(),
 ]);
 export type LauncherOrder = z.infer<typeof launcherOrderSchema>;
 
@@ -142,6 +216,13 @@ export const REPLY_CODES = [
   'bad_directory', // a launch's working directory is outside the agents' folders
   'unknown_agent', // an order for an agent the launcher hasn't launched
   'failed', // the order was understood but could not be done
+  // The file explorer's refusals (`files_*`):
+  'outside_root', // the path isn't under the workspaces folder, or a link leads out of it
+  'denied', // the path names something never readable (a login, a key, a cache of tokens)
+  'not_found', // nothing there, or the zip `id` is unknown
+  'too_large', // over the file, folder or zip cap
+  'not_regular', // not a regular file or folder (a device, pipe or socket)
+  'busy', // too many file requests already in flight
   'launcher_lost', // the controller's link: no launcher connected
   'timed_out', // the controller's link: no answer in time
 ] as const;
@@ -179,6 +260,46 @@ export const launcherReportSchema = z.discriminatedUnion('kind', [
       readiness: z.record(z.string(), z.unknown()).optional(),
       /** `disk`: the agents' volume, in bytes. */
       disk: z.object({ free: bytes, total: bytes }).strict().optional(),
+      /** `files_list`: one page, and the cursor for the next when there is more. */
+      listing: z
+        .object({
+          entries: z
+            .array(
+              z
+                .object({
+                  name: plainName,
+                  kind: z.enum(['file', 'folder']),
+                  size: bytes,
+                  /** Last changed, ms since the epoch. */
+                  mtime: bytes,
+                  /** A cache folder (`node_modules`, `.git`, ...), shown closed. */
+                  collapsed: z.literal(true).optional(),
+                })
+                .strict()
+            )
+            .max(FILES_PAGE_MAX),
+          cursor: plainName.optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+  /**
+   * File bytes for `files_read` (one chunk, `last`) or `files_zip` (in order
+   * from `seq` 0, the last marked `last`). `size`: the whole file's size, on a
+   * read.
+   */
+  z
+    .object({
+      kind: z.literal('files_chunk'),
+      id: requestId,
+      seq: count,
+      data: z
+        .string()
+        .max(FILES_CHUNK_BASE64_MAX)
+        .regex(/^[A-Za-z0-9+/]*={0,2}$/),
+      last: z.boolean(),
+      size: bytes.optional(),
     })
     .strict(),
   z

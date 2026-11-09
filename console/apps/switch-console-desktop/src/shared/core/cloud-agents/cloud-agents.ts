@@ -8,6 +8,20 @@ const machineCapacitySchema = z
   .nullable();
 
 /**
+ * A machine's disk. `scope` is "workspace" once a box measures the agents' 15 GB
+ * workspace volume; an older box leaves it out and reports its controller's own
+ * small volume, which Your cloud mustn't show as the person's disk. A value out
+ * of shape reads as absent.
+ */
+const machineDiskSchema = z
+  .object({
+    total_bytes: z.number().int().nonnegative(),
+    available_bytes: z.number().int().nonnegative(),
+    scope: z.string().max(32).optional().catch(undefined),
+  })
+  .nullable();
+
+/**
  * The owner's cloud machine. It runs the agent controller, and its agents are
  * managed agents placed on `controller_id` (null until it has enrolled).
  * `sleeping` is Core's reading of desired `stopped` for `idle`; `disk` and
@@ -37,7 +51,7 @@ export const cloudMachineSchema = z.object({
   error_code: z.string().nullable(),
   retain_until: z.string().nullable(),
   heartbeat_at: z.string().nullable(),
-  disk: machineCapacitySchema,
+  disk: machineDiskSchema,
   memory: machineCapacitySchema,
   agents: z.array(z.string()),
   controller_id: z.string().nullable(),

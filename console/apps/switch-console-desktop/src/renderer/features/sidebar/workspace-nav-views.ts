@@ -3,6 +3,7 @@ export type WorkspaceNavView =
   | 'serverAgents'
   | 'serverRooms'
   | 'connectors'
+  | 'cloudFiles'
   | 'templates'
   | 'admin';
 
@@ -22,6 +23,8 @@ export function workspaceNavViews(server: {
   administers: boolean;
   /** The server shows this person, a Switch operator, the shared machines. */
   sharedCloud?: boolean;
+  /** Your cloud files shows for this person (`useCloudFilesVisible`). */
+  cloudFiles?: boolean;
 }): WorkspaceNavView[] {
   const admin =
     (server.serviceConnections && server.administers) ||
@@ -32,6 +35,7 @@ export function workspaceNavViews(server: {
     'serverAgents',
     'serverRooms',
     ...(server.serviceConnections ? (['connectors'] as const) : []),
+    ...(server.cloudFiles ? (['cloudFiles'] as const) : []),
     'templates',
     ...(admin ? (['admin'] as const) : []),
   ];

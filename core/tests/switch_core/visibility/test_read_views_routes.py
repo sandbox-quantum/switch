@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
+from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
     AgentController,
     ServerAuditEvent,
@@ -253,6 +254,169 @@ async def test_the_overview_shows_keyed_ids_with_no_names_emails_or_raw_ids(
         controller_id,
         *agent_ids,
     )
+
+
+# --- the overview: each box's capacity and times ----------------------------------------------
+
+
+async def test_the_overview_shows_each_box_s_memory_awake_count_and_times(
+    views,
+) -> None:
+    controller_id, agent_ids = await enrolled(views.base, agents=1)
+    await _running(views.base, used_pct=25)
+    seen = datetime(2026, 11, 6, 9, 0, tzinfo=UTC)
+    await update_machine(
+        views.base.factory,
+        views.base.machine_id,
+        active_at=seen,
+        heartbeat_at=seen + timedelta(minutes=5),
+        running_observed_at=seen - timedelta(hours=1),
+    )
+    async with views.base.factory() as session:
+        controller = await session.scalar(
+            select(AgentController).where(AgentController.id == controller_id)
+        )
+        assert controller is not None
+        controller.status = {
+            "agents": [{"agent_id": agent_ids[0], "process": "running"}],
+            "machine": {"sessions_running": 3, "sessions_max": 12},
+            "note": f"{MARKER} {DUMMY_SECRET}",
+        }
+        await session.commit()
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 200, answer.text
+    (row,) = answer.json()["boxes"]
+    assert row["memory_total_bytes"] == 4 * GIB
+    assert row["memory_used_bytes"] == GIB
+    assert row["awake"] == {"running": 3, "max": 12}
+    assert row["active_at"] == seen.isoformat()
+    assert row["heartbeat_at"] == (seen + timedelta(minutes=5)).isoformat()
+    assert row["running_observed_at"] == (seen - timedelta(hours=1)).isoformat()
+    # `_running`'s heartbeat has a disk reading with no scope: an older box.
+    assert row["disk"] == {"total_bytes": 100, "available_bytes": 50, "scope": None}
+    _never_leaks(answer.text, controller_id, *agent_ids)
+
+
+async def test_a_box_that_has_not_reported_shows_no_capacity(views) -> None:
+    await enrolled(views.base, agents=0)
+    await update_machine(views.base.factory, views.base.machine_id, heartbeat=None)
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 200, answer.text
+    (row,) = answer.json()["boxes"]
+    assert (row["memory_used_bytes"], row["memory_total_bytes"], row["awake"]) == (
+        None,
+        None,
+        None,
+    )
+    assert row["heartbeat_at"] is None
+
+
+async def test_a_put_away_box_shows_when_it_goes_for_good(views) -> None:
+    await enrolled(views.base, agents=0)
+    until = datetime(2026, 11, 20, 0, 0, tzinfo=UTC)
+    await update_machine(
+        views.base.factory,
+        views.base.machine_id,
+        state="retained",
+        desired_state="retained",
+        retain_until=until,
+    )
+    (row,) = (await views.client.get(OVERVIEW)).json()["boxes"]
+    assert (row["state"], row["retain_until"]) == ("retired", until.isoformat())
+
+
+async def test_a_current_box_has_no_kept_until_date(views) -> None:
+    await enrolled(views.base, agents=0)
+    await _running(views.base, used_pct=25)
+    (row,) = (await views.client.get(OVERVIEW)).json()["boxes"]
+    assert row["retain_until"] is None
+
+
+@pytest.mark.parametrize("who", ["owner", "second", "admin", "deployment_admin"])
+async def test_members_never_see_a_box_s_capacity(views, who) -> None:
+    await enrolled(views.base, agents=0)
+    await _running(views.base, used_pct=25)
+    views.as_(who)
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 403
+    assert "memory_total_bytes" not in answer.text
+    assert "awake" not in answer.text
+
+
+# --- the overview: boxes made against the ceiling ---------------------------------------------
+
+
+def _config(views):
+    return views.app.dependency_overrides[get_config]()
+
+
+async def _provision_event(views, machine_id: str, **details) -> None:
+    with no_tenant():
+        async with views.base.factory() as session:
+            await record_server_audit_event(
+                session,
+                actor_user_id=None,
+                action=ServerAuditAction.HOSTED_BOX_PROVISION,
+                target_type="box",
+                target_id=KEY.keyed_id(KeyedIdKind.BOX, machine_id),
+                details={"machine_id": machine_id, **details},
+            )
+            await session.commit()
+
+
+async def test_the_overview_counts_boxes_made_against_the_ceiling(views) -> None:
+    """The provisioner's own count: a box made and not deleted. A request that
+    hasn't finished, or one that failed, doesn't count."""
+    await enrolled(views.base, agents=0)
+    config = _config(views)
+    config.hosted_box_provisioning = True
+    config.hosted_box_ceiling = 20
+    await _provision_event(views, views.base.machine_id, phase="requested")
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["box_ceiling"] == {"made": 0, "ceiling": 20}
+    await _provision_event(
+        views, views.base.machine_id, phase="result", result="failed"
+    )
+    assert (await views.client.get(OVERVIEW)).json()["box_ceiling"] == {
+        "made": 0,
+        "ceiling": 20,
+    }
+    await _provision_event(views, views.base.machine_id, phase="result", result="done")
+    assert (await views.client.get(OVERVIEW)).json()["box_ceiling"] == {
+        "made": 1,
+        "ceiling": 20,
+    }
+    # A deleted box no longer counts, as the provisioner sees it.
+    await update_machine(views.base.factory, views.base.machine_id, state="deleted")
+    assert (await views.client.get(OVERVIEW)).json()["box_ceiling"] == {
+        "made": 0,
+        "ceiling": 20,
+    }
+
+
+async def test_with_box_provisioning_off_there_is_no_ceiling(views) -> None:
+    await enrolled(views.base, agents=0)
+    config = _config(views)
+    config.hosted_box_provisioning = False
+    config.hosted_box_ceiling = 20
+    await _provision_event(views, views.base.machine_id, phase="result", result="done")
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["box_ceiling"] is None
+
+
+@pytest.mark.parametrize("who", ["owner", "second", "admin", "deployment_admin"])
+async def test_members_never_see_the_ceiling(views, who) -> None:
+    await enrolled(views.base, agents=0)
+    config = _config(views)
+    config.hosted_box_provisioning = True
+    config.hosted_box_ceiling = 20
+    views.as_(who)
+    answer = await views.client.get(OVERVIEW)
+    assert answer.status_code == 403
+    assert "box_ceiling" not in answer.text
+    assert "ceiling" not in answer.text
 
 
 # --- the overview: nodes from the cluster report ------------------------------------------------

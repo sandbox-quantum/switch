@@ -88,6 +88,13 @@ HOSTED_AWAKE_BUDGETS = "hosted_awake_budgets"
 # ignores the fields and makes an internal chat instead.
 BUDDY_SLACK_HANDOFF = "buddy_slack_handoff"
 
+# Your cloud files: the owner lists, previews and downloads the files on their
+# own hosted box, read-only (`gateway/cloud_files.py`). Off by default. It needs
+# a single switch-core replica until a process-to-process relay exists: a file
+# request is served only by the process holding the box controller's socket,
+# and any other answers `503 files_elsewhere` for the client to retry.
+HOSTED_CLOUD_FILES = "hosted_cloud_files"
+
 # Connector apps per organization: a workspace signs in to GitHub and the
 # static OAuth services through the app its organization registered, where
 # it registered one, and through the server's otherwise
@@ -108,6 +115,7 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         SWITCH_BUDDY,
         GROUP_CHATS,
         HOSTED_AWAKE_BUDGETS,
+        HOSTED_CLOUD_FILES,
         BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
     }

@@ -202,11 +202,45 @@ it("shows a shared-cloud user's own box as Your cloud, with Repair and no machin
   expect(switchServers.sharedCloudAgents).toHaveBeenCalled();
   expect(el.textContent).toMatch(/Your cloud/);
   expect(el.textContent).not.toMatch(/Cloud machine/);
-  expect(el.textContent).toMatch(/Room to work: Plenty of room/);
-  expect(el.textContent).toMatch(/1 of 4 awake/);
+  // Your cloud's rows: memory from `room`, awake out of the limit, and the disk only
+  // once the box marks it as the workspace disk (this one doesn't).
+  expect(el.textContent).toMatch(/1 hosted agent/);
+  expect(el.textContent).toMatch(/Memory: 2\.0 GB of 8\.0 GB/);
+  expect(el.textContent).toMatch(/Agents awake: 1 of 4/);
+  expect(el.textContent).toMatch(/Disk: not available/);
+  expect(el.textContent).not.toMatch(/free of/);
+  expect(el.textContent).not.toMatch(/Room to work/);
   expect(button(el, /Repair my cloud/)).toBeDefined();
   expect(button(el, /start machine/i)).toBeUndefined();
   expect(button(el, /stop machine/i)).toBeUndefined();
+});
+
+it('a box with no agent yet says how to start, in the PM’s words; with v2 off it says nothing new', async () => {
+  flags.hosted_agents = true;
+  flags.hosted_v2 = true;
+  switchServers.sharedCloudAgents.mockResolvedValue([]);
+  const empty = {
+    ...sleepingMachine(),
+    state: 'ready',
+    desired_state: 'running',
+    stop_reason: null,
+    sleeping: false,
+    instance_type: null,
+    controller_id: 'c-box',
+    agents: [],
+    backend: 'box',
+  } satisfies CloudMachine;
+  switchServers.cloudMachines.mockResolvedValue([empty]);
+  let el = await render();
+  await settle();
+  expect(el.textContent).toContain('Add your first agent on Switch cloud');
+  await act(async () => root!.unmount());
+  container?.remove();
+
+  flags.hosted_v2 = false;
+  el = await render();
+  await settle();
+  expect(el.textContent).not.toContain('Add your first agent on Switch cloud');
 });
 
 it('says a paused box is paused by Switch, and offers no start', async () => {

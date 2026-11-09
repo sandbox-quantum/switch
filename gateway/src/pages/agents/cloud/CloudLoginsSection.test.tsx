@@ -156,4 +156,65 @@ describe("Login set only once the box confirms it", () => {
     section();
     await waitFor(async () => expect(await statusOf("claude")).toBe("Couldn't read"));
   });
+
+  describe("the checklist's AI login set", () => {
+    it("reports it by the agents' providers: one Claude agent with only a Claude login is set", async () => {
+      const onLoginSet = vi.fn();
+      render(
+        <CloudLoginsSection
+          controllerId="box-ctl"
+          machine={MACHINE}
+          onCloudChanged={() => {}}
+          onLoginSet={onLoginSet}
+          agentProviders={["claude"]}
+        />,
+      );
+      await waitFor(() => expect(onLoginSet).toHaveBeenLastCalledWith({ set: true, missing: null }));
+    });
+
+    it("isn't set while a Codex agent has no login, and doesn't report again on every render", async () => {
+      const onLoginSet = vi.fn();
+      const view = (providers: (string | null)[]) => (
+        <CloudLoginsSection
+          controllerId="box-ctl"
+          machine={MACHINE}
+          onCloudChanged={() => {}}
+          onLoginSet={onLoginSet}
+          agentProviders={providers}
+        />
+      );
+      const { rerender } = render(view(["claude", "codex"]));
+      await waitFor(() => expect(onLoginSet).toHaveBeenLastCalledWith({ set: false, missing: "codex" }));
+      const calls = onLoginSet.mock.calls.length;
+      // The parent hands over a new array with the same providers.
+      rerender(view(["claude", "codex"]));
+      expect(onLoginSet.mock.calls.length).toBe(calls);
+    });
+
+    it("reports nothing it can trust when the logins can't be read", async () => {
+      vi.mocked(logins.listCloudLogins).mockRejectedValue(new Error("down"));
+      const onLoginSet = vi.fn();
+      render(
+        <CloudLoginsSection
+          controllerId="box-ctl"
+          machine={MACHINE}
+          onCloudChanged={() => {}}
+          onLoginSet={onLoginSet}
+          agentProviders={["claude"]}
+        />,
+      );
+      await screen.findByText("Claude");
+      expect(onLoginSet).toHaveBeenLastCalledWith(null);
+    });
+
+    it("opens the form for the provider Give login asks for", async () => {
+      const { rerender } = section();
+      await screen.findByText("Codex");
+      expect(screen.queryByTestId("login-dialog")).toBeNull();
+      rerender(
+        <CloudLoginsSection controllerId="box-ctl" machine={MACHINE} onCloudChanged={() => {}} ask={{ provider: "codex" }} />,
+      );
+      expect((await screen.findByTestId("login-dialog")).textContent).toBe("codex");
+    });
+  });
 });

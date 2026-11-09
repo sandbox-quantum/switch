@@ -233,3 +233,98 @@ async function freeLoopbackPort(): Promise<number> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
 }
+
+describe('LauncherLink: file requests (the file explorer)', () => {
+  type Got = {
+    kind: string;
+    id: number;
+    ok?: boolean;
+    code?: string;
+    seq?: number;
+    last?: boolean;
+  };
+
+  it('routes every reply and chunk under a file request’s id to it, in order, until it ends', async () => {
+    const l = await launcher();
+    l.send(hello());
+    l.send(measure());
+    await tick();
+    const got: Got[] = [];
+    const id = link.startFile(
+      { kind: 'files_zip', path: 'w', includeCaches: false },
+      (r) => void got.push(r)
+    );
+    await tick();
+    expect(l.orders.at(-1)).toEqual({ kind: 'files_zip', path: 'w', includeCaches: false, id });
+    l.send(encodeLine({ kind: 'files_chunk', id, seq: 0, data: 'AA==', last: false }));
+    await tick();
+    link.followFile('files_more', id);
+    await tick();
+    expect(l.orders.at(-1)).toEqual({ kind: 'files_more', id });
+    l.send(encodeLine({ kind: 'files_chunk', id, seq: 1, data: '', last: true }));
+    await tick();
+    expect(got.map((g) => [g.kind, g.seq, g.last])).toEqual([
+      ['files_chunk', 0, false],
+      ['files_chunk', 1, true],
+    ]);
+    link.endFile(id);
+    l.send(encodeLine({ kind: 'files_chunk', id, seq: 2, data: '', last: true }));
+    await tick();
+    expect(got).toHaveLength(2);
+    expect(link.unmatchedReplies).toBe(1);
+  });
+
+  it('sends no follow-up for a request that has ended or was never started', async () => {
+    const l = await launcher();
+    l.send(hello());
+    l.send(measure());
+    await tick();
+    const before = l.orders.length;
+    link.followFile('files_cancel', 9999);
+    await tick();
+    expect(l.orders.length).toBe(before);
+  });
+
+  it('answers launcher_lost at once with no launcher, and to every open request when the link is lost', async () => {
+    const early: Got[] = [];
+    link.startFile({ kind: 'files_list', path: '' }, (r) => void early.push(r));
+    await tick();
+    expect(early).toEqual([
+      expect.objectContaining({ kind: 'reply', ok: false, code: 'launcher_lost' }),
+    ]);
+
+    const l = await launcher();
+    l.send(hello());
+    l.send(measure());
+    await tick();
+    const open: Got[] = [];
+    link.startFile(
+      { kind: 'files_read', path: 'a', offset: 0, length: 1 },
+      (r) => void open.push(r)
+    );
+    await tick();
+    l.socket.destroy();
+    await l.closed;
+    await tick();
+    expect(open).toEqual([
+      expect.objectContaining({ kind: 'reply', ok: false, code: 'launcher_lost' }),
+    ]);
+  });
+
+  it('keeps ordinary orders’ replies apart from file requests', async () => {
+    const l = await launcher();
+    l.send(hello());
+    l.send(measure());
+    await tick();
+    const files: Got[] = [];
+    const fileId = link.startFile({ kind: 'files_list', path: '' }, (r) => void files.push(r));
+    const answer = link.order({ kind: 'observe', agentId: AGENT });
+    await tick();
+    const orderId = (l.orders.at(-1) as { id: number }).id;
+    l.send(encodeLine({ kind: 'reply', id: orderId, ok: true, observation: {} }));
+    l.send(encodeLine({ kind: 'reply', id: fileId, ok: true, listing: { entries: [] } }));
+    expect((await answer).ok).toBe(true);
+    await tick();
+    expect(files).toEqual([expect.objectContaining({ kind: 'reply', id: fileId, ok: true })]);
+  });
+});

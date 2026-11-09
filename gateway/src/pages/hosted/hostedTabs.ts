@@ -1,11 +1,16 @@
-import type { ComponentType } from "react";
+import { type ComponentType, lazy } from "react";
 import AlertsTab from "./alerts/AlertsTab";
 import AuditTab from "./audit/AuditTab";
 import BoxesTab from "./boxes/BoxesTab";
+import { withDetail } from "./detail/withDetail";
 import IsolationTab from "./isolation/IsolationTab";
 import MachinesTab from "./machines/MachinesTab";
 import OperatorsTab from "./operators/OperatorsTab";
 import OverviewTab from "./overview/OverviewTab";
+
+// The detail pages, and the charts they draw, load only when one is opened.
+const BoxDetailPage = lazy(() => import("./detail/BoxDetailPage"));
+const MachineDetailPage = lazy(() => import("./detail/MachineDetailPage"));
 
 /** One tab of Switch web's Hosted page.
  *
@@ -40,8 +45,14 @@ export type HostedTabKey = (typeof TAB_ORDER)[number];
  *  (`./<folder>/...`). This is the only file the tab owners share. */
 export const HOSTED_TABS: HostedTab[] = [
   { key: "overview", label: "Overview", component: OverviewTab },
-  { key: "boxes", label: "Boxes", component: BoxesTab },
-  { key: "machines", label: "Machines", component: MachinesTab },
+  // Each with its detail page under it (`/hosted/boxes/<box id>`,
+  // `/hosted/machines/<machine id>`), keyed ids only.
+  { key: "boxes", label: "Boxes", component: withDetail(BoxesTab, BoxDetailPage, "boxId") },
+  {
+    key: "machines",
+    label: "Machines",
+    component: withDetail(MachinesTab, MachineDetailPage, "machineId"),
+  },
   { key: "isolation", label: "Isolation", component: IsolationTab },
   { key: "alerts", label: "Alerts", component: AlertsTab },
   { key: "audit", label: "Audit log", component: AuditTab },

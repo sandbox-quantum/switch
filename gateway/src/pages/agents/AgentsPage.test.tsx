@@ -27,7 +27,29 @@ vi.mock("../../data/api", async (importOriginal) => {
 
 vi.mock("./RegisterAgentDialog", () => ({ default: () => null }));
 // The logins section has tests of its own; here it would add its own reads.
-vi.mock("./cloud/CloudLoginsSection", () => ({ default: () => null }));
+// It's drawn as an empty section, so a status line's link has somewhere to go.
+vi.mock("./cloud/CloudLoginsSection", () => ({
+  AI_LOGINS_ID: "cloud-ai-logins",
+  default: ({
+    agentProviders,
+    ask,
+    onLoginSet,
+  }: {
+    agentProviders?: (string | null)[];
+    ask?: { provider: string } | null;
+    onLoginSet?: (tick: { set: boolean; missing: string | null }) => void;
+  }) => (
+    <section
+      id="cloud-ai-logins"
+      tabIndex={-1}
+      aria-label="AI logins on your cloud"
+      data-providers={JSON.stringify(agentProviders ?? [])}
+      data-ask={ask?.provider ?? ""}
+    >
+      <button onClick={() => onLoginSet?.({ set: false, missing: "claude" })}>report Claude missing</button>
+    </section>
+  ),
+}));
 // The cloud delete has tests of its own; here it only shows which agent it opened for.
 vi.mock("./cloud/CloudDeleteDialog", () => ({
   default: ({ agent }: { agent: { name: string } | null }) =>
@@ -219,11 +241,89 @@ describe("AgentsPage with hosted agents v2", () => {
         "Stopped · Start your cloud to use it",
       ),
     );
+    // Its owner stopped it, so Core sends no state: on a stopped box it still says to start the cloud.
     expect(within(screen.getByTestId("row-stopped-one")).getByTestId("cloud").textContent).toBe(
-      "Stopped",
+      "Stopped · Start your cloud to use it",
     );
     // An agent not on the box is left alone.
     expect(within(screen.getByTestId("row-<b>local</b>")).getByTestId("cloud").textContent).toBe("—");
+  });
+
+  it("an agent with no working login says so, and its Check your AI login goes to the AI logins", async () => {
+    box = { ...resting, state: "ready", sleeping: false };
+    fetch.mockImplementation(async (url: string) => {
+      const body = url.endsWith("/hosted-machines")
+        ? { available: true, machines: [box] }
+        : { agents: [{ agent_id: "a1", state: "unavailable", stop_reason: "login_needed" }] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    const cell = await waitFor(() => {
+      const found = within(screen.getByTestId("row-notes-taker")).getByTestId("cloud");
+      expect(found.textContent).toBe("Can't reply right now · Check your AI login");
+      return found;
+    });
+    fireEvent.click(within(cell).getByRole("button", { name: "Check your AI login" }));
+    expect(document.activeElement).toBe(screen.getByRole("region", { name: "AI logins on your cloud" }));
+  });
+
+  it("hands the logins each box agent's provider, and Give login asks for the one missing", async () => {
+    box = { ...resting, state: "ready", sleeping: false };
+    vi.mocked(hooks.useAgents).mockReturnValue({
+      data: [
+        { ...agent, known_agent_type: "claude-code" },
+        { ...agent, id: "a2", name: "coder", known_agent_type: "codex" },
+        { ...agent, id: "a3", name: "<b>local</b>", known_agent_type: "claude-code" },
+      ] as AgentSummary[],
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    const logins = await screen.findByRole("region", { name: "AI logins on your cloud" });
+    // Only the agents on the box (a1, a2), in the box's order.
+    expect(logins.getAttribute("data-providers")).toBe(JSON.stringify(["claude", "codex"]));
+    fireEvent.click(screen.getByRole("button", { name: "report Claude missing" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Give login" }));
+    expect(logins.getAttribute("data-ask")).toBe("claude");
+    expect(document.activeElement).toBe(logins);
+  });
+
+  it("shows no checklist while the agents list is still loading, then shows it", async () => {
+    box = { ...resting, state: "ready", sleeping: false, agents: [] };
+    const loadingAgents = { data: null, loading: true, error: null, refetch: vi.fn() };
+    vi.mocked(hooks.useAgents).mockReturnValue(loadingAgents as never);
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    const { rerender } = render(<AgentsPage />);
+    await screen.findByRole("region", { name: "AI logins on your cloud" });
+    fireEvent.click(screen.getByRole("button", { name: "report Claude missing" }));
+    expect(screen.queryByRole("list", { name: "Setting up your cloud" })).toBeNull();
+    vi.mocked(hooks.useAgents).mockReturnValue({ data: others, loading: false, error: null, refetch: vi.fn() });
+    rerender(<AgentsPage />);
+    expect(await screen.findByRole("list", { name: "Setting up your cloud" })).toBeTruthy();
+  });
+
+  it("puts a cloud state and its detail on two lines, never cut off, with the whole on hover", async () => {
+    box = { ...resting, state: "ready", sleeping: false };
+    fetch.mockImplementation(async (url: string) => {
+      const body = url.endsWith("/hosted-machines")
+        ? { available: true, machines: [box] }
+        : { agents: [{ agent_id: "a1", state: "waking", box_starting: true, last_reply_at: "2026-11-05T11:56:00Z" }] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    const cell = await waitFor(() => {
+      const found = within(screen.getByTestId("row-notes-taker")).getByTestId("cloud-cell");
+      expect(found.textContent).toBe("Back in a moment · Starting your cloud");
+      return found;
+    });
+    // One line each: the state, then its detail.
+    const lines = [...cell.querySelectorAll(":scope > div > div")].map((line) => line.textContent);
+    expect(lines).toEqual(["Back in a moment", " · Starting your cloud"]);
+    expect(cell.getAttribute("title")).toMatch(/^Back in a moment · Starting your cloud \(last reply .+\)$/);
   });
 
   it("while the flag is still loading, shows and asks nothing", async () => {

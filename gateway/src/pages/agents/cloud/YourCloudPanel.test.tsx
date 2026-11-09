@@ -10,6 +10,8 @@ vi.mock("../../../data/hostedCloud", async (importOriginal) => {
   return { ...actual, ensureCloudMachine: vi.fn(), startCloudMachine: vi.fn() };
 });
 
+const GB = 1024 ** 3;
+
 function box(overrides: Partial<CloudMachine> = {}): CloudMachine {
   return {
     machine_id: "m-1",
@@ -42,8 +44,9 @@ describe("YourCloudPanel", () => {
     expect(screen.getByText("Your cloud")).toBeTruthy();
     expect(screen.getByText("2 agents")).toBeTruthy();
     expect(screen.getByText("Ready")).toBeTruthy();
-    expect(screen.getByText("Room to work: Plenty of room")).toBeTruthy();
-    expect(screen.getByText("2 of 15 awake")).toBeTruthy();
+    expect(screen.getByText("Agents awake: 2 of 15")).toBeTruthy();
+    expect(screen.getByText("Disk: not available")).toBeTruthy();
+    expect(screen.queryByText(/Room to work/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
   });
 
@@ -80,10 +83,34 @@ describe("YourCloudPanel", () => {
     expect(hosted.startCloudMachine).not.toHaveBeenCalled();
   });
 
-  it("shows no unlabelled bar under Ready", () => {
-    render(<YourCloudPanel machine={box()} onChanged={vi.fn()} />);
-    expect(screen.getByText("Room to work: Plenty of room")).toBeTruthy();
-    expect(screen.queryByRole("progressbar")).toBeNull();
+  it("labels every bar with its figures", () => {
+    render(
+      <YourCloudPanel
+        machine={box({
+          room: { used_bytes: 2 * GB, total_bytes: 5 * GB },
+          disk: { total_bytes: 15 * GB, available_bytes: 12.9 * GB, scope: "workspace" },
+        })}
+        onChanged={vi.fn()}
+      />,
+    );
+    const bars = screen.getAllByRole("progressbar");
+    expect(bars.map((bar) => bar.getAttribute("aria-label"))).toEqual([
+      "Agents awake: 2 of 15",
+      "Memory: 2.0 GB of 5.0 GB",
+      "Disk: 2.1 GB of 15.0 GB",
+    ]);
+    for (const bar of bars) expect(bar.getAttribute("aria-valuetext")).toBe(bar.getAttribute("aria-label"));
+  });
+
+  it("warns at 80% and says the bar is full at 95%, in the PM's words", () => {
+    render(
+      <YourCloudPanel
+        machine={box({ awake: { running: 12, max: 12 }, room: { used_bytes: 8, total_bytes: 10 } })}
+        onChanged={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Full right now. New work waits until a place frees up.")).toBeTruthy();
+    expect(screen.getByText("Nearly full. Agents may slow down.")).toBeTruthy();
   });
 
   it("wakes a resting box with no agents", async () => {
@@ -136,5 +163,89 @@ describe("YourCloudPanel", () => {
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain('<img src=x onerror="alert(1)">');
     expect(alert.querySelector("img")).toBeNull();
+  });
+
+  describe("setup checklist", () => {
+    it("shows each missing step with its button, and they do what they say", () => {
+      const onGiveLogin = vi.fn();
+      const onAddAgent = vi.fn();
+      render(
+        <YourCloudPanel
+          machine={box({ agents: [] })}
+          onChanged={vi.fn()}
+          loginSet={false}
+          onGiveLogin={onGiveLogin}
+          onAddAgent={onAddAgent}
+        />,
+      );
+      expect(screen.getByText("Add your first agent on Switch cloud")).toBeTruthy();
+      const list = screen.getByRole("list", { name: "Setting up your cloud" });
+      expect(list.textContent).toContain("Your cloud is ready, done");
+      fireEvent.click(screen.getByRole("button", { name: "Give login" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
+      expect(onGiveLogin).toHaveBeenCalledOnce();
+      expect(onAddAgent).toHaveBeenCalledOnce();
+    });
+
+    it("folds away once all three are ticked, and stays hidden until the login is known", () => {
+      render(<YourCloudPanel machine={box()} onChanged={vi.fn()} loginSet />);
+      expect(screen.queryByRole("list", { name: "Setting up your cloud" })).toBeNull();
+      cleanup();
+      render(<YourCloudPanel machine={box({ agents: [] })} onChanged={vi.fn()} loginSet={null} />);
+      expect(screen.queryByRole("list", { name: "Setting up your cloud" })).toBeNull();
+    });
+
+    it("its Start starts the box, in place of the panel's own Start", async () => {
+      const onChanged = vi.fn();
+      vi.mocked(hosted.ensureCloudMachine).mockResolvedValue(null);
+      render(<YourCloudPanel machine={box({ state: "retained" })} onChanged={onChanged} loginSet={false} />);
+      expect(screen.getAllByRole("button", { name: "Start" })).toHaveLength(1);
+      expect(screen.getByTestId("setup-cloud").textContent).toContain("Your cloud is stopped");
+      fireEvent.click(screen.getByRole("button", { name: "Start" }));
+      await waitFor(() => expect(onChanged).toHaveBeenCalled());
+      expect(hosted.ensureCloudMachine).toHaveBeenCalledOnce();
+    });
+
+    it("offers no Add agent where the workspace can't have one", () => {
+      render(<YourCloudPanel machine={box({ agents: [] })} onChanged={vi.fn()} loginSet />);
+      expect(screen.getByText("No agent yet")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Add agent" })).toBeNull();
+    });
+  });
+
+  it("says a starting box's state once: in the checklist while it shows, on the panel when there's no checklist", () => {
+    const starting = box({ state: "provisioning" });
+    const { rerender } = render(<YourCloudPanel machine={starting} onChanged={vi.fn()} loginSet={false} />);
+    expect(screen.getAllByText("Starting…")).toHaveLength(1);
+    expect(screen.getAllByText(/Usually ready in about two minutes\./)).toHaveLength(1);
+    expect(screen.getByTestId("setup-cloud").textContent).toContain("Starting…");
+    // No checklist showing (here, the login state not known yet): the panel says it.
+    rerender(<YourCloudPanel machine={starting} onChanged={vi.fn()} loginSet={null} />);
+    expect(screen.queryByRole("list", { name: "Setting up your cloud" })).toBeNull();
+    expect(screen.getByText("Starting…")).toBeTruthy();
+    expect(screen.getByText("Usually ready in about two minutes.")).toBeTruthy();
+  });
+
+  it("keeps the panel's line when the checklist words it differently (a stopped box)", () => {
+    render(<YourCloudPanel machine={box({ state: "retained" })} onChanged={vi.fn()} loginSet={false} />);
+    expect(screen.getByTestId("setup-cloud").textContent).toContain("Your cloud is stopped");
+    expect(screen.getByText("Start it to add or use an agent.")).toBeTruthy();
+  });
+
+  it("explains a resting box with agents", () => {
+    render(<YourCloudPanel machine={box({ sleeping: true })} onChanged={vi.fn()} />);
+    expect(
+      screen.getByText(
+        "Your cloud is resting to save resources. It wakes in about a minute when you message an agent or press Wake it.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Wake" })).toBeTruthy();
+  });
+
+  it("fades the heading only when the state changes, and not on first show", () => {
+    const { rerender, container } = render(<YourCloudPanel machine={box()} onChanged={vi.fn()} />);
+    expect(container.querySelector("[data-state-fade]")).toBeNull();
+    rerender(<YourCloudPanel machine={box({ sleeping: true })} onChanged={vi.fn()} />);
+    expect(container.querySelector("[data-state-fade='on']")?.textContent).toContain("Resting");
   });
 });

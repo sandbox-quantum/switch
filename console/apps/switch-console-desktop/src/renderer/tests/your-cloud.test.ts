@@ -38,12 +38,13 @@ describe('Your cloud on the cloud machine card', () => {
     });
   });
 
-  it('steps: plenty to 80%, a little left above it, full from 95%', () => {
+  it('steps: plenty below 80%, nearly full from 80% (as the bars), full from 95%', () => {
     const step = (used: number) => {
       const view = yourCloudView(room(used), at);
       return view.resting ? null : [view.heading, view.room?.label];
     };
-    expect(step(800)).toEqual(['Ready', 'Plenty of room']);
+    expect(step(799)).toEqual(['Ready', 'Plenty of room']);
+    expect(step(800)).toEqual(['Nearly full', 'A little left']);
     expect(step(801)).toEqual(['Nearly full', 'A little left']);
     expect(step(949)).toEqual(['Nearly full', 'A little left']);
     expect(step(950)).toEqual(['Full right now', 'Full right now']);
@@ -67,7 +68,7 @@ describe('Your cloud on the cloud machine card', () => {
     expect(yourCloudView({ ...machine, sleeping: true }, at)).toEqual({
       resting: true,
       heading: 'Resting',
-      line: 'Starts when you message an agent.',
+      line: 'Your cloud is resting to save resources. It wakes in about a minute when you message an agent or press Wake it.',
       start: 'ensure',
       startLabel: 'Wake',
     });
@@ -194,7 +195,7 @@ describe('Your cloud shows the box\'s real state, never "Ready" from an old repo
     expect(yourCloudView({ ...resting, agents: ['a1'] }, at2)).toEqual({
       resting: true,
       heading: 'Resting',
-      line: 'Starts when you message an agent.',
+      line: 'Your cloud is resting to save resources. It wakes in about a minute when you message an agent or press Wake it.',
       start: 'ensure',
       startLabel: 'Wake',
     });

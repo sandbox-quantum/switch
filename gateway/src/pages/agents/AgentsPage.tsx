@@ -15,6 +15,7 @@ import {
   DialogTitle,
   IconButton,
   InputAdornment,
+  Link,
   MenuItem,
   Stack,
   TextField,
@@ -32,7 +33,9 @@ import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
 import { type CloudPresentation, cloudStatusFor } from "./cloud/cloudAgentState";
 import { boxShowsStopped } from "./cloud/yourCloud";
 import CloudDeleteDialog from "./cloud/CloudDeleteDialog";
-import CloudLoginsSection from "./cloud/CloudLoginsSection";
+import CloudLoginsSection, { AI_LOGINS_ID } from "./cloud/CloudLoginsSection";
+import { type LoginTick, type NextAction, agentProvider } from "./cloud/peopleWords";
+import StateFade from "./cloud/StateFade";
 import YourCloudPanel from "./cloud/YourCloudPanel";
 import CloudAgentDialog from "./CloudAgentDialog";
 import RegisterAgentDialog from "./RegisterAgentDialog";
@@ -40,6 +43,19 @@ import RegisterAgentDialog from "./RegisterAgentDialog";
 // Connector type is a category, not a status. Colour here would compete with
 // the status hues for the reader's attention and mean nothing, so the tag is
 // neutral and the label carries the distinction.
+
+/** Read by screen readers, not shown (as MUI's `visuallyHidden`, which is not a direct dependency here). */
+const visuallyHidden = {
+  border: 0,
+  clip: "rect(0 0 0 0)",
+  height: "1px",
+  margin: "-1px",
+  overflow: "hidden",
+  padding: 0,
+  position: "absolute",
+  whiteSpace: "nowrap",
+  width: "1px",
+} as const;
 
 export default function AgentsPage() {
   const navigate = useNavigate();
@@ -62,6 +78,23 @@ export default function AgentsPage() {
   // same read as the panel (`available`).
   const [cloudOpen, setCloudOpen] = useState(false);
   const cloudAgents = hostedV2 && cloud.available;
+  // "AI login set", from the logins section (`loginTick`); a box with no
+  // controller yet can't have a login. While the agents list is still
+  // loading it waits rather than tick on "any login" (as Console does); if
+  // the list can't be read, any ready login counts.
+  const [loginRead, setLoginRead] = useState<LoginTick | null>(null);
+  const loginSet = !cloud.machine?.controller_id
+    ? false
+    : loading && !agents
+      ? null
+      : (loginRead?.set ?? null);
+  // The provider each of the box's agents runs, from the agents list already read.
+  const agentProviders = useMemo(() => {
+    const byId = new Map((agents ?? []).map((agent) => [agent.id, agent]));
+    return (cloud.machine?.agents ?? []).map((id) => agentProvider(byId.get(id)?.known_agent_type));
+  }, [agents, cloud.machine?.agents]);
+  // The checklist's Give login opens the first missing provider's form.
+  const [askLogin, setAskLogin] = useState<{ provider: string } | null>(null);
   const [ownerFilter, setOwnerFilter] = useState<string>("");
   const [search, setSearch] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<string>("");
@@ -172,6 +205,14 @@ export default function AgentsPage() {
     refetch();
   }, [deleteTarget, refetch]);
 
+  // A next step's link: bring its section into view and move focus there, so
+  // keyboard and screen-reader users land on it too.
+  const goToStep = useCallback((step: NextAction) => {
+    const section = step === "give_login" ? document.getElementById(AI_LOGINS_ID) : null;
+    section?.scrollIntoView?.({ block: "center" });
+    section?.focus();
+  }, []);
+
   // Each agent's state on the person's cloud; worked out once per read.
   const cloudStatus = useMemo(() => {
     const onBox = new Set(cloud.machine?.agents ?? []);
@@ -219,14 +260,48 @@ export default function AgentsPage() {
                       {EM_DASH}
                     </Box>
                   );
+                // Two short lines rather than one cut off ("Back in a moment · Startin…"):
+                // the state, then its detail. Each line still ends in "…" if a very
+                // narrow column needs it, with the whole line on hover, and the hidden
+                // " · " keeps it one sentence for screen readers.
+                const full = [shown.label, shown.detail].filter(Boolean).join(" · ");
+                const hover = shown.when ? `${full} (${shown.when})` : full;
+                const line = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } as const;
                 return (
-                  <Box component="span" title={shown.when ?? undefined}>
-                    {shown.label}
-                    {shown.detail && (
-                      <Box component="span" sx={{ color: "text.secondary" }}>
-                        {` · ${shown.detail}`}
-                      </Box>
-                    )}
+                  <Box
+                    title={hover}
+                    data-testid="cloud-cell"
+                    sx={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", minWidth: 0, lineHeight: 1.3 }}
+                  >
+                    <StateFade state={`${shown.label}|${shown.detail ?? ""}`} component="div">
+                      <Box sx={line}>{shown.label}</Box>
+                      {shown.detail && (
+                        <Box sx={{ ...line, typography: "caption" }}>
+                          <Box component="span" sx={visuallyHidden}>
+                            {" · "}
+                          </Box>
+                          {shown.next ? (
+                            // The second part is the next step: it goes there.
+                            <Link
+                              component="button"
+                              variant="caption"
+                              sx={{ verticalAlign: "baseline" }}
+                              onClick={(event) => {
+                                // The row opens the agent; this link only goes to the step.
+                                event.stopPropagation();
+                                goToStep(shown.next!);
+                              }}
+                            >
+                              {shown.detail}
+                            </Link>
+                          ) : (
+                            <Box component="span" sx={{ color: "text.secondary" }}>
+                              {shown.detail}
+                            </Box>
+                          )}
+                        </Box>
+                      )}
+                    </StateFade>
                   </Box>
                 );
               },
@@ -302,7 +377,7 @@ export default function AgentsPage() {
         },
       },
     ],
-    [isAdmin, user?.id, parentNameById, hostedV2, cloudStatus, cloud.machine],
+    [isAdmin, user?.id, parentNameById, hostedV2, cloudStatus, cloud.machine, goToStep],
   );
 
   return (
@@ -330,13 +405,26 @@ export default function AgentsPage() {
       </Stack>
 
       {hostedV2 && cloud.machine && (
-        <YourCloudPanel machine={cloud.machine} onChanged={cloud.refresh} />
+        <YourCloudPanel
+          machine={cloud.machine}
+          onChanged={cloud.refresh}
+          loginSet={loginSet}
+          onGiveLogin={() => {
+            goToStep("give_login");
+            if (loginRead?.missing) setAskLogin({ provider: loginRead.missing });
+          }}
+          onAddAgent={cloudAgents ? () => setCloudOpen(true) : undefined}
+        />
       )}
       {hostedV2 && cloud.machine?.controller_id && (
         <CloudLoginsSection
           controllerId={cloud.machine.controller_id}
           machine={cloud.machine}
           onCloudChanged={cloud.refresh}
+          onLoginSet={setLoginRead}
+          onHurry={cloud.hurry}
+          agentProviders={agentProviders}
+          ask={askLogin}
         />
       )}
 

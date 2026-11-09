@@ -42,6 +42,7 @@ from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.changes import router as changes_router
 from switch_core.gateway.chats import chat_error_response
 from switch_core.gateway.chats import router as chats_router
+from switch_core.gateway.cloud_files import router as cloud_files_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connection_catalog import router as connection_catalog_router
 from switch_core.gateway.connector_apps import router as connector_apps_router
@@ -221,6 +222,8 @@ def create_gateway_app(
     app.include_router(
         shared_cloud_agents_router, tags=["shared-cloud"], dependencies=v2_only
     )
+    # Your cloud files: the owner's files on their own box, behind its own flag too.
+    app.include_router(cloud_files_router, tags=["cloud-files"], dependencies=v2_only)
     # v1 hosted uses these two, so they stay up; their v2 parts are gated inside.
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
     app.include_router(hosted_controller_router, tags=["hosted-controller"])

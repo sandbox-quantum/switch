@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { adminGroups } from '@renderer/features/admin/admin-sections';
+import { boxShowsStopped } from '@renderer/features/cloud-agents/your-cloud';
+import { managedAgentState } from '@renderer/features/managed-agents/managed-agent-state';
 import {
   gigabytes,
   isolationText,
@@ -35,7 +37,7 @@ describe('an agent on the shared cloud, as a person reads it', () => {
       now
     );
     expect(shown.label).toBe('Resting');
-    expect(shown.detail).toBe('Back when messaged');
+    expect(shown.detail).toBe('Wakes when you message it');
     expect(shown.when).toBe('last reply 4 min ago');
   });
 
@@ -295,6 +297,38 @@ describe('the session state the controller reports (F5)', () => {
     const state = sharedCloudFromSession(offline(), true, failed);
     expect(state).toEqual({ agent_id: 'a1', state: 'unavailable', needs_check: true });
     expect(sharedCloudPresentation(state!, now).detail).toBe('Open it to see why');
+  });
+
+  it('shows an owner-stopped box as Stopped · Start your cloud to use it, in a calm tone, never Machine offline', () => {
+    const ownerStopped = { state: 'stopped', desired_state: 'stopped', sleeping: false } as const;
+    const state = sharedCloudFromSession(offline(), true, ownerStopped, false, true);
+    expect(state).toEqual({ agent_id: 'a1', state: 'resting', box_stopped: true });
+    const shown = sharedCloudPresentation(state!, now, true);
+    expect([shown.label, shown.detail, shown.tone]).toEqual([
+      'Stopped',
+      'Start your cloud to use it',
+      'resting',
+    ]);
+    // The flag the cards pass comes from Your cloud's own reading of the box.
+    expect(
+      boxShowsStopped({
+        ...ownerStopped,
+        stop_reason: 'owner',
+        room: null,
+        awake: null,
+        ai_calls_today: null,
+        agents: ['a1'],
+      } as Parameters<typeof boxShowsStopped>[0])
+    ).toBe(true);
+  });
+
+  it('a machine that is truly offline (not a stopped box) still reads Machine offline', () => {
+    const upButUnreachable = { state: 'ready', desired_state: 'running', sleeping: false } as const;
+    expect(sharedCloudFromSession(offline(), true, upButUnreachable, false, false)).toBeNull();
+    expect(managedAgentState(offline() as Parameters<typeof managedAgentState>[0])).toMatchObject({
+      label: 'Machine offline',
+      tone: 'problem',
+    });
   });
 
   it("keeps today's states for a box that's down without an idle stop, or off the shared cloud", () => {

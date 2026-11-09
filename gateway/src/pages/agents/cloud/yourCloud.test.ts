@@ -145,7 +145,8 @@ describe("yourCloudView", () => {
   });
 
   it.each([
-    [0.8, "Ready", "Plenty of room", 80],
+    [0.79, "Ready", "Plenty of room", 79],
+    [0.8, "Nearly full", "A little left", 80],
     [0.81, "Nearly full", "A little left", 81],
     [0.95, "Full right now", "Full right now", 95],
     [1.2, "Full right now", "Full right now", 100],

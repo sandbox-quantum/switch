@@ -4,7 +4,7 @@
 
 import type { CloudMachine } from "../../../data/hostedCloud";
 
-/** Room steps (designer): above 80% "A little left", from 95% "Full right now". */
+/** Room steps (designer): from 80% "A little left" (where the capacity bars warn), from 95% "Full right now". */
 export const NEARLY_FULL = 0.8;
 export const FULL = 0.95;
 
@@ -51,7 +51,8 @@ export type YourCloudView =
 
 function roomStep(share: number): RoomStep {
   if (share >= FULL) return "full";
-  if (share > NEARLY_FULL) return "little";
+  // From 80%, the same point the capacity bars warn (Console's `roomStep` too).
+  if (share >= NEARLY_FULL) return "little";
   return "plenty";
 }
 

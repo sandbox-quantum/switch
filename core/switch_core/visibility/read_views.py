@@ -40,7 +40,11 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_session_factory,
 )
-from switch_core.gateway.hosted_machines import hosted_settings, machines_enabled
+from switch_core.gateway.hosted_machines import (
+    hosted_settings,
+    machines_enabled,
+    your_cloud,
+)
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import current_tenant_id, no_tenant
 from switch_core.visibility.alerts import overview_alerts
@@ -48,6 +52,7 @@ from switch_core.visibility.audit_log import (
     check_reason,
     record_operator_result,
 )
+from switch_core.visibility.box_provision import box_provisioning_on, boxes_made
 from switch_core.visibility.cluster_report import latest_cluster_report
 from switch_core.visibility.dependencies import get_keyed_id_key
 from switch_core.visibility.guards import require_operator, require_workspace_admin
@@ -297,6 +302,27 @@ class OverviewNodes(BaseModel):
     report_stale: bool
 
 
+class AwakeCount(BaseModel):
+    running: int
+    max: int
+
+
+class DiskUsage(BaseModel):
+    total_bytes: int
+    available_bytes: int
+    # "workspace" (the agents' volume) or "unknown"; absent from older boxes.
+    # The apps show a disk figure only for "workspace".
+    scope: Literal["workspace", "unknown"] | None = None
+
+
+class BoxCeiling(BaseModel):
+    """Boxes made against the ceiling the provisioner refuses at (operators
+    only): two integers, the same count as the ceiling check."""
+
+    made: int
+    ceiling: int
+
+
 class OverviewBox(BaseModel):
     box: str
     user: str
@@ -305,10 +331,97 @@ class OverviewBox(BaseModel):
     node: str | None
     memory_used_bytes: int | None
     restarts_today: int | None
+    # Capacity and times for the operator's Boxes page (read only, operators
+    # only, as the rest of the overview). Each is null when the box hasn't said.
+    memory_total_bytes: int | None = None
+    # Sessions awake out of the box's limit, from its controllers' last reports.
+    awake: AwakeCount | None = None
+    # When the box last did work, last reported, and was last seen come up.
+    active_at: str | None = None
+    heartbeat_at: str | None = None
+    running_observed_at: str | None = None
+    # For a put-away box: when it goes for good. Null when not set.
+    retain_until: str | None = None
+    # The disk the box last reported, with which disk it is. Null when not
+    # reported, out of shape, or 0 of 0 (a box that couldn't measure it).
+    disk: DiskUsage | None = None
+
+
+def _byte_count(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def box_disk(machine: CloudMachine) -> DiskUsage | None:
+    """The box's disk reading from its heartbeat, as the owner's panel reads
+    it (`hosted_machines._usage`), but never raising on a reading out of shape."""
+    reading = (machine.heartbeat or {}).get("disk")
+    if not isinstance(reading, dict):
+        return None
+    total = _byte_count(reading.get("total_bytes"))
+    available = _byte_count(reading.get("available_bytes"))
+    if total is None or available is None or total == 0 or available > total:
+        return None
+    scope = reading.get("scope")
+    return DiskUsage(
+        total_bytes=total,
+        available_bytes=available,
+        scope=scope if scope in ("workspace", "unknown") else None,
+    )
+
+
+def memory_total_bytes(machine: CloudMachine) -> int | None:
+    """The box's memory, from the same heartbeat reading as the used figure."""
+    if memory_used_bytes(machine) is None:
+        return None
+    reading = (machine.heartbeat or {}).get("memory")
+    total = reading.get("total_bytes") if isinstance(reading, dict) else None
+    # Never a bool (a subclass of int) or a missing figure: null, not a 500.
+    if isinstance(total, bool) or not isinstance(total, int) or total <= 0:
+        return None
+    return total
+
+
+def box_awake(reports: list[dict], now: datetime) -> AwakeCount | None:
+    """Sessions awake on the box out of its limit, from each workspace
+    controller's last report (as the owner's Your cloud reads it): running
+    added up, the limit the box's own. Null when no controller reports both."""
+    counts = [
+        figures
+        for figures in (your_cloud(report, now)["awake"] for report in reports)
+        if figures is not None
+    ]
+    if not counts:
+        return None
+    return AwakeCount(
+        running=sum(c["running"] for c in counts), max=max(c["max"] for c in counts)
+    )
+
+
+async def _box_ceiling(
+    factory: async_sessionmaker[AsyncSession], config: SwitchConfig
+) -> BoxCeiling | None:
+    """Boxes made against `hosted_box_ceiling`, or None while box provisioning
+    (V0) is off and nothing enforces it."""
+    ceiling = getattr(config, "hosted_box_ceiling", None)
+    if not box_provisioning_on(config):
+        return None
+    if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling < 1:
+        return None
+    with no_tenant():
+        async with factory() as session:
+            return BoxCeiling(made=await boxes_made(session), ceiling=ceiling)
+
+
+def _iso(moment: datetime | None) -> str | None:
+    return None if moment is None else moment.isoformat()
 
 
 class Overview(BaseModel):
     viewer: Literal["operator"]
+    # Null when box provisioning is off, since no ceiling is enforced then.
+    box_ceiling: BoxCeiling | None = None
     people: list[OverviewPerson]
     room: Literal["plenty", "limited", "full", "unknown"]
     cost: OverviewCost
@@ -318,11 +431,11 @@ class Overview(BaseModel):
     boxes: list[OverviewBox]
 
 
-async def _box_agents(
+async def _box_reports(
     factory: async_sessionmaker[AsyncSession], box: CloudMachine, tenants: list[str]
 ) -> list[dict]:
-    """The agents each workspace's controller on the box last reported, read
-    with that workspace bound, since the box belongs to none of them."""
+    """Each workspace controller's last report on the box, read with that
+    workspace bound, since the box belongs to none of them."""
     found: list[dict] = []
     for tenant_id in tenants:
         async with tenant_session(factory, tenant_id) as session:
@@ -333,9 +446,18 @@ async def _box_agents(
                 select(AgentController).where(AgentController.id == here.controller_id)
             )
             report = None if controller is None else controller.status
-            agents = (report or {}).get("agents") if isinstance(report, dict) else None
-            if isinstance(agents, list):
-                found.extend(a for a in agents if isinstance(a, dict))
+            if isinstance(report, dict):
+                found.append(report)
+    return found
+
+
+def _report_agents(reports: list[dict]) -> list[dict]:
+    """The agents the reports list, from every workspace controller on the box."""
+    found: list[dict] = []
+    for report in reports:
+        agents = report.get("agents")
+        if isinstance(agents, list):
+            found.extend(a for a in agents if isinstance(a, dict))
     return found
 
 
@@ -364,7 +486,8 @@ async def shared_cloud_overview(
         tenants = await tenants_of_cloud_machine(factory, box.id)
         counts = AgentCounts()
         owner_paused = box.owner_id in paused
-        for agent in await _box_agents(factory, box, tenants):
+        reports = await _box_reports(factory, box, tenants)
+        for agent in _report_agents(reports):
             bucket = agent_bucket(agent, box, owner_paused=owner_paused)
             setattr(counts, bucket, getattr(counts, bucket) + 1)
         user_keyed = key.keyed_id(KeyedIdKind.USER, box.owner_id)
@@ -388,6 +511,13 @@ async def shared_cloud_overview(
                 node=box_node(box),
                 memory_used_bytes=memory_used_bytes(box),
                 restarts_today=restarts_today(box, now),
+                memory_total_bytes=memory_total_bytes(box),
+                awake=box_awake(reports, now),
+                active_at=_iso(box.active_at),
+                heartbeat_at=_iso(box.heartbeat_at),
+                running_observed_at=_iso(box.running_observed_at),
+                retain_until=_iso(box.retain_until),
+                disk=box_disk(box),
             )
         )
     # A paused user may have no box at all: they're still listed, as paused.
@@ -436,6 +566,7 @@ async def shared_cloud_overview(
     )
     return Overview(
         viewer="operator",
+        box_ceiling=await _box_ceiling(factory, config),
         people=people,
         room="unknown",
         cost=OverviewCost(

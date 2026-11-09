@@ -40,8 +40,14 @@ export interface CloudMachine {
   agents: string[];
   controller_id: string | null;
   backend?: "vm" | "box";
+  /** Memory: used of total (`mem_total_bytes - mem_free_bytes`). */
   room: { used_bytes: number; total_bytes: number } | null;
   awake: { running: number; max: number } | null;
+  /**
+   * The box's disk. `scope` says which disk was measured: only `"workspace"`
+   * is the agents' workspace volume; `"unknown"` or none (an older box) isn't.
+   */
+  disk?: { total_bytes: number; available_bytes: number; scope?: "workspace" | "unknown" } | null;
   ai_calls_today: { used: number; cap: number; capped: boolean; resets_at: string } | null;
 }
 
@@ -95,6 +101,23 @@ function readRoom(value: unknown): CloudMachine["room"] {
     : null;
 }
 
+const DISK_SCOPES = new Set<string>(["workspace", "unknown"]);
+
+function readDisk(value: unknown): CloudMachine["disk"] {
+  if (!isObject(value)) return null;
+  const { total_bytes: total, available_bytes: available, scope } = value;
+  if (typeof total !== "number" || total < 0 || typeof available !== "number" || available < 0)
+    return null;
+  return {
+    total_bytes: total,
+    available_bytes: available,
+    // Only the agreed values: anything else reads as not said.
+    ...(typeof scope === "string" && DISK_SCOPES.has(scope)
+      ? { scope: scope as "workspace" | "unknown" }
+      : {}),
+  };
+}
+
 function readAwake(value: unknown): CloudMachine["awake"] {
   if (!isObject(value)) return null;
   return isCount(value.running) && isCount(value.max)
@@ -137,6 +160,7 @@ export function readMachine(value: unknown): CloudMachine | null {
     backend: value.backend === "vm" || value.backend === "box" ? value.backend : undefined,
     room: readRoom(value.room),
     awake: readAwake(value.awake),
+    disk: readDisk(value.disk),
     ai_calls_today: readCalls(value.ai_calls_today),
   };
 }
@@ -182,8 +206,12 @@ export async function fetchCloudPlace(): Promise<{ available: boolean; machine: 
   const machines = Array.isArray(answer.machines) ? answer.machines : [];
   let machine: CloudMachine | null = null;
   for (const raw of machines) {
-    machine = readBox(raw);
-    if (machine) break;
+    const box = readBox(raw);
+    // A deleted box is gone: no panel, as Console hides it too.
+    if (box && box.state !== "deleted") {
+      machine = box;
+      break;
+    }
   }
   return { available: answer.available === true, machine };
 }
@@ -217,8 +245,30 @@ export async function startCloudMachine(machine: CloudMachine): Promise<void> {
   });
 }
 
-/** How often the panel and the status column read again: boxes rest and wake on their own. */
-export const REFRESH_MS = 5000;
+/** How often the panel and the status column read again while the tab is visible (UX rule:
+ * every 15 s, none while hidden, and once more when it comes back). */
+export const REFRESH_MS = 15_000;
+
+/** The rate while the box is on its way up, or something is waiting on it (the login
+ * dialog in front of a resting box), so nobody watches a spinner for 15 s. */
+export const WAKING_REFRESH_MS = 5_000;
+
+/**
+ * Whether the box is on its way up: what the panel shows as "Starting…"
+ * (`yourCloudView`). A resting box isn't; it wakes only when asked.
+ */
+export function boxStarting(
+  machine: Pick<CloudMachine, "state" | "desired_state" | "sleeping" | "stop_reason"> | null,
+): boolean {
+  if (!machine || machine.sleeping) return false;
+  if (machine.stop_reason === "paused" || machine.stop_reason === "turned_off") return false;
+  if (machine.state === "retained" || machine.desired_state === "retained") return false;
+  return (
+    machine.state === "queued" ||
+    machine.state === "provisioning" ||
+    (machine.state === "stopped" && machine.desired_state === "running")
+  );
+}
 
 export interface CloudView {
   machine: CloudMachine | null;
@@ -228,6 +278,9 @@ export interface CloudView {
   /** False until the first read has finished. */
   loaded: boolean;
   refresh: () => void;
+  /** Read at the waking rate until the returned function is called: for
+   * something waiting on the box, such as the login dialog in front of a resting box. */
+  hurry: () => () => void;
 }
 
 /**
@@ -243,6 +296,17 @@ export function useCloudView(enabled: boolean): CloudView {
   const [loaded, setLoaded] = useState(false);
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick((value) => value + 1), []);
+  const [hurries, setHurries] = useState(0);
+  const hurry = useCallback(() => {
+    setHurries((count) => count + 1);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      setHurries((count) => count - 1);
+    };
+  }, []);
+  const rate = hurries > 0 || boxStarting(machine) ? WAKING_REFRESH_MS : REFRESH_MS;
 
   useEffect(() => {
     if (!enabled) return;
@@ -272,14 +336,20 @@ export function useCloudView(enabled: boolean): CloudView {
       }
     };
     void read();
-    const timer = window.setInterval(() => void read(), REFRESH_MS);
+    const timer = window.setInterval(() => void read(), rate);
+    // Back on the tab: read once straight away rather than waiting for the timer.
+    const onVisible = () => {
+      if (!document.hidden) void read();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [enabled, tick]);
+  }, [enabled, tick, rate]);
 
   return enabled
-    ? { machine, available, agents, loaded, refresh }
-    : { machine: null, available: false, agents: new Map(), loaded: false, refresh };
+    ? { machine, available, agents, loaded, refresh, hurry }
+    : { machine: null, available: false, agents: new Map(), loaded: false, refresh, hurry };
 }

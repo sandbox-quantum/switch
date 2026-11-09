@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, statfs } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { sharedConfigSchema } from '@switch-console/agent-providers-box';
+import type { FilesReader } from './files-reader';
+import { FilesService } from './files-service';
 import { FirstSight, OPERATOR, type SeenProcess } from './first-sight';
 import {
   encodeLine,
@@ -109,6 +111,8 @@ export type LauncherDeps = {
   confirmMs?: number;
   /** The controller's socket closed: the caller exits. */
   onClosed: () => void;
+  /** The file explorer's reader (tests point it at a folder of their own). */
+  files?: FilesReader;
 };
 
 export class Launcher {
@@ -131,8 +135,15 @@ export class Launcher {
   private operatorSeen = new Set<string>();
   readonly bootId = randomBytes(16).toString('hex');
   private closed = false;
+  /** The file explorer's orders: the box's workspaces, read for the owner's Console. */
+  private readonly files: FilesService;
 
   constructor(private readonly deps: LauncherDeps) {
+    this.files = new FilesService({
+      report: (report) => this.report(report),
+      log: deps.log,
+      ...(deps.files ? { reader: deps.files } : {}),
+    });
     this.runner = deps.runner(this.markers, (agentId, pid, key) => {
       this.forgetSpawn(agentId);
       this.spawned.set(agentId, { pid, startTicks: null, key, confirmed: false, timer: null });
@@ -164,6 +175,7 @@ export class Launcher {
     if (this.closed) return;
     this.closed = true;
     for (const spawn of this.spawned.values()) if (spawn.timer) clearTimeout(spawn.timer);
+    void this.files.close();
     this.deps.onClosed();
   }
 
@@ -415,6 +427,12 @@ export class Launcher {
             told: Math.max(0, Math.min(told, 1_000_000)),
           });
         }
+        case 'files_list':
+        case 'files_read':
+        case 'files_zip':
+        case 'files_more':
+        case 'files_cancel':
+          return await this.files.handle(order);
         case 'freeze':
         case 'thaw':
         case 'end':

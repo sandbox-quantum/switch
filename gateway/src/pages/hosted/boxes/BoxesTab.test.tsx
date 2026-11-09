@@ -1,9 +1,11 @@
-import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { REFRESH_MS, STALE } from "../overview/overview";
-import { U1, U3, U4, W2, boxRow, fixture } from "../overview/testing";
+import { B1, U1, U3, U4, W2, boxRow, fixture, machineId } from "../overview/testing";
+import { HostedContext } from "../HostedContext";
 import { MARKER, answer, answers, renderTab } from "../w5shared/testing";
-import BoxesTab, { BADGES, EMPTY } from "./BoxesTab";
+import BoxesTab, { BADGES, DISK_NOT_AVAILABLE, EMPTY, NO_MATCH } from "./BoxesTab";
 import { BODY, PLACEHOLDER } from "./ShowNameDialog";
 
 vi.mock("../../../data/AuthContext", () => ({
@@ -14,8 +16,16 @@ function rows() {
   return screen.getAllByTestId("box-row");
 }
 
+/** A row by any text in it, or by an id's full grouped form (the id cell
+ *  shows a short id, with the full one in its label). */
 function rowOf(text: string) {
-  const row = rows().find((r) => r.textContent?.includes(text));
+  const row = rows().find(
+    (r) =>
+      r.textContent?.includes(text) ||
+      Array.from(r.querySelectorAll("[aria-label]")).some((el) =>
+        el.getAttribute("aria-label")?.includes(text),
+      ),
+  );
   if (!row) throw new Error(`no row with ${text}`);
   return within(row);
 }
@@ -33,22 +43,22 @@ describe("the Boxes tab (W4, p10)", () => {
     renderTab(BoxesTab, { overview: fixture() });
     expect(rows()).toHaveLength(4);
     const first = rowOf("k1-4f2a 91aa 0b1c");
-    expect(first.getByText("k1-7c10 ab12 cd34")).toBeTruthy();
-    expect(first.getByText("k1-a83e 91f0 c2d4")).toBeTruthy();
+    expect(first.getByLabelText("workspace k1-7c10 ab12 cd34")).toBeTruthy();
+    expect(first.getByLabelText("person k1-a83e 91f0 c2d4")).toBeTruthy();
     expect(first.getByText("Running")).toBeTruthy();
-    expect(first.getByText("shared-1 · eu-west-3a")).toBeTruthy();
+    expect(first.getByText("shared-1 · zone-a")).toBeTruthy();
     expect(first.getByText("1.9 GB")).toBeTruthy();
     expect(screen.queryByText(/k1-7aa0/)).toBeNull(); // retired
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("shows a dash for no machine or memory, every workspace, and the restarts", () => {
+  it("shows a dash for no machine, agents or memory, every workspace, and the restarts", () => {
     renderTab(BoxesTab, { overview: fixture() });
     const paused = rowOf("k1-0e77 b5aa 0b1c");
-    expect(paused.getAllByText("—")).toHaveLength(2);
+    expect(paused.getAllByText("—")).toHaveLength(3);
     const two = rowOf("k1-c4d8 12aa 0b1c");
-    expect(two.getByText("k1-2a44 ab12 cd34")).toBeTruthy();
-    expect(two.getByText("k1-7c10 ab12 cd34")).toBeTruthy();
+    expect(two.getByLabelText("workspace k1-2a44 ab12 cd34")).toBeTruthy();
+    expect(two.getByLabelText("workspace k1-7c10 ab12 cd34")).toBeTruthy();
     expect(two.getByText("3")).toBeTruthy();
   });
 
@@ -58,6 +68,8 @@ describe("the Boxes tab (W4, p10)", () => {
       boxRow(`k1-${String(i).padStart(16, "0")}`, U1, [], state, null, null, 0),
     );
     renderTab(BoxesTab, { overview: raw });
+    // "All" shows every state, put away included.
+    fireEvent.click(screen.getByRole("button", { name: /^All / }));
     for (const { label } of Object.values(BADGES)) expect(screen.getByText(label)).toBeTruthy();
     expect(screen.getByText("Can't start")).toBeTruthy();
     expect(screen.queryByText("Restarting")).toBeNull();
@@ -246,8 +258,8 @@ describe("Show name (W4, p15)", () => {
     renderTab(BoxesTab, { overview: fixture() });
     const table = screen.getByRole("table", { name: "Boxes" });
     expect(getComputedStyle(table.parentElement as HTMLElement).overflowX).toBe("auto");
-    const cell = rowOf("k1-4f2a 91aa 0b1c").getByText("shared-1 · eu-west-3a");
-    expect(getComputedStyle(cell).whiteSpace).toBe("nowrap");
+    const cell = rowOf("k1-4f2a 91aa 0b1c").getByText("shared-1 · zone-a").closest("td");
+    expect(getComputedStyle(cell as HTMLElement).whiteSpace).toBe("nowrap");
   });
 
   it("clears the reason on Cancel", () => {
@@ -257,5 +269,233 @@ describe("Show name (W4, p15)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     open();
     expect((screen.getByPlaceholderText(PLACEHOLDER) as HTMLTextAreaElement).value).toBe("");
+  });
+});
+
+describe("the Boxes filter bar and rows (UX, operators 3 and 5)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  function withRows(): Record<string, unknown> {
+    const raw = fixture();
+    const boxes = raw.boxes as Record<string, unknown>[];
+    boxes[0] = {
+      ...boxes[0],
+      awake: { running: 3, max: 12 },
+      memory_total_bytes: 4 * 1024 ** 3,
+    };
+    boxes[4] = { ...boxes[4], retain_until: "2026-11-20T00:00:00+00:00" };
+    return raw;
+  }
+
+  function chip(name: RegExp) {
+    return screen.getByRole("button", { name });
+  }
+
+  it("defaults to Current, with a count on every chip", () => {
+    renderTab(BoxesTab, { overview: withRows() });
+    expect(rows()).toHaveLength(4);
+    expect(chip(/^Current 4$/).getAttribute("aria-pressed")).toBe("true");
+    expect(chip(/^Put away 1$/)).toBeTruthy();
+    expect(chip(/^All 5$/)).toBeTruthy();
+  });
+
+  it("shows put-away boxes only under Put away and All, greyed, with when they go", () => {
+    renderTab(BoxesTab, { overview: withRows() });
+    fireEvent.click(chip(/^Put away/));
+    expect(rows()).toHaveLength(1);
+    const put = rowOf("k1-7aa0 31aa 0b1c");
+    expect(put.getByText("Put away")).toBeTruthy();
+    expect(put.getByText("Kept until 20 Nov")).toBeTruthy();
+    // No actions on a put-away box.
+    expect(put.queryByRole("button", { name: "Pause user" })).toBeNull();
+    expect(getComputedStyle(rows()[0]).opacity).toBe("0.6");
+    fireEvent.click(chip(/^All/));
+    expect(rows()).toHaveLength(5);
+  });
+
+  it("searches ids and machines, and says when nothing matches", () => {
+    renderTab(BoxesTab, { overview: withRows() });
+    fireEvent.change(screen.getByRole("textbox", { name: "Search boxes" }), {
+      target: { value: "k1-0e77 b5aa" },
+    });
+    expect(rows()).toHaveLength(1);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search boxes" }), {
+      target: { value: "nothing like this" },
+    });
+    expect(screen.queryAllByTestId("box-row")).toHaveLength(0);
+    expect(screen.getByText(NO_MATCH)).toBeTruthy();
+  });
+
+  it("reads its filters from the address, so a view can be shared", () => {
+    render(
+      <MemoryRouter initialEntries={["/hosted/boxes?state=resting&q=k1-91c0"]}>
+        <HostedContext.Provider
+          value={{
+            operator: { id: "op-me", name: "Jo" } as never,
+            overview: withRows(),
+            overviewStale: false,
+            refreshKey: 0,
+            refresh: async () => undefined,
+          }}
+        >
+          <BoxesTab />
+        </HostedContext.Provider>
+      </MemoryRouter>,
+    );
+    expect(rows()).toHaveLength(1);
+    expect(chip(/^Resting/).getAttribute("aria-pressed")).toBe("true");
+    expect((screen.getByRole("textbox", { name: "Search boxes" }) as HTMLInputElement).value).toBe(
+      "k1-91c0",
+    );
+  });
+
+  it("shows awake agents and memory as the panel words them, and links to the detail pages", () => {
+    renderTab(BoxesTab, { overview: withRows() });
+    const first = rowOf("k1-4f2a 91aa 0b1c");
+    expect(first.getByText("3 of 12 awake")).toBeTruthy();
+    expect(first.getByText("1.9 GB of 4.0 GB")).toBeTruthy();
+    expect(first.getByRole("link", { name: "Open" }).getAttribute("href")).toBe(
+      `/hosted/boxes/${encodeURIComponent(B1)}`,
+    );
+    expect(first.getByRole("link", { name: "shared-1 · zone-a" }).getAttribute("href")).toBe(
+      `/hosted/machines/${machineId("shared-1")}`,
+    );
+  });
+});
+
+describe("the Boxes disk column", () => {
+  afterEach(() => cleanup());
+
+  function withDisk(disk: unknown): Record<string, unknown> {
+    const raw = fixture();
+    const boxes = raw.boxes as Record<string, unknown>[];
+    boxes[0] = { ...boxes[0], disk };
+    return raw;
+  }
+
+  it("shows the workspace disk in use out of its size", () => {
+    renderTab(BoxesTab, {
+      overview: withDisk({ total_bytes: 15 * 1024 ** 3, available_bytes: 12.9 * 1024 ** 3, scope: "workspace" }),
+    });
+    expect(rowOf("k1-4f2a 91aa 0b1c").getByText("2.1 GB of 15.0 GB")).toBeTruthy();
+  });
+
+  it.each([
+    ["an older box with no scope", { total_bytes: 8 * 1024 ** 3, available_bytes: 1024 ** 3 }],
+    ["a figure marked unknown", { total_bytes: 8 * 1024 ** 3, available_bytes: 1024 ** 3, scope: "unknown" }],
+    ["no reading", null],
+  ])("never shows the system disk: %s reads Not available", (_case, disk) => {
+    renderTab(BoxesTab, { overview: withDisk(disk) });
+    const row = rowOf("k1-4f2a 91aa 0b1c");
+    expect(row.getByText(DISK_NOT_AVAILABLE)).toBeTruthy();
+    expect(row.queryByText(/7\.0 GB/)).toBeNull();
+  });
+});
+
+describe("thin capacity bars on Boxes", () => {
+  afterEach(() => cleanup());
+
+  function withCapacity(awake: number, usedGb: number, diskUsedGb: number): Record<string, unknown> {
+    const raw = fixture();
+    const boxes = raw.boxes as Record<string, unknown>[];
+    boxes[0] = {
+      ...boxes[0],
+      awake: { running: awake, max: 12 },
+      memory_used_bytes: usedGb * 1024 ** 3,
+      memory_total_bytes: 5 * 1024 ** 3,
+      disk: {
+        total_bytes: 15 * 1024 ** 3,
+        available_bytes: (15 - diskUsedGb) * 1024 ** 3,
+        scope: "workspace",
+      },
+    };
+    return raw;
+  }
+
+  function stepOf(name: string): string | null {
+    const row = rows().find((r) => r.textContent?.includes("awake"));
+    return row?.querySelector(`[data-capacity="${name}"]`)?.getAttribute("data-step") ?? null;
+  }
+
+  it("colours each bar by the same steps as Your cloud", () => {
+    // 6 of 12 awake (50%), 4.1 of 5 GB memory (82%), 14.5 of 15 GB disk (97%).
+    renderTab(BoxesTab, { overview: withCapacity(6, 4.1, 14.5) });
+    expect(stepOf("awake")).toBe("ok");
+    expect(stepOf("memory")).toBe("nearly_full");
+    expect(stepOf("disk")).toBe("full");
+  });
+
+  it("draws no bar where there's no share, but still says so in words", () => {
+    renderTab(BoxesTab, { overview: fixture() });
+    const paused = rowOf("k1-0e77 b5aa 0b1c");
+    expect(paused.getByText(DISK_NOT_AVAILABLE)).toBeTruthy();
+    const cell = rows()
+      .find((r) => r.textContent?.includes(DISK_NOT_AVAILABLE))
+      ?.querySelector('[data-capacity="disk"]');
+    expect(cell?.getAttribute("data-step")).toBe("none");
+    expect(cell?.querySelector('[role="progressbar"]')).toBeNull();
+  });
+});
+
+describe("Boxes on a laptop screen (1440 px)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  /** A browser window `width` wide, as far as CSS media queries go. */
+  function windowOf(width: number) {
+    vi.stubGlobal("matchMedia", (query: string) => {
+      const max = /max-width:\s*([\d.]+)px/.exec(query);
+      return {
+        matches: max ? width <= Number(max[1]) : false,
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      };
+    });
+  }
+
+  it("drops the Workspace column and keeps the actions pinned at the right", () => {
+    windowOf(1440);
+    renderTab(BoxesTab, { overview: fixture() });
+    const table = screen.getByRole("table", { name: "Boxes" });
+    expect(within(table).queryByRole("columnheader", { name: "Workspace" })).toBeNull();
+    const headers = within(table).getAllByRole("columnheader");
+    const actions = headers[headers.length - 1];
+    expect(actions.getAttribute("aria-label")).toBe("Actions");
+    expect(getComputedStyle(actions).position).toBe("sticky");
+    // Every current box's buttons sit in the pinned last cell.
+    const live = rows().find((r) => within(r).queryByRole("button", { name: "Restart box" }));
+    const cells = live!.querySelectorAll("td");
+    const last = cells[cells.length - 1];
+    expect(last.hasAttribute("data-pinned")).toBe(true);
+    expect(getComputedStyle(last).position).toBe("sticky");
+    expect(within(last as HTMLElement).getByRole("button", { name: "Restart box" })).toBeTruthy();
+    expect(cells.length).toBe(headers.length);
+  });
+
+  it("puts the zone in the machine's hover text, so Restarts today fits", () => {
+    windowOf(1440);
+    renderTab(BoxesTab, { overview: fixture() });
+    const link = rowOf("k1-4f2a 91aa 0b1c").getByRole("link", { name: "shared-1" });
+    expect(link.getAttribute("title")).toBe("Zone zone-a");
+    expect(screen.queryByText("shared-1 · zone-a")).toBeNull();
+    expect(screen.getByRole("columnheader", { name: "Restarts today" })).toBeTruthy();
+  });
+
+  it("keeps the Workspace column on a wide screen", () => {
+    windowOf(1920);
+    renderTab(BoxesTab, { overview: fixture() });
+    const table = screen.getByRole("table", { name: "Boxes" });
+    expect(within(table).getByRole("columnheader", { name: "Workspace" })).toBeTruthy();
+    expect(rowOf("k1-4f2a 91aa 0b1c").getByText("shared-1 · zone-a")).toBeTruthy();
   });
 });

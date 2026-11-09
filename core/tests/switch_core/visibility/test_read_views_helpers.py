@@ -11,10 +11,14 @@ from pydantic import ValidationError
 
 from switch_core.visibility import cluster_report
 from switch_core.visibility.read_views import (
+    AwakeCount,
     agent_bucket,
+    box_awake,
+    box_disk,
     box_node,
     box_state,
     memory_band,
+    memory_total_bytes,
     memory_used_bytes,
     restarts_today,
 )
@@ -222,3 +226,91 @@ def test_a_paused_owner_s_agents_are_unavailable_whatever_the_box_says() -> None
     assert agent_bucket(busy, running, owner_paused=True) == "unavailable"  # type: ignore[arg-type]
     resting = _box("stopped", "idle")
     assert agent_bucket({}, resting, owner_paused=True) == "unavailable"  # type: ignore[arg-type]
+
+
+# --- each box's capacity on the operator's overview ---------------------------------------------
+
+
+def test_memory_total_comes_from_the_same_reading_as_used() -> None:
+    assert memory_total_bytes(_box(heartbeat=_memory(4 * GIB, GIB))) == 4 * GIB
+    assert memory_total_bytes(_box(heartbeat=None)) is None
+    # A reading memory_used_bytes refuses gives no total either.
+    assert memory_total_bytes(_box(heartbeat={"memory": {"total_bytes": 0}})) is None
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [
+        {"used_bytes": GIB, "available_bytes": GIB},
+        {"total_bytes": True, "available_bytes": 0},
+        {"total_bytes": "4", "available_bytes": 0},
+        "not a reading",
+    ],
+)
+def test_memory_total_is_null_for_a_reading_out_of_shape(memory) -> None:
+    # Never a KeyError (which would 500 the whole overview), never a bool.
+    assert memory_total_bytes(_box(heartbeat={"memory": memory})) is None
+
+
+NOW = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
+
+
+def test_awake_adds_up_each_controller_and_keeps_the_box_s_limit() -> None:
+    reports = [
+        {"machine": {"sessions_running": 2, "sessions_max": 12}},
+        {"machine": {"sessions_running": 1, "sessions_max": 12}},
+    ]
+    assert box_awake(reports, NOW) == AwakeCount(running=3, max=12)
+
+
+@pytest.mark.parametrize(
+    "reports",
+    [
+        [],
+        [{"agents": []}],
+        [{"machine": {"sessions_running": 2}}],
+        [{"machine": {"sessions_running": -1, "sessions_max": 12}}],
+        [{"machine": {"sessions_running": True, "sessions_max": 12}}],
+    ],
+)
+def test_awake_is_null_without_a_sound_report(reports) -> None:
+    assert box_awake(reports, NOW) is None
+
+
+# --- each box's disk on the operator's overview ------------------------------------------------
+
+
+def _disk(**reading) -> SimpleNamespace:
+    return _box(heartbeat={"disk": reading})
+
+
+def test_disk_keeps_the_scope_the_box_sent() -> None:
+    disk = box_disk(
+        _disk(total_bytes=15 * GIB, available_bytes=12 * GIB, scope="workspace")
+    )
+    assert disk is not None
+    assert (disk.total_bytes, disk.available_bytes, disk.scope) == (
+        15 * GIB,
+        12 * GIB,
+        "workspace",
+    )
+    older = box_disk(_disk(total_bytes=8 * GIB, available_bytes=GIB))
+    assert older is not None and older.scope is None
+    odd = box_disk(_disk(total_bytes=8 * GIB, available_bytes=GIB, scope="<b>x</b>"))
+    assert odd is not None and odd.scope is None
+
+
+@pytest.mark.parametrize(
+    "heartbeat",
+    [
+        None,
+        {"disk": None},
+        {"disk": "full"},
+        {"disk": {"total_bytes": 0, "available_bytes": 0, "scope": "workspace"}},
+        {"disk": {"total_bytes": 10, "available_bytes": 11}},
+        {"disk": {"total_bytes": True, "available_bytes": 0}},
+        {"disk": {"available_bytes": 5}},
+    ],
+)
+def test_disk_is_null_for_a_reading_out_of_shape(heartbeat) -> None:
+    assert box_disk(_box(heartbeat=heartbeat)) is None
