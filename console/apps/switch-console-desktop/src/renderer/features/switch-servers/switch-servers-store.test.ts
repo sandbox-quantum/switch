@@ -15,8 +15,9 @@ const oidcLogin = vi.hoisted(() => vi.fn());
 /** SSH hosts the reachability manager currently considers down. */
 const blockedHosts = vi.hoisted(() => new Set<string>());
 
+const eventsOn = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: vi.fn() },
+  events: { on: eventsOn },
   rpc: {
     switchServers: {
       getAuthConfig,
@@ -68,7 +69,13 @@ vi.mock('@renderer/lib/stores/app-state', () => ({
   appState: { navigation: { revalidate } },
 }));
 
-const { SwitchServersStore } = await import('./switch-servers-store');
+const { SwitchServersStore, switchServersStore } = await import('./switch-servers-store');
+const { gatewaySessionEndedChannel } = await import('@shared/events/switchServerEvents');
+/** What the store does with word from the main process that a session ended,
+ * taken before `beforeEach` clears the record of it being subscribed. */
+const onSessionEnded = eventsOn.mock.calls.find(
+  ([channel]) => channel === gatewaySessionEndedChannel
+)?.[1] as ((payload: { serverId: string }) => void) | undefined;
 
 /** Scope the window to a server, the way choosing one of its workspaces does. */
 function selectServer(serverId: string | null): void {
@@ -751,5 +758,65 @@ describe('the error banner', () => {
     await store.recoverStale();
 
     expect(store.error).toBe('Invalid email or password');
+  });
+});
+
+describe('a session the server has ended', () => {
+  const user = { id: 'u1', name: 'Ada', email: 'ada@example.test', role: 'user' } as never;
+
+  it('re-checks a signed-in server and shows it signed out once the check is refused', async () => {
+    const store = newStore([server('a')]);
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+    expect(store.isConnected('a')).toBe(true);
+
+    // The session was revoked (a password change elsewhere): `/auth/me` now refuses it.
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: false, user: null });
+    await store.noteSessionEnded('a');
+
+    expect(store.isConnected('a')).toBe(false);
+    // Signed out, not unreachable: the sidebar asks for a sign-in rather than
+    // calling the rooms out of date or the server offline.
+    expect(store.isUnreachable('a')).toBe(false);
+  });
+
+  it('stays signed in when the re-check finds the session still good', async () => {
+    const store = newStore([server('a')]);
+    getConnectionStatus.mockResolvedValue({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+    await store.noteSessionEnded('a');
+    expect(store.isConnected('a')).toBe(true);
+  });
+
+  it('does not re-check a server already signed out, so a refused re-check cannot loop', async () => {
+    const store = newStore([server('a')]);
+    await store.refreshStatus('a');
+    getConnectionStatus.mockClear();
+    await store.noteSessionEnded('a');
+    expect(getConnectionStatus).not.toHaveBeenCalled();
+  });
+
+  it('does not start a second check while one is running', async () => {
+    const store = newStore([server('a')]);
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+    const pending = deferred<unknown>();
+    getConnectionStatus.mockReturnValueOnce(pending.promise);
+    const first = store.noteSessionEnded('a');
+    await store.noteSessionEnded('a');
+    expect(getConnectionStatus).toHaveBeenCalledTimes(2);
+    pending.resolve({ serverId: 'a', connected: false, user: null });
+    await first;
+  });
+
+  it('listens for the main process saying so', async () => {
+    expect(onSessionEnded).toBeDefined();
+    switchServersStore.servers = [server('a')];
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await switchServersStore.refreshStatus('a');
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: false, user: null });
+    onSessionEnded!({ serverId: 'a' });
+    await flush();
+    expect(switchServersStore.isConnected('a')).toBe(false);
   });
 });
