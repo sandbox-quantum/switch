@@ -372,13 +372,13 @@ async def test_an_agent_cannot_name_the_key_in_its_own_arguments() -> None:
     assert "client_txn_id" in str(excinfo.value)
 
 
-@pytest.mark.parametrize(("v2", "status"), [(True, 503), (False, 422)])
+@pytest.mark.parametrize(("v2", "status"), [(True, 503), (False, 400)])
 async def test_a_post_while_the_agents_client_is_not_running_yet_is_a_503(
     monkeypatch: pytest.MonkeyPatch, v2: bool, status: int
 ) -> None:
     """Just after Core starts, before the agent's client is up: the host sends
     the post again (B62) rather than taking it as refused. With hosted agents
-    v2 off, upstream's 422 (sweep row 9)."""
+    v2 off, upstream's 400, as for any ValueError (v1 sweep, item 3)."""
     from fastapi import HTTPException
 
     from switch_core import hosted_v2

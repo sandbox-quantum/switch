@@ -10,6 +10,10 @@ from pydantic import ValidationError
 from switch_core.db.models import BUDGET_METRICS, UsageMetric
 from switch_core.gateway.schemas import BudgetCreateRequest
 
+# v2's metrics: with hosted agents v2 off they are refused as upstream refused
+# them (`test_hosted_v2_extras.py`, v1 sweep item 12).
+pytestmark = pytest.mark.usefixtures("hosted_v2_on")
+
 
 def _request(metric: str, model: str = "") -> BudgetCreateRequest:
     return BudgetCreateRequest(

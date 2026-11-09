@@ -2,11 +2,10 @@ import logging
 import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal, NoReturn
+from typing import Annotated, Any, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -587,6 +586,26 @@ class Observation(_UpstreamObservation):
     restarts: int | None = Field(default=None, ge=0, le=1_000_000)
     node: str | None = Field(default=None, pattern=NODE_NAME, max_length=253)
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _v2_fields_while_off(cls, data: Any, handler: Any) -> Any:
+        """The v1/v2 switch (v1 sweep, item 14): with hosted agents v2 off, an
+        observation naming v2's fields is checked by upstream's model alone,
+        which forbids unknown fields. So the 422 lists exactly upstream's
+        errors, in its order, before the handler runs."""
+        if (
+            not process_hosted_v2()
+            and isinstance(data, dict)
+            and any(name in _V2_OBSERVATION_FIELDS for name in data)
+        ):
+            _UpstreamObservation.model_validate(data)
+        return handler(data)
+
+
+_V2_OBSERVATION_FIELDS = frozenset(
+    set(Observation.model_fields) - set(_UpstreamObservation.model_fields)
+)
+
 
 ERROR_REPLACING_STATES = {"error", "retained", "deleting", "deleted"}
 
@@ -595,35 +614,12 @@ STALE_ERROR_IGNORED_STATES = {"deleted", "queued", "provisioning"}
 OBSERVED_ERROR = "The cloud machine could not start. Retry it in Switch Console, or contact your administrator if it keeps failing."
 
 
-def _refuse_v2_fields_while_off(body: Observation) -> None:
-    """The v1/v2 switch (sweep row 14): with hosted agents v2 off, an
-    observation naming v2's fields is refused as upstream refuses any unknown
-    field, with the same 422 (`extra_forbidden`), before anything is read."""
-    if process_hosted_v2():
-        return
-    v2_fields = set(Observation.model_fields) - set(_UpstreamObservation.model_fields)
-    named = [name for name in body.model_fields_set if name in v2_fields]
-    if named:
-        raise RequestValidationError(
-            [
-                {
-                    "type": "extra_forbidden",
-                    "loc": ("body", name),
-                    "msg": "Extra inputs are not permitted",
-                    "input": getattr(body, name),
-                }
-                for name in named
-            ]
-        )
-
-
 @router.post("/machines/{machine_id}/observation")
 async def observe(
     machine_id: str,
     body: Observation,
     session: Annotated[AsyncSession, Depends(controller_session)],
 ) -> dict:
-    _refuse_v2_fields_while_off(body)
     machine = await _locked_machine(session, machine_id)
     now = datetime.now(UTC)
     if body.evictions:

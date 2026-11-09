@@ -85,8 +85,9 @@ def refusal_status(exc: Exception) -> int | None:
     if isinstance(exc, AgentClientNotRunning):
         # Core has only just started: the agent's host sends the post again
         # (B62), as for any 503, rather than taking it as refused. With hosted
-        # agents v2 off, upstream's 422, as any ValueError (sweep row 9).
-        return 503 if process_hosted_v2() else 422
+        # agents v2 off, upstream's 400, as for any ValueError below (v1
+        # sweep, item 3).
+        return 503 if process_hosted_v2() else 400
     if isinstance(exc, MembershipFixed):
         # As the room routes answer it: nothing is wrong with the request, the
         # room is a direct or group conversation.
@@ -218,6 +219,13 @@ def checked_reply_key(value: str | None) -> str | None:
             ),
         )
     return value
+
+
+def reply_key(value: str | None) -> str | None:
+    """The host's reply key for this call's room post. With hosted agents v2
+    off the header is ignored, as before v2: no 400 for one out of shape, and
+    no `sent_under` lookup (v1 sweep, item 8)."""
+    return checked_reply_key(value) if process_hosted_v2() else None
 
 
 SESSION_SELECTOR_HEADERS = (
@@ -373,9 +381,10 @@ async def post_operation(
 
     `X-Switch-Client-Txn-Id`, when sent, is the host's key for the room post
     this call makes (`reply:…`; B62): asked again under it, after an answer
-    lost to a Switch restart, the post is the one already made.
+    lost to a Switch restart, the post is the one already made. With hosted
+    agents v2 off it is ignored, as before v2 (`reply_key`).
     """
-    key = checked_reply_key(client_txn_id)
+    key = reply_key(client_txn_id)
     caller: CallerSession | None
     session_key: str | None
     if isinstance(request.scope.get("controller"), ControllerPrincipal):

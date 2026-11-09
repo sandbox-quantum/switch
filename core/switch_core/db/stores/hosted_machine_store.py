@@ -21,6 +21,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.tenant_context import tenant_scope
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
@@ -273,8 +274,9 @@ class CloudMachineStore:
         again with a controller for it. The caller holds `lock_claims`, so no
         other claim can count towards capacity or join the machine meanwhile.
         """
-        # A paused user claims nothing, box or no box (visibility V3).
-        if await owner_paused(session, owner_id):
+        # A paused user claims nothing, box or no box (visibility V3). The
+        # pause is v2's: with it off, no read, as before v2 (v1 sweep, item 7).
+        if process_hosted_v2() and await owner_paused(session, owner_id):
             raise CloudMachineConflict(MACHINE_PAUSED)
         machine = await self.live_for_owner(session, owner_id)
         if machine is not None:

@@ -6,17 +6,36 @@ controllers' notice routes answer as if absent. Their Postgres halves are in
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
-from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
+from pydantic import (
+    BaseModel,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from switch_core import hosted_v2
-from switch_core.db.models import UsageMetric
+from switch_core.db.models import (
+    MAX_BUDGET_AMOUNT,
+    MAX_BUDGET_PERIOD_HOURS,
+    UsageMetric,
+)
 from switch_core.gateway import tenants
+from switch_core.gateway.schemas import (
+    BudgetCreateRequest,
+    BudgetUpdateRequest,
+    _V1Metric,
+)
 from switch_core.management.controller_routes import router as controller_router
+from switch_core.tenant_context import tenant_scope
 
 NOTICE_ROUTES = ("restart-notice", "rest-notice", "reset-refused")
 
@@ -29,27 +48,110 @@ def v2(monkeypatch: pytest.MonkeyPatch):
     return _set
 
 
+class _UpstreamBudgetCreateRequest(BaseModel):
+    """Upstream's `BudgetCreateRequest` (807a1f94d), copied as it was, so the
+    v2-off answer is checked against the real thing rather than a summary."""
+
+    agent_id: str | None
+    metric: _V1Metric  # type: ignore[valid-type]
+    model: str
+    amount_limit: int = Field(gt=0, le=MAX_BUDGET_AMOUNT)
+    period_hours: int = Field(gt=0, le=MAX_BUDGET_PERIOD_HOURS)
+
+    @model_validator(mode="after")
+    def _model_only_on_token_metrics(self) -> _UpstreamBudgetCreateRequest:
+        if self.model and self.metric in ("messages", "turns"):
+            raise ValueError(
+                f"A {self.metric.value} budget cannot name a model: "
+                f"{self.metric.value} are not counted per model"
+            )
+        return self
+
+
+def _errors(model: type[BaseModel], body: dict) -> list[dict] | None:
+    try:
+        TypeAdapter(model).validate_python(body)
+    except ValidationError as error:
+        # A value error's context holds the exception itself, which compares
+        # by identity: compare its words instead.
+        return [
+            {**e, "ctx": {k: str(v) for k, v in e["ctx"].items()}} if "ctx" in e else e
+            for e in error.errors(include_url=False)
+        ]
+    return None
+
+
+_BUDGET_BODIES = [
+    {
+        "agent_id": None,
+        "metric": metric,
+        "model": model,
+        "amount_limit": limit,
+        "period_hours": hours,
+    }
+    for metric in ("awake_minutes", "hosted_ai_calls", "turns", "input_tokens", "bogus")
+    for model, limit, hours in (("", 300, 24), ("m", 0, 99999), ("m", 5, 1))
+]
+
+
+@pytest.mark.parametrize("body", _BUDGET_BODIES)
+def test_v2_off_a_new_budget_is_refused_exactly_as_upstream(v2, body: dict) -> None:
+    """V1 sweep, item 12: with v2 off, the same errors in the same order,
+    raised while the body is read, so before the handler's workspace check."""
+    v2(False)
+    assert _errors(BudgetCreateRequest, body) == _errors(
+        _UpstreamBudgetCreateRequest, body
+    )
+
+
 @pytest.mark.parametrize(
     "metric", [UsageMetric.AWAKE_MINUTES, UsageMetric.HOSTED_AI_CALLS]
 )
-def test_v2s_budget_metrics_are_refused_as_unknown(metric: UsageMetric) -> None:
-    with pytest.raises(RequestValidationError) as refused:
-        tenants._v1_metric(metric)
-    (error,) = refused.value.errors()
-    assert error["loc"] == ("body", "metric")
-    assert error["type"] == "enum"
+def test_v2_on_its_budget_metrics_are_accepted(v2, metric: UsageMetric) -> None:
+    v2(True)
+    body = {
+        "agent_id": None,
+        "metric": metric.value,
+        "model": "",
+        "amount_limit": 300,
+        "period_hours": 24,
+    }
+    assert _errors(BudgetCreateRequest, body) is None
+    assert _errors(_UpstreamBudgetCreateRequest, body)
 
 
-@pytest.mark.parametrize(
-    "metric",
-    [
-        m
-        for m in UsageMetric
-        if m not in (UsageMetric.AWAKE_MINUTES, UsageMetric.HOSTED_AI_CALLS)
-    ],
-)
-def test_every_v1_metric_is_still_accepted(metric: UsageMetric) -> None:
-    tenants._v1_metric(metric)
+@pytest.mark.parametrize("on", [False, True])
+@pytest.mark.parametrize("change", ["update", "delete"])
+async def test_the_budget_is_read_before_a_change_only_with_v2_on(
+    v2, monkeypatch, on: bool, change: str
+) -> None:
+    """V1 sweep, item 13: with v2 off, no extra `usage_budgets` read before an
+    update or delete, as upstream; only v2's audit, cap and nudge need it."""
+    v2(on)
+    monkeypatch.setattr(tenants, "record_audit_event", AsyncMock())
+    row = AsyncMock(return_value=None)
+    monkeypatch.setattr(tenants, "_budget_row", row)
+    monkeypatch.setattr(tenants, "_budget_standing", AsyncMock())
+    store = AsyncMock()
+    store.update.return_value = SimpleNamespace(
+        metric="turns", model="", agent_id=None, amount_limit=5, period_hours=24
+    )
+    common: dict[str, Any] = {
+        "tenant_id": "t",
+        "budget_id": "b",
+        "session": AsyncMock(),
+        "budget_store": store,
+        "user": SimpleNamespace(id="u"),
+        "request": SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
+    }
+    with tenant_scope("t"):
+        if change == "update":
+            await tenants.update_budget(
+                body=BudgetUpdateRequest(amount_limit=5, period_hours=24), **common
+            )
+        else:
+            await tenants.delete_budget(**common)
+    assert row.await_count == (1 if on else 0)
 
 
 async def test_v2_off_a_budget_change_is_not_audited(v2, monkeypatch) -> None:
@@ -163,29 +265,50 @@ def test_a_machine_row_names_its_backend_as_ruled(
     assert ("backend" in item) is (shown is not None)
 
 
-@pytest.mark.parametrize("field", ["evictions", "restarts", "node"])
-def test_v2_off_an_observation_with_v2_fields_is_refused_as_upstream(
-    v2, field: str
-) -> None:
-    """Sweep row 14: upstream's `extra="forbid"` refused these with a 422."""
+_OBSERVATIONS = [
+    {"state": "running", "revision": 1, "evictions": 2},
+    {"node": "node-a", "state": "running", "revision": 1},
+    {"restarts": 1, "evictions": -1, "node": "!", "state": "nope", "revision": 0},
+    {"state": "running", "revision": 1, "surprise": True, "evictions": 1},
+    {"state": "running", "revision": 1},
+    {"state": "nope", "revision": 0},
+]
+
+
+@pytest.mark.parametrize("body", _OBSERVATIONS)
+def test_v2_off_an_observation_is_refused_exactly_as_upstream(v2, body: dict) -> None:
+    """V1 sweep, item 14: upstream's `extra="forbid"` model alone decides, so
+    the 422 lists its errors in its order, even for v2 fields out of range."""
     from switch_core.gateway.hosted_controller import (
         Observation,
-        _refuse_v2_fields_while_off,
+        _UpstreamObservation,
     )
 
-    body = Observation.model_validate(
-        {"state": "running", "revision": 1, field: "node-a" if field == "node" else 1}
-    )
-    v2(True)
-    _refuse_v2_fields_while_off(body)  # on: accepted
     v2(False)
-    with pytest.raises(RequestValidationError) as refused:
-        _refuse_v2_fields_while_off(body)
-    (error,) = refused.value.errors()
-    assert (error["type"], error["loc"]) == ("extra_forbidden", ("body", field))
-    _refuse_v2_fields_while_off(
-        Observation.model_validate({"state": "running", "revision": 1})
-    )  # an upstream observation still passes
+    assert _errors(Observation, body) == _errors(_UpstreamObservation, body)
+
+
+def test_v2_on_an_observation_may_name_v2s_fields(v2) -> None:
+    from switch_core.gateway.hosted_controller import Observation
+
+    v2(True)
+    body = {
+        "state": "running",
+        "revision": 1,
+        "evictions": 2,
+        "restarts": 1,
+        "node": "node-a",
+    }
+    assert _errors(Observation, body) is None
+    assert _errors(Observation, {**body, "evictions": -1}) == [
+        {
+            "type": "greater_than_equal",
+            "loc": ("evictions",),
+            "msg": "Input should be greater than or equal to 0",
+            "input": -1,
+            "ctx": {"ge": "0"},
+        }
+    ]
 
 
 def _status_with(machine: dict, agent: dict) -> dict:
@@ -358,3 +481,219 @@ def test_unset_they_answer_as_upstream(
     upstream = allowed_tenants is None or "t-1" in allowed_tenants
     assert hosted_machines.machines_enabled(config, settings, user_id) is upstream  # type: ignore[arg-type]
     assert tenant_allowed(settings.management_tenant_ids, "any-workspace")
+
+
+@pytest.mark.parametrize("on", [False, True])
+async def test_a_status_report_reads_and_locks_only_with_v2_on(
+    v2, monkeypatch, on: bool
+) -> None:
+    """V1 sweep, item 4: with v2 off, no read of the bound agents, no lock on
+    the previous report, and a session state kept as sent, as upstream."""
+    from switch_core.bridges.agent.auth import ControllerPrincipal
+    from switch_core.management import service as service_module
+    from switch_core.management.schemas import StatusReport
+    from switch_core.management.service import ManagementService
+
+    v2(on)
+    monkeypatch.setattr(service_module, "controller_release_view", lambda *_: None)
+    controller = SimpleNamespace(
+        id="c", status={}, kind="local", assignment_revision=3, owner_id="u"
+    )
+    listed = AsyncMock(return_value=[])
+    locked = AsyncMock(return_value=(None, None))
+    stored_status = AsyncMock(return_value=True)
+    svc: Any = object.__new__(ManagementService)
+    svc.definitions = SimpleNamespace(list_for_controller=listed)
+    svc.controllers = SimpleNamespace(
+        lock_previous_report=locked, record_status=stored_status
+    )
+    svc._principal_controller = AsyncMock(return_value=controller)
+    svc.now = lambda: datetime.now(UTC)
+    svc.user_changes = SimpleNamespace(publish=lambda *_: None)
+    svc.settings = SimpleNamespace(
+        status_interval_seconds=30, wait_limit_seconds=600, controller_release=None
+    )
+    report = StatusReport.model_validate(_status_with({}, {"session": "active"}))
+    await svc.record_status(
+        AsyncMock(),
+        ControllerPrincipal(controller_id="c", owner_id="u", tenant_id="t"),
+        report,
+    )
+    calls = 1 if on else 0
+    assert listed.await_count == calls
+    assert locked.await_count == calls
+    assert stored_status.await_args is not None
+    stored = stored_status.await_args.kwargs["status"]
+    # The agent isn't bound to this controller: v2 drops its session state.
+    assert ("session" in stored["agents"][0]) is not on
+
+
+@pytest.mark.parametrize("on", [False, True])
+async def test_a_claim_reads_the_owners_pause_only_with_v2_on(
+    v2, monkeypatch, on: bool
+) -> None:
+    """V1 sweep, item 7: the pause is v2's; with it off, no read on claim."""
+    from switch_core.db.stores import hosted_machine_store as store_module
+
+    class _Reached(Exception):
+        pass
+
+    v2(on)
+    paused = AsyncMock(return_value=True)
+    monkeypatch.setattr(store_module, "owner_paused", paused)
+    monkeypatch.setattr(
+        store_module.CloudMachineStore,
+        "live_for_owner",
+        AsyncMock(side_effect=_Reached),
+    )
+    store = object.__new__(store_module.CloudMachineStore)
+    expected = store_module.CloudMachineConflict if on else _Reached
+    with pytest.raises(expected) as raised:
+        await store.claim(
+            AsyncMock(), AsyncMock(), owner_id="u", capacity=1, now=datetime.now(UTC)
+        )
+    if on:
+        assert str(raised.value) == store_module.MACHINE_PAUSED
+    assert paused.await_count == (1 if on else 0)
+
+
+@pytest.mark.parametrize("value", ["reply:7f1c", "not a key", "x" * 500])
+def test_v2_off_a_client_txn_id_is_ignored(v2, value: str) -> None:
+    """V1 sweep, item 8: with v2 off the header is ignored as upstream: no 400
+    for one out of shape, and no key, so no `sent_under` lookup."""
+    from switch_core.bridges.agent.api.operations import reply_key
+
+    v2(False)
+    assert reply_key(value) is None
+
+
+def test_v2_on_a_client_txn_id_is_checked_and_kept(v2) -> None:
+    from fastapi import HTTPException
+
+    from switch_core.bridges.agent.api.operations import reply_key
+
+    v2(True)
+    assert reply_key("reply:7f1c") == "reply:7f1c"
+    assert reply_key(None) is None
+    with pytest.raises(HTTPException) as refused:
+        reply_key("not a key")
+    assert refused.value.status_code == 400
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_the_agent_apis_feature_flags_hide_v2s_own_flags_with_v2_off(
+    on: bool,
+) -> None:
+    """V1 sweep, item 9: as the gateway's list, upstream's exactly with v2 off."""
+    from switch_core.bridges.agent.api.handlers import router as agent_router
+    from switch_core.bridges.agent.auth import get_agent_from_scope
+    from switch_core.bridges.agent.dependencies import get_config
+    from switch_core.feature_flags import (
+        ECOSYSTEM_SHOW_OWNERS,
+        HOSTED_AWAKE_BUDGETS,
+        HOSTED_CLOUD_FILES,
+    )
+
+    flags = {
+        ECOSYSTEM_SHOW_OWNERS: True,
+        HOSTED_AWAKE_BUDGETS: True,
+        HOSTED_CLOUD_FILES: False,
+    }
+    app = FastAPI()
+    app.include_router(agent_router, prefix="/agent")
+    app.dependency_overrides[get_agent_from_scope] = lambda: SimpleNamespace(id="a")
+    app.dependency_overrides[get_config] = lambda: SimpleNamespace(
+        feature_flags=flags, hosted_box_provisioning=on
+    )
+    listed = TestClient(app).get("/agent/feature-flags").json()["flags"]
+    keys = [flag["key"] for flag in listed]
+    if on:
+        assert keys == list(flags)
+    else:
+        assert keys == [ECOSYSTEM_SHOW_OWNERS]
+
+
+def _hosted_config(tmp_path, **lists) -> str:
+    """A v1 server's hosted controller config: no v2 setting, and only the
+    lists given here."""
+    import json
+
+    path = tmp_path / "hosted.json"
+    path.write_text(
+        json.dumps(
+            {
+                "allowed_tenant_ids": None,
+                "token": "t" * 32,
+                "agent_api_endpoint": "https://core.example",
+                **lists,
+            }
+        )
+    )
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    ("lists", "refused"),
+    [
+        (None, False),  # no hosted config at all
+        ({}, False),  # a v1 config, lists left out
+        ({"management_tenant_ids": None, "allowed_user_ids": None}, False),
+        ({"management_tenant_ids": ["t-1"]}, True),  # set: the check is real
+    ],
+)
+async def test_unset_allow_lists_add_no_403_on_the_paths_that_check_them(
+    tmp_path, monkeypatch, lists: dict | None, refused: bool
+) -> None:
+    """Security's item 17: with `management_tenant_ids` and `allowed_user_ids`
+    unset, a v1 server refuses no workspace on the three paths that check the
+    management list, wired as `create_management` wires them, and lets every
+    account use cloud machines as upstream."""
+    from functools import partial
+
+    from switch_core.bridges.agent.auth import ControllerAuthError, ControllerPrincipal
+    from switch_core.gateway import hosted_machines
+    from switch_core.management import auth as auth_module
+    from switch_core.management.auth import ManagementAuthenticator
+    from switch_core.management.dependencies import require_management_workspace
+    from switch_core.management.errors import ManagementError
+    from switch_core.management.wiring import _management_tenant_ids
+    from switch_core.providers.hosted import load_hosted_settings, tenant_allowed
+
+    path = None if lists is None else _hosted_config(tmp_path, **lists)
+    tenant_ids = _management_tenant_ids(path)
+    principal = ControllerPrincipal(controller_id="c", owner_id="u", tenant_id="t-2")
+    authenticator = ManagementAuthenticator(
+        session_factory=AsyncMock(),  # type: ignore[arg-type]
+        controllers=AsyncMock(),  # type: ignore[arg-type]
+        token_secret="s" * 32,
+        presence=AsyncMock(),  # type: ignore[arg-type]
+        auth_cache=SimpleNamespace(controller=lambda *_: principal),  # type: ignore[arg-type]
+        workspace_allowed=partial(tenant_allowed, tenant_ids),
+        workspace_restricted=tenant_ids is not None,
+    )
+    monkeypatch.setattr(auth_module, "tenant_of_api_key", AsyncMock(return_value="t-2"))
+    outcomes: list[int | None] = []
+    with tenant_scope("t-2"):
+        for check in (
+            lambda: _sync(require_management_workspace, authenticator),
+            lambda: authenticator.current(principal),
+            lambda: authenticator.tenant_of_secret("secret"),
+        ):
+            try:
+                await check()
+                outcomes.append(None)
+            except (ManagementError, ControllerAuthError) as error:
+                outcomes.append(error.status_code)
+    assert outcomes == ([403, 403, 403] if refused else [None, None, None])
+    assert authenticator.workspace_restricted is refused
+    if path is not None:
+        settings = load_hosted_settings(path)
+        assert settings is not None
+        monkeypatch.setattr(hosted_machines, "require_tenant_id", lambda: "t-2")
+        config = SimpleNamespace(hosted_agents_enabled=True, hosted_launch_capacity=1)
+        assert hosted_machines.machines_enabled(config, settings, "any-user")  # type: ignore[arg-type]
+
+
+async def _sync(check: Any, authenticator: object) -> None:
+    """A sync dependency, run as the awaited checks are."""
+    check(SimpleNamespace(), authenticator)

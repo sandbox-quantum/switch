@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -10,9 +11,12 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    TypeAdapter,
+    ValidationError,
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
 from switch_core.bridges.collaboration.models import (
@@ -31,6 +35,7 @@ from switch_core.db.models import (
     PER_MODEL_METRICS,
     UsageMetric,
 )
+from switch_core.hosted_v2 import process_hosted_v2
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -2082,6 +2087,18 @@ def daily_cap_problem(
         raise ValueError(f"The daily AI cap is 1 to {MAX_DAILY_CAP} calls")
 
 
+# The metrics before hosted agents v2, in their order: with v2 off, a budget on
+# any other is refused with the same validation error as before v2.
+_V1Metric = StrEnum(  # type: ignore[misc]
+    "UsageMetric",
+    {
+        m.name: m.value
+        for m in UsageMetric
+        if m not in (UsageMetric.AWAKE_MINUTES, UsageMetric.HOSTED_AI_CALLS)
+    },
+)
+
+
 class BudgetCreateRequest(BaseModel):
     """A new budget. `agent_id` null covers every agent in the workspace;
     `model` empty covers every model."""
@@ -2091,6 +2108,24 @@ class BudgetCreateRequest(BaseModel):
     model: str
     amount_limit: int = Field(gt=0, le=MAX_BUDGET_AMOUNT)
     period_hours: int = Field(gt=0, le=MAX_BUDGET_PERIOD_HOURS)
+
+    @field_validator("metric", mode="before")
+    @classmethod
+    def _v1_metrics_while_off(cls, value: Any) -> Any:
+        """The v1/v2 switch (v1 sweep, item 12): with hosted agents v2 off, its
+        metrics don't exist. Refused as a field error, so the 422 lists the
+        same errors, in the same order and before the handler runs, as before
+        v2."""
+        if process_hosted_v2():
+            return value
+        try:
+            TypeAdapter(_V1Metric).validate_python(value)
+        except ValidationError as error:
+            first = error.errors()[0]
+            raise PydanticCustomError(
+                first["type"], first["msg"], first.get("ctx")
+            ) from None
+        return value
 
     @model_validator(mode="after")
     def _model_only_on_token_metrics(self) -> BudgetCreateRequest:

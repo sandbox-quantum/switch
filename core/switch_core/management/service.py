@@ -605,33 +605,43 @@ class ManagementService:
         not on every report: free disk and memory, and the times a report and
         its provider checks were taken, move on every one of them.
         """
-        # A session state is kept only for agents bound to this controller, so a
-        # box can't set "Resting" or "Running" on anyone else's agent. (Each
-        # agent's view reads only its own controller's report anyway.)
-        bound_clients = {
-            agent.id: agent.client_id
-            for _row, agent in await self.definitions.list_for_controller(
-                session, principal.tenant_id, principal.controller_id
-            )
-        }
-        bound = set(bound_clients)
+        # The v1/v2 switch: with v2 off, the report is stored as before v2, with
+        # no read of the bound agents, no lock on the previous report and every
+        # field kept as sent (v1 sweep, item 4).
+        v2 = process_hosted_v2()
         status = report.model_dump(mode="json", exclude_unset=True)
         if report.machine._dropped_old_note:
             _note_dropped(principal.controller_id)
-        for entry in status.get("agents", []):
-            if entry.get("agent_id") not in bound and "session" in entry:
-                entry.pop("session")
-                # Not an error a box can cause by accident: worth a look.
-                logger.warning(
-                    "Controller %s reported a session state for agent %s, which "
-                    "is not bound to it; the state was dropped",
-                    principal.controller_id,
-                    entry.get("agent_id"),
-                )
+        bound_clients: dict[str, str] = {}
+        previous_seen_at: datetime | None = None
+        previous_status: dict[str, Any] | None = None
         seen_at = self.now()
-        previous_seen_at, previous_status = await self.controllers.lock_previous_report(
-            session, principal.tenant_id, principal.controller_id
-        )
+        if v2:
+            # A session state is kept only for agents bound to this controller,
+            # so a box can't set "Resting" or "Running" on anyone else's agent.
+            # (Each agent's view reads only its own controller's report anyway.)
+            bound_clients = {
+                agent.id: agent.client_id
+                for _row, agent in await self.definitions.list_for_controller(
+                    session, principal.tenant_id, principal.controller_id
+                )
+            }
+            for entry in status.get("agents", []):
+                if entry.get("agent_id") not in bound_clients and "session" in entry:
+                    entry.pop("session")
+                    # Not an error a box can cause by accident: worth a look.
+                    logger.warning(
+                        "Controller %s reported a session state for agent %s, "
+                        "which is not bound to it; the state was dropped",
+                        principal.controller_id,
+                        entry.get("agent_id"),
+                    )
+            (
+                previous_seen_at,
+                previous_status,
+            ) = await self.controllers.lock_previous_report(
+                session, principal.tenant_id, principal.controller_id
+            )
         controller = await self._principal_controller(session, principal)
         before = _status_signature(controller.status)
         new_status = status

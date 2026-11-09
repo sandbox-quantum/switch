@@ -5,14 +5,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from switch_core.config import SwitchConfig
-from switch_core.feature_flags import HOSTED_AWAKE_BUDGETS, HOSTED_CLOUD_FILES
+from switch_core.feature_flags import V2_ONLY_FLAGS
 from switch_core.gateway.auth import get_authenticated_user_id
 from switch_core.gateway.dependencies import get_config
 from switch_core.gateway.schemas import FeatureFlagsResponse, FeatureFlagState
 from switch_core.hosted_v2 import HOSTED_V2_FLAG, hosted_v2_on
-
-# Flags only hosted agents v2 has: absent upstream.
-V2_ONLY_FLAGS = frozenset({HOSTED_AWAKE_BUDGETS, HOSTED_CLOUD_FILES})
 
 router = APIRouter()
 

@@ -105,6 +105,8 @@ async def test_prepare_hands_out_no_code_for_a_blocked_workspace(controller_app)
     assert machine.state != "error" and machine.error is None
 
 
+# The pause is v2's: with v2 off a claim never reads it (v1 sweep, item 7).
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_paused_owner_with_no_box_claims_none(controller_app):  # noqa: F811
     app = controller_app
     await _pause(app)

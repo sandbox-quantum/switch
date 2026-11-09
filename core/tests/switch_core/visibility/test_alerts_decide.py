@@ -346,6 +346,8 @@ class TestBoxFacts:
             == 1
         )
 
+    # v2's fields: with v2 off, upstream's model decides (v1 sweep, item 14).
+    @pytest.mark.usefixtures("hosted_v2_on")
     def test_the_observation_checks_node_and_restarts(self) -> None:
         ok = Observation(state="running", revision=1, node="ip-10-0-1-7", restarts=2)
         assert ok.node == "ip-10-0-1-7"

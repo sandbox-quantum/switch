@@ -18,6 +18,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from switch_core.config import SwitchConfig
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import LogContextFilter
 from switch_core.observability.catalogue import (
     AGENTS_CONNECTED,
@@ -281,9 +282,14 @@ def start_observability(
             tasks.append(
                 asyncio.create_task(sampler.run_forever(), name="db-server-sampler")
             )
-        if db_server_engine is not None and config.hosted_agents_enabled:
+        if (
+            db_server_engine is not None
+            and config.hosted_agents_enabled
+            and process_hosted_v2()
+        ):
             # Its own connection too: it holds the lock that makes this the
-            # one process reporting the hosted boxes' gauges.
+            # one process reporting the hosted boxes' gauges. Hosted agents v2
+            # only: with it off, nothing new starts (v1 sweep, item 5).
             hosted = HostedSampler(db_server_engine)
             registry.register_observer(hosted.readings)
             tasks.append(

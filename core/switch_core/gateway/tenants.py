@@ -3,14 +3,11 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
-from enum import StrEnum
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -750,27 +747,6 @@ async def _budget_standing(
     raise HTTPException(status_code=404, detail="Budget not found")
 
 
-# The metrics before hosted agents v2, in their order: with v2 off, a budget on
-# any other is refused with the same validation error as before v2.
-_V1Metric = StrEnum(  # type: ignore[misc]
-    "UsageMetric",
-    {
-        m.name: m.value
-        for m in UsageMetric
-        if m not in (UsageMetric.AWAKE_MINUTES, UsageMetric.HOSTED_AI_CALLS)
-    },
-)
-
-
-def _v1_metric(metric: UsageMetric) -> None:
-    try:
-        TypeAdapter(_V1Metric).validate_python(metric.value)
-    except ValidationError as error:
-        raise RequestValidationError(
-            [{**e, "loc": ("body", "metric")} for e in error.errors()]
-        ) from None
-
-
 def _budget_terms(budget: UsageBudget) -> dict:
     """What a budget covers and allows, for its audit entry: ids, a fixed
     metric, numbers and the model name, never anything a person typed."""
@@ -877,10 +853,6 @@ async def create_budget(
     that one instead.
     """
     _require_bound_tenant(tenant_id)
-    if not process_hosted_v2():
-        # The v1/v2 switch: with hosted agents v2 off, its metrics don't exist,
-        # refused exactly as before v2.
-        _v1_metric(body.metric)
     if (
         body.metric is UsageMetric.AWAKE_MINUTES
         and not config.hosted_awake_budgets_enabled
@@ -936,7 +908,13 @@ async def update_budget(
     """Change a budget's limit and period. Admins only. What it
     covers is fixed; to cover something else, add another budget."""
     _require_bound_tenant(tenant_id)
-    before = await _budget_row(session, tenant_id, budget_id)
+    # Only v2 needs the row before the change (its audit entry, the daily cap
+    # and the nudge); with v2 off, no extra read, as before v2 (v1 sweep, item 13).
+    before = (
+        await _budget_row(session, tenant_id, budget_id)
+        if process_hosted_v2()
+        else None
+    )
     before_terms = None if before is None else _budget_terms(before)
     if before is not None and before.metric == UsageMetric.HOSTED_AI_CALLS.value:
         # The daily AI cap stays daily (visibility L1b, engineer-4).
@@ -984,7 +962,13 @@ async def delete_budget(
 ) -> Response:
     """Remove a budget. Admins only."""
     _require_bound_tenant(tenant_id)
-    before = await _budget_row(session, tenant_id, budget_id)
+    # Only v2 needs the row before the change (its audit entry, the daily cap
+    # and the nudge); with v2 off, no extra read, as before v2 (v1 sweep, item 13).
+    before = (
+        await _budget_row(session, tenant_id, budget_id)
+        if process_hosted_v2()
+        else None
+    )
     before_terms = None if before is None else _budget_terms(before)
     try:
         await budget_store.delete(session, tenant_id=tenant_id, budget_id=budget_id)
