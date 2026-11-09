@@ -65,7 +65,7 @@ const alive = () => {
     return true;
   } catch (e) {
     if (e.code === 'ESRCH') return false;
-    if (e.code === 'EPERM') return true;
+    if (e.code === 'EPERM') return process.platform === 'win32';
     throw e;
   }
 };

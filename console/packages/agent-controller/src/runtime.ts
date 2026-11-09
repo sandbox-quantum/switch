@@ -271,7 +271,7 @@ export function isInside(root: string, path: string): boolean {
 
 /** A saved PID counts only while it still names a process started for this root. */
 export async function ownsRoot(pid: number, root: string): Promise<boolean> {
-  if (!isProcessAlive(pid)) return false;
+  if (!isProcessAlive(pid, 'recorded')) return false;
   const commandLine = await processCommandLine(pid);
   return commandLine !== null && commandLineNames(commandLine, root);
 }
@@ -321,7 +321,7 @@ export async function observeOnDisk(
 ): Promise<AgentObservation> {
   const root = layout.watcherRoot(agentId);
   const pid = await recordedPid(join(root, 'shared-owner.lock'));
-  const running = pid !== null && isProcessAlive(pid);
+  const running = pid !== null && isProcessAlive(pid, 'recorded');
   const healthText = await readOptional(join(root, WATCHER_HEALTH_FILE));
   const health =
     healthText === null
@@ -626,7 +626,7 @@ export class InProcessRuntime implements AgentRuntime {
       });
       await requestStop(root, pid);
       const deadline = Date.now() + STOP_TIMEOUT_MS;
-      while (isProcessAlive(pid)) {
+      while (isProcessAlive(pid, 'recorded')) {
         if (Date.now() > deadline) {
           await killProcessTree(pid);
           break;

@@ -64,14 +64,14 @@ export function readHostSessions(
       return false;
     }
     if (!Number.isSafeInteger(pid) || (pid as number) <= 0) return false;
-    // `isProcessAlive`, written out: this function runs on its own as a script.
+    // `isProcessAlive(pid, 'recorded')`, written out: this function runs on its own as a script.
     try {
       process.kill(pid as number, 0);
       return true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ESRCH') return false;
-      if (code === 'EPERM') return true;
+      if (code === 'EPERM') return process.platform === 'win32';
       throw error;
     }
   };

@@ -65,7 +65,7 @@ export async function superviseSharedHost(input: {
   const owner = { pid: process.pid, token: randomUUID(), build: input.build };
   await withOwnershipLock(directory, async () => {
     const pid = await ownerPid(ownerPath);
-    if (pid !== null && isProcessAlive(pid))
+    if (pid !== null && isProcessAlive(pid, 'recorded'))
       throw new Error('The shared host supervisor is already running.');
     await replaceOwner(ownerPath, owner);
   });
@@ -73,7 +73,7 @@ export async function superviseSharedHost(input: {
     while (!input.signal.aborted) {
       // A replacement supervisor adopts a living worker instead of starting a competitor.
       const existing = await ownerPid(join(input.root, 'shared-owner.lock'));
-      if (existing !== null && isProcessAlive(existing)) {
+      if (existing !== null && isProcessAlive(existing, 'recorded')) {
         await delay(500, undefined, { signal: input.signal });
         continue;
       }

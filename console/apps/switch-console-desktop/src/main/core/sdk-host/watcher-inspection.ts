@@ -8,7 +8,7 @@ const read=p=>{try{return readJson(p)}catch(e){if(e.code==='ENOENT')return null;
 const owner=p=>{
  const saved=read(p); if(!saved)return null;
  if(!Number.isSafeInteger(saved.pid)||saved.pid<=0)throw new Error('Invalid host PID');
- try{process.kill(saved.pid,0);return saved.pid}catch(e){if(e.code==='ESRCH')return null;if(e.code==='EPERM')return saved.pid;throw e}
+ try{process.kill(saved.pid,0);return saved.pid}catch(e){if(e.code==='ESRCH')return null;if(e.code==='EPERM')return process.platform==='win32'?saved.pid:null;throw e}
 };
 const tail=p=>{
  let fd;
@@ -67,7 +67,7 @@ function waitForWatcherStop(root) {
       return true;
     } catch (e) {
       if (['ENOENT', 'ESRCH'].includes(e.code)) return false;
-      if (e.code === 'EPERM') return true;
+      if (e.code === 'EPERM') return process.platform === 'win32';
       throw e;
     }
   };

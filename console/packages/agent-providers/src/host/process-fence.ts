@@ -38,12 +38,12 @@ export async function fenceDeadOwner(
 ): Promise<void> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid shared host owner PID.');
   if (process.platform === 'win32') return fenceDeadWindowsOwner(pid, startedAt);
-  if (isProcessAlive(pid))
+  if (isProcessAlive(pid, 'recorded'))
     throw new Error('FENCING_REQUIRED: the shared host owner is still alive.');
   if (group !== pid)
     throw new Error('FENCING_REQUIRED: the previous host did not isolate its provider processes.');
   try {
-    if (!isProcessAlive(-group)) return;
+    if (!isProcessAlive(-group, 'any-user')) return;
     process.kill(-group, 'SIGKILL');
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -53,7 +53,7 @@ export async function fenceDeadOwner(
     if (code !== 'EPERM') throw error;
   }
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (!isProcessAlive(-group)) return;
+    if (!isProcessAlive(-group, 'any-user')) return;
     await delay(50);
   }
   throw new Error('FENCING_REQUIRED: the previous provider process group has not exited.');

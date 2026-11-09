@@ -101,7 +101,7 @@ export async function runningCore(layout: NativeLayout): Promise<CoreProcessReco
   if (record === null) return null;
   const bootedAt = Date.now() - os.uptime() * 1000;
   if (Date.parse(record.startedAt) < bootedAt) return null;
-  return isProcessAlive(record.pid) ? record : null;
+  return isProcessAlive(record.pid, 'recorded') ? record : null;
 }
 
 /**
@@ -150,13 +150,13 @@ export async function stopCore(layout: NativeLayout): Promise<void> {
   if (record !== null) {
     process.kill(record.pid, 'SIGTERM');
     const deadline = Date.now() + STOP_GRACE_MS;
-    while (isProcessAlive(record.pid) && Date.now() < deadline) await sleep(250);
-    if (isProcessAlive(record.pid)) {
+    while (isProcessAlive(record.pid, 'recorded') && Date.now() < deadline) await sleep(250);
+    if (isProcessAlive(record.pid, 'recorded')) {
       log.warn('local-switch-server: switch-core did not stop in time; killing it', {
         pid: record.pid,
       });
       process.kill(record.pid, 'SIGKILL');
-      while (isProcessAlive(record.pid)) await sleep(250);
+      while (isProcessAlive(record.pid, 'recorded')) await sleep(250);
     }
   }
   await rm(path.join(layout.run, PID_FILE), { force: true });

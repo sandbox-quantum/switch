@@ -40,7 +40,7 @@ export async function connectHost(
     const owner = await readFile(ownerPath, 'utf8');
     const pid = Number(owner);
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK host owner lock.');
-    if (!isProcessAlive(pid)) await unlink(ownerPath);
+    if (!isProcessAlive(pid, 'recorded')) await unlink(ownerPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }

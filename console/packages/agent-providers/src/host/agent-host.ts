@@ -706,7 +706,8 @@ export async function runAgentHost(
       }
       if (text !== null) {
         const { pid } = z.object({ pid: z.number().int().positive() }).parse(JSON.parse(text));
-        if (isProcessAlive(pid)) throw new Error('The shared SDK watcher is already running.');
+        if (isProcessAlive(pid, 'recorded'))
+          throw new Error('The shared SDK watcher is already running.');
       }
       await replaceOwner(ownerPath, owner);
     },

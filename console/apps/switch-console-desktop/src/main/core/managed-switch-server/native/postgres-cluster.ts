@@ -262,7 +262,7 @@ export async function stopClusterByPid(layout: NativeLayout): Promise<void> {
     throw error;
   }
   if (!Number.isInteger(pid) || pid <= 0) return;
-  if (!isProcessAlive(pid)) return;
+  if (!isProcessAlive(pid, 'recorded')) return;
   if (process.platform === 'win32') {
     throw new Error(
       `PostgreSQL (pid ${pid}) is still running, and the binaries that could stop it are gone.`
@@ -271,7 +271,7 @@ export async function stopClusterByPid(layout: NativeLayout): Promise<void> {
   process.kill(pid, 'SIGINT');
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
-    if (!isProcessAlive(pid)) return;
+    if (!isProcessAlive(pid, 'recorded')) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`PostgreSQL (pid ${pid}) did not stop within a minute.`);

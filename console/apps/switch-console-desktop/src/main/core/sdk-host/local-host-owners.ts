@@ -36,7 +36,12 @@ export function ownsRoot(pid: number, root: string): boolean {
 export async function ownedElsewhere(root: string): Promise<boolean> {
   for (const record of OWNER_RECORDS) {
     const pid = await ownerPid(join(root, record));
-    if (pid !== null && pid !== process.pid && isProcessAlive(pid) && ownsRoot(pid, root))
+    if (
+      pid !== null &&
+      pid !== process.pid &&
+      isProcessAlive(pid, 'recorded') &&
+      ownsRoot(pid, root)
+    )
       return true;
   }
   return false;
@@ -52,7 +57,10 @@ export async function clearStaleOwners(root: string): Promise<void> {
   for (const record of OWNER_RECORDS) {
     const path = join(root, record);
     const pid = await ownerPid(path);
-    if (pid === null || (pid !== process.pid && isProcessAlive(pid) && ownsRoot(pid, root)))
+    if (
+      pid === null ||
+      (pid !== process.pid && isProcessAlive(pid, 'recorded') && ownsRoot(pid, root))
+    )
       continue;
     if (pid === process.pid) continue;
     await unlink(path).catch((error: NodeJS.ErrnoException) => {

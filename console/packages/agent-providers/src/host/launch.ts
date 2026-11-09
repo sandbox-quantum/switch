@@ -253,7 +253,7 @@ export async function liveSupervisor(root: string): Promise<{ build: unknown } |
   }
   if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
     throw new Error('Invalid shared host supervisor owner.');
-  return isProcessAlive(owner.pid) ? { build: owner.build } : null;
+  return isProcessAlive(owner.pid, 'recorded') ? { build: owner.build } : null;
 }
 
 async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> {
@@ -265,7 +265,7 @@ async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> 
     throw error;
   }
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK process owner.');
-  if (!isProcessAlive(pid)) return;
+  if (!isProcessAlive(pid, 'recorded')) return;
   const commandLine = await processCommandLine(pid);
   if (commandLine === null) return;
   if (!commandLineNames(commandLine, root))
@@ -291,7 +291,7 @@ export const STOP_GRACE_MS = 20_000;
 
 async function exitsWithin(pid: number, ms: number): Promise<boolean> {
   for (let waited = 0; ; waited += 200) {
-    if (!isProcessAlive(pid)) return true;
+    if (!isProcessAlive(pid, 'recorded')) return true;
     if (waited >= ms) return false;
     await delay(200);
   }

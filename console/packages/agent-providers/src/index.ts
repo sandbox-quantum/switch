@@ -71,7 +71,7 @@ export type { Supervision } from './host/launch';
 export { commandLineNames, killProcessTree, processCommandLine } from './host/process-fence';
 export { execProvider, findOnPath, spawnProvider, stopProvider } from './provider-process';
 export { replaceFile } from './host/replace-file';
-export { isProcessAlive } from './process-alive';
+export { isProcessAlive, type PidOrigin } from './process-alive';
 export {
   isStopMessage,
   onStopRequest,

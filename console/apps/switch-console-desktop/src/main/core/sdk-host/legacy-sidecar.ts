@@ -39,7 +39,7 @@ const alive = (pid) => {
     return true;
   } catch (error) {
     if (error.code === 'ESRCH') return false;
-    if (error.code === 'EPERM') return true;
+    if (error.code === 'EPERM') return process.platform === 'win32';
     throw error;
   }
 };

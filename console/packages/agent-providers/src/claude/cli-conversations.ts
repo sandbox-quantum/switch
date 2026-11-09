@@ -117,7 +117,7 @@ const defaultDeps: CliConversationDeps = {
   forkSession: sdkForkSession,
   tagSession: sdkTagSession,
   deleteSession: sdkDeleteSession,
-  processExists: isProcessAlive,
+  processExists: (pid) => isProcessAlive(pid, 'any-user'),
   processes,
 };
 

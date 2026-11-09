@@ -37,7 +37,7 @@ const pidIn = (root, file) => {
   }
 };
 const alive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch (e) { if (e.code === 'ESRCH') return false; if (e.code === 'EPERM') return true; throw e; }
+  try { process.kill(pid, 0); return true; } catch (e) { if (e.code === 'ESRCH') return false; if (e.code === 'EPERM') return process.platform === 'win32'; throw e; }
 };
 const commandOf = (pid) => {
   try { return fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').join(' '); }
