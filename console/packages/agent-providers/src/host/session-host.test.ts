@@ -1609,6 +1609,29 @@ it('treats a post-reset dispatch with only a prior-generation acceptance as unkn
   expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
 });
 
+it('treats conflicting duplicate acceptances as an unknown dispatch', async () => {
+  const { host, root } = await start('copilot');
+  await host.command({ ...message('reset'), body: { type: 'session.reset' } });
+  await host.shutdown();
+  const records = [
+    { type: 'accepted', command: message('duplicate') },
+    { type: 'accepted', command: { ...message('duplicate'), body: { type: 'session.reset' } } },
+    { type: 'dispatched', commandId: 'duplicate' },
+  ];
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    `${records.map((record) => JSON.stringify(record)).join('\n')}\n`
+  );
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+});
+
 it('does not present authentication or transport failures as a missing conversation', async () => {
   const { host, root } = await start('codex');
   await host.shutdown();

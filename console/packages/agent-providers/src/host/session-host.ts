@@ -391,12 +391,15 @@ export class HostedSession {
     const snapshot = this.replica.snapshot();
     const earlier = new Set<string>();
     const current = new Set<string>();
-    const accepted = new Map<string, Command['body']['type']>();
+    const accepted = new Map<string, Command['body']['type'] | null>();
     let dispatchedTurn = false;
     for (const record of this.inbox.records) {
       if (record.type === 'accepted') {
         const type = record.command.body.type;
-        accepted.set(record.command.commandId, type);
+        const id = record.command.commandId;
+        // A malformed journal with conflicting acceptances cannot prove what ran.
+        if (!accepted.has(id)) accepted.set(id, type);
+        else if (accepted.get(id) !== type) accepted.set(id, null);
         if (type === 'message.send' || type === 'message.retry')
           current.add(record.command.commandId);
       } else if (record.type === 'reset-started') {
