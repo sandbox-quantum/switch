@@ -1556,7 +1556,9 @@ class CollaborationBridgeLifecycleService:
         if self._telemetry is None:
             return
         if first_connect:
-            self._report_connector_added(bridge_id, platform, configured_at)
+            self._report_connector_added(
+                bridge_id, platform, configured_at, preconfigured=preconfigured
+            )
         # Claimed while telemetry is off too, so switching it on later does
         # not report a connector added long before. Once-ever, so a bridge
         # that already reported still asks, in case the deployment-wide claim
@@ -1567,10 +1569,14 @@ class CollaborationBridgeLifecycleService:
             )
 
     def _report_connector_added(
-        self, bridge_id: str, platform: str, configured_at: object
+        self,
+        bridge_id: str,
+        platform: str,
+        configured_at: object,
+        *,
+        preconfigured: bool,
     ) -> None:
         assert self._telemetry is not None
-        preconfigured = bridge_id in self._preconfigured
         emit_safely(
             self._telemetry,
             "connector_added",
