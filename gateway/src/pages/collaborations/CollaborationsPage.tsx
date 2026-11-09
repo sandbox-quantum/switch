@@ -28,7 +28,7 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useBridges, useInstallablePlatforms } from "../../data/hooks";
-import { formatDate, platformLabel, titleCase } from "../../theme/hootFormat";
+import { formatDate, platformLabel, sentenceCase } from "../../theme/hootFormat";
 import AddToChatDialog from "./AddToChatDialog";
 import AttentionBanner from "./AttentionBanner";
 import DeleteConnectionText from "./DeleteConnectionText";
@@ -144,7 +144,7 @@ export default function CollaborationsPage() {
         width: 130,
         renderCell: ({ value }) => (
           <Chip
-            label={titleCase(String(value))}
+            label={sentenceCase(String(value))}
             size="small"
             color={STATUS_COLOR[value as string] ?? "default"}
           />
@@ -263,7 +263,7 @@ export default function CollaborationsPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" mb={2}>
-        <Typography variant="h5">Messaging Apps</Typography>
+        <Typography variant="h5">Messaging apps</Typography>
         {isAdmin && (
           <Button
             variant="contained"
@@ -271,7 +271,7 @@ export default function CollaborationsPage() {
             sx={{ ml: "auto" }}
             onClick={() => setRegisterOpen(true)}
           >
-            Register messaging app
+            Add messaging app
           </Button>
         )}
       </Stack>

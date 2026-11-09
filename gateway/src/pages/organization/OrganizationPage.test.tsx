@@ -143,7 +143,7 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByText("Acme Inc")).toBeTruthy();
     expect(await screen.findByText("Acme (current)")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Members" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Users" })).toBeTruthy();
     expect(await screen.findByText("Organization role changed")).toBeTruthy();
     expect(screen.getByText("Olga (platform operator)")).toBeTruthy();
   });
@@ -181,7 +181,7 @@ describe("OrganizationPage", () => {
     expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
     expect(
       await screen.findByText(
-        "Your workspaces use the server's Airtable client. Add your organization's own to use that instead.",
+        "Your workspaces use Switch's Airtable client. Add your organization's own to use that instead.",
       ),
     ).toBeTruthy();
     const google = screen.getByTestId("connector-app-google-workspace");
@@ -247,7 +247,7 @@ describe("OrganizationPage", () => {
 
     render(<OrganizationPage />);
 
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Users" })).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
     expect(screen.queryByRole("heading", { name: "Connectors" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Services" })).toBeNull();
@@ -301,7 +301,7 @@ describe("OrganizationPage", () => {
     render(<OrganizationPage />);
 
     expect(await screen.findByText("Acme (current)")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Members" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Users" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Audit log" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add workspace" })).toBeNull();
   });
@@ -375,7 +375,7 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByText(/someone has to be made an organization admin there/)).toBeTruthy();
     fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-    const orgAdmin = await screen.findByRole("option", { name: "Org Admin" });
+    const orgAdmin = await screen.findByRole("option", { name: "Org admin" });
     expect(orgAdmin.getAttribute("aria-disabled")).toBe("true");
   });
 
@@ -424,7 +424,7 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByText(/come from your organization's account settings/)).toBeTruthy();
     fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-    const promote = await screen.findByRole("option", { name: "Org Admin" });
+    const promote = await screen.findByRole("option", { name: "Org admin" });
     expect(promote.getAttribute("aria-disabled")).toBe("true");
     fireEvent.keyDown(promote, { key: "Escape" });
     fireEvent.mouseDown(within(screen.getByTestId("row-u3")).getByRole("combobox"));
@@ -489,7 +489,7 @@ describe("OrganizationPage", () => {
 
       expect(await screen.findByText(/Changes you make here are made there too/)).toBeTruthy();
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      const promote = await screen.findByRole("option", { name: "Org Admin" });
+      const promote = await screen.findByRole("option", { name: "Org admin" });
       expect(promote.getAttribute("aria-disabled")).toBeNull();
     });
 
@@ -500,7 +500,7 @@ describe("OrganizationPage", () => {
 
       render(<OrganizationPage />);
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Org admin" }));
 
       await waitFor(() =>
         expect(window.location.href).toBe(
@@ -520,7 +520,7 @@ describe("OrganizationPage", () => {
 
       render(<OrganizationPage />);
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Org admin" }));
 
       await waitFor(() =>
         expect(window.location.href).toBe(
@@ -540,7 +540,7 @@ describe("OrganizationPage", () => {
 
       render(<OrganizationPage />);
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Org admin" }));
 
       expect(
         await screen.findByText("Your sign-in has ended. Access was already taken away."),
@@ -624,7 +624,7 @@ describe("OrganizationPage", () => {
     render(<OrganizationPage />);
 
     fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-    const promote = await screen.findByRole("option", { name: "Org Admin" });
+    const promote = await screen.findByRole("option", { name: "Org admin" });
     expect(promote.getAttribute("aria-disabled")).toBeNull();
     expect(screen.queryByText(/account settings/)).toBeNull();
   });

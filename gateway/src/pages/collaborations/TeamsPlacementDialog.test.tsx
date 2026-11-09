@@ -205,7 +205,7 @@ describe("TeamsPlacementDialog", () => {
     fireEvent.click(screen.getAllByRole("radio")[1]);
 
     expect(
-      await screen.findByText("The connection is restarting with your change…"),
+      await screen.findByText("Switch is reconnecting to Teams with your change…"),
     ).toBeTruthy();
     expect(screen.queryByText(/not running/)).toBeNull();
     await vi.advanceTimersByTimeAsync(1500);
@@ -229,7 +229,7 @@ describe("TeamsPlacementDialog", () => {
       <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
     );
 
-    await screen.findByText("The connection is restarting with your change…");
+    await screen.findByText("Switch is reconnecting to Teams with your change…");
     await vi.advanceTimersByTimeAsync(1500 * 21);
 
     expect(
@@ -248,7 +248,7 @@ describe("TeamsPlacementDialog", () => {
     const { rerender } = render(
       <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
     );
-    await screen.findByText("The connection is restarting with your change…");
+    await screen.findByText("Switch is reconnecting to Teams with your change…");
     rerender(<TeamsPlacementDialog bridge={null} onClose={() => {}} onChanged={() => {}} />);
     const callsWhenClosed = fetchMock.mock.calls.length;
 

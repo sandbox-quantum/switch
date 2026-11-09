@@ -156,7 +156,7 @@ export default function ServiceAccessSection({
           Service access
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          What this agent may use of your own connections. Its sessions are given
+          What this agent may use of your own connectors. Its sessions are given
           short-lived access for what you grant, and nothing else.
         </Typography>
         {error && <Alert severity="error">{error}</Alert>}
@@ -295,7 +295,7 @@ export function onOffGrantNote(
   const off = `Turning it off stops its sessions using ${name} within a minute.`;
   if (service.key)
     return `On, ${agentName} uses ${name} with your key, as far as the key allows. ${off}`;
-  const note = `On, ${agentName} acts as you at ${name}, with everything your ${name} connection allows. ${off}`;
+  const note = `On, ${agentName} acts as you at ${name}, with everything your ${name} connector allows. ${off}`;
   return service.token_lifetime !== null && service.token_lifetime > 3600
     ? `${note} A token already handed out stays valid at ${name} until it expires or you disconnect.`
     : note;
@@ -374,7 +374,7 @@ function OnOffGrant({
       )}
       {!grant && !connected && !service.unavailable_reason && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          To turn {service.name} on, first connect it from Switch Console&apos;s connections.
+          To turn {service.name} on, first connect it in Switch Console, under Connectors.
         </Typography>
       )}
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
@@ -426,8 +426,8 @@ function GitHubGrantForm({
   if (github.status === "not_connected")
     return (
       <Typography variant="body2" color="text.secondary">
-        To grant GitHub, first connect your GitHub account from Switch Console&apos;s
-        connections.
+        To grant GitHub, first connect your GitHub account in Switch Console, under
+        Connectors.
       </Typography>
     );
 
@@ -497,7 +497,7 @@ function GitHubGrantForm({
 
 /** What removing a grant does, and what it does not. */
 export const REMOVED_NOTE =
-  "Removing a grant stops Switch giving this access. On a laptop or server, the agent may still use the machine's own sign-in, and the session says so when it does.";
+  "Removing a grant stops Switch giving this access. On a device, the agent may still use the device's own sign-in, and the session says so when it does.";
 
 /** What a GitHub grant changes on the machine the agent runs on, and what it does not. */
 export function GitHubNotes() {

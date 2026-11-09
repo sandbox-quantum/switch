@@ -2931,7 +2931,7 @@ export class ConnectorAppRefusal extends ApiError {
 /** What the operator reads when the server has no connector-apps routes:
  * they are mounted only with the `service_connections` flag. */
 export const CONNECTORS_NOT_ENABLED =
-  "Connectors are not enabled on this server. An operator turns them on by adding service_connections to FEATURE_FLAGS_ENABLED.";
+  "Connectors aren't turned on here. An operator turns them on by adding service_connections to FEATURE_FLAGS_ENABLED.";
 
 /** Whose apps a page manages: the server's, its operator's alone, or the
  * current workspace's organization's, its org admins'. */

@@ -282,7 +282,7 @@ describe("today's layout", () => {
       "Resources",
       "Agents",
       "Apps",
-      "API Keys",
+      "API keys",
       "Workspace",
       "Organization",
     ]);
@@ -299,7 +299,7 @@ describe("today's layout", () => {
     renderAt("/rooms");
     const labels = await railLabels();
     expect(labels).toContain("Usage");
-    expect(labels).toContain("Machines");
+    expect(labels).toContain("Devices");
     expect(labels).not.toContain("All workspaces");
   });
 
@@ -329,7 +329,7 @@ describe("today's layout", () => {
     mockFetch(signedInAs("operator"));
     renderAt("/machines");
     expect(await screen.findByText("Not turned on")).toBeTruthy();
-    expect(screen.getByText("Agent management isn't turned on for this server.")).toBeTruthy();
+    expect(screen.getByText("Agent management isn't turned on here.")).toBeTruthy();
     expect(
       screen.getByText("An operator turns it on by adding agent_management to FEATURE_FLAGS_ENABLED."),
     ).toBeTruthy();
@@ -702,7 +702,7 @@ describe("a page that falls behind the server", () => {
     mockFetch({ ...signedInAs("member"), "/auth/session": [503, { detail: "server restarting" }] });
     comeBackToTheTab();
     expect(
-      await screen.findByText(/Could not check your session with the server: server restarting/),
+      await screen.findByText(/Could not check your session with Switch: server restarting/),
     ).toBeTruthy();
     expect(await railLabels()).toContain("Rooms");
 

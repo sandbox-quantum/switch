@@ -139,7 +139,7 @@ describe("ServiceAccessSection", () => {
     const calls = mockServer(GRANTED);
     render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const remove = await screen.findByRole("button", { name: "Remove" });
-    expect(remove.getAttribute("title")).toMatch(/may still use the machine's own sign-in/);
+    expect(remove.getAttribute("title")).toMatch(/may still use the device's own sign-in/);
 
     fireEvent.click(remove);
     expect(await screen.findByText(/Removing a grant stops Switch giving this access/)).toBeTruthy();
@@ -265,7 +265,7 @@ describe("ServiceAccessSection", () => {
     ).toBeTruthy();
     expect(screen.queryByText(/stays valid/)).toBeNull();
     expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getByText(/To turn Other on, first connect it from Switch Console/)).toBeTruthy();
+    expect(screen.getByText(/To turn Other on, first connect it in Switch Console/)).toBeTruthy();
   });
 
   it("says why a service cannot be turned on: not connected, or not available here", async () => {
@@ -280,7 +280,7 @@ describe("ServiceAccessSection", () => {
     render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const example = await screen.findByLabelText("Example for helper");
     expect((example as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getByText(/first connect it from Switch Console/)).toBeTruthy();
+    expect(screen.getByText(/first connect it in Switch Console/)).toBeTruthy();
     expect(screen.getByText("Coming to this server soon.")).toBeTruthy();
     expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
   });

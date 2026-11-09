@@ -159,9 +159,9 @@ describe("MachinesPage", () => {
       "GET /operations": [200, []],
     });
     render(<MachinesPage />);
-    expect(await screen.findByRole("button", { name: "Edit machine laptop" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Edit device laptop" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Revoke laptop" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Edit machine theirs" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit device theirs" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Revoke theirs" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Re-check providers on theirs" })).toBeNull();
 
@@ -182,7 +182,7 @@ describe("MachinesPage", () => {
     const start = await screen.findByRole("button", { name: "Stop pm-agent" });
     expect((start as HTMLButtonElement).disabled).toBe(true);
     expect(
-      screen.getByLabelText("Not on a machine: move it to one to start or stop it"),
+      screen.getByLabelText("Not on a device: move it to one to start or stop it"),
     ).toBeTruthy();
   });
 
@@ -233,7 +233,7 @@ describe("MachinesPage", () => {
     });
     render(<MachinesPage />);
     expect(await screen.findByText("None (revoked)")).toBeTruthy();
-    expect(screen.getByText("not running: machine revoked")).toBeTruthy();
+    expect(screen.getByText("not running: device revoked")).toBeTruthy();
     expect(screen.queryByText("1 / 1")).toBeNull();
     // Only what is wanted says running; nothing claims the agent actually is.
     expect(screen.getAllByText("running")).toHaveLength(1);
@@ -257,7 +257,7 @@ describe("MachinesPage", () => {
     render(<MachinesPage />);
     expect(await screen.findByText("offline")).toBeTruthy();
     expect(screen.getByText("Not connected")).toBeTruthy();
-    expect(screen.getByText("machine offline")).toBeTruthy();
+    expect(screen.getByText("device offline")).toBeTruthy();
     expect(screen.queryByText("failed: invalid_credential")).toBeNull();
   });
 
@@ -314,7 +314,7 @@ describe("MachinesPage", () => {
       ],
     });
     render(<MachinesPage />);
-    fireEvent.click(await screen.findByLabelText("Edit machine laptop"));
+    fireEvent.click(await screen.findByLabelText("Edit device laptop"));
     const name = await screen.findByLabelText(/^Name/);
     fireEvent.change(name, { target: { value: "  build-box " } });
     fireEvent.change(screen.getByLabelText("Description"), {
@@ -339,9 +339,9 @@ describe("MachinesPage", () => {
     });
     render(<MachinesPage />);
     expect(await screen.findByText("Old note")).toBeTruthy();
-    fireEvent.click(await screen.findByLabelText("Edit machine laptop"));
+    fireEvent.click(await screen.findByLabelText("Edit device laptop"));
     fireEvent.change(await screen.findByLabelText(/^Name/), { target: { value: "   " } });
-    expect(screen.getByText("A machine needs a name.")).toBeTruthy();
+    expect(screen.getByText("A device needs a name.")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -457,7 +457,7 @@ describe("MachinesPage", () => {
       "GET /operations": [200, []],
     });
     render(<MachinesPage />);
-    expect(await screen.findByText(/Could not load the providers this server runs/)).toBeTruthy();
+    expect(await screen.findByText(/Could not load the list of providers/)).toBeTruthy();
     expect(await screen.findByText("codex: login expired")).toBeTruthy();
   });
 });

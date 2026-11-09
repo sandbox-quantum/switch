@@ -34,7 +34,7 @@ import {
   EM_DASH,
   MONO_SX,
   formatDateTime,
-  titleCase,
+  sentenceCase,
 } from "../../theme/hootFormat";
 import { useAuth } from "../../data/AuthContext";
 import AddressingPolicySection from "./AddressingPolicySection";
@@ -138,7 +138,7 @@ export default function AgentDetailPage() {
         <Chip label={agent.connector_type} size="small" variant="outlined" />
         {agent.connection_model && (
           <Chip
-            label={titleCase(agent.connection_model)}
+            label={sentenceCase(agent.connection_model)}
             size="small"
             variant="outlined"
           />
@@ -434,8 +434,8 @@ function InfoSection({ agent }: { agent: AgentDetail }) {
       )}
       <InfoLine label="Agent type" value={agent.connector_type} />
       <InfoLine
-        label="Connection type"
-        value={agent.connection_model ? titleCase(agent.connection_model) : null}
+        label="Availability"
+        value={agent.connection_model ? sentenceCase(agent.connection_model) : null}
       />
       <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />
       <InfoLine label="Created" value={formatDateTime(agent.created_at)} />
@@ -518,8 +518,8 @@ function OptionsSection({
       </Typography>
       {!spec ? (
         <Alert severity="warning">
-          Unknown agent type "{agent.known_agent_type}" — its schema is no
-          longer registered on this server.
+          Unknown agent type "{agent.known_agent_type}" — Switch no longer
+          describes its options.
         </Alert>
       ) : (
         <>
@@ -583,7 +583,7 @@ export function SessionsSection({ sessions }: { sessions: AgentSessionDetail[] }
 function SessionRow({ session }: { session: AgentSessionDetail }) {
   const navigate = useNavigate();
   const meta = SESSION_STATE_META[session.state] ?? {
-    label: titleCase(session.state),
+    label: sentenceCase(session.state),
     color: NEUTRAL_STATUS_COLOR,
   };
   const isLive = session.state === "live";
@@ -668,7 +668,7 @@ function RoomsSection({ rooms }: { rooms: AgentRoomMembership[] }) {
       </Typography>
       {rooms.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          Not a member of any room.
+          Not in any room.
         </Typography>
       ) : (
         <Stack spacing={0.5}>
@@ -684,7 +684,7 @@ function RoomsSection({ rooms }: { rooms: AgentRoomMembership[] }) {
 function RoomRow({ room }: { room: AgentRoomMembership }) {
   const navigate = useNavigate();
   const meta = ROOM_STATUS_META[room.status] ?? {
-    label: titleCase(room.status),
+    label: sentenceCase(room.status),
     color: NEUTRAL_STATUS_COLOR,
   };
   return (

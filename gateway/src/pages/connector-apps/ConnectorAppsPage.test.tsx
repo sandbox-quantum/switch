@@ -364,7 +364,7 @@ describe("ConnectorAppsPage", () => {
       },
     });
     render(<ConnectorAppsPage />);
-    const chip = (await screen.findByText("Set on the server")).closest(".MuiChip-root")!;
+    const chip = (await screen.findByText("Set in configuration")).closest(".MuiChip-root")!;
     expect(chip.className).toContain("MuiChip-colorSuccess");
     expect(chip.className).toContain("MuiChip-filled");
     expect(

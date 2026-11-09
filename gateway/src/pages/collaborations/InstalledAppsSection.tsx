@@ -24,7 +24,7 @@ import {
   formatDate,
   pluralize,
   platformLabel,
-  titleCase,
+  sentenceCase,
 } from "../../theme/hootFormat";
 import discordIcon from "../../assets/bridges/discord.svg";
 import slackIcon from "../../assets/bridges/slack.svg";
@@ -164,7 +164,7 @@ export default function InstalledAppsSection({ onConnectionsChanged }: Props) {
       </Typography>
       <Typography variant="body2" color="text.secondary" mb={2}>
         This deployment&apos;s own apps, using credentials only the deployment
-        holds. Disconnect what an app is installed in here: a connection above
+        holds. Disconnect what an app is installed in here: a messaging app above
         cannot be deleted while an app is still installed through it.
       </Typography>
 
@@ -256,7 +256,7 @@ function PlatformCard({
             {active.length > 0
               ? `${pluralize(active.length, noun)} connected`
               : claimable?.connected
-                ? `No ${noun}s connected. The connection stays until an admin deletes it above.`
+                ? `No ${noun}s connected. The messaging app stays until an admin deletes it above.`
                 : "Not connected"}
           </Typography>
         </Box>
@@ -363,7 +363,7 @@ function InstallRow({
         </Box>
         {!live && (
           <Chip
-            label={titleCase(install.status)}
+            label={sentenceCase(install.status)}
             size="small"
             color={ENDED_COLOR[install.status] ?? "default"}
           />

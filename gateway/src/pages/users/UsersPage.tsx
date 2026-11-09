@@ -80,7 +80,7 @@ export default function UsersPage() {
           startIcon={<AddCircleOutline />}
           onClick={() => setCreateOpen(true)}
         >
-          Add User
+          Add user
         </Button>
       </Stack>
 

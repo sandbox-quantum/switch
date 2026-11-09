@@ -90,7 +90,7 @@ export default function RegistrationKeysPage() {
       { field: "label", headerName: "Label", flex: 1, minWidth: 200 },
       {
         field: "key_prefix",
-        headerName: "Key Prefix",
+        headerName: "Key prefix",
         width: 180,
         renderCell: ({ value }) => (
           <Typography component="span" sx={MONO_SX}>
@@ -152,7 +152,7 @@ export default function RegistrationKeysPage() {
       { field: "label", headerName: "Agent", flex: 1, minWidth: 200 },
       {
         field: "key_prefix",
-        headerName: "Key Prefix",
+        headerName: "Key prefix",
         width: 180,
         renderCell: ({ value }) => (
           <Typography component="span" sx={MONO_SX}>
@@ -214,18 +214,18 @@ export default function RegistrationKeysPage() {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
-        <Typography variant="h5">API Keys</Typography>
+        <Typography variant="h5">API keys</Typography>
         <Button
           variant="contained"
           startIcon={<AddCircleOutline />}
           onClick={() => setCreateOpen(true)}
         >
-          Create Registration Key
+          Create API key
         </Button>
       </Stack>
 
       <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
-        Registration Keys
+        Keys for adding agents
       </Typography>
       {loading ? (
         <CircularProgress />
@@ -254,7 +254,7 @@ export default function RegistrationKeysPage() {
         sx={{ mt: 3, mb: 1 }}
       >
         <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-          Agent Keys
+          Agent keys
         </Typography>
         <TextField
           size="small"

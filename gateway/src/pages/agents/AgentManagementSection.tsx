@@ -64,8 +64,8 @@ export default function AgentManagementSection({
           label="Can manage agents"
         />
         <Typography variant="body2" color="text.secondary">
-          Lets this agent see your machines and managed agents, and create new agents that run on
-          your machines and belong to you. Agents it creates do not get this permission.
+          Lets this agent see your devices and managed agents, and create new agents that run on
+          your devices and belong to you. Agents it creates do not get this permission.
           {!canEdit && " Only the agent's owner can change this."}
         </Typography>
       </Stack>

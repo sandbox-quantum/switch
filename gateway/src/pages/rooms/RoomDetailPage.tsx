@@ -55,7 +55,7 @@ import {
   MONO_SX,
   channelTypeLabel,
   formatDateTime,
-  titleCase,
+  sentenceCase,
 } from "../../theme/hootFormat";
 import RoomAutoRouteSection from "./RoomAutoRouteSection";
 import RoomGroupSection from "./RoomGroupSection";
@@ -977,7 +977,7 @@ function AgentRow({
 }) {
   const navigate = useNavigate();
   const meta = (status && STATUS_META[status]) || {
-    label: status ? titleCase(status) : "Unknown",
+    label: status ? sentenceCase(status) : "Unknown",
     color: "var(--hoot-muted-foreground)",
     description: "",
   };
@@ -1123,7 +1123,7 @@ function ArchiveSection({
       <Typography variant="body2" color="text.secondary">
         {room.archived
           ? "This room is archived: hidden from the active room list but fully intact and retrievable. Unarchive it to restore it to the active list."
-          : "Archiving hides this room from the active room list while keeping it fully intact — the Matrix room, members, and any bridge channel are untouched. It's reversible at any time."}
+          : "Archiving hides this room from the active room list while keeping it fully intact — its messages, who is in it and any linked channel are untouched. It's reversible at any time."}
       </Typography>
       <Box>
         <Button
@@ -1193,8 +1193,8 @@ function DangerSection({
         <DialogContent>
           <DialogContentText>
             Are you sure you want to delete <b>{room.name}</b>? This removes the
-            Matrix room, all client memberships, and any bridge mapping. This
-            cannot be undone.
+            room, takes everyone out of it, and unlinks any messaging app channel.
+            This cannot be undone.
           </DialogContentText>
         </DialogContent>
         <DialogActions>

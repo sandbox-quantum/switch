@@ -57,7 +57,7 @@ function StaleSessionBanner() {
         </Button>
       }
     >
-      Could not check your session with the server: {staleError}. This page may be out of date.
+      Could not check your session with Switch: {staleError}. This page may be out of date.
     </Alert>
   );
 }

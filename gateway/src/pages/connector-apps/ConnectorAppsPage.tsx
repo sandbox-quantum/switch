@@ -18,7 +18,7 @@ function Heading({ publicUrl }: { publicUrl: string | null }) {
       <Typography variant="h5">Connectors</Typography>
       <Typography variant="body2" color="text.secondary">
         Some connectors sign in through an app you register at the vendor. Set each up once,
-        for the whole server, before anyone can connect it.
+        for all of Switch, before anyone can connect it.
         {publicUrl !== null && ` ${sentBackTo(publicUrl)}`}
       </Typography>
     </Box>

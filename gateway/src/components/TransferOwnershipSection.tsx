@@ -128,7 +128,7 @@ export function TransferOwnershipDialog({
         if (!cancelled) setMembers(found);
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Could not load members");
+        if (!cancelled) setError(e instanceof Error ? e.message : "Could not load users");
       });
     return () => {
       cancelled = true;
@@ -180,7 +180,7 @@ export function TransferOwnershipDialog({
             aria-label="New owner"
           >
             <MenuItem value="" disabled>
-              Choose a member
+              Choose a user
             </MenuItem>
             {candidates.map((m) => (
               <MenuItem key={m.user_id} value={m.user_id}>

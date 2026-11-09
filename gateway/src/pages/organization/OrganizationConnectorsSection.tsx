@@ -8,7 +8,7 @@ function Heading({ publicUrl }: { publicUrl: string | null }) {
       <Typography variant="h6">Connectors</Typography>
       <Typography variant="body2" color="text.secondary">
         Your organization can register its own app at a vendor, and every workspace in it signs
-        in through that one instead of the server&apos;s.
+        in through that one instead of Switch&apos;s.
         {publicUrl !== null && ` ${sentBackTo(publicUrl)}`}
       </Typography>
     </Box>
