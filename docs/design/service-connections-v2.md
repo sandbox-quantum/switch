@@ -591,6 +591,8 @@ auth:
       headers: { X-Api-Key: "{api_key}" }
       account_id: user.id       # optional: without it, the key's SHA-256
       label: user.email         # optional: without it, the name and choices
+      # requires: result.tools  # optional: a path the answer must hold, for a
+                                # vendor that refuses with 200 (JSON-RPC errors)
     help_url: https://docs.example.com/keys
 token: { kind: pass_through, max_lifetime: null }   # never handed to an agent
 mcp:

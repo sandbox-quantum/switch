@@ -216,7 +216,10 @@ class ApiKeyAdapter:
     ) -> tuple[str, str]:
         identity = self._sign_in.identity
         body: Any = None
-        if identity.account_id is not None or identity.label is not None:
+        if any(
+            path is not None
+            for path in (identity.account_id, identity.label, identity.requires)
+        ):
             if len(response.content) > MAX_IDENTITY_BYTES:
                 raise InvalidKeyError(f"{self._name}'s answer is too large.")
             try:
@@ -225,6 +228,11 @@ class ApiKeyAdapter:
                 raise InvalidKeyError(
                     f"{self._name}'s answer is not JSON, so whose key it is is unknown."
                 ) from None
+        if (
+            identity.requires is not None
+            and _path_value(body, identity.requires) is None
+        ):
+            raise InvalidKeyError(self._refusal(body))
         if identity.account_id is None:
             account_id = secret_digest(
                 [values[f.name] for f in self._sign_in.fields if f.secret]
@@ -243,6 +251,15 @@ class ApiKeyAdapter:
             choices = [values[f.name] for f in self._sign_in.fields if not f.secret]
             label = " · ".join([f"{self._name} key", *choices])
         return account_id, label
+
+    def _refusal(self, body: Any) -> str:
+        """Why an answer without what the identity call requires is a refusal:
+        the vendor's own first line, when it gives one as a JSON-RPC error."""
+        message = _path_value(body, "error.message")
+        if isinstance(message, str) and message.strip():
+            line = message.strip().splitlines()[0][:200]
+            return f"{self._name} did not accept the key and settings: {line}"
+        return f"{self._name} did not accept the key and settings."
 
     def secret(self, values: dict[str, str]) -> ConnectionSecret:
         """What the connection stores: the token a session host is handed."""

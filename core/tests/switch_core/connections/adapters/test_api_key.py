@@ -199,6 +199,66 @@ def test_a_pattern_field_never_takes_a_value_that_moves_the_request(
         )
 
 
+RPC_ENTRY = {
+    **ENTRY,
+    "auth": {
+        **ENTRY["auth"],
+        "api_key": {
+            **ENTRY["auth"]["api_key"],
+            "identity": {
+                "method": "POST",
+                "url": "https://api.{region}/mcp",
+                "headers": {"API-Key": "{api_key}"},
+                "body": {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                "requires": "result.tools",
+            },
+        },
+    },
+}
+
+
+def _rpc_adapter(answer: httpx.Response) -> ApiKeyAdapter:
+    definition = ConnectionDefinition.model_validate(RPC_ENTRY)
+    return ApiKeyAdapter(
+        definition,
+        httpx.AsyncClient(transport=httpx.MockTransport(lambda _: answer)),
+    )
+
+
+async def test_an_answer_holding_what_is_required_passes() -> None:
+    answer = httpx.Response(
+        200, json={"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
+    )
+    identity = await _rpc_adapter(answer).identify(FIELDS)
+    assert identity.label == "Example key · eu.example.test"
+
+
+async def test_a_refusal_answered_with_200_is_refused_in_the_vendors_words() -> None:
+    answer = httpx.Response(
+        200,
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": -32603,
+                "message": "Server X does not exist or not authorized.\nrequest-id: 1",
+            },
+        },
+    )
+    with pytest.raises(InvalidKeyError) as raised:
+        await _rpc_adapter(answer).identify(FIELDS)
+    assert str(raised.value) == (
+        "Example did not accept the key and settings: "
+        "Server X does not exist or not authorized."
+    )
+
+
+async def test_a_required_path_missing_without_an_error_is_refused() -> None:
+    answer = httpx.Response(200, json={"jsonrpc": "2.0", "id": 1})
+    with pytest.raises(InvalidKeyError, match="did not accept the key and settings"):
+        await _rpc_adapter(answer).identify(FIELDS)
+
+
 async def test_disconnecting_says_only_the_vendor_can_revoke_a_key() -> None:
     adapter = _adapter(lambda request: httpx.Response(200))
     with pytest.raises(ConnectionNotRevocable, match="Revoke it in Example"):

@@ -376,7 +376,9 @@ class ApiKeyIdentity(BaseModel):
     `url`, with `headers` (and a JSON `body`, for a POST), each a template of
     the fields. `account_id` and `label` are dotted paths in its JSON answer;
     without `account_id` the account is the key itself (its SHA-256), and
-    without `label` the connection is named by the service and its choices."""
+    without `label` the connection is named by the service and its choices.
+    `requires` is a dotted path the answer must hold, for a vendor that
+    answers a refusal with 200 (a JSON-RPC error, say)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     method: Literal["GET", "POST"]
@@ -387,6 +389,7 @@ class ApiKeyIdentity(BaseModel):
     body: dict[str, object] | None = None
     account_id: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
     label: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
+    requires: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
 
     @model_validator(mode="after")
     def _body_for_post(self) -> "ApiKeyIdentity":
