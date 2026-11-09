@@ -371,28 +371,54 @@ class ConnectionIdentity(BaseModel):
         return self
 
 
+class ApiKeyBasic(BaseModel):
+    """HTTP Basic credentials, each a template of the fields: for a vendor
+    that takes a key as a password (Zendesk's `{email}/token` and token)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
 class ApiKeyIdentity(BaseModel):
     """The call that checks a pasted key and says whose it is: `method` to
-    `url`, with `headers` (and a JSON `body`, for a POST), each a template of
-    the fields. `account_id` and `label` are dotted paths in its JSON answer;
-    without `account_id` the account is the key itself (its SHA-256), and
-    without `label` the connection is named by the service and its choices."""
+    `url`, with `headers`, `basic` credentials or both (and a JSON `body`, for
+    a POST), each a template of the fields. `account_id` and `label` are
+    dotted paths in its JSON answer; without `account_id` the account is the
+    key itself (its SHA-256), and without `label` the connection is named by
+    the service and its choices."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     method: Literal["GET", "POST"]
     url: str = Field(pattern=HTTPS_URL_PATTERN)
     headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] = Field(
-        min_length=1
+        default_factory=dict
     )
+    basic: ApiKeyBasic | None = None
     body: dict[str, object] | None = None
     account_id: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
     label: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
 
     @model_validator(mode="after")
-    def _body_for_post(self) -> "ApiKeyIdentity":
+    def _body_and_credentials(self) -> "ApiKeyIdentity":
         if (self.body is not None) != (self.method == "POST"):
             raise ValueError("a POST identity call sends a body, and only one does")
+        if not self.headers and self.basic is None:
+            raise ValueError("an identity call sends the key in headers or basic")
+        if self.basic is not None and any(
+            name.lower() == "authorization" for name in self.headers
+        ):
+            raise ValueError(
+                "an identity call with basic credentials names no Authorization header"
+            )
         return self
+
+    def templates(self) -> list[str]:
+        """The header and credential templates, which name the fields."""
+        values = list(self.headers.values())
+        if self.basic is not None:
+            values += [self.basic.username, self.basic.password]
+        return values
 
 
 class ApiKeySignIn(BaseModel):
@@ -416,7 +442,7 @@ class ApiKeySignIn(BaseModel):
             choices=self.choice_names(),
             patterns=self.pattern_names(),
             urls=[self.identity.url],
-            values=list(self.identity.headers.values()),
+            values=self.identity.templates(),
             where="the identity call",
         )
         return self

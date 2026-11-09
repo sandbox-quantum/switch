@@ -17,6 +17,7 @@ and the broker refuses before it gets here.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -175,16 +176,18 @@ class ApiKeyAdapter:
         the person's to fix, so it says which fields to check.
         """
         identity = self._sign_in.identity
+        headers = {
+            name: render(value, values) for name, value in identity.headers.items()
+        }
+        if identity.basic is not None:
+            headers["Authorization"] = self._basic_header(
+                render(identity.basic.username, values),
+                render(identity.basic.password, values),
+            )
         request = self._http.build_request(
             identity.method,
             render(identity.url, values),
-            headers={
-                **{
-                    name: render(value, values)
-                    for name, value in identity.headers.items()
-                },
-                "Accept": "application/json",
-            },
+            headers={**headers, "Accept": "application/json"},
             json=identity.body,
         )
         try:
@@ -210,6 +213,13 @@ class ApiKeyAdapter:
             )
         account_id, label = self._read_identity(response, values)
         return KeyIdentity(account_id, label)
+
+    def _basic_header(self, username: str, password: str) -> str:
+        # RFC 7617: a colon in the user-id would move where the password starts.
+        if ":" in username:
+            raise InvalidKeyError(f"{self._name} cannot take a ':' in that field.")
+        pair = f"{username}:{password}".encode()
+        return "Basic " + base64.b64encode(pair).decode("ascii")
 
     def _read_identity(
         self, response: httpx.Response, values: dict[str, str]

@@ -1872,6 +1872,22 @@ def test_loads_an_api_key_entry_whose_tool_is_a_cli(catalog_copy):
             "      method: POST\n",
             "sends a body",
         ),
+        (
+            '      headers: { X-Key: "{api_key}" }\n',
+            "",
+            "sends the key in headers or basic",
+        ),
+        (
+            '      headers: { X-Key: "{api_key}" }\n',
+            '      basic: { username: "{user}", password: "{api_key}" }\n',
+            "unknown field",
+        ),
+        (
+            '      headers: { X-Key: "{api_key}" }\n',
+            '      headers: { authorization: "{api_key}" }\n'
+            '      basic: { username: "me", password: "{api_key}" }\n',
+            "names no Authorization header",
+        ),
     ],
 )
 def test_rejects_an_inconsistent_api_key_entry(catalog_copy, old, new, message):
@@ -1885,6 +1901,21 @@ PATTERN_ENTRY = API_KEY_ENTRY.replace(
     "        choices: [us.example.test, eu.example.test]\n",
     '        pattern: "[a-z0-9][a-z0-9-]{0,62}"\n',
 ).replace("https://api.{region}/me", "https://{region}.example.test/api/me")
+
+
+def test_loads_an_identity_call_with_basic_credentials(catalog_copy):
+    _write_example(
+        catalog_copy,
+        API_KEY_ENTRY.replace(
+            '      headers: { X-Key: "{api_key}" }\n',
+            '      basic: { username: "{region}/token", password: "{api_key}" }\n',
+        ),
+    )
+    sign_in = load_catalog(catalog_copy)["example"].definition.auth.api_key
+    assert sign_in is not None
+    assert sign_in.identity.headers == {}
+    assert sign_in.identity.basic is not None
+    assert sign_in.identity.templates() == ["{region}/token", "{api_key}"]
 
 
 def test_loads_a_field_held_to_a_pattern(catalog_copy):
