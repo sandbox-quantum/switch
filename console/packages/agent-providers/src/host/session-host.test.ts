@@ -1474,6 +1474,28 @@ it.each(['tool activity', 'approval request'] as const)(
   }
 );
 
+it('does not count a known completed turn from before an explicit reset', async () => {
+  const { host, adapter, emit, root } = await start('copilot');
+  await host.command(message('old-completed'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({ type: 'turn.completed', turnId: 'old-completed', outcome: 'completed', usage: [] });
+  emit({ type: 'session.state.changed', status: 'ready' });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(host.snapshot().items.every((item) => item.kind === 'user-message')).toBe(true);
+  await host.command({ ...message('reset'), body: { type: 'session.reset' } });
+  await host.shutdown();
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(false);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
+  expect(recovered.snapshot().turns[0]?.status).toBe('completed');
+});
+
 it('keeps unknown legacy activity conservative after a reset', async () => {
   const { host, adapter, emit, root } = await start('copilot');
   await host.command(message('legacy-turn'));
@@ -1558,6 +1580,24 @@ it('requires confirmation for an unknown dispatch after reset', async () => {
   await appendFile(
     join(root, 'inbox.jsonl'),
     `${JSON.stringify({ type: 'dispatched', commandId: 'unknown-legacy-command' })}\n`
+  );
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+});
+
+it('treats a post-reset dispatch with only a prior-generation acceptance as unknown', async () => {
+  const { host, root } = await start('copilot');
+  await host.command({ ...message('old-reset'), body: { type: 'session.reset' } });
+  await host.shutdown();
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    `${JSON.stringify({ type: 'dispatched', commandId: 'old-reset' })}\n`
   );
   const next = setup('copilot');
   vi.mocked(next.adapter.startSession).mockRejectedValueOnce(

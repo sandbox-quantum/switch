@@ -391,24 +391,22 @@ export class HostedSession {
     const snapshot = this.replica.snapshot();
     const earlier = new Set<string>();
     const current = new Set<string>();
+    const accepted = new Map<string, Command['body']['type']>();
     let dispatchedTurn = false;
     for (const record of this.inbox.records) {
       if (record.type === 'accepted') {
         const type = record.command.body.type;
+        accepted.set(record.command.commandId, type);
         if (type === 'message.send' || type === 'message.retry')
           current.add(record.command.commandId);
       } else if (record.type === 'reset-started') {
         for (const id of current) earlier.add(id);
         current.clear();
+        accepted.clear();
         dispatchedTurn = false;
       } else if (record.type === 'dispatched') {
-        const command = this.commands.get(record.commandId);
-        if (
-          !command ||
-          command.body.type === 'message.send' ||
-          command.body.type === 'message.retry'
-        )
-          dispatchedTurn = true;
+        const type = accepted.get(record.commandId);
+        if (!type || type === 'message.send' || type === 'message.retry') dispatchedTurn = true;
       }
     }
     // Only discard activity whose turn is known to predate the reset. Unknown
