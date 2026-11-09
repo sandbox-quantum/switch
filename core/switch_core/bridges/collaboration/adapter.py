@@ -848,6 +848,19 @@ class PlatformAdapter(ABC):
         return None
 
     @classmethod
+    def refused_for_good(cls, exc: BaseException) -> bool:
+        """Whether this platform refused a send in a way no retry will change.
+
+        True only for a client error the platform answered with — a request it
+        read and rejected, a post or channel it says is not there, a permission
+        the bot does not have. A timeout, a dropped connection, a server error
+        or a rate limit is worth another attempt, and so is anything this
+        adapter cannot recognise. The session activity publisher drops a
+        publication refused for good instead of retrying it for ever.
+        """
+        return False
+
+    @classmethod
     async def prepare_config(
         cls, connection_config: dict[str, object]
     ) -> dict[str, object]:
