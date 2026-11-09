@@ -534,25 +534,25 @@ describe('the launch after an install', () => {
     h.trackEvent.mockClear();
   });
 
-  it('reports the handover the previous run wrote down', async () => {
+  it('takes the handover the previous run wrote down, and reports nothing when it worked', async () => {
     h.pending.target = '1.2.3';
     h.pending.from = '1.2.2';
     const { updateService: restarted } = await import('./update-service');
     await restarted.initialize();
 
-    expect(installEvents()).toEqual([['update_install_started', { outcome: 'success' }]]);
+    expect(installEvents()).toEqual([]);
     expect(restarted.getState()).toMatchObject({ status: 'idle' });
     // Taken, not just read: a launch is counted once, and a user who never
     // updates again does not report this install on every start from here on.
     expect(h.pending.target).toBeNull();
   });
 
-  it('counts a marker from a build that recorded no version as a success', async () => {
+  it('counts a marker from a build that recorded no version as a success, reporting nothing', async () => {
     h.pending.legacy = true;
     const { updateService: restarted } = await import('./update-service');
     await restarted.initialize();
 
-    expect(installEvents()).toEqual([['update_install_started', { outcome: 'success' }]]);
+    expect(installEvents()).toEqual([]);
     expect(h.pending.legacy).toBe(false);
   });
 
@@ -636,7 +636,7 @@ describe('the launch after an install', () => {
     expect(restartedEvents.emit).not.toHaveBeenCalled();
   });
 
-  it('counts a launch on a version other than the one that handed over as a success', async () => {
+  it('counts a launch on a version other than the one that handed over as a success, reporting nothing', async () => {
     // The handover to 1.3.0 did not take, and the user then installed 1.2.3 by
     // hand. An install happened, so there is nothing to show.
     h.pending.target = '1.3.0';
@@ -645,7 +645,7 @@ describe('the launch after an install', () => {
     await restarted.initialize();
     restarted.dispose();
 
-    expect(installEvents()).toEqual([['update_install_started', { outcome: 'success' }]]);
+    expect(installEvents()).toEqual([]);
     expect(restarted.getState()).toMatchObject({ status: 'idle' });
   });
 

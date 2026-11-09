@@ -173,18 +173,16 @@ class UpdateService implements IInitializable, IDisposable {
   }
 
   /**
-   * Report the install the previous run handed over. The app going down for the
-   * installer is not proof it came back on the new version: on macOS a
-   * Squirrel.Mac failure relaunches the old bundle without an error. Only a
-   * launch on the version that handed over is a failure. Any other version
-   * means an install happened, by the updater or by hand.
+   * Report the install the previous run handed over, if it failed. The app
+   * going down for the installer is not proof it came back on the new version:
+   * on macOS a Squirrel.Mac failure relaunches the old bundle without an error.
+   * Only a launch on the version that handed over is a failure. Any other
+   * version means an install happened, by the updater or by hand, which
+   * `app_launched` reports.
    */
   private reportHandover({ targetVersion, fromVersion }: PendingHandover): void {
     const current = this.updateState.currentVersion;
-    if (targetVersion === null || current !== fromVersion) {
-      trackEvent('update_install_started', { outcome: 'success' });
-      return;
-    }
+    if (targetVersion === null || current !== fromVersion) return;
     trackEvent('update_install_started', { outcome: 'failure' });
     this.failInstall(
       targetVersion,

@@ -473,16 +473,13 @@ export type TelemetryEventMap = {
     outcome: TelemetryOutcome;
   };
   /**
-   * An install was started — not finished.
-   *
-   * Deliberately named for what it can actually observe. A successful install
-   * quits the app, so there is no moment afterwards in which to report one; what
-   * this counts is the point the update was handed to the installer. Whether it
-   * worked is answered by `app_launched` on the next launch. A launch that
-   * comes back on the old version reports this event again, as a failure.
+   * An install that was started did not finish: the app never went down for
+   * the installer, or the launch after it came back on the old version.
+   * Failures only. One that worked is the next launch's `app_launched`, with
+   * `install_kind: updated`.
    */
   update_install_started: {
-    outcome: TelemetryOutcome;
+    outcome: 'failure';
   };
   /** A messaging platform was connected to a server. */
   bridge_connected: {
