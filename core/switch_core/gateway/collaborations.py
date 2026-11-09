@@ -265,8 +265,10 @@ async def _detail(
         private_channels_supported=collab_lifecycle.supports_private_channels(
             bridge.type
         ),
+        # Every private channel Switch makes needs one: the person asking is
+        # put in it (or, on Teams, made its owner) through that account.
         private_channel_needs_linked_account=(
-            collab_lifecycle.private_channel_needs_owner(bridge.type)
+            collab_lifecycle.supports_private_channels(bridge.type)
         ),
         channel_ids_refused=_channel_ids_refused(bridge.id, collab_lifecycle),
         directory_search_supported=collab_lifecycle.supports_directory_search(

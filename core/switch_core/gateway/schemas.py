@@ -758,8 +758,9 @@ class BridgeDetail(BaseModel):
     channel_creation_enabled: bool = True
     # Whether a new room here can have a private channel, and whether that
     # channel needs the person asking to have linked their account on the
-    # platform, which Switch names as its owner (Teams). Lets a room form offer
-    # "New private channel" from the server rather than a list of its own.
+    # platform, through which Switch puts them in it (on Teams, as its owner).
+    # Lets a room form offer "New private channel" from the server rather than
+    # a list of its own.
     private_channels_supported: bool = True
     private_channel_needs_linked_account: bool = False
     # Why no existing channel can be bound to a room by id on this connection,

@@ -29,7 +29,12 @@ import { useNavigate } from "react-router";
 import { type RoomRoleSpec, createRoom } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
-import { useAgents, useBridges, useBridgeUsers, useRoomGroups } from "../../data/hooks";
+import {
+  useAgents,
+  useBridges,
+  useBridgeUsers,
+  useRoomGroups,
+} from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
 import { flattenTree } from "./groupTree";
 import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
@@ -50,7 +55,9 @@ export default function RoomCreateFormBody() {
   const [bridgeId, setBridgeId] = useState("");
   const [channelSource, setChannelSource] = useState<ChannelSource>("new");
   const [externalChannelId, setExternalChannelId] = useState("");
-  const [newChannelType, setNewChannelType] = useState<"channel_public" | "channel_private">("channel_public");
+  const [newChannelType, setNewChannelType] = useState<
+    "channel_public" | "channel_private"
+  >("channel_public");
   const [agentIds, setAgentIds] = useState<string[]>([]);
   // Per-agent opt-in: ids of selected agents whose subagents to also add.
   const [includeSubagentsFor, setIncludeSubagentsFor] = useState<string[]>([]);
@@ -79,17 +86,24 @@ export default function RoomCreateFormBody() {
   // turned it off for this connection.
   const channelCreationBlocked =
     !!selectedBridge &&
-    !(selectedBridge.channel_creation_supported && selectedBridge.channel_creation_enabled);
+    !(
+      selectedBridge.channel_creation_supported &&
+      selectedBridge.channel_creation_enabled
+    );
 
   // A connection whose chats arrive only one way takes no channel id either,
   // and says how its rooms come about instead.
   const existingChannelRefusal = selectedBridge?.channel_ids_refused ?? null;
-  const noChannelSource = channelCreationBlocked && existingChannelRefusal !== null;
-  const privateChannelsSupported = selectedBridge?.private_channels_supported ?? true;
+  const noChannelSource =
+    channelCreationBlocked && existingChannelRefusal !== null;
+  const privateChannelsSupported =
+    selectedBridge?.private_channels_supported ?? true;
   const privateChannelNeedsLinkedAccount =
     selectedBridge?.private_channel_needs_linked_account ?? false;
   // A private choice the chosen connection cannot make is sent as public.
-  const effectiveChannelType = privateChannelsSupported ? newChannelType : "channel_public";
+  const effectiveChannelType = privateChannelsSupported
+    ? newChannelType
+    : "channel_public";
 
   const channelCreationBlockedReason = useMemo(() => {
     if (!selectedBridge || !channelCreationBlocked) return null;
@@ -108,7 +122,11 @@ export default function RoomCreateFormBody() {
   }, [channelCreationBlocked, noChannelSource, channelSource]);
 
   const addRole = useCallback(
-    () => setRoles((rs) => [...rs, { name: "", instructions: "", exclusive: false }]),
+    () =>
+      setRoles((rs) => [
+        ...rs,
+        { name: "", instructions: "", exclusive: false },
+      ]),
     [],
   );
   const updateRole = useCallback(
@@ -149,11 +167,20 @@ export default function RoomCreateFormBody() {
     if (!name.trim() || !description.trim()) return false;
     if (hasBridge) {
       if (noChannelSource) return false;
-      if (channelSource === "existing" && !externalChannelId.trim()) return false;
+      if (channelSource === "existing" && !externalChannelId.trim())
+        return false;
       return true;
     }
     return agentIds.length >= 1;
-  }, [name, description, hasBridge, noChannelSource, channelSource, externalChannelId, agentIds]);
+  }, [
+    name,
+    description,
+    hasBridge,
+    noChannelSource,
+    channelSource,
+    externalChannelId,
+    agentIds,
+  ]);
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
@@ -287,7 +314,10 @@ export default function RoomCreateFormBody() {
 
       <Divider />
       <Stack spacing={1}>
-        <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
+        <Typography
+          variant="overline"
+          sx={{ color: "text.secondary", display: "block" }}
+        >
           Roles (optional)
         </Typography>
         <Typography variant="caption" color="text.secondary">
@@ -335,7 +365,9 @@ export default function RoomCreateFormBody() {
                 label="Instructions"
                 size="small"
                 value={role.instructions}
-                onChange={(e) => updateRole(idx, { instructions: e.target.value })}
+                onChange={(e) =>
+                  updateRole(idx, { instructions: e.target.value })
+                }
                 fullWidth
                 multiline
                 rows={2}
@@ -397,9 +429,13 @@ export default function RoomCreateFormBody() {
             />
           </RadioGroup>
 
-          {(noChannelSource ? existingChannelRefusal : channelCreationBlockedReason) && (
+          {(noChannelSource
+            ? existingChannelRefusal
+            : channelCreationBlockedReason) && (
             <Alert severity="info" variant="outlined">
-              {noChannelSource ? existingChannelRefusal : channelCreationBlockedReason}
+              {noChannelSource
+                ? existingChannelRefusal
+                : channelCreationBlockedReason}
             </Alert>
           )}
 
@@ -418,17 +454,25 @@ export default function RoomCreateFormBody() {
               label="Channel type"
               value={effectiveChannelType}
               onChange={(e) =>
-                setNewChannelType(e.target.value as "channel_public" | "channel_private")
+                setNewChannelType(
+                  e.target.value as "channel_public" | "channel_private",
+                )
               }
               fullWidth
               helperText={
-                effectiveChannelType === "channel_private" && privateChannelNeedsLinkedAccount
-                  ? `You become the channel's owner through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
+                effectiveChannelType === "channel_private" &&
+                privateChannelNeedsLinkedAccount
+                  ? selectedBridge?.bridge_type === "teams"
+                    ? `You become the channel's owner through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
+                    : `Switch adds you to the channel through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
                   : undefined
               }
             >
               <MenuItem value="channel_public">Public channel</MenuItem>
-              <MenuItem value="channel_private" disabled={!privateChannelsSupported}>
+              <MenuItem
+                value="channel_private"
+                disabled={!privateChannelsSupported}
+              >
                 Private channel
               </MenuItem>
             </TextField>
@@ -445,7 +489,9 @@ export default function RoomCreateFormBody() {
           const ids = selected.map((a) => a.id);
           setAgentIds(ids);
           // Drop subagent opt-ins for agents that were just removed.
-          setIncludeSubagentsFor((prev) => prev.filter((id) => ids.includes(id)));
+          setIncludeSubagentsFor((prev) =>
+            prev.filter((id) => ids.includes(id)),
+          );
         }}
         getOptionLabel={(a) => a.name}
         isOptionEqualToValue={(a, b) => a.id === b.id}
