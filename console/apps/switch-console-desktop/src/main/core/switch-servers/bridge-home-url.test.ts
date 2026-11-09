@@ -122,6 +122,19 @@ describe('withResolvedHomeUrls', () => {
     expect(resolved[1].homeUrl).toBe('https://chat.example.com/team');
   });
 
+  it('keeps the only Mattermost on its own link when a person connected it', async () => {
+    const resolved = await withResolvedHomeUrls(MANAGED, [
+      bridge({
+        id: 'external',
+        preconfigured: false,
+        homeUrl: 'mattermost://chat.example.com/team',
+      }),
+    ]);
+
+    expect(resolved[0].homeUrl).toBe('https://chat.example.com/team');
+    expect(mattermostOriginFor).not.toHaveBeenCalled();
+  });
+
   it('substitutes no origin when the bundled Mattermost cannot be told apart', async () => {
     const resolved = await withResolvedHomeUrls(MANAGED, [
       bridge({ id: 'a', homeUrl: 'mattermost://chat.example.com/team' }),

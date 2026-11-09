@@ -5,9 +5,11 @@ import type { RemoteBridge } from './switch-servers';
  * to a Mattermost the user connected themselves.
  *
  * - `bundled`: the one Mattermost bridge marked `preconfigured`, or, on a
- *   server none of whose Mattermost bridges is marked (older than the flag),
- *   the only Mattermost bridge there is.
- * - `none`: no Mattermost bridge at all.
+ *   server too old to list the flag (`preconfigured` null), the only
+ *   Mattermost bridge there is.
+ * - `none`: no Mattermost bridge that could be the bundled one: none at all,
+ *   or only one, and that one marked as connected by a person
+ *   (`preconfigured` false).
  * - `ambiguous`: several Mattermost bridges and no single marked one, so
  *   nothing says which is bundled. Callers leave every bridge alone.
  *
@@ -24,7 +26,9 @@ export function bundledMattermostBridge(bridges: readonly RemoteBridge[]): Bundl
   const marked = mattermost.filter((bridge) => bridge.preconfigured === true);
   if (marked.length === 1) return { kind: 'bundled', bridge: marked[0] };
   if (marked.length === 0 && mattermost.length === 1) {
-    return { kind: 'bundled', bridge: mattermost[0] };
+    return mattermost[0].preconfigured === null
+      ? { kind: 'bundled', bridge: mattermost[0] }
+      : { kind: 'none' };
   }
   if (mattermost.length === 0) return { kind: 'none' };
   return { kind: 'ambiguous', bridgeIds: mattermost.map((bridge) => bridge.id) };

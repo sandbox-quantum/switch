@@ -64,6 +64,15 @@ describe('pointBundledMattermostBridgeAt', () => {
     expect(updateBridge).toHaveBeenCalledWith(SERVER, 'only', expect.anything());
   });
 
+  it('leaves the only Mattermost bridge alone when a person connected it', async () => {
+    fetchBridges.mockResolvedValue([bridge({ id: 'external', preconfigured: false })]);
+
+    await pointBundledMattermostBridgeAt(SERVER, URL, CALLBACK);
+
+    expect(updateBridge).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('does nothing when there is no Mattermost bridge yet', async () => {
     fetchBridges.mockResolvedValue([bridge({ id: 'slack', type: 'slack' })]);
 

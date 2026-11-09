@@ -198,11 +198,12 @@ def bundled_mattermost_bridge(
     """Which listed bridge is the deployment's own Mattermost.
 
     The one Mattermost bridge marked ``preconfigured``; failing that, on a
-    deployment that predates the flag (a server too old to list it, or a
-    bridge registered before it existed), the only Mattermost bridge there
-    is. None when there is no Mattermost bridge, so one is to be registered.
-    Several and no single marked one is ambiguous: one of them may be a
-    Mattermost somebody connected by hand, and nothing says which.
+    server too old to list the flag, the only Mattermost bridge there is.
+    None when no Mattermost bridge could be the bundled one, so one is to be
+    registered: there is none, or only one and that one marked as connected
+    by a person (``preconfigured`` false). Several and no single marked one
+    is ambiguous: one of them may be a Mattermost somebody connected by hand,
+    and nothing says which.
 
     The same rule as ``bundledMattermostBridge`` in Switch Console
     (``src/shared/core/switch-servers/bundled-bridge.ts``), which repoints the
@@ -213,7 +214,8 @@ def bundled_mattermost_bridge(
     if len(marked) == 1:
         return marked[0]
     if not marked and len(mattermost) == 1:
-        return mattermost[0]
+        only = mattermost[0]
+        return only if only.get("preconfigured") is None else None
     if not mattermost:
         return None
     return AmbiguousBundledBridge([b["bridge_id"] for b in mattermost])
@@ -225,7 +227,8 @@ def ambiguous_bundled_bridge_message(bridge_ids: list[str]) -> str:
         f"({', '.join(bridge_ids)}) and none is marked as the deployment's "
         "bundled one, so setup cannot tell which to adopt. Mark the bundled "
         "one by setting preconfigured on it (PATCH "
-        '/gateway/collaborations/<bridge_id> with {"preconfigured": true}).'
+        '/gateway/collaborations/<bridge_id> with {"preconfigured": true}) '
+        "and run setup again."
     )
 
 
@@ -268,10 +271,12 @@ def gateway_login() -> httpx.Client:
     return client
 
 
-def register_bridge(client: httpx.Client) -> str:
+def register_bridge(client: httpx.Client) -> str | None:
     """Register Mattermost bridge with Switch via the authorized gateway API.
 
-    Returns the bridge id — the one already registered, or the new one. Every
+    Returns the bridge id — the one already registered, or the new one — or
+    None when several Mattermost bridges are registered and none is marked as
+    the bundled one, in which case it registers and changes nothing. Every
     call it makes raises on failure, the read included: without a bridge there
     is no deployment to speak of, so none of it is something to carry on past.
     """
@@ -292,14 +297,16 @@ def register_bridge(client: httpx.Client) -> str:
     # A deployment can hold a Mattermost its users connected themselves beside
     # the bundled one. Adopting the wrong one would repoint, re-default and
     # mark someone's own chat, and registering another bundled bridge beside
-    # an unidentifiable one only doubles the confusion, so stop instead.
+    # an unidentifiable one only doubles the confusion, so leave them all be.
+    # Not fatal: the job reruns on every upgrade, and failing it would stop the
+    # rest of setup each time over something only an admin can settle.
     bridge = bundled_mattermost_bridge(bridges)
     if isinstance(bridge, AmbiguousBundledBridge):
         print(
             f"ERROR: {ambiguous_bundled_bridge_message(bridge.bridge_ids)} "
             "Registering no bridge and changing none."
         )
-        sys.exit(1)
+        return None
     if bridge is not None:
         bridge_id = bridge["bridge_id"]
         print(f"Mattermost bridge already registered: {bridge_id}")
@@ -311,18 +318,6 @@ def register_bridge(client: httpx.Client) -> str:
                 f"/gateway/collaborations/{bridge_id}/default"
             ).raise_for_status()
             print(f"Set Mattermost bridge as default: {bridge_id}")
-        # And mark it as the deployment's own, for a bridge registered
-        # before the flag existed. Telemetry leaves a preconfigured
-        # connector out of onboarding: it came up because the deployment
-        # booted, not because anybody connected anything. A server that
-        # predates the flag does not list it, and is left alone rather
-        # than sent a field it would ignore.
-        if bridge.get("preconfigured") is False:
-            client.patch(
-                f"/gateway/collaborations/{bridge_id}",
-                json={"preconfigured": True},
-            ).raise_for_status()
-            print(f"Marked Mattermost bridge as preconfigured: {bridge_id}")
         # Same reason: a bridge registered before callbacks existed
         # would otherwise keep drawing cards with no buttons on them,
         # and the only cure would be editing a connection field by
@@ -340,6 +335,19 @@ def register_bridge(client: httpx.Client) -> str:
             ).raise_for_status()
             print(f"Set Mattermost callback address: {MATTERMOST_CALLBACK_BASE_URL}")
         return bridge_id
+
+    # A bundled bridge registered before the flag existed, and never marked
+    # since, reads the same as a Mattermost a person connected, so say which
+    # bridge the new one is registered beside.
+    for other in bridges:
+        if other.get("bridge_type") == "mattermost":
+            print(
+                "WARNING: Registering the bundled Mattermost bridge beside "
+                f"{other['bridge_id']}, which is marked as connected by a "
+                "person (preconfigured false). If it is in fact the bundled "
+                "one, registered before the flag existed, mark it preconfigured "
+                "and delete the bridge registered now."
+            )
 
     # Register new bridge
     connection_config: dict[str, str] = {
@@ -544,7 +552,12 @@ def main() -> None:
     client = gateway_login()
     try:
         bridge_id = register_bridge(client)
-        if mattermost_user_id is None:
+        if bridge_id is None:
+            print(
+                f"ERROR: No bundled Mattermost bridge to link {GATEWAY_ADMIN_EMAIL} "
+                f"to the Mattermost account {MATTERMOST_USER} on"
+            )
+        elif mattermost_user_id is None:
             print(
                 f"WARNING: No Mattermost account for {MATTERMOST_USER}, so "
                 f"{GATEWAY_ADMIN_EMAIL} could not be linked to one"

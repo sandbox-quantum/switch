@@ -37,7 +37,7 @@ describe('bundledMattermostBridge', () => {
   it('ignores a preconfigured bridge of another platform', () => {
     const bridges = [
       bridge({ id: 'slack', type: 'slack', preconfigured: true }),
-      bridge({ id: 'mm', preconfigured: false }),
+      bridge({ id: 'mm', preconfigured: null }),
     ];
 
     expect(bundledMattermostBridgeId(bridges)).toBe('mm');
@@ -47,8 +47,10 @@ describe('bundledMattermostBridge', () => {
     expect(bundledMattermostBridgeId([bridge({ id: 'mm', preconfigured: null })])).toBe('mm');
   });
 
-  it('takes the only Mattermost bridge when it is not marked yet', () => {
-    expect(bundledMattermostBridgeId([bridge({ id: 'mm', preconfigured: false })])).toBe('mm');
+  it('never takes a Mattermost bridge a person connected, even the only one', () => {
+    expect(bundledMattermostBridge([bridge({ id: 'mm', preconfigured: false })])).toEqual({
+      kind: 'none',
+    });
   });
 
   it('reports no bridge when there is no Mattermost one', () => {

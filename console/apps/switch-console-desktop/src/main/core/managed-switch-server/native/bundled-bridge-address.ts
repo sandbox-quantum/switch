@@ -17,7 +17,7 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
  * Only the bundled bridge is touched: a Mattermost the user connected
  * themselves keeps its own address. When the bundled one cannot be told apart
  * from the others nothing is changed, and the seeder, which applies the same
- * rule, fails the Mattermost start saying why.
+ * rule, logs why and adopts none of them.
  */
 export async function pointBundledMattermostBridgeAt(
   server: SwitchServer,
