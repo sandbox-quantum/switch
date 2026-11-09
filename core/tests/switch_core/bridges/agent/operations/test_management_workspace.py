@@ -55,7 +55,7 @@ def test_with_a_list_set_a_call_with_no_workspace_bound_sees_it_off():
 
 
 def test_the_reason_names_the_workspace_when_management_runs_here():
-    assert "not enabled on this Switch server" in management_off_reason()
+    assert "not turned on here" in management_off_reason()
     enable_agent_management(object(), lambda _tenant_id: False, restricted=True)  # type: ignore[arg-type]
     try:
         assert management_off_reason() == WORKSPACE_NOT_ENABLED_MESSAGE

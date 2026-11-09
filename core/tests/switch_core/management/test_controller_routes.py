@@ -15,6 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.protocol.types import SentMessage
 from switch_core.config import ControllerRelease
 from switch_core.db.models import AgentControllerEnrollmentCode, ApiKey, AuditEvent
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -988,7 +989,7 @@ class TestTheRestartNotice:
                     **kwargs,
                 }
             )
-            return "$notice"
+            return SentMessage(event_id="$notice", trust=None)
 
         monkeypatch.setattr(harness.protocol, "send_message", send_message)
         return sent

@@ -1807,7 +1807,9 @@ async def test_v2_off_a_message_never_wakes_a_box(controller_app, v2_off):
     )
     with tenant_scope(TENANT_ZERO_ID):
         async with app.factory() as session:
-            await wake_controller_machine(session, controller_id, datetime.now(UTC))
+            await wake_controller_machine(
+                session, controller_id, datetime.now(UTC), "message"
+            )
             assert (
                 await wake_lifted_machine(session, controller_id, datetime.now(UTC))
                 is None
@@ -1819,7 +1821,9 @@ async def test_v2_off_a_message_never_wakes_a_box(controller_app, v2_off):
     await update_machine(app.factory, app.machine_id, backend="vm")
     with tenant_scope(TENANT_ZERO_ID):
         async with app.factory() as session:
-            await wake_controller_machine(session, controller_id, datetime.now(UTC))
+            await wake_controller_machine(
+                session, controller_id, datetime.now(UTC), "message"
+            )
             await session.commit()
     assert (await machine_of(app.factory, app.machine_id)).desired_state == "running"
 

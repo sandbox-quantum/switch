@@ -635,7 +635,9 @@ async def test_a_message_never_wakes_a_box_for_a_turned_off_workspace(
             await session.commit()
     with tenant_scope(x):
         async with rls_harness.restricted() as session:
-            await wake_controller_machine(session, controller_id, datetime.now(UTC))
+            await wake_controller_machine(
+                session, controller_id, datetime.now(UTC), "message"
+            )
             await session.commit()
     machine = await _machine(rls_harness, machine_id)
     assert machine.desired_state == "stopped" and machine.stop_reason == "idle"
@@ -784,7 +786,9 @@ async def test_a_message_never_wakes_a_paused_box(rls_harness: RLSHarness) -> No
     )
     with tenant_scope(x):
         async with rls_harness.restricted() as session:
-            await wake_controller_machine(session, controller_id, datetime.now(UTC))
+            await wake_controller_machine(
+                session, controller_id, datetime.now(UTC), "message"
+            )
             await session.commit()
     machine = await _machine(rls_harness, machine_id)
     assert (machine.desired_state, machine.stop_reason) == ("stopped", "paused")
@@ -1213,13 +1217,17 @@ async def test_a_message_in_another_workspace_wakes_a_box_turned_off_elsewhere(
     # X's message: no wake.
     with tenant_scope(x):
         async with rls_harness.restricted() as session:
-            await wake_controller_machine(session, controller_in[x], datetime.now(UTC))
+            await wake_controller_machine(
+                session, controller_in[x], datetime.now(UTC), "message"
+            )
             await session.commit()
     assert (await _machine(rls_harness, machine_id)).desired_state == "stopped"
     # Y's message: the box starts for Y.
     with tenant_scope(y):
         async with rls_harness.restricted() as session:
-            await wake_controller_machine(session, controller_in[y], datetime.now(UTC))
+            await wake_controller_machine(
+                session, controller_in[y], datetime.now(UTC), "message"
+            )
             await session.commit()
     machine = await _machine(rls_harness, machine_id)
     assert machine.desired_state == "running" and machine.stop_reason is None

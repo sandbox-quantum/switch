@@ -466,7 +466,13 @@ class TestSessionStateEndpoint:
             session_factory, name="v1user", tenant_ids=[TENANT_ZERO_ID]
         )
         token = create_jwt(
-            user_id, "v1user@example.invalid", "user", _KEYRING, TENANT_ZERO_ID
+            user_id,
+            "v1user@example.invalid",
+            "user",
+            _KEYRING,
+            TENANT_ZERO_ID,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
         response = await self._get(
             session_factory,
@@ -498,7 +504,15 @@ class TestSessionStateEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="listed", tenant_ids=[TENANT_ZERO_ID]
         )
-        token = create_jwt(user_id, "listed@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "listed@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         response = await self._get(
             session_factory,
@@ -520,7 +534,15 @@ class TestSessionStateEndpoint:
         admin_id = await _make_user_with_memberships(
             session_factory, name="admin", tenant_ids=[TENANT_ZERO_ID], role="admin"
         )
-        token = create_jwt(admin_id, "admin@example.invalid", "admin", _KEYRING, None)
+        token = create_jwt(
+            admin_id,
+            "admin@example.invalid",
+            "admin",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         listed_other = self._operator_list(tmp_path, ["someone-else"])
         missing = OperatorList(tmp_path / "missing.json")
@@ -541,7 +563,15 @@ class TestSessionStateEndpoint:
         user_id = await _make_user_with_memberships(
             session_factory, name="removed", tenant_ids=[TENANT_ZERO_ID]
         )
-        token = create_jwt(user_id, "removed@example.invalid", "user", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "removed@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
         operators = self._operator_list(tmp_path, [user_id])
 
         first = await self._get(

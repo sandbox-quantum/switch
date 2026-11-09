@@ -616,7 +616,7 @@ class TestTheAgentClientsReplies:
             object(), _agent("auto", "auto_session"), meta, "u"
         )
         assert reply is not None
-        assert reply.startswith("My machine, **machine**, is offline or reconnecting")
+        assert reply.startswith("My device, **machine**, is offline or reconnecting")
 
     async def test_an_offline_or_removed_machine_is_named_not_console(
         self,
@@ -672,7 +672,7 @@ class TestTheAgentClientsReplies:
         again = await client._reply_when_unavailable_here(object(), agent, meta, "u")
 
         assert first == (
-            "My machine, **machine**, was asleep and is starting now. I'll pick "
+            "My device, **machine**, was asleep and is starting now. I'll pick "
             "this up as soon as it's back, usually within a few minutes."
         )
         assert again is None
@@ -714,7 +714,7 @@ class TestTheAgentClientsReplies:
             object(), _agent("auto", "auto_session"), meta, "u"
         )
         assert reply is not None and reply.startswith(
-            "@owner — my machine, **machine**, has been removed from Switch"
+            "@owner — my device, **machine**, has been removed from Switch"
         )
         assert client._cloud_waking_notices == set()
 
@@ -1091,7 +1091,7 @@ class TestWithHostedAgentsV2Off:
             object(), _agent("auto", "auto_session"), self._meta(), "u"
         )
         assert reply is not None
-        assert reply.startswith("@owner — my machine, **machine**, has been removed")
+        assert reply.startswith("@owner — my device, **machine**, has been removed")
         assert (client.woken_lifted, client.woken) == ([], [])
         await client._wake_for_follow_up()
         assert (client.woken_lifted, client.woken) == ([], [])
@@ -1108,7 +1108,7 @@ class TestWithHostedAgentsV2Off:
             object(), _agent("auto", "auto_session"), self._meta(), "u"
         )
         assert reply is not None
-        assert reply.startswith("My machine, **machine**, is offline or reconnecting")
+        assert reply.startswith("My device, **machine**, is offline or reconnecting")
 
     async def test_a_v2_box_reads_offline_and_gets_no_waking_line(self) -> None:
         registry = AgentConnectionRegistry()
@@ -1124,7 +1124,7 @@ class TestWithHostedAgentsV2Off:
             object(), _agent("auto", "auto_session"), self._meta(), "u"
         )
         assert reply is not None
-        assert reply.startswith("My machine, **machine**, is offline or reconnecting")
+        assert reply.startswith("My device, **machine**, is offline or reconnecting")
         assert client._cloud_waking_notices == set()
 
     async def test_a_v1_machine_still_wakes_with_its_line(self) -> None:
@@ -1139,6 +1139,6 @@ class TestWithHostedAgentsV2Off:
             object(), _agent("auto", "auto_session"), self._meta(), "u"
         )
         assert reply == (
-            "My machine, **machine**, was asleep and is starting now. I'll pick "
+            "My device, **machine**, was asleep and is starting now. I'll pick "
             "this up as soon as it's back, usually within a few minutes."
         )
