@@ -275,6 +275,18 @@ async def test_refusals_never_mention_an_agent_live() -> None:
     the agent it names."""
     from switch_core.room_invites import not_addressable_refusal
 
-    agent = Agent(name="bobs-agent", display_name=None)
+    agent = Agent(name="bobs-agent", display_name="Bob's agent")
     assert "@" not in not_addressable_refusal(agent)
+    assert "@" not in not_addressable_refusal(agent, markdown=True)
+
+
+def test_plain_refusal_shows_no_markdown() -> None:
+    """The Gateway and the agent tools show the refusal as it is."""
+    from switch_core.room_invites import not_addressable_refusal
+
+    agent = Agent(name="bobs-agent", display_name="Bob's agent")
+    assert not_addressable_refusal(agent).startswith(
+        "You can't invite Bob's agent (bobs-agent):"
+    )
+    assert "`bobs-agent`" in not_addressable_refusal(agent, markdown=True)
     assert "@" not in NOT_IN_ROOM_REFUSAL

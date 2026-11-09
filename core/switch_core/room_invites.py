@@ -49,10 +49,20 @@ NOT_IN_ROOM_REFUSAL = (
 )
 
 
-def not_addressable_refusal(target: Agent) -> str:
-    """The refusal for an agent the inviter may not address. No leading `@`:
-    it may be posted to the room, where a live mention would address it."""
-    label = agent_label_with_identifier(target.display_name, target.name)
+def not_addressable_refusal(target: Agent, *, markdown: bool = False) -> str:
+    """The refusal for an agent the inviter may not address.
+
+    Plain text by default, for the Gateway and the agent tools, which show it
+    as it is. `markdown` writes the agent the way chat notices do, its
+    identifier in a code span. Neither form has a leading `@`: it may be
+    posted to a room, where a live mention would address the agent.
+    """
+    if markdown:
+        label = agent_label_with_identifier(target.display_name, target.name)
+    elif target.display_name:
+        label = f"{target.display_name} ({target.name})"
+    else:
+        label = target.name
     return (
         f"You can't invite {label}: it doesn't take requests from you, so you "
         "can't bring it into a room either. Ask its owner to invite it, or to "

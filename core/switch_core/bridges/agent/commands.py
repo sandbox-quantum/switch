@@ -1435,7 +1435,7 @@ async def _cmd_invite(
             session, agent=target, room_id=meta.room_id, sender=event.user_id
         )
         if not decision.allowed:
-            refusal = not_addressable_refusal(target)
+            refusal = not_addressable_refusal(target, markdown=True)
             if decision.refusal == ADDRESSING_UNCLAIMED_MESSAGE:
                 refusal += (
                     " If it's yours, this chat account isn't linked to your "
