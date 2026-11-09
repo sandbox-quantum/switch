@@ -25,8 +25,13 @@ address Meta can reach.
 ## Connect it in Switch Console
 
 **Connect a messaging app → WhatsApp**, and fill in the phone number ID,
-access token, app secret and verify token. Switch checks the token and the
-phone number ID with Meta before it saves the connection.
+access token, app secret and verify token. Before it saves the connection,
+Switch checks each with Meta and says which one is wrong:
+
+- the token: valid, not expired, and allowed `whatsapp_business_messaging`;
+- the phone number ID: readable with that token;
+- the app secret: Meta refuses a request signed with another app's secret, so
+  a mistyped secret is caught here rather than when every event is refused.
 
 Then, in your Meta app, **WhatsApp → Configuration → Webhook**:
 
@@ -50,11 +55,14 @@ Then, in your Meta app, **WhatsApp → Configuration → Webhook**:
 |---|---|
 | Rooms | One direct room per WhatsApp user. Cloud API numbers talk 1:1; there are no group chats to bridge, and Switch cannot create one |
 | Threads | WhatsApp has none. A reply in a thread is sent as a quote-reply of the thread's first message, and a quote-reply from WhatsApp lands in that message's thread |
-| The 24-hour window | A business may send free-form messages only within 24 hours of the person's last message. Outside it WhatsApp refuses them, and the refusal says the person has to write again. Approved templates, which WhatsApp allows outside the window, are not sent yet |
-| Cards | A request with up to three options has WhatsApp reply buttons; one with more is sent as text with numbered options, answered by replying with its handle and number |
+| The 24-hour window | A business may send free-form messages only within 24 hours of the person's last message. WhatsApp refuses one outside it either at once, when Switch reports the post as failed and says the person has to write again, or a moment later in a `failed` status, which switch-core logs as an error with the same explanation. Approved templates, WhatsApp's way to write outside the window, are not sent |
+| Cards | A request with up to three options has WhatsApp reply buttons, and one with four to ten a list (WhatsApp's own picker). A button or list choice answers the card. A card with more options, or one WhatsApp refuses, is sent as text with numbered options, answered by replying with its handle and number |
+| Working | While an agent works on a message, Switch reacts to it with 👀 and takes the reaction off when the turn ends. Every agent shares the one reaction, as they share the number |
+| Long replies | Split under WhatsApp's 4,096 characters at a line or a word; a code block cut in two is closed and opened again |
 | Formatting | Markdown is sent in WhatsApp's own marks: `*bold*`, `_italic_`, `~strike~`; a link as its text and its address |
 | Edits and deletes | WhatsApp gives a business neither; a sent message stays as it is |
-| Media | Images, documents and voice notes are not relayed yet; the room is told one was sent. WhatsApp's own limits are 5 MB for images and 100 MB for documents |
+| Media from WhatsApp | Images, videos, voice notes, stickers and documents reach the room as files, with their caption as the message. One over the server's attachment limit, or one that will not download, is named in the room with the reason. A shared location or contact arrives as a line saying what it was |
+| Media to WhatsApp | JPEG and PNG go as images (up to 5 MB), MP4 and 3GPP as videos and AAC, AMR, MP3, MP4 and Ogg audio as voice (up to 16 MB), anything else as a document with its name (up to 100 MB). A file over its limit, or one WhatsApp refuses, is not sent: the person gets a message naming it and saying why |
 | Agent identities | One number speaks for every agent; each message starts with the agent's name |
 
 ## Several pods
