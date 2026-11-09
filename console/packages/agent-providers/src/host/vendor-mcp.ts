@@ -11,7 +11,7 @@ import {
 } from '@sandboxaq/switch-agent-runtime/hosted';
 import type { HttpMcpServerSpec } from '../adapter';
 import type { Redactions } from './redaction';
-import { type ServiceGrant, serviceTokenAnswerSchema } from './service-access';
+import { monotonicMillis, type ServiceGrant, serviceTokenAnswerSchema } from './service-access';
 import { redactServiceToken, type ServiceCredential } from './service-credential';
 import type { HostAsk } from './session-channel';
 
@@ -55,6 +55,10 @@ export async function startVendorServers(input: {
   callTimeoutMs: number;
   /** How the vendor is reached: `fetch`, but for tests. */
   fetch: typeof fetch;
+  /** Clock overrides for testing lease expiry during a vendor exchange. */
+  monotonicNow?: () => number;
+  wallNow?: () => number;
+  leaseTimeout?: (ms: number) => AbortSignal;
 }): Promise<VendorServers> {
   const specs: Record<string, HttpMcpServerSpec> = {};
   const closers: (() => Promise<void>)[] = [];
@@ -94,6 +98,9 @@ class VendorServer {
       listTimeoutMs: number;
       callTimeoutMs: number;
       fetch: typeof fetch;
+      monotonicNow?: () => number;
+      wallNow?: () => number;
+      leaseTimeout?: (ms: number) => AbortSignal;
     }
   ) {}
 
@@ -130,7 +137,12 @@ class VendorServer {
     const signal = AbortSignal.timeout(timeoutMs);
     let rejected: string | null = null;
     for (let attempt = 0; ; attempt += 1) {
-      const credential: ServiceCredential = await withinSignal(
+      const credential: {
+        credential: ServiceCredential;
+        deadline: number;
+        wallDeadline: number;
+        wallStarted: number;
+      } = await withinSignal(
         this.credential(rejected),
         signal,
         `The agent host did not hand out a ${this.service} token within ${timeoutMs / 1000} s.`
@@ -145,25 +157,57 @@ class VendorServer {
           throw new Error(
             `${this.service} refused this agent's token again after Switch issued a new one.`
           );
-        rejected = credential.token;
+        rejected = credential.credential.token;
       }
     }
   }
 
-  private async credential(rejected: string | null): Promise<ServiceCredential> {
+  private async credential(rejected: string | null): Promise<{
+    credential: ServiceCredential;
+    deadline: number;
+    wallDeadline: number;
+    wallStarted: number;
+  }> {
+    // Notion hands out the owner's non-revocable token. A separate ask keeps
+    // its short cutoff enforceable without changing scoped-token connectors.
+    const verified = this.service === 'notion';
     const answer = serviceTokenAnswerSchema.parse(
-      await this.deps.ask({ type: 'service-token', service: this.service, rejected })
+      await this.deps.ask({
+        type: verified ? 'service-token-verified' : 'service-token',
+        service: this.service,
+        rejected,
+      })
     );
     if (answer.kind === 'refused') throw new Error(answer.message);
-    return redactServiceToken(this.deps.redactions, answer.token);
+    if (
+      verified &&
+      (answer.validUntilMonotonicMs === undefined ||
+        (this.deps.monotonicNow ?? monotonicMillis)() >= answer.validUntilMonotonicMs ||
+        answer.validUntilWallMs === undefined ||
+        (this.deps.wallNow ?? Date.now)() >= answer.validUntilWallMs ||
+        answer.validAfterWallMs === undefined ||
+        (this.deps.wallNow ?? Date.now)() < answer.validAfterWallMs)
+    )
+      throw new Error(`Switch could not verify this agent's ${this.service} grant in time.`);
+    return {
+      credential: redactServiceToken(this.deps.redactions, answer.token),
+      deadline: answer.validUntilMonotonicMs ?? Infinity,
+      wallDeadline: answer.validUntilWallMs ?? Infinity,
+      wallStarted: answer.validAfterWallMs ?? -Infinity,
+    };
   }
 
   private async connected<T>(
-    credential: ServiceCredential,
+    verified: {
+      credential: ServiceCredential;
+      deadline: number;
+      wallDeadline: number;
+      wallStarted: number;
+    },
     signal: AbortSignal,
     exchange: (client: Client) => Promise<T>
   ): Promise<T> {
-    const url = new URL(credential.render(this.server.url));
+    const url = new URL(verified.credential.render(this.server.url));
     if (url.protocol !== 'https:')
       throw new Error(
         `${this.service}'s MCP server ${this.server.name} is not served over HTTPS once its address is filled in.`
@@ -171,17 +215,29 @@ class VendorServer {
     const headers = Object.fromEntries(
       Object.entries(this.server.headers).map(([name, template]) => [
         name,
-        credential.render(template),
+        verified.credential.render(template),
       ])
     );
     const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers },
-      fetch: (url, init) =>
-        this.deps.fetch(url, {
+      fetch: (url, init) => {
+        const remaining = Math.min(
+          verified.deadline - (this.deps.monotonicNow ?? monotonicMillis)(),
+          verified.wallDeadline - (this.deps.wallNow ?? Date.now)()
+        );
+        if (remaining < 1 || (this.deps.wallNow ?? Date.now)() < verified.wallStarted)
+          throw new Error(
+            `Switch's ${this.service} grant check expired before the vendor request.`
+          );
+        const signals = [signal, ...(init?.signal ? [init.signal] : [])];
+        if (Number.isFinite(remaining))
+          signals.push((this.deps.leaseTimeout ?? AbortSignal.timeout)(Math.floor(remaining)));
+        return this.deps.fetch(url, {
           ...init,
           redirect: 'error',
-          signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal,
-        }),
+          signal: AbortSignal.any(signals),
+        });
+      },
     });
     const client = new Client({ name: 'switch-session', version: '1.0.0' });
     try {

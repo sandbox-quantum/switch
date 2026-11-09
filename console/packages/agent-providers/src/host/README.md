@@ -195,3 +195,24 @@ host logs. Only a locally elapsed renewal deadline is labelled lease expiry.
 Room messages are admitted only after Core acknowledges a ready or running
 state in the current lease epoch. Local provider readiness alone does not imply
 that Core has received that state.
+
+### Vendor MCP grant validation
+
+Notion MCP access requires a successful Core token issuance within the last
+30 seconds, checked on demand. Reissuance checks the current grant even on
+older Core servers with no grant revision, or after a grant is removed and
+re-created with the same revision. Concurrent requests share one issuance; a
+response arriving after its deadline is refused. If Core is unreachable, Notion
+MCP stops starting new requests once the lease expires, even if the vendor
+token itself remains valid. Other connectors retain their existing behavior.
+An older watcher cannot answer the new verified request; a new watcher also
+refuses legacy Notion token requests and asks for the session to restart. Thus
+Notion fails closed until both sides are updated. The session host checks the lease
+before every vendor HTTP request; an operation already accepted by the vendor
+cannot be undone by this check.
+
+On Linux the monotonic clock pauses during suspend. The wall-clock deadline
+also detects ordinary sleep, and moving wall time before the check is refused.
+If the machine sleeps while wall time is moved backwards but still remains
+inside the original lease interval, neither clock can reveal how long it slept;
+there is no hard one-minute cutoff in that case.

@@ -103,6 +103,26 @@ it('scrubs every service token handed out from what it sends to Switch', async (
   });
 });
 
+it('refuses legacy Notion token requests until the session restarts', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+  roots.push(base);
+  const answer = sessionToolAnswerer({
+    identity: { agentId: 'agent', endpoint: 'https://switch.test', token: 't' },
+    connectionId: 'connection',
+    placements: await SessionPlacements.open(base, () => []),
+    publish: async () => {},
+    placementsNameCallRooms: () => false,
+    redactions: new Redactions(),
+  });
+  expect(
+    await answer(await caller(base, 'session'), {
+      type: 'service-token',
+      service: 'notion',
+      rejected: null,
+    })
+  ).toMatchObject({ kind: 'refused', code: 'session_upgrade_required', final: false });
+});
+
 it('answers a service token ask from Switch, as the agent, and scrubs the token from then on', async () => {
   const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
   roots.push(base);

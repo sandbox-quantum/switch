@@ -243,7 +243,18 @@ export function sessionToolAnswerer(deps: {
   };
 
   return async (caller, ask) => {
-    if (ask.type === 'service-token') return services.answer(ask.service, ask.rejected);
+    if (ask.type === 'service-token') {
+      if (ask.service === 'notion')
+        return {
+          kind: 'refused',
+          code: 'session_upgrade_required',
+          message: 'Restart this session to use Notion with updated grant checks.',
+          final: false,
+        };
+      return services.answer(ask.service, ask.rejected);
+    }
+    if (ask.type === 'service-token-verified')
+      return services.answerVerified(ask.service, ask.rejected);
     const catalog = await tools();
     if (ask.type === 'tools') return catalog.tools();
     if (ask.type === 'room-reply') return roomReply(caller, catalog, ask);

@@ -111,6 +111,13 @@ export const hostAskSchema = z.discriminatedUnion('type', [
     service: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
     rejected: z.string().nullable(),
   }),
+  // Separate message type: an older watcher must refuse rather than silently
+  // ignore a flag requiring grant validation.
+  z.object({
+    type: z.literal('service-token-verified'),
+    service: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/),
+    rejected: z.string().nullable(),
+  }),
 ]);
 export type HostAsk = z.infer<typeof hostAskSchema>;
 
@@ -346,7 +353,12 @@ export class SessionLinks {
         const asker = link.identity;
         this.answerAsk(root, asker, message.ask).then(
           (value) => {
-            if (asker && message.ask.type === 'service-token' && isTokenAnswer(value))
+            if (
+              asker &&
+              (message.ask.type === 'service-token' ||
+                message.ask.type === 'service-token-verified') &&
+              isTokenAnswer(value)
+            )
               this.shareToken(asker.agentId, value.token);
             answer({ ok: true, value: value ?? null });
           },
