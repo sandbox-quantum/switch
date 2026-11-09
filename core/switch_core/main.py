@@ -1945,6 +1945,14 @@ async def _seed_admin_user(
                 )
             else:
                 logger.info("Admin user already exists: %s", existing.id)
+            if existing.password_hash is None and config.gateway_admin_password:
+                existing.password_hash = hash_password(config.gateway_admin_password)
+                await session.commit()
+                logger.warning(
+                    "Admin user %s was seeded without a password; set it from "
+                    "GATEWAY_ADMIN_PASSWORD.",
+                    existing.id,
+                )
             return
 
         admin = User(

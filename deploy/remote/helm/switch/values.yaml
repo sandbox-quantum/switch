@@ -5,7 +5,7 @@ global:
   # "standard-rwo" on GKE) only if your cluster has no default or you need a
   # specific class.
   storageClass: ""
-  imageRegistry: "ghcr.io/render-check"
+  imageRegistry: ""
   # Names of pre-existing dockerconfigjson Secrets used to pull images from a
   # private registry (e.g. a private GHCR namespace). Applied to every pod. Leave
   # empty for public images.
@@ -225,7 +225,7 @@ switchCore:
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
-  image: "switch-core:0.0.0-check@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  image: switch-core:latest
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
@@ -801,7 +801,7 @@ switchCore:
 # switchCore's to different releases and those pages load blank.
 gateway:
   enabled: true
-  image: "gateway:0.0.0-check@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  image: gateway:latest
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
@@ -1052,7 +1052,7 @@ decision:
 
 # ── Setup Job ─────────────────────────────────────────────────────────────────
 setup:
-  image: "setup:0.0.0-check@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  image: setup:latest
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""

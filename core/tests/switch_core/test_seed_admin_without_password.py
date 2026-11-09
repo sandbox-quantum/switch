@@ -75,6 +75,20 @@ class TestSeeding:
         assert admin.role == "admin"
         assert admin.password_hash is None
 
+    async def test_a_password_set_later_reaches_an_admin_seeded_without_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _seed_admin_user(
+            session_factory, UserStore(), _config(password=None, password_login=False)
+        )
+        await _seed_admin_user(
+            session_factory,
+            UserStore(),
+            _config(password="s3cret-pw", password_login=True),
+        )
+
+        assert (await _admin(session_factory)).password_hash is not None
+
     async def test_the_first_oidc_sign_in_links_to_the_seeded_admin(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

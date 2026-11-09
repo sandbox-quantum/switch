@@ -27,7 +27,8 @@ function Heading({ publicUrl }: { publicUrl: string | null }) {
 }
 
 /** Every app of `scope`, a card each, under `heading`. A 404 means the
- * routes are not mounted, and shows `notEnabled`. */
+ * routes are not mounted, and shows `notEnabled`. Parents must check the
+ * server's feature flags before rendering it. */
 export function ConnectorAppsList({
   scope,
   notEnabled,

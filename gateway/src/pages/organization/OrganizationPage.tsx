@@ -24,7 +24,7 @@ export default function OrganizationPage() {
     () => (isAdmin ? fetchFeatureFlags() : Promise.resolve(null)),
     [isAdmin],
   );
-  const { data: flags } = useLoad(loadFlags);
+  const { data: flags, error: flagsError } = useLoad(loadFlags);
   // The server mounts the routes behind Services and Connectors only with
   // both flags on; asking a server without them would only be refused.
   const organizationApps =
@@ -54,6 +54,11 @@ export default function OrganizationPage() {
         </Typography>
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
+      {flagsError && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          Could not tell whether Services and Connectors are available: {flagsError}
+        </Alert>
+      )}
       <Stack spacing={4}>
         {(isAdmin || session.user.is_operator) && <OrganizationIssuesNotice key={membersChanged} />}
         <WorkspacesSection currentId={tenant.id} canAdd={session.can_add_workspace} />
