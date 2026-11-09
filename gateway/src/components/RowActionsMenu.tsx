@@ -28,8 +28,20 @@ export interface RowAction {
  *
  * Clicks and keys inside are kept from reaching the row: React carries events
  * up through the menu's portal, and a row click usually opens the row.
+ *
+ * `tabIndex` is the cell's, from the grid's `renderCell` params: the grid is
+ * one Tab stop that arrow keys move within, and a "…" that is a Tab stop of
+ * its own on every row would make tabbing past a table take a press a row.
  */
-export default function RowActionsMenu({ label, actions }: { label: string; actions: RowAction[] }) {
+export default function RowActionsMenu({
+  label,
+  actions,
+  tabIndex,
+}: {
+  label: string;
+  actions: RowAction[];
+  tabIndex: number;
+}) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const triggerId = useId();
   const close = () => setAnchor(null);
@@ -41,6 +53,7 @@ export default function RowActionsMenu({ label, actions }: { label: string; acti
       <IconButton
         id={triggerId}
         aria-label={label}
+        tabIndex={tabIndex}
         aria-haspopup="menu"
         aria-expanded={anchor ? "true" : undefined}
         onClick={(event) => {

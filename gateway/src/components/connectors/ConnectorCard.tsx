@@ -90,6 +90,12 @@ export default function ConnectorCard({
               // so this stretches to the card rather than to the button.
               position: "static",
               "&::after": { content: '""', position: "absolute", inset: 0, borderRadius: "10px" },
+              // The focus ring goes round the card it opens, not the text.
+              "&.Mui-focusVisible, &:focus-visible": { outline: "none" },
+              "&.Mui-focusVisible::after, &:focus-visible::after": {
+                outline: "2px solid var(--hoot-ring)",
+                outlineOffset: "2px",
+              },
             }}
           >
             {body}

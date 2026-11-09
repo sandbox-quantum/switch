@@ -64,7 +64,7 @@ export default function ConfirmDialog({
         <DialogContent>
           {description && <DialogContentText component="div">{description}</DialogContentText>}
           {error && (
-            <Alert severity="error" sx={{ mt: description ? 2 : 0 }}>
+            <Alert severity="error" sx={{ mt: description ? 2 : 0, overflowWrap: "anywhere" }}>
               {error}
             </Alert>
           )}
@@ -79,6 +79,15 @@ export default function ConfirmDialog({
           color={tone === "destructive" ? "error" : "primary"}
           onClick={confirm}
           loading={busy}
+          // Busy, the button keeps its colour: greyed out, a destructive
+          // confirm would read as refused while the action is still running.
+          sx={{
+            "&.MuiButton-loading": {
+              backgroundColor: tone === "destructive" ? "error.main" : "primary.main",
+              color: tone === "destructive" ? "error.contrastText" : "primary.contrastText",
+              opacity: 0.85,
+            },
+          }}
         >
           {confirmLabel}
         </Button>

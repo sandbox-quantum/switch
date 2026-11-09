@@ -79,7 +79,7 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
         )}
       </Box>
       {visible.length > 0 && (
-        <Box sx={{ mt: 2.5, display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", lg: "1fr 1fr" } }}>
+        <Box sx={{ mt: 2.5, display: "grid", gap: 1.5, gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "repeat(2, minmax(0, 1fr))" } }}>
           {visible.map((connector) => (
             <Fragment key={connector.slug}>{renderCard(connector)}</Fragment>
           ))}

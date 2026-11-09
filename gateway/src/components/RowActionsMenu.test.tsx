@@ -9,7 +9,7 @@ describe("RowActionsMenu", () => {
 
   it("runs an available action and closes", () => {
     const rename = vi.fn();
-    render(<RowActionsMenu label="Actions for Dana" actions={[{ label: "Rename", onClick: rename }]} />);
+    render(<RowActionsMenu tabIndex={0} label="Actions for Dana" actions={[{ label: "Rename", onClick: rename }]} />);
     open();
     fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
 
@@ -21,6 +21,7 @@ describe("RowActionsMenu", () => {
     const remove = vi.fn();
     render(
       <RowActionsMenu
+        tabIndex={0}
         label="Actions for Dana"
         actions={[
           {
@@ -44,6 +45,7 @@ describe("RowActionsMenu", () => {
   it("lets the arrow keys reach a disabled action, so its reason can be read", () => {
     render(
       <RowActionsMenu
+        tabIndex={0}
         label="Actions for Dana"
         actions={[
           { label: "Rename", onClick: () => {} },
@@ -65,6 +67,7 @@ describe("RowActionsMenu", () => {
     const clear: string | null = null;
     render(
       <RowActionsMenu
+        tabIndex={0}
         label="Actions for Dana"
         actions={[
           { label: "Transfer", onClick: transfer, disabledReason: clear },
@@ -82,16 +85,22 @@ describe("RowActionsMenu", () => {
   });
 
   it("has no button when every action is hidden", () => {
-    render(<RowActionsMenu label="Actions for Dana" actions={[]} />);
+    render(<RowActionsMenu tabIndex={0} label="Actions for Dana" actions={[]} />);
 
     expect(screen.queryByRole("button", { name: "Actions for Dana" })).toBeNull();
+  });
+
+  it("follows its cell's tab stop, so a table stays one Tab stop", () => {
+    render(<RowActionsMenu tabIndex={-1} label="Actions for Dana" actions={[{ label: "Rename", onClick: () => {} }]} />);
+
+    expect(screen.getByRole("button", { name: "Actions for Dana" }).getAttribute("tabindex")).toBe("-1");
   });
 
   it("keeps its clicks from reaching the row", () => {
     const rowClick = vi.fn();
     render(
       <div onClick={rowClick}>
-        <RowActionsMenu label="Actions for Dana" actions={[{ label: "Rename", onClick: () => {} }]} />
+        <RowActionsMenu tabIndex={0} label="Actions for Dana" actions={[{ label: "Rename", onClick: () => {} }]} />
       </div>,
     );
     open();
