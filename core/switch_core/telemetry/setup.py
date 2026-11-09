@@ -126,6 +126,21 @@ async def build_telemetry(
     )
 
 
+def telemetry_environment(config: SwitchConfig, version: str | None) -> str:
+    """The Amplitude project this deployment reports to (`flint_env`).
+
+    `TELEMETRY_ENVIRONMENT` when it is set. Otherwise `dev` for a build that
+    is not a release (a `.dev` version, as every build of main is), so a
+    development server nobody configured does not report as production, and
+    `prod` for a release, which is what every customer runs.
+    """
+    if "telemetry_environment" in config.model_fields_set:
+        return config.telemetry_environment
+    if version is not None and ".dev" in version:
+        return "dev"
+    return config.telemetry_environment
+
+
 def _service(
     config: SwitchConfig,
     sink: TelemetrySink,
@@ -143,7 +158,7 @@ def _service(
         enabled=config.telemetry_enabled if enabled is None else enabled,
         client_id=client_id,
         version=version,
-        telemetry_environment=config.telemetry_environment,
+        telemetry_environment=telemetry_environment(config, version),
         telemetry_internal=config.telemetry_internal,
         deployment_kind=config.deployment_kind,
         session_factory=session_factory,

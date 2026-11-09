@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from switch_core.config import SwitchConfig
+from switch_core.telemetry.setup import telemetry_environment
 
 _BASE_KWARGS = dict(
     db_host="db",
@@ -33,6 +34,28 @@ def test_a_deployment_that_says_nothing_is_production(
     monkeypatch.delenv("TELEMETRY_ENVIRONMENT", raising=False)
 
     assert SwitchConfig(**_BASE_KWARGS).telemetry_environment == "prod"  # type: ignore[arg-type]
+
+
+def test_a_development_build_that_says_nothing_reports_as_dev(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build of main is not a release, so it must not land in production."""
+    monkeypatch.delenv("TELEMETRY_ENVIRONMENT", raising=False)
+    config = SwitchConfig(**_BASE_KWARGS)  # type: ignore[arg-type]
+
+    assert telemetry_environment(config, "0.31.1.dev345") == "dev"
+    assert telemetry_environment(config, "0.31.0") == "prod"
+    assert telemetry_environment(config, None) == "prod"
+
+
+@pytest.mark.parametrize("environment", ["prod", "staging", "local"])
+def test_a_set_environment_wins_over_a_development_version(
+    environment: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TELEMETRY_ENVIRONMENT", environment)
+    config = SwitchConfig(**_BASE_KWARGS)  # type: ignore[arg-type]
+
+    assert telemetry_environment(config, "0.31.1.dev345") == environment
 
 
 @pytest.mark.parametrize("environment", ["prod", "staging", "dev", "local"])

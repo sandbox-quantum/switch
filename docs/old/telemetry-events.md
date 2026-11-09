@@ -86,8 +86,11 @@ under the one its `flint_env` resource attribute names: `prod`, `staging`,
 anything else is dropped and counted. So every event says where it belongs,
 even `prod`:
 
-- **The server** sends `TELEMETRY_ENVIRONMENT`, which defaults to `prod`
-  because every customer's deployment is production. Flint's own development
+- **The server** sends `TELEMETRY_ENVIRONMENT`. Unset, a released version
+  sends `prod`, because every customer's deployment is production, and a
+  version that is not a release (one containing `.dev`, as every build of main
+  does) sends `dev`, so a development server nobody configured never reports
+  as production. A value that is set always wins. Flint's own development
   deployment sets `dev`; `.env.example`, which `just init-env` copies for a
   developer's machine, sets `local`. Any other value stops the server at
   startup. It is set by the Helm chart's `switchCore.telemetry.environment`,
@@ -225,7 +228,7 @@ On every event:
 | `service.name` | `switch-core`, always |
 | `service.version` | the running version, as `/version` reports it; omitted when unknown |
 | `flint.client_id` | the per-deployment id |
-| `flint_env` | `prod` \| `staging` \| `dev` \| `local`, from `TELEMETRY_ENVIRONMENT` |
+| `flint_env` | `prod` \| `staging` \| `dev` \| `local`, from `TELEMETRY_ENVIRONMENT`; unset, `dev` for a `.dev` version and `prod` for a release |
 | `flint_internal` | `true` \| `false`, from `TELEMETRY_INTERNAL` |
 
 And one event property on every event, added by the service rather than
