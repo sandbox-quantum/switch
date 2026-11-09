@@ -27,6 +27,7 @@ import {
   usePackageReferences,
   useReferences,
 } from "../../data/hooks";
+import { LockedMark, OpensMark } from "../../components/RowAccess";
 import { privateRoomsLabel } from "./privateRooms";
 
 interface Props {
@@ -192,9 +193,15 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
                   label={r.type_display_name ?? `${r.type} (unknown type)`}
                   size="small"
                 />
-                <Typography variant="body2" sx={{ flexGrow: 1 }}>
+                <Typography
+                  variant="body2"
+                  color={r.can_read ? undefined : "text.secondary"}
+                >
                   {r.name || "(unnamed)"}
                 </Typography>
+                {!r.can_read && <LockedMark />}
+                <span style={{ flexGrow: 1 }} />
+                {r.can_read && <OpensMark />}
                 {canMutate && (
                   <IconButton
                     size="small"
@@ -259,9 +266,15 @@ export default function PackageMembersSection({ packageId, canMutate }: Props) {
                 }
                 data-testid={`package-document-${d.id}`}
               >
-                <Typography variant="body2" sx={{ flexGrow: 1 }}>
+                <Typography
+                  variant="body2"
+                  color={d.can_read ? undefined : "text.secondary"}
+                >
                   {d.name || "(unnamed)"}
                 </Typography>
+                {!d.can_read && <LockedMark />}
+                <span style={{ flexGrow: 1 }} />
+                {d.can_read && <OpensMark />}
                 {canMutate && (
                   <IconButton
                     size="small"

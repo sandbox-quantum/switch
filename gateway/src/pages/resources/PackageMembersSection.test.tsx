@@ -62,6 +62,11 @@ describe("PackageMembersSection", () => {
     fireEvent.click(screen.getByTestId("package-document-doc1"));
     expect(navigate).not.toHaveBeenCalled();
     expect(screen.getByText("Secret")).toBeTruthy();
+    // Each private row says so with a lock; the one that opens doesn't.
+    expect(screen.getAllByLabelText("Private")).toHaveLength(2);
+    expect(
+      screen.getByTestId("package-reference-ref1").querySelector('[aria-label="Private"]'),
+    ).toBeNull();
   });
 
   it("counts rooms that lost sight of a member, naming only readable ones", async () => {

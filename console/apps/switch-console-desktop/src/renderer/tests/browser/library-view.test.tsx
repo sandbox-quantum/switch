@@ -628,6 +628,8 @@ describe('a package', () => {
     expect(
       [...section.querySelectorAll('button')].some((b) => b.textContent?.includes('Secret repo'))
     ).toBe(false);
+    // It says why, with a lock.
+    expect(section.querySelector('[aria-label="Private"]')).not.toBeNull();
   });
 
   it('offers no adding or removing to someone who may not change it', async () => {

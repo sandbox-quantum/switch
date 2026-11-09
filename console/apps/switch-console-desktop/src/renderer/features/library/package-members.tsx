@@ -17,6 +17,7 @@ import { Input } from '@renderer/lib/ui/input';
 import type { LibraryItem, PackageMemberKind } from '@shared/core/switch-servers/library';
 import { KIND_TEXT, libraryItemOpens, removalText, type Viewer } from './library-model';
 import { invalidateLibrary, libraryItemsKey } from './library-queries';
+import { LOCKED_ROW_HINT, LockedMark, OpensMark } from './row-access';
 
 export const packageMembersKey = (
   workspaceId: string,
@@ -368,7 +369,7 @@ function List({ children }: { children: ReactNode }) {
 /**
  * One thing a package holds. It opens its page for whoever may open it; for
  * anyone else, an item its owner keeps private, it is named without a link,
- * since its page would refuse them.
+ * dimmed and locked, since its page would refuse them.
  */
 function MemberRow({
   member,
@@ -379,6 +380,7 @@ function MemberRow({
   kind: PackageMemberKind;
   onOpen: (() => void) | null;
 }) {
+  const locked = onOpen === null;
   const content = (
     <>
       {kind === 'references' ? (
@@ -386,8 +388,13 @@ function MemberRow({
       ) : (
         <FileText className="size-4 shrink-0 text-foreground-muted" />
       )}
-      <span className="flex min-w-0 flex-col">
-        <span className="truncate text-sm text-foreground">{member.name}</span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span
+          className={`flex items-center gap-1.5 text-sm ${locked ? 'text-foreground-muted' : 'text-foreground'}`}
+        >
+          <span className="truncate">{member.name}</span>
+          {locked && <LockedMark />}
+        </span>
         {(member.typeLabel || member.description) && (
           <span className="truncate text-xs text-foreground-muted">
             {[member.typeLabel, member.description].filter(Boolean).join(' · ')}
@@ -398,10 +405,7 @@ function MemberRow({
   );
   if (onOpen === null) {
     return (
-      <span
-        className="flex min-w-0 flex-1 items-center gap-3"
-        title="Private to its owner, so you can't open it."
-      >
+      <span className="flex min-w-0 flex-1 items-center gap-3" title={LOCKED_ROW_HINT}>
         {content}
       </span>
     );
@@ -413,6 +417,7 @@ function MemberRow({
       onClick={onOpen}
     >
       {content}
+      <OpensMark />
     </button>
   );
 }
