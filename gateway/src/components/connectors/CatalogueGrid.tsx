@@ -1,6 +1,6 @@
 import SearchOutlined from "@mui/icons-material/SearchOutlined";
 import { Box, InputAdornment, Stack, TextField, Typography } from "@mui/material";
-import { type ReactNode, useMemo } from "react";
+import { Fragment, type ReactNode, useMemo } from "react";
 import type { CatalogueConnector } from "./ConnectorCard";
 
 const SCREEN_READER_ONLY = {
@@ -80,7 +80,9 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
       </Box>
       {visible.length > 0 && (
         <Box sx={{ mt: 2.5, display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", lg: "1fr 1fr" } }}>
-          {visible.map(renderCard)}
+          {visible.map((connector) => (
+            <Fragment key={connector.slug}>{renderCard(connector)}</Fragment>
+          ))}
         </Box>
       )}
     </>

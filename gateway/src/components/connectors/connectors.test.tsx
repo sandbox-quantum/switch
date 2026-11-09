@@ -117,10 +117,20 @@ describe("CatalogueGrid", () => {
         query={query}
         onQueryChange={setQuery}
         emptyMessage="No connectors match that search."
-        renderCard={(connector) => <ConnectorCard key={connector.slug} connector={connector} />}
+        renderCard={(connector) => <ConnectorCard connector={connector} />}
       />
     );
   }
+
+  // First in this block: React warns about a missing key once per component,
+  // so after any other render of the grid it would stay quiet.
+  it("keys each card itself, so a page's renderCard needs no key", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<Harness />);
+
+    expect(errors.mock.calls.filter(([message]) => String(message).includes('unique "key"'))).toEqual([]);
+    errors.mockRestore();
+  });
 
   it("searches names, categories and descriptions, and says when nothing matches", () => {
     render(<Harness />);
