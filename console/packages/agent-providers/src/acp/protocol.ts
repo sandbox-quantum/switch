@@ -77,6 +77,7 @@ export interface AcpToolCall {
   status?: string;
   content?: AcpToolCallContent[];
   rawInput?: Record<string, unknown>;
+  locations?: Array<{ path: string; line?: number | null }> | null;
   rawOutput?: Record<string, unknown>;
   _meta?: Record<string, unknown>;
 }

@@ -201,6 +201,358 @@ it('answers Kiro permission requests with the options it offered', async () => {
   ]);
 });
 
+it('shows cached file targets on a partial Kiro approval without exposing other input', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'write',
+      kind: 'edit',
+      title: 'Write File',
+      locations: [{ path: '/work/first.txt' }],
+      rawInput: { file_path: '/work/first.txt', content: 'private file contents' },
+      content: [{ type: 'diff', path: '/work/first.txt', newText: 'private diff' }],
+    },
+  });
+  // A status-only update and a partial permission request must retain prior metadata.
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: { sessionUpdate: 'tool_call_update', toolCallId: 'write', status: 'pending' },
+  });
+  server.send({
+    id: 73,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'write', title: 'Write File' },
+      options: [{ optionId: 'no', name: 'Deny', kind: 'reject_once' }],
+    },
+  });
+  await flush();
+  const opened = events.find((e) => e.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  expect(opened.detail).toContain('/work/first.txt');
+  expect(opened.detail).toContain('Other input and file contents are not displayed');
+  expect(opened.detail).not.toContain('private file contents');
+  expect(opened.detail).not.toContain('private diff');
+  expect(opened.options.map((option) => option.decision)).toEqual(['decline', 'cancel']);
+  await adapter.respondToRequest('s', opened.requestId, 'decline');
+  await flush();
+  expect(server.received.find((m) => m.id === 73)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'no' },
+  });
+});
+
+it('shows the target for the observed Kiro 3.1.0 partial-update approval shape', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  const target = '/work/approval-probe.txt';
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'write',
+      kind: 'edit',
+      title: 'Write File',
+      locations: [{ path: target }],
+      rawInput: { path: target, content: 'do not expose' },
+    },
+  });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'write',
+      locations: [{ path: target }],
+      rawInput: { path: target, content: 'do not expose' },
+    },
+  });
+  server.send({
+    id: 83,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'write', title: 'Write File' },
+      options: [{ optionId: 'no', name: 'Deny', kind: 'reject_once' }],
+    },
+  });
+  await flush();
+  const opened = events.find((event) => event.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  expect(opened.detail).toContain(target);
+  expect(opened.detail).not.toContain('do not expose');
+  await adapter.respondToRequest('s', opened.requestId, 'cancel');
+  await flush();
+  expect(server.received.find((message) => message.id === 83)?.result).toEqual({
+    outcome: { outcome: 'cancelled' },
+  });
+});
+
+it('merges request details, flags distinct targets, and isolates tool calls', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'write',
+      kind: 'edit',
+      title: 'Write File',
+      locations: [{ path: '/work/old.txt' }],
+      rawInput: { path: '/work/input.txt', token: 'private-token' },
+    },
+  });
+  const options = [{ optionId: 'no', name: 'Deny', kind: 'reject_once' }];
+  server.send({
+    id: 74,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: {
+        toolCallId: 'write',
+        title: 'Write File',
+        locations: [{ path: '/work/new.txt' }],
+        content: [{ type: 'diff', path: '/work/diff.txt', newText: 'private-diff' }],
+      },
+      options,
+    },
+  });
+  server.send({
+    id: 75,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'other', title: 'Write File' },
+      options,
+    },
+  });
+  await flush();
+  const opened = events.filter((e) => e.type === 'request.opened');
+  if (opened[0]?.type !== 'request.opened' || opened[1]?.type !== 'request.opened')
+    throw new Error('No approval');
+  expect(opened[0].detail).toContain('/work/new.txt');
+  expect(opened[0].detail).toContain('/work/input.txt');
+  expect(opened[0].detail).toContain('/work/diff.txt');
+  expect(opened[0].detail).toContain('Multiple paths reported');
+  expect(opened[0].detail).not.toContain('/work/old.txt');
+  expect(opened[0].detail).not.toContain('private-token');
+  expect(opened[0].detail).not.toContain('private-diff');
+  expect(opened[1].detail).toContain('No paths shown');
+  expect(opened[1].detail).not.toContain('/work/');
+  for (const event of opened) {
+    if (event.type === 'request.opened')
+      await adapter.respondToRequest('s', event.requestId, 'decline');
+  }
+});
+
+it('shows a request-provided input path but never forwards arbitrary input', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send({
+    id: 77,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: {
+        toolCallId: 'write',
+        kind: 'edit',
+        title: 'Write File',
+        rawInput: { filePath: '/work/request.txt', contents: 'private-data' },
+      },
+      options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+    },
+  });
+  await flush();
+  const opened = events.find((e) => e.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  expect(opened.detail).toContain('/work/request.txt');
+  expect(opened.detail).toContain('Other input and file contents are not displayed');
+  expect(opened.detail).not.toContain('private-data');
+  expect(opened.options.map((option) => option.decision)).toEqual(['accept', 'cancel']);
+  await adapter.respondToRequest('s', opened.requestId, 'cancel');
+});
+
+it('does not expose path-shaped input from non-file or MCP approvals', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  const options = [{ optionId: 'no', name: 'Deny', kind: 'reject_once' }];
+  for (const [id, toolCall] of [
+    [
+      78,
+      {
+        toolCallId: 'shell',
+        kind: 'execute',
+        title: 'Write File',
+        rawInput: { path: '/private-shell-value' },
+      },
+    ],
+    [
+      79,
+      {
+        toolCallId: 'mcp',
+        kind: 'edit',
+        title: 'Write File',
+        rawInput: { path: '/private-mcp-value' },
+        _meta: { kiro: { mcpTool: { version: 1, identity: { serverName: 'external' } } } },
+      },
+    ],
+    [80, { toolCallId: 'mcp', kind: 'edit' }],
+    [
+      81,
+      {
+        toolCallId: 'mcp_unknown',
+        kind: 'edit',
+        title: 'Write File',
+        rawInput: { path: '/private-unidentified-mcp-value' },
+      },
+    ],
+  ] as const)
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: { sessionId: 'native', toolCall, options },
+    });
+  await flush();
+  const opened = events.filter((e) => e.type === 'request.opened');
+  expect(opened).toHaveLength(4);
+  for (const event of opened) {
+    if (event.type !== 'request.opened') throw new Error('No approval');
+    expect(event.detail).toBeUndefined();
+    await adapter.respondToRequest('s', event.requestId, 'decline');
+  }
+});
+
+it('does not expose earlier non-file input when the same tool call changes kind', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'conflicting',
+      kind: 'execute',
+      rawInput: { path: '/private-command-argument' },
+    },
+  });
+  server.send({
+    id: 82,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'conflicting', kind: 'edit', title: 'Write File' },
+      options: [{ optionId: 'no', name: 'Deny', kind: 'reject_once' }],
+    },
+  });
+  await flush();
+  const opened = events.find((e) => e.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  expect(opened.detail).toBeUndefined();
+  await adapter.respondToRequest('s', opened.requestId, 'decline');
+});
+
+it('withholds file paths when Kiro reports a subagent or an unknown vendor kind', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'subtask',
+      kind: 'other',
+      _meta: { kiro: { kind: 'agent-subtask' } },
+    },
+  });
+  for (const [id, toolCallId, meta] of [
+    [86, 'subtask', undefined],
+    [87, 'unknown', { kiro: { kind: 'unknown-kind' } }],
+  ] as const)
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: {
+          toolCallId,
+          kind: 'edit',
+          title: 'Write File',
+          rawInput: { path: '/private-vendor-value' },
+        },
+        ...(meta ? { _meta: meta } : {}),
+        options: [{ optionId: 'no', name: 'Deny', kind: 'reject_once' }],
+      },
+    });
+  await flush();
+  const opened = events.filter((event) => event.type === 'request.opened');
+  expect(opened).toHaveLength(2);
+  for (const event of opened) {
+    if (event.type !== 'request.opened') throw new Error('No approval');
+    expect(event.detail).toBeUndefined();
+    await adapter.respondToRequest('s', event.requestId, 'decline');
+  }
+});
+
+it('withholds path details for request-level and malformed MCP identities', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  for (const [id, meta] of [
+    [84, { kiro: { mcpTool: { version: 1, identity: { serverName: 'external' } } } }],
+    [85, { kiro: { mcpTool: { version: 99, identity: { serverName: 'external' } } } }],
+  ] as const)
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: {
+          toolCallId: `call-${id}`,
+          kind: 'edit',
+          title: 'Write File',
+          rawInput: { path: '/private-connector-value' },
+        },
+        _meta: meta,
+        options: [{ optionId: 'no', name: 'Deny', kind: 'reject_once' }],
+      },
+    });
+  await flush();
+  const opened = events.filter((event) => event.type === 'request.opened');
+  expect(opened).toHaveLength(2);
+  for (const event of opened) {
+    if (event.type !== 'request.opened') throw new Error('No approval');
+    expect(event.detail).toBeUndefined();
+    await adapter.respondToRequest('s', event.requestId, 'decline');
+  }
+});
+
+it('warns when approval paths are malformed or too large instead of displaying partial paths', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send({
+    id: 76,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: {
+        toolCallId: 'bad',
+        kind: 'edit',
+        title: 'Write File',
+        locations: [{ path: 'x'.repeat(4097) }, {}, { path: 'https://example.test/?token=secret' }],
+        rawInput: { filePath: 42, password: 'private-password' },
+      },
+      options: [{ optionId: 'no', name: 'Deny', kind: 'reject_once' }],
+    },
+  });
+  await flush();
+  const opened = events.find((e) => e.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  expect(opened.detail).toContain('Some paths omitted from this approval');
+  expect(opened.detail).not.toContain('private-password');
+  expect(opened.detail).not.toContain('token=secret');
+  expect(opened.detail).not.toContain('x'.repeat(100));
+  await adapter.respondToRequest('s', opened.requestId, 'decline');
+});
+
 it('does not offer a persistent Kiro permission when it is the only allow option', async () => {
   const { adapter, events, server } = await setup();
   await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });

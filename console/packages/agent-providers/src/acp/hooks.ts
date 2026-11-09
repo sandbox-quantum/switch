@@ -169,6 +169,10 @@ export interface AcpProviderHooks {
   permissionMcpServerOf?(request: AcpPermissionRequest): string | null | undefined;
   /** Exclude vendor choices whose effects exceed the session UI's promise. */
   allowPermissionOption?(option: AcpPermissionOption): boolean;
+  /** Show bounded file-path metadata on approvals without forwarding arbitrary input. */
+  showApprovalFilePaths?: boolean;
+  /** Whether vendor metadata rules out treating a call as a file approval. */
+  nonFileApprovalMetadata?(meta: unknown): boolean;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**

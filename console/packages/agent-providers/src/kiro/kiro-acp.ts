@@ -62,6 +62,15 @@ function kiroMetadataMcpServer(meta: unknown): string | null | undefined {
   return kiroMcpServer({ _meta: meta as Record<string, unknown> }) ?? null;
 }
 
+/** Unknown explicit Kiro kinds are not evidence of a file operation. */
+function kiroNonFileApprovalMetadata(meta: unknown): boolean {
+  if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) return false;
+  if (!Object.hasOwn(meta, 'kiro')) return false;
+  const kiro = (meta as Record<string, unknown>).kiro;
+  if (typeof kiro !== 'object' || kiro === null || Array.isArray(kiro)) return true;
+  return Object.hasOwn(kiro, 'kind');
+}
+
 /**
  * Kiro CLI over ACP, started on its V3 engine. Kiro signs itself in from the
  * sign-in `kiro-cli login` saved, or from `KIRO_API_KEY`, when it starts, so a
@@ -106,6 +115,8 @@ export const kiroAcp: AcpProviderHooks = {
   // Kiro's allow_always persists a policy beyond this session, so it cannot
   // be represented by Switch's session-only approval decision.
   allowPermissionOption: (option) => option.kind !== 'allow_always',
+  showApprovalFilePaths: true,
+  nonFileApprovalMetadata: kiroNonFileApprovalMetadata,
   // The top-level task is a subagent; child tool calls carry agentSubtaskId
   // but are still ordinary tool calls of their own.
   itemType: (toolCall) => {

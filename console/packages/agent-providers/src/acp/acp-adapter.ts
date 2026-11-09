@@ -32,6 +32,12 @@ import {
   StdioJsonRpcClient,
   type ProviderLogger,
 } from '../transport/stdio-json-rpc';
+import {
+  formatApprovalPaths,
+  isFileApproval,
+  mergeApprovalPaths,
+  type ApprovalPaths,
+} from './approval-details';
 import type {
   AcpAdapterOptions,
   AcpProviderHooks,
@@ -131,6 +137,7 @@ interface State {
   autoApprovedMcpNames: Set<string>;
   /** Null retains conflicting or explicitly invalid identity for the turn. */
   toolServers: Map<string, string | null>;
+  approvalPaths: Map<string, ApprovalPaths>;
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
@@ -214,6 +221,7 @@ export class AcpAdapter implements ProviderAdapter {
         Object.keys(input.mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
       ),
       toolServers: new Map(),
+      approvalPaths: new Map(),
       prompt: {},
       configOptions: [],
       models: [],
@@ -333,6 +341,7 @@ export class AcpAdapter implements ProviderAdapter {
     state.messageId = randomUUID();
     state.items.clear();
     state.toolServers.clear();
+    state.approvalPaths.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
     this.emit(state, { type: 'session.state.changed', status: 'running' });
     void this.run(state, input).then(
@@ -532,10 +541,25 @@ export class AcpAdapter implements ProviderAdapter {
     const vendor = this.hooks.permission?.(context, request);
     if (vendor) return await vendor;
     const { toolCall } = request;
+    const approvalPaths = this.hooks.showApprovalFilePaths
+      ? mergeApprovalPaths(state.approvalPaths.get(toolCall.toolCallId) ?? {}, toolCall)
+      : undefined;
+    if (approvalPaths) state.approvalPaths.set(toolCall.toolCallId, approvalPaths);
     const once = request.options.find((option) => option.kind === 'allow_once');
     const updateServer = state.toolServers.get(toolCall.toolCallId);
     const toolCallServer = this.hooks.mcpServerOf?.(toolCall);
     const requestServer = this.hooks.permissionMcpServerOf?.(request);
+    if (
+      approvalPaths &&
+      (updateServer !== undefined || toolCallServer !== undefined || requestServer !== undefined)
+    )
+      approvalPaths.hasMcpIdentity = true;
+    if (
+      approvalPaths &&
+      (this.hooks.nonFileApprovalMetadata?.(toolCall._meta) ||
+        this.hooks.nonFileApprovalMetadata?.(request._meta))
+    )
+      approvalPaths.hasNonFileIdentity = true;
     const serverNames = [updateServer, toolCallServer, requestServer].filter(
       (name): name is string => typeof name === 'string'
     );
@@ -592,6 +616,16 @@ export class AcpAdapter implements ProviderAdapter {
             ? 'file_change_approval'
             : 'tool_approval',
       title: toolCall.title ?? `${this.hooks.label} needs permission`,
+      ...(approvalPaths &&
+      isFileApproval(approvalPaths) &&
+      !approvalPaths.hasMcpIdentity &&
+      !approvalPaths.hasNonFileIdentity &&
+      !toolCall.toolCallId.startsWith('mcp_') &&
+      updateServer === undefined &&
+      toolCallServer === undefined &&
+      requestServer === undefined
+        ? { detail: formatApprovalPaths(approvalPaths) }
+        : {}),
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
@@ -638,12 +672,23 @@ export class AcpAdapter implements ProviderAdapter {
     if (
       (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') &&
       update.toolCallId
-    )
+    ) {
+      if (this.hooks.showApprovalFilePaths)
+        state.approvalPaths.set(
+          update.toolCallId,
+          mergeApprovalPaths(state.approvalPaths.get(update.toolCallId) ?? {}, update)
+        );
       this.toolUpdate(state, state.turn, {
         ...update,
         toolCallId: update.toolCallId,
         content: Array.isArray(update.content) ? update.content : [],
       });
+      const approvalPaths = state.approvalPaths.get(update.toolCallId);
+      if (approvalPaths && state.toolServers.has(update.toolCallId))
+        approvalPaths.hasMcpIdentity = true;
+      if (approvalPaths && this.hooks.nonFileApprovalMetadata?.(update._meta))
+        approvalPaths.hasNonFileIdentity = true;
+    }
   }
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
