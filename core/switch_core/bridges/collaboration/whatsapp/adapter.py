@@ -438,30 +438,7 @@ class WhatsAppAdapter(PlatformAdapter):
             return
         attachments: list[Attachment] = []
         failures: list[AttachmentFailure] = []
-        if kind == "text":
-            text = str((message.get("text") or {}).get("body") or "").strip()
-        elif kind in _INBOUND_MEDIA:
-            media = message.get(str(kind)) or {}
-            text = str(media.get("caption") or "").strip()
-            await self._fetch_media(str(kind), media, attachments, failures)
-        elif kind == "button":
-            # A quick-reply button on a template message.
-            text = str((message.get("button") or {}).get("text") or "").strip()
-        elif kind == "location":
-            place = message.get("location") or {}
-            label = " ".join(str(place[k]) for k in ("name", "address") if place.get(k))
-            text = (
-                f"_shared a location: {label + ' ' if label else ''}"
-                f"({place.get('latitude')}, {place.get('longitude')})_"
-            )
-        elif kind == "contacts":
-            people = [
-                str((c.get("name") or {}).get("formatted_name") or "a contact")
-                for c in message.get("contacts") or []
-            ]
-            text = f"_shared {', '.join(people) or 'a contact'}_"
-        else:
-            text = f"_sent a {kind} message, which Switch does not relay_"
+        text = await self._content(message, attachments, failures)
         if not text and not attachments and not failures:
             return
         if text.startswith("!") and not attachments and self._on_command is not None:
@@ -494,6 +471,39 @@ class WhatsAppAdapter(PlatformAdapter):
                     attachment_failures=failures,
                 )
             )
+
+    async def _content(
+        self,
+        message: dict[str, Any],
+        attachments: list[Attachment],
+        failures: list[AttachmentFailure],
+    ) -> str:
+        """What a message says, its files fetched into `attachments` (or
+        `failures`, with the reason)."""
+        kind = message.get("type")
+        if kind == "text":
+            return str((message.get("text") or {}).get("body") or "").strip()
+        if kind in _INBOUND_MEDIA:
+            media = message.get(str(kind)) or {}
+            await self._fetch_media(str(kind), media, attachments, failures)
+            return str(media.get("caption") or "").strip()
+        if kind == "button":
+            # A quick-reply button on a template message.
+            return str((message.get("button") or {}).get("text") or "").strip()
+        if kind == "location":
+            place = message.get("location") or {}
+            label = " ".join(str(place[k]) for k in ("name", "address") if place.get(k))
+            return (
+                f"_shared a location: {label + ' ' if label else ''}"
+                f"({place.get('latitude')}, {place.get('longitude')})_"
+            )
+        if kind == "contacts":
+            people = [
+                str((c.get("name") or {}).get("formatted_name") or "a contact")
+                for c in message.get("contacts") or []
+            ]
+            return f"_shared {', '.join(people) or 'a contact'}_"
+        return f"_sent a {kind} message, which Switch does not relay_"
 
     # ── Attachments ──────────────────────────────────────────────────────────
 
@@ -647,6 +657,12 @@ class WhatsAppAdapter(PlatformAdapter):
         }
 
     async def _send(self, body: dict[str, Any]) -> str:
+        chat = body.get("to")
+        if isinstance(chat, str) and not chat.isdigit():
+            # A person known only by a username: Meta takes their
+            # business-scoped id as `recipient`, with no `to`.
+            body = {k: v for k, v in body.items() if k != "to"}
+            body["recipient"] = chat
         response = await self._http.post(
             f"{GRAPH}/{self.config.phone_number_id}/messages",
             json={"messaging_product": "whatsapp", **body},

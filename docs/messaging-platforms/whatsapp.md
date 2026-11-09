@@ -60,7 +60,7 @@ Then, in your Meta app, **WhatsApp → Configuration → Webhook**:
 | Working | While an agent works on a message, Switch reacts to it with 👀, marks it read and shows "typing…", and takes the reaction off when the turn ends. Every agent shares the one reaction, as they share the number. A turn's step-by-step status is not sent, since WhatsApp cannot redraw a sent message; a turn that fails is said once |
 | Long replies | Split under WhatsApp's 4,096 characters at a line or a word; a code block cut in two is closed and opened again |
 | Formatting | Markdown is sent in WhatsApp's own marks: `*bold*`, `_italic_`, `~strike~`; a link as its text and its address. A message from WhatsApp reaches the room in Markdown, its code left as it is |
-| Senders | A person is their phone number, or, for someone who hides it behind a WhatsApp username, the business-scoped id Meta gives instead. Group chats are not relayed, and the skip is logged |
+| Senders | A person is their phone number, or, for someone who hides it behind a WhatsApp username, the business-scoped id Meta gives instead, which replies are addressed to (`recipient`). Group chats are not relayed, and the skip is logged |
 | One number per app | A Meta app has one webhook address, so give each number its own Meta app. An event for a number other than the connection's is dropped and logged |
 | Edits and deletes | WhatsApp gives a business neither; a sent message stays as it is |
 | Media from WhatsApp | Images, videos, voice notes, stickers and documents reach the room as files, with their caption as the message. One over the server's attachment limit, or one that will not download, is named in the room with the reason. A shared location or contact arrives as a line saying what it was |

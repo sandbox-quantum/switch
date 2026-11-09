@@ -530,6 +530,15 @@ async def test_a_long_reply_is_split_and_code_blocks_closed(
     assert all(b.count("```") % 2 == 0 for b in bodies)
 
 
+async def test_a_person_known_by_username_is_written_to_as_recipient(
+    adapter: WhatsAppAdapter, graph: FakeGraph
+) -> None:
+    await adapter.send_message("US.13491208655302741918", "coder", "hi")
+    [sent] = graph.sent
+    assert "to" not in sent
+    assert sent["recipient"] == "US.13491208655302741918"
+
+
 async def test_outside_the_24_hour_window_the_refusal_says_so(
     adapter: WhatsAppAdapter, graph: FakeGraph
 ) -> None:
