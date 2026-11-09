@@ -149,6 +149,41 @@ describe("AppRoutes", () => {
       expect(screen.queryByRole("heading", { name: HOSTED_HEADING })).toBeNull();
     });
 
+    describe("/files, which needs hosted_v2 and hosted_cloud_files", () => {
+      const both = (v2: boolean, files: boolean) =>
+        [200, { flags: [{ key: "hosted_v2", enabled: v2 }, { key: "hosted_cloud_files", enabled: files }] }] as [
+          number,
+          unknown,
+        ];
+      const goesHome = async () => {
+        renderAt("/files");
+        expect(await screen.findByRole("heading", { name: "Rooms" })).toBeTruthy();
+        expect(screen.queryByRole("heading", { name: "Your cloud files" })).toBeNull();
+        expect(screen.queryByText(/once you have an agent in your cloud/)).toBeNull();
+      };
+
+      it("goes home with v2 off", async () => {
+        mockFetch({ "/auth/session": [200, operator], "/feature-flags": both(false, true) });
+        await goesHome();
+      });
+
+      it("goes home with Your cloud files off, even with v2 on", async () => {
+        mockFetch({ "/auth/session": [200, operator], "/feature-flags": both(true, false) });
+        await goesHome();
+      });
+
+      it("goes home when Core's flags can't be read", async () => {
+        mockFetch({ "/auth/session": [200, operator] });
+        await goesHome();
+      });
+
+      it("opens Your cloud files with both on", async () => {
+        mockFetch({ "/auth/session": [200, operator], "/feature-flags": both(true, true) });
+        renderAt("/files");
+        expect(await screen.findByRole("heading", { name: "Your cloud files" })).toBeTruthy();
+      });
+    });
+
     it("opens the Hosted pages when Core says v2 is on", async () => {
       mockFetch({ "/auth/session": [200, operator], "/feature-flags": flags(true) });
       renderAt("/hosted/overview");

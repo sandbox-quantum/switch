@@ -1,7 +1,7 @@
 import { Alert, Box, Button, CircularProgress } from "@mui/material";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
-import { useHostedV2 } from "./data/hooks";
+import { useFeatureFlags, useHostedV2 } from "./data/hooks";
 import { appView, readPendingInvite } from "./data/sessionState";
 import PageShell from "./layout/PageShell";
 import AgentDetailPage from "./pages/agents/AgentDetailPage";
@@ -142,7 +142,7 @@ export function AppRoutes() {
         />
         <Route path="agents" element={<AgentsPage />} />
         <Route path="agents/:agentId" element={<AgentDetailPage />} />
-        <Route path="files" element={<CloudFilesPage />} />
+        <Route path="files" element={<FilesRoute />} />
         <Route path="machines" element={<MachinesPage />} />
         <Route path="collaborations" element={<CollaborationsPage />} />
         <Route path="registration-keys" element={<RegistrationKeysPage />} />
@@ -166,6 +166,16 @@ function HostedRoute() {
   const hostedV2 = useHostedV2();
   if (hostedV2 === null) return <CircularProgress />;
   return hostedV2 ? <HostedPage /> : <Navigate to="/" replace />;
+}
+
+/** Your cloud files is hosted agents v2's, behind its own flag too: with
+ * `hosted_v2` or `hosted_cloud_files` off, or Core's flags unreadable, `/files`
+ * goes home, as `/hosted/*` does, rather than showing any of its page. */
+function FilesRoute() {
+  const flags = useFeatureFlags();
+  if (flags.loading && flags.data === null) return <CircularProgress />;
+  const on = flags.data?.hosted_v2 === true && flags.data?.hosted_cloud_files === true;
+  return on ? <CloudFilesPage /> : <Navigate to="/" replace />;
 }
 
 export default function App() {
