@@ -155,7 +155,6 @@ class AgentTransferFacts:
     # It is a sub-agent, or has sub-agents.
     in_family: bool
     has_oauth_client: bool
-    run_by_server_connector: bool
 
 
 async def agent_transfer_facts(
@@ -173,7 +172,6 @@ async def agent_transfer_facts(
                 Agent.can_manage_agents,
                 Agent.parent_agent_id,
                 Agent.oauth_client_id,
-                Agent.metadata_,
             ).where(Agent.tenant_id == tenant_id, Agent.id.in_(ids))
         )
     ).all()
@@ -206,10 +204,8 @@ async def agent_transfer_facts(
             may_manage_agents=may_manage_agents,
             in_family=parent_agent_id is not None or agent_id in parents,
             has_oauth_client=oauth_client_id is not None,
-            run_by_server_connector=isinstance(metadata, dict)
-            and bool(metadata.get("server_connector_id")),
         )
-        for agent_id, may_manage_agents, parent_agent_id, oauth_client_id, metadata in rows
+        for agent_id, may_manage_agents, parent_agent_id, oauth_client_id in rows
     }
 
 
@@ -243,12 +239,6 @@ def agent_transfer_refusal(facts: AgentTransferFacts, *, to_owner: bool) -> str 
     if facts.has_oauth_client:
         return (
             "This agent signs in with an OAuth client of its own and can't be "
-            "transferred."
-        )
-    if facts.run_by_server_connector:
-        return (
-            "This agent is run by Switch itself, which registers it again "
-            "under its own owner whenever Switch starts, so it can't be "
             "transferred."
         )
     return None

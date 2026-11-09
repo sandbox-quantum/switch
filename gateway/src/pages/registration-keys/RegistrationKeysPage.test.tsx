@@ -78,7 +78,9 @@ describe("RegistrationKeysPage", () => {
     const gone = within(screen.getByTestId("row-gone"));
     expect(gone.getAllByRole("button")).toHaveLength(1);
     expect(gone.getByRole("button", { name: "Delete server-connector:gone (retired)" })).toBeTruthy();
-    expect(within(screen.getByTestId("row-held")).queryAllByRole("button")).toHaveLength(0);
+    const held = within(screen.getByTestId("row-held"));
+    expect(held.queryAllByRole("button")).toHaveLength(0);
+    expect(held.getByText("Delete its agent first")).toBeTruthy();
 
     fireEvent.click(gone.getByRole("button"));
     expect(screen.getByText(/It no longer authenticates/)).toBeTruthy();

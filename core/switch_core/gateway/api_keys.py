@@ -7,18 +7,19 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import Principal, can_delete_api_key, owns
 from switch_core.bridges.agent.registration_bootstrap import RETIRED_KEY_TYPE
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import HASH_ONLY_KEY_TYPES, Agent, ApiKey, User
+from switch_core.db.models import HASH_ONLY_KEY_TYPES, ApiKey, User
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
     current_telemetry,
+    get_agent_store,
     get_api_key_store,
     get_config,
     get_protocol,
@@ -42,30 +43,21 @@ def _key_type(value: str) -> str:
     The label an operator gave the key never goes anywhere near this — only
     what the key is *for*, which is a fixed set the code chooses.
     """
-    return value if value in ("agent", "registration", "bootstrap") else "other"
+    return (
+        value
+        if value in ("agent", "registration", "bootstrap", RETIRED_KEY_TYPE)
+        else "other"
+    )
 
 
 router = APIRouter()
-
-
-async def _held_by_an_agent(session: AsyncSession, keys: list[ApiKey]) -> set[str]:
-    """Which of `keys` an agent's row still points at: its own key, which goes
-    with it (`authz.can_delete_api_key`). A retired one too: its agent no
-    longer signs in with it, but the row's reference would refuse the delete
-    until the agent is gone."""
-    if not keys:
-        return set()
-    return set(
-        await session.scalars(
-            select(Agent.api_key_id).where(Agent.api_key_id.in_([k.id for k in keys]))
-        )
-    )
 
 
 @router.get("")
 async def list_api_keys(
     session: Annotated[AsyncSession, Depends(get_session)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> list[ApiKeyDetail]:
     # Controller credentials and enrollment codes are managed through agent
@@ -75,7 +67,7 @@ async def list_api_keys(
         for k in await api_key_store.get_by_user(session, user.id)
         if k.type not in HASH_ONLY_KEY_TYPES
     ]
-    held = await _held_by_an_agent(session, keys)
+    held = await agent_store.keys_held(session, [k.id for k in keys])
     # The caller's own keys, whatever their role: administering the workspace
     # gives no reach over anyone's keys here.
     principal = Principal(user.id, False)
@@ -90,7 +82,7 @@ async def list_api_keys(
             # A retired key authenticates as nothing, so there is nothing to copy.
             can_reveal=owns(principal, k.user_id) and k.type != RETIRED_KEY_TYPE,
             can_delete=can_delete_api_key(
-                principal, k.user_id, an_agent_signs_in_with_it=k.id in held
+                principal, k.user_id, an_agent_holds_it=k.id in held
             ),
         )
         for k in keys
@@ -189,6 +181,7 @@ async def delete_api_key(
     key_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> dict[str, bool]:
     key = await api_key_store.get(session, key_id)
@@ -200,7 +193,7 @@ async def delete_api_key(
     if not can_delete_api_key(
         principal,
         key.user_id,
-        an_agent_signs_in_with_it=key.id in await _held_by_an_agent(session, [key]),
+        an_agent_holds_it=key.id in await agent_store.keys_held(session, [key.id]),
     ):
         # The agent row refers to it, so deleting it would fail anyway.
         raise HTTPException(

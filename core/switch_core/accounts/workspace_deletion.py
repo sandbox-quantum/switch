@@ -72,7 +72,6 @@ WORKSPACE_TABLES: dict[str, Handling] = {
     "collaboration_bridges": "refused",
     "machine_workspaces": "refused",
     "agent_controllers": "refused",
-    "server_connectors": "refused",
     "skills": "refused",
     "service_connections": "refused",
     # Refused for anyone but the person deleting it; their own row goes.
@@ -168,7 +167,6 @@ REFUSED: dict[str, tuple[str, str]] = {
     "collaboration_bridges": ("messaging app", "messaging apps"),
     "machine_workspaces": ("cloud device", "cloud devices"),
     "agent_controllers": ("device", "devices"),
-    "server_connectors": ("agent run by Switch", "agents run by Switch"),
     "skills": ("skill", "skills"),
     "service_connections": ("connector", "connectors"),
 }

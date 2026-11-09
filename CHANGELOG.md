@@ -1966,7 +1966,9 @@ version of their own to them without also giving them a release of their own.
   under **Retired keys** on the gateway's API keys page, where it can be
   deleted once no agent holds it. The agents stay: the upgrade log names each
   as `workspace/agent`, and the gateway shows them with the type
-  `server-side:opencode`. Delete them from the gateway. Dropping the table
+  `server-side:opencode`. Delete them from the gateway; they can also be
+  transferred to another owner now, and no longer stop a workspace being
+  deleted. Dropping the table
   briefly locks `api_keys` and `tenants`, for at most
   `DB_MIGRATION_LOCK_TIMEOUT`, so upgrade at a quiet time.
 

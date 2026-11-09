@@ -3,8 +3,7 @@
 `keep_agent_keys` keeps whatever key an agent's row still points at: the
 agent's own, or one retired while the agent stays (a server-side connector's
 agent, after the connectors were dropped). Deleting either would fail on the
-agent's reference, so only `agent`-typed keys being kept made removing such a
-member a server error.
+agent's reference.
 """
 
 from __future__ import annotations

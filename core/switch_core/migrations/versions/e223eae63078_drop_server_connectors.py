@@ -3,7 +3,7 @@
 A server-side connector had Switch reach out to an agent host and run its
 agents from inside switch-core. OpenCode was the only type, and the release
 before this one removed it together with the framework it plugged into. This
-drops what only it used, now that no release still serving reads it:
+drops what only it used:
 
 - `server_connectors`, and the row-level security policy that goes with it;
 - `tenant_of_server_connector`, one of the `SECURITY DEFINER` lookups that are
@@ -34,6 +34,13 @@ effect when the upgrade commits: Alembic runs every pending revision in one
 transaction, so a later revision that fails rolls this one back too. Each
 retired key is named with its workspace and id, so two keys with the same
 label can be told apart on the API Keys page.
+
+The release before this one runs no connector, but still knows the table:
+deleting a workspace counts its rows, and booting re-encrypts them and grants
+the lookup. While it serves beside this one during a rolling deploy, a
+workspace or account deletion it handles fails on the missing table until the
+roll completes, and a pod of it that restarts is refused, as on any revision
+that is not `expand_only`.
 
 Dropping the table takes an ACCESS EXCLUSIVE lock on `api_keys` and `tenants`,
 which its foreign keys point at, until the upgrade commits; Postgres takes the

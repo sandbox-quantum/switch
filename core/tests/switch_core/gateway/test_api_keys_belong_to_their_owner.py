@@ -131,10 +131,9 @@ async def test_a_retired_key_offers_nothing_to_copy_and_goes_after_its_agent(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A retired key authenticates as nothing, so it is not revealed. One an
-    agent's row still points at cannot be deleted under it, which used to be
-    a server error for a retired key since only `agent` keys were checked;
-    once the agent is gone it can go."""
+    """A retired key authenticates as nothing, so it is never revealed. One an
+    agent still holds can't be deleted under it, and the refusal says so; once
+    the agent is gone it can go."""
     monkeypatch.setitem(
         gw_deps._state,
         "protocol",

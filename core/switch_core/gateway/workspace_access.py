@@ -13,13 +13,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.connections.broker import ServiceBroker, SignIn
 from switch_core.connections.sign_in_flows import SignInFlows
-from switch_core.db.models import Agent
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 
 
@@ -52,14 +51,8 @@ async def revoke_workspace_access(
     """
     removed_services = await broker.remove_connections(session, user_id)
     keys = await api_key_store.get_by_user(session, user_id)
-    if keep_agent_keys and keys:
-        in_use = set(
-            await session.scalars(
-                select(Agent.api_key_id).where(
-                    Agent.api_key_id.in_([key.id for key in keys])
-                )
-            )
-        )
+    if keep_agent_keys:
+        in_use = await AgentStore().keys_held(session, [key.id for key in keys])
         keys = [key for key in keys if key.id not in in_use]
     for key in keys:
         await api_key_store.delete(session, key.id)
