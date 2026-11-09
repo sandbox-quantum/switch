@@ -365,7 +365,10 @@ function ManagedAgentPageContent({
                 info={{
                   label: 'More info about the directory',
                   content:
-                    'The working directory, a full path on its machine. Its sessions start there.',
+                    'The working directory, a full path on its machine. Its sessions start there. ' +
+                    'Changing it applies to new sessions only: a room where the agent already has a ' +
+                    'session keeps the directory that session started in, through a reset too, until ' +
+                    'the session is recreated.',
                 }}
                 description={`Where the agent runs on ${agent.machine?.name ?? 'its machine'}.`}
                 control={null}

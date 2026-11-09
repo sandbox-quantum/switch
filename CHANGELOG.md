@@ -851,6 +851,9 @@ version of their own to them without also giving them a release of their own.
   `viewer_is_member: false` and `is_console_chat: false`, so Console's room
   settings named a Console chat's messaging app "None". Both now say what
   the room list says.
+- **`!list-documents` and `!list-references` answer again.** Since they began
+  listing what a room's packages bring, both failed on the admin client that
+  runs them, and the channel got no answer at all.
 - **The dashboard's addressing policy editor judges rules as the server
   does.** A rule letting in only the agent's owner, or its owner's agents,
   was taken for one that lets in nobody, and Save was held; the editor now
