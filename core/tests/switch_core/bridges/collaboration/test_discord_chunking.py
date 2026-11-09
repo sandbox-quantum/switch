@@ -214,3 +214,89 @@ def test_a_longer_fence_is_reopened_and_closed_with_its_own_length() -> None:
     assert len(chunks) > 1
     assert all(c.startswith("````md") for c in chunks)
     assert all(c.endswith("\n````") for c in chunks)
+
+
+def test_a_tilde_fence_is_closed_and_reopened_across_a_split() -> None:
+    body = (
+        "intro\n~~~python\n"
+        + "\n".join(f"x = {i}" for i in range(400))
+        + "\n~~~\nafter"
+    )
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= MAX_MESSAGE for c in chunks)
+    assert chunks[0].endswith("\n~~~")
+    assert all(c.startswith("~~~python") for c in chunks[1:])
+    assert chunks[-1].endswith("~~~\nafter")
+    assert not any("```" in c for c in chunks)
+
+
+def test_a_tilde_fence_is_not_closed_by_backticks_nor_a_shorter_run() -> None:
+    # CommonMark: a block closes only on its own character, at least as long
+    # as its opener, so these are lines of code.
+    code = "\n".join(f"line {i}" for i in range(400))
+    body = "~~~~text\n```\n~~~\n" + code + "\n~~~~\nafter"
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert chunks[0].startswith("~~~~text\n```\n~~~\n")
+    assert all(c.startswith("~~~~text") for c in chunks[1:])
+    assert all(c.endswith("\n~~~~") for c in chunks[:-1])
+
+
+def test_a_tilde_opener_may_carry_backticks_in_its_info_string() -> None:
+    body = "~~~ a`b\n" + "\n".join(f"x = {i}" for i in range(400)) + "\n~~~"
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert all(c.startswith("~~~ a`b") or c.startswith("~~~a`b") for c in chunks)
+
+
+def test_a_backtick_block_is_not_closed_by_tildes() -> None:
+    code = "\n".join(f"line {i}" for i in range(400))
+    body = "```text\n~~~\n" + code + "\n```"
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert all(c.startswith("```text") for c in chunks)
+    assert all(c.endswith("```") for c in chunks)
+
+
+def test_a_line_indented_four_spaces_is_not_a_fence() -> None:
+    # Indented code that happens to start with backticks: in CommonMark it is
+    # not a fence, and counting it as one inverted every block after it.
+    prose = "\n".join(f"prose line {i} " + "p" * 50 for i in range(80))
+    body = "Indented:\n\n    ```python\n    x = 1\n\n" + prose
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert _rejoin(chunks) == body
+    assert not any(c.startswith("```") for c in chunks[1:])
+
+
+def test_an_indented_code_line_inside_a_block_does_not_close_it() -> None:
+    code = "\n".join(f"line {i}" for i in range(400))
+    body = "```text\n    ```\n" + code + "\n```"
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert all(c.startswith("```text") for c in chunks)
+    assert all(c.endswith("\n```") for c in chunks)
+
+
+def test_a_fence_indented_up_to_three_spaces_still_counts() -> None:
+    code = "\n".join(f"line {i}" for i in range(400))
+    body = "   ```text\n" + code + "\n   ```\nafter"
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert chunks[0].endswith("\n```")
+    assert all(c.startswith("```text") for c in chunks[1:])

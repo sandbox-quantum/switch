@@ -44,6 +44,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     AgentIdentity,
     ChannelNotBindable,
+    MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
     RemovalFailed,
@@ -3591,7 +3592,17 @@ class TelegramAdapter(PlatformAdapter):
         Returns the caption to attach and the ref of any message posted first."""
         if len(caption) <= _MAX_CAPTION_CHARS:
             return caption, None
-        ref = await self._send_text(channel_id, caption, thread_root_id)
+        try:
+            ref = await self._send_text(channel_id, caption, thread_root_id)
+        except MessagePartlySent as partial:
+            # The chat already says the caption is cut short; the file still
+            # goes out after what of it arrived.
+            logger.error(
+                "The caption for a file in Telegram chat %s was cut short: %s",
+                channel_id,
+                partial,
+            )
+            return "", partial.first_ref
         return "", ref
 
     async def _send_text(
@@ -3600,7 +3611,9 @@ class TelegramAdapter(PlatformAdapter):
         """Post one body, split across messages if Telegram's cap demands it.
 
         Returns the ref of the first message so an edit or delete targets the
-        head of the run."""
+        head of the run, or `None` when not even that was taken. A later
+        message refused ends the run with a notice saying the rest is missing,
+        and `MessagePartlySent`."""
         bot = self._require_bot()
         anchor = await self._anchor_kwargs(channel_id, thread_root_id)
         # In a forum the anchor is what keeps the run together: a chunk without
@@ -3614,14 +3627,38 @@ class TelegramAdapter(PlatformAdapter):
         # a forum is also mandatory, so a target deleted mid-run fails the rest
         # of the send instead of scattering it into General.
         every_chunk = bool(anchor) and await self._is_forum(channel_id)
-        first_ref: str | None = None
-        for index, chunk in enumerate(chunk_message(body)):
-            kwargs = anchor if every_chunk or index == 0 else {}
-            sent = await self._send_chunk(bot, channel_id, chunk, kwargs)
-            if sent is None:
-                return first_ref
-            if first_ref is None:
-                first_ref = sent
+        chunks = chunk_message(body)
+        first_ref = await self._send_chunk(bot, channel_id, chunks[0], anchor)
+        if first_ref is None:
+            return None
+        rest = anchor if every_chunk else {}
+        for index, chunk in enumerate(chunks[1:], start=1):
+            if await self._send_chunk(bot, channel_id, chunk, rest) is not None:
+                continue
+            logger.error(
+                "Only %d of %d parts of a message reached Telegram chat %s",
+                index,
+                len(chunks),
+                channel_id,
+            )
+            notice = (
+                f"⚠️ Only {index} of {len(chunks)} parts of this message could "
+                "be delivered — Telegram rejected the rest."
+            )
+            if await self._send_chunk(bot, channel_id, notice, rest) is None:
+                logger.error(
+                    "Could not tell Telegram chat %s that the message %s is "
+                    "missing its last %d parts; nothing there says it is cut short",
+                    channel_id,
+                    first_ref,
+                    len(chunks) - index,
+                )
+            raise MessagePartlySent(
+                platform="Telegram",
+                first_ref=first_ref,
+                delivered=index,
+                total=len(chunks),
+            )
         return first_ref
 
     async def _send_chunk(

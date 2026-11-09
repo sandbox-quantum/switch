@@ -257,6 +257,32 @@ class RichContentFailed(Exception):
         self.text = text
 
 
+class MessagePartlySent(Exception):
+    """A message split over several platform messages stopped part way.
+
+    Raised by `send_message` and `admin_message` once at least one part is on
+    the platform, never when none is: nothing posted is still a `None` ref.
+    The parts that went out stay, followed where the platform allowed it by a
+    notice in the channel saying the rest is missing.
+
+    `first_ref` names the first part, which is what a caller records the
+    message as, the same ref a complete send would have returned. A caller that
+    let the message be sent again instead would post the delivered parts a
+    second time.
+    """
+
+    def __init__(
+        self, *, platform: str, first_ref: str, delivered: int, total: int
+    ) -> None:
+        super().__init__(
+            f"Only {delivered} of {total} parts of a message reached {platform}; "
+            f"the first is {first_ref}."
+        )
+        self.first_ref = first_ref
+        self.delivered = delivered
+        self.total = total
+
+
 class PrivateNoticeRefused(Exception):
     """The platform would not let the bot reach this person privately, as it
     refuses for someone who never opened a chat with the bot, blocked it, or

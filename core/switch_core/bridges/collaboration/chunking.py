@@ -11,10 +11,13 @@ reopens it, with the same info string, at the start of the next. Agents post
 code constantly, and a fence torn in half renders the whole remainder as
 unformatted text with a stray fence in it.
 
-Fences follow CommonMark for backtick fences: an opening fence is a run of at
-least three backticks whose info string contains no backtick (so a one-line
-span such as ```npm test``` opens nothing), and a closing fence is a run at
-least as long as the opener followed only by whitespace.
+Fences follow CommonMark. A fence is indented by at most three spaces; a line
+indented further is code or paragraph text, whatever it starts with. An
+opening fence is a run of at least three backticks or tildes; a backtick
+opener's info string contains no backtick (so a one-line span such as
+```npm test``` opens nothing), while a tilde opener's may contain anything. A
+closing fence is a run of the opener's own character at least as long as the
+opener, followed only by whitespace.
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 _TICK = "`"
+_TILDE = "~"
+_MAX_FENCE_INDENT = 3
 
 
 @dataclass(frozen=True)
@@ -31,39 +36,58 @@ class _Fence:
     line: str
 
 
-def _tick_run(text: str) -> int:
-    return len(text) - len(text.lstrip(_TICK))
+def _marker_run(text: str) -> int:
+    """How many fence characters `text` starts with: a run of one character,
+    backtick or tilde, and 0 when it starts with neither."""
+    if not text or text[0] not in (_TICK, _TILDE):
+        return 0
+    return len(text) - len(text.lstrip(text[0]))
+
+
+def _fence_text(line: str) -> str | None:
+    """`line` without its indentation, or None when it is indented too far
+    to be a fence."""
+    text = line.lstrip(" ")
+    if len(line) - len(text) > _MAX_FENCE_INDENT:
+        return None
+    return text
 
 
 def _opening_fence(line: str) -> _Fence | None:
-    text = line.lstrip()
-    run = _tick_run(text)
+    text = _fence_text(line)
+    if text is None:
+        return None
+    run = _marker_run(text)
     if run < 3:
         return None
     info = text[run:].strip()
-    if _TICK in info:
+    if text[0] == _TICK and _TICK in info:
         return None
-    return _Fence(_TICK * run, info, line)
+    return _Fence(text[:run], info, line)
 
 
 def _closes(line: str, fence: _Fence) -> bool:
-    text = line.lstrip()
-    run = _tick_run(text)
+    text = _fence_text(line)
+    if text is None or not text.startswith(fence.marker[0]):
+        return False
+    run = _marker_run(text)
     return run >= len(fence.marker) and not text[run:].strip()
 
 
 def _first_cut_floor(line: str) -> int:
     """How long the first piece of a wrapped `line` must be to keep its role.
 
-    A line that starts with a backtick run but is neither an opener nor a
-    closer has a backtick or other text after the run, and the first piece
-    has to carry it. Cut sooner and the piece reads as a fence."""
-    text = line.lstrip()
-    run = _tick_run(text)
+    A line that starts with a fence run but is neither an opener nor a closer
+    has a backtick or other text after the run, and the first piece has to
+    carry it. Cut sooner and the piece reads as a fence."""
+    text = _fence_text(line)
+    if text is None:
+        return 0
+    run = _marker_run(text)
     if run < 3:
         return 0
     after = text[run:]
-    tail = after.find(_TICK)
+    tail = after.find(_TICK) if text[0] == _TICK else -1
     if tail == -1:
         tail = len(after) - len(after.lstrip())
     return len(line) - len(text) + run + tail + 1
@@ -73,7 +97,7 @@ def _hard_wrap(line: str, budget: int) -> list[str]:
     """Break one over-long line, preferring a space over cutting a word.
 
     No piece reads as a fence the line was not: the first keeps what makes
-    the line plain text, and no later piece starts with three backticks."""
+    the line plain text, and no later piece starts with a fence run."""
     budget = max(1, budget)
     if len(line) <= budget:
         return [line]
@@ -83,12 +107,12 @@ def _hard_wrap(line: str, budget: int) -> list[str]:
     floor = _first_cut_floor(line)
     while len(rest) > budget:
         cut = rest.rfind(" ", floor, budget + 1)
-        while cut > 0 and _tick_run(rest[cut:].lstrip(" ")) >= 3:
+        while cut > 0 and _marker_run(rest[cut:].lstrip(" ")) >= 3:
             cut = rest.rfind(" ", floor, cut)
         if cut <= 0:
             cut = budget
             lowest = floor if floor <= budget else 1
-            while cut > lowest and _tick_run(rest[cut:].lstrip(" ")) >= 3:
+            while cut > lowest and _marker_run(rest[cut:].lstrip(" ")) >= 3:
                 cut -= 1
         pieces.append(rest[:cut])
         rest = rest[cut:].lstrip(" ")

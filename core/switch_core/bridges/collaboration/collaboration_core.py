@@ -22,6 +22,7 @@ from switch_core.bridges.agent.commands import link_account_reply, stop_control_
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
+    MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
     SupportsSharedConnection,
@@ -2713,6 +2714,8 @@ class CollaborationCore:
                 admin_marker=admin_marker if is_system else None,
                 is_system=is_system,
             )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(event.event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -2953,6 +2956,8 @@ class CollaborationCore:
                     caption=caption,
                     thread_root_id=thread_root_ref,
                 )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(event.event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -3083,6 +3088,8 @@ class CollaborationCore:
                 caption=pending.caption,
                 thread_root_id=thread_root_ref,
             )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(claim_event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(claim_event_id))
             raise
@@ -3195,6 +3202,25 @@ class CollaborationCore:
                 channel_id,
             )
         return claimed
+
+    @staticmethod
+    def _partly_posted(
+        transport_event_id: str, channel_id: str, partial: MessagePartlySent
+    ) -> str:
+        """The ref to settle a message's claim with when only some of its parts
+        reached the platform.
+
+        Settled rather than let go: a claim let go is posted again by the next
+        delivery, and the parts already in the channel would show twice. What
+        is missing has been said in the channel by the adapter."""
+        logger.error(
+            "[BRIDGE-OUT] %s reached channel %s only in part, and is not posted "
+            "again: %s",
+            transport_event_id,
+            channel_id,
+            partial,
+        )
+        return partial.first_ref
 
     async def _settle_outbound(
         self, transport_event_id: str, external_post_id: str | None
