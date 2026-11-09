@@ -11,17 +11,25 @@ const SOURCES = import.meta.glob<string>(["./**/*.{ts,tsx}", "!./**/*.test.{ts,t
   eager: true,
 });
 
-/** Words the dashboard no longer uses, each with what to write instead. */
-const RETIRED: { word: RegExp; instead: string }[] = [
-  { word: /\bmachines?\b/i, instead: "device" },
-  { word: /\bregistration keys?\b/i, instead: "API key" },
-  { word: /\bregister agents?\b/i, instead: "Add agent" },
+/** Words the dashboard no longer uses, each with what to write instead.
+ * `alone` says whether a literal holding only the word counts: "server" on
+ * its own is a value the server sends (a connector app's scope), and
+ * Discord's name for a guild. */
+const RETIRED: { word: RegExp; instead: string; alone: boolean }[] = [
+  { word: /\bmachines?\b/i, instead: "device", alone: true },
+  { word: /\bregistration keys?\b/i, instead: "API key", alone: true },
+  { word: /\bregister agents?\b/i, instead: "Add agent", alone: true },
   {
-    word: /(?<!\b(?:Discord|Mattermost|MCP) )\bservers?\b/i,
+    word: /(?<!\b(?:Discord|Mattermost) )\bservers?\b/i,
     instead: '"here", "Switch" or "Switch\'s configuration"',
+    alone: false,
   },
-  { word: /\bconnections?\b/i, instead: '"connector", or "messaging app" for a chat app' },
-  { word: /\bMatrix\b/, instead: "nothing: Switch no longer runs on Matrix" },
+  {
+    word: /\bconnections?\b/i,
+    instead: '"connector", or "messaging app" for a chat app',
+    alone: true,
+  },
+  { word: /\bMatrix\b/, instead: "nothing: Switch no longer runs on Matrix", alone: true },
 ];
 
 /** Uses of a retired word that mean something else, removed before checking. */
@@ -34,24 +42,29 @@ const ALLOWED = [
   "--server",
 ];
 
-/** Text a person could read: JSX text, and string and template literals
- * that hold more than one word or start with a capital. A lone lowercase
- * word is a key or a value the server sends, not copy. */
-function copyIn(source: string, fileName: string): { line: number; text: string }[] {
+/** Text a person could read: JSX text, and string and template literals.
+ * A literal holding one lowercase word is `alone`: often a key or a value
+ * the server sends rather than copy, so only some words count there. One
+ * lowercase token that is not a plain word is a path or a key, not copy. */
+function copyIn(
+  source: string,
+  fileName: string,
+): { line: number; text: string; alone: boolean }[] {
   const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const found: { line: number; text: string }[] = [];
-  const add = (node: ts.Node, text: string) => {
+  const found: { line: number; text: string; alone: boolean }[] = [];
+  const add = (node: ts.Node, text: string, isJsxText: boolean) => {
     const trimmed = text.trim();
     if (trimmed === "") return;
-    if (!/\s/.test(trimmed) && !/^[A-Z]/.test(trimmed)) return;
-    found.push({ line: file.getLineAndCharacterOfPosition(node.getStart()).line + 1, text: trimmed });
+    const alone = !isJsxText && !/\s/.test(trimmed) && !/^[A-Z]/.test(trimmed);
+    if (alone && !/^[a-z]+$/.test(trimmed)) return;
+    found.push({ line: file.getLineAndCharacterOfPosition(node.getStart()).line + 1, text: trimmed, alone });
   };
   const visit = (node: ts.Node) => {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) return;
-    if (ts.isJsxText(node)) add(node, node.text);
-    else if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) add(node, node.text);
+    if (ts.isJsxText(node)) add(node, node.text, true);
+    else if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) add(node, node.text, false);
     else if (ts.isTemplateExpression(node)) {
-      add(node, [node.head.text, ...node.templateSpans.map((span) => span.literal.text)].join("…"));
+      add(node, [node.head.text, ...node.templateSpans.map((span) => span.literal.text)].join("…"), false);
     }
     ts.forEachChild(node, visit);
   };
@@ -67,9 +80,10 @@ describe("dashboard vocabulary", () => {
   it("uses none of the retired words", () => {
     const problems: string[] = [];
     for (const [path, source] of Object.entries(SOURCES)) {
-      for (const { line, text } of copyIn(source, path)) {
+      for (const { line, text, alone } of copyIn(source, path)) {
         const checked = ALLOWED.reduce((rest, allowed) => rest.split(allowed).join(" "), text);
-        for (const { word, instead } of RETIRED) {
+        for (const { word, instead, alone: countsAlone } of RETIRED) {
+          if (alone && !countsAlone) continue;
           const match = checked.match(word);
           if (match) problems.push(`${path}:${line} "${match[0]}" → ${instead}: ${text}`);
         }

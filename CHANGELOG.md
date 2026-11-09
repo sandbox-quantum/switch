@@ -5007,6 +5007,9 @@ tags; see RELEASING.md.
   can run (16 by default).
 
 #### Changed
+- **Points to the dashboard's Devices page.** Its messages, installer and
+  README sent people to the Machines page, which the dashboard now calls
+  Devices.
 - **Agents' operations go to Switch on the controller's socket.** Every
   operation an agent host calls through the relay
   (`POST /agents/{id}/ops/{operation}`) is sent as a call on the socket the
