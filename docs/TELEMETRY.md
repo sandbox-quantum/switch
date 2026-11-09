@@ -176,7 +176,7 @@ sign-in records `invalid_credentials` — not the username tried, not the server
 | `bridge_identity_confirmed` | `bridge_platform` · `link_kind`: `new` (a link that was waiting on its code) / `existing` (a link made before links had to be confirmed, which worked all along) / `unknown` — sent when the code is posted and the link confirmed, after asking the server that it is |
 | `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `network` / `forbidden` / `not_found` / `conflict` / `server_error` / `error` · `source`: `dialog` / `template` |
 | `room_deleted` | `server_kind` · `outcome` |
-| `room_agents_added` | `agent_count`: `2` · `direction`: `agents_to_room` / `room_to_agents` |
+| `room_agents_added` | `agent_count`: `2` · `direction`: `agents_to_room` / `room_to_agents` · `outcome` · `failure_reason`: `none` / `unreachable` / `unauthenticated` / `network` / `forbidden` / `not_found` / `conflict` / `invalid` / `server_error` / `error` |
 
 A room creation tells us *"someone made a Slack-bridged room with 3 agents and it
 worked"*. It does not tell us the room name, the channel, the workspace, or which

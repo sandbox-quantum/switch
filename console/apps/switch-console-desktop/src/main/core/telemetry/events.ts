@@ -288,6 +288,25 @@ export type TelemetryDockerAvailability = 'available' | 'unavailable' | 'unknown
 export type TelemetryRoomAgentsDirection = 'agents_to_room' | 'room_to_agents';
 
 /**
+ * Why adding agents to a room failed. `unreachable` is the server's host known
+ * to be down before asking; `unauthenticated` a session the server refused;
+ * `network` a request that never reached the server; `forbidden`, `not_found`,
+ * `conflict`, `invalid` and `server_error` the server's own answer (403, 404,
+ * 409, 400 or 422, 5xx); `error` anything with no answer to read.
+ */
+export type TelemetryRoomAgentsAddFailure =
+  | 'none'
+  | 'unreachable'
+  | 'unauthenticated'
+  | 'network'
+  | 'forbidden'
+  | 'not_found'
+  | 'conflict'
+  | 'invalid'
+  | 'server_error'
+  | 'error';
+
+/**
  * Which control the user reached the action from, and who started a session.
  *
  * Both are declared in `@shared` because the renderer names them and the main
@@ -628,6 +647,8 @@ export type TelemetryEventMap = {
   room_agents_added: {
     agent_count: number;
     direction: TelemetryRoomAgentsDirection;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryRoomAgentsAddFailure;
   };
   /** Someone signed in to a server. */
   server_sign_in: {
@@ -806,7 +827,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'source',
   ],
   room_deleted: ['server_kind', 'outcome'],
-  room_agents_added: ['agent_count', 'direction'],
+  room_agents_added: ['agent_count', 'direction', 'outcome', 'failure_reason'],
   server_sign_in: ['auth_method', 'server_kind', 'outcome', 'failure_reason'],
   server_sign_out: ['server_kind'],
   host_setup_step: ['step_kind', 'agent_type', 'action', 'outcome'],
