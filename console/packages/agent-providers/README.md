@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `goose` | `goose acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume, model catalogue, stdio and HTTP MCP registration and approvals, on whichever model provider the owner configured. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -68,6 +69,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| goose (ACP) | 1.57.0 | not recorded | No model provider key was available, so no real-model turn ran. Set `GOOSE_PROVIDER`, `GOOSE_MODEL` and the provider's key (for example `GOOGLE_API_KEY`) in the shell to run the suite; the test passes them through. `user-input` is skipped: Goose offers its model no ask-the-user tool. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
@@ -121,6 +123,22 @@ approved by the adapter. A session that advertises no modes is left in its
 own. A hosted Antigravity login (the token file of the legacy runtime) is
 refused for an `agy` target with an error saying how to sign in there,
 rather than written where `agy` never reads it.
+**Goose** runs `goose acp` on the model provider set with `goose configure` or
+`GOOSE_PROVIDER` and `GOOSE_MODEL`; it has no account, and its `initialize`
+lists the same `goose-provider` method whether or not one is set. A new Goose
+session starts in `auto`, which approves every tool call, so every session is
+put in `approve` (or `auto` for full access): `smart_approve` asked for the
+same calls when measured, and a session that must ask is refused when Goose
+does not offer `approve`. The sign-in check starts a session, which Goose
+refuses without a provider and model, and deletes it again; it never
+authenticates and a wrong provider key shows on the first turn. Goose sends
+every tool call without a `kind`: its shell, write and edit tools are typed
+from `_meta.goose.toolCall`, and a tool on an MCP server (named
+`<server>__<tool>`) is attributed to that server so the session's own servers
+run without asking. Goose saves `allow_always` to its global `permission.yaml`,
+silencing that tool in every later session, so its `permission` hook offers
+only allow once and reject (Goose names its options after their ids) and types
+the shell, write and edit requests from their titles, which carry no `_meta`.
 A legacy `antigravity-acp` install still runs in its own profile directory
 (`GEMINI_HOME`) with its `auto_edit` and `yolo` modes, questions as permission
 requests whose tool call id starts with `interaction_`, and its old sign-in
