@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import CloudFilesPage from "./CloudFilesPage";
+import CloudFilesPage, { filterEntries } from "./CloudFilesPage";
+import type { CloudFileEntry } from "./cloudFiles";
 import { DOWNLOAD_REVOKE_MS } from "./cloudFiles";
 
 // The preview modal is loaded on demand; load it once here so no test waits on the first import.
@@ -119,6 +120,207 @@ describe("Your cloud files (Switch web)", () => {
     expect(listedPaths().length).toBe(reads);
   });
 
+  it("shows grey skeleton rows, not a spinner, while a folder loads", async () => {
+    // Every read of the agent's folder waits until the test lets them through,
+    // and any read after that answers straight away.
+    const waiting: (() => void)[] = [];
+    let released = false;
+    const release = () => {
+      released = true;
+      waiting.splice(0).forEach((go) => go());
+    };
+    routes = [
+      boxWithAgent,
+      (url) =>
+        url.pathname === "/gateway/cloud-files/list" && url.searchParams.get("path") === ""
+          ? json({ entries: TOP })
+          : undefined,
+      (url) =>
+        url.pathname !== "/gateway/cloud-files/list"
+          ? undefined
+          : released
+            ? json({ entries: [file("README.md")] })
+            : (new Promise<Response>((resolve) => waiting.push(() => resolve(json({ entries: [file("README.md")] })))) as never),
+    ];
+    open("?agent=web-frontend");
+    // The top level is in (its side list shows), and the agent's folder is still loading.
+    await screen.findByRole("navigation", { name: "Folders" });
+    await waitFor(() => expect(waiting.length).toBeGreaterThan(0));
+    const skeleton = screen.getByTestId("folder-skeleton");
+    expect(skeleton.getAttribute("aria-busy")).toBe("true");
+    expect(within(skeleton).getByText("Loading files…")).toBeTruthy();
+    expect(document.querySelector(".MuiCircularProgress-root")).toBeNull();
+    act(() => release());
+    expect(await screen.findByText("README.md")).toBeTruthy();
+    expect(screen.queryByTestId("folder-skeleton")).toBeNull();
+  });
+
+  it("an empty agent folder and an empty folder each say so in their own words", async () => {
+    routes = [boxWithAgent, listing({ "": TOP, "web-frontend": [], shared: [] })];
+    open("?agent=web-frontend");
+    expect(await screen.findByText("Nothing here yet. Files your agent makes appear here.")).toBeTruthy();
+    cleanup();
+    open("?path=shared");
+    expect(await screen.findByText("This folder is empty.")).toBeTruthy();
+  });
+
+  it("each row shows its kind's icon and says the kind after its name", async () => {
+    routes = [
+      boxWithAgent,
+      listing({ "": TOP, "web-frontend": [folder("src"), file("README.md"), file("data.csv"), file("notes.txt")] }),
+    ];
+    open("?agent=web-frontend");
+    await screen.findByText("README.md");
+    const kinds = [...document.querySelectorAll("tbody [data-file-kind]")].map((icon) => icon.getAttribute("data-file-kind"));
+    expect(kinds).toEqual(["folder", "data", "other", "markdown"]);
+    expect(screen.getByRole("button", { name: "README.md, Markdown file" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "src, Folder" })).toBeTruthy();
+    // Icons come from the name only: nothing was read to choose them.
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/cloud-files/content"))).toBe(false);
+  });
+
+  it("the preview has Copy path, which copies the in-cloud path", async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    routes = [
+      boxWithAgent,
+      listing({ "": TOP, "web-frontend": [file("README.md")] }),
+      (url) =>
+        url.pathname === "/gateway/cloud-files/content"
+          ? new Response(new TextEncoder().encode("# hi"), { status: 206, headers: { "content-range": "bytes 0-3/4" } })
+          : undefined,
+    ];
+    open("?agent=web-frontend");
+    fireEvent.click(await screen.findByRole("button", { name: /README\.md/ }));
+    const dialog = await screen.findByRole("dialog");
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Copy path" }));
+    });
+    expect(writeText).toHaveBeenCalledWith("web-frontend/README.md");
+    expect(within(dialog).getByRole("button", { name: "Path copied" })).toBeTruthy();
+  });
+
+  describe("filter, sort and keyboard (part 2)", () => {
+    const FILES = [folder("src"), file("menu.md"), file("menu-old.md"), file("notes.txt")];
+    const filterBox = () => screen.getByRole("textbox", { name: "Filter this folder" }) as HTMLInputElement;
+    const names = () =>
+      [...document.querySelectorAll("tbody [data-file-kind]")].map(
+        (icon) => icon.closest("button")!.textContent!.replace(/,.*$/, ""),
+      );
+
+    it("narrows the open folder by name, says when nothing matches, and Clear filter brings it back", async () => {
+      routes = [boxWithAgent, listing({ "": TOP, "web-frontend": FILES })];
+      open("?agent=web-frontend");
+      await screen.findByText("notes.txt");
+      const reads = listedPaths().length;
+      fireEvent.change(filterBox(), { target: { value: "MENU" } });
+      expect(names().sort()).toEqual(["menu-old.md", "menu.md"]);
+      fireEvent.change(filterBox(), { target: { value: "zzz" } });
+      expect(screen.getByText("No files match ‘zzz’.")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+      expect(filterBox().value).toBe("");
+      expect(names()).toHaveLength(4);
+      expect(names()[0]).toBe("src");
+      // Typing reads nothing: it only narrows what's loaded.
+      expect(listedPaths().length).toBe(reads);
+    });
+
+    it("keeps the filter and sort while moving into a folder and back", async () => {
+      routes = [boxWithAgent, listing({ "": TOP, "web-frontend": FILES, "web-frontend/src": [file("menu.ts"), file("app.ts")] })];
+      open("?agent=web-frontend");
+      await screen.findByText("notes.txt");
+      fireEvent.click(screen.getByRole("button", { name: "Changed, newest first" }));
+      fireEvent.change(filterBox(), { target: { value: "menu" } });
+      fireEvent.change(filterBox(), { target: { value: "" } });
+      fireEvent.click(screen.getByRole("button", { name: "src, Folder" }));
+      await screen.findByText("app.ts");
+      fireEvent.change(filterBox(), { target: { value: "menu" } });
+      expect(names()).toEqual(["menu.ts"]);
+      fireEvent.keyDown(screen.getByRole("button", { name: "menu.ts, Code file" }), { key: "Backspace" });
+      await screen.findByText("menu.md");
+      expect(filterBox().value).toBe("menu");
+      expect(names().sort()).toEqual(["menu-old.md", "menu.md"]);
+      expect(screen.getByRole("button", { name: "Changed, newest first" }).closest("th")?.getAttribute("aria-sort")).toBe(
+        "descending",
+      );
+    });
+
+    it("while filtering a folder with more pages, says it only looked at what's loaded", async () => {
+      routes = [
+        boxWithAgent,
+        (url) =>
+          url.pathname === "/gateway/cloud-files/list"
+            ? url.searchParams.get("path") === ""
+              ? json({ entries: TOP })
+              : json({ entries: FILES, cursor: "next-page" })
+            : undefined,
+      ];
+      open("?agent=web-frontend");
+      expect(await screen.findByRole("button", { name: "Show more" })).toBeTruthy();
+      expect(screen.queryByText(/Filtering the first/)).toBeNull();
+      fireEvent.change(filterBox(), { target: { value: "menu" } });
+      expect(screen.getByText("Filtering the first 4 loaded. Show more to include the rest.")).toBeTruthy();
+    });
+
+    it("is one grid with a single Tab stop: arrows move, Enter opens, Backspace goes up", async () => {
+      routes = [boxWithAgent, listing({ "": TOP, "web-frontend": FILES, "web-frontend/src": [file("app.ts")] })];
+      open("?agent=web-frontend");
+      await screen.findByText("notes.txt");
+      expect(screen.getByRole("grid", { name: "Files in web-frontend" })).toBeTruthy();
+      const rowButtons = () => [...document.querySelectorAll<HTMLButtonElement>("tbody button[tabindex]")].filter((b) => b.querySelector("[data-file-kind]"));
+      expect(rowButtons().map((b) => b.tabIndex)).toEqual([0, -1, -1, -1]);
+      const order = names();
+      rowButtons()[0]!.focus();
+      fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+      expect(document.activeElement?.textContent?.startsWith(order[1]!)).toBe(true);
+      fireEvent.keyDown(document.activeElement!, { key: "End" });
+      expect(document.activeElement?.textContent?.startsWith(order[3]!)).toBe(true);
+      expect(rowButtons().map((b) => b.tabIndex)).toEqual([-1, -1, -1, 0]);
+      fireEvent.keyDown(document.activeElement!, { key: "Home" });
+      // Enter on a folder is the button's own click, with no mouse clicks behind it.
+      fireEvent.click(document.activeElement!, { detail: 0 });
+      await screen.findByText("app.ts");
+      // Opened from the keyboard: focus is on the new folder's first row.
+      await waitFor(() => expect(document.activeElement?.textContent?.startsWith("app.ts")).toBe(true));
+      fireEvent.keyDown(document.activeElement!, { key: "Backspace" });
+      expect(await screen.findByText("notes.txt")).toBeTruthy();
+      await waitFor(() => expect(document.activeElement?.textContent?.startsWith("src")).toBe(true));
+    });
+
+    it("/ jumps to the filter, but not while typing in it or with the preview open", async () => {
+      routes = [boxWithAgent, listing({ "": TOP, "web-frontend": FILES })];
+      open("?agent=web-frontend");
+      await screen.findByText("notes.txt");
+      fireEvent.keyDown(document.body, { key: "/" });
+      expect(document.activeElement).toBe(filterBox());
+      const typed = new KeyboardEvent("keydown", { key: "/", bubbles: true, cancelable: true });
+      filterBox().dispatchEvent(typed);
+      expect(typed.defaultPrevented).toBe(false);
+      // Esc in the filter clears it first.
+      fireEvent.change(filterBox(), { target: { value: "menu" } });
+      fireEvent.keyDown(filterBox(), { key: "Escape" });
+      expect(filterBox().value).toBe("");
+    });
+
+    it("each row has its quick actions, and Preview opens the file", async () => {
+      routes = [boxWithAgent, listing({ "": TOP, "web-frontend": [file("README.md")] })];
+      open("?agent=web-frontend");
+      await screen.findByText("README.md");
+      const row = screen.getByText("README.md").closest("tr")!;
+      expect(within(row).getByRole("button", { name: "Copy path" })).toBeTruthy();
+      expect(within(row).getByRole("button", { name: "Download" })).toBeTruthy();
+      fireEvent.click(within(row).getByRole("button", { name: "Preview" }));
+      expect(await screen.findByRole("dialog")).toBeTruthy();
+    });
+  });
+
+  it("filterEntries matches name or label, ignoring case and spaces around", () => {
+    const entries = [folder("web-frontend", { label: "Web Frontend" }), file("Menu.md"), file("notes.txt")] as CloudFileEntry[];
+    expect(filterEntries(entries, "  web front ").map((e) => e.name)).toEqual(["web-frontend"]);
+    expect(filterEntries(entries, "MENU").map((e) => e.name)).toEqual(["Menu.md"]);
+    expect(filterEntries(entries, "")).toHaveLength(3);
+  });
+
   it("an empty top level says files appear once agents make something", async () => {
     routes = [boxWithAgent, listing({ "": [] })];
     open();
@@ -203,6 +405,22 @@ describe("Your cloud files (Switch web)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("after Wake it, a gently pulsing cloud says it's waking, in the spec's words", async () => {
+    routes = [
+      boxWithAgent,
+      (url) => (url.pathname === "/gateway/hosted-machines/ensure" ? json({}) : undefined),
+      (url) => (url.pathname === "/gateway/cloud-files/list" ? json({ detail: { code: "box_resting" } }, 409) : undefined),
+    ];
+    open();
+    expect(screen.queryByTestId("waking-cloud")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Wake it" }));
+    expect(await screen.findByText("Waking your cloud…")).toBeTruthy();
+    expect(screen.getByText("This takes about a minute")).toBeTruthy();
+    const cloud = screen.getByTestId("waking-cloud");
+    expect(cloud.getAttribute("aria-hidden")).toBe("true");
+    expect(document.querySelector(".MuiCircularProgress-root")).toBeNull();
   });
 
   it("an image preview is a Blob typed by the safe-image rule", async () => {
@@ -517,7 +735,7 @@ describe("Your cloud files (Switch web)", () => {
     open();
     fireEvent.click(await screen.findByRole("button", { name: /page\.html/ }));
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: "Download" }));
+      fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Download" }));
     });
     await waitFor(() => expect(clicked).toHaveLength(1));
     expect(clicked[0]!.download).toBe("page.html");

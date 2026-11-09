@@ -20,7 +20,6 @@ import { absoluteTitle, formatRelative } from "../../theme/hootFormat";
 import {
   type CloudFileEntry,
   CloudFilesError,
-  DOWNLOAD_REVOKE_MS,
   IMAGE_PREVIEW_MAX_BYTES,
   type NoPreviewReason,
   TEXT_PREVIEW_MAX_BYTES,
@@ -31,10 +30,12 @@ import {
   formatSize,
   looksLikeText,
   previewKind,
-  safeSuggestedName,
   videoTypeFromBytes,
 } from "./cloudFiles";
+import CopyPathButton from "./CopyPathButton";
+import { MOTION, type Origin, REDUCED_MOTION, animatePaper } from "./motion";
 import { PathCrumbs } from "./PathCrumbs";
+import { saveCloudFile } from "./saveCloudFile";
 import { WAKE_FAILED_MESSAGE, WAKE_GIVE_UP_MS, WAKE_RETRY_MS } from "./useCloudFiles";
 import { neighbourFiles } from "./previewFormat";
 import { CodeView, CsvView, JsonView, MarkdownView, PlainText, VideoView } from "./previewViews";
@@ -77,6 +78,7 @@ export function FilePreviewModal({
   onShow,
   onOpenFolder,
   onClose,
+  origin = null,
 }: {
   /** The folder the file is in, box-relative. */
   folder: string;
@@ -87,10 +89,16 @@ export function FilePreviewModal({
   onShow: (entry: CloudFileEntry) => void;
   onOpenFolder: (path: string) => void;
   onClose: () => void;
+  /** Where on screen the preview grows from: the clicked row's centre. */
+  origin?: Origin | null;
 }) {
   const path = childPath(folder, entry.name);
   const theme = useTheme();
   const phone = useMediaQuery(theme.breakpoints.down("sm"));
+  const reduced = useMediaQuery(REDUCED_MOTION);
+  // Esc and Close shrink it back towards its row first; the list drops it once that's done.
+  const [open, setOpen] = useState(true);
+  const close = () => setOpen(false);
   const [preview, setPreview] = useState<Preview>({ kind: "loading" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -199,16 +207,7 @@ export function FilePreviewModal({
     setSaving(true);
     setSaveError(null);
     try {
-      const bytes = await readCloudFile(path);
-      const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = safeSuggestedName(entry.name, "file");
-      link.rel = "noopener";
-      link.click();
-      // Released a moment later: some Safari versions cancel a download whose
-      // address is revoked straight after the click.
-      window.setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_REVOKE_MS);
+      await saveCloudFile(path, entry.name);
     } catch (error) {
       setSaveError(cloudFilesMessage(error instanceof CloudFilesError ? error.code : "unknown"));
     } finally {
@@ -219,14 +218,20 @@ export function FilePreviewModal({
   const changed = new Date(entry.mtime).toISOString();
   return (
     <Dialog
-      open
-      onClose={onClose}
+      open={open}
+      onClose={close}
+      transitionDuration={reduced ? 0 : { enter: MOTION.inMs, exit: MOTION.outMs }}
       fullScreen={phone}
       maxWidth={false}
       disableRestoreFocus
       aria-labelledby="cloud-file-preview-title"
       slotProps={{
         paper: { sx: phone ? {} : { width: "90vw", height: "90vh", maxWidth: "90vw", maxHeight: "90vh" } },
+        transition: {
+          onEnter: (node: HTMLElement) => animatePaper(node.querySelector(".MuiDialog-paper"), origin, true, reduced),
+          onExit: (node: HTMLElement) => animatePaper(node.querySelector(".MuiDialog-paper"), origin, false, reduced),
+          onExited: onClose,
+        },
       }}
       onKeyDown={(event) => {
         if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -270,6 +275,7 @@ export function FilePreviewModal({
           <IconButton size="small" aria-label="Next file" disabled={!next} onClick={() => next && onShow(next)}>
             <ChevronRight fontSize="small" />
           </IconButton>
+          {preview.kind !== "gone" && <CopyPathButton path={path} />}
           {preview.kind !== "gone" && (
             <Button
               size="small"
@@ -281,7 +287,7 @@ export function FilePreviewModal({
               Download
             </Button>
           )}
-          <IconButton size="small" aria-label="Close preview" onClick={onClose}>
+          <IconButton size="small" aria-label="Close preview" onClick={close}>
             <Close fontSize="small" />
           </IconButton>
         </Stack>
@@ -353,7 +359,7 @@ function PreviewBody({ preview, name, onWake }: { preview: Preview; name: string
       return (
         <Stack direction="row" spacing={1} alignItems="center">
           <CircularProgress size={18} />
-          <Typography variant="body2">Waking your cloud… This usually takes a minute or two.</Typography>
+          <Typography variant="body2">Waking your cloud… This takes about a minute.</Typography>
         </Stack>
       );
     case "error":

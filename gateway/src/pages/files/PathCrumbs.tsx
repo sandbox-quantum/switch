@@ -1,6 +1,7 @@
 import ChevronRight from "@mui/icons-material/ChevronRight";
 import { Link, Stack, Typography } from "@mui/material";
 import { type CloudFileEntry, entryTitle, pathCrumbs } from "./cloudFiles";
+import { APPEAR_SX } from "./motion";
 
 /** Where you are: All files, then each folder (each opens it), then the open file's name if a file is open. */
 export function PathCrumbs({
@@ -24,7 +25,14 @@ export function PathCrumbs({
       {crumbs.map((crumb, index) => (
         <Stack key={crumb.path} direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0 }}>
           <ChevronRight fontSize="small" color="action" />
-          <Link component="button" underline="hover" noWrap onClick={() => onOpen(crumb.path)}>
+          <Link
+            component="button"
+            underline="hover"
+            noWrap
+            onClick={() => onOpen(crumb.path)}
+            // The newest part of the path fades in as you arrive.
+            sx={index === crumbs.length - 1 ? APPEAR_SX : undefined}
+          >
             {index === 0 && top ? entryTitle(top) : crumb.name}
           </Link>
         </Stack>
