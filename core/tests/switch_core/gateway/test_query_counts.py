@@ -127,7 +127,13 @@ def _app(
         gw_deps.get_agent_store: AgentStore,
         gw_deps.get_protocol: lambda: protocol,
         gw_deps.get_config: lambda: SimpleNamespace(
-            keyring=_KEYRING, gateway_tenant_choice_enabled=False
+            keyring=_KEYRING,
+            gateway_tenant_choice_enabled=False,
+            # The room detail says whether decision routing is offered.
+            decision_routing_enabled=False,
+            decision_endpoint_url=None,
+            decision_api_key=None,
+            decision_bedrock_enabled=False,
         ),
     }
     app.dependency_overrides.update(overrides)
