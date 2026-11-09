@@ -12,7 +12,7 @@ import { type MachineAction, machinePresentation } from './cloud-machine-state';
 import { hostedSummary } from './hosted-summary';
 import { HostedCapacityRows } from './hosted-summary-view';
 import { RepairCloud } from './repair-cloud';
-import { BoxSetupChecklist, stoppedStart } from './setup-checklist-view';
+import { BoxSetupChecklist, BoxStatusLine, stoppedStart } from './setup-checklist-view';
 import { CLOUD_MACHINES_KEY } from './use-cloud-agents';
 import { yourCloudView } from './your-cloud';
 
@@ -134,7 +134,8 @@ export function CloudMachineCard({
           cloud machine's card stays as upstream. */}
       {!box ? null : cloud.resting ? (
         <div className="mt-2 text-xs text-foreground-muted">
-          <span className="font-medium text-foreground">{cloud.heading}</span> · {cloud.line}
+          {/* Said once: while the checklist shows these very words, the card doesn't repeat them. */}
+          <BoxStatusLine machine={machine} serverId={serverId} view={cloud} />
           {cloud.start && !blocked && !checklistStarts && (
             <div className="mt-2">
               <Button

@@ -26,7 +26,7 @@ vi.mock('@renderer/features/locations/components/add-agent-modal/give-machine-lo
   },
 }));
 
-const { BoxSetupChecklist } = await import('./setup-checklist-view');
+const { BoxSetupChecklist, BoxStatusLine } = await import('./setup-checklist-view');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -165,5 +165,46 @@ describe('BoxSetupChecklist', () => {
     const view = await show(ready, ['a1']);
     expect(view.host.innerHTML).toBe('');
     view.done();
+  });
+
+  it('the card says a starting box’s state once: hidden while the checklist says it, shown once there’s no checklist', async () => {
+    const starting: YourCloudView = {
+      resting: true,
+      heading: 'Starting…',
+      line: 'Usually ready in about two minutes.',
+    };
+    const showLine = async () => {
+      const host = document.createElement('div');
+      document.body.append(host);
+      const root = createRoot(host);
+      await act(async () =>
+        root.render(
+          createElement(BoxStatusLine, { machine: box(['a1']), serverId: 's1', view: starting })
+        )
+      );
+      return { host, done: () => act(() => root.unmount()) };
+    };
+    owned.data = [controller(false)];
+    let view = await showLine();
+    expect(view.host.querySelector('[data-card-status]')).toBeNull();
+    view.done();
+    owned.data = undefined; // the machine list still loading: no checklist, so the card says it
+    view = await showLine();
+    expect(view.host.textContent).toBe('Starting… · Usually ready in about two minutes.');
+    view.done();
+  });
+
+  it('a stopped box keeps the card’s own words, since the checklist words it differently', async () => {
+    owned.data = [controller(false)];
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () =>
+      root.render(
+        createElement(BoxStatusLine, { machine: box(['a1']), serverId: 's1', view: stopped })
+      )
+    );
+    expect(host.querySelector('[data-card-status]')?.textContent).toBe('Stopped · x');
+    act(() => root.unmount());
   });
 });

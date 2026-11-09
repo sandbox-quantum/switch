@@ -142,10 +142,12 @@ export function replyAgo(iso: string, now: Date): string {
 }
 
 /**
- * What the agents list shows for one agent: its state from Core, "Stopped"
- * for an agent on the box its owner stopped (Core leaves those out) or on a
- * box the panel shows as Stopped (`boxStopped`), or null for an agent not on
- * the person's cloud at all.
+ * What the agents list shows for one agent: its state from Core, or null for
+ * an agent not on the person's cloud at all. On a box the panel shows as
+ * Stopped (`boxStopped`), every agent on it says "Stopped · Start your cloud
+ * to use it", whether or not Core sent a state for it (Core leaves out an
+ * agent its owner stopped); a failure keeps its own words. The plain "Stopped"
+ * is only for an agent its owner stopped on a box that's running.
  */
 export function cloudStatusFor(
   agentId: string,
@@ -156,8 +158,9 @@ export function cloudStatusFor(
 ): CloudPresentation | null {
   const agent = states.get(agentId);
   // A resting agent on a stopped box won't start when messaged (Console's
-  // `sharedCloudPresentation` says the same); a failure keeps its own words.
-  if (boxStopped && onBox.has(agentId) && agent?.state === "resting") return BOX_STOPPED;
+  // `sharedCloudPresentation` says the same), and nor will one with no state
+  // at all; a failure keeps its own words.
+  if (boxStopped && onBox.has(agentId) && (!agent || agent.state === "resting")) return BOX_STOPPED;
   if (agent) return cloudPresentation(agent, now);
   return onBox.has(agentId) ? OWNER_STOPPED : null;
 }

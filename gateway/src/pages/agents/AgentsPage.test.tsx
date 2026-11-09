@@ -241,8 +241,9 @@ describe("AgentsPage with hosted agents v2", () => {
         "Stopped · Start your cloud to use it",
       ),
     );
+    // Its owner stopped it, so Core sends no state: on a stopped box it still says to start the cloud.
     expect(within(screen.getByTestId("row-stopped-one")).getByTestId("cloud").textContent).toBe(
-      "Stopped",
+      "Stopped · Start your cloud to use it",
     );
     // An agent not on the box is left alone.
     expect(within(screen.getByTestId("row-<b>local</b>")).getByTestId("cloud").textContent).toBe("—");
@@ -302,6 +303,27 @@ describe("AgentsPage with hosted agents v2", () => {
     vi.mocked(hooks.useAgents).mockReturnValue({ data: others, loading: false, error: null, refetch: vi.fn() });
     rerender(<AgentsPage />);
     expect(await screen.findByRole("list", { name: "Setting up your cloud" })).toBeTruthy();
+  });
+
+  it("puts a cloud state and its detail on two lines, never cut off, with the whole on hover", async () => {
+    box = { ...resting, state: "ready", sleeping: false };
+    fetch.mockImplementation(async (url: string) => {
+      const body = url.endsWith("/hosted-machines")
+        ? { available: true, machines: [box] }
+        : { agents: [{ agent_id: "a1", state: "waking", box_starting: true, last_reply_at: "2026-11-05T11:56:00Z" }] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.mocked(hooks.useHostedV2).mockReturnValue(true);
+    render(<AgentsPage />);
+    const cell = await waitFor(() => {
+      const found = within(screen.getByTestId("row-notes-taker")).getByTestId("cloud-cell");
+      expect(found.textContent).toBe("Back in a moment · Starting your cloud");
+      return found;
+    });
+    // One line each: the state, then its detail.
+    const lines = [...cell.querySelectorAll(":scope > div > div")].map((line) => line.textContent);
+    expect(lines).toEqual(["Back in a moment", " · Starting your cloud"]);
+    expect(cell.getAttribute("title")).toMatch(/^Back in a moment · Starting your cloud \(last reply .+\)$/);
   });
 
   it("while the flag is still loading, shows and asks nothing", async () => {

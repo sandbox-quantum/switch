@@ -229,7 +229,14 @@ export function sharedCloudFromSession(
         Partial<Pick<CloudMachine, 'reseal_providers'>>)
     | null = null,
   /** V3b: whether this Console has already run the re-seal for the box's current controller. */
-  resealActed = false
+  resealActed = false,
+  /**
+   * Your cloud shows the box as Stopped (`boxShowsStopped`: its owner stopped
+   * it, or it's put away). Its controller is off on purpose, so the card reads
+   * "Stopped · Start your cloud to use it" (as Switch web), never the red
+   * "Machine offline".
+   */
+  boxStopped = false
 ): SharedCloudAgent | null {
   // Visibility V2: the server's reason comes first where it changes the card. Waiting too long, a restart and a
   // move keep the card's usual state (the copy: "then today's state"); the Status panel shows them.
@@ -296,6 +303,9 @@ export function sharedCloudFromSession(
   // starting again after one: never the red "Machine offline" (L2-IS-1).
   if (onSharedBox && box && agent.desiredState !== 'stopped') {
     if (box.sleeping) return { agent_id: agent.agentId, state: 'resting', box_stopped: true };
+    // Stopped by its owner (or put away): the same resting card, which reads Stopped
+    // once the caller passes `boxStopped` on to `sharedCloudPresentation`.
+    if (boxStopped) return { agent_id: agent.agentId, state: 'resting', box_stopped: true };
     // A start that failed: Core leaves it until the owner retries, and its room
     // line asks the owner to check, so the card says the same (never amber).
     if (box.state === 'error')

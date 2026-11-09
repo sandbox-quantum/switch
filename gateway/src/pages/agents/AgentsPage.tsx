@@ -44,6 +44,19 @@ import RegisterAgentDialog from "./RegisterAgentDialog";
 // the status hues for the reader's attention and mean nothing, so the tag is
 // neutral and the label carries the distinction.
 
+/** Read by screen readers, not shown (as MUI's `visuallyHidden`, which is not a direct dependency here). */
+const visuallyHidden = {
+  border: 0,
+  clip: "rect(0 0 0 0)",
+  height: "1px",
+  margin: "-1px",
+  overflow: "hidden",
+  padding: 0,
+  position: "absolute",
+  whiteSpace: "nowrap",
+  width: "1px",
+} as const;
+
 export default function AgentsPage() {
   const navigate = useNavigate();
   const { user, canAdminTenant: isAdmin } = useAuth();
@@ -247,33 +260,46 @@ export default function AgentsPage() {
                       {EM_DASH}
                     </Box>
                   );
+                // Two short lines rather than one cut off ("Back in a moment · Startin…"):
+                // the state, then its detail. Each line still ends in "…" if a very
+                // narrow column needs it, with the whole line on hover, and the hidden
+                // " · " keeps it one sentence for screen readers.
+                const full = [shown.label, shown.detail].filter(Boolean).join(" · ");
+                const hover = shown.when ? `${full} (${shown.when})` : full;
+                const line = { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } as const;
                 return (
-                  <Box component="span" title={shown.when ?? undefined}>
-                    <StateFade state={`${shown.label}|${shown.detail ?? ""}`}>
-                      {shown.label}
-                      {shown.detail && shown.next ? (
-                        <>
-                          {" · "}
-                          {/* The second part is the next step: it goes there. */}
-                          <Link
-                            component="button"
-                            variant="body2"
-                            sx={{ verticalAlign: "baseline" }}
-                            onClick={(event) => {
-                              // The row opens the agent; this link only goes to the step.
-                              event.stopPropagation();
-                              goToStep(shown.next!);
-                            }}
-                          >
-                            {shown.detail}
-                          </Link>
-                        </>
-                      ) : (
-                        shown.detail && (
-                          <Box component="span" sx={{ color: "text.secondary" }}>
-                            {` · ${shown.detail}`}
+                  <Box
+                    title={hover}
+                    data-testid="cloud-cell"
+                    sx={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%", minWidth: 0, lineHeight: 1.3 }}
+                  >
+                    <StateFade state={`${shown.label}|${shown.detail ?? ""}`} component="div">
+                      <Box sx={line}>{shown.label}</Box>
+                      {shown.detail && (
+                        <Box sx={{ ...line, typography: "caption" }}>
+                          <Box component="span" sx={visuallyHidden}>
+                            {" · "}
                           </Box>
-                        )
+                          {shown.next ? (
+                            // The second part is the next step: it goes there.
+                            <Link
+                              component="button"
+                              variant="caption"
+                              sx={{ verticalAlign: "baseline" }}
+                              onClick={(event) => {
+                                // The row opens the agent; this link only goes to the step.
+                                event.stopPropagation();
+                                goToStep(shown.next!);
+                              }}
+                            >
+                              {shown.detail}
+                            </Link>
+                          ) : (
+                            <Box component="span" sx={{ color: "text.secondary" }}>
+                              {shown.detail}
+                            </Box>
+                          )}
+                        </Box>
                       )}
                     </StateFade>
                   </Box>

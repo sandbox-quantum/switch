@@ -105,3 +105,17 @@ export function setupChecklist(params: {
   const lines = [cloud, login, agent];
   return lines.every((line) => line.done) ? null : lines;
 }
+
+/**
+ * Whether the card's own status line would only repeat the checklist's first
+ * line (a box starting, stopping, paused or turned off), so the card hides it
+ * while the checklist shows. Only for the very same words: a stopped box's
+ * "Your cloud is stopped" and the card's "Stopped · …" are worded differently,
+ * so both stay. The same rule as Switch web.
+ */
+export function repeatsChecklist(view: YourCloudView, lines: ChecklistLine[] | null): boolean {
+  if (!view.resting || !lines) return false;
+  return lines.some(
+    (line) => line.key === 'cloud' && !line.done && line.text === `${view.heading} · ${view.line}`
+  );
+}

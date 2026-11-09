@@ -213,6 +213,25 @@ describe("YourCloudPanel", () => {
     });
   });
 
+  it("says a starting box's state once: in the checklist while it shows, on the panel when there's no checklist", () => {
+    const starting = box({ state: "provisioning" });
+    const { rerender } = render(<YourCloudPanel machine={starting} onChanged={vi.fn()} loginSet={false} />);
+    expect(screen.getAllByText("Starting…")).toHaveLength(1);
+    expect(screen.getAllByText(/Usually ready in about two minutes\./)).toHaveLength(1);
+    expect(screen.getByTestId("setup-cloud").textContent).toContain("Starting…");
+    // No checklist showing (here, the login state not known yet): the panel says it.
+    rerender(<YourCloudPanel machine={starting} onChanged={vi.fn()} loginSet={null} />);
+    expect(screen.queryByRole("list", { name: "Setting up your cloud" })).toBeNull();
+    expect(screen.getByText("Starting…")).toBeTruthy();
+    expect(screen.getByText("Usually ready in about two minutes.")).toBeTruthy();
+  });
+
+  it("keeps the panel's line when the checklist words it differently (a stopped box)", () => {
+    render(<YourCloudPanel machine={box({ state: "retained" })} onChanged={vi.fn()} loginSet={false} />);
+    expect(screen.getByTestId("setup-cloud").textContent).toContain("Your cloud is stopped");
+    expect(screen.getByText("Start it to add or use an agent.")).toBeTruthy();
+  });
+
   it("explains a resting box with agents", () => {
     render(<YourCloudPanel machine={box({ sleeping: true })} onChanged={vi.fn()} />);
     expect(

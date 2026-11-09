@@ -52,6 +52,14 @@ export default function YourCloudPanel({
 }) {
   const cloud = yourCloudView(machine, localTime);
   const checklist = loginSet === null ? null : setupChecklist(machine, loginSet);
+  // While the checklist shows the box's own state ("Starting… · Usually ready in
+  // about two minutes."), the panel doesn't say it a second time.
+  const repeatsChecklist =
+    cloud.resting &&
+    (checklist?.some(
+      (line) => line.step === "cloud" && !line.done && line.text === cloud.heading && line.note === cloud.line,
+    ) ??
+      false);
   const blocked = startBlocked(machine);
   const problem = machineProblem(machine);
   const [pending, setPending] = useState(false);
@@ -106,15 +114,17 @@ export default function YourCloudPanel({
       <StateFade state={cloud.heading} component="div">
         {cloud.resting ? (
           <Box sx={{ mt: 1 }}>
-            <Typography variant="body2">
-              <Box component="span" sx={{ fontWeight: 600 }}>
-                {cloud.heading}
-              </Box>
-              {" · "}
-              <Box component="span" sx={{ color: "text.secondary" }}>
-                {cloud.line}
-              </Box>
-            </Typography>
+            {!repeatsChecklist && (
+              <Typography variant="body2">
+                <Box component="span" sx={{ fontWeight: 600 }}>
+                  {cloud.heading}
+                </Box>
+                {" · "}
+                <Box component="span" sx={{ color: "text.secondary" }}>
+                  {cloud.line}
+                </Box>
+              </Typography>
+            )}
             {cloud.heading === "Resting" && machine.agents.length > 0 && (
               <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: 520 }}>
                 {RESTING_EXPLANATION}

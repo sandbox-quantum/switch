@@ -145,6 +145,8 @@ it('a resting box with agents offers Wake, which calls ensure', async () => {
 it('a box that is starting reads Starting… with no Start', async () => {
   const el = await render(box({ state: 'provisioning', desired_state: 'running' }));
   expect(el.textContent).toContain('Starting…');
+  // Said once, whether the checklist or the card carries it.
+  expect(el.textContent?.split('Usually ready in about two minutes').length).toBe(2);
   expect(startButton(el)).toBeNull();
 });
 

@@ -11,7 +11,7 @@ import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import { isValidProviderId } from '@shared/core/providers/agent-provider-registry';
 import { PEOPLE_WORDS } from './people-words';
-import { type ChecklistLine, setupChecklist } from './setup-checklist';
+import { type ChecklistLine, repeatsChecklist, setupChecklist } from './setup-checklist';
 import type { YourCloudView } from './your-cloud';
 
 const W = PEOPLE_WORDS.checklist;
@@ -104,27 +104,11 @@ export function SetupChecklist({
 }
 
 /**
- * The box card's checklist, with its read of the machine list kept to the box
- * card only (a v1 machine's card asks for nothing new). A stopped box's Start
- * lives here: on the checklist's first line, or as a plain button while the
- * machine list is still loading, so Start is never missing or shown twice.
+ * The box card's checklist lines, from what Console already loads: the machine
+ * list (for the box's controller and its logins) and the managed agents (for the
+ * providers they use). Null while it isn't known yet, or once all three are ticked.
  */
-export function BoxSetupChecklist({
-  machine,
-  serverId,
-  view,
-  pending,
-  blocked,
-  onStart,
-}: {
-  machine: CloudMachine;
-  serverId: string;
-  view: YourCloudView;
-  pending: boolean;
-  /** Switch paused it or the admin turned it off: no Start is offered. */
-  blocked: boolean;
-  onStart: (how: 'ensure' | 'lifecycle') => void;
-}) {
+export function useBoxChecklist(machine: CloudMachine, serverId: string, view: YourCloudView) {
   const owned = useOwnedMachines(serverId);
   // A failed read counts as "no controller row": the checklist still shows, with no Give login.
   const controller = owned.isError
@@ -148,6 +132,32 @@ export function BoxSetupChecklist({
         ? undefined
         : null;
   const lines = setupChecklist({ view, agents: machine.agents, controller, agentProviders });
+  return { lines, controller };
+}
+
+/**
+ * The box card's checklist, with its read of the machine list kept to the box
+ * card only (a v1 machine's card asks for nothing new). A stopped box's Start
+ * lives here: on the checklist's first line, or as a plain button while the
+ * machine list is still loading, so Start is never missing or shown twice.
+ */
+export function BoxSetupChecklist({
+  machine,
+  serverId,
+  view,
+  pending,
+  blocked,
+  onStart,
+}: {
+  machine: CloudMachine;
+  serverId: string;
+  view: YourCloudView;
+  pending: boolean;
+  /** Switch paused it or the admin turned it off: no Start is offered. */
+  blocked: boolean;
+  onStart: (how: 'ensure' | 'lifecycle') => void;
+}) {
+  const { lines, controller } = useBoxChecklist(machine, serverId, view);
   if (lines)
     return (
       <SetupChecklist
@@ -178,4 +188,29 @@ export function stoppedStart(
   view: YourCloudView
 ): view is YourCloudView & { start: 'ensure' | 'lifecycle' } {
   return view.resting && view.heading === 'Stopped' && view.start !== undefined;
+}
+
+/**
+ * A box card's own status line ("Starting… · Usually ready in about two
+ * minutes."), left out while the checklist's first line says exactly the same,
+ * so it's said once (the same rule as Switch web). It shows again once the
+ * checklist folds away. Rendered only on a v2 box's card, so a v1 machine's card
+ * asks for nothing new.
+ */
+export function BoxStatusLine({
+  machine,
+  serverId,
+  view,
+}: {
+  machine: CloudMachine;
+  serverId: string;
+  view: YourCloudView;
+}) {
+  const { lines } = useBoxChecklist(machine, serverId, view);
+  if (!view.resting || repeatsChecklist(view, lines)) return null;
+  return (
+    <span data-card-status="">
+      <span className="font-medium text-foreground">{view.heading}</span> · {view.line}
+    </span>
+  );
 }

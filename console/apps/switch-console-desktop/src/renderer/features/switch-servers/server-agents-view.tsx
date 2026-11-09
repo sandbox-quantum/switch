@@ -209,7 +209,14 @@ function ManagedAgentCard({
   const box = useCloudMachineFor(agent);
   const resealResult = useResealResult(agent.serverId, box);
   const sharedState =
-    shared ?? sharedCloudFromSession(agent, onSharedBox, box, resealResult !== undefined);
+    shared ??
+    sharedCloudFromSession(
+      agent,
+      onSharedBox,
+      box,
+      resealResult !== undefined,
+      box !== null && boxShowsStopped(box)
+    );
   return (
     <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] transition-colors hover:bg-[var(--fill)]">
       <button

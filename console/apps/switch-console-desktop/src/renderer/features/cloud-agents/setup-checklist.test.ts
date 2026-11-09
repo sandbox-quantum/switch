@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
-import { setupChecklist } from './setup-checklist';
+import { repeatsChecklist, setupChecklist } from './setup-checklist';
 import type { YourCloudView } from './your-cloud';
 
 const ready: YourCloudView = {
@@ -196,5 +196,42 @@ describe('setupChecklist', () => {
       text: 'First agent added',
       action: null,
     });
+  });
+
+  it('the card leaves out its status only when the checklist says the very same words', () => {
+    const starting: YourCloudView = {
+      resting: true,
+      heading: 'Starting…',
+      line: 'Usually ready in about two minutes.',
+    };
+    const lines = setupChecklist({
+      view: starting,
+      agents: [],
+      controller: controller(),
+      agentProviders: null,
+    });
+    expect(lines?.[0]?.text).toBe('Starting… · Usually ready in about two minutes.');
+    expect(repeatsChecklist(starting, lines)).toBe(true);
+    // No checklist showing (not known yet, or folded away): the card says it.
+    expect(repeatsChecklist(starting, null)).toBe(false);
+    // A stopped box: "Your cloud is stopped" and "Stopped · …" differ, so both stay.
+    const stoppedView = stopped('lifecycle');
+    expect(
+      repeatsChecklist(
+        stoppedView,
+        setupChecklist({
+          view: stoppedView,
+          agents: [],
+          controller: controller(),
+          agentProviders: null,
+        })
+      )
+    ).toBe(false);
+    expect(
+      repeatsChecklist(
+        ready,
+        setupChecklist({ view: ready, agents: [], controller: controller(), agentProviders: null })
+      )
+    ).toBe(false);
   });
 });

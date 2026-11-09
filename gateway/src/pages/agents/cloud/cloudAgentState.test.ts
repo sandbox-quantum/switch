@@ -115,16 +115,23 @@ describe("cloudStatusFor", () => {
     expect(cloudStatusFor("a2", states, new Set(["a1", "a2"]), now)).toBe(OWNER_STOPPED);
   });
 
-  it("says Stopped for every agent on a box the panel shows as Stopped", () => {
+  it("says Stopped · Start your cloud for every agent on a box the panel shows as Stopped", () => {
     expect(cloudStatusFor("a1", states, new Set(["a1"]), now, true)).toBe(BOX_STOPPED);
-    // Its owner stopped it: Core leaves it out.
-    expect(cloudStatusFor("a2", states, new Set(["a1", "a2"]), now, true)).toBe(OWNER_STOPPED);
+    // Its owner stopped it too, so Core leaves it out: on a stopped box it still
+    // says to start the cloud, never just "Stopped".
+    expect(cloudStatusFor("a2", states, new Set(["a1", "a2"]), now, true)).toBe(BOX_STOPPED);
+    expect(BOX_STOPPED.label + " · " + BOX_STOPPED.detail).toBe("Stopped · Start your cloud to use it");
     expect(cloudStatusFor("a3", states, new Set(["a1"]), now, true)).toBeNull();
     // A failure keeps its own words on a stopped box.
     const paused = new Map([["a1", agent({ state: "unavailable", paused: true })]]);
     expect(cloudStatusFor("a1", paused, new Set(["a1"]), now, true)?.label).toBe(
       "Paused by Switch",
     );
+  });
+
+  it("keeps the plain Stopped only for an agent its owner stopped on a running box", () => {
+    expect(cloudStatusFor("a2", states, new Set(["a1", "a2"]), now, false)).toBe(OWNER_STOPPED);
+    expect(OWNER_STOPPED.detail).toBeNull();
   });
 
   it("shows nothing for an agent not on the person's cloud", () => {
