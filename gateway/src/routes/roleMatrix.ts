@@ -99,7 +99,7 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/operator/workspaces", OPERATOR),
   ],
   v2: [
-    planned("/overview", EVERYONE),
+    built("/overview", EVERYONE),
     built("/ecosystem", EVERYONE),
     built("/rooms", EVERYONE),
     built("/rooms/new", EVERYONE),
@@ -200,16 +200,8 @@ const CURRENT_RAIL_MEMBER = [
   "Organization",
   "Devices",
 ];
-const V2_RAIL = [
-  "Overview",
-  "Agents",
-  "Rooms",
-  "Templates",
-  "Connectors",
-  "Resources",
-  "Ecosystem",
-  "Settings",
-];
+// The ecosystem graph has no rail item of its own: Overview links to it.
+const V2_RAIL = ["Overview", "Agents", "Rooms", "Templates", "Connectors", "Resources", "Settings"];
 
 /** The navigation rail's labels, in order. */
 export const RAIL: Record<MatrixLayout, Record<Persona, readonly string[]>> = {
