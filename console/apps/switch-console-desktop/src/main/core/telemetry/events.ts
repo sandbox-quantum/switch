@@ -384,6 +384,23 @@ export type TelemetryEventMap = {
     failure_reason: TelemetryAgentCreateFailure;
     entry_point: TelemetryEntryPoint;
   };
+  /**
+   * An agent already set up in a directory on a host was loaded into this app
+   * under the Switch identity it already has (Load existing agents). Nothing
+   * was created: the agent existed before, set up by another install.
+   */
+  agent_attached: {
+    agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
+  };
+  /**
+   * An agent's session spawned a subagent, and the app took it on as an agent
+   * of its own. Nobody did anything in the app.
+   */
+  subagent_adopted: {
+    agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
+  };
   session_started: {
     agent_type: TelemetryAgentType;
     location: TelemetryLocationKind;
@@ -725,6 +742,8 @@ export type TelemetryEvent = {
 export const TELEMETRY_EVENT_PROPERTIES = {
   app_launched: ['install_kind', 'from_version', 'trigger'],
   agent_created: ['agent_type', 'location', 'outcome', 'failure_reason', 'entry_point'],
+  agent_attached: ['agent_type', 'location'],
+  subagent_adopted: ['agent_type', 'location'],
   session_started: [
     'agent_type',
     'location',

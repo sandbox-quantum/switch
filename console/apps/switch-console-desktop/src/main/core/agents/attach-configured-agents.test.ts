@@ -155,6 +155,17 @@ describe('attachConfiguredAgents', () => {
     );
   });
 
+  it('announces the agent as attached rather than created, since it already existed', async () => {
+    await attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]));
+
+    expect(h.emit).toHaveBeenCalledWith(
+      'agent:created',
+      expect.objectContaining({ name: 'theirs' }),
+      'unknown',
+      'attached'
+    );
+  });
+
   it('starts an attached agent on a host in auto mode with bypass off', async () => {
     await attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]));
 

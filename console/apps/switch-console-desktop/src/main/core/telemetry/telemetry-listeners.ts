@@ -97,10 +97,21 @@ async function rememberSession(sessionId: string, locationId: string): Promise<v
  * `trackEvent` at their own site.
  */
 export function registerTelemetryListeners(): void {
-  agentEvents.on('agent:created', async (agent, entryPoint) => {
-    trackEvent('agent_created', {
+  agentEvents.on('agent:created', async (agent, entryPoint, origin) => {
+    const shape = {
       agent_type: agentTypeOf(agent.providerId),
       location: await locationKindOf(agent.locationId),
+    };
+    if (origin === 'attached') {
+      trackEvent('agent_attached', shape);
+      return;
+    }
+    if (origin === 'adopted') {
+      trackEvent('subagent_adopted', shape);
+      return;
+    }
+    trackEvent('agent_created', {
+      ...shape,
       outcome: 'success',
       failure_reason: 'none',
       entry_point: entryPointOf(entryPoint),
