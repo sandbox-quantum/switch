@@ -30,9 +30,14 @@ from switch_core.gateway.cloud_controllers import (
     enrollment_code,
     live_controller,
 )
-from switch_core.gateway.dependencies import get_config, get_session_factory
+from switch_core.gateway.dependencies import (
+    current_telemetry,
+    get_config,
+    get_session_factory,
+)
 from switch_core.gateway.hosted_machines import controller_settings
 from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.telemetry import emit_after_commit
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -143,16 +148,19 @@ async def _sweep(
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine was not scheduled within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
+        _report_failure(session, "not_scheduled")
     elif _connect_timed_out(machine, now):
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine started but did not connect to Switch within 10 minutes. Retry it in Switch Console, or ask your administrator to check the machine's startup logs."
         machine.updated_at = now
+        _report_failure(session, "never_connected")
     elif _start_timed_out(machine, now):
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
+        _report_failure(session, "never_started")
     elif machine.state in {"retained", "error"} and retention_expired(machine, now):
         machine.desired_state = "deleted"
         bump_revision(machine, now)
@@ -174,6 +182,34 @@ async def _sweep(
             machine, workspaces, retention_days=retention_days, now=now
         ):
             store.stop(machine, "idle", now)
+            emit_after_commit(
+                session,
+                current_telemetry(),
+                "cloud_machine_stopped",
+                {"reason": "idle"},
+            )
+
+
+FailureReason = Literal[
+    "not_scheduled",
+    "never_started",
+    "never_connected",
+    "owner_left",
+    "needs_attention",
+    "reported",
+]
+
+
+def _observed_failure(error_code: str | None) -> FailureReason:
+    """An error the machine reported: `needs_attention` for the one code an
+    observation can carry, `reported` for any other."""
+    return "needs_attention" if error_code == "machine_needs_attention" else "reported"
+
+
+def _report_failure(session: AsyncSession, reason: FailureReason) -> None:
+    emit_after_commit(
+        session, current_telemetry(), "cloud_machine_failed", {"reason": reason}
+    )
 
 
 @router.get("/machines")
@@ -285,6 +321,8 @@ async def prepare(
             },
         }
     if not controllers:
+        if machine.state != "error":
+            _report_failure(session, "owner_left")
         machine.state = "error"
         machine.error = "The cloud machine's owner is no longer a member of any workspace it serves."
         machine.updated_at = now
@@ -350,6 +388,8 @@ async def observe(
         elif (
             body.state == "error" or body.error is not None
         ) and machine.state not in STALE_ERROR_IGNORED_STATES:
+            if machine.state != "error":
+                _report_failure(session, _observed_failure(body.error_code))
             machine.state = "error"
             machine.error = body.error or OBSERVED_ERROR
             machine.error_code = body.error_code
@@ -373,6 +413,8 @@ async def observe(
         if machine.state != "ready":
             machine.state = "provisioning"
     elif body.state == "error":
+        if machine.state != "error":
+            _report_failure(session, _observed_failure(body.error_code))
         machine.state = "error"
         machine.error = body.error or OBSERVED_ERROR
         machine.error_code = body.error_code

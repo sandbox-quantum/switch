@@ -6,12 +6,19 @@ import pytest
 
 from switch_core.authz import (
     Principal,
+    admin_by_own_membership,
     administers_tenant,
     can,
+    can_change_workspace_member,
+    can_delete_api_key,
+    can_delete_room_document,
+    can_delete_workspace,
     can_manage,
-    owns_tenant,
+    can_unlink_from_room,
+    owns,
     require,
     require_manage,
+    require_visibility_change,
     validate_visibility_pair,
 )
 
@@ -111,7 +118,7 @@ class TestCanManage:
 class TestAdministersTenant:
     """`administers_tenant` is the one function allowed to turn a role into
     the admin bit (`authz.py` module docstring) — the operator bypass and the
-    per-tenant `owner`/`admin` membership role, combined."""
+    per-tenant `admin` membership role, combined."""
 
     def test_operator_administers_regardless_of_tenant_role(self) -> None:
         assert administers_tenant(
@@ -121,12 +128,16 @@ class TestAdministersTenant:
             is_operator=True, tenant_role="member", organization_role=None
         )
 
-    def test_owner_or_admin_membership_administers(self) -> None:
-        assert administers_tenant(
-            is_operator=False, tenant_role="owner", organization_role=None
-        )
+    def test_admin_membership_administers(self) -> None:
         assert administers_tenant(
             is_operator=False, tenant_role="admin", organization_role=None
+        )
+
+    def test_owner_is_no_longer_an_admin_role(self) -> None:
+        """`owner` merged into `admin`; a stray `owner` string must not
+        grant anything."""
+        assert not administers_tenant(
+            is_operator=False, tenant_role="owner", organization_role=None
         )
 
     def test_plain_member_does_not_administer(self) -> None:
@@ -156,37 +167,39 @@ class TestAdministersTenant:
         )
 
 
-class TestOwnsTenant:
-    """`owns_tenant` is the narrower bit: who may move the ownership set,
-    which is not everyone who may administer the workspace."""
+class TestCanUnlinkFromRoom:
+    def test_those_taking_part_and_admins_may(self) -> None:
+        assert can_unlink_from_room(ALICE, takes_part=True)
+        assert can_unlink_from_room(ADMIN, takes_part=False)
 
-    def test_operator_owns_regardless_of_tenant_role(self) -> None:
-        assert owns_tenant(is_operator=True, tenant_role=None)
-        assert owns_tenant(is_operator=True, tenant_role="member")
+    def test_anyone_else_may_not(self) -> None:
+        assert not can_unlink_from_room(ALICE, takes_part=False)
+        assert not can_unlink_from_room(ANON, takes_part=False)
 
-    def test_owner_membership_owns(self) -> None:
-        assert owns_tenant(is_operator=False, tenant_role="owner")
 
-    def test_admin_membership_administers_but_does_not_own(self) -> None:
-        """The whole point of there being two functions: an admin who also
-        owned could take the workspace from its owner one safe-looking
-        request at a time."""
-        assert administers_tenant(
-            is_operator=False, tenant_role="admin", organization_role=None
+class TestCanDeleteRoomDocument:
+    def test_its_creator_the_room_owner_and_an_admin_may(self) -> None:
+        assert can_delete_room_document(
+            ALICE, room_owner_id="u-bob", document_owner_id="u-alice"
         )
-        assert not owns_tenant(is_operator=False, tenant_role="admin")
-
-    def test_organization_admin_does_not_own(self) -> None:
-        """`org_admin` is admin-level in each workspace of its organization:
-        it administers them but does not move their ownership set."""
-        assert administers_tenant(
-            is_operator=False, tenant_role=None, organization_role="org_admin"
+        assert can_delete_room_document(
+            ALICE, room_owner_id="u-alice", document_owner_id="u-bob"
         )
-        assert not owns_tenant(is_operator=False, tenant_role=None)
+        assert can_delete_room_document(
+            ADMIN, room_owner_id="u-bob", document_owner_id="u-carol"
+        )
 
-    def test_plain_member_and_no_membership_do_not_own(self) -> None:
-        assert not owns_tenant(is_operator=False, tenant_role="member")
-        assert not owns_tenant(is_operator=False, tenant_role=None)
+    def test_anyone_else_may_not(self) -> None:
+        assert not can_delete_room_document(
+            ALICE, room_owner_id="u-bob", document_owner_id="u-carol"
+        )
+
+    def test_a_missing_owner_matches_nobody(self) -> None:
+        # The None-guard is load-bearing, as in `can`: an unowned document
+        # in an unowned room is not "owned" by a principal with no id.
+        assert not can_delete_room_document(
+            ANON, room_owner_id=None, document_owner_id=None
+        )
 
 
 class TestValidateVisibilityPair:
@@ -208,3 +221,87 @@ class TestValidateVisibilityPair:
     def test_rejects_invalid_enum(self, read: str, write: str) -> None:
         with pytest.raises(ValueError, match="expected public|private"):
             validate_visibility_pair(read, write)
+
+
+class TestRequireVisibilityChange:
+    """Changing who may see or edit a resource is its owner's or an admin's,
+    like a room's; write access alone does not reach it."""
+
+    def _open(self) -> SimpleNamespace:
+        return _resource(
+            owner_id="u-owner", read_visibility="public", write_visibility="public"
+        )
+
+    def test_a_writer_may_not_change_visibility(self) -> None:
+        with pytest.raises(PermissionError, match="owner or a workspace admin"):
+            require_visibility_change(ALICE, self._open(), "private", None, "reference")
+        with pytest.raises(PermissionError):
+            require_visibility_change(ALICE, self._open(), None, "private", "package")
+
+    def test_a_writer_may_send_the_current_visibility_back(self) -> None:
+        require_visibility_change(ALICE, self._open(), "public", "public", "reference")
+        require_visibility_change(ALICE, self._open(), None, None, "reference")
+
+    def test_the_owner_and_an_admin_may_change_it(self) -> None:
+        owner = Principal("u-owner", False)
+        require_visibility_change(owner, self._open(), "private", "private", "package")
+        require_visibility_change(ADMIN, self._open(), "private", "private", "package")
+
+
+class TestOwns:
+    def test_only_the_owner_owns_it_whatever_their_role(self) -> None:
+        assert owns(ALICE, "u-alice")
+        assert not owns(ADMIN, "u-alice")
+
+    def test_a_missing_owner_matches_nobody(self) -> None:
+        assert not owns(ANON, None)
+
+
+class TestCanChangeWorkspaceMember:
+    def test_an_admin_may_change_a_member_themselves_included(self) -> None:
+        assert can_change_workspace_member(
+            administers=True, member_is_organization_admin=False
+        )
+
+    def test_a_member_may_not(self) -> None:
+        assert not can_change_workspace_member(
+            administers=False, member_is_organization_admin=False
+        )
+
+    def test_nobody_may_change_an_organization_admins_row_here(self) -> None:
+        assert not can_change_workspace_member(
+            administers=True, member_is_organization_admin=True
+        )
+
+
+class TestAdminByOwnMembership:
+    def test_only_an_admin_membership_is(self) -> None:
+        assert admin_by_own_membership("admin")
+        assert not admin_by_own_membership("member")
+        assert not admin_by_own_membership(None)
+
+
+class TestCanDeleteWorkspace:
+    def test_an_admin_member_may_delete_it(self) -> None:
+        assert can_delete_workspace(tenant_role="admin", is_default=False)
+
+    @pytest.mark.parametrize("tenant_role", ["member", None])
+    def test_no_one_else_may_whatever_else_they_administer(
+        self, tenant_role: str | None
+    ) -> None:
+        # An organization admin, or the operator, holds no admin row here.
+        assert not can_delete_workspace(tenant_role=tenant_role, is_default=False)
+
+    def test_nobody_may_delete_the_default_workspace(self) -> None:
+        assert not can_delete_workspace(tenant_role="admin", is_default=True)
+
+
+class TestCanDeleteApiKey:
+    def test_the_owner_may_delete_their_own_key(self) -> None:
+        assert can_delete_api_key(ALICE, "u-alice", an_agent_signs_in_with_it=False)
+
+    def test_not_one_an_agent_still_signs_in_with(self) -> None:
+        assert not can_delete_api_key(ALICE, "u-alice", an_agent_signs_in_with_it=True)
+
+    def test_not_someone_elses_even_as_an_admin(self) -> None:
+        assert not can_delete_api_key(ADMIN, "u-alice", an_agent_signs_in_with_it=False)

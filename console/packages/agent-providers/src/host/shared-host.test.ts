@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { Command, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
+  type ConversationHistoryTurn,
   ProviderConversationUnavailableError,
   type ProviderAdapter,
   type TurnAttachment,
@@ -136,6 +137,8 @@ async function start(
     /** The provider reports work, such as subagents, still running outside any turn. */
     backgroundWork?: { running: boolean };
     resettable?: boolean;
+    /** The provider compacts its conversation natively. */
+    compactable?: boolean;
     /**
      * Stopping a conversation reports it stopped and exited, as every provider
      * adapter does, and returns only after the host has had time to look.
@@ -160,6 +163,8 @@ async function start(
     instructions?: string | null;
     /** The provider takes developer messages mid-conversation; each one is recorded here. */
     developerMessages?: string[];
+    /** The session continues a conversation started outside Switch, which had these turns. */
+    continuing?: ConversationHistoryTurn[];
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
@@ -270,6 +275,9 @@ async function start(
       };
     },
   };
+  if (opts.compactable) adapter.compactSession = vi.fn(async () => {});
+  const continuing = opts.continuing;
+  if (continuing) adapter.conversationHistory = vi.fn(async () => structuredClone(continuing));
   if (opts.conversationLost)
     vi.mocked(adapter.startSession).mockRejectedValueOnce(
       new ProviderConversationUnavailableError(
@@ -311,8 +319,10 @@ async function start(
         env: {},
         mcpServers: {},
         connectorMcpServers: [],
+        ...(continuing ? { resume: { nativeSessionId: 'cli-copy' } } : {}),
       },
       ...(opts.rooms ? { roomConnection: { connectionId: 'controller' } } : {}),
+      importHistory: continuing !== undefined,
       parent: channel,
       parkAfterMs: opts.parkAfterMs ?? null,
       instructions: opts.instructions ?? null,
@@ -460,6 +470,36 @@ it('turns a room message it was handed into a fenced prompt, once', async () => 
     expect(turn!.text).toContain('(2 unaddressed room messages arrived');
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('starts a continued conversation as new here: its instructions are not news, and its first room message opens it', async () => {
+  const host = await start({
+    rooms: true,
+    instructions: '',
+    continuing: [
+      {
+        turnId: 'prompt-1',
+        items: [
+          {
+            itemId: 'prompt-1',
+            kind: 'user-message',
+            status: 'completed',
+            title: '',
+            text: 'Fix the build',
+          },
+        ],
+      },
+    ],
+  });
+  try {
+    expect(await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') })).toMatchObject({
+      ok: true,
+    });
+    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.turns[0]!.text).not.toContain('instructions were');
   } finally {
     expect(await host.stop()).toBeNull();
   }
@@ -994,12 +1034,76 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     expect(host.turns[0]!.text).toContain('The requested reset completed successfully.');
     expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
     expect(host.turns[0]!.text).toContain('in thread "thread"');
-    expect(host.turns[0]!.text).toContain('targeted message to "louisa"');
+    expect(host.turns[0]!.text).toContain(
+      'post_message a short note in the room in thread "thread"'
+    );
+    expect(host.turns[0]!.text).toContain('mention "louisa" only if list_participants lists them');
+    expect(host.turns[0]!.text).toContain('Do not use send_targeted_message');
     expect(host.turns[0]!.text).toContain('your session has been reset');
     // Asked again (a relay retried), the follow-up is not sent twice.
     await host.parent.ask({ type: 'command', command: reset, requesterName: 'louisa' });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('owes no follow-up for a reset asked for in a direct chat', async () => {
+  const host = await start({ resettable: true });
+  try {
+    const reset: Command = {
+      ...relayed('current', 'room-reset', { type: 'session.reset' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'console',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: reset,
+      requesterName: 'louisa',
+      direct: true,
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-reset', status: 'applied' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(host.turns).toHaveLength(0);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('still owes the follow-up for a compaction asked for in a direct chat', async () => {
+  const host = await start({ compactable: true });
+  try {
+    const compact: Command = {
+      ...relayed('current', 'room-compact', { type: 'session.compact' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'console',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: compact,
+      requesterName: 'louisa',
+      direct: true,
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-compact', status: 'applied' },
+    });
+    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
   } finally {
     expect(await host.stop()).toBeNull();
   }

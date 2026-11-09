@@ -623,6 +623,7 @@ async def harness(
                 version=None,
                 telemetry_environment="dev",
                 telemetry_internal=True,
+                deployment_kind="self_hosted",
             ),
             session_factory=session_factory,
         )
@@ -653,6 +654,8 @@ async def harness(
                 agent_store=session_env.agent_store,
                 room_role_store=session_env.room_role_store,
             ),
+            decisions=None,
+            decision_max_age_seconds=120,
         )
 
         provisioning: Provisioning = PostgresProvisioning(

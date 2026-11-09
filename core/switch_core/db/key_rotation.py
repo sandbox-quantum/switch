@@ -34,8 +34,10 @@ from switch_core.db.encrypted_json import reencrypt_stale_values
 from switch_core.db.models import (
     ApiKey,
     CollaborationBridge,
+    DecisionSettings,
     MachineWorkspace,
     MessagingInstall,
+    OrganizationAppCredential,
     ProviderConnection,
     ServerConnector,
     ServiceAppCredential,
@@ -45,8 +47,9 @@ from switch_core.db.models import (
     SignInFlow,
     TrustSettings,
 )
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.db.tenant_lookup import all_organization_ids
 from switch_core.keys import Keyring
 from switch_core.process_lease import read_leases
 
@@ -60,6 +63,7 @@ _ENCRYPTED_JSON_COLUMNS: tuple[tuple[type[Any], str], ...] = (
 )
 _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (ApiKey, "encrypted_key"),
+    (DecisionSettings, "api_key_encrypted"),
     (MessagingInstall, "encrypted_bot_token"),
     (ProviderConnection, "encrypted_credential"),
     (MachineWorkspace, "enrollment_code_encrypted"),
@@ -67,6 +71,11 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (ServiceTokenIssuance, "encrypted_token"),
     (SignInFlow, "encrypted_verifier"),
     (SignInFlow, "encrypted_result"),
+)
+# In organization-scoped tables: rewritten once per organization, in a session
+# bound to it alone.
+_ORGANIZATION_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
+    (OrganizationAppCredential, "encrypted_secrets"),
 )
 # In tables no tenant holds (`db/rls_ddl.py`, GLOBAL_TABLES), one row set for
 # the whole deployment (`trust_settings`, `service_oauth_clients`,
@@ -172,14 +181,19 @@ async def reencrypt_stored_secrets(
     keyring: Keyring,
     tenant_ids: list[str],
 ) -> None:
-    """Bring every tenant's encrypted values, plus the deployment's global
-    ones, onto the current key."""
+    """Bring every tenant's and every organization's encrypted values, plus
+    the deployment's global ones, onto the current key."""
     total = 0
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             for model, column in _ENCRYPTED_JSON_COLUMNS:
                 total += await reencrypt_stale_values(session, model, column)
             for model, column in _ENCRYPTED_TEXT_COLUMNS:
+                total += await reencrypt_stale_text(session, keyring, model, column)
+            await session.commit()
+    for organization_id in await all_organization_ids(session_factory):
+        async with organization_session(session_factory, organization_id) as session:
+            for model, column in _ORGANIZATION_ENCRYPTED_TEXT_COLUMNS:
                 total += await reencrypt_stale_text(session, keyring, model, column)
             await session.commit()
     async with session_factory() as session:

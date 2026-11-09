@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  ApiError,
-  CONNECTORS_NOT_ENABLED,
+  type ConnectorAppScope,
   type ConnectorApps,
   fetchConnectorApps,
   type AgentDetail,
@@ -13,7 +12,6 @@ import {
   type BridgeDetail,
   type BridgeTypeInfo,
   type ExternalUserSummary,
-  type DocumentDetail,
   type DocumentSummary,
   type InboundLinkedRoomDetail,
   type InstallablePlatforms,
@@ -28,10 +26,12 @@ import {
   type ReferenceTypeInfo,
   type ResourceRoom,
   type RoomDetail,
+  type RoomDocumentDetail,
+  type RoomDocumentSummary,
   type RoomGroupDetail,
   type RoomSummary,
   type TemplateSummary,
-  type UserInfo,
+  type ListedUser,
   fetchAgent,
   fetchAgents,
   fetchApiKeys,
@@ -183,8 +183,9 @@ export function useKnownAgentTypes(): UseQueryResult<KnownAgentType[]> {
   return useQuery(fetchKnownAgentTypes);
 }
 
-/** The server's connector apps; the operator's only, so call it only for them. */
-export function useConnectorApps(): UseQueryResult<ConnectorApps> {
+/** The connector apps of `scope`: the server's, which only its operator
+ * reads, or the current organization's, which only its org admins do. */
+export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<ConnectorApps> {
   const [data, setData] = useState<ConnectorApps | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -194,7 +195,7 @@ export function useConnectorApps(): UseQueryResult<ConnectorApps> {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchConnectorApps().then(
+    fetchConnectorApps(scope).then(
       (result) => {
         if (cancelled) return;
         setData(result);
@@ -203,25 +204,19 @@ export function useConnectorApps(): UseQueryResult<ConnectorApps> {
       },
       (err: unknown) => {
         if (cancelled) return;
-        setError(
-          err instanceof ApiError && err.status === 404
-            ? CONNECTORS_NOT_ENABLED
-            : err instanceof Error
-              ? err.message
-              : String(err),
-        );
+        setError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [tick]);
+  }, [scope, tick]);
 
   return { data, loading, error, refetch };
 }
 
-export function useUsers(): UseQueryResult<UserInfo[]> {
+export function useUsers(): UseQueryResult<ListedUser[]> {
   return useQuery(fetchUsers);
 }
 
@@ -285,7 +280,7 @@ export function useRoomReferences(
 
 export function useRoomDocuments(
   roomId: string | undefined,
-): UseQueryResult<DocumentSummary[]> {
+): UseQueryResult<RoomDocumentSummary[]> {
   const fetcher = useCallback(
     () => (roomId ? fetchRoomDocuments(roomId) : Promise.resolve(null)),
     [roomId],
@@ -296,7 +291,7 @@ export function useRoomDocuments(
 export function useRoomDocument(
   roomId: string | undefined,
   documentId: string | undefined,
-): UseQueryResult<DocumentDetail> {
+): UseQueryResult<RoomDocumentDetail> {
   const fetcher = useCallback(
     () =>
       roomId && documentId

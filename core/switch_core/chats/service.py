@@ -24,7 +24,8 @@ import logging
 import re
 import uuid
 import weakref
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
@@ -42,7 +43,6 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
@@ -67,6 +67,7 @@ from switch_core.db.models import (
     ChatRead,
     Client,
     ClientRoom,
+    CollaborationBridge,
     MediaBlob,
     Message,
     MessageAttachment,
@@ -105,6 +106,14 @@ from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.content import media_content, message_content
 from switch_core.transport.types import MessageFormat
+from switch_core.trust.attachments import AttachmentsVerdict, check_attachments
+from switch_core.trust.client import (
+    TrustCheckResult,
+    TrustClient,
+    check_message,
+    trust_annotation,
+    trust_is_active,
+)
 
 if TYPE_CHECKING:
     from switch_core.chats.signals import ChatSignals
@@ -177,12 +186,16 @@ class ChatService:
         media_max_bytes: int,
         agent_chats_enabled: bool,
         group_chats_enabled: bool,
+        buddy_slack_handoff_enabled: bool,
         connections: AgentConnectionRegistry,
+        trust_client: TrustClient,
     ) -> None:
         self.session_factory = session_factory
+        self._trust_client = trust_client
         self._connections = connections
         self.agent_chats_enabled = agent_chats_enabled
         self.group_chats_enabled = group_chats_enabled
+        self.buddy_slack_handoff_enabled = buddy_slack_handoff_enabled
         self.listener = listener
         self.activity_listener = activity_listener
         self._activity_store = AgentSessionActivityStore()
@@ -277,7 +290,7 @@ class ChatService:
         that turned it off (or never on) says so rather than half-serving it."""
         if not self.group_chats_enabled:
             raise ChatError(
-                409, "GROUP_CHATS_OFF", "Group chats are not turned on for this server."
+                409, "GROUP_CHATS_OFF", "Group chats are not turned on here."
             )
 
     def _lock(self, *key: str) -> asyncio.Lock:
@@ -998,6 +1011,12 @@ class ChatService:
             raise ChatError(422, "NOT_A_PERSON", "That account can't join chats.")
         return user
 
+    async def require_can_join(self, tenant_id: str, user_id: str) -> None:
+        """Raise the ChatError `add_member` would refuse this person with, for
+        a caller that must know before it makes the room."""
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            await self._require_tenant_member(session, tenant_id, user_id)
+
     async def _make_group(self, session: AsyncSession, room: Room) -> None:
         """Turn a Switch Console direct chat into a group, for good.
 
@@ -1363,6 +1382,8 @@ class ChatService:
         request_id: str,
         greeting: str | None,
         kind: Literal["group"] | None,
+        bridge_id: str | None,
+        resume_only: bool,
     ) -> Room:
         """A private room with the agents and members, owned by and joined by
         the user.
@@ -1380,9 +1401,27 @@ class ChatService:
         `greeting` is what the agent says as it joins, in place of its usual
         one-liner: its first words, written for it (switch-buddy's welcome).
         Only for a direct chat with one of the user's own agents.
+
+        `bridge_id` makes the direct chat a private channel on that bridge
+        between the user's own linked account there and the agent.
+
+        `resume_only` only finishes a create this request id already started;
+        when it started none, nothing is made and the chat is 404.
         """
         member_user_ids = sorted(set(member_user_ids) - {user.id})
         direct = kind != "group" and len(agent_ids) == 1 and not member_user_ids
+        if bridge_id is not None and not self.buddy_slack_handoff_enabled:
+            raise ChatError(
+                409,
+                "BUDDY_SLACK_HANDOFF_OFF",
+                "Chats on a messaging app are not turned on here.",
+            )
+        if bridge_id is not None and not direct:
+            raise ChatError(
+                422,
+                "BRIDGED_CHAT_NEEDS_ONE_AGENT",
+                "A chat on a bridge is a direct chat with one agent and nobody else.",
+            )
         if member_user_ids or kind == "group" or not agent_ids:
             self._require_group_chats()
         if greeting is not None:
@@ -1412,10 +1451,21 @@ class ChatService:
         # Only when given, so a request without it hashes as it always has.
         if kind is not None:
             request["kind"] = kind
+        if bridge_id is not None:
+            # The greeting's text changes between app versions; a retry must
+            # still match the request it repeats.
+            request.pop("greeting", None)
+            request["bridgeId"] = bridge_id
         payload_hash = _hash(request)
         async with self._lock("create", tenant_id, user.id):
             async with tenant_session(self.session_factory, tenant_id) as session:
                 operation = await self._operation(session, user.id, request_id)
+                if operation is None and resume_only:
+                    raise ChatError(
+                        404,
+                        "NO_SUCH_OPERATION",
+                        "No chat was started with this request id, so there is none to resume.",
+                    )
                 if operation is not None:
                     self._require_same(operation, "create_chat", payload_hash)
                     if operation.state == "done" and operation.room_id is not None:
@@ -1439,6 +1489,15 @@ class ChatService:
                         "NOT_AGENT_OWNER",
                         "Only the agent's owner can give it a greeting.",
                     )
+                linked = (
+                    await self._linked_account(session, user.id, bridge_id)
+                    if bridge_id is not None
+                    else None
+                )
+                if bridge_id is not None and name is None:
+                    bridge = await session.get(CollaborationBridge, bridge_id)
+                    assert bridge is not None  # _linked_account found it
+                    name = f"{agents[0].display_name or agents[0].name} · {bridge.display_name}"
                 if operation is None:
                     claimed = await self._claim(
                         session,
@@ -1462,56 +1521,61 @@ class ChatService:
                                 session, tenant_id, user, operation.room_id
                             )
                             return room
-                operation_id = self._operation_id(tenant_id, user.id, request_id)
-                found = await self._room_of_operation(session, operation_id)
-            if found is None:
-                names = ", ".join(
-                    [agent.name for agent in agents]
-                    + [member.name for member in members]
-                )
-                try:
-                    created = await self._room_service.create_room(
-                        RoomCreateConfig(
-                            name=name or "New Chat",
-                            description=(
-                                f"Switch Console chat with {names}"
-                                if names
-                                else "Switch Console chat"
-                            ),
-                            agent_ids=[agent.id for agent in agents],
-                            channel_type="direct" if direct else "channel_private",
-                            internal_only=True,
-                            created_by=user.id,
-                            owner_id=user.id,
-                            read_visibility="private",
-                            write_visibility="private",
-                            acting_user_id=user.id,
-                            created_by_kind="user",
-                            chat_operation_id=operation_id,
-                            agent_greeting=(
-                                {"agent_id": agents[0].id, "body": greeting}
-                                if greeting is not None
-                                else None
-                            ),
-                        )
+            operation_id = self._operation_id(tenant_id, user.id, request_id)
+            async with self._provisioning_one_at_a_time(tenant_id, operation_id):
+                async with tenant_session(self.session_factory, tenant_id) as session:
+                    found = await self._room_of_operation(session, operation_id)
+                if found is None:
+                    names = ", ".join(
+                        [agent.name for agent in agents]
+                        + [member.name for member in members]
                     )
-                except ValueError as exc:
-                    raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
-                except IntegrityError:
-                    # The same request made the room first, on another process.
-                    async with tenant_session(
-                        self.session_factory, tenant_id
-                    ) as session:
-                        found = await self._room_of_operation(session, operation_id)
-                    if found is None:
-                        raise
-                    room = found
-                    await self._room_service.reconcile_room(room)
-                else:
+                    try:
+                        # shortcut: a crash or lost Slack response after the channel exists but before the room is saved leaves an orphan channel and a retry makes a second one; add adoption if this shows up.
+                        created = await self._room_service.create_room(
+                            RoomCreateConfig(
+                                name=name or "New Chat",
+                                description=(
+                                    f"Switch Console chat with {names}"
+                                    if names
+                                    else "Switch Console chat"
+                                ),
+                                agent_ids=[agent.id for agent in agents],
+                                channel_type="direct" if direct else "channel_private",
+                                internal_only=bridge_id is None,
+                                bridge_id=bridge_id,
+                                user_names=[linked[0]] if linked else None,
+                                user_external_id=linked[1] if linked else None,
+                                created_by=user.id,
+                                owner_id=user.id,
+                                read_visibility="private",
+                                write_visibility="private",
+                                acting_user_id=user.id,
+                                created_by_kind="user",
+                                chat_operation_id=operation_id,
+                                agent_greeting=(
+                                    {"agent_id": agents[0].id, "body": greeting}
+                                    if greeting is not None
+                                    else None
+                                ),
+                            )
+                        )
+                    except ValueError as exc:
+                        raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
                     room = created.room
-            else:
-                room = found
-                await self._room_service.reconcile_room(room)
+                else:
+                    room = found
+                    opened_for = (room.metadata_ or {}).get("user_external_id")
+                    if linked and opened_for is not None and opened_for != linked[1]:
+                        raise ChatError(
+                            409,
+                            "LINKED_ACCOUNT_CHANGED",
+                            "This chat was started with a different linked "
+                            "account than the one now linked. Start a new chat.",
+                        )
+                    await self._room_service.reconcile_room(
+                        room, [linked[1]] if linked else []
+                    )
             for joiner in [user, *members]:
                 client = await self.member_actor(tenant_id, joiner)
                 await self._join(tenant_id, room, client)
@@ -1534,6 +1598,54 @@ class ChatService:
         if len(agents) == 1:
             self._start_session(agents[0].id, room.id)
         return room
+
+    @asynccontextmanager
+    async def _provisioning_one_at_a_time(
+        self, tenant_id: str, operation_id: str
+    ) -> AsyncIterator[None]:
+        """At most one attempt at an operation's room at once, across every
+        server process: a session-level advisory lock, released with the
+        connection if the process dies."""
+        key = func.hashtext(f"chat-create:{operation_id}")
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            await session.execute(select(func.pg_advisory_lock(key)))
+            try:
+                yield
+            finally:
+                await session.execute(select(func.pg_advisory_unlock(key)))
+
+    @staticmethod
+    async def _linked_account(
+        session: AsyncSession, user_id: str, bridge_id: str
+    ) -> tuple[str, str]:
+        """The user's own account on the bridge as (username, external user
+        id), from the identity they linked there; never one the client names."""
+        bridge = await session.get(CollaborationBridge, bridge_id)
+        if bridge is None or bridge.tenant_id != require_tenant_id():
+            raise ChatError(404, "BRIDGE_NOT_FOUND", "No such bridge.")
+        linked = [
+            external
+            for external in await ExternalUserStore().get_by_user(session, user_id)
+            if external.bridge_id == bridge_id
+        ]
+        if not linked:
+            raise ChatError(
+                422,
+                "ACCOUNT_NOT_LINKED",
+                f"Your Switch account is not linked to an account on "
+                f"{bridge.display_name}. Link it in your Switch settings, then "
+                "try again.",
+            )
+        if len(linked) > 1:
+            # Which one opens the DM must not depend on row order, here or on a retry.
+            raise ChatError(
+                409,
+                "ACCOUNTS_AMBIGUOUS",
+                f"Your Switch account is linked to {len(linked)} accounts on "
+                f"{bridge.display_name}. Unlink the ones you no longer use in "
+                "your Switch settings, then try again.",
+            )
+        return linked[0].external_username, linked[0].external_user_id
 
     async def _room_of_operation(
         self, session: AsyncSession, operation_id: str
@@ -1645,6 +1757,10 @@ class ChatService:
         `mention_spans` say where in `body` each mention is written (UTF-16
         offsets, as the Console's strings count); an agent's span is for it as
         `mention_agent_ids` is, a person's addresses no agent.
+
+        Switch Trust checks the text and each file first, as it does a
+        message from any other platform, and a refusal of either raises
+        ChatError TRUST_BLOCKED with nothing posted.
         """
         mentions = sorted(set(mention_agent_ids))
         people = sorted(set(mention_user_ids))
@@ -1672,6 +1788,14 @@ class ChatService:
         )
         people = sorted(
             {*people, *(span.id for span in mention_spans if span.kind == "user")}
+        )
+        body = await self._checked_by_trust(
+            tenant_id,
+            user,
+            room_id,
+            request_id=request_id,
+            body=body,
+            upload_ids=upload_ids,
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, client = await self.require_member(session, tenant_id, user, room_id)
@@ -2014,6 +2138,105 @@ class ChatService:
             session, room.id, ids
         )
         return sorted(rows, key=lambda m: m.seq)
+
+    async def _checked_by_trust(
+        self,
+        tenant_id: str,
+        user: User,
+        room_id: str,
+        *,
+        request_id: str,
+        body: str,
+        upload_ids: list[str],
+    ) -> str:
+        """The body to post once Switch Trust has checked it and the files
+        (`trust/attachments.py`): redacted if it redacted the text, with a
+        note for anything flagged or not checked. Runs before the send's own
+        transaction, so no database work waits on Switch Trust."""
+        if not await trust_is_active(self._trust_client):
+            return body
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            room, _ = await self.require_member(session, tenant_id, user, room_id)
+            if await self._operation(session, user.id, request_id) is not None:
+                # A retry: `send` answers it with what was posted the first time.
+                return body
+            files: list[tuple[bytes, str, str]] = []
+            for upload_id in upload_ids:
+                upload = await self._staged_upload(session, user.id, room.id, upload_id)
+                blob = await self._media_store.get(session, upload.uri)
+                if blob is None:
+                    raise ChatError(
+                        422,
+                        "UPLOAD_NOT_FOUND",
+                        f"No file was uploaded to this chat as {upload_id}.",
+                    )
+                files.append((blob.data, upload.filename, upload.mimetype))
+
+        text_check: TrustCheckResult | None = None
+        files_check = AttachmentsVerdict()
+        if body.strip() and files:
+            text_check, files_check = await asyncio.gather(
+                check_message(
+                    self._trust_client, role="user", content=body, room_id=room.id
+                ),
+                check_attachments(
+                    self._trust_client, role="user", files=files, room_id=room.id
+                ),
+            )
+        elif body.strip():
+            text_check = await check_message(
+                self._trust_client, role="user", content=body, room_id=room.id
+            )
+        elif files:
+            files_check = await check_attachments(
+                self._trust_client, role="user", files=files, room_id=room.id
+            )
+
+        if text_check is not None and (
+            text_check.blocked
+            or (
+                text_check.outcome == "redacted" and text_check.redacted_content is None
+            )
+        ):
+            categories = (
+                ", ".join(sorted({f.category for f in text_check.findings}))
+                or "policy violation"
+            )
+            logger.warning(
+                "Chat message from user %s in room %s not posted: Switch Trust "
+                "outcome=%s (%s)",
+                user.id,
+                room.id,
+                text_check.outcome,
+                categories,
+            )
+            raise ChatError(
+                422,
+                "TRUST_BLOCKED",
+                f"Switch Trust blocked this message ({categories}). Nothing was sent.",
+            )
+        if files_check.blocked:
+            reasons = "; ".join(files_check.block_reasons)
+            logger.warning(
+                "Chat message from user %s in room %s not posted: Switch Trust "
+                "blocked its files: %s",
+                user.id,
+                room.id,
+                reasons,
+            )
+            raise ChatError(
+                422,
+                "TRUST_BLOCKED",
+                f"Switch Trust blocked this message: {reasons}. Nothing was sent.",
+            )
+        if text_check is not None and text_check.redacted_content is not None:
+            body = text_check.redacted_content
+        annotation = trust_annotation(text_check) if text_check is not None else None
+        notes = [*([annotation] if annotation is not None else []), *files_check.notes]
+        if notes:
+            notes_text = "\n".join(notes)
+            body = f"{body}\n\n{notes_text}" if body.strip() else notes_text
+        return body
 
     async def _staged_upload(
         self, session: AsyncSession, user_id: str, room_id: str, upload_id: str

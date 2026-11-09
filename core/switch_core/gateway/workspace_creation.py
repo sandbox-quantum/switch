@@ -13,6 +13,7 @@ import logging
 import re
 import secrets
 import uuid
+from datetime import datetime
 
 from fastapi import HTTPException, Response
 from sqlalchemy import select
@@ -44,11 +45,19 @@ from switch_core.gateway.auth import (
     set_session_cookie,
     workspace_creation_refusal,
 )
+from switch_core.gateway.dependencies import current_telemetry
 from switch_core.gateway.schemas import (
     OrganizationCreateResponse,
     OrganizationSummary,
     TenantMembershipResponse,
 )
+from switch_core.organization_directory import (
+    DirectoryError,
+    DirectoryOrganization,
+    DirectoryRefusal,
+    OrganizationDirectory,
+)
+from switch_core.telemetry import emit_safely
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +95,23 @@ def _slugs(name: str) -> list[str]:
     ]
 
 
+def directory_failed(error: DirectoryError, outcome: str) -> HTTPException:
+    """The answer when the organization directory did not make a change: 409
+    when it refused by its own rules, 503 when it could not be reached, with
+    its reason and `outcome`, what that leaves in Switch."""
+    logger.warning(
+        "The organization directory did not make a change: %s", error.message
+    )
+    return HTTPException(
+        status_code=409 if isinstance(error, DirectoryRefusal) else 503,
+        detail=f"{error.message} {outcome}",
+    )
+
+
+# `directory_failed`'s outcome for a change that had written nothing yet.
+NOTHING_CHANGED = "Nothing was changed."
+
+
 def _no_free_slug(kind: str, name: str) -> HTTPException:
     logger.error(
         "Could not find a free slug for %s %r after %d attempts",
@@ -118,16 +144,16 @@ async def lock_workspace_allowance(
     `GET /auth/session` reports the same answer this enforces.
 
     The bound is on workspaces created (`users.workspaces_created`), not on
-    workspaces owned: ownership can be handed to another account, so a count of
-    ownership could be reset by creating, handing over and stepping down, over
-    and over. An invitation into someone else's workspace spends nothing.
+    workspaces administered: a workspace can be handed to another admin, so a
+    count of those could be reset by creating, handing over and stepping down,
+    over and over. An invitation into someone else's workspace spends nothing.
 
     The row lock is what makes the check hold under concurrent requests. It
     is taken `NOWAIT`, so a second request from the same person is refused
     with 409 at once rather than holding a pool connection while it waits —
     the request holding the lock needs more connections to provision, and a
     burst of waiters could starve it of them. `FOR NO KEY UPDATE` rather than
-    `FOR UPDATE`, because the new owner membership's foreign key takes a key
+    `FOR UPDATE`, because the new admin membership's foreign key takes a key
     share on this same row from another session, and `FOR UPDATE` would make
     the request wait on itself.
     """
@@ -167,11 +193,13 @@ async def create_organization_for(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     organization_store: OrganizationStore,
+    organization_directory: OrganizationDirectory,
     client_lifecycle: ClientLifecycleService,
     config: SwitchConfig,
     *,
     name: str,
     workspace_name: str,
+    auth_time: datetime,
 ) -> OrganizationCreateResponse:
     """Create an organization and its first workspace for `caller`, count it
     against their allowance, and switch their session into the workspace.
@@ -195,15 +223,19 @@ async def create_organization_for(
         user = allowance = await lock_workspace_allowance(
             session, caller.id, config, new_organization=True
         )
-    organization, tenant = await create_organization(
-        session_factory,
-        user_store,
-        organization_store,
-        client_lifecycle,
-        caller.id,
-        name,
-        workspace_name,
-    )
+    try:
+        organization, tenant = await create_organization(
+            session_factory,
+            user_store,
+            organization_store,
+            organization_directory,
+            client_lifecycle,
+            user,
+            name,
+            workspace_name,
+        )
+    except DirectoryError as error:
+        raise directory_failed(error, NOTHING_CHANGED) from None
     if allowance is not None:
         allowance.workspaces_created += 1
         await session.commit()
@@ -211,7 +243,12 @@ async def create_organization_for(
     await user_store.record_last_tenant(session, user, tenant.id)
     await session.commit()
     set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant.id
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        tenant.id,
+        auth_time,
     )
     return OrganizationCreateResponse(
         organization=OrganizationSummary(
@@ -224,7 +261,7 @@ async def create_organization_for(
             id=tenant.id,
             slug=tenant.slug,
             name=tenant.name,
-            role="owner",
+            role="admin",
             organization_role=ORGANIZATION_ADMIN_ROLE,
             organization_id=organization.id,
         ),
@@ -235,24 +272,75 @@ async def create_organization(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     organization_store: OrganizationStore,
+    organization_directory: OrganizationDirectory,
     client_lifecycle: ClientLifecycleService,
-    creator_id: str,
+    creator: User,
     name: str,
     workspace_name: str,
 ) -> tuple[Organization, Tenant]:
     """Create an organization named `name` and its first workspace, named
-    `workspace_name`. `creator_id` becomes the organization's `org_admin` and
-    the workspace's `owner`, a member there in their own right.
+    `workspace_name`. `creator` becomes the organization's `org_admin` and
+    the workspace's `admin`, a member there in their own right.
 
-    The organization is committed first, because the workspace references it.
-    If the workspace then cannot be created, for any reason, the organization
-    is deleted again, so a failed creation leaves nothing behind.
+    The directory records it first (`organization_directory.py`), since the
+    row keeps what the directory knows it by; a `DirectoryError` there leaves
+    nothing written. If Switch's rows then cannot be created, for any reason,
+    the directory is asked to discard it again.
     """
     # Both names are checked before anything is written.
     workspace_slugs = _slugs(workspace_name)
+    organization_slugs = _slugs(name)
+    recorded = await organization_directory.create_organization(creator, name)
+    try:
+        return await _create_organization_rows(
+            session_factory,
+            user_store,
+            organization_store,
+            client_lifecycle,
+            creator,
+            recorded,
+            name,
+            organization_slugs,
+            workspace_name,
+            workspace_slugs,
+        )
+    except BaseException:
+        try:
+            await organization_directory.discard_organization(recorded)
+        except Exception:
+            logger.exception(
+                "Could not discard organization %r from the directory after "
+                "creating it in Switch failed; it is left there",
+                name,
+            )
+        raise
+
+
+async def _create_organization_rows(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    organization_store: OrganizationStore,
+    client_lifecycle: ClientLifecycleService,
+    creator: User,
+    recorded: DirectoryOrganization,
+    name: str,
+    organization_slugs: list[str],
+    workspace_name: str,
+    workspace_slugs: list[str],
+) -> tuple[Organization, Tenant]:
+    """The organization's row, its first workspace and its creator's
+    memberships. The organization is committed first, because the workspace
+    references it; if the workspace then cannot be created, the organization
+    is deleted again."""
     organization: Organization | None = None
-    for slug in _slugs(name):
-        candidate = Organization(id=str(uuid.uuid4()), name=name, slug=slug)
+    for slug in organization_slugs:
+        candidate = Organization(
+            id=str(uuid.uuid4()),
+            name=name,
+            slug=slug,
+            workos_organization_id=recorded.workos_organization_id,
+            customer_id=recorded.customer_id,
+        )
         try:
             async with organization_session(session_factory, candidate.id) as session:
                 await organization_store.create(session, candidate)
@@ -289,7 +377,7 @@ async def create_organization(
         session_factory,
         user_store,
         tenant,
-        creator_id,
+        creator.id,
         organization_role=ORGANIZATION_ADMIN_ROLE,
         new_organization=organization,
     )
@@ -305,7 +393,7 @@ async def create_workspace(
     name: str,
 ) -> Tenant:
     """Create a workspace named `name` in `organization_id`, with `creator_id`,
-    its `org_admin`, as its `owner`.
+    its `org_admin`, as its `admin`.
 
     The creator administers it through the organization already; the
     membership row makes them a member there in their own right, as creating
@@ -350,7 +438,7 @@ async def _add_creator(
     organization_role: str,
     new_organization: Organization | None,
 ) -> None:
-    """Make `creator_id` the new workspace's `owner` and record its creation:
+    """Make `creator_id` the new workspace's `admin` and record its creation:
     in the workspace's audit log, and in its organization's, with the
     organization's own creation first when `new_organization` was made for it.
 
@@ -366,7 +454,7 @@ async def _add_creator(
                 session,
                 tenant_id=tenant.id,
                 user_id=creator_id,
-                role="owner",
+                role="admin",
                 organization_role=organization_role,
             )
             await record_audit_event(
@@ -408,7 +496,7 @@ async def _add_creator(
             await session.commit()
     except Exception:
         logger.error(
-            "Workspace %s (slug %s) was created but its owner membership for "
+            "Workspace %s (slug %s) was created but its admin membership for "
             "user %s was not written: it now has no members and its slug is "
             "taken. Insert the membership to repair it.",
             tenant.id,
@@ -416,6 +504,11 @@ async def _add_creator(
             creator_id,
         )
         raise
+    emit_safely(
+        current_telemetry(),
+        "workspace_created",
+        {"new_organization": new_organization is not None},
+    )
 
 
 async def _discard_organization(

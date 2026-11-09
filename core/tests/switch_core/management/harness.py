@@ -131,7 +131,7 @@ class _FakeClientLifecycle:
     def start_client(self, client: Client) -> None:
         return None
 
-    def announce(self, tenant_id: str) -> None:
+    def announce(self, tenant_id: str, client_ids: object = None) -> None:
         return None
 
     def get_by_agent_id(self, agent_id: str) -> None:
@@ -343,7 +343,13 @@ async def add_member(
 def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
     return {
         "switch_auth": create_jwt(
-            user.id, user.email, user.role, TEST_KEYRING, tenant_id
+            user.id,
+            user.email,
+            user.role,
+            TEST_KEYRING,
+            tenant_id,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
     }
 

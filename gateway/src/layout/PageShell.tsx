@@ -1,12 +1,14 @@
-import { Box, Stack } from "@mui/material";
+import { Alert, Box, Button, Stack } from "@mui/material";
 import { Outlet } from "react-router";
+import { useAuth } from "../data/AuthContext";
+import type { Layout } from "../routes/routeTable";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
 
 /** Hoot's signature shell: a narrow icon rail and a slim top bar sitting bare on
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
  *  the content is the hero — an "app within a surface", not edge-to-edge chrome. */
-export default function PageShell() {
+export default function PageShell({ layout }: { layout: Layout }) {
   return (
     <Box
       sx={{
@@ -16,7 +18,7 @@ export default function PageShell() {
         backgroundColor: "var(--hoot-canvas)",
       }}
     >
-      <NavRail />
+      <NavRail layout={layout} />
       <Stack sx={{ flex: 1, minWidth: 0, overflow: "hidden", pr: "var(--surface-gutter)", pb: "var(--surface-gutter)" }}>
         <TopBar />
         <Stack
@@ -32,9 +34,30 @@ export default function PageShell() {
             p: 4,
           }}
         >
+          <StaleSessionBanner />
           <Outlet />
         </Stack>
       </Stack>
     </Box>
+  );
+}
+
+/** Says so when the session could not be read again on coming back to the
+ * tab, rather than carrying on as if what the page shows were current. */
+function StaleSessionBanner() {
+  const { staleError, recheck } = useAuth();
+  if (staleError === null) return null;
+  return (
+    <Alert
+      severity="warning"
+      sx={{ mb: 2 }}
+      action={
+        <Button color="inherit" size="small" onClick={recheck}>
+          Retry
+        </Button>
+      }
+    >
+      Could not check your session with Switch: {staleError}. This page may be out of date.
+    </Alert>
   );
 }

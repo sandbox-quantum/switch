@@ -61,6 +61,10 @@ from switch_core.db.rls_ddl import (
 from switch_core.db.session_activity_notify_ddl import (
     SESSION_ACTIVITY_NOTIFY_FUNCTION,
 )
+from switch_core.db.session_version_ddl import (
+    SESSION_VERSION_FUNCTION_NAME,
+    SESSION_VERSION_TRIGGER_NAME,
+)
 from switch_core.db.tenant_lookup import TENANT_LOOKUPS
 
 _CORE = Path(__file__).resolve().parents[3]
@@ -248,6 +252,8 @@ class _DDLSnapshot:
     notify_trigger_def: str
     session_activity_function_body: str
     session_activity_trigger_defs: dict[str, str]
+    session_version_function_body: str
+    session_version_trigger_def: str
 
 
 def _snapshot(connection: Connection) -> _DDLSnapshot:
@@ -270,6 +276,12 @@ def _snapshot(connection: Connection) -> _DDLSnapshot:
             name: _trigger_def(connection, table, name)
             for table, name in _SESSION_ACTIVITY_TRIGGERS
         },
+        session_version_function_body=_function_body(
+            connection, SESSION_VERSION_FUNCTION_NAME
+        ),
+        session_version_trigger_def=_trigger_def(
+            connection, "users", SESSION_VERSION_TRIGGER_NAME
+        ),
     )
 
 
@@ -325,6 +337,14 @@ async def test_migration_ddl_matches_the_live_copy(ddl_parity_urls: Any) -> None
     # A sanity floor on the live side: if this were ever empty, every
     # assertion below would pass vacuously against a schema with no policies
     # at all, which is exactly the failure this test exists to catch.
+    assert _without_comments(
+        migrated.session_version_function_body
+    ) == _without_comments(live.session_version_function_body), (
+        "the migration's frozen switch_bump_session_version() body no longer "
+        "matches db/session_version_ddl.py's live copy"
+    )
+    assert migrated.session_version_trigger_def == live.session_version_trigger_def
+
     assert len(live.policies) >= 30, (
         "create_all did not attach any tenant_isolation policies — "
         "db/rls_ddl.py is not wired into Base.metadata"

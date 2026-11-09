@@ -7,7 +7,10 @@
       "report_within_s": 60,
       "connection_id": "00000000-0000-4000-8000-0000000000e1",
       "generation": 3141592653,
-      "heartbeat_interval_s": 2.0
+      "heartbeat_interval_s": 2.0,
+      "calls": {
+        "max_in_flight": 64
+      }
     }
   },
   {
@@ -56,7 +59,9 @@
           "attachments": [],
           "opening_message": null,
           "sender_role": null,
-          "switch_notice": null
+          "switch_notice": null,
+          "routed": false,
+          "routed_reason": null
         },
         "sequence": 1,
         "missed": {
@@ -86,7 +91,8 @@
         "body": {
           "type": "session.reset"
         },
-        "requesterName": "Ada"
+        "requesterName": "Ada",
+        "direct": false
       }
     }
   },
@@ -153,6 +159,16 @@
     "data": {
       "code": "taken_over",
       "reason": "another stream attached to this connection and took it over"
+    }
+  },
+  {
+    "event": "call.result",
+    "data": {
+      "id": 1,
+      "status": 404,
+      "body": {
+        "detail": "unknown operation 'no_such_operation'; expected one of: post_message, read_context"
+      }
     }
   }
 ]

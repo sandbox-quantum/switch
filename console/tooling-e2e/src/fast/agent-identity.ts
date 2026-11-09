@@ -15,6 +15,12 @@ import { WRITABLE, type FastScenario } from "./scenario.ts";
  * Renaming and deleting an agent on the Mattermost bridge, with the harness
  * playing both the human and the agent:
  *
+ * 0. the human links their chat account: the link waits, listed as pending,
+ *    until the account posts a code from the gateway, which is what makes
+ *    the chat commands recognise them. A link already in place (the stack's
+ *    setup makes one, and one from before links needed confirming reads as
+ *    unconfirmed) is undone first, so the confirmation always runs, and the
+ *    account ends up linked and confirmed either way;
  * 1. a rename from the gateway renames the agent's Mattermost bot in place,
  *    and the new name reaches the agent while the old one does not;
  * 2. `!rename-agent` from the chat does the same, for the person who owns the
@@ -29,6 +35,11 @@ export const agentIdentity: FastScenario = {
     covers: [
       "PUT /gateway/agents/{agent_id}/name",
       "POST /gateway/collaborations/{bridge_id}/identities",
+      "DELETE /gateway/collaborations/{bridge_id}/identities/{external_user_row_id}",
+      "DELETE /gateway/collaborations/{bridge_id}/identities/{external_user_row_id}/request",
+      "GET /gateway/auth/me/identities/pending",
+      "GET /gateway/collaborations/{bridge_id}/identities/unconfirmed",
+      "POST /gateway/collaborations/{bridge_id}/identities/{external_user_row_id}/code",
     ],
     lane: "fast",
     environments: WRITABLE,
@@ -42,13 +53,52 @@ export const agentIdentity: FastScenario = {
     const bot = bridged.bots.get(agent.id)!;
     const channelId = bridged.channel.id;
     // The chat commands recognise the sender through the Switch user who linked
-    // their chat account; the gateway admin the harness signs in as links it.
-    await switchClient.claimIdentity(
-      "mattermost",
-      bridged.human.id,
-      bridged.human.username,
+    // their chat account; the gateway admin the harness signs in as links it,
+    // and the account confirms by posting the code.
+    const claim = (): ReturnType<SwitchClient["claimIdentity"]> =>
+      switchClient.claimIdentity(
+        "mattermost",
+        bridged.human.id,
+        bridged.human.username,
+      );
+    let link = await claim();
+    // Already linked, confirmed (no code) or not (not listed as waiting).
+    if (
+      link.code === null ||
+      !(await switchClient.pendingIdentityIds()).includes(link.identityId)
+    ) {
+      await switchClient.releaseIdentity(link.bridgeId, link.identityId);
+      link = await claim();
+    }
+    expect(link.code).not.toBeNull();
+    expect(await switchClient.pendingIdentityIds()).toContain(link.identityId);
+    // Cancelling stops the wait; linking again starts a new one.
+    await switchClient.cancelLinkRequest(link.bridgeId, link.identityId);
+    expect(await switchClient.pendingIdentityIds()).not.toContain(
+      link.identityId,
     );
+    link = await claim();
+    expect(link.code).not.toBeNull();
     const admin = await mm.waitForBotUser("switch-admin", 30_000);
+    // A fresh code replaces the first, which then confirms nothing.
+    const code = await switchClient.issueLinkCode(
+      link.bridgeId,
+      link.identityId,
+    );
+    let sinceLink = Date.now();
+    await mm.post({ channelId, message: `!link-account ${link.code}` });
+    await switchReply(mm, channelId, admin.id, sinceLink, /doesn't match/);
+    sinceLink = Date.now();
+    await mm.post({ channelId, message: `!link-account ${code}` });
+    await switchReply(mm, channelId, admin.id, sinceLink, /Linked this/);
+    expect(await switchClient.pendingIdentityIds()).not.toContain(
+      link.identityId,
+    );
+    // Confirmed, so not among the older links an admin could demote.
+    expect(await switchClient.unconfirmedLinkIds(link.bridgeId)).not.toContain(
+      link.identityId,
+    );
+    log("linked the chat account by posting its code");
     const reaches = (name: string, label: string): Promise<boolean> =>
       reachesAgent(
         switchClient,
