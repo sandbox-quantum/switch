@@ -520,7 +520,9 @@ version of their own to them without also giving them a release of their own.
   naming it, registers a new client there, and everyone reconnects Atlassian
   once. A server that does not name Atlassian registers what it did before.
   Starting a sign-in also answers `callback_url`: the server's callback when
-  the browser comes back through it, null otherwise.
+  the browser comes back through it, null otherwise. With Helm, set
+  `switchCore.serviceSignInRedirect`, and restart all replicas together to
+  change it.
 - **Datadog connects again, by signing in at your Datadog site.** People pick
   their Datadog site (US1, US3, US5, EU1, AP1, AP2 or UK1) and sign in to
   Datadog, where its consent page's Full access connects for reading and
@@ -560,7 +562,7 @@ version of their own to them without also giving them a release of their own.
   and hand it to agents. Such a key can only be revoked at the vendor. Off,
   it is not offered, and a connection made with one while the setting was on
   must be reconnected another way. Connectors that connect with a key alone
-  stay refused either way.
+  stay refused either way. With Helm, set `switchCore.allowNonExpiringKeys`.
 - **Datadog takes a pasted personal access token, or API and application
   keys, in place of its sign-in.** Either is pasted at the site picked for
   the sign-in and checked at Datadog's MCP server there. A token goes to it
@@ -580,6 +582,11 @@ version of their own to them without also giving them a release of their own.
   kept and left out of sessions, and a token request or a new grant is
   refused with the same sentence. The same holds for any connection made
   before its service asked for a choice it now needs.
+- **The dashboard says when a GitHub App can only read.** On Connectors
+  (Platform → Connectors in the new layout), a GitHub App without write
+  permissions reads "Agents can read only", naming what it lacks. On an
+  agent's Service access, a write grant on such an App shows why it gets
+  nothing, and granting GitHub offers Read and push disabled with the reason.
 
 #### Changed
 - **The dashboard, and what Switch tells people, use Switch's own words.** A
@@ -1265,10 +1272,9 @@ version of their own to them without also giving them a release of their own.
   replaced too, where it used to surface later as a refused sign-in.
 - **A refusal to reconnect is worded for who reads it.** Opening your own
   GitHub repositories, or granting a service, could answer "The agent's owner
-  must reconnect GitHub under Settings, Connections", addressed to someone
-  else and naming a page that does not exist. You are now told to reconnect
-  it from Connectors in Switch Console, and an agent asking for a token is
-  told its owner must.
+  must reconnect GitHub", as if someone else had to. You are now told to
+  reconnect it yourself in Switch Console, under Connectors, and an agent
+  asking for a token is told its owner must.
 - **The dashboard says when the workspace has a service switched off.** An
   agent's Service access offered to turn on, or to grant GitHub for, a
   service the workspace had switched off, and the server refused. It now
