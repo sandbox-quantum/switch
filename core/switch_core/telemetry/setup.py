@@ -97,7 +97,10 @@ async def build_telemetry(
     # Before any service that reports a milestone is built.
     await settle_from_evidence(
         session_factory,
-        lambda: milestones_passed(session_factory),
+        lambda: milestones_passed(
+            session_factory,
+            active_before=enabled_since if config.telemetry_enabled else None,
+        ),
         switched_on=switched_on,
     )
 

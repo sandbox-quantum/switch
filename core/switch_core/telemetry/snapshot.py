@@ -1172,9 +1172,15 @@ async def collect_each_period_counts(
 
 async def milestones_passed(
     session_factory: async_sessionmaker[AsyncSession],
+    *,
+    active_before: datetime | None,
 ) -> set[str]:
     """The milestones the database shows this deployment has passed, for
     `deployment.settle_from_evidence`.
+
+    `active_before` limits the room-activity evidence to what happened before
+    it: with telemetry on, a room first used since reporting started is the
+    snapshot pass's to report, and settling it here would lose it.
 
     - `first_room_created`: a room a person made exists.
     - `first_room_active`: a person used one of those rooms with an agent in
@@ -1210,6 +1216,11 @@ async def milestones_passed(
                     Room.tenant_id == tenant_id,
                     by_a_person,
                     *_room_activity_conditions(tenant_id, SNAPSHOT_PERSON_TYPES),
+                    *(
+                        (Message.sent_at < active_before,)
+                        if active_before is not None
+                        else ()
+                    ),
                 ),
                 "first_agent_registered": select(Agent.id).where(
                     Agent.tenant_id == tenant_id

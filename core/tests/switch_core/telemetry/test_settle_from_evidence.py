@@ -38,11 +38,14 @@ from switch_core.telemetry.snapshot import milestones_passed
 
 
 async def _settle(
-    session_factory: async_sessionmaker[AsyncSession], *, switched_on: bool
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    switched_on: bool,
+    active_before: datetime | None = None,
 ) -> list[str]:
     return await settle_from_evidence(
         session_factory,
-        lambda: milestones_passed(session_factory),
+        lambda: milestones_passed(session_factory, active_before=active_before),
         switched_on=switched_on,
     )
 
@@ -166,6 +169,23 @@ async def test_it_runs_once_unless_telemetry_is_switched_on_again(
 
     assert await _settle(session_factory, switched_on=False) == []
     assert "first_room_active" in await _settle(session_factory, switched_on=True)
+
+
+async def test_a_room_first_used_since_reporting_started_is_left_to_the_snapshot(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Upgrading a server that already reports: a room it first used since the
+    last snapshot pass is reported by the next one, not settled away here."""
+    await _room_used_by_a_person(session_factory)
+
+    settled = await _settle(
+        session_factory,
+        switched_on=False,
+        active_before=datetime.now(UTC) - timedelta(days=60),
+    )
+
+    assert "first_room_active" not in settled
+    assert "first_room_created" in settled
 
 
 async def test_only_a_connector_a_person_added_that_connected_counts(
