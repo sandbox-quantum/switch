@@ -25,6 +25,17 @@ import type {
 } from '@shared/core/switch-servers/connection-catalog';
 import type { ServiceCalls } from './service-calls';
 
+/** Whether `value` fits the field's pattern, matched in full as Core matches it. */
+function fitsPattern(field: ServiceKeyField, value: string): boolean {
+  if (!field.pattern) return true;
+  try {
+    return new RegExp(`^(?:${field.pattern})$`).test(value);
+  } catch {
+    // Core checks every value again, so a pattern this build cannot read is left to it.
+    return true;
+  }
+}
+
 /**
  * The fields a person fills in to connect with a key, or with a credential
  * pasted in place of a sign-in: each secret typed into a password input, any
@@ -60,6 +71,7 @@ export function ServiceKeyFields({
       {fields.map((field) => {
         const id = `service-key-${service}-${field.name}`;
         const value = values[field.name] ?? '';
+        const misfit = value.trim() !== '' && !fitsPattern(field, value.trim());
         return (
           <div key={field.name} className="space-y-1">
             <label htmlFor={id} className="block text-sm font-medium">
@@ -91,10 +103,17 @@ export function ServiceKeyFields({
                 spellCheck={false}
                 disabled={busy}
                 value={value}
+                aria-invalid={misfit || undefined}
+                aria-describedby={misfit ? `${id}-form` : undefined}
                 onChange={(event) => onChange(field.name, event.target.value)}
               />
             )}
             {field.help && <p className="text-xs text-foreground-muted">{field.help}</p>}
+            {misfit && (
+              <p id={`${id}-form`} className="text-xs text-destructive">
+                {field.label} is not in the form {name} uses.
+              </p>
+            )}
           </div>
         );
       })}
@@ -148,7 +167,10 @@ export function ServiceKeyStep({
   const [error, setError] = useState<string | null>(null);
   useCloseGuard(busy);
   const editing = !connected || changingKey;
-  const complete = form.fields.every((field) => (values[field.name] ?? '').trim() !== '');
+  const complete = form.fields.every((field) => {
+    const value = (values[field.name] ?? '').trim();
+    return value !== '' && fitsPattern(field, value);
+  });
   const clearSecrets = () =>
     setValues((current) =>
       Object.fromEntries(

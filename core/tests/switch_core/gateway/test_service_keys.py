@@ -264,6 +264,11 @@ class TestConnect:
             "key_never_expires",
             reason,
         )
+        # Console holds each typed name to its pattern; Core holds it again.
+        patterns = {f["name"]: f["pattern"] for f in entry["key"]["fields"]}
+        assert patterns["account"] == "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+        assert patterns["server"] == "[A-Za-z_][A-Za-z0-9_]{0,254}"
+        assert patterns["pat"] is None
         assert response.status_code == 403, response.text
         assert response.json()["detail"] == reason
         assert snowflake == []

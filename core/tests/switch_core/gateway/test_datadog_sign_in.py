@@ -514,6 +514,7 @@ class TestUse:
                 "secret": False,
                 "help": "The address you open Datadog at, without app. On Datadog's consent page, Full access lets agents do all your user can, admin actions too; Limited is read-only.",
                 "choices": list(SITES),
+                "pattern": None,
             }
         ]
         assert entries["datadog"]["key"] is None

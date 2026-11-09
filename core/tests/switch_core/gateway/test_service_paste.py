@@ -159,6 +159,7 @@ class TestList:
                         "secret": True,
                         "help": None,
                         "choices": None,
+                        "pattern": None,
                     }
                 ],
                 "help_url": "https://docs.example.test/tokens",
