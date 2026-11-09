@@ -317,7 +317,10 @@ in it, or an agent replied to one. A post the platform marked as an
 integration's (an alerting or CI app, another Switch server's agent) is not a
 human's. This is the unit "active" is built on
 throughout: mere membership is not activity, and two agents talking to each
-other is not a human using the product.
+other is not a human using the product. Who counts as a human differs in one
+place: the snapshot's figures count people on messaging platforms only, as they
+always have, while the period counts, `room_became_active`, `first_room_active`
+and `was_ever_active` count a person in Switch Console chat too.
 
 **Active user** — a human user with at least one interaction in the window.
 Counted distinctly per window, so one person in six rooms is one active user.
@@ -695,7 +698,10 @@ when Switch is first told about the bridge.
 
 **`room_became_active`** — the first interaction in a room, once per room,
 dated to that interaction rather than to the snapshot pass that noticed it. A
-room that went live while telemetry was off is not reported.
+room that went live while telemetry was off is not reported. A person in
+Switch Console counts, so a room used only from Console chat becomes active;
+the snapshot's `room_active_*` leave such a room out (see
+[Definitions](#definitions)).
 
 | Property | Type |
 |---|---|
@@ -715,9 +721,10 @@ minutes and rooms created in week six never do, that is a different problem from
 a slow average.
 
 **`room_archived`** — `bridge_platform`, `age_days` (number), `was_ever_active`
-(tri-state: `true` | `false` | `unknown` — `unknown` when the activity count
-itself could not be run, which is not evidence the room was never used). Not
-sent for a room that was already archived.
+(tri-state: `true` | `false` | `unknown` — whether a person, on a messaging
+platform or in Switch Console, ever used it with an agent in it; `unknown` when
+the activity count itself could not be run, which is not evidence the room was
+never used). Not sent for a room that was already archived.
 
 **`room_agents_added`** — `agent_count` (number), `added_by_kind` (`user` | `agent` | `system`).
 

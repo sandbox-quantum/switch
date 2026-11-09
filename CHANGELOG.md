@@ -50,7 +50,11 @@ version of their own to them without also giving them a release of their own.
   invisible to the message events and the period counts. Each post is now a
   `message_sent` with `sender_kind = member`, a chat's Console members count
   in a room's size, and adding someone to a Console chat (an agent putting its
-  owner in a room it made included) reports `room_users_added`.
+  owner in a room it made included) reports `room_users_added`. A room used
+  only from Console chat becomes active (`room_became_active`,
+  `first_room_active`) and reports `was_ever_active` when it is archived or
+  deleted; the daily snapshot's room and people counts still count messaging
+  platforms only.
 - **Usage telemetry counts what agents and templates make.** An agent saving
   or deleting a template now reports `template_created` / `template_deleted`,
   a room group an agent or a group template makes reports

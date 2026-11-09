@@ -76,9 +76,10 @@ AGENT_CLIENT_TYPE = "agent"
 # figures were defined before Switch Console chat existed and keep that
 # definition.
 SNAPSHOT_PERSON_TYPES = (HUMAN_CLIENT_TYPE,)
-# Who counts as a person in the period counts: a person on a messaging
-# platform, or in Switch Console through their `member` client. Someone who
-# uses both is two people, as someone on two platforms already is.
+# Who counts as a person everywhere else: in the period counts, a room
+# becoming active, and whether a removed room was ever used. A person on a
+# messaging platform, or in Switch Console through their `member` client.
+# Someone who uses both is two people, as someone on two platforms already is.
 PERSON_CLIENT_TYPES = (HUMAN_CLIENT_TYPE, MEMBER_CLIENT_TYPE)
 
 
@@ -335,9 +336,15 @@ def _room_activity_conditions(
 ) -> tuple[Any, ...]:
     """The one definition of "a person used this room", shared by every path
     that asks it: the room-activity gauges, the period counts, the
-    once-per-room activation event, and the "was this room ever active" check
-    on deletion and archival. They must agree, or the same room reads as
-    active in one figure and never-active in another.
+    once-per-room activation event, the first-room-active evidence, and the
+    "was this room ever active" check on deletion and archival.
+
+    Who counts as a person is the caller's `person_types`, and the paths do
+    not all agree on it. The snapshot's released gauges (`room_active_*`)
+    count people on messaging platforms only (`SNAPSHOT_PERSON_TYPES`); every
+    other path counts a person in Switch Console too (`PERSON_CLIENT_TYPES`).
+    So a room used only from Switch Console chat becomes active, counts in the
+    period counts and reads as ever active, but is not in `room_active_*`.
 
     `_human_activity_conditions`, less a post the bridge marked as an
     integration's (`SENDER_IS_APP_MARKER`): an alerting app posting into a
@@ -925,7 +932,7 @@ async def room_had_human_activity(
         .where(
             Message.tenant_id == tenant_id,
             Message.room_id == room_id,
-            *_human_message_conditions(tenant_id, SNAPSHOT_PERSON_TYPES),
+            *_human_message_conditions(tenant_id, PERSON_CLIENT_TYPES),
             ~Message.content.has_key(SENDER_IS_APP_MARKER),
             exists(
                 select(agent_rooms.c.room_id).where(agent_rooms.c.room_id == room_id)
@@ -1215,7 +1222,7 @@ async def milestones_passed(
                     Message.tenant_id == tenant_id,
                     Room.tenant_id == tenant_id,
                     by_a_person,
-                    *_room_activity_conditions(tenant_id, SNAPSHOT_PERSON_TYPES),
+                    *_room_activity_conditions(tenant_id, PERSON_CLIENT_TYPES),
                     *(
                         (Message.sent_at < active_before,)
                         if active_before is not None
@@ -1301,7 +1308,7 @@ async def newly_active_rooms(
                     .join(Client, Client.id == Message.sender_client_id)
                     .where(
                         Message.tenant_id == tenant_id,
-                        *_room_activity_conditions(tenant_id, SNAPSHOT_PERSON_TYPES),
+                        *_room_activity_conditions(tenant_id, PERSON_CLIENT_TYPES),
                     )
                     .group_by(Message.room_id)
                     .subquery()

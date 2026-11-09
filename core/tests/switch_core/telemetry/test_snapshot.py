@@ -1137,6 +1137,69 @@ class TestTheFourPathsAgreeOnActivity:
         assert newly_active[0].first_active_at == NOW - timedelta(minutes=90)
 
 
+class TestASwitchConsoleChat:
+    """A room used only from Switch Console chat, through a person's `member`
+    client. It becomes active and reads as ever active, as it counts in the
+    period counts; the snapshot's released gauges keep their definition, which
+    counts people on messaging platforms only."""
+
+    async def test_it_becomes_active_and_was_ever_active(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(
+                session, created_at=NOW - timedelta(hours=5), channel_type="direct"
+            )
+            person = await _client(session, "member")
+            agent = await _client(session, "agent")
+            await _join(session, person, room)
+            await _join(session, agent, room)
+            await _say(session, room, person, seq=1, when=NOW - timedelta(hours=2))
+            await session.flush()
+
+            counts = await _counts(session)
+            was_ever_active = await room_had_human_activity(
+                session, TENANT_ZERO, room.id
+            )
+            await session.commit()
+
+        newly_active = await newly_active_rooms(
+            session_factory, since=NOW - timedelta(hours=4), now=NOW
+        )
+
+        assert was_ever_active is True
+        assert len(newly_active) == 1
+        assert newly_active[0].first_active_at == NOW - timedelta(hours=2)
+        assert newly_active[0].channel_type == "direct"
+        assert counts.room_active_1d == 0
+        assert counts.chat_identity_active_1d == 0
+
+    async def test_a_chat_with_no_agent_is_not_active(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session, created_at=NOW - timedelta(hours=5))
+            first = await _client(session, "member")
+            second = await _client(session, "member")
+            await _join(session, first, room)
+            await _join(session, second, room)
+            await _say(session, room, first, seq=1, when=NOW - timedelta(hours=2))
+            await _say(session, room, second, seq=2, when=NOW - timedelta(hours=1))
+            await session.flush()
+
+            was_ever_active = await room_had_human_activity(
+                session, TENANT_ZERO, room.id
+            )
+            await session.commit()
+
+        newly_active = await newly_active_rooms(
+            session_factory, since=NOW - timedelta(hours=4), now=NOW
+        )
+
+        assert was_ever_active is False
+        assert newly_active == []
+
+
 class TestTheDeploymentTotal:
     async def test_users_are_counted_once_for_the_deployment(
         self, session_factory: async_sessionmaker[AsyncSession]

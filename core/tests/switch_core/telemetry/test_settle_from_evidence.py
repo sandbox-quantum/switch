@@ -51,8 +51,11 @@ async def _settle(
 
 
 async def _room_used_by_a_person(
-    session_factory: async_sessionmaker[AsyncSession],
+    session_factory: async_sessionmaker[AsyncSession], *, person_type: str
 ) -> None:
+    """A room a person made, with an agent in it, where the person spoke and
+    the agent answered. `person_type` is the person's client: `user` on a
+    messaging platform, `member` in Switch Console."""
     suffix = uuid.uuid4().hex[:8]
     async with session_factory() as session:
         owner = User(
@@ -69,7 +72,9 @@ async def _room_used_by_a_person(
             type="agent",
         )
         person = Client(
-            transport_user_id=f"@person-{suffix}:test", display_name="p", type="user"
+            transport_user_id=f"@person-{suffix}:test",
+            display_name="p",
+            type=person_type,
         )
         agent_client = Client(
             transport_user_id=f"@agent-{suffix}:test", display_name="a", type="agent"
@@ -144,7 +149,7 @@ async def test_a_new_deployment_has_nothing_to_settle(
 async def test_what_a_deployment_already_did_is_claimed_without_reporting(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    await _room_used_by_a_person(session_factory)
+    await _room_used_by_a_person(session_factory, person_type="user")
 
     settled = await _settle(session_factory, switched_on=False)
 
@@ -159,13 +164,24 @@ async def test_what_a_deployment_already_did_is_claimed_without_reporting(
     assert await milestone_claimed(session_factory, "deployment_installed") == "false"
 
 
+async def test_a_room_used_from_switch_console_chat_was_active(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _room_used_by_a_person(session_factory, person_type="member")
+
+    settled = await _settle(session_factory, switched_on=False)
+
+    assert "first_room_active" in settled
+    assert "first_agent_session" in settled
+
+
 async def test_it_runs_once_unless_telemetry_is_switched_on_again(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Once claims are taken while off, only a room first used while off
     still needs it, and that is only seen at the boot that switches it on."""
     assert await _settle(session_factory, switched_on=False) == []
-    await _room_used_by_a_person(session_factory)
+    await _room_used_by_a_person(session_factory, person_type="user")
 
     assert await _settle(session_factory, switched_on=False) == []
     assert "first_room_active" in await _settle(session_factory, switched_on=True)
@@ -176,7 +192,7 @@ async def test_a_room_first_used_since_reporting_started_is_left_to_the_snapshot
 ) -> None:
     """Upgrading a server that already reports: a room it first used since the
     last snapshot pass is reported by the next one, not settled away here."""
-    await _room_used_by_a_person(session_factory)
+    await _room_used_by_a_person(session_factory, person_type="user")
 
     settled = await _settle(
         session_factory,
@@ -220,7 +236,7 @@ async def test_booting_with_telemetry_settles_and_starts_its_clock(
             )
         )
         await session.commit()
-    await _room_used_by_a_person(session_factory)
+    await _room_used_by_a_person(session_factory, person_type="user")
     config = SwitchConfig(
         db_host="h",
         db_port="5432",
