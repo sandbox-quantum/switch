@@ -1,5 +1,6 @@
 import { INSTALL_METHODS } from '@switch-console/core/deps';
 import {
+  type SessionProvisionTrigger,
   type SessionStartSource,
   AGENT_REMOVE_TRIGGERS,
   ROOM_AGENTS_DIRECTIONS,
@@ -14,7 +15,6 @@ import type {
   TelemetryIdentityLinkKind,
   TelemetryInstallMethod,
   TelemetryRoomAgentsDirection,
-  TelemetrySessionProvisionTrigger,
   TelemetryUpdateTrigger,
 } from './events';
 
@@ -58,7 +58,7 @@ export function startSourceOf(value: unknown): SessionStartSource {
  * `initial` is the honest fallback: an unrecognised trigger is not evidence
  * anybody retried anything, and `initial` is the value that reports nothing.
  */
-export function provisionTriggerOf(value: unknown): TelemetrySessionProvisionTrigger | 'initial' {
+export function provisionTriggerOf(value: unknown): SessionProvisionTrigger {
   return oneOf(SESSION_PROVISION_TRIGGERS, value, 'initial');
 }
 

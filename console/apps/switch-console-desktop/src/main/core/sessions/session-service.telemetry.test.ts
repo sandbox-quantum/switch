@@ -259,16 +259,27 @@ describe('provisioning a session again', () => {
     expect(hoisted.trackEvent).not.toHaveBeenCalled();
   });
 
-  it('separates a retry someone asked for from one the view made on its own', async () => {
+  it('separates a retry someone asked for from one the app made on its own', async () => {
+    // Activity is counted per event name, so the app reopening a session by
+    // itself needs a name of its own; a click on the session stays a person's.
     await sessionService.provisionSession('s-1', 'retry_button');
+    await settle();
+    await sessionService.provisionSession('s-1', 'session_click');
     await settle();
     await sessionService.provisionSession('s-1', 'auto');
     await settle();
 
-    const triggers = hoisted.trackEvent.mock.calls
-      .filter(([name]) => name === 'session_provision_retried')
-      .map(([, p]) => (p as Record<string, unknown>).trigger);
-    expect(triggers).toEqual(['retry_button', 'auto']);
+    expect(hoisted.trackEvent.mock.calls).toEqual([
+      [
+        'session_provision_retried',
+        { agent_type: 'codex', location: 'local', trigger: 'retry_button', outcome: 'failure' },
+      ],
+      [
+        'session_provision_retried',
+        { agent_type: 'codex', location: 'local', trigger: 'session_click', outcome: 'failure' },
+      ],
+      ['session_reopened', { agent_type: 'codex', location: 'local', outcome: 'failure' }],
+    ]);
   });
 
   it('reports a retry that failed rather than throwing it away', async () => {

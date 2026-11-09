@@ -299,8 +299,11 @@ export type TelemetryRoomAgentsDirection = 'agents_to_room' | 'room_to_agents';
 export type TelemetryEntryPoint = UiEntryPoint;
 export type TelemetrySessionStartSource = Exclude<SessionStartSource, 'adopted'>;
 
-/** A retry's trigger, minus `initial`, which is not a retry and is not sent. */
-export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 'initial'>;
+/**
+ * A retry someone asked for. `initial` is not a retry and is not sent, and
+ * `auto` is the app's own, sent as `session_reopened`.
+ */
+export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 'initial' | 'auto'>;
 
 /** Which setting was changed. The keys of the app's settings, and nothing else. */
 export type TelemetrySettingKey = AppSettingsKeyName;
@@ -521,7 +524,9 @@ export type TelemetryEventMap = {
     server_kind: TelemetryServerKind;
   };
   /**
-   * A session whose setup had not completed was provisioned again.
+   * Someone asked for a session whose setup had not completed to be
+   * provisioned again: `retry_button` is Retry, `session_click` clicking the
+   * session in the sidebar or a session list.
    *
    * The first attempt for a session is not reported: what is worth knowing is
    * whether a second one worked, and whether anyone had to ask for it.
@@ -530,6 +535,15 @@ export type TelemetryEventMap = {
     agent_type: TelemetryAgentType;
     location: TelemetryLocationKind;
     trigger: TelemetrySessionProvisionTrigger;
+    outcome: TelemetryOutcome;
+  };
+  /**
+   * The app provisioned a session again on its own: the session view opened
+   * on one that was not running, typically the screen a launch resumes on.
+   */
+  session_reopened: {
+    agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
     outcome: TelemetryOutcome;
   };
   /**
@@ -742,6 +756,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   ],
   server_removed: ['server_kind'],
   session_provision_retried: ['agent_type', 'location', 'trigger', 'outcome'],
+  session_reopened: ['agent_type', 'location', 'outcome'],
   setting_changed: ['setting_key'],
   search_performed: ['status', 'result_count'],
   agent_cli_action: [

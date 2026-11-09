@@ -103,7 +103,8 @@ function reportFailedSessionStart(params: CreateSessionParams, error: CreateSess
 }
 
 /**
- * Report a provision that was a retry.
+ * Report a provision that was a retry: one someone asked for, or the app's own
+ * (`auto`), which is `session_reopened`.
  *
  * The first attempt for a session is not one, and reporting it would drown the
  * signal: nearly every session is provisioned once. The session is read back
@@ -122,12 +123,13 @@ function reportProvisionRetry(
   void (async () => {
     const session = await getSession(sessionId);
     const agent = session ? await getAgentById(session.agentId) : null;
-    trackEvent('session_provision_retried', {
-      agent_type: session ? agentTypeOf(session.providerId) : 'unknown',
-      location: agent ? await locationKindOf(agent.locationId) : 'unknown',
-      trigger,
+    const shape = {
+      agent_type: session ? agentTypeOf(session.providerId) : ('unknown' as const),
+      location: agent ? await locationKindOf(agent.locationId) : ('unknown' as const),
       outcome,
-    });
+    };
+    if (trigger === 'auto') trackEvent('session_reopened', shape);
+    else trackEvent('session_provision_retried', { ...shape, trigger });
   })().catch(() => {});
 }
 

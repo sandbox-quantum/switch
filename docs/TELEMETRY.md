@@ -139,7 +139,8 @@ id, no IP field, no Switch identity.
 | `session_discovered` | `agent_type` · `location` — a session this app found running on a host and took on, rather than started: one started in a room, say, or from another computer |
 | `session_ended` | `agent_type` · `location` · `outcome`: `normal` / `failed` |
 | `session_attached` | `agent_type` · `outcome` |
-| `session_provision_retried` | `agent_type` · `location` · `trigger`: `auto` / `retry_button` · `outcome` |
+| `session_provision_retried` | `agent_type` · `location` · `trigger`: `retry_button` (Retry pressed) / `session_click` (the session clicked in the sidebar or a session list) · `outcome` — someone asked for a session that was not running to be set up again |
+| `session_reopened` | `agent_type` · `location` · `outcome` — the app set a session up again on its own, typically the one a launch resumes on |
 
 Note the shape of `failure_reason` everywhere: a short enumerated code such as
 `permission_denied` or `docker_daemon_down`. It is **never** an exception message,
