@@ -1,5 +1,6 @@
 import { createTheme } from "@mui/material";
-import type { PaletteOptions, Shadows } from "@mui/material";
+import type { PaletteOptions, Shadows, Theme } from "@mui/material";
+import type {} from "@mui/x-data-grid/themeAugmentation";
 import { HOOT_DARK, HOOT_LIGHT, hootVar } from "./hoot-tokens";
 
 declare module "@mui/material/styles" {
@@ -35,6 +36,20 @@ const CARD = "0 1px 2px 0 rgb(0 0 0 / 0.04)";
  *  over a table of the same colour only its shadow sets it apart. */
 const POPOVER = "0 2px 6px 0 rgb(0 0 0 / 0.08), 0 10px 28px 0 rgb(0 0 0 / 0.14)";
 const MODAL = "0 0 8px 0 rgb(0 0 0 / 0.12), 0 8px 32px 0 rgb(0 0 0 / 0.12)";
+/** On a near-black page a soft shadow vanishes, so a dark menu's is deeper. */
+const POPOVER_DARK = "0 2px 6px 0 rgb(0 0 0 / 0.4), 0 10px 28px 0 rgb(0 0 0 / 0.6)";
+
+/** Everything that floats over a card: menus, popovers, autocomplete lists
+ *  and the grid's own menus and panels. They share the card's fill, so only
+ *  a firm edge and a shadow set them apart from what they cover. */
+const floating = (theme: Theme) => ({
+  borderRadius: RADIUS_LG,
+  border: `1px solid ${hootVar("field-border")}`,
+  backgroundColor: hootVar("popover"),
+  backgroundImage: "none",
+  boxShadow: POPOVER,
+  ...theme.applyStyles("dark", { boxShadow: POPOVER_DARK }),
+});
 
 const HOOT_SHADOWS = [
   "none",
@@ -52,7 +67,10 @@ const palette = (t: HootTokens, mode: "light" | "dark"): PaletteOptions => ({
   contrastThreshold: 4.5,
   primary: { main: t.primary, contrastText: t.primaryForeground },
   secondary: { main: t.secondary, contrastText: t.secondaryForeground },
-  error: { main: t.destructive, contrastText: t.destructiveForeground },
+  // Red as text and icons is the darker-in-light, lighter-in-dark mix, which
+  // reads at small sizes in both schemes; a filled button keeps Hoot's red
+  // (see MuiButton).
+  error: { main: t.destructiveText, contrastText: t.destructiveForeground },
   success: { main: t.success, contrastText: t.successForeground },
   // Hoot pairs brand black, never white, with its orange.
   warning: { main: t.warning, contrastText: t.brandBlack },
@@ -174,6 +192,14 @@ export const APP_THEME = () =>
                 },
               },
               { props: { variant: "outlined", color: "inherit" }, style: { borderColor: hootVar("input") } },
+              {
+                props: { variant: "contained", color: "error" },
+                style: {
+                  backgroundColor: hootVar("destructive"),
+                  color: hootVar("destructive-foreground"),
+                  "&:hover": { backgroundColor: hootVar("destructive") },
+                },
+              },
             ],
           },
         },
@@ -224,7 +250,7 @@ export const APP_THEME = () =>
               },
               {
                 props: { variant: "filled", color: "error" },
-                style: { backgroundColor: hootVar("destructive-muted"), color: hootVar("destructive") },
+                style: { backgroundColor: hootVar("destructive-muted"), color: hootVar("destructive-text") },
               },
             ],
           },
@@ -243,7 +269,16 @@ export const APP_THEME = () =>
       // menus and popovers mount an invisible backdrop that must stay invisible.
       MuiDialog: {
         defaultProps: {
-          slotProps: { backdrop: { sx: { backgroundColor: hootVar("overlay") } } },
+          slotProps: {
+            backdrop: {
+              // Hoot's overlay is its warm black at 60%, which barely dims a
+              // page that is already near-black; dark mode dims with black.
+              sx: (theme: Theme) => ({
+                backgroundColor: hootVar("overlay"),
+                ...theme.applyStyles("dark", { backgroundColor: "rgb(0 0 0 / 0.7)" }),
+              }),
+            },
+          },
         },
         styleOverrides: {
           paper: { borderRadius: RADIUS_LG, boxShadow: MODAL, backgroundColor: hootVar("card") },
@@ -262,7 +297,17 @@ export const APP_THEME = () =>
         },
       },
       MuiMenu: { defaultProps: { elevation: 4 } },
-      MuiMenuItem: { styleOverrides: { root: { borderRadius: 6, fontSize: "0.875rem" } } },
+      MuiMenuItem: {
+        styleOverrides: {
+          root: {
+            borderRadius: 6,
+            fontSize: "0.875rem",
+            // A full-width item's ring drawn outside it would be clipped by
+            // the menu to two stray lines, so it is drawn inside.
+            "&.Mui-focusVisible, &:focus-visible": { outlineOffset: "-2px" },
+          },
+        },
+      },
       MuiPaper: {
         defaultProps: { variant: "outlined", elevation: 0 },
         styleOverrides: {
@@ -270,20 +315,19 @@ export const APP_THEME = () =>
           rounded: { borderRadius: RADIUS },
         },
       },
-      // Menus and popovers float over cards of the same fill, so their edge is
-      // the field's firmer hairline, and in dark mode, where a shadow barely
-      // shows, they take the lifted fill fields use.
       MuiPopover: {
         defaultProps: { elevation: 4 },
+        styleOverrides: { paper: ({ theme }) => floating(theme) },
+      },
+      MuiAutocomplete: {
         styleOverrides: {
-          paper: ({ theme }) => ({
-            borderRadius: RADIUS_LG,
-            boxShadow: POPOVER,
-            borderColor: hootVar("field-border"),
-            backgroundColor: hootVar("popover"),
-            ...theme.applyStyles("dark", { backgroundColor: hootVar("field") }),
-          }),
+          paper: ({ theme }) => floating(theme),
+          // A chip on a field shares its fill in dark mode, so it keeps an edge.
+          tag: { border: `1px solid ${hootVar("border")}` },
         },
+      },
+      MuiDataGrid: {
+        styleOverrides: { paper: ({ theme }) => floating(theme) },
       },
       // Hoot's field chrome: a white field on a hairline with one soft shadow,
       // and on focus a full-strength border with a soft ring hugging it.
@@ -314,6 +358,13 @@ export const APP_THEME = () =>
               boxShadow: "none",
             },
             "&.Mui-disabled .MuiOutlinedInput-notchedOutline": { borderColor: hootVar("field-border") },
+            // A disabled multi-line field is usually content to read that the
+            // viewer may not change (a template's document), so its text stays
+            // readable; the grey fill still says it cannot be edited.
+            "&.Mui-disabled.MuiInputBase-multiline .MuiInputBase-input": {
+              color: hootVar("muted-foreground"),
+              WebkitTextFillColor: hootVar("muted-foreground"),
+            },
           },
           input: { fontSize: "0.875rem" },
         },
@@ -325,34 +376,44 @@ export const APP_THEME = () =>
       MuiSwitch: {
         defaultProps: { size: "small", disableRipple: true },
         styleOverrides: {
-          root: {
+          root: ({ theme }) => ({
             width: 36,
             height: 20,
             padding: 0,
-            overflow: "visible",
+            borderRadius: 10,
             // Disabled dims the whole switch, as Hoot does, rather than
             // MUI's near-invisible track.
             "&:has(.Mui-disabled)": { opacity: 0.5 },
+            // One ring, round the pill, rather than the thumb's own as well.
+            "&:has(.Mui-focusVisible)": { outline: `2px solid ${hootVar("ring")}`, outlineOffset: "2px" },
             "& .MuiSwitch-switchBase": {
               padding: 2,
+              "&.Mui-focusVisible": { outline: "none" },
               "&.Mui-checked": {
                 transform: "translateX(16px)",
                 "& + .MuiSwitch-track": { backgroundColor: hootVar("primary"), opacity: 1 },
               },
               "&.Mui-disabled + .MuiSwitch-track": { opacity: 1 },
-              "&.Mui-focusVisible + .MuiSwitch-track": {
-                outline: `2px solid ${hootVar("ring")}`,
-                outlineOffset: "2px",
-              },
             },
             "& .MuiSwitch-thumb": {
               width: 16,
               height: 16,
               boxShadow: "0 1px 3px rgb(0 0 0 / 0.25)",
-              backgroundColor: hootVar("background"),
+              backgroundColor: hootVar("card"),
             },
-            "& .MuiSwitch-track": { borderRadius: 10, backgroundColor: hootVar("input"), opacity: 1 },
-          },
+            // An off switch is a grey that holds 3:1 against the card, so it
+            // can be seen at all; Hoot's input grey all but vanishes.
+            "& .MuiSwitch-track": {
+              borderRadius: 10,
+              backgroundColor: `color-mix(in oklch, ${hootVar("foreground")} 45%, ${hootVar("card")})`,
+              opacity: 1,
+            },
+            // On, the dark track is light and takes the dark thumb; off, the
+            // thumb stays light on the grey.
+            ...theme.applyStyles("dark", {
+              "& .MuiSwitch-switchBase:not(.Mui-checked) .MuiSwitch-thumb": { backgroundColor: hootVar("foreground") },
+            }),
+          }),
         },
       },
       // MUI offsets a label by -11px to take back the padding around its
@@ -360,12 +421,12 @@ export const APP_THEME = () =>
       // the switch out of line and left the label touching it.
       MuiFormControlLabel: {
         styleOverrides: {
+          // Weak selectors (`:where`), so a Stack's spacing between the label
+          // and what comes before it still applies.
           root: {
-            "&:has(> .MuiSwitch-root)": {
-              gap: 8,
-              "&:not(.MuiFormControlLabel-labelPlacementStart)": { marginLeft: 0 },
-              "&.MuiFormControlLabel-labelPlacementStart": { marginRight: 0 },
-            },
+            "&:has(> .MuiSwitch-root)": { gap: 8 },
+            "&:where(:has(> .MuiSwitch-root):not(.MuiFormControlLabel-labelPlacementStart))": { marginLeft: 0 },
+            "&:where(.MuiFormControlLabel-labelPlacementStart:has(> .MuiSwitch-root))": { marginRight: 0 },
           },
         },
       },

@@ -134,10 +134,11 @@ function schemeScopes(blocks) {
 }
 
 /**
- * A token's value as a colour, following var() references and
- * `color-mix(in oklch, <colour> N%, transparent)` washes. Null for a token
- * that is not a colour (a length, a shadow). Throws on a colour written in a
- * form this script does not resolve, so it can never be silently dropped.
+ * A token's value as a colour, following var() references,
+ * `color-mix(in oklch, <colour> N%, transparent)` washes and mixes of two
+ * opaque colours. Null for a token that is not a colour (a length, a shadow).
+ * Throws on a colour written in a form this script does not resolve, so it
+ * can never be silently dropped.
  */
 function resolveColour(scope, name, seen = []) {
   if (seen.includes(name)) throw new Error(`var() cycle: ${[...seen, name].map((n) => `--hoot-${n}`).join(" -> ")}`);
@@ -157,9 +158,38 @@ function resolveValue(scope, raw, seen) {
     return { ...colour, alpha: colour.alpha * (Number(mix[2]) / 100) };
   }
 
+  const blend = /^color-mix\(in oklch,\s*(.+?)\s+([\d.]+)%,\s*(.+)\)$/.exec(raw);
+  if (blend) {
+    const a = resolveValue(scope, blend[1], seen);
+    const b = resolveValue(scope, blend[3], seen);
+    if (a === null || b === null) throw new Error(`color-mix() of a non-colour: ${raw}`);
+    return mixOklch(a, b, Number(blend[2]) / 100, raw);
+  }
+
   if (raw.startsWith("oklch(")) return parseOklch(raw);
   if (/^(#|rgb|hsl|color|lab|lch|oklab)/.test(raw)) throw new Error(`colour format the generator does not resolve: ${raw}`);
   return null;
+}
+
+/** CSS `color-mix(in oklch, a p, b)` for two opaque colours: each
+ *  component interpolated, hue along the shorter arc, and an achromatic
+ *  side taking the other's hue. */
+function mixOklch(a, b, p, raw) {
+  if (a.alpha !== 1 || b.alpha !== 1) throw new Error(`color-mix() of a translucent colour: ${raw}`);
+  const achromatic = (colour) => colour.C < 1e-4;
+  let ha = a.H;
+  let hb = b.H;
+  if (achromatic(a)) ha = hb;
+  if (achromatic(b)) hb = ha;
+  let delta = hb - ha;
+  if (delta > 180) delta -= 360;
+  if (delta < -180) delta += 360;
+  return {
+    L: a.L * p + b.L * (1 - p),
+    C: a.C * p + b.C * (1 - p),
+    H: (((ha + delta * (1 - p)) % 360) + 360) % 360,
+    alpha: 1,
+  };
 }
 
 /** camelCase a kebab token name so it reads naturally in TS. */

@@ -463,6 +463,12 @@
   --hoot-shadow-surface: var(--hoot-elevation-2);
   --hoot-shadow-rail-active: var(--hoot-elevation-3);
   --hoot-shadow-popover: 0 2px 6px 0 rgb(0 0 0 / 0.08), 0 10px 28px 0 rgb(0 0 0 / 0.14);
+
+  /* Red as text. Upstream's red is one value for both schemes, which is
+     under 4.5:1 for small text on the dark card (and only just on the light
+     one), so text takes it mixed toward the scheme's own ink: a little darker
+     in light, lighter in dark. Fills keep the red itself. */
+  --hoot-destructive-text: color-mix(in oklch, var(--hoot-destructive) 88%, var(--hoot-foreground));
 }
 
 /* Gateway overrides of upstream values, the same in both schemes. Last in the
