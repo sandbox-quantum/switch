@@ -1115,7 +1115,11 @@ class RoomYamlService:
             failures=failures,
         )
         created_doc_ids = await self._create_inline_docs(
-            room_id, spec.docs, user_id=user_id, failures=failures
+            room_id,
+            spec.docs,
+            user_id=user_id,
+            created_by_kind="agent" if origin is not None else "system",
+            failures=failures,
         )
 
         if kickoff:
@@ -1401,6 +1405,7 @@ class RoomYamlService:
         docs: list[DocSpec],
         *,
         user_id: str,
+        created_by_kind: Literal["agent", "system"],
         failures: list[dict[str, Any]],
     ) -> list[str]:
         created: list[str] = []
@@ -1415,6 +1420,7 @@ class RoomYamlService:
                         description=doc.description,
                         instructions=doc.instructions,
                         content=doc.content,
+                        created_by_kind=created_by_kind,
                     )
                     created.append(created_doc.id)
                 except Exception as e:

@@ -403,11 +403,11 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
     ("ran_by_an_agent", "room_kind", "reference_kind"),
     [(False, "user", "system"), (True, "agent", "agent")],
 )
-async def test_who_ran_a_template_is_who_made_its_room_and_references(
+async def test_who_ran_a_template_is_who_made_its_room_references_and_docs(
     env, monkeypatch: pytest.MonkeyPatch, ran_by_an_agent, room_kind, reference_kind
 ):
     """A person running a template asked for the room, not for each reference
-    in it; an agent running one made both."""
+    or document in it; an agent running one made all of them."""
     telemetry, sink = recording_telemetry()
     env["resource_service"]._telemetry = telemetry
     configs: list[RoomCreateConfig] = []
@@ -429,6 +429,11 @@ async def test_who_ran_a_template_is_who_made_its_room_and_references(
               description: "the repo"
               instructions: "use it"
               value: { urls: ["https://github.com/example-org/switch"] }
+          docs:
+            - name: "Runbook"
+              description: "how we work"
+              instructions: "read before shipping"
+              content: "Ship small."
         """
     )
     origin = (
@@ -450,6 +455,9 @@ async def test_who_ran_a_template_is_who_made_its_room_and_references(
 
     assert [config.created_by_kind for config in configs] == [room_kind]
     assert [event["created_by_kind"] for event in sink.events("reference_created")] == [
+        reference_kind
+    ]
+    assert [event["created_by_kind"] for event in sink.events("document_created")] == [
         reference_kind
     ]
 

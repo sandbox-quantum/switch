@@ -1102,11 +1102,12 @@ class ResourceService:
         description: str,
         instructions: str,
         content: str,
+        created_by_kind: Literal["agent", "system"],
     ) -> Document:
         """Create a room-scoped document on behalf of a user (no creating
         agent). Mirrors ``create_room_document`` but sets
-        ``created_by_agent_id=None``; used by user-facing flows like
-        YAML provisioning where there is no acting agent."""
+        ``created_by_agent_id=None``; used by template runs, where
+        `created_by_kind` is who ran the template, as for their references."""
         if not name.strip():
             raise ValueError("name must not be empty")
         if len(content.encode("utf-8")) > ROOM_DOCUMENT_MAX_CONTENT_BYTES:
@@ -1133,7 +1134,7 @@ class ResourceService:
             "document_created",
             {
                 "scope": "room",
-                "created_by_kind": "user",
+                "created_by_kind": created_by_kind,
                 "has_instructions": bool(instructions),
             },
         )
