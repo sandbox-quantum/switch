@@ -1,3 +1,4 @@
+import AccountCircleOutlined from "@mui/icons-material/AccountCircleOutlined";
 import AddOutlined from "@mui/icons-material/AddOutlined";
 import CloudOutlined from "@mui/icons-material/CloudOutlined";
 import FolderOpenOutlined from "@mui/icons-material/FolderOpenOutlined";
@@ -18,7 +19,7 @@ import {
   Typography,
 } from "@mui/material";
 import { memo, useState } from "react";
-import { NavLink, useLocation } from "react-router";
+import { NavLink, Link as RouterLink, useLocation } from "react-router";
 import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
 import { useHostedV2 } from "../data/hooks";
@@ -130,8 +131,12 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
     ...(cloudFiles ? [CLOUD_FILES_ITEM] : []),
     ...(isHostedOperator && hostedV2 ? [HOSTED_ITEM] : []),
   ];
+  const isActive = (item: RailItemDefinition) =>
+    item.activeFor.some((prefix) => location.pathname.startsWith(prefix));
   const current = session?.tenant ?? null;
-  const others = (session?.tenants ?? []).filter((t) => t.id !== current?.id);
+  // The new layout switches workspace from the top bar's breadcrumb.
+  const others =
+    layout === "v2" ? [] : (session?.tenants ?? []).filter((t) => t.id !== current?.id);
   const initial = (user?.email ?? "?").charAt(0).toUpperCase();
 
   return (
@@ -187,30 +192,37 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
 
       <Divider sx={{ my: 1.5, width: 29 }} />
 
-      <Stack
-        component="nav"
-        aria-label="Main"
-        sx={{
-          width: "100%",
-          alignItems: "center",
-          gap: ITEM_GAP,
-          // On a window shorter still, the items scroll and the account
-          // button stays put; the rail is too narrow for a scrollbar.
-          flex: 1,
-          minHeight: 0,
-          overflowY: "auto",
-          overflowX: "hidden",
-          scrollbarWidth: "none",
-          "&::-webkit-scrollbar": { display: "none" },
-        }}
-      >
-        {items.map((item) => (
-          <RailItem
-            key={item.to}
-            item={item}
-            active={item.activeFor.some((prefix) => location.pathname.startsWith(prefix))}
-          />
-        ))}
+      <Stack component="nav" aria-label="Main" sx={{ width: "100%", flex: 1, minHeight: 0 }}>
+        <Stack
+          sx={{
+            width: "100%",
+            alignItems: "center",
+            gap: ITEM_GAP,
+            // On a window shorter still, the items scroll and the account
+            // button stays put; the rail is too narrow for a scrollbar.
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
+            overflowX: "hidden",
+            scrollbarWidth: "none",
+            "&::-webkit-scrollbar": { display: "none" },
+          }}
+        >
+          {items
+            .filter((item) => !item.bottom)
+            .map((item) => (
+              <RailItem key={item.to} item={item} active={isActive(item)} />
+            ))}
+        </Stack>
+        {items.some((item) => item.bottom) && (
+          <Stack sx={{ width: "100%", alignItems: "center", gap: ITEM_GAP, pt: 2 }}>
+            {items
+              .filter((item) => item.bottom)
+              .map((item) => (
+                <RailItem key={item.to} item={item} active={isActive(item)} />
+              ))}
+          </Stack>
+        )}
       </Stack>
 
       <Stack sx={{ width: "100%", alignItems: "center", gap: 2, pt: 2 }}>
@@ -256,14 +268,26 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
           )}
         </Box>
         <Divider sx={{ my: 0.5 }} />
-        <Box sx={{ px: 1.5, pt: 0.5, pb: 0.25 }}>
-          <Typography variant="caption" sx={{ color: "text.secondary" }}>
-            Workspace
-          </Typography>
-          <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
-            {current?.name}
-          </Typography>
-        </Box>
+        {layout === "v2" ? (
+          <MenuItem
+            component={RouterLink}
+            to="/settings/account"
+            onClick={() => setAnchor(null)}
+            sx={{ gap: 1 }}
+          >
+            <AccountCircleOutlined sx={{ fontSize: 16 }} />
+            Your account
+          </MenuItem>
+        ) : (
+          <Box sx={{ px: 1.5, pt: 0.5, pb: 0.25 }}>
+            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+              Workspace
+            </Typography>
+            <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
+              {current?.name}
+            </Typography>
+          </Box>
+        )}
         {others.map((tenant) => (
           <MenuItem
             key={tenant.id}

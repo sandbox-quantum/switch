@@ -1182,6 +1182,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         external_user_store=external_user_store,
         document_store=document_store,
         reference_store=reference_store,
+        package_store=package_store,
         agent_session_store=agent_session_store,
         room_service=room_service,
         user_store=user_store,

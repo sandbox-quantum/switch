@@ -555,6 +555,11 @@ export class SwitchClient {
     return this.gateway<OrganizationSummary[]>("GET", "/organizations");
   }
 
+  /** `GET /gateway/tenants/counts` — how many users and agents each workspace the caller may enter has. */
+  async workspaceCounts(): Promise<{ id: string; users: number; agents: number }[]> {
+    return this.gateway("GET", "/tenants/counts");
+  }
+
   /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter. */
   async organizationWorkspaces(): Promise<WorkspaceMembership[]> {
     return this.gateway<WorkspaceMembership[]>(

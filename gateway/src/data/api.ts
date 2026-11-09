@@ -37,6 +37,9 @@ export interface RoomSummary {
   write_visibility: "public" | "private";
   created_at: string;
   archived: boolean;
+  // The viewer takes part in it: owns it, is in it (in Switch Console or
+  // through a platform account they claimed), or owns an agent in it.
+  viewer_is_member: boolean;
   // What the viewer may do, as the server decides it. `can_write` covers the
   // room's settings, roles, links and attaching resources;
   // `can_change_members` covers adding and removing its agents and people,
@@ -384,6 +387,12 @@ export async function fetchRooms(
   return fetchJson<RoomSummary[]>(`/rooms${q ? `?${q}` : ""}`);
 }
 
+/** The rooms the Rooms list opens on (archived ones left out), throwing
+ * rather than answering null so a failure can say why. */
+export async function loadRooms(): Promise<RoomSummary[]> {
+  return jsonRequest<RoomSummary[]>("/rooms", "GET");
+}
+
 export async function fetchRoom(roomId: string): Promise<RoomDetail | null> {
   return fetchJson<RoomDetail>(`/rooms/${roomId}`);
 }
@@ -690,6 +699,12 @@ export interface RegisterResult {
 
 export async function fetchAgents(): Promise<AgentSummary[] | null> {
   return fetchJson<AgentSummary[]>("/agents");
+}
+
+/** The agents the Agents list shows, throwing rather than answering null so
+ * a failure can say why. */
+export async function loadAgents(): Promise<AgentSummary[]> {
+  return jsonRequest<AgentSummary[]>("/agents", "GET");
 }
 
 export async function fetchAgent(agentId: string): Promise<AgentDetail | null> {
@@ -1281,6 +1296,29 @@ export async function createTenant(name: string): Promise<TenantMembership> {
     { name },
   );
   return created.workspace;
+}
+
+export interface OrganizationSummary {
+  id: string;
+  slug: string;
+  name: string;
+  role: OrganizationRole;
+}
+
+/** The organizations of the workspaces the caller may enter. */
+export async function fetchOrganizations(): Promise<OrganizationSummary[]> {
+  return jsonRequest<OrganizationSummary[]>("/organizations", "GET");
+}
+
+export interface WorkspaceCounts {
+  id: string;
+  users: number;
+  agents: number;
+}
+
+/** How many people and agents each workspace the caller may enter has. */
+export async function fetchWorkspaceCounts(): Promise<WorkspaceCounts[]> {
+  return jsonRequest<WorkspaceCounts[]>("/tenants/counts", "GET");
 }
 
 export async function switchTenant(tenantId: string): Promise<void> {
