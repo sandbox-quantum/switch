@@ -83,7 +83,7 @@ machine, in what repository, or what the prompt said.
 | `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
 | `flint.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
 | `flint.insert_id` | a random UUID made for this one event, so that two events alike in every field and sent in the same millisecond are not taken for one. A new one every event; kept nowhere | `9d0c5e7a-41b2-4f3e-8a6d-2b7c1e94f0a3` |
-| `flint.session_id` | which visit to the app the event belongs to: the time, in milliseconds, of the first thing someone did in it. A visit ends after 30 minutes with nothing done, and is kept only in memory. `-1` on the events that are not someone using the app — `session_discovered`, `session_reopened`, `subagent_adopted`, `agent_pruned`, `update_install_started`, `telemetry_consent_changed`, `renderer_crashed`, and a `session_ended` for a session that went because the app removed its agent by itself — which neither start nor prolong a visit | `1789571950042`, `-1` |
+| `flint.session_id` | which visit to the app the event belongs to: the time, in milliseconds, of the first thing someone did in it. A visit ends after 30 minutes with nothing done, and is kept only in memory. `-1` on the events that are not someone using the app — `session_discovered`, `session_reopened`, `subagent_adopted`, `agent_pruned`, `update_checked`, `update_install_started`, `telemetry_consent_changed`, `renderer_crashed`, and a `session_ended` for a session that went because the app removed its agent by itself — which neither start nor prolong a visit | `1789571950042`, `-1` |
 | `event.name` | the event, prefixed with the product | `switch_console.session_started` |
 | timestamp | event time | `1789572278158000000` |
 
@@ -110,7 +110,8 @@ id, no IP field, no Switch identity.
 |---|---|
 | `app_launched` | `install_kind`: `new` (the installation's very first launch) / `updated` (the first launch on a newer version; switching between the canary and stable builds, or going back to an older version, is `same`) / `same` · `from_version`: `0.40.1`, or `unknown` when the previous launch did not record one · `update_trigger`: `restart_button` (the app restarted itself to install the update) / `other` (installed on quit, or by hand) / `unknown` (that could not be read) — both are `none` unless `install_kind` is `updated` |
 | `renderer_crashed` | *(no fields)* |
-| `update_check_requested` | `result`: `available` / `up_to_date` / `failed` — someone asked for an update check, from the menu or a Check button. The app's own checks, at launch and every hour, are not sent |
+| `update_check_requested` | `result`: `available` / `up_to_date` / `failed` — someone asked for an update check, from the menu or a Check button |
+| `update_checked` | `trigger`: `startup` (as a window loads) / `scheduled` (the hourly check) · `result`: `available` / `up_to_date` / `failed` — the app checked for an update on its own. Sent so the updater's health can be watched; a check that joins one already running is not sent again |
 | `update_download_started` | *(no fields)* — Download was pressed for an available update |
 | `update_downloaded` | `outcome`: `success` / `failure` |
 | `update_install_started` | `outcome`: `failure` — an update install that was started and did not finish (the app never went down for the installer, or came back on the old version). One that worked is the next `app_launched`, with `install_kind` `updated` |

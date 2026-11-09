@@ -194,8 +194,8 @@ describe('what a check reports', () => {
     );
   });
 
-  it.each(['scheduled', 'startup', 'unknown'] as const)(
-    'reports nothing for a %s check, which nobody asked for',
+  it.each(['scheduled', 'startup'] as const)(
+    'reports a %s check, which nobody asked for, as the app checking',
     async (trigger) => {
       h.checkForUpdatesAndNotify.mockResolvedValue({
         isUpdateAvailable: false,
@@ -205,9 +205,54 @@ describe('what a check reports', () => {
 
       await updateService.checkForUpdates(trigger);
 
-      expect(h.trackEvent).not.toHaveBeenCalledWith('update_check_requested', expect.anything());
+      expect(h.trackEvent.mock.calls).toEqual([
+        ['update_checked', { trigger, result: 'up_to_date' }],
+      ]);
     }
   );
+
+  it('reports an automatic check that could not run as failed', async () => {
+    h.checkForUpdatesAndNotify.mockRejectedValue(new Error('HTTP 503'));
+
+    await expect(updateService.checkForUpdates('scheduled')).rejects.toThrow();
+
+    await vi.waitFor(() =>
+      expect(h.trackEvent).toHaveBeenCalledWith('update_checked', {
+        trigger: 'scheduled',
+        result: 'failed',
+      })
+    );
+  });
+
+  it('reports nothing for a check whose trigger nobody named', async () => {
+    h.checkForUpdatesAndNotify.mockResolvedValue({
+      isUpdateAvailable: false,
+      versionInfo: { version: '1.2.3' },
+      updateInfo: { version: '1.2.3' },
+    });
+
+    await updateService.checkForUpdates('unknown');
+
+    expect(h.trackEvent).not.toHaveBeenCalled();
+  });
+
+  it('reports an automatic check that joins one already running only once', async () => {
+    let finish!: (value: unknown) => void;
+    h.checkForUpdatesAndNotify.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+
+    const scheduled = updateService.checkForUpdates('scheduled');
+    const startup = updateService.checkForUpdates('startup');
+    finish({
+      isUpdateAvailable: false,
+      versionInfo: { version: '1.2.3' },
+      updateInfo: { version: '1.2.3' },
+    });
+    await Promise.all([scheduled, startup]);
+
+    expect(h.trackEvent.mock.calls).toEqual([
+      ['update_checked', { trigger: 'scheduled', result: 'up_to_date' }],
+    ]);
+  });
 
   it('reports a request that joins the app’s own check, with that check’s result', async () => {
     let finish!: (value: unknown) => void;
@@ -223,7 +268,8 @@ describe('what a check reports', () => {
     await Promise.all([scheduled, requested]);
 
     expect(h.checkForUpdatesAndNotify).toHaveBeenCalledTimes(1);
-    expect(h.trackEvent.mock.calls.filter(([name]) => name === 'update_check_requested')).toEqual([
+    expect(h.trackEvent.mock.calls).toEqual([
+      ['update_checked', { trigger: 'scheduled', result: 'available' }],
       ['update_check_requested', { result: 'available' }],
     ]);
   });

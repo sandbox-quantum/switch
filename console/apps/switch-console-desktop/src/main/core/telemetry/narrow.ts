@@ -72,8 +72,9 @@ export function roomAgentsDirectionOf(value: unknown): TelemetryRoomAgentsDirect
 }
 
 /**
- * `unknown` rather than `user`: only a check somebody asked for is reported,
- * and a caller that said nothing is not evidence anybody did.
+ * `unknown` rather than a guess: a check is reported as a person's or as the
+ * app's own, and a caller that said nothing is evidence of neither, so its
+ * check is not reported.
  */
 export function updateTriggerOf(value: unknown): UpdateTrigger | 'unknown' {
   return oneOf<UpdateTrigger | 'unknown'>(UPDATE_TRIGGERS, value, 'unknown');

@@ -54,6 +54,11 @@ const FAKE_STARTUP_DELAY_MS = 1_500;
 /** Dev builds cannot restart into a new binary, so the fake install unwinds. */
 const FAKE_INSTALL_ROLLBACK_MS = 3_000;
 
+/** How a check that finished came out, as its telemetry reports it. */
+function checkResult(info: UpdateInfo | null): 'available' | 'up_to_date' {
+  return info ? 'available' : 'up_to_date';
+}
+
 /** Why an install did not happen, as logged with `event: 'update.install'`. */
 type InstallFailureCode =
   | 'installer_error'
@@ -419,16 +424,20 @@ class UpdateService implements IInitializable, IDisposable {
   /**
    * Check for an update.
    *
-   * `trigger` says who asked, and only a check somebody asked for is reported:
-   * the app's own, at launch and every hour, say nothing about anyone. A check
-   * that arrives while one is already running joins it rather than starting a
-   * second, and a person's request that joins one is still reported, with the
-   * result of the check it joined.
+   * `trigger` says who asked. A person's check is reported as
+   * `update_check_requested`; the app's own, at launch and every hour, as
+   * `update_checked`, which is not someone using the app. A check that
+   * arrives while one is already running joins it rather than starting a
+   * second: a person's request that joins one is still reported, with the
+   * result of the check it joined, and one of the app's own is not, since the
+   * check it joined is reported already. A trigger nobody named is not
+   * reported.
    */
   async checkForUpdates(trigger: UpdateTrigger | 'unknown'): Promise<UpdateInfo | null> {
     // During an install, an error from a check would read as an installer error.
     if (!this.active || this.installRequested) return null;
 
+    const joined = this.currentCheckPromise !== null;
     this.currentCheckPromise ??= this._performCheck().finally(() => {
       this.currentCheckPromise = null;
       this.scheduleNextCheck();
@@ -436,9 +445,13 @@ class UpdateService implements IInitializable, IDisposable {
     const check = this.currentCheckPromise;
     if (trigger === 'user') {
       check.then(
-        (info) =>
-          trackEvent('update_check_requested', { result: info ? 'available' : 'up_to_date' }),
+        (info) => trackEvent('update_check_requested', { result: checkResult(info) }),
         () => trackEvent('update_check_requested', { result: 'failed' })
+      );
+    } else if (trigger !== 'unknown' && !joined) {
+      check.then(
+        (info) => trackEvent('update_checked', { trigger, result: checkResult(info) }),
+        () => trackEvent('update_checked', { trigger, result: 'failed' })
       );
     }
     return check;

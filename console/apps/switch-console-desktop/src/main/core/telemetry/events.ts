@@ -482,9 +482,20 @@ export type TelemetryEventMap = {
    * Someone asked for an update check, from the menu or a Check button, and
    * how the check came out. One that lands while the app's own check is
    * already running joins it, and reports that check's result. The app's own
-   * checks, on launch and every hour, are not reported.
+   * checks are `update_checked`.
    */
   update_check_requested: {
+    result: 'available' | 'up_to_date' | 'failed';
+  };
+  /**
+   * The app checked for an update on its own, as a window loaded (`startup`)
+   * or on its hourly timer (`scheduled`), and how the check came out. Not
+   * someone using the app (`BACKGROUND_EVENTS`): it is there for the
+   * updater's health. One that joins a check already running is not sent;
+   * the check it joined already is.
+   */
+  update_checked: {
+    trigger: 'startup' | 'scheduled';
     result: 'available' | 'up_to_date' | 'failed';
   };
   /**
@@ -760,6 +771,7 @@ export const BACKGROUND_EVENTS: ReadonlySet<TelemetryEventName> = new Set<Teleme
   'session_reopened',
   'subagent_adopted',
   'agent_pruned',
+  'update_checked',
   'update_install_started',
   'telemetry_consent_changed',
   'renderer_crashed',
@@ -797,6 +809,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   session_ended: ['agent_type', 'location', 'outcome'],
   server_added: ['server_kind', 'outcome', 'failure_reason'],
   update_check_requested: ['result'],
+  update_checked: ['trigger', 'result'],
   update_download_started: [],
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],

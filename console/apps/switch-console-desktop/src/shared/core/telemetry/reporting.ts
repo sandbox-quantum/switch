@@ -92,7 +92,13 @@ export const ROOM_AGENTS_DIRECTIONS = ['agents_to_room', 'room_to_agents'] as co
 
 export type RoomAgentsDirection = (typeof ROOM_AGENTS_DIRECTIONS)[number];
 
-/** What asked for an update check. */
+/**
+ * What asked for an update check. The renderer names `user` (a menu item or a
+ * Check button) and `startup` (a window loading); `scheduled` is the main
+ * process's hourly timer. A person's check is reported as
+ * `update_check_requested`, and the app's own as `update_checked`, with this as
+ * its `trigger`.
+ */
 export const UPDATE_TRIGGERS = ['user', 'startup', 'scheduled'] as const;
 
 export type UpdateTrigger = (typeof UPDATE_TRIGGERS)[number];

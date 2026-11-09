@@ -2967,9 +2967,10 @@ version of their own to them without also giving them a release of their own.
   agent removed because its Switch server no longer has it is `agent_pruned`,
   with the cause, rather than `agent_removed` with `trigger: server_teardown`,
   and its sessions' `session_ended` are sent in no session.
-- **Less usage data that says nothing about use.** Only an update check
-  someone asked for is sent, as `update_check_requested`; the checks the app
-  makes at launch and every hour are not. The screen a launch resumes on is no
+- **Less usage data that says nothing about use.** An update check someone
+  asked for is sent as `update_check_requested`, and the checks the app makes
+  at launch and every hour as `update_checked`, which is not counted as
+  someone using the app. The screen a launch resumes on is no
   longer sent as `view_opened`. `setting_changed` is sent only when a setting
   actually changed, and never for the usage-data answer or the first run's own
   progress. `update_install_started` is sent only for an install that did not

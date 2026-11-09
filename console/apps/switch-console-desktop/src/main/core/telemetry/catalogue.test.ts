@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TELEMETRY_EVENT_PROPERTIES, type TelemetryEventName } from './events';
+import { BACKGROUND_EVENTS, TELEMETRY_EVENT_PROPERTIES, type TelemetryEventName } from './events';
 import { buildOtlpPayload, type TelemetryContext } from './relay-client';
 
 /**
@@ -184,5 +184,18 @@ describe('the catalogue as a whole', () => {
         expect(property).toMatch(snake);
       }
     }
+  });
+});
+
+describe('which events are someone using the app', () => {
+  it('counts the app checking for updates on its own as background, and a person asking as use', () => {
+    // Amplitude blocks the automatic check and Datadog keeps it for the
+    // updater's health; a person's check is a person doing something.
+    expect(BACKGROUND_EVENTS.has('update_checked')).toBe(true);
+    expect(BACKGROUND_EVENTS.has('update_check_requested')).toBe(false);
+  });
+
+  it('names only catalogued events as background', () => {
+    for (const name of BACKGROUND_EVENTS) expect(EVENT_NAMES).toContain(name);
   });
 });
