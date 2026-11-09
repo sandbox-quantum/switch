@@ -49,6 +49,10 @@ describe('the channel choices for a new room', () => {
     expect(channelChoiceCards(teams, false)[1]!.detail).toBe(
       'Only people added to it can see it. Link your Acme teams account first: Acme teams needs you as its owner.'
     );
+    // Elsewhere the account is how Switch puts them in it.
+    expect(channelChoiceCards(bridge('slack', null, true, true), false)[1]!.detail).toBe(
+      'Only people invited to it can see it. Link your Acme slack account first, so Switch can add you to it.'
+    );
     // Not while the answer is unknown, and never where no account is needed.
     expect(channelChoiceCards(teams, null)[1]!.detail).toBe('Only people added to it can see it.');
     expect(channelChoiceCards(bridge('slack', null, true), false)[1]!.detail).toBe(

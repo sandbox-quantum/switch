@@ -40,6 +40,17 @@ function Mark({
   );
 }
 
+/**
+ * Someone who is in the room whatever is picked, shown first among the chips
+ * and not removable: the person creating a private channel, who is put in it.
+ * `detail` says how (their account there); `warning` says why they cannot be.
+ */
+export type FixedParticipant = {
+  participant: Participant;
+  detail: string;
+  warning: boolean;
+};
+
 /** A picked participant: an agent tinted with its avatar's colour, a person in grey. */
 export function ParticipantChip({
   participant,
@@ -78,6 +89,30 @@ export function ParticipantChip({
   );
 }
 
+/** A {@link FixedParticipant}: no remove button, and its detail beside the name. */
+function FixedChip({ fixed }: { fixed: FixedParticipant }) {
+  return (
+    <span
+      title={fixed.detail}
+      className={cn(
+        'flex h-6 max-w-full items-center gap-1.5 rounded-full py-0.5 pr-2 pl-0.5 text-sm text-foreground',
+        fixed.warning ? 'bg-destructive/15' : 'bg-[var(--fill-2)]'
+      )}
+    >
+      <Initials name={fixed.participant.name} size={18} />
+      <span className="truncate">{fixed.participant.name}</span>
+      <span
+        className={cn(
+          'truncate text-xs',
+          fixed.warning ? 'text-destructive' : 'text-foreground-muted'
+        )}
+      >
+        {fixed.detail}
+      </span>
+    </span>
+  );
+}
+
 /**
  * One field that finds agents and people together and keeps the picked ones
  * as chips inside it. Up and down move through the results, Enter adds,
@@ -93,6 +128,7 @@ export function ParticipantPicker({
   autoFocus,
   busy,
   overlay,
+  fixed = [],
 }: {
   candidates: Participant[];
   picked: Participant[];
@@ -106,6 +142,8 @@ export function ParticipantPicker({
   busy: boolean;
   /** The results float over what follows the field; otherwise they push it down, as a dialog needs. */
   overlay: boolean;
+  /** Shown before the picks, and not removable: who is in the room regardless. */
+  fixed?: FixedParticipant[];
 }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -155,6 +193,9 @@ export function ParticipantPicker({
           (event.currentTarget.querySelector('input') as HTMLInputElement | null)?.focus()
         }
       >
+        {fixed.map((each) => (
+          <FixedChip key={`fixed:${each.participant.kind}:${each.participant.id}`} fixed={each} />
+        ))}
         {picked.map((participant) => (
           <ParticipantChip
             key={`${participant.kind}:${participant.id}`}

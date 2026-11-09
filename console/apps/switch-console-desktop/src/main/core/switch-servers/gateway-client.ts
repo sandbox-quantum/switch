@@ -77,6 +77,7 @@ import {
   type AgentRenameOutcome,
   type BridgeConfigField,
   type BridgeDirectoryUser,
+  type BridgePerson,
   type ChannelRetirement,
   type ChatClaim,
   type ConnectedChat,
@@ -3811,6 +3812,33 @@ export async function setRoomAutoRoute(
 }
 
 /**
+ * The people Switch knows on one bridge (`GET /collaborations/{id}/users`),
+ * with who has linked each account, for the New room dialog to offer them and
+ * to match them to the workspace's people. A link counts only once confirmed;
+ * a server that predates confirming leaves `verified` out, and its links count.
+ */
+export async function fetchBridgePeople(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<BridgePerson[]> {
+  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
+    authenticated: true,
+  });
+  const users = (await res.json()) as ExternalUserSummaryJson[];
+  return users
+    .map((user) => {
+      const linked = (user.claimed_by ?? []).filter((claim) => claim.verified !== false);
+      return {
+        username: user.external_username,
+        externalUserId: user.external_user_id,
+        linkedUserIds: linked.map((claim) => claim.user_id),
+        linkedName: linked[0]?.user_name ?? null,
+      };
+    })
+    .sort((a, b) => a.username.localeCompare(b.username));
+}
+
+/**
  * Add agents to an existing room (`POST /rooms/{id}/agents`). Requires write
  * access to the room. Agents already in the room are ignored server-side, so
  * this is safe to call with a set that overlaps the current membership.
@@ -3901,6 +3929,8 @@ export async function createRoom(
     /** Null makes an internal room: no channel, not even on the default app. */
     bridgeId: string | null;
     agentIds: string[];
+    /** Usernames on the bridge's app to add to the channel. */
+    userNames?: string[];
     /** Null for a new public channel. */
     channel: NewRoomChannel | null;
     groupId: string | null;
@@ -3932,6 +3962,7 @@ export async function createRoom(
           }
         : {}),
       agent_ids: params.agentIds,
+      ...(params.userNames?.length ? { user_names: params.userNames } : {}),
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);

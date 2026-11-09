@@ -73,7 +73,7 @@ export function channelChoiceCards(
   // unknown: a warning on a list that has not arrived is a false alarm.
   const privateDetail =
     bridge.privateChannelNeedsLinkedAccount && linkedHere === false
-      ? `${known.private} Link your ${bridge.displayName} account first: ${bridge.displayName} needs you as its owner.`
+      ? `${known.private} ${linkFirst(bridge)}`
       : known.private;
   return [
     { value: 'public', title: 'New public channel', detail: known.public },
@@ -90,6 +90,17 @@ export function channelChoiceCards(
         ]
       : []),
   ];
+}
+
+/**
+ * Why a private channel on `bridge` needs the person's linked account: Teams
+ * makes them its owner; anywhere else they are put in it, as nobody else
+ * could let them in.
+ */
+export function linkFirst(bridge: Pick<ChoiceBridge, 'type' | 'displayName'>): string {
+  return bridge.type === 'teams'
+    ? `Link your ${bridge.displayName} account first: ${bridge.displayName} needs you as its owner.`
+    : `Link your ${bridge.displayName} account first, so Switch can add you to it.`;
 }
 
 /** `options` with its channel choice kept only if `bridge` offers it. */

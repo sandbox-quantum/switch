@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
@@ -11,9 +11,14 @@ import { addableAgents, addablePeople } from '@renderer/features/switch-rooms/ro
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
 import { agentProviderLabelFor } from '@renderer/lib/components/agent-picker';
-import { ParticipantPicker } from '@renderer/lib/components/participant-picker';
+import {
+  type FixedParticipant,
+  ParticipantPicker,
+} from '@renderer/lib/components/participant-picker';
 import {
   agentParticipant,
+  bridgePersonParticipant,
+  carryPicks,
   type Participant,
   personParticipant,
 } from '@renderer/lib/components/participant-search';
@@ -36,7 +41,7 @@ import { Textarea } from '@renderer/lib/ui/textarea';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { CreateRoomOptions, RoomChannelField } from './create-room-options';
 import { MessagingAppSelector, SWITCH_CONSOLE } from './messaging-app-selector';
-import { optionsForBridge } from './room-channel-choices';
+import { linkFirst, optionsForBridge } from './room-channel-choices';
 import {
   CreateRequestIds,
   canCreate,
@@ -95,7 +100,11 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const [where, setWhere] = useState(SWITCH_CONSOLE);
   const [options, setOptions] = useState<RoomCreateOptions>(DEFAULT_ROOM_OPTIONS);
   const [picked, setPicked] = useState<Participant[]>([]);
+  // Who a change of messaging app left out, as no one of theirs is known there.
+  const [leftOut, setLeftOut] = useState<string[]>([]);
+  const queryClient = useQueryClient();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [switchingApp, setSwitchingApp] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [requestIds] = useState(() => new CreateRequestIds(() => crypto.randomUUID()));
 
@@ -126,6 +135,11 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     enabled: serverId !== '',
   });
   const managedQuery = useManagedAgents(serverId || null);
+  const bridgePeopleQuery = (bridgeId: string) => ({
+    queryKey: ['bridge-people', workspaceId, bridgeId],
+    queryFn: () =>
+      rpc.workspaces.listBridgePeople({ workspaceId: workspaceId as string, bridgeId }),
+  });
 
   // Only a running bridge allowed to create channels can back a new room.
   const bridges = (bridgesQuery.data ?? []).filter(
@@ -147,6 +161,11 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     setOptions((now) => ({ ...now, channel: DEFAULT_ROOM_OPTIONS.channel }));
   }, [resolvedBridgeId]);
 
+  const peopleQuery = useQuery({
+    ...bridgePeopleQuery(resolvedBridgeId ?? ''),
+    enabled: workspaceId !== null && resolvedBridgeId !== null,
+  });
+
   const managedProviders = new Map(
     (managedQuery.data ?? []).map((managed) => [managed.agentId, managed.definition.provider])
   );
@@ -155,9 +174,9 @@ export const CreateRoomModal = observer(function CreateRoomModal({
       ? agentProviderLabel(managedProviders.get(agentId))
       : (knownAgentTypeDisplayName(knownType) ?? agentProviderLabelFor(agentId, workspaceId));
   // A bridged room is driven from this install, so it takes only the agents
-  // this install registered or manages, and no people at creation. A Switch
-  // Console room is driven through the server: the agents the server says the
-  // person may use, and its people.
+  // this install registered or manages, and the people Switch knows on its
+  // app. A Switch Console room is driven through the server: the agents the
+  // server says the person may use, and its people.
   const agentCandidates = selectedBridge
     ? (agentsQuery.data ?? []).filter(
         (remote) =>
@@ -168,13 +187,41 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               .some((local) => local.switchAgentId === remote.id))
       )
     : addableAgents(agentsQuery.data ?? [], allowedQuery.data ?? []);
+  // A new private channel on an app is made with its creator in it, so they
+  // are shown in it, through the account of theirs it will use, rather than
+  // offered: and said plainly when they have none, as it would be refused.
+  const offeredChannel = optionsForBridge(options, selectedBridge).channel;
+  const makesPrivateChannel =
+    selectedBridge !== null && offeredChannel.kind === 'new' && offeredChannel.private;
+  const myAccount = selectedBridge
+    ? (identities ?? []).find((each) => each.bridgeId === selectedBridge.id && each.verified)
+    : undefined;
+  const fixed: FixedParticipant[] =
+    makesPrivateChannel && selectedBridge
+      ? [
+          {
+            participant: { kind: 'person', id: myUserId ?? 'me', name: 'You', detail: '' },
+            detail: myAccount
+              ? `@${myAccount.externalUsername}`
+              : identities === null
+                ? ''
+                : `No linked ${selectedBridge.displayName} account`,
+            warning: identities !== null && myAccount === undefined,
+          },
+        ]
+      : [];
+  const people: Participant[] = selectedBridge
+    ? (peopleQuery.data ?? [])
+        .filter(
+          (person) => !(makesPrivateChannel && person.externalUserId === myAccount?.externalUserId)
+        )
+        .map(bridgePersonParticipant)
+    : addablePeople(rosterQuery.data ?? [], new Set([myUserId ?? ''])).map(personParticipant);
   const candidates: Participant[] = [
     ...agentCandidates.map((agent) =>
       agentParticipant(agent, providerLabel(agent.id, agent.knownAgentType))
     ),
-    ...addablePeople(selectedBridge ? [] : (rosterQuery.data ?? []), new Set([myUserId ?? ''])).map(
-      personParticipant
-    ),
+    ...people,
   ];
   // The agent the room is made from shows picked once the agents are read, whatever
   // else is edited meanwhile, until its chip is removed.
@@ -195,7 +242,9 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const bridgeOptions = optionsForBridge(options, selectedBridge);
   const roomOptions = administers ? bridgeOptions : { ...bridgeOptions, groupId: null };
   const agentIds = shownPicked.filter((each) => each.kind === 'agent').map((each) => each.id);
-  const memberUserIds = shownPicked.filter((each) => each.kind === 'person').map((each) => each.id);
+  const pickedPeople = shownPicked.filter((each) => each.kind === 'person').map((each) => each.id);
+  const memberUserIds = selectedBridge ? [] : pickedPeople;
+  const userNames = selectedBridge ? pickedPeople : [];
 
   const trimmedName = name.trim();
   // The agent the room is made from must be applied, or known not to be, before creating:
@@ -215,9 +264,46 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     workspaceId !== null &&
     startingAgentState !== 'pending' &&
     !nowhere &&
+    !switchingApp &&
     canCreate({ name }) &&
     (selectedBridge === null || roomOptionsReady(roomOptions, selectedBridge.type)) &&
     !isSubmitting;
+
+  /**
+   * Move the room to another app, keeping the people picked who are known
+   * there too (the same Switch user, through an account they linked) and
+   * saying who is not. Create waits until that is worked out, so a pick is
+   * never sent to an app it does not belong to.
+   */
+  async function changeApp(next: string) {
+    setError(null);
+    const pickedPeople = shownPicked.filter((each) => each.kind === 'person');
+    if (pickedPeople.length === 0 || workspaceId === null) {
+      setLeftOut([]);
+      setWhere(next);
+      return;
+    }
+    setSwitchingApp(true);
+    try {
+      let there: Participant[] = [];
+      try {
+        there =
+          next === SWITCH_CONSOLE
+            ? addablePeople(rosterQuery.data ?? [], new Set([myUserId ?? ''])).map(
+                personParticipant
+              )
+            : (await queryClient.fetchQuery(bridgePeopleQuery(next))).map(bridgePersonParticipant);
+      } catch {
+        // Unknown there: nobody can be carried, and each is named as left out.
+      }
+      const { kept, dropped } = carryPicks(pickedPeople, there);
+      changePicks([...shownPicked.filter((each) => each.kind === 'agent'), ...kept]);
+      setLeftOut(dropped.map((each) => each.name));
+      setWhere(next);
+    } finally {
+      setSwitchingApp(false);
+    }
+  }
 
   async function handleSubmit() {
     if (!canSubmit) return;
@@ -237,6 +323,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
         instructions,
         agentIds,
         memberUserIds,
+        userNames,
         requestId: requestIds.for({
           bridgeId,
           name,
@@ -340,10 +427,23 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               serverId={serverId || null}
               loading={
                 agentsQuery.isLoading ||
-                rosterQuery.isLoading ||
+                (selectedBridge ? peopleQuery.isLoading : rosterQuery.isLoading) ||
                 (!selectedBridge && allowedQuery.isLoading)
               }
+              fixed={fixed}
             />
+            {fixed[0]?.warning && selectedBridge && (
+              <p className="text-xs text-destructive">
+                {`A private channel is open only to the people in it. ${linkFirst(selectedBridge)}`}
+              </p>
+            )}
+            {leftOut.length > 0 && (
+              <p className="text-xs text-foreground-muted">
+                {selectedBridge
+                  ? `Not added: ${leftOut.join(', ')}. Switch doesn’t know them on ${selectedBridge.displayName}.`
+                  : `Not added: ${leftOut.join(', ')}. They have no Switch account linked to theirs.`}
+              </p>
+            )}
             <span className="text-xs text-foreground-muted">
               Agents answer only when someone @-mentions them.
             </span>
@@ -352,9 +452,12 @@ export const CreateRoomModal = observer(function CreateRoomModal({
                 {failureText(agentsQuery.error ?? allowedQuery.error, 'Could not load the agents.')}
               </p>
             )}
-            {rosterQuery.isError && (
+            {(selectedBridge ? peopleQuery.isError : rosterQuery.isError) && (
               <p className="text-xs text-destructive">
-                {failureText(rosterQuery.error, 'Could not load the people.')}
+                {failureText(
+                  selectedBridge ? peopleQuery.error : rosterQuery.error,
+                  'Could not load the people.'
+                )}
               </p>
             )}
           </Field>
@@ -453,13 +556,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
           bridges={bridges}
           consoleOffered={consoleOffered}
           value={where}
-          onChange={(next) => {
-            setWhere(next);
-            setError(null);
-            // A bridged room starts with agents only.
-            if (next !== SWITCH_CONSOLE)
-              changePicks(shownPicked.filter((each) => each.kind === 'agent'));
-          }}
+          onChange={(next) => void changeApp(next)}
         />
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" onClick={onClose} disabled={isSubmitting}>

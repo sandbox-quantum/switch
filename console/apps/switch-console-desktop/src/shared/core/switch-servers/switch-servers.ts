@@ -1403,12 +1403,30 @@ export type CreateRoomParams = {
   /** Switch agent ids to add as members. May be empty — a room is valid with
    * no agents, and members can be invited later. */
   agentIds: string[];
+  /** People to add to the bridged room's channel, by their username on its
+   * messaging app. Absent or empty adds nobody; a new private channel gets its
+   * creator from the server either way. */
+  userNames?: string[];
   /** The bridged room's channel: a new one, or an existing one by its id. Null for a new public one. */
   channel: NewRoomChannel | null;
   /** The group to file the room under, or null for none. */
   groupId: string | null;
   /** Who may see and change the room, or null for the server's default. */
   access: RoomAccess | null;
+};
+
+/**
+ * Someone Switch knows on a messaging app, who a room there can be given
+ * (`GET /collaborations/{id}/users`).
+ */
+export type BridgePerson = {
+  /** Their username on the app: what a room on it is given them by. */
+  username: string;
+  externalUserId: string;
+  /** The Switch users who linked this account and confirmed it from it. */
+  linkedUserIds: string[];
+  /** The first of those users' names, to show beside the username; null when nobody has. */
+  linkedName: string | null;
 };
 
 /** A bridged room's channel, as the New room dialog asks for it. */
