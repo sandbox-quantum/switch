@@ -764,7 +764,8 @@ class AgentRecipient:
         agent = await self._fresh_agent(session)
         gate = await self._gate_addressed(session, agent, event, meta)
         if not gate.addressed:
-            logger.info(
+            # The router's decision record says so (`dropped_not_allowed`).
+            logger.debug(
                 "Decision routing: room=%s message=%s agent=%s routed_reason=%s "
                 "outcome=dropped_not_permitted reason=the sender may not "
                 "instruct this agent, or it is over budget",

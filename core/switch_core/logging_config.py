@@ -25,6 +25,7 @@ from switch_core.logging_context import (
     CONTEXT_FIELDS,
     LogContextFilter,
     McpIdentityDiagnosticFilter,
+    structured_fields,
 )
 
 _configured = False
@@ -109,6 +110,8 @@ class JsonFormatter(logging.Formatter):
         if self._version:
             payload["version"] = self._version
         payload.update(_context_fields(record))
+        for group, fields in structured_fields(record).items():
+            payload.setdefault(group, fields)
 
         if record.exc_info:
             exc_type, exc_value, _ = record.exc_info

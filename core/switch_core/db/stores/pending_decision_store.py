@@ -8,6 +8,7 @@ them. Every query runs in the caller's tenant-bound session.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,9 +24,40 @@ class Pending:
     room_id: str
     room_seq: int
     message_key: str
+    # When the row was written, with the message, on the database's clock: what
+    # a settled message's wait is measured from (`switch.decision.wait`).
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class PendingSummary:
+    """How many of a tenant's messages wait for a decision, and how long the
+    oldest has waited, on the database's clock. `oldest_age_seconds` is None
+    when none waits."""
+
+    count: int
+    oldest_age_seconds: float | None
 
 
 class PendingDecisionStore:
+    async def summary(self, session: AsyncSession, *, tenant_id: str) -> PendingSummary:
+        """The tenant's waiting queue, claimed rows included: a message being
+        decided right now is still one a person is waiting on."""
+        row = (
+            await session.execute(
+                select(
+                    func.count(),
+                    func.extract(
+                        "epoch", func.now() - func.min(PendingDecision.created_at)
+                    ),
+                ).where(PendingDecision.tenant_id == tenant_id)
+            )
+        ).one()
+        count, age = row
+        return PendingSummary(
+            count=int(count), oldest_age_seconds=None if age is None else float(age)
+        )
+
     async def add(
         self,
         session: AsyncSession,
@@ -61,6 +93,7 @@ class PendingDecisionStore:
                 PendingDecision.room_id,
                 PendingDecision.room_seq,
                 PendingDecision.message_key,
+                PendingDecision.created_at,
             )
         )
         return [Pending(*row) for row in rows.all()]
@@ -110,6 +143,7 @@ class PendingDecisionStore:
                 PendingDecision.room_id,
                 PendingDecision.room_seq,
                 PendingDecision.message_key,
+                PendingDecision.created_at,
             )
             .execution_options(synchronize_session=False)
         )

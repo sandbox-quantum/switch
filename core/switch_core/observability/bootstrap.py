@@ -34,6 +34,7 @@ from switch_core.observability.catalogue import (
 from switch_core.observability.db_server import DbServerSampler
 from switch_core.observability.exporter import MetricsExporter
 from switch_core.observability.health import (
+    HealthCheck,
     HealthMonitor,
     agent_event_listener_check,
     bridges_check,
@@ -188,6 +189,7 @@ def start_observability(
     session_factory: async_sessionmaker,
     probes: RuntimeProbes,
     process_id: str,
+    optional_checks: Sequence[HealthCheck],
     db_server_engine: Callable[[], AsyncEngine] | None = None,
 ) -> Observability:
     """Install the registry, start the loops, and hand back the handle.
@@ -195,8 +197,15 @@ def start_observability(
     Called once, from the server's lifespan. `db_server_engine` builds the
     engine the database sampler takes its one connection from; it must not be
     the application's pooled engine. `process_id` names this process on
-    everything it reports (`process_identity.py`).
+    everything it reports (`process_identity.py`). `optional_checks` are
+    checks of optional services, reported beside the rest; none may gate
+    readiness.
     """
+    gating = [check.name for check in optional_checks if check.gates_readiness]
+    if gating:
+        raise ValueError(
+            f"Optional health checks must not gate readiness, but {gating} do."
+        )
     # With another replica to take the traffic, a process that would answer
     # late is better out of service; with one, it is the only one there is.
     listeners_gate = config.core_replicas > 1
@@ -212,6 +221,7 @@ def start_observability(
             ),
             signal_bus_check(probes.signal_bus_connected, listeners_gate),
             bridges_check(probes.bridges_running, probes.bridges_configured),
+            *optional_checks,
         ],
         interval_seconds=HEALTH_REFRESH_INTERVAL_SECONDS,
     )
