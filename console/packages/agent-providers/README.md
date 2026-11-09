@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `qwen` | `qwen --acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model selection through a `model` config option, MCP registration, approvals and questions; hooks for its modes, sign-in check, tool metadata and question requests. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -103,6 +104,32 @@ naming a permanent or future policy are never offered.
 prefix. The CLI and default model used for verification did not expose its
 AskQuestion tool, so `user-input` is skipped in its conformance run.
 
+**Antigravity** runs in its own profile directory (`GEMINI_HOME`), set up for
+OAuth on first use. Its questions arrive as permission requests whose tool
+call id starts with `interaction_`. Native session ids are stored with an
+`acp:` prefix; a conversation saved by the retired `agy` runtime starts fresh.
+Its sign-in check reads `authMethods` from the handshake and never calls
+`authenticate`, which would open a browser on the machine.
+
+**Qwen Code** runs `qwen --acp`. A new session starts in Qwen's `auto` mode,
+where its own classifier approves actions without asking. That is how
+QwenLM/qwen-code#11887 saw tools run with no permission request. So every
+runtime mode sets a Qwen mode explicitly: approval-required is `default`,
+auto-accept-edits is `auto-edit`, auto is `auto` (its classifier) and
+full-access is `yolo`. In `default`, 0.26.1 asks before shell commands and
+file writes, and a declined command does not run. Its "Always Allow in
+project / for user" options write a rule to Qwen's settings, so they are never
+offered. "Allow All Edits" lasts for the session, so it is offered as allow for
+this session. `ask_user_question` arrives as a permission request with the
+questions in `_meta.qwenQuestions`, and the answers go back beside the
+outcome, keyed by question index. MCP tools are called through its deferred
+`tool_call` tool, and the request names only `mcp__<server>__<tool>`, which is
+where the server is read from. Its `authMethods` are the same signed in or
+out, so the sign-in check starts a session instead: `session/new` loads the
+configured provider's credentials, runs no model call and stores nothing
+until a prompt. It never sends `authenticate`, which in Qwen clears the
+cached credentials first.
+`authenticate`, which would open a browser.
 **Antigravity** runs Google's `agy` as `agy acp`, with the user's own profile
 and sign-in (the OS keychain), so the launch sets nothing up. `agy` signs
 itself in when it starts, and refuses `session/list` with `Authentication

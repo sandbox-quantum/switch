@@ -184,6 +184,43 @@ it('embeds file contents when the agent takes embedded context', async () => {
   });
 });
 
+it('starts a tool call again under the type a later update gives it, and only then', async () => {
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    itemType: (toolCall) => (toolCall._meta?.kind === 'agent' ? 'subagent' : undefined),
+  };
+  const { adapter, events, server } = await start(hooks);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  for (const update of [
+    { sessionUpdate: 'tool_call', status: 'pending', title: 'Tool', kind: 'other' },
+    {
+      sessionUpdate: 'tool_call_update',
+      status: 'in_progress',
+      title: 'Agent',
+      _meta: { kind: 'agent' },
+    },
+    { sessionUpdate: 'tool_call_update', status: 'in_progress', title: 'Agent: working' },
+    { sessionUpdate: 'tool_call_update', status: 'completed' },
+  ])
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { toolCallId: 'call', ...update },
+    });
+  await flush();
+  expect(
+    events.flatMap((e) =>
+      e.type.startsWith('item.') && 'item' in e && e.item.id === 'call'
+        ? [`${e.type}:${e.item.type}`]
+        : []
+    )
+  ).toEqual([
+    'item.started:tool_call',
+    'item.started:subagent',
+    'item.updated:subagent',
+    'item.completed:subagent',
+  ]);
+});
+
 it('auto-approves a tool the hooks place on any session-registered MCP server', async () => {
   const hooks: AcpProviderHooks = {
     ...dummy,
