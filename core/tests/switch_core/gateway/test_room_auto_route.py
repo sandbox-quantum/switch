@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -177,7 +178,13 @@ def _as(app: FastAPI, user: User) -> httpx.AsyncClient:
         base_url="http://test",
         cookies={
             "switch_auth": create_jwt(
-                user.id, user.email, user.role, KEYRING, TENANT_ZERO_ID
+                user.id,
+                user.email,
+                user.role,
+                KEYRING,
+                TENANT_ZERO_ID,
+                session_version=0,
+                auth_time=datetime.now(UTC),
             )
         },
     )
