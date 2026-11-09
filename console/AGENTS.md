@@ -463,7 +463,7 @@ pnpm run lint
 - **The interface may report only through the one gate.** Almost everything is
   reported from the main process, where a call site is type-checked against the
   catalogue. The exceptions are moments that exist only in the UI — a screen
-  opened, a command run, a checklist abandoned — and they go through
+  opened, a command run, a page of the first run reached — and they go through
   `rpc.telemetry.track` into `src/main/core/telemetry/renderer-events.ts`, which
   checks the event is one of the few permitted and every value against the set
   the catalogue allows. That check is not ceremony: a type does not survive a
@@ -472,14 +472,14 @@ pnpm run lint
   the main process, observe it there.
 - **Report a moment, not a state — and if you must report a state, claim it after
   the gate.** A condition that is true from the instant it becomes true is true
-  again on every later launch, so reporting it directly counts it forever;
-  `ONCE_PER_INSTALL` in `renderer-events.ts` exists for that case and keeps the
-  record beside the emitter rather than in the user's settings, which would
-  report a setting nobody changed. The record is spent once and never given
-  back, so it must not be claimed until a send is actually possible: the app
-  renders behind the first-run consent prompt, so anything claiming before the
-  consent check spends its one chance while the answer is still unset and
-  retires the event for the life of the install.
+  again on every later launch, so reporting it directly counts it forever. A
+  state reported once per install needs a record that it was sent, kept beside
+  the emitter rather than in the user's settings, which would report a setting
+  nobody changed. The record is spent once and never given back, so it must not
+  be claimed until a send is actually possible (`telemetryService.canSend()`):
+  the app renders behind the first-run consent prompt, so anything claiming
+  before the consent check spends its one chance while the answer is still
+  unset and retires the event for the life of the install.
 - **Prefer a value the caller declares to one you read back.** Several
   dimensions describe an intent that only the caller has — which button, which
   source, whether a room was chosen — and the state that would answer is often

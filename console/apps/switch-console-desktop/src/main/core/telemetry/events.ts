@@ -678,9 +678,6 @@ export type TelemetryEventMap = {
   view_opened: RendererTelemetryEvents['view_opened'];
   command_executed: RendererTelemetryEvents['command_executed'];
   deeplink_opened: RendererTelemetryEvents['deeplink_opened'];
-  onboarding_step_started: RendererTelemetryEvents['onboarding_step_started'];
-  onboarding_checklist_dismissed: RendererTelemetryEvents['onboarding_checklist_dismissed'];
-  onboarding_completed: RendererTelemetryEvents['onboarding_completed'];
   add_server_step: RendererTelemetryEvents['add_server_step'];
   onboarding_page: RendererTelemetryEvents['onboarding_page'];
   buddy_step: RendererTelemetryEvents['buddy_step'];
@@ -814,9 +811,6 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   view_opened: ['view_id'],
   command_executed: ['command_id', 'invoked_by'],
   deeplink_opened: ['resolved', 'cold_start'],
-  onboarding_step_started: ['step_id'],
-  onboarding_checklist_dismissed: [],
-  onboarding_completed: [],
   add_server_step: ['step', 'choice', 'first_run'],
   onboarding_page: ['page', 'path'],
   buddy_step: ['action', 'provider'],

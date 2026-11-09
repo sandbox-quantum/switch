@@ -76,14 +76,12 @@ class TelemetryService {
   /**
    * Whether an event sent right now would actually go anywhere.
    *
-   * The same two refusals `track` applies, asked in advance. Only the
-   * once-per-install events need this: they spend a record that is never given
-   * back, so spending it on a send that consent then discards would retire the
-   * event for the life of the install. A report that must ask a server for what
-   * it describes uses it too, to skip asking when nothing could be sent. Nothing
-   * else should call it — everywhere else, asking first and sending second is
-   * two reads of a gate that can change in between, and `track` already reads
-   * it at the only moment that matters.
+   * The same two refusals `track` applies, asked in advance. A report that must
+   * ask a server for what it describes uses it, to skip asking when nothing
+   * could be sent; so would anything that spends a record of having reported
+   * that is never given back. Nothing else should call it — everywhere else,
+   * asking first and sending second is two reads of a gate that can change in
+   * between, and `track` already reads it at the only moment that matters.
    */
   async canSend(): Promise<boolean> {
     return resolveTelemetryConfig().enabled && (await isTelemetryAllowed());

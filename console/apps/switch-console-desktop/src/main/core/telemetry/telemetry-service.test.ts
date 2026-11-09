@@ -182,9 +182,9 @@ describe('a build that cannot send', () => {
 
 describe('asking in advance whether a send would arrive', () => {
   /**
-   * The once-per-install events spend a record that is never given back, so they
-   * ask before they claim. The answer has to be the same two refusals `track`
-   * applies, or the question is worse than not asking.
+   * A report that asks a server for what it describes asks this first, so it
+   * does not ask for nothing. The answer has to be the same two refusals
+   * `track` applies, or the question is worse than not asking.
    */
   it('is no when the build cannot send, without asking the user', async () => {
     delete process.env.SWITCHDASH_TELEMETRY_DEV;
