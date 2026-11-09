@@ -835,6 +835,10 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **`@Switch link-account CODE` on Teams** got the "you tagged me" reply
+  instead of linking the account, though it's what the link instructions say
+  to send. A command name straight after an @mention of the Switch app now
+  runs the command, without the `!`, as it already did from the `/` picker.
 - **Two organization admins demoting or removing each other at once** could
   leave the refused one without their keys and connections in the workspaces
   they reached as an organization admin: those were taken away before the
