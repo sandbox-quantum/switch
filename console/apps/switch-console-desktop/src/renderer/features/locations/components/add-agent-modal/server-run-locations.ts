@@ -108,6 +108,21 @@ export function machineFor(runLocation: string, machines: OwnedMachine[]): Owned
   );
 }
 
+/**
+ * The icon for a picked machine run location. A machine shows as cloud when it is the owner's
+ * Switch cloud machine, or the shared-cloud box picked for them. With no box (hosted agents v2
+ * off, or none found) only `cloud` counts, as upstream: a machine not in the list yet is a server.
+ */
+export function machineRunIcon(
+  machine: OwnedMachine | null,
+  sharedBoxId: string | null
+): 'this-computer' | 'cloud' | 'server' {
+  if (machine?.local?.kind === 'this-computer') return 'this-computer';
+  if (machine && (machine.cloud || (sharedBoxId !== null && machine.id === sharedBoxId)))
+    return 'cloud';
+  return 'server';
+}
+
 /** What a shared-cloud user's box is called here: prod's name for a cloud machine. */
 export const SHARED_CLOUD_LABEL = 'Switch cloud';
 

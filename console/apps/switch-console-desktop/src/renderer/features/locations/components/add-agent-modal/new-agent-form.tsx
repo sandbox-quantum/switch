@@ -81,6 +81,7 @@ import {
   machineIdOf,
   machineLabel,
   machineRunLocation,
+  machineRunIcon,
   machineRunLocations,
   autoEnablesMachine,
   boxBackends,
@@ -864,9 +865,9 @@ export const NewAgentForm = observer(function NewAgentForm({
                 {isCloudRun ? (
                   <Cloud className="size-4 text-foreground-muted" />
                 ) : isMachineRun ? (
-                  serverMachine?.local?.kind === 'this-computer' ? (
+                  machineRunIcon(serverMachine, sharedBox?.id ?? null) === 'this-computer' ? (
                     <Monitor className="size-4 text-foreground-muted" />
-                  ) : serverMachine?.cloud || serverMachine?.id === sharedBox?.id ? (
+                  ) : machineRunIcon(serverMachine, sharedBox?.id ?? null) === 'cloud' ? (
                     <Cloud className="size-4 text-foreground-muted" />
                   ) : (
                     <Server className="size-4 text-foreground-muted" />
@@ -989,7 +990,7 @@ export const NewAgentForm = observer(function NewAgentForm({
           )}
           {isMachineRun && serverMachine && (
             <p className="flex items-start gap-1.5 text-xs text-foreground-muted">
-              {serverMachine.cloud || serverMachine.id === sharedBox?.id ? (
+              {machineRunIcon(serverMachine, sharedBox?.id ?? null) === 'cloud' ? (
                 <Cloud className="mt-0.5 size-3.5 shrink-0" />
               ) : (
                 <Server className="mt-0.5 size-3.5 shrink-0" />

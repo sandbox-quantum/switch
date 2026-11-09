@@ -8,6 +8,7 @@ import {
   holdsThisComputer,
   machineFor,
   machineIdOf,
+  machineRunIcon,
   machineRunLocation,
   hasSharedCloudBox,
   sharedCloudBoxIds,
@@ -190,6 +191,25 @@ describe("a shared-cloud user's box", () => {
 });
 
 // Add agent on hosted agents v2: nothing turned on by itself, and a put-away box started.
+describe('the icon on a picked machine run location', () => {
+  it("with no shared box and no machine in the list, shows upstream's server icon, not cloud", () => {
+    expect(machineRunIcon(null, null)).toBe('server');
+  });
+  it('with no shared box, shows cloud only for the Switch cloud machine, as upstream', () => {
+    expect(machineRunIcon(machine({ id: 'c', cloud: true }), null)).toBe('cloud');
+    expect(machineRunIcon(machine({ id: 'vm' }), null)).toBe('server');
+  });
+  it('shows this computer as a monitor', () => {
+    expect(machineRunIcon(MACHINES[2], null)).toBe('this-computer');
+    expect(machineRunIcon(MACHINES[2], 'laptop')).toBe('this-computer');
+  });
+  it('shows the picked shared box as cloud, and only that one', () => {
+    expect(machineRunIcon(machine({ id: 'b1' }), 'b1')).toBe('cloud');
+    expect(machineRunIcon(machine({ id: 'b2' }), 'b1')).toBe('server');
+    expect(machineRunIcon(null, 'b1')).toBe('server');
+  });
+});
+
 describe('autoEnablesMachine', () => {
   it('never with hosted_v2 on (B38: only the button adds this computer)', () => {
     expect(autoEnablesMachine(true, true)).toBe(false);
