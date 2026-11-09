@@ -97,6 +97,13 @@ _SLACK_MASS_MENTION_WORD = re.compile(
     r"<!(channel|here|everyone|group)(?:\|[^>]*)?>", re.IGNORECASE
 )
 
+# A channel link, `<#C123|general>`. The label may be empty (`<#C123|>`).
+_SLACK_CHANNEL_LINK = re.compile(r"<#([A-Z0-9]+)(?:\|([^>]*))?>")
+
+# The only three characters Slack escapes in the text it delivers.
+_SLACK_ENTITY = re.compile(r"&(amp|lt|gt);")
+_SLACK_ENTITY_CHARS = {"amp": "&", "lt": "<", "gt": ">"}
+
 # Stamped on the description of every user group we mint for an agent, so a
 # reload can tell ours apart from the workspace's own groups.
 _AGENT_GROUP_MARKER = "Switch agent — "
@@ -3221,11 +3228,51 @@ class SlackAdapter(PlatformAdapter):
         return escape_mrkdwn(super().escape_label_for_body(label))
 
     def translate_inbound(self, raw_message: str) -> str:
+        return self._unescape_entities(self._translate_markup(raw_message))
+
+    def _translate_markup(self, raw_message: str) -> str:
+        """Rewrite Slack's `<…>` sequences, leaving its entity escaping alone.
+
+        Running this twice changes nothing, which is why a command's arguments
+        get only this from the adapter: `CollaborationCore` runs every
+        command's arguments through `translate_inbound` again, and the entities
+        must be decoded exactly once, or a person's literal `&amp;lt;` would
+        reach the agent as `<`.
+        """
         return self._translate_links_to_markdown(
-            self._translate_mass_mentions_to_markdown(
-                self._translate_mentions_to_markdown(raw_message)
+            self._translate_channel_links(
+                self._translate_mass_mentions_to_markdown(
+                    self._translate_mentions_to_markdown(raw_message)
+                )
             )
         )
+
+    @staticmethod
+    def _unescape_entities(message: str) -> str:
+        """Decode `&amp;`, `&lt;` and `&gt;` back to what the person typed.
+
+        Must run after every `<…>` sequence is translated: until then a `<`
+        can only be Slack's own markup, because Slack escapes the ones people
+        type. Decoding is one pass, so `&amp;lt;` becomes the `&lt;` that was
+        typed rather than `<`.
+        """
+        return _SLACK_ENTITY.sub(
+            lambda match: _SLACK_ENTITY_CHARS[match.group(1)], message
+        )
+
+    def _translate_channel_links(self, message: str) -> str:
+        """Show a channel link `<#C123|general>` as `#general`.
+
+        A link without a label falls back to the channel's cached name, and to
+        its id when the name is not known yet.
+        """
+
+        def _replace(match: re.Match[str]) -> str:
+            channel_id = match.group(1)
+            name = match.group(2) or self._channel_name_cache.get(channel_id)
+            return f"#{name or channel_id}"
+
+        return _SLACK_CHANNEL_LINK.sub(_replace, message)
 
     @staticmethod
     def _translate_mass_mentions_to_markdown(message: str) -> str:
@@ -3590,7 +3637,7 @@ class SlackAdapter(PlatformAdapter):
         if stripped.startswith("!") and self._on_command:
             parts = stripped.split(None, 1)
             command = parts[0].lstrip("!")
-            args = self.translate_inbound(parts[1].strip()) if len(parts) > 1 else ""
+            args = self._translate_markup(parts[1].strip()) if len(parts) > 1 else ""
             await self._on_command(
                 InboundCommand(
                     channel_id=channel_id,
@@ -3657,7 +3704,7 @@ class SlackAdapter(PlatformAdapter):
         # Slack encodes @mentions in command arguments as `<@U…>`; normalise
         # them to `@name` so the command dispatcher's first `@` token resolves
         # to the target agent or role.
-        args = self.translate_inbound(text)
+        args = self._translate_markup(text)
 
         try:
             channel_type = await self.get_channel_type(channel_id)
