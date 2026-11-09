@@ -154,6 +154,21 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="qwen",
+        label="Qwen Code",
+        sign_in_command="qwen",
+        connector_type="Qwen Code CLI",
+        tools=(
+            ToolSpec(name="run_shell_command", description="Executes shell commands"),
+            ToolSpec(name="read_file", description="Reads file contents"),
+            ToolSpec(name="write_file", description="Writes files"),
+            ToolSpec(name="edit", description="Edits existing files"),
+            ToolSpec(name="grep_search", description="Searches file contents"),
+            ToolSpec(name="glob", description="Finds files by pattern"),
+            ToolSpec(name="agent", description="Delegates to a subagent"),
+        ),
+    ),
 )
 
 

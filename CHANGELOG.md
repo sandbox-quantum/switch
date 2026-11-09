@@ -45,6 +45,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Qwen Code agents.** The provider table has Qwen Code (`qwen`), so a
+  managed agent definition, the gateway's provider list and an agent's
+  registration accept it. It has no advanced settings.
 - **A one-screen Datadog board and alerts that say what to do.**
   `deploy/observability/signal-board.json` shows the four golden signals
   (latency, traffic, errors, saturation) plus whether agents are connected and
