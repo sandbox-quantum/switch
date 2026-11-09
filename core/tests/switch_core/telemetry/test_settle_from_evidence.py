@@ -10,8 +10,10 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -19,6 +21,7 @@ from switch_core.db.models import (
     Client,
     ClientRoom,
     CollaborationBridge,
+    DeploymentIdentity,
     Message,
     Room,
     User,
@@ -30,6 +33,7 @@ from switch_core.telemetry.deployment import (
     milestone_claimed,
     settle_from_evidence,
 )
+from switch_core.telemetry.setup import build_telemetry
 from switch_core.telemetry.snapshot import milestones_passed
 
 
@@ -177,3 +181,53 @@ async def test_only_a_connector_a_person_added_that_connected_counts(
     await claim_milestone(session_factory, f"{CONNECTOR_ADDED_PREFIX}{connected}")
     assert configured_only != connected
     assert await _settle(session_factory, switched_on=True) == ["first_connector_added"]
+
+
+async def test_booting_with_telemetry_settles_and_starts_its_clock(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`build_telemetry`, as `main` runs it: the first boot with telemetry on
+    records when it was switched on, which the service dates the past from,
+    and claims what the deployment had already done before anything can
+    report it."""
+    async with session_factory() as session:
+        await session.execute(delete(DeploymentIdentity))
+        session.add(
+            DeploymentIdentity(
+                id=1,
+                client_id=str(uuid.uuid4()),
+                installed_at=datetime.now(UTC) - timedelta(days=60),
+            )
+        )
+        await session.commit()
+    await _room_used_by_a_person(session_factory)
+    config = SwitchConfig(
+        db_host="h",
+        db_port="5432",
+        db_user="u",
+        db_password="p",
+        db_name="d",
+        matrix_server_name="test",
+        agent_registration_token="t",
+        secret_keys="test:" + "x" * 40,
+        gateway_admin_email="a@b.test",
+        gateway_admin_password="pw",
+        telemetry_enabled=True,
+        telemetry_endpoint="http://127.0.0.1:9",
+    )
+
+    service, _, http = await build_telemetry(config, session_factory, "1.0.0")
+    try:
+        reporting_since = service.reporting_since
+        assert reporting_since is not None
+        assert reporting_since > datetime.now(UTC) - timedelta(minutes=5)
+        assert await milestone_claimed(session_factory, "first_room_created") == (
+            "true"
+        )
+        assert await milestone_claimed(session_factory, "deployment_installed") == (
+            "false"
+        )
+    finally:
+        await service.aclose()
+        if http is not None:
+            await http.aclose()
