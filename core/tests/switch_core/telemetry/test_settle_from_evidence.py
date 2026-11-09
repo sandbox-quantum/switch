@@ -24,6 +24,7 @@ from switch_core.db.models import (
     DeploymentIdentity,
     Message,
     Room,
+    TelemetrySnapshotWatermark,
     User,
 )
 from switch_core.db.session_scope import tenant_session
@@ -33,6 +34,7 @@ from switch_core.telemetry.deployment import (
     milestone_claimed,
     settle_from_evidence,
 )
+from switch_core.telemetry.setup import _milestones_passed as _setup_milestones_passed
 from switch_core.telemetry.setup import build_telemetry
 from switch_core.telemetry.snapshot import milestones_passed
 
@@ -41,11 +43,11 @@ async def _settle(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     switched_on: bool,
-    active_before: datetime | None = None,
+    activated_before: datetime | None = None,
 ) -> list[str]:
     return await settle_from_evidence(
         session_factory,
-        lambda: milestones_passed(session_factory, active_before=active_before),
+        lambda: milestones_passed(session_factory, activated_before=activated_before),
         switched_on=switched_on,
     )
 
@@ -197,11 +199,53 @@ async def test_a_room_first_used_since_reporting_started_is_left_to_the_snapshot
     settled = await _settle(
         session_factory,
         switched_on=False,
-        active_before=datetime.now(UTC) - timedelta(days=60),
+        activated_before=datetime.now(UTC) - timedelta(days=60),
     )
 
     assert "first_room_active" not in settled
     assert "first_room_created" in settled
+
+
+async def test_a_room_counts_from_when_it_went_live_not_its_first_message(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A room goes live when it has both a person's message and an agent: a
+    person spoke before the cutoff, but the agent only came after, so the
+    snapshot pass reports it and the settlement must leave it alone."""
+    await _room_used_by_a_person(session_factory, person_type="user")
+
+    settled = await _settle(
+        session_factory,
+        switched_on=False,
+        activated_before=datetime.now(UTC) - timedelta(days=28, hours=12),
+    )
+
+    assert "first_room_active" not in settled
+
+
+async def test_an_upgraded_server_settles_what_went_live_before_its_last_pass(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Reporting since long ago, last pass yesterday: a room that went live
+    in between was never reported (the old definition ignored it, or the pass
+    missed it), and the next pass only looks after yesterday. Settled."""
+    await _room_used_by_a_person(session_factory, person_type="member")
+    async with session_factory() as session:
+        await session.execute(delete(TelemetrySnapshotWatermark))
+        session.add(
+            TelemetrySnapshotWatermark(
+                id=1, last_sent_at=datetime.now(UTC) - timedelta(days=1)
+            )
+        )
+        await session.commit()
+
+    passed = await _setup_milestones_passed(
+        session_factory,
+        enabled=True,
+        enabled_since=datetime.now(UTC) - timedelta(days=90),
+    )
+
+    assert "first_room_active" in passed
 
 
 async def test_only_a_connector_a_person_added_that_connected_counts(

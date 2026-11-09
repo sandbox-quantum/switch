@@ -1211,14 +1211,14 @@ async def collect_each_period_counts(
 async def milestones_passed(
     session_factory: async_sessionmaker[AsyncSession],
     *,
-    active_before: datetime | None,
+    activated_before: datetime | None,
 ) -> set[str]:
     """The milestones the database shows this deployment has passed, for
     `deployment.settle_from_evidence`.
 
-    `active_before` limits the room-activity evidence to what happened before
-    it: with telemetry on, a room first used since reporting started is the
-    snapshot pass's to report, and settling it here would lose it.
+    `activated_before` limits the room-activity evidence to rooms that went
+    live before it (`_RoomActivation`): a room that went live later is the
+    next snapshot pass's to report, and settling it here would lose it.
 
     - `first_room_created`: a room a person made exists.
     - `first_room_active`: a person used one of those rooms with an agent in
@@ -1242,21 +1242,31 @@ async def milestones_passed(
     by_a_person = (kind == "user") | kind.is_(None)
     for tenant_id in await all_tenant_ids(session_factory):
         async with tenant_session(session_factory, tenant_id) as session:
+            activation = _RoomActivation.of(tenant_id)
             checks: dict[str, Select[Any]] = {
                 "first_room_created": select(Room.id).where(
                     Room.tenant_id == tenant_id, by_a_person
                 ),
-                "first_room_active": select(Message.id)
-                .join(Client, Client.id == Message.sender_client_id)
-                .join(Room, Room.id == Message.room_id)
+                "first_room_active": select(Room.id)
+                .join(
+                    activation.first_interaction,
+                    activation.first_interaction.c.room_id == Room.id,
+                )
+                .outerjoin(
+                    activation.agent_joined,
+                    activation.agent_joined.c.room_id == Room.id,
+                )
+                .outerjoin(
+                    activation.agent_posted,
+                    activation.agent_posted.c.room_id == Room.id,
+                )
                 .where(
-                    Message.tenant_id == tenant_id,
                     Room.tenant_id == tenant_id,
                     by_a_person,
-                    *_room_activity_conditions(tenant_id, PERSON_CLIENT_TYPES),
+                    activation.agent_since.is_not(None),
                     *(
-                        (Message.sent_at < active_before,)
-                        if active_before is not None
+                        (activation.activated_at < activated_before,)
+                        if activated_before is not None
                         else ()
                     ),
                 ),
@@ -1285,6 +1295,81 @@ async def milestones_passed(
     if "first_room_active" in passed:
         passed.add("first_agent_session")
     return passed
+
+
+@dataclass(frozen=True)
+class _RoomActivation:
+    """When each room of a tenant went live: the later of its first
+    interaction by a person (`_room_activity_conditions`) and the first sign
+    of an agent in it (the first current agent member to join, or the first
+    agent message, whichever came first). The one definition the snapshot's
+    `newly_active_rooms` and the evidence settlement share, so a room the
+    settlement leaves alone is one the snapshot will report.
+
+    A query joins `first_interaction` to `Room`, outer-joins the other two,
+    and keeps rows where `agent_since` is not null.
+    """
+
+    first_interaction: Any
+    agent_joined: Any
+    agent_posted: Any
+    agent_since: Any
+    activated_at: Any
+
+    @classmethod
+    def of(cls, tenant_id: str) -> _RoomActivation:
+        first_interaction = (
+            select(
+                Message.room_id.label("room_id"),
+                func.min(Message.sent_at).label("first_at"),
+            )
+            .join(Client, Client.id == Message.sender_client_id)
+            .where(
+                Message.tenant_id == tenant_id,
+                *_room_activity_conditions(tenant_id, PERSON_CLIENT_TYPES),
+            )
+            .group_by(Message.room_id)
+            .subquery()
+        )
+        agent_joined = (
+            select(
+                ClientRoom.room_id.label("room_id"),
+                func.min(ClientRoom.joined_at).label("at"),
+            )
+            .join(Client, Client.id == ClientRoom.client_id)
+            .where(
+                ClientRoom.tenant_id == tenant_id,
+                Client.type == AGENT_CLIENT_TYPE,
+                Client.tenant_id == tenant_id,
+            )
+            .group_by(ClientRoom.room_id)
+            .subquery()
+        )
+        agent_posted = (
+            select(
+                Message.room_id.label("room_id"),
+                func.min(Message.sent_at).label("at"),
+            )
+            .join(Client, Client.id == Message.sender_client_id)
+            .where(
+                Message.tenant_id == tenant_id,
+                Message.seq > 0,
+                Client.type == AGENT_CLIENT_TYPE,
+                Client.tenant_id == tenant_id,
+            )
+            .group_by(Message.room_id)
+            .subquery()
+        )
+        # LEAST and GREATEST skip NULLs, so a room with no agent at all would
+        # otherwise become active at its first human message.
+        agent_since = func.least(agent_joined.c.at, agent_posted.c.at)
+        return cls(
+            first_interaction=first_interaction,
+            agent_joined=agent_joined,
+            agent_posted=agent_posted,
+            agent_since=agent_since,
+            activated_at=func.greatest(first_interaction.c.first_at, agent_since),
+        )
 
 
 async def newly_active_rooms(
@@ -1331,52 +1416,8 @@ async def newly_active_rooms(
         tenant_found: list[NewlyActiveRoom] = []
         try:
             async with tenant_session(session_factory, tenant_id) as session:
-                first_interaction = (
-                    select(
-                        Message.room_id.label("room_id"),
-                        func.min(Message.sent_at).label("first_at"),
-                    )
-                    .join(Client, Client.id == Message.sender_client_id)
-                    .where(
-                        Message.tenant_id == tenant_id,
-                        *_room_activity_conditions(tenant_id, PERSON_CLIENT_TYPES),
-                    )
-                    .group_by(Message.room_id)
-                    .subquery()
-                )
-                agent_joined = (
-                    select(
-                        ClientRoom.room_id.label("room_id"),
-                        func.min(ClientRoom.joined_at).label("at"),
-                    )
-                    .join(Client, Client.id == ClientRoom.client_id)
-                    .where(
-                        ClientRoom.tenant_id == tenant_id,
-                        Client.type == AGENT_CLIENT_TYPE,
-                        Client.tenant_id == tenant_id,
-                    )
-                    .group_by(ClientRoom.room_id)
-                    .subquery()
-                )
-                agent_posted = (
-                    select(
-                        Message.room_id.label("room_id"),
-                        func.min(Message.sent_at).label("at"),
-                    )
-                    .join(Client, Client.id == Message.sender_client_id)
-                    .where(
-                        Message.tenant_id == tenant_id,
-                        Message.seq > 0,
-                        Client.type == AGENT_CLIENT_TYPE,
-                        Client.tenant_id == tenant_id,
-                    )
-                    .group_by(Message.room_id)
-                    .subquery()
-                )
-                # LEAST and GREATEST skip NULLs, so a room with no agent at all
-                # would otherwise become active at its first human message.
-                agent_since = func.least(agent_joined.c.at, agent_posted.c.at)
-                activated_at = func.greatest(first_interaction.c.first_at, agent_since)
+                activation = _RoomActivation.of(tenant_id)
+                activated_at = activation.activated_at
                 agent_count = (
                     select(func.count())
                     .select_from(ClientRoom)
@@ -1398,13 +1439,22 @@ async def newly_active_rooms(
                         Room.metadata_["created_by_kind"].astext,
                         agent_count,
                     )
-                    .join(first_interaction, first_interaction.c.room_id == Room.id)
-                    .outerjoin(agent_joined, agent_joined.c.room_id == Room.id)
-                    .outerjoin(agent_posted, agent_posted.c.room_id == Room.id)
+                    .join(
+                        activation.first_interaction,
+                        activation.first_interaction.c.room_id == Room.id,
+                    )
+                    .outerjoin(
+                        activation.agent_joined,
+                        activation.agent_joined.c.room_id == Room.id,
+                    )
+                    .outerjoin(
+                        activation.agent_posted,
+                        activation.agent_posted.c.room_id == Room.id,
+                    )
                     .where(
                         and_(
                             Room.tenant_id == tenant_id,
-                            agent_since.is_not(None),
+                            activation.agent_since.is_not(None),
                             activated_at > since,
                             activated_at <= moment,
                         )

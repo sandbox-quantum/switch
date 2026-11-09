@@ -51,6 +51,20 @@ _FIRST_PASS_DELAY_SECONDS = 60.0
 _POLL_INTERVAL_SECONDS = 300.0
 
 
+async def read_watermark(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> datetime | None:
+    """When the last snapshot pass ran, or None before the first."""
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(TelemetrySnapshotWatermark).limit(1))
+        ).scalar_one_or_none()
+    if row is None:
+        return None
+    stamp = row.last_sent_at
+    return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp
+
+
 class SnapshotReporter:
     """Collects and sends the usage snapshot on a schedule."""
 
@@ -284,14 +298,7 @@ class SnapshotReporter:
         )
 
     async def _read_watermark(self) -> datetime | None:
-        async with self._session_factory() as session:
-            row = (
-                await session.execute(select(TelemetrySnapshotWatermark).limit(1))
-            ).scalar_one_or_none()
-        if row is None:
-            return None
-        stamp = row.last_sent_at
-        return stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp
+        return await read_watermark(self._session_factory)
 
     async def _claim(self, now: datetime, last_sent: datetime | None) -> bool:
         """Move the watermark from `last_sent` to `now`, if no other process

@@ -23,6 +23,7 @@ from switch_core.telemetry.deployment import (
 )
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink, OtlpRelaySink, TelemetrySink
+from switch_core.telemetry.reporter import read_watermark
 from switch_core.telemetry.snapshot import milestones_passed
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,27 @@ logger = logging.getLogger(__name__)
 _FLUSH_INTERVAL_SECONDS = 5.0
 _MAX_BATCH = 200
 _MAX_BUFFERED = 10_000
+
+
+async def _milestones_passed(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    enabled: bool,
+    enabled_since: datetime | None,
+) -> set[str]:
+    """`milestones_passed`, leaving to the snapshot pass any room it will
+    report: with telemetry on, one that went live after both the last pass
+    and the moment reporting began. Before the first pass, which reports no
+    room, and with telemetry off, every room is evidence."""
+    watermark = await read_watermark(session_factory) if enabled else None
+    activated_before = (
+        None
+        if watermark is None
+        else max(watermark, enabled_since)
+        if enabled_since is not None
+        else watermark
+    )
+    return await milestones_passed(session_factory, activated_before=activated_before)
 
 
 async def build_telemetry(
@@ -97,9 +119,10 @@ async def build_telemetry(
     # Before any service that reports a milestone is built.
     await settle_from_evidence(
         session_factory,
-        lambda: milestones_passed(
+        lambda: _milestones_passed(
             session_factory,
-            active_before=enabled_since if config.telemetry_enabled else None,
+            enabled=config.telemetry_enabled,
+            enabled_since=enabled_since,
         ),
         switched_on=switched_on,
     )
