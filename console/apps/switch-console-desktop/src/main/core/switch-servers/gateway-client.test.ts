@@ -1569,7 +1569,7 @@ describe('GitHub connection transport', () => {
   });
   it('reads why a service can be granted for reading only', async () => {
     const reason =
-      "This server's GitHub App lets agents read only, so GitHub can't be granted for writing.";
+      "Switch's GitHub App lets agents read only, so GitHub can't be granted for writing.";
     const entry = {
       slug: 'github',
       name: 'GitHub',

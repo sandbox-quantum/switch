@@ -110,7 +110,8 @@ describe("an agent's connection cards", () => {
           status: 'not_connected',
           connectable: false,
           unavailable_code: 'app_not_set_up',
-          unavailable_reason: 'Google is not set up on this server.',
+          unavailable_reason:
+            'Google is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.',
         }),
         service('box', {
           status: 'not_connected',
@@ -217,7 +218,7 @@ describe("an agent's connection cards", () => {
   });
 
   it('says why a write grant gets nothing where the server lets agents read only', () => {
-    const reason = "This server's GitHub App lets agents read only.";
+    const reason = "Switch's GitHub App lets agents read only.";
     const github = service('github', { pass_through: false, read_only_reason: reason });
     const [writes] = agentConnectionCards(
       [github],

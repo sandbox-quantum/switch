@@ -681,7 +681,7 @@ describe('the agents on a connector page', () => {
       { value: 'write', label: 'Read and push', disabled: false },
     ]);
     expect(
-      githubAccessOptions("This server's GitHub App lets agents read only.").map((option) => [
+      githubAccessOptions("Switch's GitHub App lets agents read only.").map((option) => [
         option.value,
         option.disabled,
       ])
