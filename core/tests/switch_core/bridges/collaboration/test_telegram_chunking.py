@@ -136,3 +136,18 @@ def test_splitting_a_list_loses_only_the_separator_newlines() -> None:
     )
     # Exactly one per boundary — each piece is its own message.
     assert lost == len(chunks) - 1
+
+
+def test_a_split_never_cuts_inside_an_html_entity() -> None:
+    # Telegram bodies are HTML-escaped before chunking (e.g. `<` becomes `&lt;`).
+    # A cut through an entity splits `&lt;` into `&lt` and `;`, corrupting text.
+    import html
+
+    body = html.escape("Map<String, List<Integer>> x; " * 200, quote=False)
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= MAX_MESSAGE for c in chunks)
+    for i, chunk in enumerate(chunks):
+        assert not re.search(r"&[a-zA-Z0-9#]+$", chunk), f"chunk {i} ends with incomplete entity: {chunk[-20:]!r}"
+        assert not chunk.startswith(";"), f"chunk {i} starts with semicolon: {chunk[:20]!r}"
