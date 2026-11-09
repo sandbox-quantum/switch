@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from switch_core.addressing import AddressingRule, owner_only_policy
 from switch_core.agent_refusals import AgentRefused
 from switch_core.authz import Principal, can
-from switch_core.bridges.agent.operations.agent_management import management_off_reason
 from switch_core.bridges.agent.protocol.agent_core import VALID_AGENT_NAME_RE
 from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
 from switch_core.bridges.agent.protocol.agent_management import (
@@ -236,6 +235,13 @@ class TemplateAgents:
         if not plans:
             return []
         if self._management is None:
+            # Imported here, not at the top: `operations/__init__` loads
+            # `agent_template_ops`, which needs this module's `agent_templates`
+            # caller to have finished loading (an import cycle otherwise).
+            from switch_core.bridges.agent.operations.agent_management import (
+                management_off_reason,
+            )
+
             off_reason = management_off_reason()
             raise AgentsNotCreated(
                 [
