@@ -76,6 +76,8 @@ export type MachineProvider = {
   provider: string;
   /** Installed and logged in. */
   ready: boolean;
+  /** Installed, but its login could not be verified; a person may still attempt to run it. */
+  canAttempt?: boolean;
   /** Why it is not ready, in a few words; null when it is. */
   problem: string | null;
   /** What the machine said about it, when it said more than `problem` does. */
@@ -83,6 +85,11 @@ export type MachineProvider = {
   /** False when signing in with the provider's login command would not make it ready. */
   loginHelps: boolean;
 };
+
+/** The server permits an explicit attempt for an installed, unverified provider. */
+export function canAttemptMachineProvider(provider: MachineProvider | null | undefined): boolean {
+  return !!provider && (provider.ready || provider.canAttempt === true);
+}
 
 /**
  * This computer's providers as its agent controller last reported them to a

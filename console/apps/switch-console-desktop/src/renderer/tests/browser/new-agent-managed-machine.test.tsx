@@ -362,6 +362,36 @@ describe('the providers a server machine offers', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('lets a person choose an installed provider whose login is unverified without picking it automatically', async () => {
+    const onChange = vi.fn();
+    const el = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={{
+          ...BOX,
+          providers: [
+            {
+              provider: 'deepseek-harness',
+              ready: false,
+              canAttempt: true,
+              problem: 'login could not be checked',
+              detail: 'Configure and select an OpenRouter model.',
+              loginHelps: true,
+            },
+          ],
+        }}
+        value={null}
+        onChange={onChange}
+        defaultAgent="deepseek-harness"
+      />
+    );
+    expect(onChange).not.toHaveBeenCalled();
+    expect(tile(el, 'DeepSeek Harness').disabled).toBe(false);
+    expect(tile(el, 'DeepSeek Harness').textContent).toMatch(/Login could not be checked/);
+    await act(async () => tile(el, 'DeepSeek Harness').click());
+    expect(onChange).toHaveBeenCalledWith('deepseek-harness');
+  });
+
   it('picks the one ready provider for the user', async () => {
     const onChange = vi.fn();
     await render(

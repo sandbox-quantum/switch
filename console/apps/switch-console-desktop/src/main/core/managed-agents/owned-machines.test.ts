@@ -64,6 +64,7 @@ describe('machineProvider', () => {
     expect(problem(true, 'unknown')).toEqual({
       provider: 'codex',
       ready: false,
+      canAttempt: true,
       problem: 'login not checked yet',
       detail: null,
       loginHelps: true,
@@ -82,10 +83,31 @@ describe('machineProvider', () => {
     ).toEqual({
       provider: 'claude',
       ready: false,
+      canAttempt: true,
       problem: 'login could not be checked',
       detail: 'Claude Code did not say whether it is signed in. It may be too old.',
       loginHelps: true,
     });
+  });
+
+  it('allows only an installed unknown report to be attempted without claiming it is ready', () => {
+    const make = (installed: boolean, auth: 'ok' | 'missing' | 'expired' | 'unknown') =>
+      machineProvider({
+        provider: 'deepseek-harness',
+        installed,
+        auth,
+        problem: 'Configure OpenRouter.',
+        loginHelps: true,
+      });
+    expect(make(true, 'unknown')).toMatchObject({
+      ready: false,
+      canAttempt: true,
+      detail: 'Configure OpenRouter.',
+    });
+    expect(make(false, 'unknown').canAttempt).toBeUndefined();
+    expect(make(true, 'missing').canAttempt).toBeUndefined();
+    expect(make(true, 'expired').canAttempt).toBeUndefined();
+    expect(make(true, 'ok').ready).toBe(true);
   });
 
   it('passes on that signing in would not make a provider ready', () => {

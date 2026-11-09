@@ -52,6 +52,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@rende
 import { log } from '@renderer/utils/logger';
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
+import { canAttemptMachineProvider } from '@shared/core/managed-agents/managed-agents';
 import {
   describeRemoteDirRefusal,
   isAbsoluteMachineDir,
@@ -396,7 +397,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     !isMachineRun ||
     (!!pickState.providerId &&
       !!serverMachine?.providers.some(
-        (entry) => entry.provider === pickState.providerId && entry.ready
+        (entry) => entry.provider === pickState.providerId && canAttemptMachineProvider(entry)
       ));
   const [canManageAgents, setCanManageAgents] = useState(false);
   // The managed agent's model and advanced configuration, held in a ref for the
