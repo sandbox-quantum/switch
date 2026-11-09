@@ -1,4 +1,5 @@
 import { Alert, Box, Button, CircularProgress } from "@mui/material";
+import { Suspense, lazy } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
 import { appView, readPendingInvite } from "./data/sessionState";
@@ -98,11 +99,21 @@ export function AppRoutes() {
   );
 }
 
+// Dev builds only. A production build reads `import.meta.env.DEV` as false and
+// drops this import with it, and `scripts/check-no-dev-tools.mjs` fails the
+// build if any of `src/dev/` is left in.
+const DevRoleSwitcher = import.meta.env.DEV ? lazy(() => import("./dev/DevRoleSwitcher")) : null;
+
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
         <AppRoutes />
+        {DevRoleSwitcher !== null && (
+          <Suspense fallback={null}>
+            <DevRoleSwitcher />
+          </Suspense>
+        )}
       </AuthProvider>
     </BrowserRouter>
   );

@@ -140,6 +140,26 @@ them. That's also why cookie-based gateway auth (including OIDC login, see
 any CORS configuration: as far as the browser can tell, it never left
 `:5173`.
 
+### Viewing the dashboard as each role
+
+To check what each permission level sees, run `just seed-dev-roles` once the
+stack and `just run` are up. It creates a test account per level on your
+local server (an org admin, a workspace admin and a member, with a random
+password) plus a second workspace that only the org admin can open, and saves
+their logins, with the gateway admin's from `.env` as the operator, to
+`gateway/.dev-role-accounts.json` (gitignored). It is safe to run again.
+
+`just gateway-dev` then shows a **Dev · Viewing as** badge at the top of
+every page. Picking a role signs you in as that account, an ordinary password
+sign-in, and reloads the page, staying in the same workspace when that
+account can open it. The server sees only that account, so what you see is
+exactly what a person with that role gets.
+
+It exists only in the Vite dev server: a production build leaves it out, and
+`npm run build` fails if any of it gets in (`gateway/scripts/check-no-dev-tools.mjs`).
+The dashboard switch-core serves from `GATEWAY_UI_DIR` is such a build, so it
+never has the badge.
+
 ## Which URL is which
 
 | URL | What's there | Started by |
@@ -274,3 +294,4 @@ out, not for judging its latency. Another model is `DECISION_MODEL_URL`,
 | `just test-integration` | Integration tests against a real Postgres via testcontainers |
 | `just migration "message"` | Autogenerate a new Alembic migration |
 | `just gateway-build` | Build the gateway frontend's production bundle |
+| `just seed-dev-roles` | Create the test accounts the dashboard's dev role switcher signs in as (see above) |

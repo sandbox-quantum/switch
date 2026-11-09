@@ -69,6 +69,14 @@ version of their own to them without also giving them a release of their own.
   `alerted` or `errored`. A message Switch Trust left alone has no `trust`
   field, so its result is as before. Until now an agent whose words were
   redacted had no way to know.
+- **A dev-only role switcher for the dashboard.** `just seed-dev-roles`
+  creates local test accounts for an org admin, a workspace admin and a
+  member, plus a second workspace only the org admin can open, and
+  `just gateway-dev` shows a **Dev · Viewing as** badge that signs in as any
+  of them, or as the operator from `.env`, so a page can be checked as each
+  role. Switching is an ordinary sign-in, so every check is the server's own.
+  A production build leaves the switcher out, and `npm run build` now fails if
+  it gets in.
 
 #### Changed
 - **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
