@@ -283,14 +283,24 @@ def _parse_interrupt_id(custom_id: str) -> str | None:
     return turn_id
 
 
-@contextlib.contextmanager
-def _card_refusals() -> Iterator[None]:
-    """A card that does not fit Discord's limits, or that Discord answers with
-    a 4xx, was not posted: `CardRejectedError`, so the text goes instead."""
+def _render_card(
+    spec: UISpec, *, interactive: bool
+) -> tuple[list[discord.Embed], discord.ui.View | None]:
+    """`ui_spec_to_message`, with a card over Discord's limits refused before
+    anything is sent."""
     try:
-        yield
+        return ui_spec_to_message(spec, interactive=interactive)
     except ValueError as error:
         raise CardRejectedError(str(error)) from error
+
+
+@contextlib.contextmanager
+def _card_refusals() -> Iterator[None]:
+    """A card Discord answers with a 4xx was not posted: `CardRejectedError`,
+    so the text goes instead. A `ValueError` is not converted here: discord.py
+    parses the response inside the send, so one may mean the card did post."""
+    try:
+        yield
     except discord.HTTPException as error:
         if 400 <= error.status < 500 and error.status != 429:
             raise CardRejectedError(str(error)) from error
@@ -424,7 +434,7 @@ class _WebhookIdentity:
         if self._fallback == self._identifier:
             return payload
         if "embed" in payload or "embeds" in payload:
-            raise ValueError(
+            raise CardRejectedError(
                 "Webhook identity disclosure requires a payload without embeds"
             )
         disclosure = discord.Embed()
@@ -1009,7 +1019,7 @@ class DiscordAdapter(PlatformAdapter):
                 else fallback_text
             )
             if len(content) > MAX_MESSAGE:
-                raise ValueError(
+                raise CardRejectedError(
                     f"the card's text is {len(content)} characters, over Discord's "
                     f"{MAX_MESSAGE}"
                 )
@@ -1019,7 +1029,7 @@ class DiscordAdapter(PlatformAdapter):
             presses = self._on_interaction is not None
             if lobby:
                 # The bot's own message, which may always carry buttons.
-                embeds, view = ui_spec_to_message(spec, interactive=presses)
+                embeds, view = _render_card(spec, interactive=presses)
                 sent = await target.send(
                     content,
                     embeds=embeds,
@@ -1029,7 +1039,7 @@ class DiscordAdapter(PlatformAdapter):
                 return f"{sent.channel.id}:{sent.id}"
 
             webhook = await self._get_webhook(int(channel_id))
-            embeds, view = ui_spec_to_message(
+            embeds, view = _render_card(
                 spec, interactive=presses and webhook.id in self._owned_webhooks
             )
             payload: dict[str, Any] = {

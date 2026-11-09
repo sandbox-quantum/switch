@@ -3,6 +3,7 @@ under its text, and its buttons pressed and settled."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -401,6 +402,19 @@ async def test_only_a_card_discord_refuses_falls_back_to_text(
     )
 
     with pytest.raises(raised):
+        await adapter.send_ui_message(
+            str(CHANNEL_ID), "my-agent", FULL, "text", None, room_wide_mention=False
+        )
+
+
+async def test_a_lost_response_is_not_taken_for_a_refusal() -> None:
+    # discord.py parses the response inside the send: a JSONDecodeError there
+    # may follow a card Discord posted, so it must not repost the text.
+    adapter, channel, _thread, _ = _guild_setup()
+    _handled(adapter)
+    _agents_webhook(channel).send_error = json.JSONDecodeError("bad", "", 0)
+
+    with pytest.raises(json.JSONDecodeError):
         await adapter.send_ui_message(
             str(CHANNEL_ID), "my-agent", FULL, "text", None, room_wide_mention=False
         )
