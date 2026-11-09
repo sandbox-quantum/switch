@@ -34,8 +34,10 @@ import httpx
 from fastmcp import Client
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.transports import StreamableHttpTransport
+from jsonschema import Draft202012Validator, validators
 from mcp.shared.exceptions import McpError
 from mcp.types import CONNECTION_CLOSED, CallToolResult, TextContent, Tool
+from referencing import Registry
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -350,6 +352,23 @@ def _leaves(error: BaseException) -> Iterator[BaseException]:
             yield current
         if current.__cause__ is not None:
             pending.append(current.__cause__)
+
+
+def _accepts_no_arguments(schema: dict[str, Any]) -> bool:
+    """Whether a tool's input schema takes `{}`. This says nothing about
+    what the tool does: read-only rests on its annotation and the catalog."""
+    if schema.get("type") != "object":
+        return False
+    try:
+        validator = validators.validator_for(schema, default=Draft202012Validator)
+        validator.check_schema(schema)
+        # An empty registry, so a remote $ref is never fetched.
+        validator(schema, registry=Registry()).validate({})
+    except Exception:
+        # An invalid schema, a refusal of {}, an unresolvable $ref, or any
+        # other failure on a vendor's schema: Core does not call the tool.
+        return False
+    return True
 
 
 def _identity_body(result: CallToolResult) -> dict[str, Any] | None:
@@ -827,12 +846,7 @@ class OAuthAdapter:
             tool = matches[0]
             if tool.annotations is None or tool.annotations.readOnlyHint is not True:
                 raise McpIdentityError(self._name, "not_read_only")
-            schema = tool.inputSchema
-            if (
-                schema.get("type") != "object"
-                or schema.get("required")
-                or any(key in schema for key in ("allOf", "anyOf", "oneOf", "$ref"))
-            ):
+            if not _accepts_no_arguments(tool.inputSchema):
                 raise McpIdentityError(self._name, "needs_arguments")
             result: CallToolResult = await client.call_tool_mcp(
                 self._identity.mcp_tool, {}

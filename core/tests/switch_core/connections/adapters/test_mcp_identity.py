@@ -387,6 +387,66 @@ async def test_optional_identity_selector_is_never_supplied(monkeypatch):
     assert calls == ["me"]
 
 
+EVIL_PATTERN = {"type": "string", "pattern": "^(a+)+$"}
+
+
+@pytest.mark.parametrize(
+    "schema, accepted",
+    [
+        ({"type": "object"}, True),
+        ({"type": "object", "properties": {"a": {"type": "string"}}}, True),
+        ({"type": "object", "additionalProperties": False}, True),
+        ({"type": "object", "dependentRequired": {"a": ["b"]}}, True),
+        ({"type": "object", "anyOf": [{}, {"required": ["a"]}]}, True),
+        (
+            {"type": "object", "$ref": "#/$defs/x", "$defs": {"x": {"type": "object"}}},
+            True,
+        ),
+        ({"type": "object", "x-vendor": 1}, True),
+        (
+            {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
+            True,
+        ),
+        ({"type": "object", "properties": {"a": EVIL_PATTERN}}, True),
+        ({"type": "object", "required": ["a"]}, False),
+        ({"type": "object", "minProperties": 1}, False),
+        ({"type": "object", "not": {"maxProperties": 0}}, False),
+        ({"type": "object", "if": {}, "then": {"required": ["a"]}}, False),
+        (
+            {"type": "object", "anyOf": [{"required": ["a"]}, {"required": ["b"]}]},
+            False,
+        ),
+        (
+            {
+                "type": "object",
+                "$ref": "#/$defs/x",
+                "$defs": {"x": {"required": ["a"]}},
+            },
+            False,
+        ),
+        ({"type": "object", "$ref": "https://schemas.example.test/s.json"}, False),
+        ({}, False),
+        ({"type": "array"}, False),
+        ({"type": ["object"]}, False),
+        ({"type": "object", "minProperties": "one"}, False),
+    ],
+)
+def test_accepts_no_arguments(schema, accepted):
+    started = time.monotonic()
+    assert oauth._accepts_no_arguments(schema) is accepted
+    assert time.monotonic() - started < 1
+
+
+async def test_mcp_identity_refuses_a_schema_that_rejects_empty_arguments(
+    monkeypatch,
+):
+    tool = {**GET_USER, "inputSchema": {"type": "object", "minProperties": 1}}
+    vendor = _ScriptedMcp({None: ([tool], None)})
+    _over_mock(monkeypatch, vendor)
+    _assert_reason(await _identify_error(), "needs_arguments")
+    assert vendor.calls == []
+
+
 @pytest.mark.parametrize(
     "paths", [[], ["data.id"], ["data.id[0]"], [""], [False], "data.id[0]"]
 )
