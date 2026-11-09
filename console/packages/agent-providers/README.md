@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols. These five adapters are the only Console session runtime.
+protocols. These providers are the only Console session runtime.
 
 ## Shape
 
@@ -67,12 +67,13 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
+| goose (ACP) | 1.43.0 | 9 passed, 1 skipped, 0 failed; 74 s (2026-11-07 ~02:17 IST, revision `84fb1a3b7`) | Clean full run with `openrouter` / `nvidia/nemotron-3-ultra-550b-a55b:free`; model confirmed in Goose's `usage_ledger`. All nine supported scenarios passed; `user-input` skips because ACP form elicitation is not advertised. Earlier revisions: three full runs with `gemini-3.5-flash-lite` each had 2–3 failures (free-tier 429s, 15 requests/min, or 300 s timeouts); failed scenarios passed singly. One run overlapped other requests on the same key. `approval-declined` timed out in two Gemini full runs; cause unproven, consistent with rate limiting. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and Goose run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -127,3 +128,43 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+**Goose** runs `goose acp --with-builtin developer` over stdio. The explicit
+builtin restores developer tools when the session registers MCP servers (observed
+with Goose 1.43.0). Run `goose configure` on the execution
+host, or set `GOOSE_PROVIDER` and `GOOSE_MODEL`. “Signed in” means a model
+provider and model are configured, not that credentials or inference were
+validated. Readiness uses Goose 1.43.0's read-only
+`_goose/unstable/defaults/read` after initialization; it never authenticates,
+creates a session or sends a prompt. Older versions without that endpoint
+cannot report readiness through this hook.
+
+Goose 1.43.0 sends a permission request with a bare title (`shell`, `write`) and no
+metadata; the `tool_call` update just before it carries the tool's identity
+(`extensionName`, `toolName`). The Goose hooks record that identity per session and
+tool call id, and read it back for the permission request. A `shell`, `write` or
+`edit` tool of the `developer` extension is classified as a command or a file
+change, so `auto-accept-edits` allows Goose's own writes and edits once; Goose's
+`todo__todo_write` planning notes (extension `todo`) are allowed once in every mode.
+The same names from any other extension, or from a registered connector with that
+name, stay manual, as does a request whose tool call was never announced. Display
+titles never grant permission.
+
+The session host sets `GOOSE_DISABLE_KEYRING=1` to avoid keyring prompts or
+hangs on headless machines. Supply model credentials through the host's
+inherited provider environment or Goose's file-backed configuration; credentials
+stored only in the OS keyring are unavailable. To configure file-backed credentials,
+run `GOOSE_DISABLE_KEYRING=1 goose configure` on the execution host.
+`GOOSE_PROVIDER`, `GOOSE_MODEL`, `GOOSE_FAST_MODEL`,
+`GOOSE_PATH_ROOT`, `GOOSE_ADDITIONAL_CONFIG_FILES`, the XDG configuration/data/state
+directories and `OLLAMA_HOST` are inherited. `GOOSE_DISABLE_KEYRING` is forced to `1`,
+not inherited. Goose's initial mode is forced to
+`approve`, then every new or resumed session explicitly receives
+`session/set_mode`: `approval-required` → `approve`, `auto-accept-edits` and
+`auto` → `smart_approve`, `full-access` → `auto`. Goose describes `smart_approve`
+as asking only for sensitive tool calls; its `ask_before` policy can still require
+approval for shell, write and edit. Goose's own saved `always_allow` rules can bypass
+those prompts, including rules persisted by choosing `allow_always`; use
+`allow_once` when verifying approvals.
+
+Killing `goose acp` outright leaves its running shell child alive.
