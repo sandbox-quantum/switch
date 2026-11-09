@@ -132,6 +132,7 @@ export function ParticipantPicker({
   busy,
   overlay,
   fixed = [],
+  busyLabel = 'Adding…',
 }: {
   candidates: Participant[];
   picked: Participant[];
@@ -147,6 +148,8 @@ export function ParticipantPicker({
   overlay: boolean;
   /** Shown before the picks, and not removable: who is in the room regardless. */
   fixed?: FixedParticipant[];
+  /** What the field says while `busy`. */
+  busyLabel?: string;
 }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -260,7 +263,7 @@ export function ParticipantPicker({
             className="flex items-center gap-1 px-1.5 text-xs text-foreground-muted"
           >
             <Loader2 className="size-3 animate-spin" />
-            Adding…
+            {busyLabel}
           </span>
         )}
       </div>

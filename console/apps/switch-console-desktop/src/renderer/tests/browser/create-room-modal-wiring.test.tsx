@@ -25,7 +25,7 @@ const rpcMock = vi.hoisted(() => ({
     listBridges: vi.fn(),
     listAgents: vi.fn(async () => []),
     listRoomGroups: vi.fn(async () => []),
-    listBridgePeople: vi.fn(async (): Promise<unknown[]> => []),
+    listBridgePeople: vi.fn(async (_params: { bridgeId: string }): Promise<unknown[]> => []),
     listMyIdentities: vi.fn(async (): Promise<unknown[]> => []),
     createRoom: vi.fn(),
   },
@@ -361,6 +361,32 @@ describe('New room dialog', () => {
     await act(async () => createButton(host).click());
     expect(rpcMock.workspaces.createRoom).toHaveBeenCalledWith(
       expect.objectContaining({ bridgeId: 'b1', userNames: ['bob.s'] })
+    );
+  });
+
+  it('keeps the latest app when an earlier switch finishes after it', async () => {
+    rpcMock.chats.workspaceMembers.mockResolvedValue([
+      { userId: 'u2', name: 'Bob', email: 'bob@example.com', role: 'member' },
+    ]);
+    let releaseSlack: (people: unknown[]) => void = () => {};
+    rpcMock.workspaces.listBridgePeople.mockImplementation(
+      async ({ bridgeId }: { bridgeId: string }) =>
+        bridgeId === 'b1'
+          ? new Promise<unknown[]>((resolve) => (releaseSlack = resolve))
+          : [person('bob.m', ['u2'], 'Bob')]
+    );
+    const host = await render();
+    await typeInto(host.querySelector<HTMLInputElement>('#new-room-name')!, 'design-review');
+    await pick(host, 'Bob');
+
+    await chooseApp(host, 'b1');
+    expect(createButton(host).disabled).toBe(true);
+    await chooseApp(host, 'b2');
+    await act(async () => releaseSlack([person('bob.s', ['u2'], 'Bob')]));
+
+    await act(async () => createButton(host).click());
+    expect(rpcMock.workspaces.createRoom).toHaveBeenCalledWith(
+      expect.objectContaining({ bridgeId: 'b2', userNames: ['bob.m'] })
     );
   });
 });

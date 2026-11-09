@@ -32,6 +32,7 @@ from switch_core.authz import (
     validate_visibility_pair,
 )
 from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelInUse,
     ChannelType,
@@ -708,6 +709,21 @@ class RoomService:
             room_id, transport_room_id, [creator.external_user_id]
         )
         return failures
+
+    @staticmethod
+    def _creator_left_out(collaboration_core: CollaborationCore) -> Exception:
+        """What a room that already existed raises when the platform would not
+        put its owner in its new private channel. Such a room has no
+        `failed_attachments` to report the miss in, and a private channel its
+        owner cannot get into is what was to be avoided. Raised once the room
+        is on the channel, so the error says so, and what to do."""
+        platform = collaboration_core.adapter.platform_name
+        return BridgeOperationError(
+            f"The room is now on a new private {platform} channel, but "
+            f"{platform} would not add its owner to it, so nobody can get "
+            f"in. Add them to the channel in {platform}, or move the room "
+            "to a public channel."
+        )
 
     @staticmethod
     def _channel_in_use(
@@ -1730,13 +1746,14 @@ class RoomService:
             await self._ensure_channel_capture(
                 collaboration_core, external_channel_id, channel_type
             )
-            await self._add_creator_to_channel(
+            if await self._add_creator_to_channel(
                 collaboration_core,
                 room.id,
                 room.transport_room_id,
                 external_channel_id,
                 creator,
-            )
+            ):
+                raise self._creator_left_out(collaboration_core)
 
         logger.info("Linked bridge %s to room %s", bridge_id, room_id)
 
@@ -1851,6 +1868,7 @@ class RoomService:
         )
 
         creator: ExternalUser | None = None
+        creator_left_out = False
         if external_channel_id is None:
             await self._require_channel_creation(bridge_id)
             external_channel_id, creator = await self._create_channel(
@@ -1912,12 +1930,16 @@ class RoomService:
                 )
                 # The one person who is carried over: the owner of a new
                 # private channel, who could not get in otherwise.
-                await self._add_creator_to_channel(
-                    new_bridge,
-                    room_id,
-                    transport_room_id,
-                    external_channel_id,
-                    creator,
+                # Reported once the old bridge is let go, below: raised here,
+                # the room would be left mapped to both.
+                creator_left_out = bool(
+                    await self._add_creator_to_channel(
+                        new_bridge,
+                        room_id,
+                        transport_room_id,
+                        external_channel_id,
+                        creator,
+                    )
                 )
                 logger.warning(
                     "Room %s moved to bridge %s: re-added %d agent(s) to channel "
@@ -1956,6 +1978,8 @@ class RoomService:
             bridge_id,
             external_channel_id,
         )
+        if creator_left_out:
+            raise self._creator_left_out(new_bridge)
 
     def _resolve_agent_clients(self, agent_ids: list[str]) -> dict[str, str]:
         """Returns {client_id: transport_user_id} for the given agent IDs."""

@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 from switch_core.bridges.collaboration.adapter import ChannelNotBindable
 from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelInUse,
     ChannelNotUsable,
@@ -94,6 +95,8 @@ class _FakeAdapter:
         self.not_bindable: set[str] = set()
         self.not_usable: dict[str, str] = {}
         self.owners_refused: set[str] = set()
+        # Platform ids `add_users_to_channel` reports as not added.
+        self.add_refused: set[str] = set()
 
     async def require_bindable_channel(self, channel_id: str) -> None:
         self._events.append(("require_bindable", channel_id))
@@ -133,7 +136,7 @@ class _FakeAdapter:
         self, channel_id: str, user_names: list[str], user_external_ids: list[str]
     ) -> list[str]:
         self._events.append(("add_users", channel_id, list(user_external_ids)))
-        return []
+        return [i for i in user_external_ids if i in self.add_refused]
 
     async def ensure_channel_subscriptions(
         self, channels: list[tuple[str, str]]
@@ -642,6 +645,39 @@ class TestChangeBridge:
         assert ("create_channel", "Work", "A room", "channel_private") in events
         assert ("add_users", "chan-new", ["owner-account"]) in events
         assert ("ensure_in_room", "room-1", ["owner-account"]) in events
+
+    async def test_a_move_says_so_when_the_platform_will_not_add_the_owner(
+        self,
+    ) -> None:
+        # The move is finished first, old bridge let go included, so the
+        # room is not left on two bridges; then it is reported.
+        events: list[Any] = []
+        svc, room_store, new_bridge = self._moving(events)
+        new_bridge.adapter._new_channel_id = "chan-new"
+        new_bridge.adapter.add_refused.add("owner-account")
+        _owner_linked(svc)
+
+        with pytest.raises(BridgeOperationError, match="would not add its owner"):
+            await svc.change_bridge(
+                "room-1", bridge_id="bridge-new", channel_type="channel_private"
+            )
+
+        assert room_store.update_bridge_calls[0]["external_channel_id"] == "chan-new"
+        assert ("remove_room_mapping", "room-1") in events
+        assert ("kick", "@bot-old:switch.local") in events
+
+    async def test_linking_says_so_when_the_platform_will_not_add_the_owner(
+        self,
+    ) -> None:
+        events: list[Any] = []
+        svc, _, new_bridge = self._moving(events)
+        new_bridge.adapter._new_channel_id = "chan-new"
+        new_bridge.adapter.add_refused.add("owner-account")
+        _owner_linked(svc)
+        svc._require_tenant_bridge = _no_check  # type: ignore[method-assign]
+
+        with pytest.raises(BridgeOperationError, match="would not add its owner"):
+            await svc.link_bridge_to_room("room-1", "bridge-new", "channel_private")
 
     async def test_the_owner_is_put_in_a_private_channel_given_to_a_room(
         self,

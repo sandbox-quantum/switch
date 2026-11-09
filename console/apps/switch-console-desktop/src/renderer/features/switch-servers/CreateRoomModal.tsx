@@ -105,6 +105,8 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const queryClient = useQueryClient();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [switchingApp, setSwitchingApp] = useState(false);
+  // Which change of app is the latest: an earlier one finishing after it is dropped.
+  const appChange = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [requestIds] = useState(() => new CreateRequestIds(() => crypto.randomUUID()));
 
@@ -277,12 +279,16 @@ export const CreateRoomModal = observer(function CreateRoomModal({
    */
   async function changeApp(next: string) {
     setError(null);
+    const change = ++appChange.current;
     const pickedPeople = shownPicked.filter((each) => each.kind === 'person');
     if (pickedPeople.length === 0 || workspaceId === null) {
       setLeftOut([]);
       setWhere(next);
+      setSwitchingApp(false);
       return;
     }
+    // The app and the picks are held still meanwhile, so nothing picked in
+    // the wait is lost when the people carried over are put in.
     setSwitchingApp(true);
     try {
       let there: Participant[] = [];
@@ -296,12 +302,13 @@ export const CreateRoomModal = observer(function CreateRoomModal({
       } catch {
         // Unknown there: nobody can be carried, and each is named as left out.
       }
+      if (change !== appChange.current) return;
       const { kept, dropped } = carryPicks(pickedPeople, there);
       changePicks([...shownPicked.filter((each) => each.kind === 'agent'), ...kept]);
       setLeftOut(dropped.map((each) => each.name));
       setWhere(next);
     } finally {
-      setSwitchingApp(false);
+      if (change === appChange.current) setSwitchingApp(false);
     }
   }
 
@@ -328,7 +335,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
           bridgeId,
           name,
           agentIds,
-          memberUserIds,
+          memberUserIds: [...memberUserIds, ...userNames],
           settings: [description.trim(), instructions.trim(), roomOptions],
         }),
         options: roomOptions,
@@ -419,7 +426,8 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             <ParticipantPicker
               inputId="new-room-participants"
               autoFocus={false}
-              busy={isSubmitting}
+              busy={isSubmitting || switchingApp}
+              busyLabel={switchingApp ? 'Matching people…' : 'Adding…'}
               overlay={false}
               candidates={candidates}
               picked={shownPicked}
@@ -552,6 +560,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
           consoleOffered={consoleOffered}
           value={where}
           onChange={(next) => void changeApp(next)}
+          disabled={switchingApp || isSubmitting}
         />
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" onClick={onClose} disabled={isSubmitting}>
