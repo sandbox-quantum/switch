@@ -809,6 +809,22 @@ describe('a session the server has ended', () => {
     await first;
   });
 
+  it('comes back signed in when a hint that raced a password change is followed by a re-read', async () => {
+    // The old session ended a moment before Console kept the new one: the
+    // hint's re-check used the old cookie and read signed out. The account
+    // page re-reads the status once the change is done, with the new cookie.
+    const store = newStore([server('a')]);
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: false, user: null });
+    await store.noteSessionEnded('a');
+    expect(store.isConnected('a')).toBe(false);
+
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+    expect(store.isConnected('a')).toBe(true);
+  });
+
   it('listens for the main process saying so', async () => {
     expect(onSessionEnded).toBeDefined();
     switchServersStore.servers = [server('a')];

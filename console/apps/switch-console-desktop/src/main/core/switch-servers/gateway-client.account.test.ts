@@ -121,6 +121,19 @@ describe('account', () => {
     expect(setSessionCookie).toHaveBeenCalledWith('srv-1', 'fresh-session');
   });
 
+  it('says the password changed when only keeping its new session failed', async () => {
+    fetchMock.mockImplementation(async () =>
+      response(200, { ok: true }, ['switch_auth=fresh-session; HttpOnly; Path=/'])
+    );
+    setSessionCookie.mockRejectedValueOnce(new Error('disk full'));
+    const failure = await changeMyPassword(SERVER, 'old-pass', 'new-password-1').catch(
+      (error: unknown) => error
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).name).toBe('PasswordChangedSessionNotSavedError');
+    expect((failure as Error).message).toMatch(/^Your password was changed/);
+  });
+
   it('leaves the stored session alone when the server sends no new one', async () => {
     fetchMock.mockImplementation(async () => response(200, { ok: true }));
     await changeMyPassword(SERVER, 'old-pass', 'new-password-1');

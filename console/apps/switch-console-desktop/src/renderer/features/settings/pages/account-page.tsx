@@ -195,6 +195,10 @@ export function ChangePassword({ serverId }: { serverId: string }) {
     onSuccess: () => {
       reset();
       setChanged(true);
+      // Anything refused in the moment between the server ending the old
+      // session and Console keeping the new one can have shown the server as
+      // signed out; read its status again now the new session is in place.
+      void switchServersStore.refreshStatus(serverId);
     },
     onError: (error) => {
       const { headline, detail } = describeFailure(error, 'Could not change your password.');

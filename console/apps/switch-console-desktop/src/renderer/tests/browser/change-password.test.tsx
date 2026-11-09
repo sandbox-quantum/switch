@@ -16,13 +16,14 @@ vi.hoisted(() => {
 });
 
 const changeMyPassword = vi.hoisted(() => vi.fn());
+const refreshStatus = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
   rpc: { switchServers: { changeMyPassword } },
 }));
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: {},
+  switchServersStore: { refreshStatus },
 }));
 
 import { ChangePassword } from '@renderer/features/settings/pages/account-page';
@@ -94,6 +95,9 @@ describe('ChangePassword', () => {
     expect(document.querySelector('[role="alert"]')?.textContent).toBe(
       'Password changed successfully'
     );
+    // Whatever was refused while the old session was ending can have shown the
+    // server as signed out; it is read again with the new session in place.
+    expect(refreshStatus).toHaveBeenCalledWith('srv-1');
   });
 
   it('does not carry the message over once the page is left and opened again', async () => {
@@ -113,5 +117,6 @@ describe('ChangePassword', () => {
     await render();
     await changePassword();
     expect(document.body.textContent).not.toContain('Password changed successfully');
+    expect(refreshStatus).not.toHaveBeenCalled();
   });
 });
