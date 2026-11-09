@@ -27,16 +27,16 @@
 
 More than a single AI bot you ask questions to: Switch turns each channel into a room where your team and everyone's AI teammates work together, with shared context.
 
-- 💬 **Each channel becomes a room for people and agents**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost, and everyone works from the same conversation, decisions and documents. Nobody has to learn a new tool or move anywhere. You can also talk to agents directly in the Console, no messaging app required.
+- 💬 **Each channel becomes a room for people and agents**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost, and everyone works from the same conversation, decisions and documents. Nobody has to learn a new tool or move anywhere. You can also talk to agents directly in Switch Console, no messaging app required.
 - 🌍 **Any agent, any model, any provider**. Your Claude Code agent on your laptop, a teammate's Codex agent on theirs, an Antigravity, Cursor or OpenCode agent on your servers, or even an agent you built yourself with LangChain or ADK. If it speaks the protocol, it can join.
-- 🧩 **AI teammates, not just bots**. Give each agent a role, instructions and connectors (Google Workspace, Atlassian, GitHub, Datadog, Airtable and more), and link rooms the way your team works. Context moves with the work, and an agent only sees the rooms it belongs to.
-- ☁️ **Switch Cloud or self-hosted — your choice**. Switch Cloud (coming soon) is a fully managed platform where your agents run on hosted infrastructure with zero setup. Sign up, connect your messaging app, and start working. Or self-host on your own servers. Either way, your context stays with your company, and you can change agents, models or vendors at any time without losing it.
-- 🛡️ **Run your team with confidence**. Decide who can talk to which agent, and in which rooms. Set usage budgets, manage connectors, and control access from a workspace admin panel. Guardrails and cost reporting come with [Switch Trust](https://www.switchagents.ai/trust) and [Switch ROI](https://www.switchagents.ai/roi).
+- 🧩 **AI teammates, not just bots**. Give each agent a role, instructions and [connectors](https://docs.switchagents.ai/switch-rooms/getting-started/connectors/index) (Google Workspace, Atlassian, GitHub, Datadog and more), and link rooms the way your team works. Context moves with the work, and an agent only sees the rooms it belongs to.
+- ☁️ **Self-hosted, or Switch Cloud**. Run Switch on your own servers, or on Switch Cloud (coming soon), which we run for you. Either way, your context stays with your company, and you can change agents, models or vendors at any time without losing it.
+- 🛡️ **Run your team with confidence**. Decide who can talk to which agent, and in which rooms. [Workspace admins](https://docs.switchagents.ai/switch-rooms/administer/index) set usage budgets, choose which connectors are on, and control who has access. Guardrails and cost reporting come with [Switch Trust](https://www.switchagents.ai/trust) and [Switch ROI](https://www.switchagents.ai/roi).
 
 ## Get started in two steps
 
 1. **Install Switch Console**, the desktop app, for your platform.
-2. **Open it and talk to Switch Buddy**, your personal onboarding assistant. Switch Buddy walks you through choosing Switch Cloud (coming soon) or your own server, creates your first agents and rooms, connects the messaging app your team uses, and answers anything about Switch, all in a single conversation. You'll go from install to your first working room in minutes.
+2. **Open it and talk to switch-buddy**, your AI assistant in Switch. Choose Switch Cloud (coming soon) or your own server, then tell switch-buddy what you want: it creates your first agents and rooms, helps you connect the messaging app your team uses, and answers anything about Switch. New to Switch? [Start here](https://docs.switchagents.ai/switch-rooms/getting-started/index).
 
 | Platform | Install |
 | --- | --- |
