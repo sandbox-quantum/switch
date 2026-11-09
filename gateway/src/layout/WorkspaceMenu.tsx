@@ -9,7 +9,7 @@ import {
   MenuItem,
   Typography,
 } from "@mui/material";
-import { Fragment, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { type OrganizationSummary, type WorkspaceCounts, fetchWorkspaceCounts } from "../data/api";
 import { useAuth } from "../data/AuthContext";
 import { countsLabel, switcherSections, switcherWorkspaces } from "../data/workspaceSwitcher";
@@ -96,37 +96,40 @@ export default function WorkspaceMenu({
           Could not load how many users and agents each workspace has: {counts.message}
         </Alert>
       )}
-      {sections.map((section) => (
-        <Fragment key={section.organizationId ?? "none"}>
-          {headed && (
-            <ListSubheader sx={{ lineHeight: "32px", backgroundColor: "transparent" }}>
-              {section.name ?? "No organization"}
-            </ListSubheader>
-          )}
-          {section.workspaces.map((workspace) => {
-            const isCurrent = workspace.id === current?.id;
-            return (
-              <MenuItem
-                key={workspace.id}
-                selected={isCurrent}
-                aria-current={isCurrent ? "true" : undefined}
-                onClick={() => (isCurrent ? onClose() : onSwitch(workspace.id))}
-                sx={{ gap: 1, borderRadius: 1 }}
+      {sections.flatMap((section) => [
+        ...(headed
+          ? [
+              <ListSubheader
+                key={`organization:${section.organizationId ?? "none"}`}
+                sx={{ lineHeight: "32px", backgroundColor: "transparent" }}
               >
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
-                    {workspace.name}
-                  </Typography>
-                  <Typography variant="caption" sx={{ color: "text.secondary" }} noWrap>
-                    {countsOf(workspace.id)}
-                  </Typography>
-                </Box>
-                {isCurrent && <CheckOutlined sx={{ fontSize: 16 }} />}
-              </MenuItem>
-            );
-          })}
-        </Fragment>
-      ))}
+                {section.name ?? "No organization"}
+              </ListSubheader>,
+            ]
+          : []),
+        ...section.workspaces.map((workspace) => {
+          const isCurrent = workspace.id === current?.id;
+          return (
+            <MenuItem
+              key={workspace.id}
+              selected={isCurrent}
+              aria-current={isCurrent ? "true" : undefined}
+              onClick={() => (isCurrent ? onClose() : onSwitch(workspace.id))}
+              sx={{ gap: 1, borderRadius: 1 }}
+            >
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
+                  {workspace.name}
+                </Typography>
+                <Typography variant="caption" sx={{ color: "text.secondary" }} noWrap>
+                  {countsOf(workspace.id)}
+                </Typography>
+              </Box>
+              {isCurrent && <CheckOutlined sx={{ fontSize: 16 }} />}
+            </MenuItem>
+          );
+        }),
+      ])}
       {capabilities.administersWorkspace && current !== null && [
         <Divider key="divider" sx={{ my: 0.5 }} />,
         <MenuItem key="invite" onClick={onInvite} sx={{ gap: 1, borderRadius: 1 }}>
