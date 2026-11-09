@@ -266,6 +266,36 @@ switchCore:
 
 An unknown service or profile stops switch-core at startup.
 
+Two more settings change how people connect a connector. The chart sets
+`SERVICE_SIGN_IN_REDIRECT` only when its map is not empty, and
+`ALLOW_NON_EXPIRING_KEYS` only when it is `true`.
+
+```yaml
+switchCore:
+  # SERVICE_SIGN_IN_REDIRECT: where a connector's sign-ins come back.
+  serviceSignInRedirect:
+    atlassian: core
+  # ALLOW_NON_EXPIRING_KEYS: offer pasted keys that never expire.
+  allowNonExpiringKeys: true
+```
+
+- `serviceSignInRedirect`: for a connector that can come back either way
+  (Atlassian, Datadog). `loopback` is Switch Console on the person's computer,
+  and the default. `core` is
+  `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback`,
+  which the vendor's admin must allow-list first. If you change it, Switch
+  registers a new client at the vendor, and everyone reconnects that service
+  once. A service or way the catalog does not list stops switch-core at
+  startup.
+- Restart all replicas together to change `serviceSignInRedirect`. With more
+  than one replica, a chart upgrade is a rolling update. Upgrade with
+  `switchCore.replicaCount: 0`, then upgrade again with your count. Otherwise
+  people may have to reconnect more than once.
+- `allowNonExpiringKeys`: off by default. On, a connector that takes a pasted
+  credential also offers one that never expires, such as an API key, and hands
+  it to agents. Such a key can only be revoked at the vendor: disconnecting it
+  or removing a grant forgets it in Switch but leaves it working.
+
 ## Auto-route and the decision service
 
 Off by default. With the `decision_routing` feature flag on (it needs
