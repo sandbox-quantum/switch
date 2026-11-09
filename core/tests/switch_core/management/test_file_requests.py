@@ -1,5 +1,5 @@
 """File requests over a controller's socket: what goes down, and which replies
-are let through (`management/file_requests.py`)."""
+are let through (`file_requests.py`)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.management.file_requests import (
+from switch_core.file_requests import (
     AGENT_NAME_PATTERN,
     CHUNK_BYTES,
     MAX_IN_FLIGHT_PER_CONTROLLER,

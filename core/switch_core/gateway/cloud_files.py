@@ -20,7 +20,7 @@ routes. The path is checked here only for its shape; the box's launcher is the
 authority on what it may read (`agent-controller-box`, the file reader).
 
 Nothing is stored or cached: each chunk goes from the controller's socket to
-the response (`management/file_requests.py`). File responses carry the same
+the response (`file_requests.py`). File responses carry the same
 headers as chat attachments (`untrusted_file_headers`). Every request and every
 refusal writes one audit line, never any content.
 
@@ -46,10 +46,17 @@ from switch_core.content_disposition import (
     untrusted_file_headers,
 )
 from switch_core.db.models import AgentController, User
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import (
     CloudMachineStore,
     idle_sleeping,
     workspace_on,
+)
+from switch_core.file_requests import (
+    BadReply,
+    FileReply,
+    FileRequest,
+    file_requests,
 )
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
@@ -58,12 +65,7 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
 )
 from switch_core.hosted_v2 import hosted_v2_on
-from switch_core.management.file_requests import (
-    BadReply,
-    FileReply,
-    FileRequest,
-    file_requests,
-)
+from switch_core.tenant_context import current_tenant_id
 
 router = APIRouter(prefix="/cloud-files")
 
@@ -390,6 +392,10 @@ async def folder_zip(
 
     zipping = files
     zip_machine = cast(str, machine_id)
+    # The caller's workspace, bound by sign-in, taken now: the zip streams
+    # after this function returns, so each mark opens its own session bound to
+    # it (`tenant_session`), not a bare one from the factory.
+    zip_tenant = current_tenant_id()
 
     async def chunks() -> AsyncIterator[bytes]:
         sent, status, reply = 0, 200, first
@@ -405,9 +411,12 @@ async def folder_zip(
                 if await request.is_disconnected():
                     status = 499
                     return
-                if time.monotonic() - marked >= ACTIVE_EVERY.total_seconds():
+                if (
+                    zip_tenant is not None
+                    and time.monotonic() - marked >= ACTIVE_EVERY.total_seconds()
+                ):
                     # A long zip keeps the box awake too, pull by pull.
-                    async with factory() as marking:
+                    async with tenant_session(factory, zip_tenant) as marking:
                         await _mark_active(marking, zip_machine)
                     marked = time.monotonic()
                 zipping.more()

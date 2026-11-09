@@ -71,6 +71,7 @@ from switch_core.delivery.restart_notice import (
     RESTART_NOTICE_TEXT,
     restart_notice_key,
 )
+from switch_core.file_requests import FILES_REPLY, file_requests
 from switch_core.hosted_v2 import require_hosted_v2_here
 from switch_core.management import reason_codes, socket_calls
 from switch_core.management.auth import ManagementAuthenticator
@@ -82,7 +83,6 @@ from switch_core.management.dependencies import (
     require_controller,
 )
 from switch_core.management.errors import ManagementError, ManagementRoute, error_body
-from switch_core.management.file_requests import FILES_REPLY, file_requests
 from switch_core.management.schemas import (
     MAX_STATUS_BYTES,
     ControllerConnectionRequest,

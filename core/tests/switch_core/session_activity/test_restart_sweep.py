@@ -255,6 +255,7 @@ async def test_two_sweepers_at_once_close_the_turn_and_post_once(
     assert len(posts.calls) == 1
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_box_coming_back_late_cannot_reopen_the_turn(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

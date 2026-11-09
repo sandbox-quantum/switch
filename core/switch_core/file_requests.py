@@ -15,6 +15,11 @@ A reply is accepted only for a request that is still open and that was sent
 down this same controller's socket (security's binding rule). Anything else is
 dropped with a log line that names ids only, never a path or any content.
 
+It lives in Core, not in `switch_core.management`, so the gateway's files
+route can use it without Core depending on agent management
+(`test_import_boundary.py`): the controller socket in management hands
+replies in, and the gateway hands requests out. It needs nothing from either.
+
 Frames, as engineer-3's controller builds them (the design note, section 2):
 
     down  {"event": "files.request", "data": {"id", "op", "path", ...}}

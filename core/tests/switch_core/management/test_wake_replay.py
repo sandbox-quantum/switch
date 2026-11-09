@@ -142,6 +142,7 @@ def _bodies(events: list[dict[str, Any]]) -> list[str]:
     return [e["event"]["payload"]["body"] for e in events]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_message_that_woke_the_box_is_sent_after_a_reconnect_with_no_cursor(
     harness: Harness,
 ) -> None:
@@ -156,6 +157,7 @@ async def test_the_message_that_woke_the_box_is_sent_after_a_reconnect_with_no_c
     assert _bodies(events) == ["hello, are you there?"]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_controllers_own_cursor_always_wins(harness: Harness) -> None:
     controller, agent_id, room_id = await _setup(harness)
     await _on_cloud_machine(harness, controller, last_seen_at=_ago(minutes=40))
@@ -167,6 +169,7 @@ async def test_the_controllers_own_cursor_always_wins(harness: Harness) -> None:
     assert events == []
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_what_came_before_it_went_down_is_not_sent_again(
     harness: Harness,
 ) -> None:
@@ -182,6 +185,7 @@ async def test_what_came_before_it_went_down_is_not_sent_again(
     assert _bodies(events) == ["after it"]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_long_sleep_sends_at_most_the_newest_twenty(
     harness: Harness, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -199,6 +203,7 @@ async def test_a_long_sleep_sends_at_most_the_newest_twenty(
     assert "only the newest 20 are sent" in caplog.text
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_nothing_older_than_a_day_is_sent(harness: Harness) -> None:
     controller, agent_id, room_id = await _setup(harness)
     await _ask(harness, agent_id, room_id, "two days ago")
@@ -211,6 +216,7 @@ async def test_nothing_older_than_a_day_is_sent(harness: Harness) -> None:
     assert _bodies(events) == ["today"]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_reconnect_before_confirming_gets_the_same_event_again(
     harness: Harness,
 ) -> None:
@@ -228,6 +234,7 @@ async def test_a_reconnect_before_confirming_gets_the_same_event_again(
     assert [e["seq"] for e in sent] == [e["seq"] for e in resent] == [woke]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_controller_enrolled_afresh_counts_from_the_machines_last_report(
     harness: Harness,
 ) -> None:
@@ -246,6 +253,7 @@ async def test_a_controller_enrolled_afresh_counts_from_the_machines_last_report
     assert _bodies(events) == ["after the pause"]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_revived_box_counts_from_shortly_before_it_was_started(
     harness: Harness,
 ) -> None:

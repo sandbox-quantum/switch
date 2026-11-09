@@ -27,6 +27,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.file_requests import file_requests
 from switch_core.gateway import cloud_files
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
@@ -34,7 +35,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_session_factory,
 )
-from switch_core.management.file_requests import file_requests
+from switch_core.tenant_context import current_tenant_id
 from tests.switch_core.hosted_machine_helpers import (
     add_tenant,
     link_controller,
@@ -512,6 +513,87 @@ async def test_browsing_adds_no_awake_time_to_the_budget(box: Box) -> None:
     async with tenant_session(box.factory, require_tenant_id()) as session:
         rows = await session.scalar(select(func.count()).select_from(TenantUsage))
     assert rows == 0
+
+
+@pytest.mark.parametrize(
+    ("route", "params"),
+    [
+        ("/cloud-files/list", {"path": ""}),
+        ("/cloud-files/content", {"path": "agent-a/report.html", "offset": 0}),
+        ("/cloud-files/zip", {"path": "agent-a"}),
+    ],
+)
+async def test_another_workspaces_box_files_are_never_read_from_this_one(
+    box: Box, route: str, params: dict[str, Any]
+) -> None:
+    """Security: the user's box serves another workspace only, through a
+    controller enrolled there that is connected, its socket held by this
+    process. A request bound to this workspace reaches none of its files, on
+    any route, and nothing goes down either socket."""
+    async with box.factory() as session:
+        await add_tenant(session, "elsewhere")
+        await session.commit()
+    async with tenant_session(box.factory, "elsewhere") as session:
+        machine = await session.get(CloudMachine, box.machine_id)
+        assert machine is not None
+        there = AgentController(
+            tenant_id="elsewhere",
+            owner_id=machine.owner_id,
+            name="Switch cloud",
+            kind="ec2",
+            connected_at=datetime.now(UTC),
+        )
+        session.add(there)
+        await session.commit()
+        there_id = there.id
+    async with box.factory() as session:
+        rows = (
+            await session.scalars(
+                select(MachineWorkspace).where(
+                    MachineWorkspace.machine_id == box.machine_id
+                )
+            )
+        ).all()
+        for row in rows:
+            # One UPDATE moves the row and its controller together, as the
+            # workspace's controller key requires.
+            row.tenant_id, row.controller_id = "elsewhere", there_id
+        await session.commit()
+    elsewhere = FakeController(controller_id=there_id)
+    file_requests.socket_opened(there_id, elsewhere, elsewhere.send)
+    try:
+        got = await box.client.get(route, params=params)
+    finally:
+        file_requests.socket_closed(there_id, elsewhere)
+
+    assert (got.status_code, got.json()["detail"]["code"]) == (404, "no_files")
+    assert box.requests_sent() == []
+    assert elsewhere.sent == []
+
+
+async def test_a_long_zip_marks_the_box_in_the_requests_own_workspace(
+    box: Box, monkeypatch
+) -> None:
+    """The zip streams after its route returns, so each "still in use" mark
+    opens its own session: bound to the workspace the request was in, never a
+    bare one with nothing bound."""
+    monkeypatch.setattr(cloud_files, "ACTIVE_EVERY", timedelta(0))
+    marked_in: list[str | None] = []
+    mark = cloud_files._mark_active
+
+    async def recording(session, machine_id):
+        marked_in.append(current_tenant_id())
+        await mark(session, machine_id)
+
+    monkeypatch.setattr(cloud_files, "_mark_active", recording)
+    workspace = require_tenant_id()
+
+    got = await box.client.get("/cloud-files/zip", params={"path": "agent-a"})
+
+    assert got.status_code == 200, got.text
+    # The route's own check marks once, then each pull after the first chunk.
+    assert len(marked_in) >= 2
+    assert set(marked_in) == {workspace}
 
 
 async def test_a_box_not_serving_the_current_workspace_gives_no_files(box: Box) -> None:
