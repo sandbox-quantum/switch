@@ -172,8 +172,10 @@ def test_unscoped_access_is_only_valid_for_oauth(adapter):
         "description": "Example service.",
         "enabled": False,
         "adapter": adapter,
-        "auth": {"type": adapter or "oauth"},
+        "auth": {"type": "api_key" if adapter == "api_key" else "oauth"},
         "access": {"unscoped": True, "read": {"scopes": []}, "write": {"scopes": []}},
     }
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="only an oauth entry can have unscoped access"
+    ):
         ConnectionDefinition.model_validate(body)

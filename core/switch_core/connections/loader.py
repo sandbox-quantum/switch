@@ -625,14 +625,14 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an enabled entry needs {', '.join(missing)}")
+        if self.access is not None and self.access.unscoped and self.adapter != "oauth":
+            raise ValueError("only an oauth entry can have unscoped access")
         if self.adapter == "github":
             self._check_github()
         elif self.adapter == "oauth":
             self._check_oauth()
         elif self.adapter == "api_key":
             self._check_api_key()
-        if self.access is not None and self.access.unscoped and self.adapter != "oauth":
-            raise ValueError("only an oauth entry can have unscoped access")
         if self.access_profiles:
             self._check_access_profiles()
         if self.adapter != "api_key":
