@@ -657,6 +657,8 @@ class WhatsAppAdapter(PlatformAdapter):
             error = _error(response)
             if error.code == _OUTSIDE_WINDOW:
                 raise BridgeOperationError(_OUTSIDE_WINDOW_TEXT)
+            if error.code == 190:
+                raise BridgeOperationError(_BAD_TOKEN)
             raise BridgeOperationError(f"WhatsApp refused the message: {error.message}")
         return str(((response.json().get("messages") or [{}])[0]).get("id") or "")
 

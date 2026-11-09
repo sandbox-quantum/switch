@@ -538,6 +538,14 @@ async def test_outside_the_24_hour_window_the_refusal_says_so(
         await adapter.send_message(ADA, "coder", "late")
 
 
+async def test_an_expired_token_is_named_when_a_send_is_refused(
+    adapter: WhatsAppAdapter, graph: FakeGraph
+) -> None:
+    graph.refuse = (401, 190)
+    with pytest.raises(BridgeOperationError, match="does not accept the access token"):
+        await adapter.send_message(ADA, "coder", "hi")
+
+
 async def test_a_card_with_few_options_has_reply_buttons(
     adapter: WhatsAppAdapter, graph: FakeGraph
 ) -> None:
