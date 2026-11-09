@@ -24,6 +24,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
@@ -32,6 +33,8 @@ import httpx
 from fastmcp import Client
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.transports import StreamableHttpTransport
+from mcp.shared.exceptions import McpError
+from mcp.types import CONNECTION_CLOSED, CallToolResult, TextContent
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -50,10 +53,42 @@ from switch_core.logging_context import (
 )
 
 MAX_METADATA_BYTES = 64 * 1024
+MCP_IDENTITY_SECONDS: float = 15
+MCP_RESULT_BYTES = 64 * 1024
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
 ClientAuthentication = Literal["client_secret_post", "client_secret_basic"]
+
+McpIdentityReason = Literal[
+    "tool_not_found",
+    "not_read_only",
+    "needs_arguments",
+    "tool_error",
+    "bad_result",
+    "protocol_error",
+]
+
+_MCP_IDENTITY_FAILURES: dict[McpIdentityReason, str] = {
+    "tool_not_found": "the server lists no single tool with the catalog's name",
+    "not_read_only": "the identity tool is not marked read-only",
+    "needs_arguments": "the identity tool needs arguments",
+    "tool_error": "the identity tool returned an error",
+    "bad_result": "the server's answer is too large or is not one JSON object",
+    "protocol_error": "the server's answer is not valid MCP",
+}
+
+
+class McpIdentityError(ServiceAdapterError):
+    """MCP identity failed for one reason from a fixed set. The message is
+    fixed text, because vendor text can hold account data or credentials."""
+
+    def __init__(self, service: str, reason: McpIdentityReason) -> None:
+        super().__init__(
+            f"{service} could not identify the account through MCP: "
+            f"{_MCP_IDENTITY_FAILURES[reason]} ({reason})."
+        )
+        self.reason: McpIdentityReason = reason
 
 
 # fastmcp's loggers do not propagate, so the root handler's filter
@@ -213,6 +248,37 @@ def _mcp_http_client(
 async def _drop_vendor_log(message: LogMessage) -> None:
     # A vendor's log notification is its own text, which Core never logs.
     return None
+
+
+def _leaves(error: BaseException) -> Iterator[BaseException]:
+    """The exceptions in `error`, with every exception group opened and
+    every explicit cause followed: fastmcp raises a connect failure as a
+    RuntimeError from the transport's error."""
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        else:
+            yield current
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+
+
+def _identity_body(result: CallToolResult) -> dict[str, Any] | None:
+    """The one JSON object an identity tool returned, or None."""
+    if result.structuredContent is not None:
+        return result.structuredContent
+    if len(result.content) != 1 or not isinstance(result.content[0], TextContent):
+        return None
+    try:
+        body = json.loads(result.content[0].text)
+    except (ValueError, RecursionError):
+        return None
+    return body if isinstance(body, dict) else None
 
 
 def _path_value(document: Any, path: str) -> Any:
@@ -608,62 +674,102 @@ class OAuthAdapter:
     async def _mcp_identity(self, access_token: str) -> dict[str, Any]:
         if self._mcp_url is None or self._identity.mcp_tool is None:
             raise ServiceAdapterError(f"{self._name} has no MCP identity source.")
+        deadline = asyncio.timeout(MCP_IDENTITY_SECONDS)
+        failure: ServiceAdapterError | None = None
+        result: CallToolResult | None = None
         diagnostics = MCP_IDENTITY_DIAGNOSTICS.set(True)
         try:
-            async with asyncio.timeout(15):
-                transport = StreamableHttpTransport(
-                    self._mcp_url,
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    httpx_client_factory=_mcp_http_client,
-                )
-                async with Client(
-                    transport,
-                    timeout=15,
-                    init_timeout=15,
-                    log_handler=_drop_vendor_log,
-                ) as client:
-                    tools = await client.list_tools()
-                    matches = [
-                        tool for tool in tools if tool.name == self._identity.mcp_tool
-                    ]
-                    if len(matches) != 1:
-                        raise ValueError("identity must name exactly one tool")
-                    tool = matches[0]
-                    schema = tool.inputSchema
-                    if (
-                        tool.annotations is None
-                        or tool.annotations.readOnlyHint is not True
-                        or schema.get("type") != "object"
-                        or schema.get("required")
-                        or any(
-                            key in schema for key in ("allOf", "anyOf", "oneOf", "$ref")
-                        )
-                    ):
-                        raise ValueError(
-                            "identity tool must be read-only and accept empty arguments"
-                        )
-                    result = await client.call_tool_mcp(self._identity.mcp_tool, {})
-            if (
-                result.isError
-                or len(result.model_dump_json().encode()) > MAX_METADATA_BYTES
-            ):
-                raise ValueError("invalid identity result")
-            if result.structuredContent is not None:
-                body = result.structuredContent
-            elif len(result.content) == 1 and result.content[0].type == "text":
-                body = json.loads(result.content[0].text)
-            else:
-                raise ValueError("identity result is not JSON")
-            if not isinstance(body, dict):
-                raise ValueError("identity result is not an object")
-            return body
-        except Exception:
-            # Vendor error payloads can contain account data or authorization details.
-            raise ServiceAdapterError(
-                f"{self._name} could not identify the account through MCP."
-            ) from None
+            async with deadline:
+                result = await self._call_identity_tool(access_token)
+        except Exception as error:
+            failure = self._mcp_failure(error, deadline)
+        except BaseExceptionGroup as group:
+            # A cancel the SDK's task group wrapped: ours if the deadline
+            # passed, otherwise the caller's, which must go on.
+            if not deadline.expired():
+                raise
+            failure = self._mcp_failure(group, deadline)
         finally:
             MCP_IDENTITY_DIAGNOSTICS.reset(diagnostics)
+        # Raised here, not in the handler, so the error carries no SDK
+        # exception: those hold vendor text and the request's bearer token.
+        if failure is not None:
+            raise failure
+        assert result is not None
+        if result.isError:
+            raise McpIdentityError(self._name, "tool_error")
+        if len(result.model_dump_json().encode()) > MCP_RESULT_BYTES:
+            raise McpIdentityError(self._name, "bad_result")
+        body = _identity_body(result)
+        if body is None:
+            raise McpIdentityError(self._name, "bad_result")
+        return body
+
+    async def _call_identity_tool(self, access_token: str) -> CallToolResult:
+        assert self._mcp_url is not None and self._identity.mcp_tool is not None
+        transport = StreamableHttpTransport(
+            self._mcp_url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            httpx_client_factory=_mcp_http_client,
+        )
+        async with Client(
+            transport,
+            timeout=MCP_IDENTITY_SECONDS,
+            init_timeout=MCP_IDENTITY_SECONDS,
+            log_handler=_drop_vendor_log,
+        ) as client:
+            tools = await client.list_tools()
+            matches = [tool for tool in tools if tool.name == self._identity.mcp_tool]
+            if len(matches) != 1:
+                raise McpIdentityError(self._name, "tool_not_found")
+            tool = matches[0]
+            if tool.annotations is None or tool.annotations.readOnlyHint is not True:
+                raise McpIdentityError(self._name, "not_read_only")
+            schema = tool.inputSchema
+            if (
+                schema.get("type") != "object"
+                or schema.get("required")
+                or any(key in schema for key in ("allOf", "anyOf", "oneOf", "$ref"))
+            ):
+                raise McpIdentityError(self._name, "needs_arguments")
+            result: CallToolResult = await client.call_tool_mcp(
+                self._identity.mcp_tool, {}
+            )
+            return result
+
+    def _mcp_failure(
+        self, error: BaseException, deadline: asyncio.Timeout
+    ) -> ServiceAdapterError:
+        """A new error, of fixed text, for what failed in the identity call."""
+        leaves = list(_leaves(error))
+        for leaf in leaves:
+            if isinstance(leaf, McpIdentityError):
+                return McpIdentityError(self._name, leaf.reason)
+        for leaf in leaves:
+            if isinstance(leaf, httpx.HTTPStatusError):
+                status = leaf.response.status_code
+                if status == 401:
+                    return ReauthorizationRequiredError(
+                        f"{self._name} refused the new sign-in when asked whose it is."
+                    )
+                if status == 429 or status >= 500:
+                    return ServiceUnavailableError(
+                        f"{self._name} is unavailable (HTTP {status}). "
+                        "Please try again."
+                    )
+                return McpIdentityError(self._name, "protocol_error")
+        if deadline.expired() or any(
+            isinstance(leaf, (TimeoutError, httpx.TransportError))
+            or (
+                isinstance(leaf, McpError)
+                and leaf.error.code in (httpx.codes.REQUEST_TIMEOUT, CONNECTION_CLOSED)
+            )
+            for leaf in leaves
+        ):
+            return ServiceUnavailableError(
+                f"{self._name} could not be reached. Please try again."
+            )
+        return McpIdentityError(self._name, "protocol_error")
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 

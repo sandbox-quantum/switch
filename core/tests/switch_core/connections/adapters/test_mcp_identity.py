@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
+from typing import Any
 
 import httpx
 import pytest
@@ -14,8 +17,14 @@ from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent
 from pydantic import ValidationError
 
-from switch_core.connections.adapters import ServiceAdapterError, oauth
+from switch_core.connections.adapters import (
+    ReauthorizationRequiredError,
+    ServiceAdapterError,
+    ServiceUnavailableError,
+    oauth,
+)
 from switch_core.connections.adapters.oauth import (
+    McpIdentityError,
     OAuthAdapter,
     OAuthClientCredentials,
     StaticClient,
@@ -120,7 +129,8 @@ async def test_mcp_identity_sanitizes_transport_failure(monkeypatch):
     async with httpx.AsyncClient() as http:
         with pytest.raises(ServiceAdapterError, match="could not identify") as exc:
             await _adapter(http).identify("example-bearer-value")
-    assert exc.value.__suppress_context__
+    assert exc.value.__context__ is None
+    _assert_reason(exc.value, "protocol_error")
     assert "private-diagnostic" not in str(exc.value)
 
 
@@ -438,3 +448,232 @@ async def test_composite_identity_changes_with_account():
         payload["org"] = "second-account"
         second = await adapter.identify("example-bearer-value")
     assert first.account_id != second.account_id
+
+
+# ── Fixed failure reasons, and HTTP errors ───────────────────────────────────
+
+MARKER = "vendor-marker example-bearer-value"
+GET_USER = {
+    "name": "get_user",
+    "inputSchema": {"type": "object"},
+    "annotations": {"readOnlyHint": True},
+}
+
+
+class _ScriptedMcp:
+    """An MCP server over `httpx.MockTransport` that answers `tools/list`
+    from `pages`: a cursor to its tools and the next cursor. `status` answers
+    every request with that status instead."""
+
+    def __init__(
+        self,
+        pages: dict[str | None, tuple[list[dict[str, Any]], str | None]] | None = None,
+        *,
+        status: int | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.pages = pages or {None: ([GET_USER], None)}
+        self.status = status
+        self.headers = headers or {}
+        self.requests: list[httpx.Request] = []
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if self.status is not None:
+            return httpx.Response(self.status, text=MARKER)
+        if request.method != "POST":
+            return httpx.Response(405)
+        message = json.loads(request.content)
+        if "id" not in message:
+            return httpx.Response(202)
+        method = message["method"]
+        if method == "initialize":
+            result: dict[str, Any] = {
+                "protocolVersion": message["params"]["protocolVersion"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "example", "version": "1.0.0"},
+            }
+        elif method == "tools/list":
+            tools, cursor = self.pages[(message.get("params") or {}).get("cursor")]
+            result = {"tools": tools, **({"nextCursor": cursor} if cursor else {})}
+        elif method == "tools/call":
+            self.calls.append(message)
+            result = {
+                "content": [],
+                "structuredContent": {"data": {"gid": "account-example"}},
+            }
+        else:
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "error": {"code": -32601, "message": MARKER},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": message["id"], "result": result},
+            headers=self.headers,
+        )
+
+
+def _over_mock(monkeypatch, handler) -> None:
+    factory = oauth._mcp_http_client
+    monkeypatch.setattr(
+        oauth,
+        "_mcp_http_client",
+        lambda **kw: factory(transport=httpx.MockTransport(handler), **kw),
+    )
+
+
+async def _identify_error() -> ServiceAdapterError:
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ServiceAdapterError) as raised:
+            await _adapter(http).identify("example-bearer-value")
+    error = raised.value
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert "vendor-marker" not in str(error)
+    assert "example-bearer-value" not in str(error)
+    return error
+
+
+def _assert_reason(error: ServiceAdapterError, reason: str) -> None:
+    assert isinstance(error, McpIdentityError)
+    assert error.reason == reason
+    assert str(error) == str(McpIdentityError("Example", reason))  # type: ignore[arg-type]
+
+
+def _failing_server(case: str, called: list[bool]) -> FastMCP:
+    server = FastMCP("failing-identity")
+    read_only = {"readOnlyHint": True}
+
+    if case == "no-tool":
+
+        @server.tool(annotations=read_only)
+        def other_tool() -> dict:
+            called.append(True)
+            return {}
+    elif case in ("not-read-only", "no-annotations"):
+        annotations = {"readOnlyHint": False} if case == "not-read-only" else None
+
+        @server.tool(annotations=annotations)
+        def get_user() -> dict:
+            called.append(True)
+            return {"data": {"gid": "a"}}
+    elif case == "required-argument":
+
+        @server.tool(annotations=read_only)
+        def get_user(account: str) -> dict:
+            called.append(True)
+            return {"data": {"gid": account}}
+    else:
+        texts = {
+            "not-json": [MARKER],
+            "oversized": ["x" * 65537],
+            "array": ["[]"],
+            "empty": [],
+            "two-blocks": ['{"data": {"gid": "a"}}', '{"data": {"gid": "b"}}'],
+        }
+
+        @server.tool(annotations=read_only)
+        def get_user() -> ToolResult:
+            called.append(True)
+            if case == "tool-error":
+                raise ToolError(MARKER)
+            return ToolResult(
+                content=[TextContent(type="text", text=text) for text in texts[case]]
+            )
+
+    return server
+
+
+@pytest.mark.parametrize(
+    "case, reason",
+    [
+        ("no-tool", "tool_not_found"),
+        ("not-read-only", "not_read_only"),
+        ("no-annotations", "not_read_only"),
+        ("required-argument", "needs_arguments"),
+        ("tool-error", "tool_error"),
+        ("not-json", "bad_result"),
+        ("oversized", "bad_result"),
+        ("array", "bad_result"),
+        ("empty", "bad_result"),
+        ("two-blocks", "bad_result"),
+    ],
+)
+async def test_mcp_identity_failure_reasons(monkeypatch, caplog, case, reason):
+    called: list[bool] = []
+    server = _failing_server(case, called)
+    monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
+    error = await _identify_error()
+    _assert_reason(error, reason)
+    assert "vendor-marker" not in caplog.text
+    assert "example-bearer-value" not in caplog.text
+    if reason in ("tool_not_found", "not_read_only", "needs_arguments"):
+        assert called == []
+
+
+async def test_mcp_identity_refuses_a_duplicate_tool_name(monkeypatch):
+    vendor = _ScriptedMcp({None: ([GET_USER, GET_USER], None)})
+    _over_mock(monkeypatch, vendor)
+    _assert_reason(await _identify_error(), "tool_not_found")
+    assert vendor.calls == []
+
+
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        (401, ReauthorizationRequiredError),
+        (429, ServiceUnavailableError),
+        (500, ServiceUnavailableError),
+        (503, ServiceUnavailableError),
+        (403, McpIdentityError),
+    ],
+)
+async def test_mcp_identity_maps_http_status(monkeypatch, status, expected):
+    _over_mock(monkeypatch, _ScriptedMcp(status=status))
+    error = await _identify_error()
+    assert type(error) is expected
+    if expected is ServiceUnavailableError:
+        assert f"HTTP {status}" in str(error)
+    if expected is McpIdentityError:
+        _assert_reason(error, "protocol_error")
+
+
+async def test_mcp_identity_transport_error_is_unavailable(monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError(MARKER)
+
+    _over_mock(monkeypatch, handler)
+    assert type(await _identify_error()) is ServiceUnavailableError
+
+
+async def test_mcp_identity_timeout_is_unavailable(monkeypatch):
+    monkeypatch.setattr(oauth, "MCP_IDENTITY_SECONDS", 0.2)
+
+    async def handler(request):
+        await asyncio.sleep(10)
+        return httpx.Response(200)
+
+    _over_mock(monkeypatch, handler)
+    started = time.monotonic()
+    assert type(await _identify_error()) is ServiceUnavailableError
+    assert time.monotonic() - started < 2
+
+
+@pytest.mark.parametrize("nested", [False, True])
+async def test_mcp_failure_unwraps_exception_groups(nested):
+    request = httpx.Request("POST", _adapter_url())
+    status = httpx.HTTPStatusError(
+        "401", request=request, response=httpx.Response(401, request=request)
+    )
+    group = ExceptionGroup("sdk", [ValueError("other"), status])
+    if nested:
+        group = ExceptionGroup("outer", [group])
+    adapter = _adapter(None)
+    failure = adapter._mcp_failure(group, asyncio.timeout(None))
+    assert type(failure) is ReauthorizationRequiredError
