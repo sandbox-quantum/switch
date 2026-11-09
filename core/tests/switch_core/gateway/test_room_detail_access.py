@@ -16,17 +16,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Room, User
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.document_store import DocumentStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
+from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
-from switch_core.gateway.rooms import get_room
+from switch_core.gateway.rooms import get_room, list_rooms
 
 _ROOM_STORE = RoomStore()
 _USER_STORE = UserStore()
@@ -110,3 +113,61 @@ class TestRoomDetailOwner:
 
             assert detail.owner_id == owner.id
             assert detail.owner_name == "owner"
+
+
+class TestViewerTakesPart:
+    """`viewer_is_member` is what the Overview's member counts and the lists
+    narrow by, so the detail says the same as the list: the owner takes part
+    in their room, and neither someone who can only read it nor an admin who
+    is not in it does."""
+
+    async def _detail_and_listing(
+        self, session: AsyncSession, room: Room, viewer: User, is_admin: bool
+    ) -> tuple[bool, bool]:
+        detail = await get_room(
+            room.id,
+            session,
+            _ROOM_STORE,
+            None,  # type: ignore[arg-type]  # bridge_store: the room has no bridge
+            None,  # type: ignore[arg-type]  # external_user_store
+            _protocol(),
+            _NO_DECISIONS,
+            viewer,
+            is_admin,
+        )
+        listed = await list_rooms(
+            session,
+            _ROOM_STORE,
+            RoomGroupStore(),
+            CollaborationBridgeStore(),
+            ExternalUserStore(),
+            _USER_STORE,
+            viewer,
+            is_admin,
+        )
+        summary = next(r for r in listed if r.id == room.id)
+        return detail.viewer_is_member, summary.viewer_is_member
+
+    async def test_detail_and_list_agree_on_who_takes_part(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            reader = await _add_user(session, name="reader")
+            admin = await _add_user(session, name="admin")
+            room = await _add_room(
+                session, name="r1", owner_id=owner.id, read_visibility="public"
+            )
+
+            assert await self._detail_and_listing(session, room, owner, False) == (
+                True,
+                True,
+            )
+            assert await self._detail_and_listing(session, room, reader, False) == (
+                False,
+                False,
+            )
+            assert await self._detail_and_listing(session, room, admin, True) == (
+                False,
+                False,
+            )

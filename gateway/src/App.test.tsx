@@ -400,7 +400,6 @@ describe("the new layout (gateway_v2)", () => {
       "Rooms",
       "Templates",
       "Resources",
-      "Ecosystem",
       "Settings",
     ]);
   });

@@ -46,6 +46,7 @@ import OrganizationPage, {
   OrganizationUsersPage,
   OrganizationWorkspacesPage,
 } from "../pages/organization/OrganizationPage";
+import OverviewPage from "../pages/overview/OverviewPage";
 import RegistrationKeysPage from "../pages/registration-keys/RegistrationKeysPage";
 import DocumentDetailPage from "../pages/resources/DocumentDetailPage";
 import PackageDetailPage from "../pages/resources/PackageDetailPage";
@@ -165,7 +166,7 @@ const orgConnectors = allOf(organizationAdminsOnly, serviceConnections, organiza
 export const ROUTES: readonly AppRoute[] = [
   redirect("/", CURRENT, "/rooms"),
   redirect("/", V2, "/overview"),
-  page("/overview", V2, everyone, <PlannedPage title="Overview" />),
+  page("/overview", V2, everyone, <OverviewPage />),
   redirect("/overview", CURRENT, "/"),
 
   page("/ecosystem", BOTH, everyone, <EcosystemGraphPage />),
@@ -393,15 +394,14 @@ export const RAIL: Record<Layout, readonly RailItem[]> = {
     railItem("Users", "/users", PeopleOutlined),
     railItem("Connectors", "/connectors", PowerOutlined),
   ],
-  // Ecosystem keeps a rail item until Overview links to the graph.
+  // The ecosystem graph is opened from Overview, which shows as current there.
   v2: [
-    railItem("Overview", "/overview", DashboardOutlined),
+    railItem("Overview", "/overview", DashboardOutlined, ["/overview", "/ecosystem"]),
     railItem("Agents", "/agents", SmartToyOutlined),
     railItem("Rooms", "/rooms", MeetingRoomOutlined),
     railItem("Templates", "/templates", DescriptionOutlined),
     railItem("Connectors", "/connectors", PowerOutlined),
     railItem("Resources", "/resources", FolderOutlined),
-    railItem("Ecosystem", "/ecosystem", AccountTreeOutlined),
     railItem("Settings", "/settings", SettingsOutlined, ["/settings", "/usage"]),
     railItem("Platform", "/platform", AdminPanelSettingsOutlined),
   ],
