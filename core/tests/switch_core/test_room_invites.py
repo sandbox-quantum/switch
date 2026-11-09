@@ -48,7 +48,6 @@ def _tool_service(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> tuple[AgentCore, _RecordingRoomService]:
     svc = _service(session_factory)
-    svc.external_user_store = ExternalUserStore()  # type: ignore[attr-defined]
     rooms = _RecordingRoomService()
     svc.room_service = rooms  # type: ignore[assignment]
     return svc, rooms

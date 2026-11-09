@@ -1366,14 +1366,14 @@ async def post_room_agents(
     principal = Principal(user.id, is_admin)
     # Seeing the room is enough to ask; who may actually bring an agent in is
     # the one invite rule every path shares (`room_invites`).
-    room = await authorize_room(session, room_store, room_id, principal, "read")
-    _refuse_fixed_membership(room)
+    target_room = await authorize_room(session, room_store, room_id, principal, "read")
+    _refuse_fixed_membership(target_room)
     try:
         await require_user_may_invite(
             session,
             room_store,
             external_user_store,
-            room=room,
+            room=target_room,
             targets=await agent_store.get_many(session, req.agent_ids),
             user_id=user.id,
             is_admin=is_admin,
