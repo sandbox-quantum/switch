@@ -42,6 +42,7 @@ from switch_core.bridges.collaboration.adapter import (
     RequestCard,
     RichContent,
     RichContentFailed,
+    TurnActivity,
 )
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
@@ -69,6 +70,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     offered_controls,
     position_action,
 )
+from switch_core.sessions.contract import TURN_ENDED
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +186,9 @@ class WhatsAppAdapter(PlatformAdapter):
     supports_channel_creation: ClassVar[bool] = False
     supports_directory_search: ClassVar[bool] = False
     renders_custom_url_schemes: ClassVar[bool] = False
+    # Request cards and a turn's failure reach the chat; a turn's running
+    # status does not, since WhatsApp cannot redraw a sent message.
+    draws_session_activity: ClassVar[bool] = True
     # A business reacts to a person's message, one reaction per message, shared
     # by every agent since they all speak through the one number.
     supports_activity_reactions: ClassVar[bool] = True
@@ -644,7 +649,14 @@ class WhatsAppAdapter(PlatformAdapter):
     ) -> str:
         """A request with up to three options as reply buttons, and with up to
         ten as a list; any other card as text, answered by replying with its
-        handle and number."""
+        handle and number. A turn's status is recorded without being sent, as
+        WhatsApp cannot redraw it: only a turn that failed is said, once."""
+        if isinstance(content, TurnActivity):
+            if content.error_summary and content.turn.status in TURN_ENDED:
+                return await self._send_turn_failure(
+                    channel_id, agent_name, content, thread_root_id
+                )
+            return f"turn-{content.turn.turn_id}"
         text = self.rich_fallback_text(content)
         controls = (
             offered_controls(content.request)
@@ -708,6 +720,42 @@ class WhatsAppAdapter(PlatformAdapter):
         except BridgeOperationError as error:
             raise RichContentFailed(str(error), text=text) from error
         return ref or ""
+
+    async def update_rich(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        content: RichContent,
+        thread_root_id: str | None,
+    ) -> None:
+        """Nothing sent is redrawn, with one exception: a turn that ends in
+        failure is said once, or nobody in the chat would know the agent
+        stopped."""
+        if (
+            isinstance(content, TurnActivity)
+            and content.error_summary
+            and content.turn.status in TURN_ENDED
+        ):
+            await self._send_turn_failure(
+                channel_id, agent_name, content, thread_root_id
+            )
+
+    async def _send_turn_failure(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: TurnActivity,
+        thread_root_id: str | None,
+    ) -> str:
+        text = self.translate_outbound(content.error_summary or "")
+        try:
+            return (
+                await self.send_message(channel_id, agent_name, text, thread_root_id)
+                or ""
+            )
+        except BridgeOperationError as error:
+            raise RichContentFailed(str(error), text=text) from error
 
     async def mark_activity(
         self,

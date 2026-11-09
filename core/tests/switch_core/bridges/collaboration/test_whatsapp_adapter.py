@@ -14,6 +14,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     RequestCard,
     RichContentFailed,
+    TurnActivity,
 )
 from switch_core.bridges.collaboration.install import (
     WebhookAuthenticityError,
@@ -45,7 +46,7 @@ from switch_core.bridges.collaboration.whatsapp.adapter import (
     to_whatsapp,
 )
 
-from .session_fixtures import open_request
+from .session_fixtures import _item, _turn, open_request
 
 NUMBER_ID = "1234567890"
 TOKEN = "token"
@@ -531,6 +532,36 @@ async def test_a_refused_card_falls_back_to_its_text(
         await adapter.post_rich(ADA, "coder", card)
 
 
+def _activity(status: str, error: str | None = None) -> TurnActivity:
+    items = [_item(kind="assistant-message", title="", text="Looking now.")]
+    return TurnActivity(items, _turn(status), error_summary=error)
+
+
+async def test_a_running_turn_is_recorded_but_not_sent(
+    adapter: WhatsAppAdapter, graph: FakeGraph
+) -> None:
+    ref = await adapter.post_rich(ADA, "coder", _activity("running"))
+    assert ref.startswith("turn-")
+    await adapter.update_rich(ADA, "coder", ref, _activity("completed"), None)
+    assert graph.sent == []
+
+
+async def test_a_failed_turn_is_said_once(
+    adapter: WhatsAppAdapter, graph: FakeGraph
+) -> None:
+    ref = await adapter.post_rich(ADA, "coder", _activity("running"))
+    await adapter.update_rich(
+        ADA,
+        "coder",
+        ref,
+        _activity("error", "The agent stopped unexpectedly."),
+        "wamid.root",
+    )
+    [sent] = graph.sent
+    assert sent["text"]["body"] == "*coder*\nThe agent stopped unexpectedly."
+    assert sent["context"] == {"message_id": "wamid.root"}
+
+
 async def test_a_photo_goes_out_inline_with_the_agents_name(
     adapter: WhatsAppAdapter, graph: FakeGraph
 ) -> None:
@@ -606,6 +637,7 @@ def test_what_whatsapp_cannot_do_is_declared() -> None:
     assert WhatsAppAdapter.supports_channel_creation is False
     assert WhatsAppAdapter.supports_directory_search is False
     assert WhatsAppAdapter.supports_activity_reactions is True
+    assert WhatsAppAdapter.draws_session_activity is True
     assert WhatsAppAdapter.supports_queue_reaction is False
     assert WhatsAppAdapter.outbound_urls(_config().model_dump()) == []
 
