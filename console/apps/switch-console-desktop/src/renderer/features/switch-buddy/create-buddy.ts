@@ -27,9 +27,10 @@ export async function createBuddy(input: {
   entryPoint: UiEntryPoint;
 }): Promise<{ agentId: string; name: string }> {
   try {
-    const created = await createBuddyAgent(input);
-    reportBuddyStep('created', input.provider);
-    return created;
+    const { reused, ...buddy } = await createBuddyAgent(input);
+    // A buddy the person already had was opened, not made.
+    if (!reused) reportBuddyStep('created', input.provider);
+    return buddy;
   } catch (error) {
     reportBuddyStep('create_failed', input.provider);
     throw error;
@@ -43,10 +44,10 @@ async function createBuddyAgent(input: {
   provider: string;
   person: { name: string | null; email: string | null };
   entryPoint: UiEntryPoint;
-}): Promise<{ agentId: string; name: string }> {
+}): Promise<{ agentId: string; name: string; reused: boolean }> {
   const existing = (await rpc.managedAgents.list(input.serverId)) ?? [];
   const mine = findBuddy(existing);
-  if (mine) return { agentId: mine.agentId, name: mine.name };
+  if (mine) return { agentId: mine.agentId, name: mine.name, reused: true };
   const template = await rpc.workspaces.getTemplateDetail({
     workspaceId: input.workspaceId,
     templateId: BUDDY_TEMPLATE_ID,
@@ -65,7 +66,7 @@ async function createBuddyAgent(input: {
     if (result.kind === 'created') {
       const created = result.createdAgents[0];
       if (!created) throw new BuddyNotCreated('The server created no agent for switch-buddy.');
-      return { agentId: created.agentId, name: created.name };
+      return { agentId: created.agentId, name: created.name, reused: false };
     }
     if (result.problems.some((problem) => problem.code === 'name_taken')) {
       taken.add(name);

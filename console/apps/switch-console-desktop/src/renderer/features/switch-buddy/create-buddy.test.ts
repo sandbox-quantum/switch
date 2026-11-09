@@ -73,6 +73,8 @@ describe('createBuddy', () => {
       name: 'switch-buddy-max',
     });
     expect(runTemplateDocument).not.toHaveBeenCalled();
+    // Opened, not made: counting it as created would count a buddy twice.
+    expect(report).not.toHaveBeenCalled();
   });
 
   it('never picks a name the person already uses', async () => {
