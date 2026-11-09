@@ -576,7 +576,7 @@ class CollaborationBridgeLifecycleService:
         if adapter is None or not self.is_connected(bridge_id):
             if self.editable_config_keys(bridge_type, current) is not None:
                 raise BridgeNotRunning(
-                    "The connection is not running, so Switch cannot check this "
+                    "The messaging app is not running, so Switch cannot check this "
                     "change with the platform; try again in a moment."
                 )
             return
@@ -958,7 +958,7 @@ class CollaborationBridgeLifecycleService:
         if channel_creation_enabled and not adapter_cls.supports_channel_creation:
             raise ValueError(
                 f"{bridge_type} cannot create channels from Switch, so this "
-                "connection cannot be allowed to. Create the chat on the "
+                "messaging app cannot be allowed to. Create the chat on the "
                 "platform and add the bot to it; Switch adopts it as a room."
             )
 

@@ -55,7 +55,8 @@ export function reachText(service: OrganizationService, workspaces: number): str
 /** Each catalog service, on or off for every workspace in the organization,
  * and whether workspace admins may change it. Unlocked, the setting is the
  * default each workspace may override; locked, it is out of their reach.
- * The page shows it only where the server lets organizations have this say. */
+ * Shown only where the server lets organizations have this say
+ * (`organization_connector_apps`), which mounts the routes it reads. */
 export default function OrganizationServicesSection() {
   const load = useCallback(() => fetchOrganizationServices(), []);
   const { data, error, loading, refetch } = useLoad(load);

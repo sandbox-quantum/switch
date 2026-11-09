@@ -215,7 +215,7 @@ def decision_target(
     headers = {"Content-Type": "application/json"}
     if source == "server_default":
         if server.endpoint_url is None:
-            raise ValueError("The server has no decision service configured.")
+            raise ValueError("Switch has no decision service configured.")
         if server.api_key is not None:
             headers["Authorization"] = f"Bearer {server.api_key}"
         return DecisionTarget(
@@ -236,7 +236,7 @@ def decision_target(
     if backend in ("haiku_anthropic", "haiku_bedrock"):
         if server.endpoint_url is None:
             raise ValueError(
-                "Haiku runs in the server's decision service, and this server has none."
+                "Haiku runs in Switch's decision service, and none is set up here."
             )
         if server.api_key is not None:
             headers["Authorization"] = f"Bearer {server.api_key}"
@@ -282,7 +282,7 @@ async def post_decision(
     except OutboundURLRefused as error:
         raise DecisionServiceError(
             "endpoint_refused",
-            f"POST {url} refused by the server's outbound policy: {error}",
+            f"POST {url} refused by Switch's outbound policy: {error}",
         ) from error
     except httpx.TimeoutException as error:
         raise DecisionServiceError(
@@ -508,8 +508,8 @@ class DynamicDecisionClient:
                 room_id,
                 label,
                 "key_unreadable",
-                "the workspace's decision key is encrypted under a secret this "
-                "server no longer holds; a workspace admin has to save it again",
+                "the workspace's decision key is encrypted under a secret Switch "
+                "no longer holds; a workspace admin has to save it again",
             )
         target = decision_target(
             server=self.server,
@@ -599,8 +599,8 @@ class DynamicDecisionClient:
         if backend == "haiku_bedrock" and not self.server.haiku_bedrock:
             return error(
                 "backend_unavailable",
-                "Haiku on Bedrock isn't offered on this server: it needs the "
-                "server's decision service and DECISION_BEDROCK_ENABLED.",
+                "Haiku on Bedrock isn't offered here: it needs Switch's "
+                "decision service and DECISION_BEDROCK_ENABLED.",
             )
         try:
             target = (
@@ -667,7 +667,7 @@ def _test_error_message(code: str, failure: DecisionServiceError) -> str:
         "unauthorized": f"The decision service refused the key. {failure}",
         "refused": (
             "Switch won't connect to that address: a workspace's endpoint must "
-            "be a public address, or a private host the server's operator lists "
+            "be a public address, or a private host whoever runs Switch lists "
             f"in OUTBOUND_ALLOWED_PRIVATE_HOSTS. {failure}"
         ),
         "key_refused": f"The Anthropic API refused the key. {failure}",

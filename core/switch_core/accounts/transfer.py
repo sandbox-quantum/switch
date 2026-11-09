@@ -220,18 +220,18 @@ def agent_transfer_refusal(facts: AgentTransferFacts, *, to_owner: bool) -> str 
     if facts.granted_services:
         if to_owner:
             return (
-                "This agent uses your own connections to "
+                "This agent uses your own connectors for "
                 f"{', '.join(facts.granted_services)}. Remove its service access "
                 "first; the new owner can then grant their own."
             )
         return (
-            "This agent uses its owner's own connections. Its owner has to "
+            "This agent uses its owner's own connectors. Its owner has to "
             "remove its service access first; the new owner can then grant "
             "their own."
         )
     if facts.managed:
         return (
-            "This agent is managed on its owner's machine, with their sign-ins, "
+            "This agent is managed on its owner's device, with their sign-ins, "
             "and can't be transferred."
         )
     if facts.may_manage_agents:
@@ -247,8 +247,8 @@ def agent_transfer_refusal(facts: AgentTransferFacts, *, to_owner: bool) -> str 
         )
     if facts.run_by_server_connector:
         return (
-            "This agent is run by a server connector, which registers it again "
-            "under its own owner whenever the server starts, so it can't be "
+            "This agent is run by Switch itself, which registers it again "
+            "under its own owner whenever Switch starts, so it can't be "
             "transferred."
         )
     return None

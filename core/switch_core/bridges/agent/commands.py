@@ -853,7 +853,7 @@ async def _cmd_list_room_agents(
 
 
 _FOLLOW_THE_CONVERSATION_OFF = (
-    "Following the conversation isn't switched on for this Switch server, so "
+    "Following the conversation isn't switched on in Switch, so "
     "`!follow-ups` and `!assign-agent` have no effect here. Agents only get "
     "messages that mention them."
 )
@@ -918,7 +918,7 @@ async def _cmd_follow_ups(
 
 
 _AUTO_ROUTE_FLAG_OFF = (
-    "Automatic routing isn't switched on for this Switch server, so "
+    "Automatic routing isn't switched on in Switch, so "
     "`!auto-route` has no effect here. Agents only get messages that mention "
     "them, follow-ups, or every message when they are the room's assigned agent."
 )

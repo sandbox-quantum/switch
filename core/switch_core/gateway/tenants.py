@@ -201,7 +201,7 @@ def _require_bound_tenant(tenant_id: str) -> None:
     codebase follows refuses to do.
     """
     if current_tenant_id() != tenant_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this tenant")
+        raise HTTPException(status_code=403, detail="Not allowed in this workspace")
 
 
 def _invitation_fields(invitation: Invitation) -> dict[str, object]:
@@ -264,9 +264,9 @@ async def _refuse_organization_admin(
         raise HTTPException(
             status_code=409,
             detail=(
-                "This member administers the workspace's organization, which "
+                "This user administers the workspace's organization, which "
                 "gives them admin rights in every one of its workspaces. Change "
-                "their role in the organization's members first."
+                "their role in the organization's users first."
             ),
         )
 
@@ -507,7 +507,7 @@ async def switch_tenant(
     workspace (`initial_tenant_claim`), so every visit starts here.
     """
     if not await may_bind_tenant(session_factory, user_store, user_id, tenant_id):
-        raise HTTPException(status_code=403, detail="Not a member of this tenant")
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
 
     user = await user_store.get(session, user_id)
     if user is None:
@@ -1790,7 +1790,7 @@ async def update_member_role(
 
     membership = await session.get(TenantMember, (tenant_id, user_id))
     if membership is None:
-        raise HTTPException(status_code=404, detail="Not a member of this tenant")
+        raise HTTPException(status_code=404, detail="Not a member of this workspace")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
     if membership.role == "admin" and role != "admin":
@@ -1885,7 +1885,7 @@ async def remove_member(
         populate_existing=True,
     )
     if membership is None:
-        raise HTTPException(status_code=404, detail="Not a member of this tenant")
+        raise HTTPException(status_code=404, detail="Not a member of this workspace")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
     if membership.role == "admin":
@@ -1898,7 +1898,7 @@ async def remove_member(
         raise HTTPException(
             status_code=409,
             detail=(
-                "Cannot remove: this member owns agents in this workspace. "
+                "Cannot remove: this user owns agents in this workspace. "
                 f"Transfer or delete them first: {names}"
             ),
         )

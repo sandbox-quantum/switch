@@ -83,7 +83,7 @@ async def _connection(
     if bridge is None or install is None or bridge.type != "teams":
         raise HTTPException(
             status_code=404,
-            detail="No connection on the distributed Teams app has that id.",
+            detail="No messaging app on the distributed Teams app has that id.",
         )
     # Connected, not merely registered: a bridge restarting — as it does after
     # its default team changes — is registered before it has a Graph client.
@@ -93,7 +93,7 @@ async def _connection(
     ):
         raise HTTPException(
             status_code=503,
-            detail="The Teams connection is not running; try again in a moment.",
+            detail="The Teams messaging app is not running; try again in a moment.",
         )
     return adapter, install
 
@@ -255,7 +255,7 @@ async def remove_from_team(
                 status_code=503,
                 detail=(
                     "Switch left the team, and channel creation is off until "
-                    "another default team is chosen, but the connection did "
+                    "another default team is chosen, but the messaging app did "
                     f"not restart ({error}). It is stopped until it is "
                     "restarted."
                 ),

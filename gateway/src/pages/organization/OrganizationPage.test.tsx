@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import { capabilitiesOf } from "../../data/capabilities";
+import { ALL_OFF, type FeatureFlags } from "../../data/featureFlags";
 import { app } from "../connector-apps/testFixtures";
 import OrganizationPage from "./OrganizationPage";
 
@@ -42,7 +44,14 @@ function answer(routes: Record<string, unknown>) {
     if (!(key in routes)) {
       return new Response(JSON.stringify({ detail: `unmocked ${key}` }), { status: 404 });
     }
-    const answered = routes[key];
+    let answered = routes[key];
+    // The organization's own answers, as the server gives them to someone
+    // holding that role, unless the test says otherwise.
+    if (key === "GET /organizations/current" && !(answered instanceof Refusal)) {
+      const organization = answered as Record<string, unknown>;
+      const admin = organization.role === "org_admin";
+      answered = { administers: admin, can_manage_members: admin, ...organization };
+    }
     if (answered instanceof Refusal) {
       return new Response(JSON.stringify({ detail: answered.detail }), {
         status: answered.status,
@@ -61,23 +70,35 @@ class Refusal {
   ) {}
 }
 
-function signedInAs(current: Session) {
+const CONNECTORS_ON: FeatureFlags = {
+  ...ALL_OFF,
+  service_connections: true,
+  organization_connector_apps: true,
+};
+
+function signedInAs(current: Session, features: FeatureFlags = CONNECTORS_ON) {
   const refresh = vi.fn();
+  const administers = current.tenant?.role === "admin" || current.user.is_operator;
   vi.mocked(useAuth).mockReturnValue({
     session: current,
+    capabilities: capabilitiesOf(
+      current,
+      {
+        id: "t1",
+        slug: "acme",
+        name: "Acme",
+        role: current.tenant?.role ?? "member",
+        administers,
+        can_delete: false,
+        can_manage_data_protection: false,
+      },
+      features,
+    ),
     switchTo: vi.fn(),
     refresh,
   } as unknown as ReturnType<typeof useAuth>);
   return refresh;
 }
-
-/** `GET /feature-flags`, with organizations' own apps on or off. */
-const flags = (organizationApps: boolean) => ({
-  flags: [
-    { key: "service_connections", enabled: true },
-    { key: "organization_connector_apps", enabled: organizationApps },
-  ],
-});
 
 const workspace = (id: string, name: string) => ({
   id,
@@ -122,7 +143,7 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByText("Acme Inc")).toBeTruthy();
     expect(await screen.findByText("Acme (current)")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Members" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Users" })).toBeTruthy();
     expect(await screen.findByText("Organization role changed")).toBeTruthy();
     expect(screen.getByText("Olga (platform operator)")).toBeTruthy();
   });
@@ -134,7 +155,6 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
-      "GET /feature-flags": flags(true),
       "GET /organizations/current/services": { workspaces: 1, services: [] },
       "GET /organizations/current/connector-apps": {
         public_url: "https://switch.example.test",
@@ -161,7 +181,7 @@ describe("OrganizationPage", () => {
     expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
     expect(
       await screen.findByText(
-        "Your workspaces use the server's Airtable client. Add your organization's own to use that instead.",
+        "Your workspaces use Switch's Airtable client. Add your organization's own to use that instead.",
       ),
     ).toBeTruthy();
     const google = screen.getByTestId("connector-app-google-workspace");
@@ -192,7 +212,6 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
-      "GET /feature-flags": flags(true),
       "GET /organizations/current/connector-apps": { public_url: null, apps: [] },
       "GET /organizations/current/services": { workspaces: 3, services: [github] },
       "PUT /organizations/current/services/github": { warning: null },
@@ -216,43 +235,25 @@ describe("OrganizationPage", () => {
     );
   });
 
-  it("neither shows nor asks for services or connectors where the server keeps them to itself", async () => {
-    signedInAs(session("org_admin", true));
+  it("shows no connectors where the server keeps them to itself, and asks nothing of it", async () => {
+    signedInAs(session("org_admin", true), { ...ALL_OFF, service_connections: true });
     const fetchMock = answer({
       "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
       "GET /organizations/current/issues": [],
-      "GET /feature-flags": flags(false),
     });
 
     render(<OrganizationPage />);
 
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith("/gateway/feature-flags", expect.anything()),
-    );
+    expect(await screen.findByRole("heading", { name: "Users" })).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
     expect(screen.queryByRole("heading", { name: "Connectors" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Services" })).toBeNull();
     const asked = fetchMock.mock.calls.map(([input]) => String(input));
-    expect(asked.filter((url) => /current\/(services|connector-apps)/.test(url))).toEqual([]);
+    expect(asked.filter((url) => /current\/(services|connector-apps)|feature-flags/.test(url))).toEqual([]);
     expect(screen.queryByText(/unmocked/)).toBeNull();
-  });
-
-  it("asks a member nothing about the server's flags", async () => {
-    signedInAs(session("member", false));
-    const fetchMock = answer({
-      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "member" },
-      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
-    });
-
-    render(<OrganizationPage />);
-
-    expect(await screen.findByText("Acme (current)")).toBeTruthy();
-    const asked = fetchMock.mock.calls.map(([input]) => String(input));
-    expect(asked.filter((url) => url.includes("feature-flags"))).toEqual([]);
   });
 
   it("shows what a demotion could not revoke at a vendor", async () => {
@@ -300,7 +301,7 @@ describe("OrganizationPage", () => {
     render(<OrganizationPage />);
 
     expect(await screen.findByText("Acme (current)")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Members" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Users" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Audit log" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add workspace" })).toBeNull();
   });
@@ -374,18 +375,20 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByText(/someone has to be made an organization admin there/)).toBeTruthy();
     fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-    const orgAdmin = await screen.findByRole("option", { name: "Org Admin" });
+    const orgAdmin = await screen.findByRole("option", { name: "Org admin" });
     expect(orgAdmin.getAttribute("aria-disabled")).toBe("true");
   });
 
   it("tells the operator why where the organization has an admin", async () => {
     signedInAs(session(null, false, true));
-    answer(operatorRoutes(new Refusal(403, "Only an organization admin may do this")));
+    const fetchMock = answer(operatorRoutes(new Refusal(403, "Only an organization admin may do this")));
 
     render(<OrganizationPage />);
 
     expect(await screen.findByText(/only while it has no admin/)).toBeTruthy();
     expect(screen.queryByText("Only an organization admin may do this")).toBeNull();
+    const asked = fetchMock.mock.calls.map(([input]) => String(input));
+    expect(asked.filter((path) => path.endsWith("/issues"))).toEqual([]);
   });
 
   it("shows the operator a failure as a failure", async () => {
@@ -421,7 +424,7 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByText(/come from your organization's account settings/)).toBeTruthy();
     fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-    const promote = await screen.findByRole("option", { name: "Org Admin" });
+    const promote = await screen.findByRole("option", { name: "Org admin" });
     expect(promote.getAttribute("aria-disabled")).toBe("true");
     fireEvent.keyDown(promote, { key: "Escape" });
     fireEvent.mouseDown(within(screen.getByTestId("row-u3")).getByRole("combobox"));
@@ -486,7 +489,7 @@ describe("OrganizationPage", () => {
 
       expect(await screen.findByText(/Changes you make here are made there too/)).toBeTruthy();
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      const promote = await screen.findByRole("option", { name: "Org Admin" });
+      const promote = await screen.findByRole("option", { name: "Org admin" });
       expect(promote.getAttribute("aria-disabled")).toBeNull();
     });
 
@@ -497,7 +500,7 @@ describe("OrganizationPage", () => {
 
       render(<OrganizationPage />);
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Org admin" }));
 
       await waitFor(() =>
         expect(window.location.href).toBe(
@@ -517,7 +520,7 @@ describe("OrganizationPage", () => {
 
       render(<OrganizationPage />);
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Org admin" }));
 
       await waitFor(() =>
         expect(window.location.href).toBe(
@@ -537,7 +540,7 @@ describe("OrganizationPage", () => {
 
       render(<OrganizationPage />);
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Org admin" }));
 
       expect(
         await screen.findByText("Your sign-in has ended. Access was already taken away."),
@@ -621,7 +624,7 @@ describe("OrganizationPage", () => {
     render(<OrganizationPage />);
 
     fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-    const promote = await screen.findByRole("option", { name: "Org Admin" });
+    const promote = await screen.findByRole("option", { name: "Org admin" });
     expect(promote.getAttribute("aria-disabled")).toBeNull();
     expect(screen.queryByText(/account settings/)).toBeNull();
   });

@@ -245,6 +245,14 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,
+  Templates and Connectors on the rail; Workspace and Organization settings
+  as areas of their own, each with a menu of only the pages you may open,
+  reopening the page you last used; and the operator's pages under Platform.
+  Today's pages move into it, and their old URLs lead there. It is still
+  being built, so turn it on for development and staging only. With it off,
+  the dashboard is laid out as before, and the new URLs lead back to today's
+  pages.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
@@ -471,6 +479,20 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **The dashboard, and what Switch tells people, use Switch's own words.** A
+  computer that runs agents is a device, not a machine; an outside service is
+  a connector, and a chat app a messaging app, not a connection; a person is a
+  user, with "member" kept for the role; and nothing calls Switch a server.
+  Dashboard labels are in sentence case. **Register Agent** is now **Add
+  agent**, **Register messaging app** is **Add messaging app**, and the API
+  keys page lists **Keys for adding agents** and **Agent keys**. The same
+  words reach the errors, refusals and status the server sends to the
+  dashboard, Switch Console and chat, and messages that sent people to
+  "Settings, Connections" in Switch Console now point to **Connectors**, where
+  that page is. Text written for agents still names their tools, such as
+  `list_machines`, and Switch Console's own cloud-machine messages are
+  unchanged for now. A dashboard test fails on the old words, naming what to
+  write instead.
 - **Admins step down and leave from their own row.** The workspace and
   organization members pages offer changing your own role and leaving, while
   another admin remains; the last one is refused, as before. Leaving the
@@ -818,6 +840,34 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **The dashboard's addressing policy editor judges rules as the server
+  does.** A rule letting in only the agent's owner, or its owner's agents,
+  was taken for one that lets in nobody, and Save was held; the editor now
+  shows both choices, and says why a rule can never let anyone in in the
+  server's own words. A restricted policy with no rules lets anyone address
+  the agent, as documented, though the editor said it let in nobody:
+  choosing Restricted now starts with an owner-only rule, the last rule
+  cannot be removed, and a policy saved with no rules shows as Open.
+- **A dashboard page someone may not open says so instead of loading.**
+  Typing the address of a page they may not open, or one the server does
+  not run, loaded it into a column of refusals; it now says why. A member
+  could open the operator's Users page; it is refused now.
+- **The dashboard offers each action only where the server would allow it.**
+  Every action follows the server's own answer for that thing, rather than
+  the dashboard's guess from someone's role or ownership. An organization
+  admin was offered Delete workspace in a workspace they are not an admin
+  member of, and was refused. Anyone may edit a publicly writable
+  reference, document or package, but only its owner and admins were
+  offered the fields. An agent that cannot be handed over now says why
+  beside a disabled Transfer.
+- **A bridged room's description can be edited.** It was locked, though
+  nothing sets it from the channel; whoever may write to the room can now
+  edit it, as on any other room.
+- **The dashboard reads the server's feature flags instead of guessing.**
+  Agent management, connectors and organization connector apps were taken
+  to be off when a page answered "not found"; they are now read from the
+  server's flags, and if those cannot be read the dashboard says so rather
+  than hiding pages.
 - **Two organization admins demoting or removing each other at once** could
   leave the refused one without their keys and connections in the workspaces
   they reached as an organization admin: those were taken away before the
@@ -4965,6 +5015,9 @@ tags; see RELEASING.md.
   can run (16 by default).
 
 #### Changed
+- **Points to the dashboard's Devices page.** Its messages, installer and
+  README sent people to the Machines page, which the dashboard now calls
+  Devices.
 - **Agents' operations go to Switch on the controller's socket.** Every
   operation an agent host calls through the relay
   (`POST /agents/{id}/ops/{operation}`) is sent as a call on the socket the
