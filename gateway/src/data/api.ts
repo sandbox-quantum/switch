@@ -1279,6 +1279,29 @@ export async function createTenant(name: string): Promise<TenantMembership> {
   return created.workspace;
 }
 
+export interface OrganizationSummary {
+  id: string;
+  slug: string;
+  name: string;
+  role: OrganizationRole;
+}
+
+/** The organizations of the workspaces the caller may enter. */
+export async function fetchOrganizations(): Promise<OrganizationSummary[]> {
+  return jsonRequest<OrganizationSummary[]>("/organizations", "GET");
+}
+
+export interface WorkspaceCounts {
+  id: string;
+  users: number;
+  agents: number;
+}
+
+/** How many people and agents each workspace the caller may enter has. */
+export async function fetchWorkspaceCounts(): Promise<WorkspaceCounts[]> {
+  return jsonRequest<WorkspaceCounts[]>("/tenants/counts", "GET");
+}
+
 export async function switchTenant(tenantId: string): Promise<void> {
   await jsonRequest(`/tenants/${encodeURIComponent(tenantId)}/switch`, "POST");
 }

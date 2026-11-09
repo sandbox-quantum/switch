@@ -15,7 +15,7 @@ function useDevRoleSwitcher(): typeof DevRoleSwitcher {
   return capabilities.features.gateway_v2 ? DevRoleSwitcher : null;
 }
 
-/** The dev role switcher, in the top bar beside Docs. */
+/** The dev role switcher, at the right end of the top bar. */
 export function DevRoleSlot() {
   const Switcher = useDevRoleSwitcher();
   if (Switcher === null) return null;
