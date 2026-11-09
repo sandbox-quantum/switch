@@ -2906,6 +2906,14 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Changing your password no longer signs Console out without a word.** The
+  server ends every session on a password change and hands the one that made
+  it a new session, which Console now keeps, so it stays signed in. The
+  account page says "Password changed successfully" in place of a toast. And
+  whenever a server ends Console's session (it expired, or was signed out from
+  elsewhere), Console re-checks its sign-in and shows the server as signed out
+  with a sign-in prompt, instead of "Chats offline" and a warning that its
+  rooms may be out of date.
 - **Direct and group conversations no longer offer adding or removing
   agents**, in a room's side column, the sidebar or an agent's "Add to rooms",
   where the server refuses it now that their platform decides who is in them.
