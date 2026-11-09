@@ -12,6 +12,7 @@ import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import {
   IS_CANARY,
+  IS_TEST_BUILD,
   RELEASE_REPO_NAME,
   RELEASE_REPO_OWNER,
   UPDATE_CHANNEL,
@@ -101,6 +102,13 @@ class UpdateService implements IInitializable, IDisposable {
 
     if (import.meta.env.DEV) {
       this.setupDevHarness();
+      return;
+    }
+
+    // A tester's build is installed by hand and must never update itself into a
+    // stable or canary release: the service stays inert, as in dev.
+    if (IS_TEST_BUILD) {
+      log.info('AutoUpdateService off: this is a test build');
       return;
     }
 

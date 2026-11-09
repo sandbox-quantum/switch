@@ -45,6 +45,7 @@ import {
   useServerSignIn,
 } from './server-sign-in';
 import { affectedSentence } from './shared-consoles';
+import { startingServerUrl } from './starting-server-url';
 import { switchServersStore } from './switch-servers-store';
 import { useSwitchCloud } from './use-switch-cloud';
 
@@ -1196,7 +1197,9 @@ export const ExternalServerStep = observer(function ExternalServerStep({
   onConnected: (server: SwitchServer) => void;
 }) {
   const [name, setName] = useState(initialName ?? existing?.name ?? '');
-  const [url, setUrl] = useState(initialUrl ?? existing?.url ?? '');
+  const [url, setUrl] = useState(() =>
+    startingServerUrl(initialUrl, existing?.url ?? null, isEdit)
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
