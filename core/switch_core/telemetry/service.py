@@ -221,17 +221,12 @@ class TelemetryService:
         elapsed = seconds_since_install(self._installed_at)
         if not await self.take_milestone("deployment_installed"):
             return
-        try:
-            self.emit_at(
-                "deployment_installed",
-                self._installed_at,
-                seconds_since_install=elapsed,
-            )
-        except Exception:
-            logger.exception(
-                "Telemetry event deployment_installed could not be reported; "
-                "continuing. This is a bug in the event, not a relay problem."
-            )
+        emit_safely_at(
+            self,
+            "deployment_installed",
+            self._installed_at,
+            {"seconds_since_install": elapsed},
+        )
 
     def _dispatch(self, record: TelemetryRecord) -> None:
         try:

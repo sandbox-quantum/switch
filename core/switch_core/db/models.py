@@ -2550,7 +2550,9 @@ class DeploymentIdentity(Base):
 
     `telemetry_enabled_since` is when reporting was last switched on: set at a
     boot with telemetry on when it is null, and cleared at a boot with it off.
-    Nothing is dated before it.
+    No period count or room activation is dated before it. The one exception
+    is `deployment_installed`, which states the install itself and is dated to
+    it (`TelemetryService.report_installed`).
     """
 
     __tablename__ = "deployment_identity"

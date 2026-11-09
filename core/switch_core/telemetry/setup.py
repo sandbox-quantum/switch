@@ -21,9 +21,9 @@ from switch_core.telemetry.deployment import (
     record_telemetry_switch,
     settle_from_evidence,
 )
+from switch_core.telemetry.reporter import read_watermark
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink, OtlpRelaySink, TelemetrySink
-from switch_core.telemetry.reporter import read_watermark
 from switch_core.telemetry.snapshot import milestones_passed
 
 logger = logging.getLogger(__name__)
@@ -184,9 +184,11 @@ def telemetry_environment(config: SwitchConfig, version: str | None) -> str:
     """The Amplitude project this deployment reports to (`flint_env`).
 
     `TELEMETRY_ENVIRONMENT` when it is set. Otherwise `dev` for a build that
-    is not a release (a `.dev` version, as every build of main is), so a
-    development server nobody configured does not report as production, and
-    `prod` for a release, which is what every customer runs.
+    is not a release (a `.dev` version, as every image built from main is), so
+    a development server nobody configured does not report as production, and
+    `prod` for a release, which is what every customer runs. A source checkout
+    reports the release version in `core/pyproject.toml`, so it is read as a
+    release; `just init-env` sets `TELEMETRY_ENVIRONMENT=local` for one.
     """
     if "telemetry_environment" in config.model_fields_set:
         return config.telemetry_environment

@@ -324,9 +324,10 @@ _SNAPSHOT_COUNTS = (
     "api_key_count",
 )
 
-# What each period event counts (`snapshot.PeriodCounts`). `is_partial` says
-# the period began before the deployment was installed or before telemetry
-# was last switched on, so its counts cover only part of it.
+# What each period event counts (`snapshot.PeriodCounts`), read from the
+# database for the whole period. `is_partial` says the period began before the
+# deployment was installed or before telemetry was last switched on: it is the
+# first of its length the deployment reports, dated no earlier than that.
 _PERIOD_COUNTS: Mapping[str, PropertyType] = {
     "room_active": NUMBER,
     "person_identity_active": NUMBER,

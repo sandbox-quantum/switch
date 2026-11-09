@@ -1395,9 +1395,11 @@ async def newly_active_rooms(
     The cost of that is a room can be reported late — up to one window — and
     cannot be reported at all if the deployment was down when the window that
     covered it would have run. Both are acceptable for a figure nobody reads
-    inside a day. One duplicate is possible: an agent that never posted,
+    inside a day. Two duplicates are possible. An agent that never posted,
     removed and added back, moves its room's join time later, and the room can
-    be reported a second time.
+    be reported a second time. And a Slack room that only an integration had
+    made active, which releases before integrations stopped counting reported,
+    is reported again the first time a person speaks in it.
 
     One tenant's failure is contained to that tenant, the same as
     `collect_usage`: its rooms are collected into a scratch list first and only

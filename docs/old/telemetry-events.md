@@ -528,7 +528,7 @@ properties.
 | `turn_human_to_agent` | number | agent messages answering a person, as `turn_human_to_agent_1d`, with a person in Switch Console counted as a person |
 | `turn_agent_to_human` | number | person messages answering an agent, likewise |
 | `turn_agent_to_agent` | number | agent messages answering another agent |
-| `is_partial` | boolean | the period began before the deployment was installed or before telemetry was last switched on, so its counts cover only part of it |
+| `is_partial` | boolean | the period began before the deployment was installed or before telemetry was last switched on. Its counts still cover the whole period, read from the database; it is the deployment's first period of that length, dated no earlier than that moment |
 | `tenant_failed_count` | number | tenants whose counts could not be read, left out of every count above, as on the snapshot |
 
 **Chart each at its own interval.** Set the interval to match the event and
