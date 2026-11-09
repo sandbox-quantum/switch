@@ -14,9 +14,11 @@ export const NO_SESSION = -1;
  * timestamp does not.
  *
  * Only an event someone caused starts a session or keeps one going. One that is
- * not someone using the app (`BACKGROUND_EVENTS`) is in no session at all, so a
- * session's length is time someone spent in the app rather than time it was
- * left open.
+ * not someone using the app is in no session at all, so a session's length is
+ * time someone spent in the app rather than time it was left open: an event
+ * whose every occurrence is the app's own (`BACKGROUND_EVENTS`), or one
+ * occurrence the caller says nobody caused (`background`), such as a session
+ * that ended because a pass removed its agent.
  *
  * Kept in memory: a launch starts afresh with the first thing someone does.
  */
@@ -25,8 +27,8 @@ export class TelemetrySession {
   private lastActivityAt = Number.NEGATIVE_INFINITY;
 
   /** The session an event at `timeMs` belongs to, starting one if it is due. */
-  idFor(name: TelemetryEventName, timeMs: number): number {
-    if (BACKGROUND_EVENTS.has(name)) return NO_SESSION;
+  idFor(name: TelemetryEventName, timeMs: number, background: boolean): number {
+    if (background || BACKGROUND_EVENTS.has(name)) return NO_SESSION;
     if (this.startedAt === null || timeMs - this.lastActivityAt > SESSION_IDLE_MS) {
       this.startedAt = timeMs;
     }

@@ -2965,7 +2965,8 @@ version of their own to them without also giving them a release of their own.
   the app took on are `subagent_adopted`, and agents loaded from a folder with
   Load existing agents are `agent_attached`, rather than `agent_created`. An
   agent removed because its Switch server no longer has it is `agent_pruned`,
-  with the cause, rather than `agent_removed` with `trigger: server_teardown`.
+  with the cause, rather than `agent_removed` with `trigger: server_teardown`,
+  and its sessions' `session_ended` are sent in no session.
 - **Less usage data that says nothing about use.** Only an update check
   someone asked for is sent, as `update_check_requested`; the checks the app
   makes at launch and every hour are not. The screen a launch resumes on is no

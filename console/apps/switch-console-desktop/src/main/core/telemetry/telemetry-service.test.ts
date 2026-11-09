@@ -355,8 +355,8 @@ describe('the session an event is in', () => {
   });
 
   it('is named for when someone first did something, and holds what they do next', async () => {
-    await telemetryService.trackAt('view_opened', VIEW, far);
-    await telemetryService.trackAt('view_opened', VIEW, far + 60_000);
+    await telemetryService.trackAt('view_opened', VIEW, far, false);
+    await telemetryService.trackAt('view_opened', VIEW, far + 60_000, false);
 
     expect(sentSessionIds()).toEqual([far, far]);
   });
@@ -365,7 +365,8 @@ describe('the session an event is in', () => {
     await telemetryService.trackAt(
       'session_reopened',
       { agent_type: 'claude', location: 'local', outcome: 'success' },
-      far + 2 * 60_000
+      far + 2 * 60_000,
+      false
     );
 
     expect(sentSessionIds()).toEqual([-1]);
@@ -375,10 +376,21 @@ describe('the session an event is in', () => {
     const later = far + 365 * 24 * 60 * 60_000;
     vi.mocked(isTelemetryAllowed).mockResolvedValueOnce(false);
 
-    await telemetryService.trackAt('view_opened', VIEW, later);
-    await telemetryService.trackAt('view_opened', VIEW, later + 1_000);
+    await telemetryService.trackAt('view_opened', VIEW, later, false);
+    await telemetryService.trackAt('view_opened', VIEW, later + 1_000, false);
 
     expect(sentSessionIds()).toEqual([later + 1_000]);
+  });
+
+  it('is none for an occurrence nobody caused, which leaves the session to lapse', async () => {
+    const start = far + 2 * 365 * 24 * 60 * 60_000;
+    const ended = { agent_type: 'claude', location: 'local', outcome: 'normal' } as const;
+
+    await telemetryService.trackAt('view_opened', VIEW, start, false);
+    await telemetryService.trackAt('session_ended', ended, start + 20 * 60_000, true);
+    await telemetryService.trackAt('session_ended', ended, start + 40 * 60_000, false);
+
+    expect(sentSessionIds()).toEqual([start, -1, start + 40 * 60_000]);
   });
 });
 
@@ -391,7 +403,11 @@ describe('failure', () => {
     fetchMock.mockResolvedValue({ ok: false, status: 503 } as Response);
 
     expect(() =>
-      trackEvent('app_launched', { install_kind: 'same', from_version: 'none', update_trigger: 'none' })
+      trackEvent('app_launched', {
+        install_kind: 'same',
+        from_version: 'none',
+        update_trigger: 'none',
+      })
     ).not.toThrow();
     await vi.waitFor(() =>
       expect(log.warn).toHaveBeenCalledWith(
@@ -404,7 +420,11 @@ describe('failure', () => {
   it('reports a network failure as such rather than as a send', async () => {
     fetchMock.mockRejectedValue(new Error('getaddrinfo ENOTFOUND'));
 
-    trackEvent('app_launched', { install_kind: 'same', from_version: 'none', update_trigger: 'none' });
+    trackEvent('app_launched', {
+      install_kind: 'same',
+      from_version: 'none',
+      update_trigger: 'none',
+    });
 
     await vi.waitFor(() =>
       expect(log.warn).toHaveBeenCalledWith(

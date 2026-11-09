@@ -501,8 +501,16 @@ describe('deleteAgent', () => {
         trigger: 'user',
       });
 
-      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-1');
-      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-2');
+      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-1', 'person');
+      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-2', 'person');
+    });
+
+    it('says the sessions a prune took went by nobody doing anything', async () => {
+      h.state.sessionRows = [{ id: 's-1' }];
+
+      await pruneAgent('agent-1', 'gone_from_server');
+
+      expect(h.sessionHookEmit).toHaveBeenCalledWith('session:deleted', 's-1', 'app');
     });
 
     it('reports the removal as failed, with a code, when the gateway refuses', async () => {

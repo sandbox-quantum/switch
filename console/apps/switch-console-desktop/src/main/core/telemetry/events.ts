@@ -751,7 +751,9 @@ export type TelemetryEventName = keyof TelemetryEventMap;
  * and the usage-data answer, which the first-run notice records by itself.
  * Amplitude counts activity per event name, and these are the names to count
  * as inactive. They carry no session (`flint.session_id` is -1, `./session`)
- * and never start or prolong one.
+ * and never start or prolong one. One occurrence of another event that nobody
+ * caused, such as a session ending because a pass pruned its agent, is sent
+ * the same way with `trackBackgroundEvent`.
  */
 export const BACKGROUND_EVENTS: ReadonlySet<TelemetryEventName> = new Set<TelemetryEventName>([
   'session_discovered',

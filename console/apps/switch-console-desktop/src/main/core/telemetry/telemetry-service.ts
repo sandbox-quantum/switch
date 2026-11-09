@@ -45,14 +45,20 @@ class TelemetryService {
   ): Promise<void> {
     // Before the gate, which reads the database: the event happened now, not
     // whenever the reads that describe it finish.
-    return this.trackAt(name, properties, Date.now());
+    return this.trackAt(name, properties, Date.now(), false);
   }
 
-  /** {@link track}, for something that happened at `timeMs`. */
+  /**
+   * {@link track}, for something that happened at `timeMs`. `background` says
+   * nobody caused this occurrence, though events of its name are usually
+   * someone's doing: it is then in no session, as a `BACKGROUND_EVENTS` event
+   * always is (`./session`).
+   */
   async trackAt<K extends TelemetryEventName>(
     name: K,
     properties: TelemetryEventMap[K],
-    timeMs: number
+    timeMs: number,
+    background: boolean
   ): Promise<void> {
     const resolution = resolveTelemetryConfig();
     if (!resolution.enabled) {
@@ -61,7 +67,7 @@ class TelemetryService {
     }
 
     if (!(await isTelemetryAllowed())) return;
-    const sessionId = this.session.idFor(name, timeMs);
+    const sessionId = this.session.idFor(name, timeMs, background);
 
     const payload = buildOtlpPayload(name, properties, {
       clientId: await getInstallId(),
@@ -134,7 +140,7 @@ export function trackEvent<K extends TelemetryEventName>(
   name: K,
   properties: TelemetryEventMap[K]
 ): void {
-  trackEventAt(name, properties, Date.now());
+  send(name, properties, Date.now(), false);
 }
 
 /** {@link trackEvent} for something that happened at `timeMs`, reported later. */
@@ -143,7 +149,29 @@ export function trackEventAt<K extends TelemetryEventName>(
   properties: TelemetryEventMap[K],
   timeMs: number
 ): void {
-  void telemetryService.trackAt(name, properties, timeMs).catch((error: unknown) => {
+  send(name, properties, timeMs, false);
+}
+
+/**
+ * {@link trackEvent} for an occurrence nobody caused, of an event that is
+ * otherwise someone's doing — a session ended because a pass removed its
+ * agent, where a person deleting it is someone using the app. It is in no
+ * session, and neither starts nor prolongs one.
+ */
+export function trackBackgroundEvent<K extends TelemetryEventName>(
+  name: K,
+  properties: TelemetryEventMap[K]
+): void {
+  send(name, properties, Date.now(), true);
+}
+
+function send<K extends TelemetryEventName>(
+  name: K,
+  properties: TelemetryEventMap[K],
+  timeMs: number,
+  background: boolean
+): void {
+  void telemetryService.trackAt(name, properties, timeMs, background).catch((error: unknown) => {
     log.warn('telemetry: event not sent', {
       event: 'telemetry_send_failed',
       telemetryEvent: name,

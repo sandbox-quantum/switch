@@ -1,14 +1,14 @@
 import { agentEvents } from '@main/core/agents/agent-events';
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { getSession } from '@main/core/sessions/operations/getSession';
-import { sessionHooks } from '@main/core/sessions/session-hooks';
+import { type SessionRemovedBy, sessionHooks } from '@main/core/sessions/session-hooks';
 import { sessionService } from '@main/core/sessions/session-service';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { agentTypeOf } from './agent-type';
 import type { TelemetryLocationKind } from './events';
 import { entryPointOf, startSourceOf } from './narrow';
 import { locationKindOf } from './shape';
-import { trackEvent } from './telemetry-service';
+import { trackBackgroundEvent, trackEvent } from './telemetry-service';
 
 type SessionShape = {
   agent_type: AgentProviderId | 'unknown';
@@ -45,7 +45,12 @@ function rememberEnded(sessionId: string): void {
   if (!oldest.done) endedSessions.delete(oldest.value);
 }
 
-function endSession(sessionId: string) {
+/**
+ * Report a session's end. One a person ended is someone using the app; one
+ * that went because the app removed its agent on its own is not, and is sent
+ * in no session, so a pass running while nobody is there does not start one.
+ */
+function endSession(sessionId: string, removedBy: SessionRemovedBy) {
   const shape = liveSessions.get(sessionId) ?? UNKNOWN_SESSION;
   // Forget it either way. A second ending reports nothing, but it must still
   // clear the entry, or a session that ends twice stays in the map for good.
@@ -53,7 +58,8 @@ function endSession(sessionId: string) {
 
   if (endedSessions.has(sessionId)) return;
   rememberEnded(sessionId);
-  trackEvent('session_ended', { ...shape, outcome: 'normal' });
+  const report = removedBy === 'app' ? trackBackgroundEvent : trackEvent;
+  report('session_ended', { ...shape, outcome: 'normal' });
 }
 
 /**
@@ -158,8 +164,9 @@ export function registerTelemetryListeners(): void {
     await rememberSession(sessionId, result.locationId);
   });
 
-  sessionService.on('session:deleted', (sessionId) => endSession(sessionId));
-  sessionService.on('session:archived', (sessionId) => endSession(sessionId));
+  // Only a person deletes or archives a session through the service.
+  sessionService.on('session:deleted', (sessionId) => endSession(sessionId, 'person'));
+  sessionService.on('session:archived', (sessionId) => endSession(sessionId, 'person'));
 
   // Un-archiving puts a session that has already reported an end back into use.
   // Forgetting that it ended is what lets it report the next one: the record is
@@ -169,9 +176,10 @@ export function registerTelemetryListeners(): void {
     endedSessions.delete(sessionId);
   });
 
-  // Rows deleted outside the sessionService path — the remote-session
-  // reconciler pruning a session that has gone from its VM, or one terminated
-  // from another client — arrive on the other bus. Subscribing to only one
-  // leaves those sessions reporting a start and never an end.
-  sessionHooks.on('session:deleted', (sessionId) => endSession(sessionId));
+  // Rows deleted outside the sessionService path — the sessions of an agent
+  // being removed, whether by a person or by a pass pruning one its server no
+  // longer has, or of an agent being reset — arrive on the other bus, saying
+  // who removed them. Subscribing to only one leaves those sessions reporting
+  // a start and never an end.
+  sessionHooks.on('session:deleted', (sessionId, removedBy) => endSession(sessionId, removedBy));
 }
