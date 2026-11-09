@@ -32,10 +32,53 @@ describe('withWindowsGitBashDir', () => {
     );
   });
 
-  it('leaves a PATH that already reaches a bash alone', () => {
-    const path = 'C:\\msys64\\usr\\bin;C:\\Program Files\\Git\\cmd';
+  it('does not take the WSL launcher in WindowsApps for Git Bash', () => {
+    const path =
+      'C:\\Users\\ada\\AppData\\Local\\Microsoft\\WindowsApps;C:\\Program Files\\Git\\cmd';
+    const exists = files(
+      'C:\\Users\\ada\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe',
+      'C:\\Program Files\\Git\\cmd\\git.exe',
+      'C:\\Program Files\\Git\\bin\\bash.exe'
+    );
+    expect(withWindowsGitBashDir(path, roots, exists)).toBe(`${path};C:\\Program Files\\Git\\bin`);
+  });
+
+  it('does not take the WSL launcher in System32 for Git Bash', () => {
+    const exists = files(
+      'C:\\Windows\\System32\\bash.exe',
+      'C:\\Program Files\\Git\\bin\\bash.exe'
+    );
+    expect(withWindowsGitBashDir('C:\\Windows\\System32', roots, exists)).toBe(
+      'C:\\Windows\\System32;C:\\Program Files\\Git\\bin'
+    );
+  });
+
+  it('leaves a PATH that already reaches Git Bash alone, from bin or usr\\bin', () => {
+    const exists = files(
+      'C:\\Tools\\PortableGit\\cmd\\git.exe',
+      'C:\\Tools\\PortableGit\\usr\\bin\\bash.exe',
+      'C:\\Tools\\PortableGit\\bin\\bash.exe',
+      'C:\\Program Files\\Git\\bin\\bash.exe'
+    );
+    expect(withWindowsGitBashDir('C:\\Tools\\PortableGit\\usr\\bin', roots, exists)).toBe(
+      'C:\\Tools\\PortableGit\\usr\\bin'
+    );
+    expect(withWindowsGitBashDir('C:\\Tools\\PortableGit\\bin\\', roots, exists)).toBe(
+      'C:\\Tools\\PortableGit\\bin\\'
+    );
+  });
+
+  it('adds Git Bash after another bash, which still comes first', () => {
     const exists = files('C:\\msys64\\usr\\bin\\bash.exe', 'C:\\Program Files\\Git\\bin\\bash.exe');
-    expect(withWindowsGitBashDir(path, roots, exists)).toBe(path);
+    expect(withWindowsGitBashDir('C:\\msys64\\usr\\bin', roots, exists)).toBe(
+      'C:\\msys64\\usr\\bin;C:\\Program Files\\Git\\bin'
+    );
+  });
+
+  it('adds the folder once, however often it runs', () => {
+    const exists = files('C:\\Program Files\\Git\\bin\\bash.exe');
+    const once = withWindowsGitBashDir('C:\\Windows', roots, exists);
+    expect(withWindowsGitBashDir(once, roots, exists)).toBe(once);
   });
 
   it('leaves PATH alone when Git for Windows is not installed', () => {
