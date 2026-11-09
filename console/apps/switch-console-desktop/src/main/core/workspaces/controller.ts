@@ -814,6 +814,7 @@ export const workspacesController = createRPCController({
           instructions: params.instructions,
           bridgeId: params.bridgeId,
           agentIds: params.agentIds,
+          userNames: params.userNames,
           channel: params.channel,
           groupId: params.groupId,
           access: params.access,
