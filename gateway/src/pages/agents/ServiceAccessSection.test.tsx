@@ -451,7 +451,7 @@ describe("ServiceAccessSection", () => {
   });
 
   const READ_ONLY =
-    "This server's GitHub App lets agents read only, so GitHub can't be granted for writing. Whoever runs your Switch server can change that in Switch Console, under Admin → Connector apps.";
+    "Switch's GitHub App lets agents read only, so GitHub can't be granted for writing. Whoever runs Switch can change that in Switch Console, under Admin → Connector apps.";
   const readOnlyGitHub = onOff("active", {
     slug: "github",
     name: "GitHub",

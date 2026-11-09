@@ -127,7 +127,7 @@ const EMPTY_RULE: RuleState = {
   platform: false,
 };
 
-// What choosing Restricted starts from: the owner, and the agents they run.
+// What choosing Restricted starts from: the owner alone.
 const OWNER_ONLY_RULES: RuleState[] = OWNER_ONLY_POLICY.rules.map(toRuleState);
 
 function DimensionField({
