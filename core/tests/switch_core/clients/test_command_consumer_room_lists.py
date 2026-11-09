@@ -55,6 +55,7 @@ def _consumer() -> CommandConsumer:
         deletion_requests=MagicMock(),
         frontend_base_url=None,
         follow_the_conversation_enabled=False,
+        decision_availability=MagicMock(),
     )
 
     @asynccontextmanager
