@@ -13,9 +13,11 @@ from aiohttp import web
 
 from switch_core.config import SwitchConfig
 from switch_core.outbound import (
+    GuardedAsyncClient,
     OutboundPolicy,
     OutboundURLRefused,
     guarded_async_client,
+    guarded_transport,
 )
 
 _NOTHING_ALLOWED = OutboundPolicy.parse("")
@@ -212,3 +214,33 @@ class TestTheGuardedClient:
         async with guarded_async_client(policy) as client:
             response = await client.get(f"http://127.0.0.1:{local_server}/ok")
         assert response.status_code == httpx.codes.OK
+
+    @pytest.mark.parametrize("verify", [True, False])
+    async def test_it_says_what_it_is_held_to(self, verify: bool) -> None:
+        policy = OutboundPolicy.parse("10.0.0.0/8")
+        async with guarded_async_client(policy, verify=verify) as client:
+            assert isinstance(client, GuardedAsyncClient)
+            assert client.policy is policy
+            assert client.verify is verify
+            with pytest.raises(AttributeError):
+                client.policy = _NOTHING_ALLOWED  # type: ignore[misc]
+
+    async def test_it_verifies_tls_unless_told_not_to(self) -> None:
+        async with guarded_async_client(_NOTHING_ALLOWED) as client:
+            assert client.verify is True
+
+
+class TestTheGuardedTransport:
+    async def test_a_refused_address_is_never_connected_to(
+        self, local_server: int
+    ) -> None:
+        transport = guarded_transport(_NOTHING_ALLOWED)
+        async with httpx.AsyncClient(transport=transport) as client:
+            with pytest.raises(OutboundURLRefused):
+                await client.get(f"http://127.0.0.1:{local_server}/ok")
+
+    async def test_an_allowed_address_is_reached(self, local_server: int) -> None:
+        transport = guarded_transport(OutboundPolicy.parse("127.0.0.1/32"))
+        async with httpx.AsyncClient(transport=transport) as client:
+            response = await client.get(f"http://127.0.0.1:{local_server}/ok")
+        assert response.text == "ok"

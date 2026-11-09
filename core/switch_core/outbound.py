@@ -208,10 +208,10 @@ class _GuardedNetworkBackend(httpcore.AsyncNetworkBackend):
         await self._inner.sleep(seconds)
 
 
-def guarded_async_client(
-    policy: OutboundPolicy, *, verify: bool = True, **client_kwargs: Any
-) -> httpx.AsyncClient:
-    """An `httpx.AsyncClient` that can reach only what `policy` allows.
+def guarded_transport(
+    policy: OutboundPolicy, *, verify: bool = True
+) -> httpx.AsyncHTTPTransport:
+    """An httpx transport that can reach only what `policy` allows.
 
     Each connection resolves its host, checks every address and connects to a
     checked one, so redirects and re-resolution are covered as well. Proxy
@@ -234,4 +234,36 @@ def guarded_async_client(
         keepalive_expiry=limits.keepalive_expiry,
         network_backend=_GuardedNetworkBackend(policy),
     )
-    return httpx.AsyncClient(transport=transport, trust_env=False, **client_kwargs)
+    return transport
+
+
+class GuardedAsyncClient(httpx.AsyncClient):
+    """A client over `guarded_transport`. It names its policy and TLS
+    setting, so code that needs its own transport can hold it to the same."""
+
+    def __init__(
+        self, policy: OutboundPolicy, *, verify: bool, **client_kwargs: Any
+    ) -> None:
+        super().__init__(
+            transport=guarded_transport(policy, verify=verify),
+            trust_env=False,
+            **client_kwargs,
+        )
+        self._policy = policy
+        self._verify = verify
+
+    @property
+    def policy(self) -> OutboundPolicy:
+        return self._policy
+
+    @property
+    def verify(self) -> bool:
+        return self._verify
+
+
+def guarded_async_client(
+    policy: OutboundPolicy, *, verify: bool = True, **client_kwargs: Any
+) -> GuardedAsyncClient:
+    """An `httpx.AsyncClient` that can reach only what `policy` allows; see
+    `guarded_transport`."""
+    return GuardedAsyncClient(policy, verify=verify, **client_kwargs)
