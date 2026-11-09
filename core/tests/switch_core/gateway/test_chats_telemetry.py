@@ -4,6 +4,11 @@ a chat is reported."""
 
 from __future__ import annotations
 
+import pytest
+from sqlalchemy import update
+
+from switch_core.db.models import TENANT_ZERO_ID, ChatOperation
+from switch_core.db.session_scope import tenant_session
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 from tests.switch_core.gateway.conftest import _Harness
 from tests.telemetry_records import recording_telemetry
@@ -76,6 +81,36 @@ async def test_people_a_chat_is_created_with_are_reported_once(
         assert created.status_code == 200, created.text
 
     assert chats.telemetry_sink.events("room_users_added") == [{"user_count": 2}]
+
+
+async def test_an_attempt_another_replica_finished_first_reports_no_one_added(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry on another replica can reach the end of a create while the
+    first attempt is still at it; only the attempt that marks the request done
+    reports the people added."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    start_reading = chats.service._start_reading
+
+    async def finished_elsewhere(session, room_id, user_ids):  # type: ignore[no-untyped-def]
+        async with tenant_session(chats.factory, TENANT_ZERO_ID) as other:
+            await other.execute(
+                update(ChatOperation)
+                .where(ChatOperation.request_id == "c1")
+                .values(state="done", room_id=room_id, result={"roomId": room_id})
+            )
+            await other.commit()
+        await start_reading(session, room_id, user_ids)
+
+    monkeypatch.setattr(chats.service, "_start_reading", finished_elsewhere)
+    created = await chats.client.post(
+        "/chats",
+        json={"agentId": agent.id, "memberUserIds": [chats.bob.id], "requestId": "c1"},
+        headers=chats.as_user(chats.alice),
+    )
+    assert created.status_code == 200, created.text
+
+    assert chats.telemetry_sink.events("room_users_added") == []
 
 
 async def test_a_chat_created_with_nobody_else_reports_no_one_added(

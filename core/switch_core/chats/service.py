@@ -28,7 +28,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import markdown
 from sqlalchemy import (
@@ -121,6 +121,8 @@ from switch_core.trust.client import (
 )
 
 if TYPE_CHECKING:
+    from sqlalchemy.engine import CursorResult
+
     from switch_core.chats.signals import ChatSignals
     from switch_core.delivery.router import MessageRouter, Routed
 
@@ -1599,21 +1601,23 @@ class ChatService:
                 await self._start_reading(
                     session, room.id, [joiner.id for joiner in [user, *members]]
                 )
-                await session.execute(
+                finished = await session.execute(
                     update(ChatOperation)
                     .where(
                         ChatOperation.tenant_id == tenant_id,
                         ChatOperation.user_id == user.id,
                         ChatOperation.request_id == request_id,
+                        ChatOperation.state != "done",
                     )
                     .values(state="done", room_id=room.id, result={"roomId": room.id})
                 )
                 await session.commit()
         self._memberships_changed(tenant_id, [user.id, *member_user_ids], [room.id])
         # The people the creator named, never the creator: once, by the
-        # attempt that finished the chat, since a finished request returns
-        # above before reaching here again.
-        if members:
+        # attempt whose update finished the chat. A retry on another replica
+        # can get this far while the first is still provisioning, but only
+        # one of them moves the operation to done.
+        if members and cast("CursorResult[Any]", finished).rowcount == 1:
             emit_safely(
                 self._telemetry, "room_users_added", {"user_count": len(members)}
             )
