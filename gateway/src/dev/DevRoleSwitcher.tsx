@@ -1,17 +1,6 @@
-import ArrowDropDown from "@mui/icons-material/ArrowDropDown";
 import Check from "@mui/icons-material/Check";
-import {
-  Alert,
-  Box,
-  Button,
-  ListItemIcon,
-  ListItemText,
-  ListSubheader,
-  Menu,
-  MenuItem,
-  Snackbar,
-  Typography,
-} from "@mui/material";
+import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
+import { Alert, Button, Menu, MenuItem, Snackbar, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { useAuth } from "../data/AuthContext";
 import {
@@ -27,9 +16,11 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Dev builds only (`App.tsx`): shows the dashboard as each permission level
- * by signing in as a test account that holds it. The server sees that account
- * and nothing else, so every check is the one a real person meets. */
+/** Dev builds only (`layout/DevRoleSlot.tsx`): shows the dashboard as each
+ * permission level by signing in as a test account that holds it. The server
+ * sees that account and nothing else, so every check is the one a real person
+ * meets. Looks like the design prototype's role control: plain text in the top
+ * bar, naming the role you are looking as. */
 export default function DevRoleSwitcher() {
   const { session, loading } = useAuth();
   // Undefined until the dev server answers; null when nothing is seeded.
@@ -53,7 +44,8 @@ export default function DevRoleSwitcher() {
 
   const email = session?.user.email.toLowerCase();
   const current = accounts?.find((account) => account.email.toLowerCase() === email);
-  const viewingAs = session === null ? "signed out" : (current?.label ?? session.user.name);
+  const role = session === null ? "signed out" : (current?.label ?? "other account");
+  const open = anchor !== null;
 
   async function choose(account: DevAccount) {
     setSwitching(true);
@@ -74,64 +66,90 @@ export default function DevRoleSwitcher() {
 
   return (
     <>
-      <Box
+      <Button
+        id="dev-role-switcher"
+        color="inherit"
+        disabled={switching}
+        aria-haspopup="menu"
+        aria-controls={open ? "dev-role-switcher-menu" : undefined}
+        aria-expanded={open}
+        onClick={(event) => setAnchor(event.currentTarget)}
+        endIcon={
+          <ExpandMoreOutlined
+            sx={{ fontSize: 14, transition: "transform 150ms", transform: open ? "rotate(180deg)" : "none" }}
+          />
+        }
         sx={{
-          position: "fixed",
-          top: "calc((var(--top-bar-height) - 1.875rem) / 2)",
-          left: "50%",
-          transform: "translateX(-50%)",
-          zIndex: "appBar",
+          height: "auto",
+          minWidth: 0,
+          px: 0.5,
+          fontWeight: 400,
+          color: "text.secondary",
+          "&:hover": { color: "text.primary", backgroundColor: "transparent" },
+          "& .MuiButton-endIcon": { ml: 0.5 },
         }}
       >
-        <Button
-          id="dev-role-switcher"
-          variant="contained"
-          color="warning"
-          size="small"
-          disabled={switching}
-          endIcon={<ArrowDropDown />}
-          aria-haspopup="menu"
-          aria-controls={anchor !== null ? "dev-role-switcher-menu" : undefined}
-          aria-expanded={anchor !== null ? "true" : undefined}
-          onClick={(event) => setAnchor(event.currentTarget)}
-          sx={{ height: "1.875rem", boxShadow: 2 }}
-        >
-          Dev · Viewing as {viewingAs}
-        </Button>
-      </Box>
+        Role: {role}
+      </Button>
       <Menu
         id="dev-role-switcher-menu"
         anchorEl={anchor}
-        open={anchor !== null}
+        open={open}
         onClose={() => setAnchor(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-        transformOrigin={{ vertical: "top", horizontal: "center" }}
-        slotProps={{ list: { "aria-labelledby": "dev-role-switcher", dense: true } }}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+        slotProps={{ list: { "aria-labelledby": "dev-role-switcher", dense: true, sx: { py: 0.5 } } }}
       >
-        <ListSubheader>View the dashboard as</ListSubheader>
-        {accounts?.map((account) => (
-          <MenuItem
-            key={account.role}
-            selected={account === current}
-            disabled={switching}
-            onClick={() => void choose(account)}
-          >
-            <ListItemIcon>{account === current && <Check fontSize="small" />}</ListItemIcon>
-            <ListItemText primary={account.label} secondary={account.email} />
-          </MenuItem>
-        ))}
+        <Typography
+          variant="body2"
+          sx={{
+            maxWidth: 280,
+            px: 1.5,
+            pt: 0.75,
+            pb: 1,
+            mb: 0.5,
+            color: "text.secondary",
+            borderBottom: 1,
+            borderColor: "divider",
+          }}
+        >
+          Dev only. Picking a role signs you in as a test account that holds it, so every page shows
+          what that person sees.
+        </Typography>
+        {accounts?.map((account) => {
+          const active = account === current;
+          return (
+            <MenuItem
+              key={account.role}
+              role="menuitemradio"
+              aria-checked={active}
+              disabled={switching}
+              onClick={() => void choose(account)}
+              sx={{
+                gap: 1,
+                mx: 0.5,
+                fontWeight: active ? 500 : 400,
+                color: active ? "text.primary" : "text.secondary",
+                "&:hover": { color: "text.primary" },
+              }}
+            >
+              <Check sx={{ fontSize: 14, opacity: active ? 1 : 0 }} />
+              {account.label}
+            </MenuItem>
+          );
+        })}
         {accounts === null && (
-          <Typography variant="body2" sx={{ px: 2, py: 1, maxWidth: 320 }}>
+          <Typography variant="body2" sx={{ maxWidth: 280, px: 1.5, py: 0.75 }}>
             No test accounts yet. Run <code>just seed-dev-roles</code>, then reload.
           </Typography>
         )}
         {accountsError !== null && (
-          <Alert severity="error" sx={{ mx: 1, maxWidth: 320 }}>
+          <Alert severity="error" sx={{ mx: 1, my: 0.5, maxWidth: 280 }}>
             {accountsError}
           </Alert>
         )}
         {switchError !== null && (
-          <Alert severity="error" sx={{ mx: 1, maxWidth: 320 }}>
+          <Alert severity="error" sx={{ mx: 1, my: 0.5, maxWidth: 280 }}>
             Could not sign in: {switchError}
           </Alert>
         )}

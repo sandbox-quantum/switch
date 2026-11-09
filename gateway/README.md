@@ -14,9 +14,9 @@ repository-root `justfile`: `just gateway-install` (deps, first time only),
 that shows the dashboard as an operator, org admin, workspace admin or member
 (seed its accounts with `just seed-dev-roles`; see
 [LOCAL_DEVELOPMENT.md](../docs/old/LOCAL_DEVELOPMENT.md#viewing-the-dashboard-as-each-role)).
-Import them only behind `import.meta.env.DEV`, as `src/App.tsx` does: a
-production build then leaves them out, and `npm run build` fails if one gets
-in anyway (`scripts/check-no-dev-tools.mjs`).
+Import them only behind `import.meta.env.DEV`, as `src/layout/DevRoleSlot.tsx`
+does: a production build then leaves them out, and `npm run build` fails if
+one gets in anyway (`scripts/check-no-dev-tools.mjs`).
 
 ## Design system
 

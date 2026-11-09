@@ -2,6 +2,7 @@ import MenuBookOutlined from "@mui/icons-material/MenuBookOutlined";
 import { Box, Button, Stack, Tooltip, Typography } from "@mui/material";
 import { useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
+import { DevRoleSlot } from "./DevRoleSlot";
 
 const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/ecosystem", "Ecosystem"],
@@ -61,6 +62,7 @@ export default function TopBar() {
       </Typography>
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
+        <DevRoleSlot />
         <Tooltip title="All Switch services are reachable">
           <Stack direction="row" sx={{ alignItems: "center", gap: 0.75, px: 1 }}>
             <Box

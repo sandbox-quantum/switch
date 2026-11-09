@@ -83,19 +83,30 @@ describe("DevRoleSwitcher", () => {
     signedIn(sessionFor("dev-workspace-admin@example.test", "Dev Workspace Admin"));
     render(<DevRoleSwitcher />);
     expect(
-      await screen.findByRole("button", { name: /Viewing as Workspace admin/ }),
+      await screen.findByRole("button", { name: /Role: Workspace admin/ }),
     ).toBeTruthy();
   });
 
-  it("names anyone else by their name, and says when signed out", async () => {
+  it("says when the session is someone else, or nobody", async () => {
     mockFetch({ [`GET ${DEV_ROLE_ACCOUNTS_PATH}`]: [200, { accounts }] });
     signedIn(sessionFor("ada@example.com", "Ada"));
     const { unmount } = render(<DevRoleSwitcher />);
-    expect(await screen.findByRole("button", { name: /Viewing as Ada/ })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Role: other account/ })).toBeTruthy();
     unmount();
     signedIn(null);
     render(<DevRoleSwitcher />);
-    expect(await screen.findByRole("button", { name: /Viewing as signed out/ })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Role: signed out/ })).toBeTruthy();
+  });
+
+  it("ticks the role the session is signed in as", async () => {
+    mockFetch({ [`GET ${DEV_ROLE_ACCOUNTS_PATH}`]: [200, { accounts }] });
+    signedIn(sessionFor("dev-org-admin@example.test", "Dev Org Admin"));
+    render(<DevRoleSwitcher />);
+    fireEvent.click(await screen.findByRole("button", { name: /Role: Org admin/ }));
+    const ticked = (await screen.findAllByRole("menuitemradio"))
+      .filter((item) => item.getAttribute("aria-checked") === "true")
+      .map((item) => item.textContent);
+    expect(ticked).toEqual(["Org admin"]);
   });
 
   it("signs in as the role picked, back in the same workspace, and reloads", async () => {
@@ -106,8 +117,8 @@ describe("DevRoleSwitcher", () => {
     });
     signedIn(sessionFor("admin@switch.local", "Admin"));
     render(<DevRoleSwitcher />);
-    fireEvent.click(await screen.findByRole("button", { name: /Viewing as Operator/ }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: /Member/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Role: Operator/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Member" }));
 
     await vi.waitFor(() => expect(reload).toHaveBeenCalled());
     const login = fetchMock.mock.calls.find(([input]) => String(input) === "/gateway/auth/login");
@@ -124,21 +135,21 @@ describe("DevRoleSwitcher", () => {
     });
     signedIn(sessionFor("admin@switch.local", "Admin"));
     render(<DevRoleSwitcher />);
-    fireEvent.click(await screen.findByRole("button", { name: /Viewing as Operator/ }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: /Member/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Role: Operator/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Member" }));
 
     expect(await screen.findByText(/Could not sign in: Invalid email or password/)).toBeTruthy();
     expect(reload).not.toHaveBeenCalled();
-    expect(screen.getByRole("menuitem", { name: /Member/ }).getAttribute("aria-disabled")).toBeNull();
+    expect(screen.getByRole("menuitemradio", { name: "Member" }).getAttribute("aria-disabled")).toBeNull();
   });
 
   it("says how to seed the accounts when there are none", async () => {
     mockFetch({});
     signedIn(null);
     render(<DevRoleSwitcher />);
-    fireEvent.click(await screen.findByRole("button", { name: /Viewing as signed out/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Role: signed out/ }));
     expect(await screen.findByText(/just seed-dev-roles/)).toBeTruthy();
-    expect(screen.queryByRole("menuitem")).toBeNull();
+    expect(screen.queryByRole("menuitemradio")).toBeNull();
   });
 
   it("shows the note the last switch left", async () => {

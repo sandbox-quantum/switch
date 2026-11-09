@@ -1,8 +1,8 @@
 import { Alert, Box, Button, CircularProgress } from "@mui/material";
-import { Suspense, lazy } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
 import { appView, readPendingInvite } from "./data/sessionState";
+import { DevRoleCorner } from "./layout/DevRoleSlot";
 import PageShell from "./layout/PageShell";
 import { renderRoutes } from "./routes/renderRoutes";
 import { NotFoundPage } from "./routes/StatusPages";
@@ -60,11 +60,14 @@ export function AppRoutes() {
 
   if (view === "signed_out") {
     return (
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/invite" element={<InviteCapture />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
+      <>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/invite" element={<InviteCapture />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+        <DevRoleCorner />
+      </>
     );
   }
 
@@ -78,11 +81,14 @@ export function AppRoutes() {
         <OnboardingPage />
       );
     return (
-      <Routes>
-        <Route path="/invite" element={<InviteCapture />} />
-        <Route path="/" element={screen} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <>
+        <Routes>
+          <Route path="/invite" element={<InviteCapture />} />
+          <Route path="/" element={screen} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+        <DevRoleCorner />
+      </>
     );
   }
 
@@ -99,21 +105,11 @@ export function AppRoutes() {
   );
 }
 
-// Dev builds only. A production build reads `import.meta.env.DEV` as false and
-// drops this import with it, and `scripts/check-no-dev-tools.mjs` fails the
-// build if any of `src/dev/` is left in.
-const DevRoleSwitcher = import.meta.env.DEV ? lazy(() => import("./dev/DevRoleSwitcher")) : null;
-
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
         <AppRoutes />
-        {DevRoleSwitcher !== null && (
-          <Suspense fallback={null}>
-            <DevRoleSwitcher />
-          </Suspense>
-        )}
       </AuthProvider>
     </BrowserRouter>
   );
