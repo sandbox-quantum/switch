@@ -16,8 +16,10 @@ export const LOCKED_ROW_HINT = "Private to its owner, so you can't open it.";
 export function LockedMark() {
   return (
     <Tooltip title={LOCKED_ROW_HINT}>
+      {/* `titleAccess`: MUI hides an icon from screen readers unless it
+          has a title. The tooltip then names it with the hint. */}
       <LockOutlined
-        aria-label="Private"
+        titleAccess="Private"
         sx={{ fontSize: 14, color: "text.secondary" }}
       />
     </Tooltip>

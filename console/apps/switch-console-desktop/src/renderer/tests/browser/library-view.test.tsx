@@ -629,7 +629,9 @@ describe('a package', () => {
       [...section.querySelectorAll('button')].some((b) => b.textContent?.includes('Secret repo'))
     ).toBe(false);
     // It says why, with a lock.
-    expect(section.querySelector('[aria-label="Private"]')).not.toBeNull();
+    const lock = section.querySelector('[aria-label="Private"]');
+    expect(lock?.getAttribute('role')).toBe('img');
+    expect(lock?.getAttribute('aria-hidden')).toBeNull();
   });
 
   it('offers no adding or removing to someone who may not change it', async () => {

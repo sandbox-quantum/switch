@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../../data/api";
 import * as hooks from "../../data/hooks";
+import { LOCKED_ROW_HINT } from "../../components/RowAccess";
 import PackageMembersSection from "./PackageMembersSection";
 
 const navigate = vi.fn();
@@ -63,9 +64,12 @@ describe("PackageMembersSection", () => {
     expect(navigate).not.toHaveBeenCalled();
     expect(screen.getByText("Secret")).toBeTruthy();
     // Each private row says so with a lock; the one that opens doesn't.
-    expect(screen.getAllByLabelText("Private")).toHaveLength(2);
+    // As a screen reader finds it: an image, not hidden, that says why.
+    expect(screen.getAllByRole("img", { name: LOCKED_ROW_HINT })).toHaveLength(2);
     expect(
-      screen.getByTestId("package-reference-ref1").querySelector('[aria-label="Private"]'),
+      within(screen.getByTestId("package-reference-ref1")).queryByRole("img", {
+        name: LOCKED_ROW_HINT,
+      }),
     ).toBeNull();
   });
 

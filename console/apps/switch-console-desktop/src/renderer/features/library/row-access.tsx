@@ -12,7 +12,7 @@ export const LOCKED_ROW_HINT = 'Private to its owner, so you can’t open it.';
 
 /** Beside the name of an item the viewer may not open. */
 export function LockedMark() {
-  return <Lock aria-label="Private" className="size-3 shrink-0 text-foreground-muted" />;
+  return <Lock role="img" aria-label="Private" className="size-3 shrink-0 text-foreground-muted" />;
 }
 
 /** At the end of a row that opens something. */
