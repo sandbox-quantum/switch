@@ -33,12 +33,16 @@ export function RoomChannelField({
   bridge,
   value,
   onChange,
+  linkedHere = null,
 }: {
   bridge: RemoteBridge;
   value: RoomCreateOptions;
   onChange: (next: RoomCreateOptions) => void;
+  /** Whether the signed-in person has a confirmed account linked on `bridge`;
+   * null while unknown. */
+  linkedHere?: boolean | null;
 }) {
-  const cards = channelChoiceCards(bridge);
+  const cards = channelChoiceCards(bridge, linkedHere);
   const choice = channelChoiceOf(value);
   return (
     <Field>

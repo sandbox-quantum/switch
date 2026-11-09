@@ -63,11 +63,18 @@ function offersPrivateChannel(bridge: ChoiceBridge): boolean {
   return bridge.privateChannels ?? bridge.type !== 'teams';
 }
 
-export function channelChoiceCards(bridge: ChoiceBridge): ChannelChoiceCard[] {
+export function channelChoiceCards(
+  bridge: ChoiceBridge,
+  linkedHere: boolean | null = null
+): ChannelChoiceCard[] {
   const known = NEW_CHANNEL[bridge.type] ?? OTHER;
-  const privateDetail = bridge.privateChannelNeedsLinkedAccount
-    ? `${known.private} You become its owner through your linked ${bridge.displayName} account, so link one first.`
-    : known.private;
+  // Said only to someone who has no confirmed account linked here, the one case
+  // where the private channel would be refused. Not while the answer is still
+  // unknown: a warning on a list that has not arrived is a false alarm.
+  const privateDetail =
+    bridge.privateChannelNeedsLinkedAccount && linkedHere === false
+      ? `${known.private} Link your ${bridge.displayName} account first: ${bridge.displayName} needs you as its owner.`
+      : known.private;
   return [
     { value: 'public', title: 'New public channel', detail: known.public },
     ...(offersPrivateChannel(bridge)

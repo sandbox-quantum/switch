@@ -39,10 +39,20 @@ describe('the channel choices for a new room', () => {
   });
 
   it('offers a private channel where the server says it can make one, Teams included', () => {
-    const cards = channelChoiceCards(bridge('teams', null, true, true));
+    const cards = channelChoiceCards(bridge('teams', null, true, true), true);
     expect(cards.map((card) => card.value)).toEqual(['public', 'private', 'existing']);
-    expect(cards[1]!.detail).toBe(
-      'Only people added to it can see it. You become its owner through your linked Acme teams account, so link one first.'
+    expect(cards[1]!.detail).toBe('Only people added to it can see it.');
+  });
+
+  it('asks for a linked account only from someone who has none where one is needed', () => {
+    const teams = bridge('teams', null, true, true);
+    expect(channelChoiceCards(teams, false)[1]!.detail).toBe(
+      'Only people added to it can see it. Link your Acme teams account first: Acme teams needs you as its owner.'
+    );
+    // Not while the answer is unknown, and never where no account is needed.
+    expect(channelChoiceCards(teams, null)[1]!.detail).toBe('Only people added to it can see it.');
+    expect(channelChoiceCards(bridge('slack', null, true), false)[1]!.detail).toBe(
+      'Only people invited to it can see it.'
     );
   });
 
