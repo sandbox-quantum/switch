@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { codexKeyringReaderEnvironment } from './agent-env';
-
+import { AGENT_ENV_VARS, codexKeyringReaderEnvironment } from './agent-env';
 describe('codexKeyringReaderEnvironment', () => {
   const session = {
     PATH: '/usr/bin',
@@ -42,5 +41,10 @@ describe('codexKeyringReaderEnvironment', () => {
       SystemRoot: 'C:\\Windows',
     });
     expect(codexKeyringReaderEnvironment(windows, {}, 'linux')).toEqual({});
+  });
+  describe('AGENT_ENV_VARS', () => {
+    it('includes the Qwen Cloud API key for session hosts', () => {
+      expect(AGENT_ENV_VARS).toContain('QWENCLOUD_API_KEY');
+    });
   });
 });

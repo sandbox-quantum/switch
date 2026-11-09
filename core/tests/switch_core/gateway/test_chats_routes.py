@@ -245,6 +245,19 @@ async def test_a_registered_agent_reports_its_provider(chats: _Harness) -> None:
     assert second.json()["chat"]["agents"][0]["provider"] is None
 
 
+async def test_a_registered_qwen_agent_reports_its_provider(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("qwen-helper", owner=chats.alice)
+    async with chats.factory() as session:
+        row = await session.get(Agent, agent.id)
+        assert row is not None
+        row.metadata_ = {"known_agent_type": "qwen"}
+        await session.commit()
+
+    response = await chats.create_chat(chats.alice, agent, "qwen-chat")
+    assert response.json()["chat"]["agents"][0]["provider"] == "qwen"
+
 async def test_an_owner_only_agent_refuses_a_chat_from_anyone_else(
     chats: _Harness,
 ) -> None:

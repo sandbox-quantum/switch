@@ -51,7 +51,7 @@ A condition reads one param: "{param}" (true when it has a value) or
 ## An agent (type: agent)
 
   instructions: text             # REQUIRED. The agent's brief.
-  provider: claude | codex | opencode | antigravity | cursor | "{param}"   # REQUIRED
+  provider: claude | codex | opencode | antigravity | cursor | qwen | "{param}"   # REQUIRED
   machine: machine name or id | "{param}"           # REQUIRED: where it runs
   directory: path | "{param}"                       # REQUIRED
   name: identifier               # optional; else derived from display_name.
@@ -90,7 +90,7 @@ with its reason code, and agents made before a later failure are deleted.
 provider, machine and directory are never filled in for you: say each on the
 agent, as a value or "{param}". A param offers a choice with a default:
 machine default [$first] is the first online machine that can run the agents'
-providers; provider default [claude, codex] the first ready on its machine;
+providers; provider default [claude, codex, qwen] the first ready on its machine;
 directory "{$agents_dir}/{lead.name}" the agent's own folder on its machine.
 
 connections are the deployer's own, granted to the new agent: they must have
