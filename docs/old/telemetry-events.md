@@ -548,7 +548,9 @@ forgotten at a boot with it off, so it is always the start of the current run
 of reporting; an upgraded server starts from its last snapshot. A period that
 began before that moment carries `is_partial = true` and, when its middle is
 earlier still, is dated at that moment instead, which is inside the period, so
-it stays in its bucket. A period that ended before it is not sent at all.
+it stays in its bucket at UTC (a chart drawn in a timezone east of UTC can
+place a late one in the next day). A period that ended before it is not sent
+at all.
 
 **Sent with the snapshot**, for every period that ended since the previous
 snapshot, so each is sent once. Not on a deployment's first pass, which has no

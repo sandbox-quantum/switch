@@ -342,8 +342,8 @@ def _room_activity_conditions(
     `_human_activity_conditions`, less a post the bridge marked as an
     integration's (`SENDER_IS_APP_MARKER`): an alerting app posting into a
     room with an agent is not anyone using it. By post rather than by
-    identity, so an integration's posts relayed before its bridge marked them
-    still count, as they did.
+    identity: an integration's posts relayed before its bridge marked them
+    carry no mark, and are read as a person's.
     """
     return (
         *_human_activity_conditions(tenant_id, person_types),
