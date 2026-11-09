@@ -2984,16 +2984,18 @@ version of their own to them without also giving them a release of their own.
 
 #### Fixed
 - **A room hears about a turn that finished without a reply.** When an agent
-  addressed in a room ended its turn without posting anything — it wrote its
-  answer as its final text, or its provider stopped it at a usage limit — the
-  room saw only "Worked for …" and kept waiting. Its session now posts "I
-  finished without replying." in the message's thread, followed by the start
-  of the agent's final text when there is one, as it already did for a turn
-  that failed. A turn someone stopped, a turn for a message that tagged
-  nobody (one Switch routed to the agent, or a follow-up it got by following
-  the conversation or as the room's assigned agent), and a turn started from
-  Console still post nothing. Such a follow-up now reads as one to the agent,
-  naming why it came to it, instead of saying the sender addressed it.
+  addressed in a room ended its turn without doing anything in the room — it
+  wrote its answer only as its final text, or its provider stopped it at a
+  usage limit — the room saw only "Worked for …" and kept waiting. Its
+  session now posts "I finished without replying." in the message's thread,
+  as it already did for a turn that failed. None of the agent's final text
+  is posted. A turn in which the agent used a Switch tool that acts (posting,
+  changing a room, and so on; reading context does not count), a turn
+  someone stopped, a turn for a message that tagged nobody (one Switch routed
+  to the agent, or a follow-up it got by following the conversation or as
+  the room's assigned agent), and a turn started from Console still post
+  nothing. Such a follow-up now reads as one to the agent, naming why it came
+  to it, instead of saying the sender addressed it.
 - **Changing your password no longer signs Console out without a word.** The
   server ends every session on a password change and hands the one that made
   it a new session, which Console now keeps, so it stays signed in. The
@@ -5235,10 +5237,10 @@ The Switch protocol client and MCP runtime
 ### [0.7.0] - 2026-09-25
 
 #### Changed
-- **The instructions no longer say an agent's final text is shown to nobody.**
-  When a room turn ends without the agent posting, its session now tells the
-  room it finished without replying, with the start of that text. A message
-  event's `follow_up` field is typed too.
+- **The instructions say when the room is told an agent finished without
+  replying.** When a turn for a message that named the agent ends without it
+  doing anything in Switch, its session posts only that, none of its final
+  text. A message event's `follow_up` field is typed too.
 - Reworked for the host-owned session model: the runtime serves the Switch tool
   surface per session host while Console/sidecar own session lifecycle and
   switch-core relays (#543). No longer published on its own tag — ships inside

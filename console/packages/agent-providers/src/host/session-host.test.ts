@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Command, Item, Session } from '@switch-console/shared/session-v1';
+import type { Command, Session } from '@switch-console/shared/session-v1';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type ConversationHistoryTurn,
@@ -13,13 +13,7 @@ import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { Redactions } from './redaction';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
-import {
-  HostedSession,
-  lastAssistantText,
-  recentTurns,
-  type RoomReply,
-  unpostedReply,
-} from './session-host';
+import { HostedSession, recentTurns, type RoomReply, unpostedReply } from './session-host';
 
 // Every step here is a journal write flushed to disk, and Windows runners take
 // many times longer over that. The waits have no deadline of their own (see
@@ -1714,31 +1708,35 @@ async function roomReplyRecords(root: string): Promise<unknown[]> {
     .filter((record) => record.type === 'room-reply');
 }
 
-it('tells the room, with its last words, that a room turn finished without posting', async () => {
+it('tells the room, and nothing of the final text, that a room turn finished without posting', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, root, adapter } = await startReplying(reply);
   await host.command(roomMessage('turn', 'thread'));
   await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   said(emit, 'turn', 'first', 'Looking into it.');
-  said(emit, 'turn', 'last', "  You've hit your 5-hour limit · resets 8:40am  ");
+  said(emit, 'turn', 'last', "You've hit your 5-hour limit, resets 8:40am");
   emit({ type: 'turn.completed', turnId: 'turn', outcome: 'completed', usage: [] });
   await until(() => expect(reply).toHaveBeenCalledOnce());
   expect(reply).toHaveBeenCalledWith({
     roomId: 'room',
     threadId: 'thread',
-    body: "I finished without replying. My last message was:\n\nYou've hit your 5-hour limit · resets 8:40am",
+    body: 'I finished without replying.',
   });
   expect(await roomReplyRecords(root)).toEqual([{ type: 'room-reply', commandId: 'turn' }]);
 });
 
-it('tells the room a room turn that finished silently, without words, finished', async () => {
+it('posts nothing for a room turn in which the agent acted through a Switch tool', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
-  const { host, emit, adapter } = await startReplying(reply);
-  await host.command(roomMessage('quiet', null));
+  const { host, emit, root, adapter } = await startReplying(reply);
+  await host.command(roomMessage('acted', null));
   await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
-  emit({ type: 'turn.completed', turnId: 'quiet', outcome: 'completed', usage: [] });
-  await until(() => expect(reply).toHaveBeenCalledOnce());
-  expect(reply.mock.calls[0]![0].body).toBe('I finished without replying.');
+  host.agentActedInSwitch();
+  said(emit, 'acted', 'last', 'Done.');
+  emit({ type: 'turn.completed', turnId: 'acted', outcome: 'completed', usage: [] });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await host.barrier();
+  expect(reply).not.toHaveBeenCalled();
+  expect(await roomReplyRecords(root)).toEqual([]);
 });
 
 it('posts nothing when a message nobody tagged finished without a post', async () => {
@@ -1919,65 +1917,23 @@ it('keeps the session working when the room reply cannot be posted', async () =>
   warn.mockRestore();
 });
 
-it('says a turn failed, and why, or finished, with its last words; nothing for one stopped', () => {
-  expect(unpostedReply('completed', null, '')).toBe('I finished without replying.');
-  expect(unpostedReply('completed', null, '  test reply \n')).toBe(
-    'I finished without replying. My last message was:\n\ntest reply'
-  );
-  const long = 'x'.repeat(1500);
-  expect(unpostedReply('completed', null, long)).toBe(
-    `I finished without replying. My last message was:\n\n${'x'.repeat(999)}…`
-  );
-  expect(unpostedReply('interrupted', 'Stopped by a person', 'Halfway')).toBeNull();
-  expect(unpostedReply('error', null, '')).toBe('I finished without replying. The turn failed.');
-  expect(unpostedReply('error', 'Not signed in.', 'Working on it')).toBe(
+it('says a turn failed, and why, or only that it finished; nothing for one stopped', () => {
+  expect(unpostedReply('completed', null)).toBe('I finished without replying.');
+  expect(unpostedReply('interrupted', 'Stopped by a person')).toBeNull();
+  expect(unpostedReply('error', null)).toBe('I finished without replying. The turn failed.');
+  expect(unpostedReply('error', 'Not signed in.')).toBe(
     'I finished without replying. The turn failed: Not signed in.'
   );
-});
-
-it("reads a turn's last words from its last assistant message, joining its parts", () => {
-  const item = (
-    itemId: string,
-    turnId: string,
-    text: string,
-    kind: Item['kind'] = 'assistant-message'
-  ): Item => ({
-    itemId,
-    turnId,
-    revision: 1,
-    kind,
-    status: 'completed',
-    title: '',
-    text,
-    attachments: [],
-    origin: null,
-  });
-  expect(
-    lastAssistantText(
-      {
-        items: [
-          item('a', 'turn', 'First'),
-          item('b', 'turn', 'Second, '),
-          item('b:part:1', 'turn', 'continued'),
-          item('c', 'turn', '   '),
-          item('d', 'turn', 'Ran a tool', 'tool-activity'),
-          item('e', 'other', 'Another turn'),
-        ],
-      },
-      'turn'
-    )
-  ).toBe('Second, continued');
-  expect(lastAssistantText({ items: [] }, 'turn')).toBe('');
 });
 
 it('leads with a !reset hint when the provider refuses the request for size', () => {
   const hint = 'Use !reset to start a fresh session, then send your message again. ';
   const tooLarge = 'API Error: 400 The message size (30296644 bytes) exceeds 30.000MB limit.';
-  expect(unpostedReply('error', tooLarge, '')).toBe(
+  expect(unpostedReply('error', tooLarge)).toBe(
     `I finished without replying. The turn failed: ${hint}${tooLarge}`
   );
-  expect(unpostedReply('error', 'Prompt is too long', '')).toContain(hint);
-  expect(unpostedReply('error', 'Other error', '')).toBe(
+  expect(unpostedReply('error', 'Prompt is too long')).toContain(hint);
+  expect(unpostedReply('error', 'Other error')).toBe(
     'I finished without replying. The turn failed: Other error'
   );
 });

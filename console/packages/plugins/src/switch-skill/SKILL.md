@@ -115,16 +115,16 @@ does, and there is no polling tool to call.
   the frame.
 
   Each delivered message ends with a one-line reminder to reply with
-  `post_message`: your final text is not your reply. When a turn for a message
-  that named you ends without you posting anything, your session posts
-  "I finished without replying." in your name, in the message's thread,
-  followed by the start of your final text if you wrote any; a turn that
-  failed says it failed, and why. Nothing is posted when someone stopped the
-  turn, or for a message that tagged nobody (a follow-up, or one Switch
-  picked you for; both below) that you chose to leave alone. So answer with
-  `post_message`, and do not count on that notice to deliver an answer. The
-  first message of
-  a chat that opened with words posted in your name as you joined (a Switch
+  `post_message`: your final text is not shown to anyone. When a turn for a
+  message that named you ends without you doing anything in Switch (no post,
+  and no Switch tool call other than one that only reads, such as
+  `read_context`), your session posts just "I finished without replying." in
+  your name, in the message's thread, so the sender is not left waiting; a
+  turn that failed says it failed, and why. None of your final text goes with
+  it. Nothing is posted when someone stopped the turn, or for a message that
+  tagged nobody (a follow-up, or one Switch picked you for; both below) that
+  you chose to leave alone. So answer with `post_message`. The first message
+  of a chat that opened with words posted in your name as you joined (a Switch
   Console chat's welcome) is preceded by those words, between
   `BEGIN OPENING MESSAGE` / `END OPENING MESSAGE` markers. You did not write
   them, but the person sees them as yours: do not repeat them.
