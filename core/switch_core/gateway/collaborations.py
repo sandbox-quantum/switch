@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core import messaging_platforms
 from switch_core.account_links import LINK_CODE_TTL
+from switch_core.authz import Principal
 from switch_core.bridges.collaboration.adapter import (
     ConfigEditRefused,
     DirectorySearchBusy,
@@ -238,6 +239,7 @@ async def _detail(
     *,
     room_count: int,
     collab_lifecycle: CollaborationBridgeLifecycleService,
+    administers: bool,
     is_default: bool | None = None,
 ) -> BridgeDetail:
     """One place every response shape is built, so a new field cannot reach
@@ -274,6 +276,8 @@ async def _detail(
         team_placement_supported=_places_app_in_teams(bridge.id, collab_lifecycle),
         receives_webhooks=collab_lifecycle.receives_webhooks(bridge.type),
         webhook_url=collab_lifecycle.webhook_url(bridge.id, bridge.type),
+        can_manage=administers,
+        can_delete=administers,
     )
 
 
@@ -398,7 +402,11 @@ async def create_bridge(
     await session.commit()
 
     return await _detail(
-        bridge, room_count=0, collab_lifecycle=collab_lifecycle, is_default=is_default
+        bridge,
+        room_count=0,
+        collab_lifecycle=collab_lifecycle,
+        administers=True,
+        is_default=is_default,
     )
 
 
@@ -431,7 +439,10 @@ async def set_default_bridge(
 
     rooms = await room_store.get_by_bridge(session, bridge_id)
     return await _detail(
-        bridge, room_count=len(rooms), collab_lifecycle=collab_lifecycle
+        bridge,
+        room_count=len(rooms),
+        collab_lifecycle=collab_lifecycle,
+        administers=True,
     )
 
 
@@ -444,6 +455,7 @@ async def list_bridges(
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
     _user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[BridgeDetail]:
     bridges = await bridge_store.get_all(session)
 
@@ -452,7 +464,10 @@ async def list_bridges(
         rooms = await room_store.get_by_bridge(session, bridge.id)
         details.append(
             await _detail(
-                bridge, room_count=len(rooms), collab_lifecycle=collab_lifecycle
+                bridge,
+                room_count=len(rooms),
+                collab_lifecycle=collab_lifecycle,
+                administers=is_admin,
             )
         )
 
@@ -598,7 +613,10 @@ async def update_bridge(
         collab_lifecycle.note_preconfigured(bridge_id, payload.preconfigured)
     rooms = await room_store.get_by_bridge(session, bridge_id)
     return await _detail(
-        bridge, room_count=len(rooms), collab_lifecycle=collab_lifecycle
+        bridge,
+        room_count=len(rooms),
+        collab_lifecycle=collab_lifecycle,
+        administers=True,
     )
 
 
@@ -609,7 +627,8 @@ async def list_bridge_users(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ExternalUserSummary]:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
@@ -624,7 +643,9 @@ async def list_bridge_users(
             bridge_id=u.bridge_id,
             external_user_id=u.external_user_id,
             external_username=u.external_username,
-            claimed_by=_claimants(claims.get(u.id, []), names),
+            claimed_by=_claimants(
+                claims.get(u.id, []), names, Principal(user.id, is_admin)
+            ),
         )
         for u in users
     ]
@@ -647,7 +668,7 @@ async def _user_names(
 
 
 def _claimants(
-    claims: list[ExternalUserClaim], names: dict[str, str]
+    claims: list[ExternalUserClaim], names: dict[str, str], viewer: Principal
 ) -> list[IdentityClaimant]:
     def label(user_id: str) -> str:
         return names.get(user_id) or user_id
@@ -657,6 +678,7 @@ def _claimants(
             user_id=claim.user_id,
             user_name=label(claim.user_id),
             verified=claim.verified_at is not None,
+            can_unlink=_may_act_for(viewer, claim.user_id),
         )
         for claim in sorted(claims, key=lambda c: label(c.user_id).lower())
     ]
@@ -673,7 +695,8 @@ async def search_bridge_directory(
     collab_lifecycle: Annotated[
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DirectorySearchResponse:
     """Find someone on a messaging platform so they can be claimed.
 
@@ -690,6 +713,7 @@ async def search_bridge_directory(
     outright would leave owner-only addressing unusable on those platforms even
     for someone Switch knows perfectly well.
     """
+    viewer = Principal(user.id, is_admin)
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
@@ -740,7 +764,11 @@ async def search_bridge_directory(
                     else None
                 ),
                 claimed_by=(
-                    _claimants(claims.get(known[person.external_user_id].id, []), names)
+                    _claimants(
+                        claims.get(known[person.external_user_id].id, []),
+                        names,
+                        viewer,
+                    )
                     if person.external_user_id in known
                     else []
                 ),
@@ -954,7 +982,12 @@ async def claim_bridge_identity(
     if claim is not None and claim.verified_at is not None:
         # Already linked and confirmed: nothing to wait for.
         return await _identity_summary(
-            session, external_user_store, user_store, external_user, None
+            session,
+            external_user_store,
+            user_store,
+            external_user,
+            None,
+            Principal(caller_id, is_admin),
         )
 
     if older_client_for_someone_else:
@@ -974,7 +1007,12 @@ async def claim_bridge_identity(
         )
         await session.commit()
         return await _identity_summary(
-            session, external_user_store, user_store, external_user, None
+            session,
+            external_user_store,
+            user_store,
+            external_user,
+            None,
+            Principal(caller_id, is_admin),
         )
     code = (
         await _issue_code(
@@ -1007,6 +1045,7 @@ async def claim_bridge_identity(
         user_store,
         external_user,
         LinkRequestSummary(user_id=target_user_id, code=code),
+        Principal(caller_id, is_admin),
     )
 
 
@@ -1066,6 +1105,7 @@ async def _identity_summary(
     user_store: UserStore,
     external_user: ExternalUser,
     link_request: LinkRequestSummary | None,
+    viewer: Principal,
 ) -> ExternalUserSummary:
     claims = await external_user_store.claims_for(session, [external_user.id])
     names = await _user_names(session, user_store, claims)
@@ -1074,7 +1114,7 @@ async def _identity_summary(
         bridge_id=external_user.bridge_id,
         external_user_id=external_user.external_user_id,
         external_username=external_user.external_username,
-        claimed_by=_claimants(claims.get(external_user.id, []), names),
+        claimed_by=_claimants(claims.get(external_user.id, []), names, viewer),
         link_request=link_request,
     )
 
@@ -1125,13 +1165,19 @@ async def _refuse_unlinkable(
         )
 
 
+def _may_act_for(viewer: Principal, user_id: str) -> bool:
+    """Whether `viewer` may act on `user_id`'s links: their own, or anyone's
+    for an admin."""
+    return viewer.is_admin or user_id == viewer.id
+
+
 def _require_self_or_admin(
     caller: User, is_admin: bool, user_id: str | None, doing: str
 ) -> str:
     """The Switch user a request acts for: the caller, or anyone for an
     admin."""
     target_user_id = user_id or caller.id
-    if target_user_id != caller.id and not is_admin:
+    if not _may_act_for(Principal(caller.id, is_admin), target_user_id):
         raise HTTPException(
             status_code=403,
             detail=f"Only an admin may {doing} for another user",
@@ -1267,6 +1313,7 @@ async def verify_identity_with_session(
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> ExternalUserSummary:
     """Confirm the caller's pending link with the account's own session token.
 
@@ -1347,7 +1394,12 @@ async def verify_identity_with_session(
     )
     await session.commit()
     return await _identity_summary(
-        session, external_user_store, user_store, external_user, None
+        session,
+        external_user_store,
+        user_store,
+        external_user,
+        None,
+        Principal(caller_id, is_admin),
     )
 
 
@@ -1445,6 +1497,7 @@ async def cancel_identity_link_request(
     links needed confirming leaves that link working. Unlinking is
     `release_bridge_identity`.
     """
+    viewer = Principal(user.id, is_admin)
     external_user = await _identity_on_bridge(
         session, external_user_store, bridge_id, external_user_row_id
     )
@@ -1471,7 +1524,12 @@ async def cancel_identity_link_request(
     )
     await session.commit()
     return await _identity_summary(
-        session, external_user_store, user_store, external_user, None
+        session,
+        external_user_store,
+        user_store,
+        external_user,
+        None,
+        viewer,
     )
 
 
@@ -1489,6 +1547,7 @@ async def release_bridge_identity(
     """Drop a claim on a platform account, and any link to it still waiting to
     be confirmed — your own, or someone else's if you are an admin. Anyone
     else's claim on the same account is left standing."""
+    viewer = Principal(user.id, is_admin)
     external_user = await _identity_on_bridge(
         session, external_user_store, bridge_id, external_user_row_id
     )
@@ -1523,7 +1582,12 @@ async def release_bridge_identity(
     )
     await session.commit()
     return await _identity_summary(
-        session, external_user_store, user_store, external_user, None
+        session,
+        external_user_store,
+        user_store,
+        external_user,
+        None,
+        viewer,
     )
 
 

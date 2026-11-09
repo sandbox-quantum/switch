@@ -3317,6 +3317,7 @@ type RoomSummaryJson = {
   write_visibility?: string;
   /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
   can_write?: boolean;
+  can_change_members?: boolean;
   can_manage?: boolean;
   can_unlink?: boolean;
   group_id?: string | null;
@@ -3352,6 +3353,8 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
       ? {
           serverPermissions: {
             canWrite: r.can_write,
+            // Who is in a room took write access until the server said otherwise.
+            canChangeMembers: r.can_change_members ?? r.can_write,
             canManage: r.can_manage,
             // Detaching took write access until the server said otherwise.
             canUnlink: r.can_unlink ?? r.can_write,

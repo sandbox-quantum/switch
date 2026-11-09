@@ -470,6 +470,16 @@ class CollaborationBridgeLifecycleService:
         """
         return bridge_id in self._connected
 
+    async def forget_human(
+        self, bridge_id: str, external_user_id: str, transport_user_id: str
+    ) -> None:
+        """Tell a running bridge that one of its people was erased. A bridge
+        that is not running has nothing in memory, and loads from the database
+        when it starts."""
+        bridge = self._bridges.get(bridge_id)
+        if bridge is not None:
+            await bridge.forget_human(external_user_id, transport_user_id)
+
     def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
 

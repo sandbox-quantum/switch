@@ -8,6 +8,7 @@ the write was issued.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -74,7 +75,17 @@ def _client(app: FastAPI, user_id: str, email: str) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
-        cookies={"switch_auth": create_jwt(user_id, email, "user", _KEYRING, None)},
+        cookies={
+            "switch_auth": create_jwt(
+                user_id,
+                email,
+                "user",
+                _KEYRING,
+                None,
+                session_version=0,
+                auth_time=datetime.now(UTC),
+            )
+        },
     )
 
 

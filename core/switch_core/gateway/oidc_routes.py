@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from contextlib import AbstractContextManager, nullcontext
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -455,6 +456,7 @@ async def oidc_callback(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return response
 
@@ -499,5 +501,6 @@ async def oidc_exchange(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return response
