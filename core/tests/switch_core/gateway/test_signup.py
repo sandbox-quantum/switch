@@ -498,7 +498,7 @@ async def test_signup_is_refused_once_the_hourly_cap_is_reached(signup_app, capl
     response = await _signup(app, email="third@example.com")
     assert response.status_code == 429, response.text
     assert response.json()["detail"] == (
-        "Too many sign-ups on this server in the last hour. Try again later."
+        "Too many sign-ups in the last hour. Try again later."
     )
     assert 1 <= int(response.headers["Retry-After"]) <= 3600
     assert "2 users created in the last hour (cap 2)" in caplog.text

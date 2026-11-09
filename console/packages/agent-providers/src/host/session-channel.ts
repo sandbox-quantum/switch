@@ -48,6 +48,8 @@ export const sessionRequestSchema = z.discriminatedUnion('type', [
     command: z.unknown(),
     /** Who asked, as the room names them; null for a command from Console. */
     requesterName: z.string().nullable(),
+    /** The command came from a direct chat; absent from a parent older than the field. */
+    direct: z.boolean().optional(),
   }),
   /** A room message the agent was addressed with, as the controller routed it. */
   z.object({

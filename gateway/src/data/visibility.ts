@@ -60,3 +60,13 @@ export const ACCESS_META: Record<AccessLevel, AccessLevelMeta> = {
     color: "default",
   },
 };
+
+/** The access levels as someone sees them who may not change them: the
+ * shared wording speaks to the owner ("only you"), and the access setting is
+ * shown to others disabled, so this says whose it is to change. */
+export const ACCESS_HELPERS_FOR_OTHERS: Record<AccessLevel, string> = {
+  private: "Only its owner and admins can see or change it.",
+  read_only: "Anyone can see and attach it. Only its owner and admins can change it.",
+  public:
+    "Anyone can see, attach and change it. Only its owner and admins can change who may.",
+};

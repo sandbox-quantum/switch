@@ -646,8 +646,7 @@ class TestGitHubNeedsHttps:
         services = {entry["slug"]: entry for entry in listed.json()["connections"]}
         assert services["github"]["unavailable_code"] == "needs_https"
         assert services["github"]["unavailable_reason"] == (
-            "GitHub can't be used on this server: it needs the server to have an "
-            "https address."
+            "GitHub can't be used here: it needs Switch to have an https address."
         )
         assert services["github"]["server_setup_needed"] is False
         assert services[GOOGLE]["unavailable_code"] == "app_not_set_up"
@@ -825,7 +824,7 @@ class TestImportAndRemove:
         assert google["server_setup_needed"] is True
         assert google["unavailable_code"] == "app_not_set_up"
         assert google["unavailable_reason"].startswith(
-            "Google Workspace is not set up on this server."
+            "Google Workspace is not set up here."
         )
         assert [event.action for event in await _audit(session_factory)] == [
             "connector_app.saved",
