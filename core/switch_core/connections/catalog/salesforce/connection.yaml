@@ -1,7 +1,74 @@
 slug: salesforce
 name: Salesforce
 category: CRM
-description: Read and update Salesforce records.
-enabled: false
+description: Read and update Salesforce records with your own Salesforce permissions, through your org's hosted MCP servers.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # The External Client App must enable refresh token rotation (see setup).
+  # Confirmed enabled in the Developer Edition test app. Live QA completed a
+  # fresh read after the original expiry and observed a later access expiry
+  # without another sign-in. This does not prove refresh-token value rotation.
+  refresh: rotating
+  oauth:
+    # Salesforce offers no dynamic registration for its hosted MCP servers:
+    # an org admin creates an External Client App (Connected Apps are not
+    # supported) and the operator stores its client. Setup:
+    # docs/old/salesforce-setup.md.
+    registration: static
+    client_settings: SALESFORCE
+    # The sign-in is a public client: PKCE proves the app, so the operator's
+    # settings file holds only the consumer key as client_id, never the
+    # consumer secret.
+    public_client: true
+    # Salesforce matches the callback URL exactly, port included, so
+    # Console's ports are pinned, as Atlassian's. It registers no
+    # IP-literal http callback ("Cannot be an HTTP URL"), only the
+    # localhost name:
+    # https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/create-external-client-app.html
+    redirect: [loopback, core]
+    loopback_ports: [39251, 39252, 39253, 39254, 39255]
+    loopback_host: localhost
+    # Endpoints are named: the hosted MCP servers share login.salesforce.com
+    # and the org comes from the token. Sandbox orgs (test.salesforce.com)
+    # and My Domain orgs with shared login disabled are out of scope.
+    authorization_url: https://login.salesforce.com/services/oauth2/authorize
+    token_url: https://login.salesforce.com/services/oauth2/token
+    # Switch cannot read the app back: the operator confirms the External
+    # Client App requires PKCE and issues JWT-based access tokens for named
+    # users, or every MCP call fails after sign-in (INVALID_JWT_FORMAT).
+    # Measured HTTP 400 unknown_error for a made-up code, including a nonexistent client.
+    inconclusive_probe: [{error: unknown_error}]
+    unchecked: The External Client App must require PKCE and issue JWT-based access tokens for named users, or every MCP call fails after sign-in.
+    # Salesforce's documented revoke endpoint takes the access or refresh
+    # token as its POST body.
+    revocation_url: https://login.salesforce.com/services/oauth2/revoke
+  identity:
+    # Salesforce's documented OIDC userinfo endpoint, which needs the openid
+    # scope. user_id is the 18-character Salesforce user id, stable and
+    # unique in the org. sobject-reads' getUserInfo tool is an identity
+    # source too, once the shared identity.mcp_tool feature lands.
+    url: https://login.salesforce.com/services/oauth2/userinfo
+    account_id: user_id
+    label: email
+# JWT access tokens follow the org's session timeout (2 hours by default) or
+# the app's custom JWT timeout. Live Developer Edition QA observed a two-hour
+# issued access window; not a guarantee for other orgs. An agent's copy may outlive its
+# grant by that long; agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  # The hosted servers share one gateway; the org is derived from the token.
+  # sobject-reads never changes data; sobject-mutations creates and updates
+  # but cannot delete. An admin activates each server in the org.
+  servers:
+    - { name: salesforce-reads, url: "https://api.salesforce.com/platform/mcp/v1/platform/sobject-reads" }
+    - { name: salesforce-mutations, url: "https://api.salesforce.com/platform/mcp/v1/platform/sobject-mutations" }
+access:
+  # Salesforce's mcp_api scope covers the activated MCP servers, including
+  # mutations. It cannot enforce read-only access. Per #834's maintainer
+  # decision (2026-11-04), offer one honestly labelled write level. Salesforce
+  # user permissions and the org's enabled servers remain the boundary.
+  write:
+    scopes: [mcp_api, refresh_token, openid]
+tools: { mode: pass_through }

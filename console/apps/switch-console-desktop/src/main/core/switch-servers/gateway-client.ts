@@ -4169,8 +4169,13 @@ export async function startServiceConnection(
         url.searchParams.get('state') === value.id
       : url.protocol === 'https:' &&
         url.searchParams.get('state') === value.id &&
-        url.searchParams.get('redirect_uri') ===
-          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}`);
+        // Salesforce registers the localhost name, not an IP-literal callback.
+        // Keep the listener's exact port and path for either loopback name.
+        ['127.0.0.1', 'localhost'].some(
+          (host) =>
+            url.searchParams.get('redirect_uri') ===
+            `http://${host}:${input.port}${SERVICE_CALLBACK_PATH}`
+        ));
   if (!valid) throw new Error('The server returned an invalid sign-in URL.');
   return value;
 }

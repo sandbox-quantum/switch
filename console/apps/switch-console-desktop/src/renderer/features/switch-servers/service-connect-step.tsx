@@ -138,6 +138,13 @@ export function ServiceConnectStep({
                 ? `Agents you turn ${connection.name} on for act as you there, with what you allowed when you signed in.`
                 : `You sign in at ${connection.name}, and allow what Switch asks for. Agents you then turn ${connection.name} on for act as you there.`}
             </p>
+            {!connected && connection.requested_access && (
+              <p className="text-sm text-foreground-muted">
+                {connection.requested_access === 'write'
+                  ? 'This connection requests write access. Agents you enable can read and change data within your permissions.'
+                  : 'This connection requests read access.'}
+              </p>
+            )}
             {needsReconnect && !connected && (
               <p className="text-sm text-destructive">
                 Switch can no longer use your {connection.name} sign-in. Connect again.

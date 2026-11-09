@@ -89,6 +89,8 @@ export const connectionCatalogEntrySchema = z.object({
   external_identity: z.string().nullable(),
   /** What the person allowed when they connected; null when not connected or not said. */
   consent: z.enum(['read', 'write']).nullable(),
+  /** Access requested by a new OAuth sign-in; absent on older servers. */
+  requested_access: z.enum(['read', 'write']).nullable().optional(),
   /**
    * Whether the workspace has the service switched on. Null from a server
    * with no workspace switch, which every page treats as on.

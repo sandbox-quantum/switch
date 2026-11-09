@@ -1849,6 +1849,28 @@ describe('a service sign-in', () => {
     ]);
   });
 
+  it('accepts Salesforce returning to the exact localhost listener callback', async () => {
+    const url = vendor({ state, redirect_uri: 'http://localhost:12345/switch-services/callback' });
+    answer({ id: state, mode: 'loopback', url });
+    expect((await startServiceConnection(SERVER, 'salesforce', input)).url).toBe(url);
+  });
+
+  it.each([
+    'http://localhost:1/switch-services/callback',
+    'http://localhost:12345/wrong-path',
+    'http://localhost:12345/switch-services/callback?extra=1',
+    'http://localhost:12345/switch-services/callback#fragment',
+    'http://localhost.evil.test:12345/switch-services/callback',
+    'http://localhost@evil.test:12345/switch-services/callback',
+    'http://[::1]:12345/switch-services/callback',
+    'https://localhost:12345/switch-services/callback',
+  ])('refuses a callback other than the exact loopback listener: %s', async (redirect_uri) => {
+    answer({ id: state, mode: 'loopback', url: vendor({ state, redirect_uri }) });
+    await expect(startServiceConnection(SERVER, 'salesforce', input)).rejects.toThrow(
+      'invalid sign-in URL'
+    );
+  });
+
   it('accepts Core’s own authorize step on this server in core mode', async () => {
     answer({ id: state, mode: 'core', url: `${flows}/authorize?state=${state}` });
     expect((await startServiceConnection(SERVER, 'example', input)).url).toBe(

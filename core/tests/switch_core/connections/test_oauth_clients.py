@@ -270,6 +270,13 @@ def test_registers_the_redirects_this_server_can_use() -> None:
         "http://127.0.0.1:43123/switch-services/callback",
         "http://127.0.0.1:43124/switch-services/callback",
     ]
+    # A vendor registering only the localhost name gets it, ports pinned or not.
+    assert redirect_uris("example", ["loopback"], None, None, "localhost") == [
+        "http://localhost/switch-services/callback"
+    ]
+    assert redirect_uris("example", ["loopback"], None, [43123], "localhost") == [
+        "http://localhost:43123/switch-services/callback"
+    ]
     assert redirect_uris("example", ["core"], None, None) == []
     assert core_callback(public + "/", "example") == core
 

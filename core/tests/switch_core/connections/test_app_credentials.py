@@ -105,6 +105,7 @@ async def _save(
     client_id: str,
     secrets: dict[str, str],
     settings: dict[str, str] | None = None,
+    secret_names: frozenset[str] | None = None,
     keyring: Keyring = TEST_KEYRING,
 ) -> None:
     operator = await _operator(session_factory)
@@ -116,7 +117,7 @@ async def _save(
             client_id=client_id,
             settings=settings or {},
             secrets=secrets,
-            secret_names=SECRET_NAMES[kind],
+            secret_names=SECRET_NAMES[kind] if secret_names is None else secret_names,
             updated_by=operator,
         )
         await session.commit()
@@ -145,10 +146,17 @@ class TestSpecs:
             "github": "github_app",
             "google-workspace": "oauth_client",
             "airtable": "oauth_client",
+            "salesforce": "oauth_client",
         }
         assert specs["google-workspace"].variables == (GOOGLE_VARIABLE,)
         assert specs["airtable"].variables == ("AIRTABLE_CLIENT_CONFIG_PATH",)
         assert specs["github"].secret_names == {"client_secret", "private_key"}
+        assert specs["google-workspace"].secret_names == {"client_secret"}
+        # Salesforce's entry names a public client: PKCE proves it, so it
+        # needs no secret at all.
+        assert specs["salesforce"].public is True
+        assert specs["salesforce"].secret_names == frozenset()
+        assert specs["google-workspace"].public is False
 
 
 class TestSavedSecrets:
@@ -221,6 +229,66 @@ class TestPrecedence:
             "saved-client-id",
             "example-secret-1111",
         )
+
+    async def test_a_configured_public_client_needs_no_secret(
+        self, session_factory, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "salesforce.json"
+        path.write_text(json.dumps({"client_id": "configured-public-client"}))
+        apps = _apps(
+            session_factory, environ={"SALESFORCE_CLIENT_CONFIG_PATH": str(path)}
+        )
+        await apps.load()
+        effective = apps.effective("salesforce")
+        assert effective.source == "configuration"
+        assert effective.values is not None
+        assert effective.values.secrets == {}
+        client = apps.oauth_clients()["salesforce"]
+        assert (client.client_id, client.client_secret) == (
+            "configured-public-client",
+            None,
+        )
+
+    async def test_a_configured_public_client_may_carry_a_secret(
+        self, session_factory, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "salesforce.json"
+        path.write_text(
+            json.dumps({"client_id": "configured-client", "client_secret": "SYNTHETIC"})
+        )
+        apps = _apps(
+            session_factory, environ={"SALESFORCE_CLIENT_CONFIG_PATH": str(path)}
+        )
+        await apps.load()
+        client = apps.oauth_clients()["salesforce"]
+        assert (client.client_id, client.client_secret) == (
+            "configured-client",
+            "SYNTHETIC",
+        )
+
+    async def test_a_client_id_alone_is_no_confidential_client(
+        self, session_factory, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "google.json"
+        path.write_text(json.dumps({"client_id": "configured-client-id"}))
+        apps = _apps(session_factory, environ={GOOGLE_VARIABLE: str(path)})
+        with pytest.raises(ServiceSetupError, match="client_secret"):
+            await apps.load()
+
+    async def test_a_saved_public_client_needs_no_secret(self, session_factory) -> None:
+        await _save(
+            session_factory,
+            "salesforce",
+            client_id="saved-public-client",
+            secrets={},
+            secret_names=frozenset(),
+        )
+        apps = _apps(session_factory)
+        await apps.load()
+        effective = apps.effective("salesforce")
+        assert effective.source == "saved"
+        client = apps.oauth_clients()["salesforce"]
+        assert (client.client_id, client.client_secret) == ("saved-public-client", None)
 
     async def test_configuration_wins_over_a_saved_client_and_says_so(
         self, session_factory, tmp_path: Path, caplog: pytest.LogCaptureFixture
