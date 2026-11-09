@@ -58,3 +58,10 @@ written out as the equivalent `fill` attributes and its ids removed.
   Fetched 2026-09-29. Vendor permission has not been verified; trademark of its
   owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
+
+- **Monday.com** (`monday.svg`): vendor mark from the logo served on
+  https://monday.com/ at
+  https://dapulse-res.cloudinary.com/image/upload/remote_mondaycom_static/img/monday-logo-2.svg.
+  Fetched 2026-11-04. The white background rectangle and fixed size were removed,
+  and the viewBox cropped to the three original coloured paths. Paths and fills
+  are unchanged. Trademark of monday.com; vendor permission has not been verified.
