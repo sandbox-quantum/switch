@@ -26,17 +26,19 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_cloudflare_datadog_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "github",
         "google-workspace",
@@ -45,7 +47,57 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["cloudflare"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+
+
+def test_the_shipped_cloudflare_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["cloudflare"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports is None
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("cloudflare", "https://mcp.cloudflare.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == [
+        "offline_access",
+        "user:read",
+        "account:read",
+        "zone.read",
+        "dns.read",
+        "workers-scripts.read",
+    ]
+    assert definition.access.write.scopes == [
+        "offline_access",
+        "user:read",
+        "account:read",
+        "zone.read",
+        "dns.read",
+        "workers-scripts.read",
+        "zone.write",
+        "dns.write",
+        "workers-scripts.write",
+    ]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.cloudflare.com/client/v4/user"
+    assert (
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == ("result.id", "result.email")
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1200,3 +1252,23 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+def test_cloudflare_scopes_are_all_in_advertised_scopes_supported():
+    definition = CATALOG["cloudflare"].definition
+    assert definition.access is not None and definition.access.write is not None
+    advertised = {
+        "offline_access",
+        "user:read",
+        "account:read",
+        "zone.read",
+        "zone.write",
+        "dns.read",
+        "dns.write",
+        "workers-scripts.read",
+        "workers-scripts.write",
+    }
+    used = set(definition.access.read.scopes or []) | set(
+        definition.access.write.scopes or []
+    )
+    assert used.issubset(advertised)
