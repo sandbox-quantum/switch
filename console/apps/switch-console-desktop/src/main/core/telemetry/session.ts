@@ -3,7 +3,7 @@ import { BACKGROUND_EVENTS, type TelemetryEventName } from './events';
 /** How long without anything someone did before the next thing they do starts a new session. */
 export const SESSION_IDLE_MS = 30 * 60_000;
 
-/** The session an event nobody caused carries: Amplitude reads -1 as none. */
+/** The session a background event carries: Amplitude reads -1 as none. */
 export const NO_SESSION = -1;
 
 /**
@@ -13,9 +13,10 @@ export const NO_SESSION = -1;
  * is what Amplitude expects of a session id and says nothing an event's own
  * timestamp does not.
  *
- * Only an event someone caused starts a session or keeps one going. An event
- * nobody caused (`BACKGROUND_EVENTS`) is in no session at all, so a session's
- * length is time someone spent in the app rather than time it was left open.
+ * Only an event someone caused starts a session or keeps one going. One that is
+ * not someone using the app (`BACKGROUND_EVENTS`) is in no session at all, so a
+ * session's length is time someone spent in the app rather than time it was
+ * left open.
  *
  * Kept in memory: a launch starts afresh with the first thing someone does.
  */

@@ -374,7 +374,8 @@ export type TelemetryHostSetupStepKind = HostSetupStepKind | 'unknown';
  * mean.
  *
  * The ambient fields every event carries — app version, operating system, build
- * channel, install id — are added by the emitter and are not repeated here.
+ * channel, install id, the record's own random id and its session — are added
+ * by the emitter and are not repeated here.
  *
  * Keep this set small. It exists to answer "is the app used, and where does it
  * break"; a question the current set cannot answer is the bar for adding to it,
@@ -745,11 +746,12 @@ export type TelemetryEventMap = {
 export type TelemetryEventName = keyof TelemetryEventMap;
 
 /**
- * The events nobody caused: the app noticing, retrying or tidying up on its
- * own, or recording an answer it took rather than was given. Amplitude counts
- * activity per event name, and these are the names it should count as
- * inactive. They carry no session (`flint.session_id` is -1, `./session`) and
- * never start or prolong one.
+ * The events that are not someone using the app: the app noticing, retrying or
+ * tidying up on its own, an update that did not install, a screen that failed,
+ * and the usage-data answer, which the first-run notice records by itself.
+ * Amplitude counts activity per event name, and these are the names to count
+ * as inactive. They carry no session (`flint.session_id` is -1, `./session`)
+ * and never start or prolong one.
  */
 export const BACKGROUND_EVENTS: ReadonlySet<TelemetryEventName> = new Set<TelemetryEventName>([
   'session_discovered',
