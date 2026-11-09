@@ -56,7 +56,7 @@ from switch_core.clients.admin_messages import (
     PLATFORM_MARKER,
     SENDER_IS_APP_MARKER,
 )
-from switch_core.clients.mentions import NAME_CHAR
+from switch_core.clients.mentions import mention_tokens
 from switch_core.delivery.addressing import IncomingMessage
 
 if TYPE_CHECKING:
@@ -103,10 +103,6 @@ _SMALL_TALK = frozenset(
 
 _TRAILING_PUNCTUATION = re.compile(r"[\s.!?,;:]+$")
 
-# A mention-shaped token: an `@` that starts a word, followed by name
-# characters. An email address (`ops@example.com`) is not one.
-_MENTION = re.compile(rf"(?<!{NAME_CHAR})@({NAME_CHAR}+)")
-
 
 def is_small_talk(body: str) -> bool:
     """True for thanks or praise ("thanks!", "great"), which ends an exchange
@@ -116,13 +112,13 @@ def is_small_talk(body: str) -> bool:
 
 def mentioned_names(body: str) -> set[str]:
     """The names @-mentioned in the text, lowercased."""
-    return {name.lower() for name in _MENTION.findall(body)}
+    return {name.lower() for name in mention_tokens(body)}
 
 
 def mentions_anyone(body: str) -> bool:
     """Whether the text @-mentions anyone, by the same token rule mentions use.
     A mention always wins, so the rules stand aside."""
-    return _MENTION.search(body) is not None
+    return bool(mention_tokens(body))
 
 
 NOT_TAKING_PART = "the agent is not taking part in this thread"

@@ -19,6 +19,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -64,6 +65,7 @@ class CommandConsumer(Consumer[SystemActor]):
         connections: AgentConnectionRegistry,
         document_store: DocumentStore,
         reference_store: ReferenceStore,
+        package_store: PackageStore,
         agent_session_store: AgentSessionStore,
         room_service: RoomService,
         user_store: UserStore,
@@ -81,6 +83,7 @@ class CommandConsumer(Consumer[SystemActor]):
         self._connections = connections
         self._document_store = document_store
         self._reference_store = reference_store
+        self._package_store = package_store
         self._agent_session_store = agent_session_store
         self._room_service = room_service
         self._user_store = user_store

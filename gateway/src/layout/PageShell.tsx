@@ -1,14 +1,18 @@
 import { Alert, Box, Button, Stack } from "@mui/material";
-import { Outlet } from "react-router";
+import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
-import type { Layout } from "../routes/routeTable";
+import { type Layout, areaOf } from "../routes/routeTable";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
 
 /** Hoot's signature shell: a narrow icon rail and a slim top bar sitting bare on
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
- *  the content is the hero — an "app within a surface", not edge-to-edge chrome. */
+ *  the content is the hero — an "app within a surface", not edge-to-edge chrome.
+ *  The new layout's organization settings are a place of their own, outside
+ *  the workspace: no rail there, and the top bar leads back. */
 export default function PageShell({ layout }: { layout: Layout }) {
+  const { pathname } = useLocation();
+  const withRail = areaOf(pathname, layout) !== "organization";
   return (
     <Box
       sx={{
@@ -18,9 +22,18 @@ export default function PageShell({ layout }: { layout: Layout }) {
         backgroundColor: "var(--hoot-canvas)",
       }}
     >
-      <NavRail layout={layout} />
-      <Stack sx={{ flex: 1, minWidth: 0, overflow: "hidden", pr: "var(--surface-gutter)", pb: "var(--surface-gutter)" }}>
-        <TopBar />
+      {withRail && <NavRail layout={layout} />}
+      <Stack
+        sx={{
+          flex: 1,
+          minWidth: 0,
+          overflow: "hidden",
+          pl: withRail ? 0 : "var(--surface-gutter)",
+          pr: "var(--surface-gutter)",
+          pb: "var(--surface-gutter)",
+        }}
+      >
+        <TopBar layout={layout} />
         <Stack
           component="main"
           sx={{

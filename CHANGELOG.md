@@ -69,6 +69,18 @@ version of their own to them without also giving them a release of their own.
   `alerted` or `errored`. A message Switch Trust left alone has no `trust`
   field, so its result is as before. Until now an agent whose words were
   redacted had no way to know.
+- **How many users and agents each workspace has.** `GET /gateway/tenants/counts`
+  answers for every workspace the caller may enter, counting people as the
+  workspace's members list shows them: its members, and its organization's
+  admins who are not one. The dashboard's new workspace switcher reads it.
+- **A dev-only role switcher for the dashboard.** `just seed-dev-roles`
+  creates local test accounts for an org admin, a workspace admin and a
+  member, plus a second workspace only the org admin can open, and
+  `just gateway-dev`, on a server with `gateway_v2` on, shows a **Role:**
+  control in the top bar that signs in as any of them, or as the operator from
+  `.env`, so a page can be checked as each role. Switching is an ordinary
+  sign-in, so every check is the server's own. A production build leaves the
+  switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
 - **The operator dashboard follows the current Hoot design.** Form fields
@@ -86,6 +98,9 @@ version of their own to them without also giving them a release of their own.
   field, its label, and a disabled checkbox or switch looked almost the same
   as enabled ones; they are now greyed out, so an action you may not take
   reads as unavailable.
+- **The dashboard no longer claims the system is healthy.** The "System
+  healthy" indicator in its top bar was hard-coded and never checked anything,
+  so it is gone.
 - **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
   `GATEWAY_PASSWORD_LOGIN_ENABLED=false` the admin account is seeded without a
   password, and the first OIDC sign-in with `GATEWAY_ADMIN_EMAIL` links to it.
@@ -268,6 +283,11 @@ version of their own to them without also giving them a release of their own.
   being built, so turn it on for development and staging only. With it off,
   the dashboard is laid out as before, and the new URLs lead back to today's
   pages.
+- **The new layout's Overview counts the workspace's agents, users and
+  rooms.** Each card opens its list, and View graph opens the ecosystem
+  graph, which leaves the new rail. A workspace's admins see its totals; a
+  member sees the agents they own and the rooms they take part in, marked
+  "Yours", and every user. A count that cannot be read shows a dash and why.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
@@ -855,6 +875,15 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **A room's detail says whether the caller takes part in it, and whether
+  it is a Switch Console chat.** The gateway's `GET /rooms/{id}`, and the
+  room it returns from a create or change, always answered
+  `viewer_is_member: false` and `is_console_chat: false`, so Console's room
+  settings named a Console chat's messaging app "None". Both now say what
+  the room list says.
+- **`!list-documents` and `!list-references` answer again.** Since they began
+  listing what a room's packages bring, both failed on the admin client that
+  runs them, and the channel got no answer at all.
 - **The dashboard's addressing policy editor judges rules as the server
   does.** A rule letting in only the agent's owner, or its owner's agents,
   was taken for one that lets in nobody, and Save was held; the editor now
