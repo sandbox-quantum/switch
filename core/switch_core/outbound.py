@@ -65,6 +65,10 @@ class OutboundURLRefused(ValueError):
     """A URL names an address Switch will not connect to on a tenant's behalf."""
 
 
+class OutboundHostUnresolved(OutboundURLRefused):
+    """The host does not resolve, so there is no address to check."""
+
+
 @dataclass(frozen=True)
 class OutboundPolicy:
     allowed_hostnames: frozenset[str]
@@ -129,7 +133,9 @@ class OutboundPolicy:
                     hostname, port, type=socket.SOCK_STREAM
                 )
             except socket.gaierror as exc:
-                raise OutboundURLRefused(f"{hostname} does not resolve: {exc}") from exc
+                raise OutboundHostUnresolved(
+                    f"{hostname} does not resolve: {exc}"
+                ) from exc
             candidates = [str(info[4][0]) for info in infos]
 
         addresses: list[str] = []

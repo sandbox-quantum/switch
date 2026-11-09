@@ -54,6 +54,13 @@ from switch_core.logging_context import (
     MCP_IDENTITY_DIAGNOSTICS,
     McpIdentityDiagnosticFilter,
 )
+from switch_core.outbound import (
+    GuardedAsyncClient,
+    OutboundHostUnresolved,
+    OutboundPolicy,
+    OutboundURLRefused,
+    guarded_transport,
+)
 
 MAX_METADATA_BYTES = 64 * 1024
 # The MCP identity call's limits: its whole time, the bytes of one response
@@ -314,20 +321,23 @@ class _BudgetTransport(httpx.AsyncBaseTransport):
 def _mcp_http_client(
     *,
     budget: _McpBudget,
-    headers: dict[str, str] | None = None,
-    timeout: httpx.Timeout | None = None,
-    auth: httpx.Auth | None = None,
-    **kwargs: Any,
+    policy: OutboundPolicy,
+    verify: bool,
+    headers: dict[str, str] | None,
+    auth: httpx.Auth | None,
+    follow_redirects: bool,
+    timeout: httpx.Timeout,
 ) -> httpx.AsyncClient:
-    kwargs["follow_redirects"] = False
-    if timeout is not None:
-        kwargs["timeout"] = timeout
-    inner = kwargs.pop("transport", None) or httpx.AsyncHTTPTransport()
+    """The identity call's own client and transport, held to the shared
+    client's policy. Closing it never closes the shared client's transport.
+    Redirects are not followed, whatever the SDK asks."""
     return httpx.AsyncClient(
         headers={**(headers or {}), "Accept-Encoding": "identity"},
         auth=auth,
-        transport=_BudgetTransport(inner, budget),
-        **kwargs,
+        follow_redirects=False,
+        trust_env=False,
+        timeout=timeout,
+        transport=_BudgetTransport(guarded_transport(policy, verify=verify), budget),
     )
 
 
@@ -777,6 +787,12 @@ class OAuthAdapter:
     async def _mcp_identity(self, access_token: str) -> dict[str, Any]:
         if self._mcp_url is None or self._identity.mcp_tool is None:
             raise ServiceAdapterError(f"{self._name} has no MCP identity source.")
+        http = self._http
+        if not isinstance(http, GuardedAsyncClient):
+            raise ServiceAdapterError(
+                f"{self._name} was not asked whose sign-in this is: Core's HTTP "
+                "client is not held to its outbound policy."
+            )
         deadline = asyncio.timeout(MCP_IDENTITY_SECONDS)
         budget = _McpBudget(MCP_RESPONSE_BYTES, MCP_IDENTITY_BYTES, deadline)
         failure: ServiceAdapterError | None = None
@@ -784,7 +800,7 @@ class OAuthAdapter:
         diagnostics = MCP_IDENTITY_DIAGNOSTICS.set(True)
         try:
             async with deadline:
-                result = await self._call_identity_tool(access_token, budget)
+                result = await self._call_identity_tool(http, access_token, budget)
         except Exception as error:
             failure = self._mcp_failure(error, budget)
         except BaseExceptionGroup as group:
@@ -810,13 +826,18 @@ class OAuthAdapter:
         return body
 
     async def _call_identity_tool(
-        self, access_token: str, budget: _McpBudget
+        self, http: GuardedAsyncClient, access_token: str, budget: _McpBudget
     ) -> CallToolResult:
         assert self._mcp_url is not None and self._identity.mcp_tool is not None
         transport = StreamableHttpTransport(
             self._mcp_url,
             headers={"Authorization": f"Bearer {access_token}"},
-            httpx_client_factory=functools.partial(_mcp_http_client, budget=budget),
+            httpx_client_factory=functools.partial(
+                _mcp_http_client,
+                budget=budget,
+                policy=http.policy,
+                verify=http.verify,
+            ),
         )
         async with Client(
             transport,
@@ -864,6 +885,16 @@ class OAuthAdapter:
             if isinstance(leaf, McpIdentityError):
                 return McpIdentityError(self._name, leaf.reason)
         for leaf in leaves:
+            # A name that does not resolve is not the policy's refusal: it
+            # is unreachable, below.
+            if isinstance(leaf, OutboundURLRefused) and not isinstance(
+                leaf, OutboundHostUnresolved
+            ):
+                return ServiceAdapterError(
+                    f"{self._name}'s MCP server address is not allowed by this "
+                    "server's outbound policy."
+                )
+        for leaf in leaves:
             if isinstance(leaf, httpx.HTTPStatusError):
                 status = leaf.response.status_code
                 if status == 401:
@@ -877,7 +908,9 @@ class OAuthAdapter:
                     )
                 return McpIdentityError(self._name, "protocol_error")
         if budget.deadline.expired() or any(
-            isinstance(leaf, (TimeoutError, httpx.TransportError))
+            isinstance(
+                leaf, (TimeoutError, httpx.TransportError, OutboundHostUnresolved)
+            )
             or (
                 isinstance(leaf, McpError)
                 and leaf.error.code in (httpx.codes.REQUEST_TIMEOUT, CONNECTION_CLOSED)

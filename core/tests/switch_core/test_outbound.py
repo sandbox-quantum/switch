@@ -14,6 +14,7 @@ from aiohttp import web
 from switch_core.config import SwitchConfig
 from switch_core.outbound import (
     GuardedAsyncClient,
+    OutboundHostUnresolved,
     OutboundPolicy,
     OutboundURLRefused,
     guarded_async_client,
@@ -123,6 +124,18 @@ class TestWhatMayBeReached:
         policy = OutboundPolicy.parse("169.254.0.0/16,fd00::/8,100.64.0.0/10")
         with pytest.raises(OutboundURLRefused, match="metadata"):
             await policy.resolve(address, 80)
+
+    async def test_a_name_that_does_not_resolve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _getaddrinfo(self: Any, host: str, port: int, **_: Any) -> list[Any]:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+        monkeypatch.setattr(
+            "asyncio.base_events.BaseEventLoop.getaddrinfo", _getaddrinfo
+        )
+        with pytest.raises(OutboundHostUnresolved, match="does not resolve"):
+            await _NOTHING_ALLOWED.resolve("missing.example.com", 443)
 
     async def test_the_gcp_metadata_name_is_refused(self) -> None:
         policy = OutboundPolicy.parse("metadata.google.internal")

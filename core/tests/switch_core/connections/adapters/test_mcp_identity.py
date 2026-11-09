@@ -5,14 +5,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import gzip
+import inspect
 import json
 import logging
+import socket
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
+import httpcore
 import httpx
 import pytest
 import yaml
+from aiohttp import web
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools.tool import ToolResult
@@ -34,7 +39,15 @@ from switch_core.connections.adapters.oauth import (
 )
 from switch_core.connections.loader import ConnectionDefinition, ConnectionIdentity
 from switch_core.logging_context import MCP_IDENTITY_DIAGNOSTICS
+from switch_core.outbound import (
+    GuardedAsyncClient,
+    OutboundPolicy,
+    guarded_async_client,
+)
 from tests.switch_core.connections.test_loader import OAUTH_ENTRY
+from tests.switch_core.test_outbound import _resolving_to
+
+_NOTHING_ALLOWED = OutboundPolicy.parse("")
 
 
 @pytest.mark.parametrize(
@@ -79,7 +92,7 @@ async def test_mcp_identity_protocol(monkeypatch, shape):
         return server
 
     monkeypatch.setattr(oauth, "StreamableHttpTransport", transport)
-    async with httpx.AsyncClient() as http:
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         adapter = _adapter(http)
         identity = await adapter.identify("example-bearer-value")
     assert identity.account_id == ("42" if shape == "integer" else "account-example")
@@ -115,7 +128,7 @@ async def test_mcp_identity_rejects_unusable_results(monkeypatch, shape, caplog)
         return ToolResult(content=[TextContent(type="text", text=text)])
 
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
-    async with httpx.AsyncClient() as http:
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError) as exc:
             await _adapter(http).identify("example-bearer-value")
     assert "private-diagnostic" not in str(exc.value)
@@ -129,7 +142,7 @@ async def test_mcp_identity_sanitizes_transport_failure(monkeypatch):
         raise RuntimeError("private-diagnostic example-bearer-value")
 
     monkeypatch.setattr(oauth, "StreamableHttpTransport", fail)
-    async with httpx.AsyncClient() as http:
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError, match="could not identify") as exc:
             await _adapter(http).identify("example-bearer-value")
     assert exc.value.__context__ is None
@@ -163,13 +176,8 @@ async def test_mcp_identity_refuses_http_redirects(monkeypatch, location):
         requests.append(request)
         return httpx.Response(307, headers={"Location": location})
 
-    factory = oauth._mcp_http_client
-
-    def mock_factory(**kwargs):
-        return factory(transport=httpx.MockTransport(handler), **kwargs)
-
-    monkeypatch.setattr(oauth, "_mcp_http_client", mock_factory)
-    async with httpx.AsyncClient() as http:
+    _over_mock(monkeypatch, handler)
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError, match="could not identify"):
             await _adapter(http).identify("example-bearer-value")
     assert requests
@@ -198,13 +206,8 @@ async def test_mcp_identity_malformed_http_does_not_log_token(
             200, content=payload, headers={"content-type": "application/json"}
         )
 
-    factory = oauth._mcp_http_client
-
-    def mock_factory(**kwargs):
-        return factory(transport=httpx.MockTransport(handler), **kwargs)
-
-    monkeypatch.setattr(oauth, "_mcp_http_client", mock_factory)
-    async with httpx.AsyncClient() as http:
+    _over_mock(monkeypatch, handler)
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError):
             await _adapter(http).identify("example-bearer-value")
     assert "example-bearer-value" not in caplog.text
@@ -244,7 +247,7 @@ async def test_vendor_log_notifications_never_reach_the_logs(monkeypatch):
     fastmcp_logger.addHandler(handler)
     logging.getLogger().addHandler(handler)
     try:
-        async with httpx.AsyncClient() as http:
+        async with guarded_async_client(_NOTHING_ALLOWED) as http:
             identity = await _adapter(http).identify("example-bearer-value")
     finally:
         fastmcp_logger.removeHandler(handler)
@@ -304,7 +307,7 @@ async def test_identity_refuses_mutating_or_parameterized_tools(
             return {"data": {"gid": "example-account"}}
 
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
-    async with httpx.AsyncClient() as http:
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError, match="could not identify"):
             await _adapter(http).identify("example-bearer-value")
     assert called == []
@@ -322,7 +325,7 @@ async def test_identity_never_selects_the_first_account_from_an_array(
         return ToolResult(content=[TextContent(type="text", text=json.dumps(accounts))])
 
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
-    async with httpx.AsyncClient() as http:
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError):
             await _adapter(http).identify("example-bearer-value")
 
@@ -336,7 +339,7 @@ async def test_identity_requires_one_scalar_account_id(monkeypatch, account_id):
         return ToolResult(content=[], structured_content={"data": {"gid": account_id}})
 
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
-    async with httpx.AsyncClient() as http:
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         with pytest.raises(ServiceAdapterError):
             await _adapter(http).identify("example-bearer-value")
 
@@ -381,7 +384,7 @@ async def test_optional_identity_selector_is_never_supplied(monkeypatch):
         )
 
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
-    async with httpx.AsyncClient() as http:
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         result = await _adapter(http).identify("example-bearer-value")
     assert result.account_id == "current-account"
     assert calls == ["me"]
@@ -474,7 +477,11 @@ async def test_composite_identity_protocol(monkeypatch, source, parts, expected)
 
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json=parts))
-    async with httpx.AsyncClient(transport=transport) as http:
+    async with (
+        guarded_async_client(_NOTHING_ALLOWED)
+        if source == "mcp"
+        else httpx.AsyncClient(transport=transport)
+    ) as http:
         adapter = _adapter(http)
         source_fields = (
             {"mcp_tool": "get_user"}
@@ -591,16 +598,16 @@ class _ScriptedMcp:
 
 
 def _over_mock(monkeypatch, handler) -> None:
-    factory = oauth._mcp_http_client
+    """The identity call's own transport answers with `handler`."""
     monkeypatch.setattr(
-        oauth,
-        "_mcp_http_client",
-        lambda **kw: factory(transport=httpx.MockTransport(handler), **kw),
+        oauth, "guarded_transport", lambda policy, **kw: httpx.MockTransport(handler)
     )
 
 
-async def _identify_error() -> ServiceAdapterError:
-    async with httpx.AsyncClient() as http:
+async def _identify_error(
+    policy: OutboundPolicy = _NOTHING_ALLOWED,
+) -> ServiceAdapterError:
+    async with guarded_async_client(policy) as http:
         with pytest.raises(ServiceAdapterError) as raised:
             await _adapter(http).identify("example-bearer-value")
     error = raised.value
@@ -757,11 +764,8 @@ async def test_mcp_failure_unwraps_exception_groups(nested):
 async def _over_http(monkeypatch, server: FastMCP, *, json_response: bool):
     """The identity call to `server`'s real HTTP app, through Core's client."""
     app = server.http_app(path="/v1/mcp", json_response=json_response)
-    factory = oauth._mcp_http_client
     monkeypatch.setattr(
-        oauth,
-        "_mcp_http_client",
-        lambda **kw: factory(transport=httpx.ASGITransport(app=app), **kw),
+        oauth, "guarded_transport", lambda policy, **kw: httpx.ASGITransport(app=app)
     )
     async with app.router.lifespan_context(app):
         yield
@@ -810,7 +814,7 @@ async def test_mcp_identity_reads_a_small_server_over_http(monkeypatch):
     async with _over_http(
         monkeypatch, _paged_server(3, page_size=2), json_response=False
     ):
-        async with httpx.AsyncClient() as http:
+        async with guarded_async_client(_NOTHING_ALLOWED) as http:
             identity = await _adapter(http).identify("example-bearer-value")
     assert identity.account_id == "account-example"
 
@@ -821,7 +825,7 @@ async def test_mcp_identity_page_limit(monkeypatch, pages, succeeds):
     server = _paged_server(10, page_size=2)
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
     if succeeds:
-        async with httpx.AsyncClient() as http:
+        async with guarded_async_client(_NOTHING_ALLOWED) as http:
             identity = await _adapter(http).identify("example-bearer-value")
         assert identity.account_id == "account-example"
     else:
@@ -831,7 +835,7 @@ async def test_mcp_identity_page_limit(monkeypatch, pages, succeeds):
 async def test_mcp_identity_finds_the_tool_on_a_later_page(monkeypatch):
     server = _paged_server(7, page_size=2)
     monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
-    async with httpx.AsyncClient() as http:
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         identity = await _adapter(http).identify("example-bearer-value")
     assert identity.account_id == "account-example"
 
@@ -869,7 +873,161 @@ async def test_mcp_identity_refuses_a_compressed_response(monkeypatch):
 async def test_mcp_identity_asks_for_identity_encoding(monkeypatch):
     vendor = _ScriptedMcp()
     _over_mock(monkeypatch, vendor)
-    async with httpx.AsyncClient() as http:
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
         await _adapter(http).identify("example-bearer-value")
     assert vendor.requests
     assert {r.headers.get("accept-encoding") for r in vendor.requests} == {"identity"}
+
+
+# ── The outbound policy ──────────────────────────────────────────────────────
+
+NOT_HELD = (
+    "Example was not asked whose sign-in this is: Core's HTTP client is not "
+    "held to its outbound policy."
+)
+REFUSED = (
+    "Example's MCP server address is not allowed by this server's outbound policy."
+)
+
+
+class _Connects:
+    """Records each TCP connection the guarded backend makes, and fails it."""
+
+    def __init__(self, monkeypatch) -> None:
+        self.addresses: list[tuple[str, int]] = []
+
+        async def connect_tcp(backend, host, port, **kwargs):
+            self.addresses.append((host, port))
+            raise httpcore.ConnectError(MARKER)
+
+        monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", connect_tcp)
+
+
+async def test_mcp_identity_refuses_a_client_not_held_to_the_policy(monkeypatch):
+    vendor = _ScriptedMcp()
+    _over_mock(monkeypatch, vendor)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(vendor)) as http:
+        assert not isinstance(http, GuardedAsyncClient)
+        with pytest.raises(ServiceAdapterError) as raised:
+            await _adapter(http).identify("example-bearer-value")
+    assert type(raised.value) is ServiceAdapterError
+    assert str(raised.value) == NOT_HELD
+    assert raised.value.__context__ is None
+    assert vendor.requests == []
+
+
+async def test_mcp_identity_never_connects_where_the_policy_refuses(monkeypatch):
+    _resolving_to(monkeypatch, "10.9.9.9")
+    connects = _Connects(monkeypatch)
+    error = await _identify_error()
+    assert type(error) is ServiceAdapterError
+    assert str(error) == REFUSED
+    assert connects.addresses == []
+
+
+@pytest.mark.parametrize(
+    "allowed, address",
+    [
+        ("10.9.9.9", "10.9.9.9"),
+        ("mcp.example.test", "10.9.9.9"),
+        ("", "93.184.215.14"),
+    ],
+)
+async def test_mcp_identity_connects_where_the_policy_allows(
+    monkeypatch, allowed, address
+):
+    _resolving_to(monkeypatch, address)
+    connects = _Connects(monkeypatch)
+    error = await _identify_error(OutboundPolicy.parse(allowed))
+    assert type(error) is ServiceUnavailableError
+    assert "could not be reached" in str(error)
+    assert connects.addresses == [(address, 443)]
+
+
+async def test_mcp_identity_name_that_does_not_resolve_is_unreachable(monkeypatch):
+    async def getaddrinfo(self, host, port, **kwargs):
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+    monkeypatch.setattr("asyncio.base_events.BaseEventLoop.getaddrinfo", getaddrinfo)
+    connects = _Connects(monkeypatch)
+    error = await _identify_error()
+    assert type(error) is ServiceUnavailableError
+    assert "could not be reached" in str(error)
+    assert connects.addresses == []
+
+
+@pytest.mark.parametrize("verify", [True, False])
+async def test_mcp_identity_transport_has_the_clients_policy(monkeypatch, verify):
+    built = []
+    vendor = _ScriptedMcp()
+
+    def transport(policy, **kwargs):
+        built.append((policy, kwargs))
+        return httpx.MockTransport(vendor)
+
+    monkeypatch.setattr(oauth, "guarded_transport", transport)
+    policy = OutboundPolicy.parse("10.0.0.0/8")
+    async with guarded_async_client(policy, verify=verify) as http:
+        await _adapter(http).identify("example-bearer-value")
+    assert built == [(policy, {"verify": verify})]
+
+
+def test_mcp_http_client_takes_no_transport():
+    """Nothing a caller passes can replace the guarded transport."""
+    parameters = inspect.signature(oauth._mcp_http_client).parameters
+    assert set(parameters) == {
+        "budget",
+        "policy",
+        "verify",
+        "headers",
+        "timeout",
+        "auth",
+        "follow_redirects",
+    }
+    assert all(p.kind is p.KEYWORD_ONLY for p in parameters.values())
+
+
+class _ClosingTransport(httpx.MockTransport):
+    closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@contextlib.asynccontextmanager
+async def _local_server() -> AsyncIterator[str]:
+    async def ok(_: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app = web.Application()
+    app.router.add_get("/ok", ok)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+    try:
+        yield f"http://127.0.0.1:{port}/ok"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.parametrize("status", [None, 500], ids=["succeeds", "fails"])
+async def test_mcp_identity_leaves_the_shared_client_open(monkeypatch, status):
+    built: list[_ClosingTransport] = []
+
+    def transport(policy, **kwargs):
+        built.append(_ClosingTransport(_ScriptedMcp(status=status)))
+        return built[-1]
+
+    monkeypatch.setattr(oauth, "guarded_transport", transport)
+    async with _local_server() as url:
+        async with guarded_async_client(OutboundPolicy.parse("127.0.0.1/32")) as http:
+            if status is None:
+                await _adapter(http).identify("example-bearer-value")
+            else:
+                with pytest.raises(ServiceUnavailableError):
+                    await _adapter(http).identify("example-bearer-value")
+            assert http.is_closed is False
+            assert (await http.get(url)).text == "ok"
+    assert [t.closed for t in built] == [True]
