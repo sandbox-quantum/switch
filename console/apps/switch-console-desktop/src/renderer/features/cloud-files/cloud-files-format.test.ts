@@ -3,6 +3,7 @@ import type { CloudFileEntry } from '@shared/core/cloud-files/cloud-files';
 import {
   childPath,
   entryTitle,
+  filterEntries,
   formatChanged,
   formatChangedFull,
   formatSize,
@@ -106,5 +107,37 @@ describe('entryTitle', () => {
   it('uses the label where there is one, otherwise the name', () => {
     expect(entryTitle(folder('web', { label: 'Web Frontend' }))).toBe('Web Frontend');
     expect(entryTitle(file('a.txt'))).toBe('a.txt');
+  });
+});
+
+describe('sort and filter (the explorer’s part 2)', () => {
+  const at = (entry: CloudFileEntry, mtime: number) => ({ ...entry, mtime });
+  const names = (entries: CloudFileEntry[]) => entries.map((entry) => entry.name);
+
+  it('Changed is newest first across folders and files, then by name, as Switch web', () => {
+    const entries = [
+      at(folder('old'), 1),
+      at(file('b.txt'), 5),
+      at(file('a.txt'), 5),
+      at(folder('new'), 9),
+    ];
+    expect(names(sortEntries(entries, false, 'changed'))).toEqual(['new', 'a.txt', 'b.txt', 'old']);
+    expect(names(sortEntries(entries, false))).toEqual(['new', 'old', 'a.txt', 'b.txt']);
+  });
+
+  it('the filter matches names or labels anywhere, ignoring case and spaces round it', () => {
+    const entries = [
+      folder('baker', { label: 'Baker' }),
+      file('Menu.csv'),
+      file('menu-draft.md'),
+      file('notes.txt'),
+    ];
+    expect(names(filterEntries(entries, '  MENU '))).toEqual(['Menu.csv', 'menu-draft.md']);
+    expect(names(filterEntries(entries, 'bak'))).toEqual(['baker']);
+    // A top-level label is matched too, where the name alone wouldn't be.
+    const web = folder('web-frontend', { label: 'Web Frontend' });
+    expect(names(filterEntries([web], 'web front'))).toEqual(['web-frontend']);
+    expect(names(filterEntries(entries, ''))).toHaveLength(4);
+    expect(filterEntries(entries, 'zebra')).toEqual([]);
   });
 });

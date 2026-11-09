@@ -68,19 +68,43 @@ export function zipLabel(path: string): string {
   return path === '' ? 'Download all as zip' : 'Download folder as zip';
 }
 
+/** How the open folder's list is sorted: by name, or by when each entry changed, newest first (as Switch web). */
+export type EntryOrder = 'name' | 'changed';
+
 /**
- * A folder's entries in the order shown: folders first, then files, each by
- * name. At the top level, the agents' own folders come before "Shared" and
- * any other shared folder.
+ * A folder's entries in the order shown. By name: folders first, then files,
+ * each by name, and at the top level the agents' own folders come before
+ * "Shared" and any other shared folder. By changed: newest first across
+ * folders and files, using the times already in the listing (no extra reads),
+ * then by name.
  */
 export function sortEntries(
   entries: readonly CloudFileEntry[],
-  topLevel: boolean
+  topLevel: boolean,
+  order: EntryOrder = 'name'
 ): CloudFileEntry[] {
+  const byName = (a: CloudFileEntry, b: CloudFileEntry) =>
+    a.name.localeCompare(b.name, undefined, { numeric: true });
+  if (order === 'changed') return [...entries].sort((a, b) => b.mtime - a.mtime || byName(a, b));
   const rank = (entry: CloudFileEntry) =>
     entry.kind === 'file' ? 2 : topLevel && entry.agent === undefined ? 1 : 0;
-  return [...entries].sort(
-    (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { numeric: true })
+  return [...entries].sort((a, b) => rank(a) - rank(b) || byName(a, b));
+}
+
+/**
+ * The entries whose name (or top-level label) contains the filter, ignoring
+ * case. It only narrows what's already loaded: it never asks for more.
+ */
+export function filterEntries(
+  entries: readonly CloudFileEntry[],
+  filter: string
+): CloudFileEntry[] {
+  const wanted = filter.trim().toLocaleLowerCase();
+  if (!wanted) return [...entries];
+  return entries.filter(
+    (entry) =>
+      entry.name.toLocaleLowerCase().includes(wanted) ||
+      (entry.label?.toLocaleLowerCase().includes(wanted) ?? false)
   );
 }
 

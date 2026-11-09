@@ -1,5 +1,6 @@
 import { ChevronLeft, ChevronRight, Download, X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { motion } from 'motion/react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { attachmentBlobType } from '@renderer/features/chats/components/attachment-blob-type';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -13,7 +14,9 @@ import {
   type NoPreviewReason,
 } from '@shared/core/cloud-files/cloud-files';
 import { Breadcrumb } from './cloud-files-breadcrumb';
-import { formatChanged, formatChangedFull, formatSize } from './cloud-files-format';
+import { childPath, formatChanged, formatChangedFull, formatSize } from './cloud-files-format';
+import { previewOrigin, useExplorerTransitions } from './explorer-motion';
+import { CopyPathButton } from './explorer-parts';
 import { FileText } from './file-markdown';
 import { CodeView, CsvView, JsonView, MarkdownView, VideoView } from './preview-content';
 import { neighbourFiles } from './preview-format';
@@ -69,6 +72,7 @@ export function FilePreviewModal({
   onShow,
   onOpenFolder,
   onClose,
+  from = null,
 }: {
   serverId: string;
   /** The folder the file is in, box-relative. */
@@ -80,7 +84,19 @@ export function FilePreviewModal({
   onShow: (entry: CloudFileEntry) => void;
   onOpenFolder: (path: string) => void;
   onClose: () => void;
+  /** The clicked row's centre on screen, so the preview grows out of it; null to grow from its middle. */
+  from?: { x: number; y: number } | null;
 }) {
+  const motionSet = useExplorerTransitions();
+  const [origin, setOrigin] = useState('50% 50%');
+  // Measured as the preview mounts (the dialog draws it a moment after opening, in a
+  // portal), before it's painted, so the very first frame already grows from the row.
+  const measure = useCallback(
+    (element: HTMLDivElement | null) => {
+      if (element) setOrigin(previewOrigin(element.getBoundingClientRect(), from ?? null));
+    },
+    [from]
+  );
   const path = folder ? `${folder}/${entry.name}` : entry.name;
   const [preview, setPreview] = useState<Preview>({ kind: 'loading' });
   const [saving, setSaving] = useState(false);
@@ -184,7 +200,8 @@ export function FilePreviewModal({
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
-        className="h-[90dvh] w-[90vw] max-w-[90vw] max-sm:h-dvh max-sm:max-h-dvh max-sm:w-screen max-sm:max-w-none max-sm:rounded-none sm:max-w-[90vw]"
+        // The dialog's own zoom is off: the preview grows from the clicked row instead (below).
+        className="h-[90dvh] w-[90vw] max-w-[90vw] data-closed:animate-none data-open:animate-none max-sm:h-dvh max-sm:max-h-dvh max-sm:w-screen max-sm:max-w-none max-sm:rounded-none sm:max-w-[90vw]"
         onKeyDown={(event) => {
           if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
           if (keepsArrows(event.target)) return;
@@ -194,58 +211,69 @@ export function FilePreviewModal({
           onShow(target);
         }}
       >
-        <DialogTitle className="sr-only">{entry.name}</DialogTitle>
-        <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-4 py-3">
-          <div className="min-w-0">
-            <Breadcrumb
-              path={folder}
-              rootEntries={rootEntries}
-              onOpen={(target) => {
-                onClose();
-                onOpenFolder(target);
-              }}
-              fileName={entry.name}
-            />
-            <p className="text-xs text-foreground-muted">
-              {formatSize(entry.size)} · changed{' '}
-              <span title={formatChangedFull(entry.mtime)}>{formatChanged(entry.mtime)}</span>
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Previous file"
-              disabled={!previous}
-              onClick={() => previous && onShow(previous)}
-            >
-              <ChevronLeft className="size-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Next file"
-              disabled={!next}
-              onClick={() => next && onShow(next)}
-            >
-              <ChevronRight className="size-4" />
-            </Button>
-            {preview.kind !== 'gone' && (
-              <Button size="sm" disabled={saving} onClick={() => void save()}>
-                {saving ? <Spinner /> : <Download className="size-3.5" aria-hidden />}
-                Download
+        <motion.div
+          ref={measure}
+          data-preview-motion=""
+          className="flex min-h-0 flex-1 flex-col"
+          style={{ transformOrigin: origin }}
+          initial={{ opacity: 0, scale: motionSet.previewScale }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={motionSet.enter}
+        >
+          <DialogTitle className="sr-only">{entry.name}</DialogTitle>
+          <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-4 py-3">
+            <div className="min-w-0">
+              <Breadcrumb
+                path={folder}
+                rootEntries={rootEntries}
+                onOpen={(target) => {
+                  onClose();
+                  onOpenFolder(target);
+                }}
+                fileName={entry.name}
+              />
+              <p className="text-xs text-foreground-muted">
+                {formatSize(entry.size)} · changed{' '}
+                <span title={formatChangedFull(entry.mtime)}>{formatChanged(entry.mtime)}</span>
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Previous file"
+                disabled={!previous}
+                onClick={() => previous && onShow(previous)}
+              >
+                <ChevronLeft className="size-4" />
               </Button>
-            )}
-            <DialogClose
-              render={<Button variant="ghost" size="icon-sm" aria-label="Close preview" />}
-            >
-              <X className="size-4" />
-            </DialogClose>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Next file"
+                disabled={!next}
+                onClick={() => next && onShow(next)}
+              >
+                <ChevronRight className="size-4" />
+              </Button>
+              {preview.kind !== 'gone' && <CopyPathButton path={childPath(folder, entry.name)} />}
+              {preview.kind !== 'gone' && (
+                <Button size="sm" disabled={saving} onClick={() => void save()}>
+                  {saving ? <Spinner /> : <Download className="size-3.5" aria-hidden />}
+                  Download
+                </Button>
+              )}
+              <DialogClose
+                render={<Button variant="ghost" size="icon-sm" aria-label="Close preview" />}
+              >
+                <X className="size-4" />
+              </DialogClose>
+            </div>
+          </header>
+          <div className="min-h-0 flex-1 overflow-auto p-4" data-preview-body="">
+            <PreviewBody preview={preview} name={entry.name} onWake={() => void wake()} />
           </div>
-        </header>
-        <div className="min-h-0 flex-1 overflow-auto p-4" data-preview-body="">
-          <PreviewBody preview={preview} name={entry.name} onWake={() => void wake()} />
-        </div>
+        </motion.div>
       </DialogContent>
     </Dialog>
   );

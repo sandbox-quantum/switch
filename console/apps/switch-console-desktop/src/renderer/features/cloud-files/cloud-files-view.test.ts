@@ -545,6 +545,401 @@ describe('Your cloud files', () => {
   });
 });
 
+describe('Your cloud files, easier to use (part 1)', () => {
+  it('while the top level loads, it shows placeholder rows, not a spinner', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockReturnValue(new Promise(() => {}));
+    const view = await open();
+    expect(view.host.querySelector('[data-explorer-skeleton="list"]')).not.toBeNull();
+    expect(view.host.querySelector('[data-explorer-skeleton="tree"]')).not.toBeNull();
+    expect(text(view.host)).not.toContain('Opening your cloud files');
+    view.done();
+  });
+
+  it('while a folder loads, the list shows placeholder rows', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(({ path }: { path: string }) =>
+      path === '' ? Promise.resolve({ ok: true, value: { entries: TOP } }) : new Promise(() => {})
+    );
+    const view = await open();
+    expect(view.host.querySelector('section [data-explorer-skeleton="list"]')).not.toBeNull();
+    expect(text(view.host)).not.toContain('Loading…');
+    view.done();
+  });
+
+  it('each row has its kind’s icon, from the name only', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    const names = [
+      'README.md',
+      'app.ts',
+      'orders.csv',
+      'logo.png',
+      'demo.mp4',
+      'site.zip',
+      'notes.txt',
+    ];
+    list.mockImplementation(async ({ path }: { path: string }) =>
+      path === ''
+        ? { ok: true, value: { entries: TOP } }
+        : { ok: true, value: { entries: [folder('src'), ...names.map((name) => file(name))] } }
+    );
+    const view = await open();
+    const kinds = [...view.host.querySelectorAll('tbody [data-file-kind]')].map((icon) =>
+      icon.getAttribute('data-file-kind')
+    );
+    // Folders first, then files by name: app.ts, demo.mp4, logo.png, notes.txt, orders.csv, README.md, site.zip.
+    expect(kinds).toEqual([
+      'folder',
+      'code',
+      'video',
+      'image',
+      'other',
+      'data',
+      'markdown',
+      'archive',
+    ]);
+    // Colour is never the only signal: each row's name, as read out, ends in its kind.
+    const spoken = [...view.host.querySelectorAll('tbody [data-row-index]')].map((b) =>
+      b.getAttribute('aria-label')
+    );
+    expect(spoken).toEqual([
+      'src, Folder',
+      'app.ts, Code file',
+      'demo.mp4, Video',
+      'logo.png, Image',
+      'notes.txt, File',
+      'orders.csv, Data file',
+      'README.md, Markdown file',
+      'site.zip, Archive',
+    ]);
+    expect(preview).not.toHaveBeenCalled();
+    view.done();
+  });
+
+  it('an empty agent folder says files appear as the agent makes them; any other empty folder says it’s empty', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockImplementation(async ({ path }: { path: string }) =>
+      path === '' ? { ok: true, value: { entries: TOP } } : { ok: true, value: { entries: [] } }
+    );
+    params.value = { serverId: 's1', path: 'baker' };
+    let view = await open();
+    expect(text(view.host)).toContain('Nothing here yet. Files your agent makes appear here.');
+    view.done();
+    params.value = { serverId: 's1', path: 'shared' };
+    view = await open();
+    expect(text(view.host)).toContain('This folder is empty.');
+    expect(text(view.host)).not.toContain('Nothing here yet');
+    view.done();
+  });
+
+  it('the preview’s Copy path copies the path within Your cloud files and says "Path copied"', async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared/sample-bakery' };
+    list.mockImplementation(async ({ path }: { path: string }) =>
+      path === ''
+        ? { ok: true, value: { entries: TOP } }
+        : { ok: true, value: { entries: [file('menu.csv')] } }
+    );
+    preview.mockResolvedValue({ ok: true, value: { kind: 'text', text: 'item,price' } });
+    const view = await open();
+    await click(button(view.host, 'menu.csv'));
+    await click(dialog()?.querySelector('[data-copy-path]'));
+    expect(writeText).toHaveBeenCalledWith('shared/sample-bakery/menu.csv');
+    expect(text(dialog()!)).toContain('Path copied');
+    view.done();
+  });
+});
+
+describe('Your cloud files, easier to use (part 2)', () => {
+  const rows = (host: HTMLElement) =>
+    [...host.querySelectorAll<HTMLElement>('tbody [data-row-index]')].map((b) =>
+      b.textContent?.trim()
+    );
+  const filterBox = (host: HTMLElement) =>
+    host.querySelector<HTMLInputElement>('input[aria-label="Filter this folder"]')!;
+  const type = async (input: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+  const SHARED = [
+    folder('sample-bakery', { mtime: 5 }),
+    file('menu.csv'),
+    { ...file('Menu-Draft.md'), mtime: 9 },
+    { ...file('notes.txt'), mtime: 3 },
+  ];
+  const twoLevels = async ({ path }: { path: string }) =>
+    path === ''
+      ? { ok: true, value: { entries: TOP } }
+      : path === 'shared'
+        ? { ok: true, value: { entries: SHARED } }
+        : { ok: true, value: { entries: [file('menu-old.csv'), file('recipes.md')] } };
+
+  it('the filter narrows the loaded folder by name, ignoring case, and asks for nothing more', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(twoLevels);
+    const view = await open();
+    const calls = list.mock.calls.length;
+    await type(filterBox(view.host), 'MENU');
+    expect(rows(view.host)).toEqual(['Menu-Draft.md', 'menu.csv']);
+    expect(list.mock.calls.length).toBe(calls);
+    view.done();
+  });
+
+  it('with no match it says so, and Clear filter (or Esc in the box) brings the rows back', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(twoLevels);
+    const view = await open();
+    await type(filterBox(view.host), 'zebra');
+    expect(text(view.host)).toContain('No files match ‘zebra’.');
+    await click(button(view.host, 'Clear filter'));
+    expect(rows(view.host)).toHaveLength(4);
+    await type(filterBox(view.host), 'zebra');
+    await press('Escape', filterBox(view.host));
+    expect(filterBox(view.host).value).toBe('');
+    expect(rows(view.host)).toHaveLength(4);
+    view.done();
+  });
+
+  it('the filter and the sort carry into the next folder for this visit', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(twoLevels);
+    const view = await open();
+    await click(view.host.querySelector('button[aria-label="Changed, newest first"]'));
+    await click(view.host.querySelector('[data-row-index][aria-label^="sample-bakery"]'));
+    expect(rows(view.host)).toEqual(['menu-old.csv', 'recipes.md']);
+    expect(view.host.querySelector('th[aria-sort="descending"]')?.textContent).toContain('Changed');
+    await type(filterBox(view.host), 'menu');
+    expect(rows(view.host)).toEqual(['menu-old.csv']);
+    const crumbs = view.host.querySelector('nav[aria-label="Folder path"]');
+    await click(
+      [...(crumbs?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Shared')
+    );
+    expect(filterBox(view.host).value).toBe('menu');
+    expect(rows(view.host)).toEqual(['Menu-Draft.md', 'menu.csv']);
+    view.done();
+  });
+
+  it('Changed sorts newest first across folders and files, and says so to a screen reader', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(twoLevels);
+    const view = await open();
+    expect(rows(view.host)).toEqual(['sample-bakery', 'Menu-Draft.md', 'menu.csv', 'notes.txt']);
+    expect(view.host.querySelector('th[aria-sort="ascending"]')?.textContent).toContain('Name');
+    await click(view.host.querySelector('button[aria-label="Changed, newest first"]'));
+    expect(rows(view.host)).toEqual(['Menu-Draft.md', 'sample-bakery', 'notes.txt', 'menu.csv']);
+    expect(view.host.querySelector('th[aria-sort="descending"]')?.textContent).toContain('Changed');
+    view.done();
+  });
+
+  it('the list is one tab stop; arrows move, Enter opens a folder (focus on its first row), Backspace goes back up', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(twoLevels);
+    const view = await open();
+    const tabStops = () =>
+      [...view.host.querySelectorAll('tbody [data-row-index]')].filter(
+        (b) => b.getAttribute('tabindex') === '0'
+      );
+    expect(tabStops()).toHaveLength(1);
+    const first = view.host.querySelector<HTMLElement>('[data-row-index="0"]')!;
+    first.focus();
+    await press('ArrowDown', first);
+    expect(document.activeElement?.textContent?.trim()).toBe('Menu-Draft.md');
+    expect(tabStops().map((b) => b.textContent?.trim())).toEqual(['Menu-Draft.md']);
+    await press('End', document.activeElement);
+    expect(document.activeElement?.textContent?.trim()).toBe('notes.txt');
+    await press('Home', document.activeElement);
+    expect(document.activeElement?.textContent?.trim()).toBe('sample-bakery');
+    await press('Enter', document.activeElement);
+    expect(list).toHaveBeenCalledWith({ serverId: 's1', path: 'shared/sample-bakery' });
+    expect(document.activeElement?.textContent?.trim()).toBe('menu-old.csv');
+    await press('Backspace', document.activeElement);
+    expect(rows(view.host)).toContain('notes.txt');
+    view.done();
+  });
+
+  it('Enter on a file previews it; `/` jumps to the filter, but not while typing or with the preview open', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(twoLevels);
+    preview.mockResolvedValue({ ok: true, value: { kind: 'text', text: 'hello' } });
+    const view = await open();
+    await press('/', document.body);
+    expect(document.activeElement).toBe(filterBox(view.host));
+    const csv = view.host.querySelector<HTMLElement>('[data-row-index][aria-label^="menu.csv"]')!;
+    csv.focus();
+    await press('Enter', csv);
+    expect(dialog()).not.toBeNull();
+    await press('/', dialog());
+    expect(document.activeElement).not.toBe(filterBox(view.host));
+    view.done();
+  });
+
+  it('row actions: Preview opens it, Download saves it safely, Copy path copies it; hovering reads nothing', async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const { rpc } = await import('@renderer/lib/ipc');
+    const saveFile = vi.mocked(rpc.cloudFiles.saveFile);
+    saveFile.mockResolvedValue({ ok: true, value: undefined } as never);
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(twoLevels);
+    preview.mockResolvedValue({ ok: true, value: { kind: 'text', text: 'hello' } });
+    const view = await open();
+    const row = view.host.querySelector('[data-row-index][aria-label^="menu.csv"]')!.closest('tr')!;
+    await act(async () => {
+      row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      row.querySelector<HTMLElement>('[data-row-index]')!.focus();
+    });
+    expect(preview).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+    await click(row.querySelector('button[aria-label="Download menu.csv"]'));
+    expect(saveFile).toHaveBeenCalledWith({
+      serverId: 's1',
+      path: 'shared/menu.csv',
+      name: 'menu.csv',
+    });
+    await click(row.querySelector('[data-row-actions] [data-copy-path]'));
+    expect(writeText).toHaveBeenCalledWith('shared/menu.csv');
+    expect(row.textContent).toContain('Path copied');
+    await click(row.querySelector('button[aria-label="Preview menu.csv"]'));
+    expect(dialog()).not.toBeNull();
+    // A folder row offers Copy path only.
+    const folderRow = view.host.querySelectorAll('tbody tr')[0]!;
+    expect(folderRow.querySelector('button[aria-label^="Preview"]')).toBeNull();
+    expect(folderRow.querySelector('[data-copy-path="shared/sample-bakery"]')).not.toBeNull();
+    view.done();
+  });
+
+  it('with more of the folder not loaded, the filter says it only looked at what is', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(async ({ path }: { path: string }) =>
+      path === ''
+        ? { ok: true, value: { entries: TOP } }
+        : { ok: true, value: { entries: SHARED, cursor: 'next' } }
+    );
+    const view = await open();
+    await type(filterBox(view.host), 'menu');
+    expect(text(view.host)).toContain(
+      'Filtering the first 4 loaded. Show more to include the rest.'
+    );
+    view.done();
+  });
+});
+
+describe('Your cloud files, easier to use (part 3: motion)', () => {
+  const NESTED = async ({ path }: { path: string }) =>
+    path === ''
+      ? { ok: true, value: { entries: TOP } }
+      : path === 'shared'
+        ? { ok: true, value: { entries: [folder('sample-bakery'), file('menu.csv')] } }
+        : { ok: true, value: { entries: [file('recipes.md')] } };
+  const motionDirection = (host: HTMLElement) =>
+    host.querySelector('[data-folder-motion]')?.getAttribute('data-folder-motion');
+
+  it('the waking cloud shows only after Wake it, as a status, with the spec’s words and no spinner', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: false, code: 'box_resting' });
+    const view = await open();
+    expect(view.host.querySelector('[data-explorer-waking]')).toBeNull();
+    await click(button(view.host, 'Wake it'));
+    const waking = view.host.querySelector('[data-explorer-waking]');
+    expect(waking?.getAttribute('role')).toBe('status');
+    expect(waking?.textContent).toContain('Waking your cloud…');
+    // The spec's words exactly, the same as Switch web.
+    expect(waking?.textContent).toContain('This takes about a minute');
+    expect(waking?.textContent).not.toContain('as soon as');
+    expect(waking?.querySelector('[class*="animate-spin"]')).toBeNull();
+    expect(ensureCloudMachine).toHaveBeenCalledTimes(1);
+    view.done();
+  });
+
+  it('a folder change slides in going into a folder, back going up, and only fades for a jump', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(NESTED);
+    const view = await open();
+    await click(view.host.querySelector('[data-row-index][aria-label^="sample-bakery"]'));
+    expect(motionDirection(view.host)).toBe('1');
+    const crumbs = view.host.querySelector('section nav[aria-label="Folder path"]');
+    await click(
+      [...(crumbs?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Shared')
+    );
+    expect(motionDirection(view.host)).toBe('-1');
+    const tree = view.host.querySelector('nav[aria-label="Folders"]');
+    await click(
+      [...(tree?.querySelectorAll('button') ?? [])].find((b) => b.textContent === 'Baker')
+    );
+    expect(motionDirection(view.host)).toBe('0');
+    view.done();
+  });
+
+  it('the tree’s chevron turns as a folder opens, and its children grow in from what was read on that click', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockImplementation(NESTED);
+    const view = await open();
+    const toggle = view.host.querySelector<HTMLButtonElement>('button[aria-label="Open Shared"]')!;
+    expect(toggle.querySelector('svg')?.getAttribute('data-open')).toBe('false');
+    expect(list).not.toHaveBeenCalledWith({ serverId: 's1', path: 'shared' });
+    await click(toggle);
+    expect(list).toHaveBeenCalledWith({ serverId: 's1', path: 'shared' });
+    expect(
+      view.host.querySelector('button[aria-label="Close Shared"] svg')?.getAttribute('data-open')
+    ).toBe('true');
+    // It turns (one chevron rotating), and turns only while motion is allowed.
+    const chevron = view.host.querySelector('button[aria-label="Close Shared"] svg');
+    expect(chevron?.getAttribute('class')).toContain('rotate-90');
+    expect(chevron?.getAttribute('class')).toContain('motion-reduce:transition-none');
+    expect(
+      view.host.querySelector('button[aria-label="Open Baker"] svg')?.getAttribute('class')
+    ).not.toContain('rotate-90');
+    expect(view.host.querySelector('[data-tree-children="shared"]')).not.toBeNull();
+    // Nothing deeper is read ahead: only the folder clicked.
+    expect(list).not.toHaveBeenCalledWith({ serverId: 's1', path: 'shared/sample-bakery' });
+    view.done();
+  });
+
+  it('the preview grows from the row it was opened from', async () => {
+    flagsState.set('s1', on('s1'));
+    params.value = { serverId: 's1', path: 'shared' };
+    list.mockImplementation(NESTED);
+    preview.mockResolvedValue({ ok: true, value: { kind: 'text', text: 'item,price' } });
+    const view = await open();
+    await click(view.host.querySelector('[data-row-index][aria-label^="menu.csv"]'));
+    const grow = dialog()?.querySelector<HTMLElement>('[data-preview-motion]');
+    expect(grow).not.toBeNull();
+    expect(grow?.style.transformOrigin).toMatch(/^\d+px \d+px$/);
+    view.done();
+  });
+});
+
+describe('Your cloud files at phone width', () => {
+  it('the folder tree steps aside below 640 px, so the list and its "⋯" menus fit; the breadcrumb still leads back up', async () => {
+    flagsState.set('s1', on('s1'));
+    list.mockResolvedValue({ ok: true, value: { entries: TOP } });
+    const view = await open();
+    expect(view.host.querySelector('nav[aria-label="Folders"]')?.className).toContain(
+      'max-sm:hidden'
+    );
+    expect(
+      view.host.querySelector('section nav[aria-label="Folder path"]')?.className
+    ).not.toContain('hidden');
+    view.done();
+  });
+});
+
 describe('openablePath', () => {
   it('opens plain names only', () => {
     expect(openablePath('shared/sample-bakery')).toBe('shared/sample-bakery');
