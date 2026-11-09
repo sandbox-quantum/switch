@@ -276,8 +276,9 @@ gateway-test:
 
 # Create the local accounts the dev role switcher signs in as, one per
 # permission level (operator, org admin, workspace admin, member), and save
-# their logins where `just gateway-dev` serves them to it. Needs `just up` and
-# `just run`; safe to run again.
+# their logins where `just gateway-dev` serves them to it. The switcher shows
+# with the `gateway_v2` flag on. Needs `just up` and `just run`; safe to run
+# again.
 seed-dev-roles:
     uv run --project core python scripts/seed_dev_roles.py
 

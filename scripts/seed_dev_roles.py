@@ -252,7 +252,7 @@ def main() -> None:
         print(f"  {account.label:<16} {account.email}")
     print(f'"{SECOND_WORKSPACE_NAME}" is open to the org admin and the operator only.')
     print(
-        f"Logins are in {ACCOUNTS_FILE.relative_to(REPO)}; `just gateway-dev` serves them to the switcher."
+        f"Logins are in {ACCOUNTS_FILE.relative_to(REPO)}; `just gateway-dev` serves them to the switcher, which shows with the gateway_v2 flag on."
     )
 
 

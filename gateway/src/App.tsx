@@ -60,14 +60,11 @@ export function AppRoutes() {
 
   if (view === "signed_out") {
     return (
-      <>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/invite" element={<InviteCapture />} />
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        </Routes>
-        <DevRoleCorner />
-      </>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/invite" element={<InviteCapture />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
     );
   }
 
