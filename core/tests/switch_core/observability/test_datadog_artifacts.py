@@ -37,7 +37,14 @@ def _load(name: str) -> object:
 )
 def test_every_metric_referenced_exists(filename: str) -> None:
     referenced = _referenced_metrics(_load(filename))
-    unknown = sorted(referenced - set(CATALOGUE))
+    # The morning report sends its own "posted" mark; that one is not core's.
+    from_report = set(
+        re.findall(
+            r'"metric": "(switch\.[a-z0-9_.]+)"',
+            (_ARTIFACTS / "daily_report.py").read_text(),
+        )
+    )
+    unknown = sorted(referenced - set(CATALOGUE) - from_report)
     assert not unknown, (
         f"{filename} references {unknown}, which no longer exist in the metric "
         "catalogue. A Datadog monitor over an absent series does not fire, and "

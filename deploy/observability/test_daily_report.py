@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
 import daily_report as r
+import httpx
 
 FINE = {
     "agents_now": 9,
@@ -149,3 +152,33 @@ def test_a_handful_of_errors_is_background():
         "Nothing to do: a handful a day is background "
         "(the most came from /gateway/rooms (5))."
     )
+
+
+def test_a_printed_report_does_not_count_as_posted(monkeypatch):
+    """Only a real post may feed the "didn't post" alert, or a job that lost
+    its room settings would look healthy."""
+    for name in ("SWITCH_URL", "SWITCH_AGENT_ID", "SWITCH_ROOM_ID", "SWITCH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    assert r.post("text", []) is False
+
+
+def test_the_posted_mark_is_one_point_tagged_with_the_service():
+    sent = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append((request.url.path, request.content))
+        return httpx.Response(202, json={"status": "ok"})
+
+    dd = r.Datadog("api", "app", "datadoghq.com")
+    dd.http = httpx.Client(
+        base_url="https://api.datadoghq.com/api/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    dd.mark_posted("switch-core", 1_800_000_000)
+
+    path, body = sent[0]
+    assert path == "/api/v1/series"
+    series = json.loads(body)["series"][0]
+    assert series["metric"] == "switch.daily_report.posted"
+    assert series["points"] == [[1_800_000_000, 1]]
+    assert series["tags"] == ["service:switch-core"]

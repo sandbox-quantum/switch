@@ -47,7 +47,7 @@
   {
     "name": "[Switch] the database is refusing connections",
     "type": "query alert",
-    "query": "sum(last_5m):sum:switch.db.pool.timeouts{service:switch-core}.as_count() > 3",
+    "query": "sum(last_5m):default_zero(sum:switch.db.pool.timeouts{service:switch-core}.as_count()) > 3",
     "message": "{{#is_alert}}Requests timed out waiting for a database connection. Users see slow or failed actions.\n\n**Check:** pool in use on the Signal board; a long query or a transaction left open usually holds the pool.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: the database is refusing connections.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
@@ -113,7 +113,7 @@
   {
     "name": "[Switch] messages are failing to deliver",
     "type": "query alert",
-    "query": "sum(last_10m):sum:switch.messages.delivery_failures{service:switch-core}.as_count() > 5",
+    "query": "sum(last_10m):default_zero(sum:switch.messages.delivery_failures{service:switch-core}.as_count()) > 5",
     "message": "{{#is_alert}}More than 5 deliveries failed in 10 minutes. Some people or agents are missing messages.\n\n**Check:** the delivery errors in the logs; one bad room can't stop the others, so look for which rooms.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: messages are failing to deliver.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
@@ -135,8 +135,8 @@
   {
     "name": "[Switch] messages are failing to send",
     "type": "query alert",
-    "query": "sum(last_10m):sum:switch.messages.send_failures{service:switch-core} by {kind}.as_count() > 5",
-    "message": "{{#is_alert}}More than 5 messages failed to save in 10 minutes ({{kind.name}}). They are lost: the sender sees nothing, the room stays quiet.\n\n**Check:** database health first, then the send errors in the logs.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: messages are failing to send.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "sum(last_10m):default_zero(sum:switch.messages.send_failures{service:switch-core}.as_count()) > 5",
+    "message": "{{#is_alert}}More than 5 messages failed to save in 10 minutes. They are lost: the sender sees nothing, the room stays quiet.\n\n**Check:** database health first, then the send errors in the logs; `kind` there says which sends failed.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: messages are failing to send.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
       "team:switch",
@@ -177,9 +177,31 @@
     "priority": 2
   },
   {
+    "name": "[Switch] a messaging app bridge has crashed, by name",
+    "type": "query alert",
+    "query": "max(last_5m):max:switch.bridges.crashed{service:switch-core} by {platform,bridge_name} >= 1",
+    "message": "{{#is_alert}}The {{platform.name}} bridge \"{{bridge_name.name}}\" has crashed. People in that workspace are cut off from their rooms; the rest of Switch works.\n\n**Check:** \"Bridge ... crashed\" in the logs for that bridge, then restart it or, if nobody uses it any more, deactivate it.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: the {{platform.name}} bridge \"{{bridge_name.name}}\" runs again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 1
+      }
+    },
+    "priority": 2
+  },
+  {
     "name": "[Switch] server errors are elevated",
     "type": "query alert",
-    "query": "sum(last_10m):sum:switch.http.requests{service:switch-core,status_class:5xx}.as_count() >= 10",
+    "query": "sum(last_10m):default_zero(sum:switch.http.requests{service:switch-core,status_class:5xx}.as_count()) >= 10",
     "message": "{{#is_alert}}At least 10 requests failed with a server error in 10 minutes. Users see errors in the Console, Gateway or agents.\n\n**Check:** server errors by route on the core service health dashboard, then that route's logs.\n\nA count, not a percentage: at pilot's traffic one failure among a few requests would read as a high error rate.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: server errors are elevated.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
@@ -285,5 +307,28 @@
       }
     },
     "priority": 2
+  },
+  {
+    "name": "[Switch] the morning report didn't post",
+    "type": "query alert",
+    "query": "max(last_1d):max:switch.daily_report.posted{service:switch-core} < 1",
+    "message": "{{#is_no_data}}The 09:00 report of switch-core hasn't posted to this channel for over 25 hours, so a quiet morning here doesn't mean all is well.\n\n**Check:** the switch-daily-report CronJob's last job in switch-staging (its log says why), and that its Parameter Store settings under /switch/staging/daily-report/ are in place.{{/is_no_data}}{{#is_recovery}}Recovered: the morning report posted again.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": true,
+      "no_data_timeframe": 1500,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 1
+      }
+    },
+    "priority": 3
   }
 ]

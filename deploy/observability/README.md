@@ -46,7 +46,10 @@ the pool full for 10 minutes, messages not delivered, failing or late, a
 messaging app bridge down, server errors, a slow API, a stalled server, or
 agents dropping off together. Each says what users see and what to check, posts
 when it fires, again every hour while it stays firing (`renotify_interval: 60`),
-and once more when it recovers.
+and once more when it recovers. A crashed bridge also gets an alert that names
+it (`switch.bridges.crashed`), and "the morning report didn't post" fires when
+the 09:00 report has been silent for 25 hours, so a quiet channel can be
+trusted.
 
 What isn't urgent stays out of them on purpose. Causes (slow queries, CPU,
 garbage collection) belong on the dashboards, and a monitor that fires without

@@ -387,6 +387,16 @@ BRIDGES_RUNNING = _spec(
     "bridge",
     "platform",
 )
+BRIDGES_CRASHED = _spec(
+    "switch.bridges.crashed",
+    "gauge",
+    "{bridge}",
+    "1 for each configured collaboration bridge whose task has died, by "
+    "platform and the bridge's display name; 0 once it runs again. The bridges "
+    "health check says that one is down, this says which.",
+    "platform",
+    "bridge_name",
+)
 BRIDGE_CALL_DURATION = _spec(
     "switch.bridge.call.duration",
     "histogram",
@@ -667,6 +677,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         BRIDGE_EVENTS_OUT,
         BRIDGE_ERRORS,
         BRIDGES_RUNNING,
+        BRIDGES_CRASHED,
         BRIDGE_CALL_DURATION,
         BRIDGE_THROTTLE_HELD,
         MESSAGING_EVENTS_IGNORED,

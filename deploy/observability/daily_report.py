@@ -29,6 +29,9 @@ Environment:
                            the room and the agent posting into it; without
                            them the report is only printed
   DASHBOARD_URL            optional, the Signal board's link for the last line
+
+After a post it sends one point on switch.daily_report.posted, which the
+"morning report didn't post" alert watches.
 """
 
 from __future__ import annotations
@@ -517,6 +520,24 @@ class Datadog:
             timeout=60,
         )
 
+    def mark_posted(self, service: str, at: int) -> None:
+        """One point on `switch.daily_report.posted`, so the "the morning
+        report didn't post" alert can tell a quiet day from a broken job."""
+        response = self.http.post(
+            "/series",
+            json={
+                "series": [
+                    {
+                        "metric": "switch.daily_report.posted",
+                        "type": "gauge",
+                        "points": [[at, 1]],
+                        "tags": [f"service:{service}"],
+                    }
+                ]
+            },
+        )
+        response.raise_for_status()
+
     def points(self, query: str, start: int, end: int) -> list[float]:
         response = self.http.get(
             "/query", params={"from": start, "to": end, "query": query}
@@ -732,14 +753,14 @@ def read_day(dd: Datadog, graph: Graph, service: str, start: int, end: int) -> D
     )
 
 
-def post(text: str, images: list[tuple[str, bytes]]) -> None:
+def post(text: str, images: list[tuple[str, bytes]]) -> bool:
     url = os.environ.get("SWITCH_URL", "")
     agent = os.environ.get("SWITCH_AGENT_ID", "")
     room = os.environ.get("SWITCH_ROOM_ID", "")
     token = os.environ.get("SWITCH_TOKEN", "")
     if not (url and agent and room and token):
         print("no Switch room set; report only printed", flush=True)
-        return
+        return False
     headers = {"Authorization": f"Bearer {token}"}
     base = f"{url.rstrip('/')}/agents/{agent}"
     if images:
@@ -758,6 +779,7 @@ def post(text: str, images: list[tuple[str, bytes]]) -> None:
             timeout=30,
         )
     response.raise_for_status()
+    return True
 
 
 def main() -> int:
@@ -790,7 +812,8 @@ def main() -> int:
     except (httpx.HTTPError, TimeoutError) as error:
         # The verdict matters more than the picture: post without it.
         print(f"graph {graph.title!r} skipped: {error}", file=sys.stderr, flush=True)
-    post(text, images)
+    if post(text, images):
+        dd.mark_posted(service, int(time.time()))
     return 0
 
 
