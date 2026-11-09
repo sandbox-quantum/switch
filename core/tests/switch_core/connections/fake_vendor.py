@@ -325,6 +325,12 @@ class FakeOAuthServer:
     secret it never needs, as some vendors do. `register_as` registers a
     client to authenticate otherwise than it asked, and the answer leaves the
     method out unless `answer_names_method`.
+
+    Its MCP server's `whoami` tool answers with `account` as structured
+    content (as JSON text alone unless `whoami_structured`, and as an error
+    where `whoami_fails`). It answers in server-sent events where `mcp_sse`,
+    and where `mcp_sessions` opens a session on `initialize` that every later
+    request must name, until a DELETE closes it.
     """
 
     def __init__(self, *, rotating: bool = True, lifetime: int = 3600) -> None:
@@ -368,6 +374,13 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        self.whoami_structured = True
+        self.whoami_fails = False
+        self.mcp_sse = False
+        self.mcp_sessions = False
+        self.open_sessions: set[str] = set()
+        self.closed_sessions: list[str] = []
+        self.mcp_headers: list[dict[str, str]] = []
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -549,17 +562,45 @@ class FakeOAuthServer:
                     else "Bearer"
                 },
             )
+        self.mcp_headers.append(dict(request.headers))
+        session = request.headers.get("mcp-session-id")
+        if request.method == "DELETE":
+            if session not in self.open_sessions:
+                return _json(404, {"error": "unknown session"})
+            self.open_sessions.discard(session)
+            self.closed_sessions.append(session)
+            return httpx.Response(200)
         message = json.loads(request.content)
         self.mcp_calls.append(message)
         method = message.get("method")
+        opened: dict[str, str] = {}
+        if self.mcp_sessions and method != "initialize":
+            if session not in self.open_sessions:
+                return _json(404, {"error": "unknown session"})
         if method == "initialize":
             result: dict[str, Any] = {
                 "protocolVersion": message["params"]["protocolVersion"],
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "example", "version": "1.0.0"},
             }
+            if self.mcp_sessions:
+                minted = f"session-{secrets.token_hex(4)}"
+                self.open_sessions.add(minted)
+                opened = {"Mcp-Session-Id": minted}
         elif method == "tools/list":
             result = {"tools": MCP_TOOLS}
+        elif method == "tools/call" and message["params"]["name"] == "whoami":
+            if self.whoami_fails:
+                result = {
+                    "content": [{"type": "text", "text": "No account."}],
+                    "isError": True,
+                }
+            else:
+                result = {
+                    "content": [{"type": "text", "text": json.dumps(self.account)}]
+                }
+                if self.whoami_structured:
+                    result["structuredContent"] = self.account
         elif method == "tools/call":
             result = {"content": [{"type": "text", "text": "2 items found"}]}
         elif "id" not in message:
@@ -573,4 +614,11 @@ class FakeOAuthServer:
                     "error": {"code": -32601, "message": "Method not found"},
                 },
             )
-        return _json(200, {"jsonrpc": "2.0", "id": message["id"], "result": result})
+        answer = {"jsonrpc": "2.0", "id": message["id"], "result": result}
+        if self.mcp_sse:
+            return httpx.Response(
+                200,
+                text=f"event: message\ndata: {json.dumps(answer)}\n\n",
+                headers={"Content-Type": "text/event-stream", **opened},
+            )
+        return _json(200, answer, opened or None)

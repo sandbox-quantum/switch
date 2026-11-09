@@ -13,12 +13,16 @@ server as the MCP authorization spec describes: its protected-resource
 metadata (RFC 9728) names the authorization server, whose metadata
 (RFC 8414) names the endpoints. The OAuth client is the operator's
 (`StaticClient`) or one Core registered at the vendor.
+
+Whose a sign-in is comes from a GET the catalog names or, for a vendor whose
+MCP tokens only its MCP server takes, from a tool on that server.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -40,6 +44,9 @@ from switch_core.connections.adapters import (
 from switch_core.connections.loader import AccessLevel, ConnectionDefinition
 
 MAX_METADATA_BYTES = 64 * 1024
+# The MCP revision Core speaks when it calls an MCP server itself: to find
+# its metadata, and to ask whose a sign-in is where only the server says.
+MCP_PROTOCOL_VERSION = "2025-06-18"
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
@@ -148,6 +155,25 @@ def _https(url: object, what: str) -> str:
     if not isinstance(url, str) or urlsplit(url).scheme != "https":
         raise ServiceAdapterError(f"The vendor's {what} is not an https URL.")
     return url
+
+
+def _event_stream_messages(text: str) -> list[Any]:
+    """The JSON-RPC messages in a server-sent event stream: each event's
+    data lines, joined (the SSE spec's), as JSON. Anything else is skipped."""
+    messages: list[Any] = []
+    for event in re.split(r"\r?\n\r?\n", text):
+        data = [
+            line[5:].removeprefix(" ")
+            for line in re.split(r"\r?\n", event)
+            if line.startswith("data:")
+        ]
+        if not data:
+            continue
+        try:
+            messages.append(json.loads("\n".join(data)))
+        except ValueError:
+            continue
+    return messages
 
 
 def _path_value(document: Any, path: str) -> Any:
@@ -348,7 +374,7 @@ class OAuthAdapter:
                     "id": 1,
                     "method": "initialize",
                     "params": {
-                        "protocolVersion": "2025-06-18",
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
                         "capabilities": {},
                         "clientInfo": {"name": "switch", "version": "1.0.0"},
                     },
@@ -488,6 +514,11 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
+        if self._identity.mcp_tool is not None:
+            return self._account(
+                await self._identity_from_tool(access_token, self._identity.mcp_tool)
+            )
+        assert self._identity.url is not None  # the loader's: one of the two
         response = await self._send(
             self._http.build_request(
                 "GET",
@@ -507,7 +538,135 @@ class OAuthAdapter:
                 f"{self._name} would not say whose sign-in this is "
                 f"(HTTP {response.status_code})."
             )
-        body = self._json(response, "account")
+        return self._account(self._json(response, "account"))
+
+    async def _identity_from_tool(self, access_token: str, tool: str) -> dict[str, Any]:
+        """The structured answer of the first MCP server's `tool`, called with
+        no arguments: for a vendor whose MCP tokens its API does not take, so
+        that only its MCP server says whose a token is. A session of its own,
+        opened and closed here (MCP's Streamable HTTP transport); the token
+        goes to the MCP server alone, as an agent's session sends it."""
+        assert self._mcp_url is not None  # the loader's: mcp_tool needs mcp
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json, text/event-stream",
+        }
+        opened = await self._mcp_request(
+            headers,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "switch", "version": "1.0.0"},
+                },
+            },
+        )
+        session = opened.headers.get("mcp-session-id")
+        if session is not None:
+            headers["Mcp-Session-Id"] = session
+        agreed = self._mcp_result(opened, 1).get("protocolVersion")
+        headers["MCP-Protocol-Version"] = (
+            agreed if isinstance(agreed, str) else MCP_PROTOCOL_VERSION
+        )
+        try:
+            await self._mcp_request(
+                headers, {"jsonrpc": "2.0", "method": "notifications/initialized"}
+            )
+            called = self._mcp_result(
+                await self._mcp_request(
+                    headers,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {"name": tool, "arguments": {}},
+                    },
+                ),
+                2,
+            )
+        finally:
+            if session is not None:
+                await self._end_mcp_session(headers)
+        if called.get("isError") is True:
+            raise ServiceAdapterError(
+                f"{self._name} would not say whose sign-in this is ({tool} failed)."
+            )
+        structured = called.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured
+        # A server without structured content may still answer in JSON text.
+        for part in called.get("content") or []:
+            if isinstance(part, dict) and part.get("type") == "text":
+                try:
+                    text = json.loads(part.get("text", ""))
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(text, dict):
+                    return text
+        raise ServiceAdapterError(
+            f"{self._name}'s {tool} did not answer with the account."
+        )
+
+    async def _mcp_request(
+        self, headers: dict[str, str], message: dict[str, Any]
+    ) -> httpx.Response:
+        assert self._mcp_url is not None
+        response = await self._send(
+            self._http.build_request(
+                "POST", self._mcp_url, json=message, headers=headers
+            )
+        )
+        if response.status_code == 401:
+            raise ReauthorizationRequiredError(
+                f"{self._name} refused the new sign-in when asked whose it is."
+            )
+        if response.status_code not in (200, 202):
+            raise ServiceAdapterError(
+                f"{self._name} would not say whose sign-in this is "
+                f"(HTTP {response.status_code})."
+            )
+        return response
+
+    def _mcp_result(self, response: httpx.Response, request_id: int) -> dict[str, Any]:
+        """The result of request `request_id`, from a JSON answer or from the
+        server-sent events of a stream."""
+        if len(response.content) > MAX_METADATA_BYTES:
+            raise ServiceAdapterError(f"{self._name}'s MCP answer is too large.")
+        if response.headers.get("content-type", "").startswith("text/event-stream"):
+            messages = _event_stream_messages(response.text)
+        else:
+            try:
+                messages = [response.json()]
+            except ValueError:
+                messages = []
+        for message in messages:
+            if not isinstance(message, dict) or message.get("id") != request_id:
+                continue
+            if "error" in message:
+                raise ServiceAdapterError(
+                    f"{self._name} would not say whose sign-in this is "
+                    "(its MCP server refused the request)."
+                )
+            result = message.get("result")
+            if isinstance(result, dict):
+                return result
+        raise ServiceAdapterError(f"{self._name}'s MCP server did not answer.")
+
+    async def _end_mcp_session(self, headers: dict[str, str]) -> None:
+        """Close the session the identity call opened, if the server still
+        has it; a server that forgets sessions on its own may refuse."""
+        assert self._mcp_url is not None
+        try:
+            await self._send(
+                self._http.build_request("DELETE", self._mcp_url, headers=headers)
+            )
+        except ServiceAdapterError:
+            pass
+
+    def _account(self, body: dict[str, Any]) -> Identity:
         account_id = _path_value(body, self._identity.account_id)
         label = _path_value(body, self._identity.label)
         if type(account_id) is int:

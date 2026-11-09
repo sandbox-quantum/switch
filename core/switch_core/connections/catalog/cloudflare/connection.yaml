@@ -1,0 +1,83 @@
+slug: cloudflare
+name: Cloudflare
+category: Deployment
+description: Inspect and manage Cloudflare Workers, their logs and DNS records, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Each refresh returns a new refresh token; the one before it is still
+  # taken until the new one is used, in case the answer was lost
+  # (workers-oauth-provider).
+  refresh: rotating
+  oauth:
+    # Cloudflare's API MCP server (mcp.cloudflare.com) offers dynamic
+    # registration and no client to configure: Core registers its own public
+    # client on first connect, so nothing is set up on the server.
+    registration: dynamic
+    # Sign-ins come back to Switch Console's listener. Cloudflare takes a
+    # loopback redirect on any port (RFC 8252), so no ports are fixed, and it
+    # works on a server without GATEWAY_PUBLIC_URL.
+    redirect: [loopback]
+    # Cloudflare advertises RFC 7009 revocation at its token endpoint;
+    # revoking the refresh token ends the whole grant, and with it every
+    # access token an agent holds. Cloudflare's MCP server does not then
+    # revoke the Cloudflare sign-in it keeps behind the grant; nothing Switch
+    # held reaches that one.
+    revocation_discovered: true
+    # Not `prompt`: Cloudflare shows its consent page on every sign-in.
+  identity:
+    # The tokens are the MCP server's own, which api.cloudflare.com refuses:
+    # the server keeps the Cloudflare token behind them. Only its whoami tool
+    # says whose a token is: `user:<id>` for a person's sign-in, and their
+    # email.
+    mcp_tool: whoami
+    account_id: id
+    label: email
+# Access tokens live an hour when issued (the server's accessTokenTTL), and a
+# refreshed one as long as Cloudflare's own token behind it.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # One server for the whole Cloudflare API, in Code Mode: `search` finds
+    # an endpoint in the API's description, `execute` calls it, `docs` and
+    # `whoami`. Every call is checked against the scopes granted.
+    - { name: cloudflare, url: "https://mcp.cloudflare.com/mcp" }
+access:
+  # The scopes Switch asks for are only the starting point of Cloudflare's
+  # consent page, where a person may tick more or fewer; the level recorded
+  # is what was granted. user:read, account:read and offline_access are
+  # required by the server for identity, account discovery and refresh.
+  # zone.read lists zones (GET /zones), without which no zone's DNS records
+  # can be found. Workers Logs are queried with a POST that needs
+  # workers-observability.write, so reading them needs the write level.
+  # Not asked for: zone.write, which creates and deletes zones;
+  # workers-scripts.admin; logs.write, which sets up Logpush jobs that copy
+  # logs to a destination outside Cloudflare; and every other product's.
+  # dns.write, workers-scripts.write and workers-routes.write include
+  # deleting records, Workers and routes.
+  read:
+    scopes:
+      - offline_access
+      - user:read
+      - account:read
+      - zone.read
+      - dns.read
+      - workers-scripts.read
+      - workers-routes.read
+      - workers-observability.read
+  write:
+    scopes:
+      - offline_access
+      - user:read
+      - account:read
+      - zone.read
+      - dns.read
+      - dns.write
+      - workers-scripts.read
+      - workers-scripts.write
+      - workers-routes.read
+      - workers-routes.write
+      - workers-observability.read
+      - workers-observability.write
+tools: { mode: pass_through }

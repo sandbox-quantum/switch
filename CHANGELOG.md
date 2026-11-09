@@ -469,6 +469,19 @@ version of their own to them without also giving them a release of their own.
   and carries nothing else. Notices travel between replicas on the signal bus,
   so a change made through one pod reaches a Console connected to another
   (#717).
+- **The Cloudflare connection.** A person connects Cloudflare from Switch
+  Console, read-only or read-write, and a granted agent inspects zones, DNS
+  records, Workers, their routes and Workers logs, and with write access
+  changes them, as that person, through Cloudflare's API MCP server. Nothing
+  is set up on the server: Core registers its own client, and sign-ins come
+  back to Switch Console. Reading Workers logs needs write access, which
+  Cloudflare's log query asks for. Disconnecting revokes the sign-in at
+  Cloudflare (#828).
+- **An OAuth connection can say whose it is through an MCP tool.** A catalog
+  entry's `auth.identity` takes an `mcp_tool` in place of a `url`, for a
+  vendor whose MCP server issues tokens of its own that its API does not
+  take; Core calls the tool on the entry's first MCP server and reads the
+  account from its answer.
 - **The Airtable connection.** A person connects Airtable from Switch Console,
   choosing at Airtable's consent screen which bases and workspaces to share,
   and a granted agent reads and updates records and comments in them, as that
