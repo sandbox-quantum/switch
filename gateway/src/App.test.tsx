@@ -87,6 +87,20 @@ function signedInAs(
       }),
     ],
     "/feature-flags": [200, { flags: flags.map((key) => ({ key, enabled: true })) }],
+    "/organizations": [
+      200,
+      [
+        { id: "o1", slug: "acme-group", name: "Acme Group", role: tenant.organization_role },
+        { id: "o2", slug: "beta-holdings", name: "Beta Holdings", role: "member" },
+      ],
+    ],
+    "/tenants/counts": [
+      200,
+      [
+        { id: "t1", users: 3, agents: 2 },
+        { id: "t2", users: 1, agents: 0 },
+      ],
+    ],
     "/tenants/current": [
       200,
       {
@@ -365,6 +379,15 @@ describe("today's layout", () => {
     renderAt("/");
     await landsOn("/rooms");
   });
+
+  it("keeps switching workspace in the account menu, and claims nothing about the system's health", async () => {
+    mockFetch(signedInAs("member", { tenants: [beta] }));
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    expect(await screen.findByText("Switch to Beta Co")).toBeTruthy();
+    expect(screen.queryByText("System healthy")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Help" })).toBeNull();
+  });
 });
 
 describe("deleting the workspace", () => {
@@ -621,6 +644,141 @@ describe("the new layout (gateway_v2)", () => {
       mockFetch(signedInAs("org_admin", { flags: V2 }));
       renderAt("/platform/users");
       expect(await screen.findByText("Only the platform operator can open this page.")).toBeTruthy();
+    });
+  });
+
+  describe("the top bar", () => {
+    async function openSwitcher() {
+      fireEvent.click(await screen.findByRole("button", { name: /Acme Group\s*\/\s*Acme/ }));
+      return screen.findByRole("menu", { name: "Workspaces" });
+    }
+
+    it("names the organization, the workspace and the page", async () => {
+      mockFetch(signedInAs("member", { flags: V2 }));
+      renderAt("/rooms");
+      expect(await screen.findByRole("button", { name: /Acme Group\s*\/\s*Acme/ })).toBeTruthy();
+      expect(screen.getByText("Rooms", { selector: "span" })).toBeTruthy();
+    });
+
+    it("names only the workspace where it belongs to no organization", async () => {
+      mockFetch(signedInAs("member", { flags: V2, inOrganization: false }));
+      renderAt("/rooms");
+      const crumb = await screen.findByRole("button", { name: "Acme" });
+      expect(crumb.getAttribute("aria-haspopup")).toBe("menu");
+    });
+
+    it("lists the workspaces by organization, with their users and agents", async () => {
+      mockFetch(signedInAs("member", { flags: V2, tenants: [beta] }));
+      renderAt("/rooms");
+      const menu = await openSwitcher();
+      expect(within(menu).getByText("Acme Group")).toBeTruthy();
+      expect(within(menu).getByText("Beta Holdings")).toBeTruthy();
+      expect(await within(menu).findByText("3 users · 2 agents")).toBeTruthy();
+      expect(within(menu).getByText("1 user · 0 agents")).toBeTruthy();
+      const current = within(menu).getByRole("menuitem", { current: true });
+      expect(current.textContent).toContain("Acme");
+    });
+
+    it("says so when the counts cannot be read, and still lists the workspaces", async () => {
+      mockFetch({
+        ...signedInAs("member", { flags: V2, tenants: [beta] }),
+        "/tenants/counts": [500, { detail: "counts unavailable" }],
+      });
+      renderAt("/rooms");
+      const menu = await openSwitcher();
+      expect(
+        await within(menu).findByText(/Could not load how many users and agents.*counts unavailable/),
+      ).toBeTruthy();
+      expect(within(menu).getByText("Beta Co")).toBeTruthy();
+    });
+
+    it("switches to the workspace chosen", async () => {
+      const assign = vi.fn();
+      const originalLocation = window.location;
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: { ...originalLocation, assign, pathname: "/rooms" },
+      });
+      try {
+        mockFetch({
+          ...signedInAs("member", { flags: V2, tenants: [beta] }),
+          "/tenants/t2/switch": [200, { ok: true }],
+        });
+        renderAt("/rooms");
+        const menu = await openSwitcher();
+        fireEvent.click(within(menu).getByText("Beta Co"));
+        await waitFor(() => expect(assign).toHaveBeenCalledWith("/"));
+        expect(
+          vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/tenants/t2/switch")),
+        ).toBe(true);
+      } finally {
+        Object.defineProperty(window, "location", {
+          configurable: true,
+          writable: true,
+          value: originalLocation,
+        });
+      }
+    });
+
+    it("lets a workspace admin or an organization admin invite people", async () => {
+      for (const role of ["workspace_admin", "org_admin"] as const) {
+        mockFetch(signedInAs(role, { flags: V2 }));
+        renderAt("/rooms");
+        const menu = await openSwitcher();
+        fireEvent.click(within(menu).getByRole("menuitem", { name: "Invite people to Acme" }));
+        expect(await screen.findByRole("dialog", { name: "Invite to workspace" })).toBeTruthy();
+        cleanup();
+      }
+    });
+
+    it("does not offer a member to invite people", async () => {
+      mockFetch(signedInAs("member", { flags: V2 }));
+      renderAt("/rooms");
+      const menu = await openSwitcher();
+      expect(within(menu).queryByRole("menuitem", { name: /Invite people/ })).toBeNull();
+    });
+
+    it("links to help and the docs, and claims nothing about the system's health", async () => {
+      mockFetch(signedInAs("member", { flags: V2 }));
+      renderAt("/rooms");
+      const help = await screen.findByRole("link", { name: "Help" });
+      expect(help.getAttribute("href")).toBe(
+        "https://docs.switchagents.ai/switch-rooms/resources/troubleshooting",
+      );
+      expect(screen.getByRole("link", { name: "Docs" })).toBeTruthy();
+      expect(screen.queryByText("System healthy")).toBeNull();
+    });
+  });
+
+  describe("the account menu", () => {
+    it("leads to your account, and leaves switching workspace to the top bar", async () => {
+      mockFetch(signedInAs("member", { flags: V2, tenants: [beta] }));
+      renderAt("/rooms");
+      fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+      const account = await screen.findByRole("menuitem", { name: "Your account" });
+      expect(account.getAttribute("href")).toBe("/settings/account");
+      expect(screen.queryByText("Switch to Beta Co")).toBeNull();
+      expect(screen.getByRole("menuitem", { name: "Change password" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Create organization" })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy();
+    });
+  });
+
+  describe("in organization settings", () => {
+    it("hides the rail and leads back to the workspace", async () => {
+      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      renderAt("/settings/org/general");
+      const back = await screen.findByRole("link", { name: "Back to workspace" });
+      expect(back.getAttribute("href")).toBe("/");
+      expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Acme Group/ })).toBeNull();
+    });
+
+    it("keeps the rail everywhere else in settings", async () => {
+      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      renderAt("/settings/general");
+      expect(await screen.findByRole("navigation", { name: "Main" })).toBeTruthy();
     });
   });
 
