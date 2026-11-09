@@ -164,7 +164,10 @@ describe('reporting a launch at boot', () => {
     await launches.reportLaunch(launchAt('0.41.0'));
 
     expect(h.trackEvent.mock.calls).toEqual([
-      ['app_launched', { install_kind: 'updated', from_version: '0.40.1', update_trigger: 'other' }],
+      [
+        'app_launched',
+        { install_kind: 'updated', from_version: '0.40.1', update_trigger: 'other' },
+      ],
     ]);
   });
 
@@ -176,7 +179,10 @@ describe('reporting a launch at boot', () => {
     await launches.reportLaunch(launchAt('0.41.0'));
 
     expect(h.trackEvent.mock.calls).toEqual([
-      ['app_launched', { install_kind: 'updated', from_version: '0.40.1', update_trigger: 'unknown' }],
+      [
+        'app_launched',
+        { install_kind: 'updated', from_version: '0.40.1', update_trigger: 'unknown' },
+      ],
     ]);
   });
 
