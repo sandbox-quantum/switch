@@ -490,12 +490,13 @@ class OAuthAdapter:
         """The account the token acts as, as the catalog says to read it."""
         response = await self._send(
             self._http.build_request(
-                "GET",
+                self._identity.method,
                 self._identity.url,
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Accept": "application/json",
                 },
+                json=self._identity.body,
             )
         )
         if response.status_code == 401:
@@ -571,6 +572,9 @@ class OAuthAdapter:
             raise ServiceAdapterError(
                 f"{self._name} gives Switch no way to revoke a sign-in."
             )
+        if self._oauth.revocation_bearer:
+            await self._revoke_as_bearer(url, secret)
+            return
         refresh_token = secret.values.get("refresh_token")
         token, hint = (
             (refresh_token, "refresh_token")
@@ -598,6 +602,49 @@ class OAuthAdapter:
         raise ServiceAdapterError(
             f"{self._name} refused to revoke the sign-in (HTTP {response.status_code})."
         )
+
+    async def _revoke_as_bearer(self, url: str, secret: ConnectionSecret) -> None:
+        """Revoke at an endpoint that takes the access token as a bearer and
+        no body (`revocation_bearer`), which ends the refresh token with it.
+        An access token that has expired is refreshed first, once, since an
+        expired one cannot authenticate the call; a token the vendor no
+        longer knows, or a refresh it refuses, means the sign-in is gone."""
+        refreshed = False
+        token = secret.access_token
+        if token is None or secret.expires_at <= time.time():
+            token, refreshed = await self._fresh_access_token(secret), True
+            if token is None:
+                return
+        while True:
+            response = await self._send(
+                self._http.build_request(
+                    "POST", url, headers={"Authorization": f"Bearer {token}"}
+                )
+            )
+            if response.status_code == 200:
+                return
+            if response.status_code == 401:
+                if "invalid_access_token" in response.text:
+                    return
+                if "expired_access_token" in response.text and not refreshed:
+                    token, refreshed = await self._fresh_access_token(secret), True
+                    if token is None:
+                        return
+                    continue
+            raise ServiceAdapterError(
+                f"{self._name} refused to revoke the sign-in "
+                f"(HTTP {response.status_code})."
+            )
+
+    async def _fresh_access_token(self, secret: ConnectionSecret) -> str | None:
+        """A new access token for the sign-in, or None where it has none to
+        refresh with or the vendor refuses the refresh: it is gone already."""
+        if not isinstance(secret.values.get("refresh_token"), str):
+            return None
+        try:
+            return (await self.refresh(secret)).access_token
+        except ReauthorizationRequiredError:
+            return None
 
     def summary(
         self, agent_name: str, access: AccessLevel, resources: dict[str, Any]
