@@ -69,6 +69,19 @@ describe("DataTable toolbar", () => {
     expect(getComputedStyle(grid.parentElement!).display).not.toBe("flex");
   });
 
+  it("gives a table sized to its rows room to say it has none", () => {
+    const heightOf = (props: Partial<Parameters<typeof DataTable<Row>>[0]>) => {
+      const { container, unmount } = render(<DataTable rows={rows} columns={columns} {...props} />);
+      const height = getComputedStyle(container.querySelector(".MuiDataGrid-root") as HTMLElement).height;
+      unmount();
+      return height;
+    };
+
+    expect(heightOf({ rows: [], height: 108 })).toBe("212px");
+    expect(heightOf({ rows: rows.slice(0, 1), height: 160 })).toBe("160px");
+    expect(heightOf({ rows: [], height: 320 })).toBe("320px");
+  });
+
   it("filters a column from its header menu", async () => {
     render(table());
     fireEvent.click(screen.getByRole("button", { name: /Status column menu/i }));

@@ -59,6 +59,34 @@ describe("RowActionsMenu", () => {
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /Make admin/ }));
   });
 
+  it("takes the server's reason as it comes, leaving an action with a null reason available", () => {
+    const transfer = vi.fn();
+    const blocked: string | null = "Revoke its service grants before handing it over.";
+    const clear: string | null = null;
+    render(
+      <RowActionsMenu
+        label="Actions for Dana"
+        actions={[
+          { label: "Transfer", onClick: transfer, disabledReason: clear },
+          { label: "Delete", onClick: () => {}, destructive: true, disabledReason: blocked },
+        ]}
+      />,
+    );
+    open();
+    const deleteItem = screen.getByRole("menuitem", { name: /Delete/ });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Transfer" }));
+
+    expect(deleteItem.getAttribute("aria-disabled")).toBe("true");
+    expect(deleteItem.textContent).toContain(blocked);
+    expect(transfer).toHaveBeenCalledOnce();
+  });
+
+  it("has no button when every action is hidden", () => {
+    render(<RowActionsMenu label="Actions for Dana" actions={[]} />);
+
+    expect(screen.queryByRole("button", { name: "Actions for Dana" })).toBeNull();
+  });
+
   it("keeps its clicks from reaching the row", () => {
     const rowClick = vi.fn();
     render(

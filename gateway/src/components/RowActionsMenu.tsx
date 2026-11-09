@@ -8,17 +8,23 @@ export interface RowAction {
   onClick: () => void;
   /** Removes or revokes something: drawn in the destructive colour. */
   destructive?: boolean;
-  /** Why the action is unavailable to this viewer. Setting it disables the
-   *  item and shows the reason under its label: a greyed item with no
-   *  explanation is the thing people file bugs about. */
-  disabledReason?: string;
+  /** Why the action is unavailable to this viewer, as the server words it
+   *  (an object's `*_blocked_reason`). A string disables the item and shows
+   *  the reason under its label: a greyed item with no explanation is the
+   *  thing people file bugs about. Null or absent leaves it available. */
+  disabledReason?: string | null;
 }
 
 /**
- * The "…" at the end of a table row and the menu it opens. A disabled item
- * stays in the menu with its reason under it, and stays reachable by keyboard
- * and screen reader (it is `aria-disabled`, not removed from the focus order),
- * so the reason can be read.
+ * The "…" at the end of a table row and the menu it opens. An action follows
+ * the server's answer for its object: hidden, by leaving it out of `actions`,
+ * when the viewer may not take it and there is no reason to give; disabled
+ * with the reason when there is one. With nothing left to offer, the row has
+ * no "…" at all rather than one that opens an empty menu.
+ *
+ * A disabled item stays in the menu with its reason under it, and stays
+ * reachable by keyboard and screen reader (it is `aria-disabled`, not removed
+ * from the focus order), so the reason can be read.
  *
  * Clicks and keys inside are kept from reaching the row: React carries events
  * up through the menu's portal, and a row click usually opens the row.
@@ -27,6 +33,8 @@ export default function RowActionsMenu({ label, actions }: { label: string; acti
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const triggerId = useId();
   const close = () => setAnchor(null);
+
+  if (actions.length === 0) return null;
 
   return (
     <>
@@ -58,7 +66,7 @@ export default function RowActionsMenu({ label, actions }: { label: string; acti
         }}
       >
         {actions.map((action) => {
-          const disabled = action.disabledReason !== undefined;
+          const disabled = action.disabledReason != null;
           const tone = disabled
             ? "var(--hoot-field-disabled-foreground)"
             : action.destructive

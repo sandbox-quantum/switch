@@ -84,8 +84,9 @@ interface DataTableProps<T extends { id: string | number }> {
    *  last, in this order. */
   pinnedRight?: string[];
   /** Shown when there are no rows at all, as opposed to none matching the
-   *  filters. Word it for the viewer: "No agents in this workspace yet" for
-   *  an admin, "You don't own any agents" for a member. */
+   *  filters. Word it for the viewer from their capabilities, not their
+   *  role: "No agents in this workspace yet" for someone who administers
+   *  the workspace, "You don't own any agents" for anyone else. */
   emptyState?: ReactNode;
 }
 
@@ -142,6 +143,12 @@ const OWN_FILTERING_SX: SxProps<Theme> = {
   "& .MuiDataGrid-menuIcon": { visibility: "visible", width: "auto", opacity: 0.5 },
   "& .MuiDataGrid-columnHeader:hover .MuiDataGrid-menuIcon": { opacity: 1 },
 };
+
+/** The least a table with no rows to show is given: its header, two rows
+ *  for what it says instead, and its footer. Pages size a table to its rows
+ *  (`108 + rows * 52`), which leaves no room at all for "No rows" when there
+ *  are none. */
+const EMPTY_TABLE_HEIGHT = 56 + 2 * 52 + 52;
 
 const PINNED = "hoot-pinned-right";
 
@@ -392,7 +399,7 @@ export default function DataTable<T extends { id: string | number }>({
         HOOT_GRID_SX,
         ...(ownFiltering ? [OWN_FILTERING_SX] : []),
         ...pinnedSx,
-        { height: fillHeight ? "100%" : height },
+        { height: fillHeight ? "100%" : shown.length === 0 ? Math.max(height, EMPTY_TABLE_HEIGHT) : height },
         ...extraSx,
       ]}
     />
