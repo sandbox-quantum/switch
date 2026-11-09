@@ -207,8 +207,8 @@ export function ChangePassword({ serverId }: { serverId: string }) {
       <div className="space-y-1.5">
         <Label>Password</Label>
         {changed && (
-          <Alert className="max-w-md">
-            <CircleCheck className="text-foreground-success" />
+          <Alert variant="success" className="max-w-md">
+            <CircleCheck />
             <AlertTitle>Password changed successfully</AlertTitle>
           </Alert>
         )}
