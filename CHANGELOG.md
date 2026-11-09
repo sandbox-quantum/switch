@@ -254,6 +254,18 @@ version of their own to them without also giving them a release of their own.
   `main_agent` (the room's assigned agent). It is null for a message that
   named the agent and for one auto-route sent (`routed`), so an agent's
   session can tell a message it may leave alone from one that asked it.
+- **Snowflake, connected with a programmatic access token.** The entry reaches
+  a Snowflake-managed MCP server from the account, database, schema and server
+  names and a token, and checks the token by listing the server's tools. Like
+  Datadog it cannot be connected or granted yet: Switch does not hand a
+  long-lived key to an agent.
+- **Key fields held to a pattern, and key checks that need part of the
+  answer.** A key entry's typed field may match a `pattern`, and a URL may hold
+  it only as a whole host label of a fixed domain or a whole path segment, so
+  it never changes the host. `identity.requires` names what the answer must
+  hold, for a vendor that refuses with HTTP 200, and the refusal repeats the
+  vendor's own reason. `GET /gateway/service-connections` sends each key
+  field's `pattern`, and a key entry may have 5 fields.
 - **A one-screen Datadog board and alerts that say what to do.**
   `deploy/observability/signal-board.json` shows the four golden signals
   (latency, traffic, errors, saturation) plus whether agents are connected and
@@ -518,6 +530,10 @@ version of their own to them without also giving them a release of their own.
   manual `upgrade` steps; a running machine is not stopped for it. The
   instance is replaced only once its data volume is set to survive
   termination; until then it starts as before.
+- **A key service's card says its keys are long-lived, not that they never
+  expire.** Some vendors' keys do expire, Snowflake's within a year: the
+  reason now reads "Snowflake keys are long-lived and only Snowflake can
+  revoke them, so Switch does not hand them to agents."
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.
@@ -4065,6 +4081,9 @@ version of their own to them without also giving them a release of their own.
   managed-agent page have the **Steer messages sent while it works** setting
   (on by default) to keep room messages queueing instead. Built on #1445 by
   Xuefeng-Zhu, with parts of #1494, #1465, #1499, #1565 and #1055 (#801).
+- **Snowflake's logo on the Connections grid.**
+- **The key form holds a typed field to its pattern.** Until the value fits,
+  the field says it is not in the form the service uses and Connect stays off.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
@@ -4193,6 +4212,8 @@ version of their own to them without also giving them a release of their own.
 - **Google Workspace shows Google's full-colour G** on the Connections grid,
   in place of a one-colour blue G that Google's guidelines do not offer, and
   the Atlassian connection shows the Atlassian logo rather than Jira's.
+- **The key form says keys are long-lived**, rather than that they don't
+  expire.
 - **The Switch skill tells agents what to do when their message was
   redacted.** When a send's result says Switch Trust redacted it, the agent
   reads what the room received and, if that no longer makes sense, says what
