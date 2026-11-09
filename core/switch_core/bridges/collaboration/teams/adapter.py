@@ -46,6 +46,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    PrivateNoticeDelivery,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_QUEUED_NOTE,
@@ -728,7 +729,7 @@ class TeamsConnectionConfig(BridgeConnectionConfig):
             raise ValueError(
                 f"{', '.join(foreign)} must not be set on a bridge on the "
                 "distributed Teams app; its credentials, keys and listener are "
-                "the deployment's, not this connection's."
+                "the deployment's, not this messaging app's."
             )
         return self
 
@@ -769,6 +770,11 @@ class TeamsAdapter(PlatformAdapter):
     # Switch is not granted Channel.Delete.All, so a deleted room's channel
     # stays for someone to remove in Teams.
     channel_on_delete = "kept"
+    #: A Teams bot cannot show a channel message to one member alone, and
+    #: opening a 1:1 chat needs the app installed for that person, which
+    #: Switch does not arrange, so a notice about someone's message is posted
+    #: in the channel where everyone sees it.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "in_channel"
     docs_slug: ClassVar[str | None] = "microsoft-teams"
     # Graph delivers a channel's messages to every subscription made for it,
     # so only the process holding the bridge makes, adopts and renews them.
@@ -1507,7 +1513,7 @@ class TeamsAdapter(PlatformAdapter):
 
         if left_behind:
             raise BridgeOperationError(
-                "Removing the Teams connection left behind: "
+                "Removing the Teams messaging app left behind: "
                 + "; ".join(left_behind)
                 + ". Subscriptions run out on their own within the hour."
             )
@@ -2622,9 +2628,9 @@ class TeamsAdapter(PlatformAdapter):
         team_id = self._config.team_id
         if not team_id:
             raise BridgeOperationError(
-                "No default team is set for this Teams connection, so Switch "
+                "No default team is set for this Teams messaging app, so Switch "
                 "does not know which team to create the channel in. Choose one "
-                "in the connection's Microsoft Teams settings."
+                "in the messaging app's Microsoft Teams settings."
             )
         membership_type = "private" if channel_type == "channel_private" else "standard"
         channel = await self._graph.create_channel(
@@ -3303,7 +3309,7 @@ class TeamsAdapter(PlatformAdapter):
     def _require_shared(self) -> GraphClient:
         if not self._me.shared:
             raise BridgeOperationError(
-                "Only a connection on the distributed Teams app places itself "
+                "Only a messaging app on the distributed Teams app places itself "
                 "in teams from Switch; a bring-your-own app is added in Teams."
             )
         if self._graph is None:

@@ -1,6 +1,6 @@
 import { observer } from 'mobx-react-lite';
 import type { ReactNode } from 'react';
-import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
+import { servesWebGateway } from '@renderer/features/switch-servers/server-gateway';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import {
   administersWorkspaceInScope,
@@ -16,7 +16,7 @@ import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import {
   ADMIN_MENU_LABELS,
   type AdminGroup,
-  type AdminMenuItem,
+  type AdminSection,
   adminGroups,
 } from './admin-sections';
 
@@ -25,21 +25,17 @@ const WIDTH = 1120;
 
 /** The Admin menu's entries for the signed-in account on `serverId`. */
 export function adminGroupsInScope(serverId: string, serviceConnections: boolean): AdminGroup[] {
+  const server = switchServersStore.servers.find((s) => s.id === serverId);
   return adminGroups({
     administers: administersWorkspaceInScope(serverId),
     operator: operatesServer(serverId),
+    operatesGatewaylessServer:
+      operatesServer(serverId) && server !== undefined && !servesWebGateway(server),
     serviceConnections,
-    managed: switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false,
   });
 }
 
-/**
- * The Admin page's side menu with one entry's content beside it. The page's
- * own sections are the `admin` view's; the server's status is the
- * `managedServer` view's, so each entry navigates to whichever view draws it
- * and both look like one page. The status entry carries the server's dot,
- * as the sidebar's Admin item does.
- */
+/** The Admin page's side menu with one section's content beside it. */
 export const AdminFrame = observer(function AdminFrame({
   serverId,
   groups,
@@ -48,7 +44,7 @@ export const AdminFrame = observer(function AdminFrame({
 }: {
   serverId: string;
   groups: AdminGroup[];
-  active: AdminMenuItem;
+  active: AdminSection;
   children: ReactNode;
 }) {
   const { navigate } = useNavigate();
@@ -57,15 +53,10 @@ export const AdminFrame = observer(function AdminFrame({
     workspace: workspacesStore.onServerInScope(serverId)?.name ?? '',
     server: server?.name ?? 'This server',
   };
-  const menu: PageSidebarGroup<AdminMenuItem>[] = groups.map((group) => ({
+  const menu: PageSidebarGroup<AdminSection>[] = groups.map((group) => ({
     label: group.scope === 'workspace' ? 'Workspace' : 'Server',
     detail: detail[group.scope],
-    items: group.items.map((id) => ({
-      id,
-      label: ADMIN_MENU_LABELS[id],
-      trailing:
-        id === 'status' && server?.managed ? <ManagedServerDot server={server} size={6} /> : null,
-    })),
+    items: group.items.map((id) => ({ id, label: ADMIN_MENU_LABELS[id] })),
   }));
 
   return (
@@ -76,10 +67,7 @@ export const AdminFrame = observer(function AdminFrame({
           <PageSidebarGroups
             groups={menu}
             activeId={active}
-            onSelect={(item) => {
-              if (item.id === 'status') navigate('managedServer', { serverId });
-              else navigate('admin', { serverId, section: item.id });
-            }}
+            onSelect={(item) => navigate('admin', { serverId, section: item.id })}
           />
         }
       >

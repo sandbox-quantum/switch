@@ -13,6 +13,13 @@ OIDC login is additive: password login (`GATEWAY_ADMIN_EMAIL` /
 `GATEWAY_ADMIN_PASSWORD` and any user created under it) keeps working unless
 you explicitly turn it off with `GATEWAY_PASSWORD_LOGIN_ENABLED=false`.
 
+With password login off, `GATEWAY_ADMIN_PASSWORD` is optional. Leave it unset
+and the admin account is seeded without a password; the first OIDC sign-in
+with the `GATEWAY_ADMIN_EMAIL` address (verified by the IdP) links to it. If
+it is set anyway, the server logs a warning at startup, since it signs nobody
+in. In the Helm chart, `secrets.gatewayAdminPassword` may then be left empty,
+except with Mattermost on, whose setup Job signs in with it.
+
 ## The variables
 
 | Variable | Required | What it does |
@@ -211,7 +218,7 @@ An invitation addressed to an e-mail can be accepted only by someone signed in
 with that address. Each workspace may send at most
 `GATEWAY_INVITE_EMAILS_PER_DAY` addressed invitations in 24 hours; past that
 the dashboard asks the admin to try tomorrow or share a link. This matters
-with `open` sign-up, where anyone can own a workspace and would otherwise be
+with `open` sign-up, where anyone can create a workspace and would otherwise be
 able to use your relay to mail any address. Operators are exempt, and link
 invitations are not counted.
 

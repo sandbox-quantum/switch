@@ -407,6 +407,7 @@ class TestLiveChanges:
             thread_id=None,
             surface="slack",
             requester_name="Ada",
+            direct=False,
             target_message_id=None,
         )
         assert harness.protocol.connections.relay_session_command(agent_id, command)
@@ -672,9 +673,13 @@ class TestTheConnection:
                 async with harness.session_factory() as session:
                     agent = await AgentStore().get(session, agent_id)
                     assert agent is not None
+                    rooms = await RoomStore().get_rooms_for_agent(
+                        session, agent_id, include_archived=True
+                    )
                     detail = await assemble_agent_detail(
                         session,
                         agent=agent,
+                        visible_room_ids={room.id for room in rooms},
                         agent_store=AgentStore(),
                         room_store=RoomStore(),
                         user_store=UserStore(),

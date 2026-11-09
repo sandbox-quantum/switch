@@ -62,7 +62,7 @@
   {
     "kwargs": {
       "channel": "C0GENERAL",
-      "text": "A **notice** in a thread.",
+      "text": "A *notice* in a thread.",
       "thread_ts": "1800000000.000001",
       "unfurl_links": false,
       "unfurl_media": false

@@ -1389,7 +1389,9 @@ async def test_renaming_an_agent_in_many_rooms_reads_them_in_one_query(
 async def test_only_a_manager_renames_a_group_and_everyone_sees_it(
     chats: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def detail(_session: AsyncSession, room: Room, *_args: Any) -> str:
+    async def detail(
+        _session: AsyncSession, room: Room, *_args: Any, **_kwargs: Any
+    ) -> str:
         return room.name
 
     monkeypatch.setattr(rooms_module, "_build_room_detail", detail)
@@ -1411,6 +1413,7 @@ async def test_only_a_manager_renames_a_group_and_everyone_sees_it(
                 session,
                 chats.room_service,
                 RoomStore(),
+                None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]

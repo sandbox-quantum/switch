@@ -56,6 +56,40 @@ down:
 reset:
     docker compose -f deploy/local/docker-compose.yml --project-directory . down -v
 
+# Start the decision service auto-route asks (with its model server): Qwen on
+# CPU by default, `gpu` for Qwen on an NVIDIA GPU, or `strands` for Strands
+# Decider 4B (the production default; an NVIDIA GPU with 24 GB). GPU modes are
+# Linux only. Weights download once into a volume.
+# docs/old/LOCAL_DEVELOPMENT.md, "Auto-route locally".
+decision-up mode="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    service=decision
+    case "{{mode}}" in
+      cpu) profile=decision ;;
+      gpu) profile=decision-gpu ;;
+      strands) profile=decision-strands-gpu service=decision-strands ;;
+      *) echo "usage: just decision-up [cpu|gpu|strands]" >&2; exit 2 ;;
+    esac
+    if [ "$profile" = decision-strands-gpu ]; then
+      echo "Strands Decider: the first start downloads about 17 GB, then loads it;"
+      echo "this waits until the model server is up (minutes)."
+    fi
+    docker compose -f deploy/local/docker-compose.yml --project-directory . --profile "$profile" up -d --build --wait "$service"
+    port="${DECISION_PORT:-8230}"
+    echo "Decision service: http://localhost:$port (curl http://localhost:$port/health)"
+    if [ "$profile" = decision ]; then
+      echo "⚠ CPU model server: each decision takes several seconds, well over the"
+      echo "  one-second target a GPU meets. Fine for trying auto-route out."
+    fi
+    echo "Point switch-core at it in .env, then restart 'just run':"
+    echo "  DECISION_ENDPOINT_URL=http://localhost:$port"
+    echo "  DECISION_TIMEOUT_SECONDS=30"
+    echo "  FEATURE_FLAGS_ENABLED=follow_the_conversation,decision_routing (plus any you had)"
+
+decision-down:
+    docker compose -f deploy/local/docker-compose.yml --project-directory . --profile decision --profile decision-gpu --profile decision-strands-gpu stop decision decision-model decision-model-gpu decision-strands decision-model-strands
+
 # ── Run switch-core locally ────────────────────────────────────────────────────
 # The Python project lives in core/; `--project core` selects that environment
 # while keeping the repo root as the working directory. Tool configs are passed explicitly since the repo root no longer
@@ -190,6 +224,14 @@ e2e-provider *args:
 e2e-browser *args:
     SWITCH_E2E_LANE=browser console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
 
+# ── End-to-end harness, explore lane, on a throwaway stack ─────────────────────
+# As e2e-browser, but Bombadil drives the gateway UI at random for
+# SWITCH_E2E_EXPLORE_TIME_LIMIT (default 5m), checking the properties in
+# console/tooling-e2e/src/explore/spec/gateway.ts in every state. Its trace:
+# build/e2e/ephemeral/explore, read with `bombadil browser inspect`.
+e2e-explore *args:
+    SWITCH_E2E_LANE=explore console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
+
 # ── End-to-end harness, agentic lane, on a throwaway stack ─────────────────────
 # As e2e-provider, then the scenario files in console/tooling-e2e/agentic: a
 # driver model plays the human, a judge model grades the conversation. Needs
@@ -231,6 +273,14 @@ gateway-build:
 
 gateway-test:
     cd gateway && npm test
+
+# Create the local accounts the dev role switcher signs in as, one per
+# permission level (operator, org admin, workspace admin, member), and save
+# their logins where `just gateway-dev` serves them to it. The switcher shows
+# with the `gateway_v2` flag on. Needs `just up` and `just run`; safe to run
+# again.
+seed-dev-roles:
+    uv run --project core python scripts/seed_dev_roles.py
 
 # ── Standalone deployment (all-in-one Docker, no host toolchain) ──────────────
 # Repo users build from source: the build override re-adds the `build:` blocks
