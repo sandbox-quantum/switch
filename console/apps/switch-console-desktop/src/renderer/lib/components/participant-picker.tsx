@@ -11,8 +11,8 @@ function Initials({ name, size }: { name: string; size: number }) {
   return (
     <span
       aria-hidden
-      style={{ width: size, height: size, fontSize: Math.round(size * 0.42) }}
-      className="flex shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] font-medium text-foreground"
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.5) }}
+      className="flex shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] leading-none font-medium text-foreground"
     >
       {agentInitials(name)}
     </span>
@@ -100,14 +100,17 @@ function FixedChip({ fixed }: { fixed: FixedParticipant }) {
       )}
     >
       <Initials name={fixed.participant.name} size={18} />
-      <span className="truncate">{fixed.participant.name}</span>
-      <span
-        className={cn(
-          'truncate text-xs',
-          fixed.warning ? 'text-destructive' : 'text-foreground-muted'
-        )}
-      >
-        {fixed.detail}
+      {/* On one baseline: centred separately, the smaller detail sits higher than the name. */}
+      <span className="flex min-w-0 items-baseline gap-1.5">
+        <span className="truncate">{fixed.participant.name}</span>
+        <span
+          className={cn(
+            'truncate text-xs',
+            fixed.warning ? 'text-destructive' : 'text-foreground-muted'
+          )}
+        >
+          {fixed.detail}
+        </span>
       </span>
     </span>
   );
