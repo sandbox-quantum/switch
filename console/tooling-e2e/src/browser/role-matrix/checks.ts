@@ -88,25 +88,31 @@ export function landingOf(layout: MatrixLayout, persona: Persona, path: string):
   return { path: target, query, state: page.status === 'planned' ? 'planned' : 'page' };
 }
 
-/** Open `url` and say how where it landed differs from `expected`, if it does. */
-async function openAndCompare(
+/** `landing` with its path's parameters filled in from `objects`. */
+export function filled(landing: Landing, objects: PageObjects): Landing {
+  return { ...landing, path: fill(landing.path, objects) };
+}
+
+/**
+ * Open `url` and say how where it landed differs from `expected` (its path
+ * filled in), if it does.
+ */
+export async function openAndCompare(
   ui: GatewayUi,
   url: string,
-  expected: Landing,
-  objects: PageObjects
+  expected: Landing
 ): Promise<string | null> {
   // A settings area opens the page it last showed; the matrix says where it
   // opens the first time.
   await ui.forgetRemembered();
   await ui.open(url);
-  const want = { ...expected, path: fill(expected.path, objects) };
   const at = new URL(ui.page.url());
   const state = await ui.pageState();
-  const wrongPath = at.pathname !== want.path;
-  const wrongQuery = want.query !== null && !at.search.includes(want.query);
-  if (!wrongPath && !wrongQuery && state === want.state) return null;
-  const wanted = `${want.path}${want.query === null ? '' : `?${want.query}`} (${want.state})`;
-  return `${url}: wanted ${wanted}, got ${at.pathname}${at.search} (${state})`;
+  const wrongPath = at.pathname !== expected.path;
+  const wrongQuery = expected.query !== null && !at.search.includes(expected.query);
+  if (!wrongPath && !wrongQuery && state === expected.state) return null;
+  const query = expected.query === null ? '' : `?${expected.query}`;
+  return `${url}: wanted ${expected.path}${query} (${expected.state}), got ${at.pathname}${at.search} (${state})`;
 }
 
 /** Every page and settings area of the layout, opened by URL. */
@@ -122,8 +128,7 @@ export async function checkPages(
     const problem = await openAndCompare(
       ui,
       fill(path, objects),
-      landingOf(ui.layout, persona, path),
-      objects
+      filled(landingOf(ui.layout, persona, path), objects)
     );
     if (problem !== null) wrong.push(problem);
   }
@@ -143,8 +148,7 @@ export async function checkRedirects(
     const problem = await openAndCompare(
       ui,
       fill(from, objects),
-      landingOf(ui.layout, persona, from),
-      objects
+      filled(landingOf(ui.layout, persona, from), objects)
     );
     if (problem !== null) wrong.push(problem);
   }

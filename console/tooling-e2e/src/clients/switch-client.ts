@@ -457,13 +457,17 @@ export class SwitchClient {
     return other;
   }
 
-  /** `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator. */
+  /**
+   * `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator.
+   * The account signs in with `password` for as long as it lasts, so it goes to the run's issued secrets.
+   */
   async createUser(params: {
     name: string;
     email: string;
     password: string;
     role: "user" | "admin";
   }): Promise<{ id: string }> {
+    this.issued.record(params.password);
     return this.gateway<{ id: string }>("POST", "/users", params);
   }
 

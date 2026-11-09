@@ -9,7 +9,14 @@ import type { SwitchClient } from '../../clients/switch-client.ts';
 import type { ScenarioHeader } from '../../core/scenario.ts';
 import type { GatewayUi } from '../gateway-ui.ts';
 import type { BrowserScenario } from '../scenario.ts';
-import { checkPages, checkRail, checkRedirects, checkSettingsMenus, landingOf } from './checks.ts';
+import {
+  checkPages,
+  checkRail,
+  checkRedirects,
+  checkSettingsMenus,
+  landingOf,
+  openAndCompare,
+} from './checks.ts';
 import {
   PERSONA_TAG,
   RoleWorld,
@@ -212,20 +219,16 @@ function personaScenario(persona: Persona): BrowserScenario {
  */
 async function checkView(ui: GatewayUi, asPersona: Persona, where: string): Promise<string[]> {
   const wrong = [...(await checkRail(ui, asPersona)), ...(await checkSettingsMenus(ui, asPersona))];
+  // Their paths name nothing, so there is nothing to fill in.
   const sensitive = [...AREAS[ui.layout], ...PAGES[ui.layout]].filter(
     (row) => row.open.length < PERSONAS.length && !row.path.includes(':')
   );
   for (const { path } of sensitive) {
-    await ui.forgetRemembered();
-    await ui.open(path);
-    const expected = landingOf(ui.layout, asPersona, path);
-    const state = await ui.pageState();
-    if (ui.path() !== expected.path || state !== expected.state) {
-      wrong.push(
-        `${path}: wanted ${expected.path} (${expected.state}), got ${ui.path()} (${state})`
-      );
-    }
+    const problem = await openAndCompare(ui, path, landingOf(ui.layout, asPersona, path));
+    if (problem !== null) wrong.push(problem);
   }
+  // Back where the switcher is: organization settings show none.
+  await ui.open(ui.landing);
   if (ui.layout === 'v2') {
     const invites = await ui.switcherOffersInvite();
     const administers = asPersona !== 'member';
