@@ -5105,11 +5105,6 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
-- **Tells Switch Console when a session started.** Once Switch has taken a
-  session host's start report, the controller Console runs on its own
-  computer passes the session's provider and how it started to Console over
-  its IPC channel, for Console's usage data. A controller with no parent
-  listening, on an SSH host or run as a service, sends nothing.
 - **Waits its turn when Switch is busy opening connections.** An open or an
   attach refused as `busy` comes with when to try again, the controller's
   place in the server's queue, and the controller now waits that long

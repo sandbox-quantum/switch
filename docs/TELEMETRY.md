@@ -253,8 +253,10 @@ Preferences. Because the default is on, events are sent from the first launch,
 before anyone has read that line, and the line records sharing as on as soon as
 it is shown. The setting is re-read before every single event rather than
 cached, so turning it off stops transmission immediately, with no further
-requests and no queued backlog. Dev builds never transmit regardless of the
-setting. Opting out is itself not reported — the one thing we do not measure is
+requests and no queued backlog. Running the app from source sends nothing
+whatever the setting, unless a developer opts that run in to test what it
+sends (it is then filed as `local`); a packaged build that is not a release
+does send, filed as `dev` (§3.1). Opting out is itself not reported — the one thing we do not measure is
 someone asking not to be measured.
 
 ### 4.1 The same answer governs a server the Console runs
@@ -362,8 +364,8 @@ an anonymous installation counter, not an identity.
 1. **App → our relay.** One plain HTTPS POST per event (OTLP logs format; no
    batching, no retries, 10-second timeout) to `telemetry.switchagents.ai`, an
    endpoint we operate. No third-party analytics SDK runs inside the app, and no
-   vendor credential is shipped in the app. Released builds cannot be pointed at
-   a different endpoint — the override exists only in dev builds.
+   vendor credential is shipped in the app. No packaged build can be pointed at
+   a different endpoint — the override exists only when running from source.
 2. **Relay → destinations.** The relay forwards to **Amplitude** and **Datadog**,
    holding the vendor keys server-side.
 3. **Storage and analysis** happen in those two products.

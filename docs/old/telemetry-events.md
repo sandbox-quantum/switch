@@ -250,7 +250,7 @@ pipeline, and either could name their company. The operational OTLP export
 collector. A test sets both to a company name and checks the whole request body
 the relay receives for it.
 
-## Four kinds of event
+## Kinds of event
 
 **A daily snapshot**, one per deployment, carrying the counts that describe the
 installation. This answers "how much".
@@ -339,8 +339,12 @@ spins up ten scratch rooms is not ten rooms of customer value, and letting the
 two share a number would make adoption look like whatever the agents happened to
 be doing that week.
 
-**Session** — an agent session as the connection registry knows it: opened when
-an agent connects, closed when it disconnects or its heartbeat lapses.
+**Session** — a coding-agent session: one run of an agent's runtime (Claude
+Code, Codex, OpenCode) doing work, started by Switch Console, its sidecar or
+an agent controller and reported once, when it is new, by the host that runs
+it (`session_started`). Not a connection: an agent coming online and going
+offline is `agent_connected` and `agent_disconnected`, several sessions share
+one connection, and the snapshot's `session_live_count` counts connections.
 
 **Connector** — a collaboration platform bridge (Slack, Mattermost, Discord,
 Teams, Telegram). A connector is *added* when a bridge for that platform first
@@ -606,9 +610,12 @@ deployments installed after this ships — see
 | `first_room_created` | the first **user-created** room is created | `channel_type`, `bridge_platform` |
 | `first_room_active` | that room sees its first interaction; dated to the interaction, not to the snapshot pass that noticed it | `bridge_platform`, `seconds_since_room_created` |
 | `first_agent_registered` | the first agent registers | `known_agent_type` |
-| `first_session_started` | no longer sent; released servers sent it for the first agent coming online, the moment `first_agent_connected` now reports | `known_agent_type` |
 | `first_agent_connected` | the first agent comes online | `known_agent_type` |
 | `first_agent_session` | a host reports the first coding-agent session (`session_started`): an agent doing work | `known_agent_type`, `start_source` |
+
+Released servers also sent `first_session_started` for the first agent coming
+online, the moment `first_agent_connected` now reports. It is no longer sent;
+on a deployment that sent it, `first_agent_connected` is claimed in its place.
 
 `first_agent_connected` and `first_agent_session` were added after deployments
 were already running. One that had already passed them claims them without
@@ -1040,8 +1047,9 @@ is summed and averaged like any other value unless every chart filters it,
 where an absent property is skipped by every aggregation. These are the only
 properties that may be missing: `age_days`, `age_hours`,
 `seconds_since_install` and `seconds_since_configured` on `connector_added`,
-`duration_ms` on `bridge_connected`, `provisioning_seconds`, and the room sizes
-on the message events. Servers released before this sent `-1` instead.
+`duration_ms` on `bridge_connected`, `provisioning_seconds`, the room sizes on
+`message_sent`, and `known_agent_type` on `message_sent`, which only an agent's
+message carries. Servers released before this sent `-1` instead.
 
 Any property whose value is not in its declared set is a bug. It should raise
 where the event is built rather than be coerced, dropped, or silently widened
@@ -1056,10 +1064,12 @@ A Switch server reporting its usage to a vendor relay is a different question
 from a desktop app doing it, because the deployment may be a customer's and the
 usage may be theirs.
 
-The Console's answer is opt-in, defaulting to off, gated on an explicit choice
-having been made, and re-read on every event so revoking takes effect
-immediately. **The server takes the same position**: telemetry is off unless
-switched on, it is one setting, and when it is off no request is made at all.
+The Console's answer is opt-out: sharing is on by default, a first-run notice
+says what is shared and carries the switch to turn it off, and the setting is
+re-read before every event, so turning it off takes effect immediately
+(`docs/TELEMETRY.md`). **The server is off unless switched on**: it is one
+setting, and when it is off no request is made at all. A server Switch Console
+runs for its user is given the Console's answer, as below.
 
 Who sets that one setting depends on who deployed the server. On a stack an
 operator brought up themselves, they set `TELEMETRY_ENABLED` — in the `.env` for
@@ -1185,6 +1195,36 @@ Two things to set up first, or a third of the list cannot fire at all:
   snapshot, from its second pass, for each day, week and month that ended
   since the pass before.
 
+**Accounts, workspaces and cloud machines** — `gateway/auth_routes.py`,
+`gateway/oidc_routes.py` and `gateway/workspace_creation.py`; the machines in
+`gateway/hosted_machines.py`, `gateway/cloud_controllers.py` and
+`gateway/hosted_controller.py`. The machine events need a server offering
+cloud machines, with a controller that reports; a plain local server sends
+none of them.
+
+- `account_created` — sign up on the sign-up page (`POST /gateway/auth/signup`,
+  `method: signup`), sign in with single sign-on as someone with no account
+  yet (`oidc`), or create a user as an admin (`POST /gateway/users`, `admin`).
+  A single sign-on sign-in that links an existing account sends nothing.
+- `signup_refused` — sign up while sign-up is switched off (`disabled`), with
+  an email that already has an account (`email_taken`), or past the hourly cap
+  (`rate_limited`).
+- `workspace_created` — create a workspace; `new_organization` is true when an
+  organization is created with it.
+- `cloud_machine_requested` — `POST /gateway/hosted-machines/ensure` for a
+  workspace whose owner has no machine (`new`), or whose owner's machine is
+  stopped, retained or serving another workspace. Asking for one already
+  running sends nothing.
+- `cloud_machine_ready` — the machine's controller reporting at its current
+  revision. `provisioning_seconds` only the first time it is ever ready.
+- `cloud_machine_failed` — a machine that has not come up 10 minutes after it
+  was asked for, whose owner has left all its workspaces, or that reports an
+  error. Not again while it stays in error.
+- `cloud_machine_woken` / `cloud_machine_idle_stopped` — leave a machine idle
+  until Switch puts it to sleep, then address its agent.
+- `cloud_machine_started` / `cloud_machine_stopped` — its owner starting or
+  stopping it (`POST /gateway/hosted-machines/{id}/lifecycle`).
+
 **Rooms** — `room_service.py` throughout; gateway routes under `/gateway/rooms`
 
 - `room_created` — `POST /gateway/rooms`. Check `created_by_kind` is `user`
@@ -1208,7 +1248,7 @@ Two things to set up first, or a third of the list cannot fire at all:
   time.
 - `first_room_active` — the same pass, once ever, user-created rooms only.
 
-**Agents** — `bridges/agent/protocol/service.py`
+**Agents** — `bridges/agent/protocol/agent_core.py`
 
 - `agent_registered` — registering a new agent. `registration_path` should be
   `gateway` from the dashboard or Console, `personal_key` from a user's own
@@ -1218,7 +1258,8 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `agent_deleted` — `DELETE /gateway/agents/{id}`. Carries how old it was and
   how many rooms it was in, both read before the row goes.
 
-**Sessions** — `bridges/agent/api/handlers.py`, and the connection registry
+**Connections and sessions** — `bridges/agent/api/handlers.py`, and the
+connection registry
 
 - `agent_connected` — an agent opening its event stream. A supervisor
   reattaching to a connection it already had correctly emits nothing.

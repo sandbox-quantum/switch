@@ -697,10 +697,10 @@ export type TelemetryEventMap = {
     docker_available: TelemetryDockerAvailability;
   };
   /**
-   * The four events below are reported by the interface, through the one gate in
-   * `./renderer-events`. They are here because they are catalogue events like
-   * any other — the same consent check, the same property filter — and only the
-   * place they are observed differs.
+   * The events from here to `renderer_crashed` are reported by the interface,
+   * through the one gate in `./renderer-events`. They are here because they are
+   * catalogue events like any other — the same consent check, the same property
+   * filter — and only the place they are observed differs.
    */
   view_opened: RendererTelemetryEvents['view_opened'];
   command_executed: RendererTelemetryEvents['command_executed'];

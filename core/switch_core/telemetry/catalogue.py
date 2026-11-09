@@ -425,7 +425,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "known_agent_type": KNOWN_AGENT_TYPE,
     },
     # An agent's first live connection. Released servers sent the same moment
-    # as `first_session_started`, which is still claimed but no longer sent.
+    # as `first_session_started`, which is no longer sent; on a deployment that
+    # sent it, this is claimed in its place (`SUPERSEDED_MILESTONES`).
     "first_agent_connected": {**_SINCE_INSTALL, "known_agent_type": KNOWN_AGENT_TYPE},
     # The first coding-agent session a host reported (`session_started`): an
     # agent doing work, not just coming online. A deployment that had already
