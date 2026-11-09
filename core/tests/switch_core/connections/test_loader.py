@@ -1483,3 +1483,18 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)github is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+def test_rejects_a_profile_on_an_entry_that_takes_a_pasted_credential(catalog_copy):
+    path = catalog_copy / "datadog" / "connection.yaml"
+    path.write_text(
+        path.read_text()
+        + "access_profiles:\n  less:\n    skill: SKILL.md\n"
+        + "    access:\n      read: { scopes: [mcp_all] }\n"
+        + "      write: { scopes: [mcp_all] }\n"
+    )
+    with pytest.raises(
+        CatalogError,
+        match="(?s)datadog is invalid.*takes no pasted credential.*no granted scopes",
+    ):
+        load_catalog(catalog_copy)

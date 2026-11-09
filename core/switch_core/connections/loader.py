@@ -834,6 +834,12 @@ class ConnectionDefinition(BaseModel):
             raise ValueError(
                 "only an oauth entry with access levels has access profiles"
             )
+        if self.auth.paste:
+            raise ValueError(
+                "an entry with access profiles takes no pasted credential: a "
+                "pasted connection holds no granted scopes, so a profile would "
+                "mark it for reconnecting for good"
+            )
         for name, profile in self.access_profiles.items():
             # A grant keeps its level when the server changes profile.
             if (profile.access.write is None) != (self.access.write is None):
