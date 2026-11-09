@@ -343,6 +343,27 @@ class AgentSessionActivityPublisher:
     def _retry_later(self, key: _Key) -> None:
         self._enqueue_later(key, self._retries.next(key), _SOON)
 
+    def _ended_turn_retry(self, error: RichContentFailed, ended: bool) -> str:
+        """What happens next to a turn whose message the platform refused, said
+        for the log line reporting the refusal."""
+        if not ended:
+            return "The next change to the turn tries again."
+        if self._adapter.refused_for_good(error):
+            return "The turn has ended, and sending it again would be refused again; not trying again."
+        return "The turn has ended; trying again after a wait."
+
+    def _retry_ended_turn(
+        self, key: _Key, error: RichContentFailed, ended: bool
+    ) -> None:
+        """Try an ended turn's refused message again after a wait, unless the
+        platform refused it in a way no retry will change."""
+        if not ended:
+            return
+        if self._adapter.refused_for_good(error):
+            self._retries.clear(key)
+            return
+        self._retry_later(key)
+
     async def _next(self) -> tuple[_Key, int]:
         """The first key in the most urgent lane holding one, and that lane.
 
@@ -381,7 +402,19 @@ class AgentSessionActivityPublisher:
                 self._enqueue_later(key, throttled.retry_after, _SOON)
             except _ThreadNotMappedYet:
                 self._enqueue_later(key, _THREAD_WAIT_SECONDS, lane)
-            except Exception:
+            except Exception as error:
+                if self._adapter.refused_for_good(error):
+                    self._retries.clear(key)
+                    logger.error(
+                        "%s refused to publish %s on bridge %s, and sending it "
+                        "again would be refused again; dropping it: %s",
+                        self._adapter.platform_name,
+                        key,
+                        self._bridge_id,
+                        error,
+                        exc_info=error,
+                    )
+                    continue
                 # The delivery loop: one key failing must not stop the rest.
                 delay = self._retries.next(key)
                 logger.exception(
@@ -1313,26 +1346,23 @@ class AgentSessionActivityPublisher:
                     view.turn.turn_id,
                     target.channel_id,
                     failed,
-                    "The turn has ended; trying again after a wait."
-                    if view.ended
-                    else "The next change to the turn draws into the same message.",
+                    self._ended_turn_retry(failed, view.ended),
                 )
-                if view.ended:
-                    self._retry_later(key)
+                self._retry_ended_turn(key, failed, view.ended)
         except RichContentThrottled:
             raise
         except RichContentFailed as error:
             logger.error(
                 "Could not post the activity for turn %s of session %s in "
                 "channel %s: %s. The channel shows what the agent asked without "
-                "what it did.",
+                "what it did. %s",
                 view.turn.turn_id,
                 view.row.session_id,
                 target.channel_id,
                 error,
+                self._ended_turn_retry(error, view.ended),
             )
-            if view.ended:
-                self._retry_later(key)
+            self._retry_ended_turn(key, error, view.ended)
             return None
         closes_in = self._adapter.activity_closes_in(ref)
         drawn.platform_closes_at = (
@@ -1388,12 +1418,9 @@ class AgentSessionActivityPublisher:
                 view.row.session_id,
                 post.external_channel_id,
                 error,
-                "The turn has ended; trying again after a wait."
-                if view.ended
-                else "The next change to the turn will try the same message.",
+                self._ended_turn_retry(error, view.ended),
             )
-            if view.ended:
-                self._retry_later(key)
+            self._retry_ended_turn(key, error, view.ended)
             return
         drawn.status_state = state
         drawn.final = view.ended
