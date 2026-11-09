@@ -8,7 +8,7 @@ import logging
 import httpx
 import pytest
 import yaml
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent
@@ -21,6 +21,7 @@ from switch_core.connections.adapters.oauth import (
     StaticClient,
 )
 from switch_core.connections.loader import ConnectionDefinition, ConnectionIdentity
+from switch_core.logging_context import MCP_IDENTITY_DIAGNOSTICS
 from tests.switch_core.connections.test_loader import OAUTH_ENTRY
 
 
@@ -202,9 +203,51 @@ def test_malformed_https_url_is_sanitized():
         oauth._https("https://[", "endpoint")
 
 
+class _Records(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+async def test_vendor_log_notifications_never_reach_the_logs(monkeypatch):
+    server = FastMCP("chatty-identity")
+
+    @server.tool(annotations={"readOnlyHint": True})
+    async def get_user(ctx: Context) -> ToolResult:
+        await ctx.warning("vendor-marker example-bearer-value")
+        return ToolResult(content=[], structured_content={"data": {"gid": "a"}})
+
+    monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
+    handler = _Records()
+    fastmcp_logger = logging.getLogger("fastmcp")
+    level = fastmcp_logger.level
+    fastmcp_logger.setLevel(logging.DEBUG)
+    fastmcp_logger.addHandler(handler)
+    logging.getLogger().addHandler(handler)
+    try:
+        async with httpx.AsyncClient() as http:
+            identity = await _adapter(http).identify("example-bearer-value")
+    finally:
+        fastmcp_logger.removeHandler(handler)
+        fastmcp_logger.setLevel(level)
+        logging.getLogger().removeHandler(handler)
+    assert identity.account_id == "a"
+    # The in-memory server's own records stand for the vendor's machine.
+    client_side = [
+        record.getMessage()
+        for record in handler.records
+        if not record.name.startswith("fastmcp.server")
+    ]
+    assert not any("vendor-marker" in message for message in client_side)
+    assert not any("example-bearer-value" in message for message in client_side)
+
+
 def test_identity_diagnostic_filter_does_not_affect_other_contexts(caplog):
     logger = logging.getLogger("mcp.client.streamable_http")
-    active = oauth._IDENTITY_DIAGNOSTICS.set(True)
+    active = MCP_IDENTITY_DIAGNOSTICS.set(True)
     try:
         try:
             raise ValueError("private-diagnostic")
@@ -216,7 +259,7 @@ def test_identity_diagnostic_filter_does_not_affect_other_contexts(caplog):
             "application diagnostic"
         )
     finally:
-        oauth._IDENTITY_DIAGNOSTICS.reset(active)
+        MCP_IDENTITY_DIAGNOSTICS.reset(active)
     logger.warning("outside identity diagnostic")
     assert "private-diagnostic" not in caplog.text
     assert "example-bearer-value" not in caplog.text

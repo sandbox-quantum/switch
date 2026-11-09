@@ -24,13 +24,13 @@ import json
 import logging
 import re
 import time
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 from fastmcp import Client
+from fastmcp.client.logging import LogMessage
 from fastmcp.client.transports import StreamableHttpTransport
 
 from switch_core.connections.adapters import (
@@ -44,6 +44,10 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import AccessLevel, ConnectionDefinition
+from switch_core.logging_context import (
+    MCP_IDENTITY_DIAGNOSTICS,
+    McpIdentityDiagnosticFilter,
+)
 
 MAX_METADATA_BYTES = 64 * 1024
 
@@ -52,25 +56,10 @@ MAX_METADATA_BYTES = 64 * 1024
 ClientAuthentication = Literal["client_secret_post", "client_secret_basic"]
 
 
-_IDENTITY_DIAGNOSTICS: ContextVar[bool] = ContextVar(
-    "mcp_identity_diagnostics", default=False
-)
-
-
-class _IdentityDiagnosticFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        if _IDENTITY_DIAGNOSTICS.get():
-            # SDK validation diagnostics include raw vendor responses and exceptions.
-            record.msg = "MCP identity transport diagnostic (vendor details omitted)."
-            record.args = ()
-            record.exc_info = None
-            record.exc_text = None
-            record.stack_info = None
-        return True
-
-
+# fastmcp's loggers do not propagate, so the root handler's filter
+# (`logging_config.py`) never sees their records.
 for _sdk_logger in ("mcp.client.streamable_http", "fastmcp.client.client"):
-    logging.getLogger(_sdk_logger).addFilter(_IdentityDiagnosticFilter())
+    logging.getLogger(_sdk_logger).addFilter(McpIdentityDiagnosticFilter())
 
 
 @dataclass(frozen=True)
@@ -219,6 +208,11 @@ def _mcp_http_client(
     if timeout is not None:
         kwargs["timeout"] = timeout
     return httpx.AsyncClient(headers=headers, auth=auth, **kwargs)
+
+
+async def _drop_vendor_log(message: LogMessage) -> None:
+    # A vendor's log notification is its own text, which Core never logs.
+    return None
 
 
 def _path_value(document: Any, path: str) -> Any:
@@ -614,7 +608,7 @@ class OAuthAdapter:
     async def _mcp_identity(self, access_token: str) -> dict[str, Any]:
         if self._mcp_url is None or self._identity.mcp_tool is None:
             raise ServiceAdapterError(f"{self._name} has no MCP identity source.")
-        diagnostics = _IDENTITY_DIAGNOSTICS.set(True)
+        diagnostics = MCP_IDENTITY_DIAGNOSTICS.set(True)
         try:
             async with asyncio.timeout(15):
                 transport = StreamableHttpTransport(
@@ -622,7 +616,12 @@ class OAuthAdapter:
                     headers={"Authorization": f"Bearer {access_token}"},
                     httpx_client_factory=_mcp_http_client,
                 )
-                async with Client(transport, timeout=15, init_timeout=15) as client:
+                async with Client(
+                    transport,
+                    timeout=15,
+                    init_timeout=15,
+                    log_handler=_drop_vendor_log,
+                ) as client:
                     tools = await client.list_tools()
                     matches = [
                         tool for tool in tools if tool.name == self._identity.mcp_tool
@@ -664,7 +663,7 @@ class OAuthAdapter:
                 f"{self._name} could not identify the account through MCP."
             ) from None
         finally:
-            _IDENTITY_DIAGNOSTICS.reset(diagnostics)
+            MCP_IDENTITY_DIAGNOSTICS.reset(diagnostics)
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 
