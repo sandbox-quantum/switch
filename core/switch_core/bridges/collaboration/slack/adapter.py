@@ -44,6 +44,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
     ChannelNotUsable,
     ChannelType,
     DirectoryUser,
@@ -2479,7 +2480,7 @@ class SlackAdapter(PlatformAdapter):
                     "Check the id, and for a private channel add the Switch app "
                     "to it first."
                 ) from error
-            raise ChannelNotUsable(
+            raise BridgeOperationError(
                 f"Slack would not describe channel {channel_id}: {reason}."
             ) from error
         channel = result["channel"]

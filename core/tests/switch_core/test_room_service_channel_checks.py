@@ -365,3 +365,35 @@ async def test_two_rooms_racing_to_one_channel_leave_the_loser_a_conflict(
             select(func.count()).where(Room.external_channel_id == "C-RACED")
         )
     assert count == 1
+
+
+async def test_losing_a_race_while_binding_an_existing_room_is_a_conflict(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same race on the path that binds a room that already exists, against
+    the real unique index: the refusal comes back as `ChannelInUse`, whether
+    the database raises it on the write or at commit."""
+    _, bridge_id = await _setup(session_factory, linked=[])
+    async with session_factory() as session:
+        loser = Room(transport_room_id="!loser:test", name="loser", description="")
+        session.add(loser)
+        await session.commit()
+        loser_id = loser.id
+    adapter = _Adapter(needs_owner=False)
+    svc = _service(session_factory, bridge_id, adapter)
+
+    async def other_room_binds_it_meanwhile(*_: Any, **__: Any) -> None:
+        # Passes the check, then loses the channel before writing.
+        await _bind_room(session_factory, bridge_id, "C-RACED")
+
+    monkeypatch.setattr(svc, "_require_channel_unused", other_room_binds_it_meanwhile)
+
+    with pytest.raises(ChannelInUse):
+        await svc.link_bridge_to_room(
+            loser_id, bridge_id, "channel_public", external_channel_id="C-RACED"
+        )
+
+    async with session_factory() as session:
+        reloaded = await session.get(Room, loser_id)
+    assert reloaded is not None and reloaded.external_channel_id is None

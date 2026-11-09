@@ -53,6 +53,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
     ChannelNotUsable,
     ChannelType,
     DirectoryUser,
@@ -2596,7 +2597,7 @@ class DiscordAdapter(PlatformAdapter):
         which shared delivery does not carry, so on the shared connection one
         is not this bridge's either.
         """
-        target = await self._get_channel(int(channel_id))
+        target = await self._channel_to_bind(channel_id)
         if (
             getattr(target, "guild", None) is None
             and self._config.event_delivery == "shared"
@@ -2606,8 +2607,11 @@ class DiscordAdapter(PlatformAdapter):
                 "connection does not carry."
             )
 
-    async def check_channel_usable(self, channel_id: str) -> None:
-        """The channel exists and the bot can see it."""
+    async def _channel_to_bind(self, channel_id: str) -> Any:
+        """The channel a room was asked to bind to, with Discord's reason when
+        it cannot be read: missing or hidden from the bot is the caller's to
+        fix (`ChannelNotUsable`), any other refusal is Discord's
+        (`BridgeOperationError`)."""
         try:
             numeric_id = int(channel_id)
         except ValueError as error:
@@ -2615,7 +2619,7 @@ class DiscordAdapter(PlatformAdapter):
                 f"{channel_id!r} is not a Discord channel id: those are numbers."
             ) from error
         try:
-            channel = await self._get_channel(numeric_id)
+            return await self._get_channel(numeric_id)
         except discord.NotFound as error:
             raise ChannelNotUsable(
                 f"Discord cannot find channel {channel_id}: {error.text or error}"
@@ -2626,6 +2630,15 @@ class DiscordAdapter(PlatformAdapter):
                 f"({error.text or error}). Give it access to the channel, then "
                 "try again."
             ) from error
+        except discord.HTTPException as error:
+            raise BridgeOperationError(
+                f"Discord would not describe channel {channel_id} "
+                f"({error.status}): {error.text or error}"
+            ) from error
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists and the bot can read and post in it."""
+        channel = await self._channel_to_bind(channel_id)
         guild = getattr(channel, "guild", None)
         me = getattr(guild, "me", None) if guild is not None else None
         if me is None:

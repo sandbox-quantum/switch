@@ -490,8 +490,25 @@ class TestChangeBridge:
                 "room-1", bridge_id="bridge-new", external_channel_id="chan-taken"
             )
 
-        assert events == []
+        # Asked whose it is first; the platform is not asked about it.
+        assert events == [("require_bindable", "chan-taken")]
         assert room_store.update_bridge_calls == []
+
+    async def test_another_bridges_channel_is_refused_before_saying_it_is_used(
+        self,
+    ) -> None:
+        """On a connection shared between organisations, "already used by a
+        room" would tell the caller that another organisation's channel is
+        bound. Whose it is is asked first."""
+        events: list[Any] = []
+        svc, room_store, new_bridge = self._moving(events)
+        new_bridge.adapter.not_bindable.add("chan-theirs")
+        room_store.bound["chan-theirs"] = "their-room"
+
+        with pytest.raises(ChannelNotBindable):
+            await svc.change_bridge(
+                "room-1", bridge_id="bridge-new", external_channel_id="chan-theirs"
+            )
 
     async def test_a_channel_this_room_already_uses_is_not_a_conflict(self) -> None:
         events: list[Any] = []

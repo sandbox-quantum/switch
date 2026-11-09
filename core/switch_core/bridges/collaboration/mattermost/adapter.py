@@ -62,6 +62,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
     ChannelNotUsable,
     ChannelType,
     DirectoryUser,
@@ -2127,6 +2128,10 @@ class MattermostAdapter(PlatformAdapter):
                 f"Mattermost will not let Switch's account see channel "
                 f"{channel_id}: {error}"
             ) from error
+        except Exception as error:
+            raise BridgeOperationError(
+                f"Mattermost would not describe channel {channel_id}: {error}"
+            ) from error
         team_id = str(channel.get("team_id") or "")
         if team_id and self._team_id and team_id != self._team_id:
             raise ChannelNotUsable(
@@ -2146,6 +2151,11 @@ class MattermostAdapter(PlatformAdapter):
             raise ChannelNotUsable(
                 f"Switch's Mattermost account is not in private channel "
                 f"{channel_id}. Add it to the channel, then try again."
+            ) from error
+        except Exception as error:
+            raise BridgeOperationError(
+                f"Mattermost would not say whether Switch's account is in "
+                f"channel {channel_id}: {error}"
             ) from error
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:

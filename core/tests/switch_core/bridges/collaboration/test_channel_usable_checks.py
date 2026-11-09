@@ -16,7 +16,10 @@ from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
 )
-from switch_core.bridges.collaboration.models import ChannelNotUsable
+from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
+    ChannelNotUsable,
+)
 from tests.switch_core.bridges.collaboration.test_discord_provisioning import (
     _adapter as _discord_adapter,
 )
@@ -75,9 +78,11 @@ def test_slack_a_channel_the_app_is_not_in_says_so() -> None:
         _run(adapter.check_channel_usable("C1"))
 
 
-def test_slack_any_other_refusal_carries_slacks_reason() -> None:
-    adapter = _slack(_SlackClient(error="missing_scope"))
-    with pytest.raises(ChannelNotUsable, match="missing_scope"):
+@pytest.mark.parametrize("reason", ["missing_scope", "ratelimited"])
+def test_slack_any_other_refusal_is_slacks_carrying_its_reason(reason: str) -> None:
+    # Not the caller's channel id at fault, so a platform refusal (502).
+    adapter = _slack(_SlackClient(error=reason))
+    with pytest.raises(BridgeOperationError, match=reason):
         _run(adapter.check_channel_usable("C1"))
 
 
@@ -144,6 +149,11 @@ def test_mattermost_a_channel_it_may_not_see_says_so() -> None:
         _mm_check(_MattermostChannels(NotEnoughPermissions("no permission")))
 
 
+def test_mattermost_any_other_failure_is_mattermosts() -> None:
+    with pytest.raises(BridgeOperationError, match="would not describe channel ch1"):
+        _mm_check(_MattermostChannels(ConnectionError("connection reset")))
+
+
 def test_mattermost_a_channel_in_another_team_is_refused() -> None:
     with pytest.raises(ChannelNotUsable, match="another team"):
         _mm_check(_MattermostChannels({"team_id": "team-2", "type": "O"}))
@@ -207,6 +217,37 @@ def test_discord_a_channel_it_may_not_see_says_so() -> None:
     adapter._connection._client = _ForbiddingClient()  # type: ignore[assignment]
     with pytest.raises(ChannelNotUsable, match="Missing Access"):
         _run(adapter.check_channel_usable("555"))
+
+
+class _RateLimitedResponse:
+    status = 429
+    reason = "Too Many Requests"
+
+
+class _RateLimitingClient:
+    def get_channel(self, channel_id: int) -> None:
+        return None
+
+    async def fetch_channel(self, channel_id: int) -> Any:
+        raise discord.HTTPException(
+            _RateLimitedResponse(), "You are being rate limited."
+        )
+
+
+def test_discord_any_other_refusal_is_discords_carrying_its_reason() -> None:
+    adapter = _discord_adapter()
+    adapter._connection._client = _RateLimitingClient()  # type: ignore[assignment]
+    with pytest.raises(BridgeOperationError, match="rate limited"):
+        _run(adapter.check_channel_usable("555"))
+
+
+def test_discord_asking_whose_a_missing_channel_is_says_it_is_missing() -> None:
+    # Whose it is is asked before anything else, so it meets a missing channel
+    # first, and has to say so rather than fail.
+    adapter = _discord_adapter()
+    _wire(adapter, _FakeGuild(), {})
+    with pytest.raises(ChannelNotUsable, match="cannot find channel 555"):
+        _run(adapter.require_bindable_channel("555"))
 
 
 def test_discord_a_channel_the_bot_cannot_post_in_says_so() -> None:

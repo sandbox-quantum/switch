@@ -554,13 +554,19 @@ class RoomService:
         except_room_id: str | None = None,
     ) -> None:
         """Everything asked of a channel named by id before a room is bound to
-        it: no other room uses it, it is this bridge's to bind, and the
-        platform says it exists and the Switch app is in it."""
+        it: it is this bridge's to bind, no other room uses it, and the
+        platform says it exists and the Switch app is in it.
+
+        Whose it is comes first. On a connection shared between organisations
+        another organisation's channel id is not this bridge's, and asking
+        whether a room uses it before refusing would tell the caller that one
+        does.
+        """
+        adapter = collaboration_core.adapter
+        await adapter.require_bindable_channel(external_channel_id)
         await self._require_channel_unused(
             bridge_id, external_channel_id, except_room_id=except_room_id
         )
-        adapter = collaboration_core.adapter
-        await adapter.require_bindable_channel(external_channel_id)
         await adapter.check_channel_usable(external_channel_id)
 
     async def _private_channel_owner(
@@ -915,7 +921,10 @@ class RoomService:
                     )
                 if config.aliases:
                     await self._seed_aliases(session, room.id, agent_ids, config)
-                await session.commit()
+                try:
+                    await session.commit()
+                except IntegrityError as error:
+                    raise self._channel_in_use(error, external_channel_id) from error
 
             if collaboration_core and external_channel_id:
                 collaboration_core.add_room_mapping(
@@ -1624,9 +1633,9 @@ class RoomService:
                     channel_type=channel_type,
                     external_channel_id=external_channel_id,
                 )
+                await session.commit()
             except IntegrityError as error:
                 raise self._channel_in_use(error, external_channel_id) from error
-            await session.commit()
 
         if collaboration_core and external_channel_id:
             collaboration_core.add_room_mapping(
@@ -1772,6 +1781,8 @@ class RoomService:
             new_bridge.begin_provisioning(external_channel_id)
             try:
                 async with self._session_factory() as session:
+                    # The commit too: the store writes at once today, but a
+                    # race lost at commit is the same conflict.
                     try:
                         await self._room_store.update_bridge(
                             session,
@@ -1780,11 +1791,11 @@ class RoomService:
                             channel_type=resolved_channel_type,
                             external_channel_id=external_channel_id,
                         )
+                        await session.commit()
                     except IntegrityError as error:
                         raise self._channel_in_use(
                             error, external_channel_id
                         ) from error
-                    await session.commit()
 
                 new_bridge.add_room_mapping(
                     room_id, transport_room_id, external_channel_id, room.tenant_id
