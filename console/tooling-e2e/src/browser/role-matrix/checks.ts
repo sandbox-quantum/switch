@@ -40,7 +40,9 @@ export function fill(path: string, objects: PageObjects): string {
   if (filled.includes(':id')) {
     const entry = ID_BY_PREFIX.find(([prefix]) => path.startsWith(prefix));
     if (entry === undefined) {
-      throw new Error(`Nothing fills :id in ${path}; add the object it names to RoleWorld.objects.`);
+      throw new Error(
+        `Nothing fills :id in ${path}; add the object it names to RoleWorld.objects.`
+      );
     }
     filled = filled.replace(':id', objects[entry[1]]);
   }

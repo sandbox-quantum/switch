@@ -9,14 +9,14 @@ import type { SwitchClient } from '../../clients/switch-client.ts';
 import type { ScenarioHeader } from '../../core/scenario.ts';
 import type { GatewayUi } from '../gateway-ui.ts';
 import type { BrowserScenario } from '../scenario.ts';
+import { checkPages, checkRail, checkRedirects, checkSettingsMenus, landingOf } from './checks.ts';
 import {
-  checkPages,
-  checkRail,
-  checkRedirects,
-  checkSettingsMenus,
-  landingOf,
-} from './checks.ts';
-import { PERSONA_TAG, RoleWorld, type Account, type Organization, type PageObjects } from './world.ts';
+  PERSONA_TAG,
+  RoleWorld,
+  type Account,
+  type Organization,
+  type PageObjects,
+} from './world.ts';
 
 /**
  * The role matrix, end to end: for each role, a real account signs in and is
@@ -39,7 +39,7 @@ async function requireMatrixFlags(switchClient: SwitchClient): Promise<void> {
   if (off.length > 0) {
     throw new Error(
       `The role matrix assumes ${off.join(', ')} on, and this server has them off. ` +
-        'The browser lane\'s stack (scripts/ephemeral-stack.sh) turns them on.'
+        "The browser lane's stack (scripts/ephemeral-stack.sh) turns them on."
     );
   }
 }
@@ -176,10 +176,7 @@ const BY_ROLE: Record<Persona, readonly string[]> = {
 
 function personaScenario(persona: Persona): BrowserScenario {
   return {
-    header: roleMatrixHeader(`role-matrix-${KEBAB[persona]}`, [
-      ...EVERY_ROLE,
-      ...BY_ROLE[persona],
-    ]),
+    header: roleMatrixHeader(`role-matrix-${KEBAB[persona]}`, [...EVERY_ROLE, ...BY_ROLE[persona]]),
     async run({ env, names, switchClient, fixtures, ui, log }) {
       await requireMatrixFlags(switchClient);
       const world = new RoleWorld(switchClient, env.switch, names, fixtures);
@@ -224,7 +221,9 @@ async function checkView(ui: GatewayUi, asPersona: Persona, where: string): Prom
     const expected = landingOf(ui.layout, asPersona, path);
     const state = await ui.pageState();
     if (ui.path() !== expected.path || state !== expected.state) {
-      wrong.push(`${path}: wanted ${expected.path} (${expected.state}), got ${ui.path()} (${state})`);
+      wrong.push(
+        `${path}: wanted ${expected.path} (${expected.state}), got ${ui.path()} (${state})`
+      );
     }
   }
   if (ui.layout === 'v2') {
@@ -267,7 +266,9 @@ const twoWorkspaces: BrowserScenario = {
     await ui.switchWorkspace(second);
     wrong.push(...(await checkView(ui, 'member', second.name)));
     await ui.switchWorkspace(organization.workspace);
-    wrong.push(...(await checkView(ui, 'workspaceAdmin', `back in ${organization.workspace.name}`)));
+    wrong.push(
+      ...(await checkView(ui, 'workspaceAdmin', `back in ${organization.workspace.name}`))
+    );
     expect(wrong, `\n  ${wrong.join('\n  ')}\n`).toEqual([]);
   },
 };

@@ -46,7 +46,9 @@ beforeAll(async () => {
   // one it serves.
   const flags = await lane.target.switchClient.enabledFeatureFlags();
   layout = flags.has('gateway_v2') ? 'v2' : 'current';
-  console.log(`  the dashboard's ${layout === 'v2' ? 'new layout (gateway_v2 on)' : 'current layout'}`);
+  console.log(
+    `  the dashboard's ${layout === 'v2' ? 'new layout (gateway_v2 on)' : 'current layout'}`
+  );
   watch = new ServerLogWatch(lane.target.env.serverLog);
   if (lane.target.env.gatewayUiUrl !== null) browser = await chromium.launch();
 }, 120_000);

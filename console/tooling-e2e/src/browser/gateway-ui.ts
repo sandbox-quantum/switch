@@ -132,7 +132,7 @@ export class GatewayUi {
    * about switching uses the app's switcher instead.
    */
   async enterWorkspace(workspaceId: string): Promise<void> {
-    await this.settled();
+    await this.quiet();
     const response = await this.page.request.post(
       `${this.baseUrl}/gateway/tenants/${encodeURIComponent(workspaceId)}/switch`
     );
@@ -170,7 +170,7 @@ export class GatewayUi {
    * has the session there and the page it lands on has settled.
    */
   async switchWorkspace(workspace: { id: string; name: string }): Promise<void> {
-    await this.settled();
+    await this.quiet();
     const menu = await this.openSwitcher();
     const item =
       this.layout === 'v2'
@@ -187,7 +187,9 @@ export class GatewayUi {
     await item.click();
     await reloaded;
     await expect.poll(() => this.workspaceId(), { timeout: 15_000 }).toBe(workspace.id);
-    await expect.poll(() => this.page.getByRole('main').isVisible(), { timeout: 15_000 }).toBe(true);
+    await expect
+      .poll(() => this.page.getByRole('main').isVisible(), { timeout: 15_000 })
+      .toBe(true);
     await this.recordSessionCookie();
     await this.settled();
   }
@@ -263,9 +265,7 @@ export class GatewayUi {
    * would, and wait until it has settled.
    */
   async open(path: string): Promise<void> {
-    // Leaving a page mid-request aborts it, which the app reports as a
-    // console error: let the page finish first.
-    await this.settled();
+    await this.quiet();
     await this.goto(path);
     // The page's own surface; the rail is not on every page.
     await expect
@@ -340,6 +340,18 @@ export class GatewayUi {
    * none with error severity.
    */
   async settled(): Promise<void> {
+    await this.quiet();
+    const alerts = this.page.locator('[role="alert"].MuiAlert-colorError');
+    const shown = await alerts.allInnerTexts();
+    for (const text of shown) this.problems.push(`${this.path()} shows an error: ${text.trim()}`);
+  }
+
+  /**
+   * Wait until no `/gateway` request has been in flight for `QUIET_MS`.
+   * Before leaving a page too: leaving mid-request aborts the request, which
+   * the app reports as a console error.
+   */
+  private async quiet(): Promise<void> {
     const deadline = Date.now() + SETTLE_TIMEOUT_MS;
     while (this.inFlight.size > 0 || Date.now() - this.lastActivityMs < QUIET_MS) {
       if (Date.now() > deadline) {
@@ -353,9 +365,6 @@ export class GatewayUi {
       }
       await this.page.waitForTimeout(50);
     }
-    const alerts = this.page.locator('[role="alert"].MuiAlert-colorError');
-    const shown = await alerts.allInnerTexts();
-    for (const text of shown) this.problems.push(`${this.path()} shows an error: ${text.trim()}`);
   }
 
   async screenshot(file: string): Promise<void> {
