@@ -52,8 +52,12 @@ export interface RoomSummary {
   // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
   // reference, document or package from it; `can_transfer` (managing it,
   // and never for a chat) covers handing it to someone else.
+  // `can_invite_agents` (in the room, or workspace admin, never for a chat)
+  // covers bringing agents in; each agent's own "who can address me" setting
+  // can still refuse a particular one.
   can_write: boolean;
   can_change_members: boolean;
+  can_invite_agents: boolean;
   can_manage: boolean;
   can_unlink: boolean;
   can_transfer: boolean;

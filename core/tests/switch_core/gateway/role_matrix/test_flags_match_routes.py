@@ -203,7 +203,7 @@ CHECKS: dict[str, Check] = {
                 _transfer("room", "{readable_room}"),
             ),
             Check(
-                "can_change_members",
+                "can_invite_agents",
                 _get(f"{G}/rooms/{{readable_room}}"),
                 _act(
                     "POST",
@@ -214,23 +214,25 @@ CHECKS: dict[str, Check] = {
         ],
         "a direct conversation": [
             Check(
-                "can_change_members",
+                "can_invite_agents",
                 _get(f"{G}/rooms/{{direct_room}}"),
-                act,
-                refused=REFUSED | {409},
-            )
-            for act in (
                 _act(
                     "POST",
                     f"{G}/rooms/{{direct_room}}/agents",
                     {"agent_ids": ["{agent}"]},
                 ),
+                refused=REFUSED | {409},
+            ),
+            Check(
+                "can_change_members",
+                _get(f"{G}/rooms/{{direct_room}}"),
                 _act(
                     "POST",
                     f"{G}/rooms/{{direct_room}}/users",
                     {"user_names": ["someone"]},
                 ),
-            )
+                refused=REFUSED | {409},
+            ),
         ],
         "a chat": [
             Check(

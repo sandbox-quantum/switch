@@ -814,6 +814,7 @@ function ParticipantsSection({
   // refuses changing them, and the page says where they are changed.
   const platformMembership = room.channel_type === "group" || room.channel_type === "direct";
   const canChangeMembers = room.can_change_members;
+  const canInviteAgents = room.can_invite_agents;
 
   return (
     <Stack spacing={3}>
@@ -850,7 +851,7 @@ function ParticipantsSection({
             </Typography>
           )}
         </Stack>
-        {canChangeMembers && (
+        {canInviteAgents && (
           <>
             <Button
               size="small"

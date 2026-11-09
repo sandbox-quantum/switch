@@ -106,9 +106,12 @@ class RoomSummary(BaseModel):
     # taking the platform channel's name; `can_unlink` (taking part in it, or
     # tenant admin) covers unlinking a reference, document or package from it;
     # `can_transfer` is `can_manage` for anything but a chat, which stays with
-    # its people.
+    # its people. `can_invite_agents` covers bringing agents in, which takes
+    # being in the room (or tenant admin), not write access; each agent's own
+    # addressing policy can still refuse a particular one (`room_invites`).
     can_write: bool
     can_change_members: bool
+    can_invite_agents: bool
     can_manage: bool
     can_unlink: bool
     can_transfer: bool

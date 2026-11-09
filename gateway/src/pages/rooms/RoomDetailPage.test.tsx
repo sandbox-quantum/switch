@@ -90,6 +90,7 @@ const room = {
   can_unlink: false,
   can_transfer: false,
   can_change_members: true,
+  can_invite_agents: true,
 } as RoomDetail;
 
 const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSummary;
@@ -102,7 +103,12 @@ function viewAs(
   can: { can_write: boolean; can_manage: boolean; can_unlink: boolean } & Partial<RoomDetail>,
 ) {
   vi.mocked(hooks.useRoom).mockReturnValue({
-    data: { ...room, can_change_members: can.can_write, ...can },
+    data: {
+      ...room,
+      can_change_members: can.can_write,
+      can_invite_agents: can.can_write,
+      ...can,
+    },
     loading: false,
     error: null,
     refetch: refetchRoom,
@@ -192,12 +198,26 @@ describe("RoomDetailPage permissions", () => {
     });
   });
 
+  it("offers adding an agent to someone in the room who can't change its settings", () => {
+    viewAs({ can_write: false, can_manage: false, can_unlink: true, can_invite_agents: true });
+
+    screen.getByRole("button", { name: "Add agent" });
+    expect(screen.queryByRole("button", { name: "Remove planner" })).toBeNull();
+  });
+
+  it("doesn't offer adding an agent to someone who isn't in the room", () => {
+    viewAs({ can_write: true, can_manage: false, can_unlink: false, can_invite_agents: false });
+
+    expect(screen.queryByRole("button", { name: "Add agent" })).toBeNull();
+  });
+
   it("leaves a chat's members to its platform, keeping its settings editable", () => {
     viewAs({
       can_write: true,
       can_manage: false,
       can_unlink: false,
       can_change_members: false,
+      can_invite_agents: false,
       channel_type: "group",
     });
 
