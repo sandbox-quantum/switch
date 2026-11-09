@@ -37,6 +37,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentityConflict,
     MessagePartlySent,
     PlatformAdapter,
+    RefusalKind,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -191,17 +192,16 @@ _DEFINITE_REFUSALS = (
     FeatureDisabled,
 )
 
-# The refusals among those that sending again will not change. A 401 is not one:
-# it can mean a session that has since expired, and signing in again fixes it.
-# A 501 (`FeatureDisabled`) is a server status and is left to retry with the
-# rest of them.
-_REFUSED_FOR_GOOD = (
-    InvalidOrMissingParameters,
-    NotEnoughPermissions,
-    ResourceNotFound,
-    MethodNotAllowed,
-    ContentTooLarge,
-)
+# Refusals that sending the same post again will not change.
+_REFUSED_FOR_GOOD = (MethodNotAllowed, ContentTooLarge)
+
+# Refusals that are usually final but can clear on their own: a 400 for a file
+# id not ready yet, a 403 for a bot not yet added to the channel, a 404 for a
+# post or channel not visible yet. A 401 is neither: a bot's session can be
+# signed in again, so it is left to retry with the server errors.
+_REFUSED_FOR_NOW = (InvalidOrMissingParameters, NotEnoughPermissions, ResourceNotFound)
+_STATUS_REFUSED_FOR_GOOD = frozenset({405, 413})
+_STATUS_TRANSIENT = frozenset({401, 408, 429})
 
 # How long to wait after a rate limit that names no interval of its own.
 # Matches the Slack adapter's fallback, for the same reason: long enough not to
@@ -469,22 +469,23 @@ class MattermostAdapter(PlatformAdapter):
         return None
 
     @classmethod
-    def refused_for_good(cls, exc: BaseException) -> bool:
-        """A 4xx from Mattermost, other than 401, 408 and 429, anywhere in the
-        chain: `RichContentFailed` carries the driver's error as its cause.
+    def classify_refusal(cls, exc: BaseException) -> RefusalKind:
+        """Read the driver's error out of the chain: `RichContentFailed`
+        carries it as its cause.
 
-        `mattermostdriver` raises its named exceptions without the response, so
-        the status is read from the class; a status it does not name arrives
-        as the `requests` error with the response still on it. A 401 is left
-        to retry, since a bot's session can be signed in again.
+        "permanent" for a 405 or 413, "bounded" for any other 4xx but 401, 408
+        and 429, "transient" for everything else. `mattermostdriver` raises its
+        named exceptions without the response, so for those the status is read
+        from the class; a status it does not name arrives as the `requests`
+        error with the response still on it.
 
-        A transient failure further down the chain wins: a refused thread root
+        A transient failure anywhere in the chain wins: a refused thread root
         whose post could not be looked up for the network is worth sending
         again once the lookup can get through.
         """
         if isinstance(exc, RichContentThrottled):
-            return False
-        refused = False
+            return "transient"
+        kind: RefusalKind = "transient"
         seen: BaseException | None = exc
         while seen is not None:
             if isinstance(
@@ -492,18 +493,24 @@ class MattermostAdapter(PlatformAdapter):
                 sync_requests.exceptions.ConnectionError
                 | sync_requests.exceptions.Timeout,
             ):
-                return False
+                return "transient"
             if isinstance(seen, _REFUSED_FOR_GOOD):
-                refused = True
+                kind = "permanent"
+            elif isinstance(seen, _REFUSED_FOR_NOW):
+                if kind != "permanent":
+                    kind = "bounded"
             elif isinstance(seen, sync_requests.exceptions.HTTPError):
                 status = getattr(seen.response, "status_code", None)
                 if isinstance(status, int):
-                    if 400 <= status < 500 and status not in (401, 408, 429):
-                        refused = True
+                    if status in _STATUS_REFUSED_FOR_GOOD:
+                        kind = "permanent"
+                    elif 400 <= status < 500 and status not in _STATUS_TRANSIENT:
+                        if kind != "permanent":
+                            kind = "bounded"
                     else:
-                        return False
+                        return "transient"
             seen = seen.__cause__
-        return refused
+        return kind
 
     draws_session_activity: ClassVar[bool] = True
 
@@ -1279,9 +1286,7 @@ class MattermostAdapter(PlatformAdapter):
         first_id = await self._create_post(driver, channel_id, parts[0], thread_root_id)
         if first_id is None:
             return None
-        await self._post_rest(
-            driver, channel_id, parts, self._thread_root_for(thread_root_id), first_id
-        )
+        await self._post_rest(driver, channel_id, parts, thread_root_id, first_id)
         return first_id
 
     async def _post_rest(
@@ -1426,27 +1431,42 @@ class MattermostAdapter(PlatformAdapter):
         """Run `send` with the root id to thread under, on the driver's thread.
 
         Mattermost takes only a thread's root as `root_id` and refuses a reply's
-        id with "Invalid RootId parameter". Switch is handed a reply to thread
-        under whenever what it answers was itself posted in a thread, so on
-        that refusal the reply is looked up and `send` tried once more under
-        the root of its thread. Anything else Mattermost says is raised as it
-        came.
+        id with a 400. Switch is handed a reply to thread under whenever what it
+        answers was itself posted in a thread, so on any 400 the reference is
+        looked up, and if it is a reply `send` is tried once more under the
+        root of its thread. The refusal's text is not consulted: Mattermost
+        translates it, and the driver keeps nothing else of the response.
+
+        A root found this way is remembered for the reference. A send under a
+        remembered root that is refused forgets it and looks the reference up
+        again, once, since the thread may have changed since.
         """
         loop = self._main_loop
         if loop is None:
             raise RuntimeError("Mattermost is not connected.")
         if thread_root_id is None:
             return await loop.run_in_executor(None, send, None)
-        known_root = self._thread_roots.get(thread_root_id)
-        if known_root is not None:
-            self._thread_roots.move_to_end(thread_root_id)
-            return await loop.run_in_executor(None, send, known_root)
-        try:
-            return await loop.run_in_executor(None, send, thread_root_id)
-        except InvalidOrMissingParameters as error:
-            if "RootId" not in str(error):
-                raise
-            root = await self._root_of_reply(driver, thread_root_id, error)
+        known_root = self._thread_root_for(thread_root_id)
+        if known_root is not None and known_root != thread_root_id:
+            try:
+                return await loop.run_in_executor(None, send, known_root)
+            except (InvalidOrMissingParameters, ResourceNotFound) as error:
+                logger.warning(
+                    "Mattermost refused %s, the remembered thread root of %s "
+                    "(%s); looking %s up again",
+                    known_root,
+                    thread_root_id,
+                    error,
+                    thread_root_id,
+                )
+                self._thread_roots.pop(thread_root_id, None)
+                refusal: InvalidOrMissingParameters | ResourceNotFound = error
+        else:
+            try:
+                return await loop.run_in_executor(None, send, thread_root_id)
+            except InvalidOrMissingParameters as error:
+                refusal = error
+        root = await self._root_of_reply(driver, thread_root_id, refusal)
         return await loop.run_in_executor(None, send, root)
 
     def _thread_root_for(self, thread_root_id: str | None) -> str | None:
@@ -1460,7 +1480,10 @@ class MattermostAdapter(PlatformAdapter):
         return known_root
 
     async def _root_of_reply(
-        self, driver: Driver, post_id: str, refusal: InvalidOrMissingParameters
+        self,
+        driver: Driver,
+        post_id: str,
+        refusal: InvalidOrMissingParameters | ResourceNotFound,
     ) -> str:
         """The root of the thread `post_id` is a reply in, or `refusal` raised
         when Mattermost cannot say it is a reply in one."""
@@ -1471,18 +1494,22 @@ class MattermostAdapter(PlatformAdapter):
                 None, driver.posts.get_post, post_id
             )
         except Exception as lookup_error:
-            logger.error(
-                "Mattermost refused %s as a thread root, and looking the post up "
-                "to find its thread failed: %s",
+            logger.warning(
+                "Mattermost refused a post threaded under %s (%s), and looking "
+                "%s up to find its thread failed: %s",
+                post_id,
+                refusal,
                 post_id,
                 lookup_error,
             )
             raise refusal from lookup_error
         root = referenced.get("root_id") if isinstance(referenced, dict) else None
-        if not isinstance(root, str) or not root:
-            logger.error(
-                "Mattermost refused %s as a thread root, and the post is not a "
-                "reply in any thread",
+        if not isinstance(root, str) or not root or root == post_id:
+            logger.warning(
+                "Mattermost refused a post threaded under %s (%s), and %s is a "
+                "thread root, so threading was not the problem",
+                post_id,
+                refusal,
                 post_id,
             )
             raise refusal
