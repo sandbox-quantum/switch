@@ -253,6 +253,11 @@ version of their own to them without also giving them a release of their own.
   being built, so turn it on for development and staging only. With it off,
   the dashboard is laid out as before, and the new URLs lead back to today's
   pages.
+- **The new layout's Overview counts the workspace's agents, users and
+  rooms.** Each card opens its list, and View graph opens the ecosystem
+  graph, which leaves the new rail. A workspace's admins see its totals; a
+  member sees the agents they own and the rooms they take part in, marked
+  "Yours", and every user. A count that cannot be read shows a dash and why.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
@@ -840,6 +845,9 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **A room's detail says whether the caller takes part in it.** The
+  gateway's `GET /rooms/{id}` always answered `viewer_is_member: false`; it
+  now says the same as the room list.
 - **The dashboard's addressing policy editor judges rules as the server
   does.** A rule letting in only the agent's owner, or its owner's agents,
   was taken for one that lets in nobody, and Save was held; the editor now

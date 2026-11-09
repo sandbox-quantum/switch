@@ -40,7 +40,7 @@ function CountCard({
     <Card sx={{ flex: "1 1 200px", minWidth: 200 }}>
       <CardActionArea component={RouterLink} to={to} sx={{ height: "100%", p: 2 }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
-          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+          <Typography component="span" variant="subtitle1" sx={{ fontWeight: 600 }}>
             {label}
           </Typography>
           <ChevronRight fontSize="small" sx={{ color: "text.secondary" }} />
