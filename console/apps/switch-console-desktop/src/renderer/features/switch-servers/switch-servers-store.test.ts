@@ -825,6 +825,50 @@ describe('a session the server has ended', () => {
     expect(store.isConnected('a')).toBe(true);
   });
 
+  it('keeps the answer of the latest check when an earlier one lands after it', async () => {
+    // A check that set out with the old cookie (refused) is overtaken by the
+    // one the account page starts once the new cookie is kept (accepted). The
+    // old one landing last must not show the server signed out again.
+    const store = newStore([server('a')]);
+    getConnectionStatus.mockResolvedValueOnce({ serverId: 'a', connected: true, user });
+    await store.refreshStatus('a');
+
+    const withOldCookie = deferred<unknown>();
+    const withNewCookie = deferred<unknown>();
+    getConnectionStatus.mockReturnValueOnce(withOldCookie.promise);
+    getConnectionStatus.mockReturnValueOnce(withNewCookie.promise);
+    const first = store.refreshStatus('a');
+    const second = store.refreshStatus('a');
+
+    withNewCookie.resolve({ serverId: 'a', connected: true, user });
+    await second;
+    expect(store.refreshing.has('a')).toBe(false);
+    withOldCookie.resolve({ serverId: 'a', connected: false, user: null });
+    await first;
+
+    expect(store.isConnected('a')).toBe(true);
+    expect(store.refreshing.has('a')).toBe(false);
+  });
+
+  it('keeps the running check marked as running when an earlier one lands first', async () => {
+    const store = newStore([server('a')]);
+    const earlier = deferred<unknown>();
+    const later = deferred<unknown>();
+    getConnectionStatus.mockReturnValueOnce(earlier.promise);
+    getConnectionStatus.mockReturnValueOnce(later.promise);
+    const first = store.refreshStatus('a');
+    const second = store.refreshStatus('a');
+
+    earlier.resolve({ serverId: 'a', connected: false, user: null });
+    await first;
+    expect(store.refreshing.has('a')).toBe(true);
+
+    later.resolve({ serverId: 'a', connected: true, user });
+    await second;
+    expect(store.refreshing.has('a')).toBe(false);
+    expect(store.isConnected('a')).toBe(true);
+  });
+
   it('listens for the main process saying so', async () => {
     expect(onSessionEnded).toBeDefined();
     switchServersStore.servers = [server('a')];

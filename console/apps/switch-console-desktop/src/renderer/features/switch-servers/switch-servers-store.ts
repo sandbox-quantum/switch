@@ -70,6 +70,13 @@ export class SwitchServersStore {
   loaded = false;
   /** Server ids with an in-flight status refresh. */
   readonly refreshing = new Set<string>();
+  /**
+   * The latest status check started for each server. Checks overlap (a
+   * session-ended hint, the account page after a password change, a manual
+   * refresh), and only the latest may write: one that set out with a cookie
+   * since replaced must not land after it and undo its answer. Nothing renders it.
+   */
+  private readonly statusGeneration = new Map<string, number>();
   /** The sentence the page leads with. Never raw exception text. */
   error: string | null = null;
   /** Diagnostics for the same failure, rendered under `error` rather than in it. */
@@ -364,11 +371,15 @@ export class SwitchServersStore {
   }
 
   async refreshStatus(serverId: string): Promise<void> {
+    const generation = (this.statusGeneration.get(serverId) ?? 0) + 1;
+    this.statusGeneration.set(serverId, generation);
+    const latest = () => this.statusGeneration.get(serverId) === generation;
     runInAction(() => {
       this.refreshing.add(serverId);
     });
     try {
       const status = await rpc.switchServers.getConnectionStatus(serverId);
+      if (!latest()) return;
       runInAction(() => {
         this.statuses.set(serverId, status);
         this.statusUnreachable.delete(serverId);
@@ -380,14 +391,18 @@ export class SwitchServersStore {
       // raise the page-level `error` banner: that field is global, so one
       // unreachable server would paint an error over every server's view.
       console.warn(`[switch-servers] could not read status for ${serverId}`, cause);
+      if (!latest()) return;
       runInAction(() => {
         this.statuses.set(serverId, { serverId, connected: false, user: null });
         this.statusUnreachable.add(serverId);
       });
     } finally {
-      runInAction(() => {
-        this.refreshing.delete(serverId);
-      });
+      // An overtaken check leaves the flag to the one still running.
+      if (latest()) {
+        runInAction(() => {
+          this.refreshing.delete(serverId);
+        });
+      }
     }
   }
 
