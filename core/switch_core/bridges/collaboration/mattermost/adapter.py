@@ -43,6 +43,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.chunking import split_markdown
 from switch_core.bridges.collaboration.ingress import (
     CallbackEndpoint,
     CallbackRefused,
@@ -149,7 +150,8 @@ _ATTACHMENTS_PROP = "attachments"
 _RECOVERY_SKEW_MS = 60_000
 
 # Mattermost's own default `MaxPostSize`. Servers can raise it to 16383, and a
-# message cut to fit the default is a message that fits everywhere.
+# message cut to fit the default is a message that fits everywhere. It is also
+# what a message is split at when the server will not say its own limit.
 _MAX_POST = 4000
 
 # The values of `TeamSettings.TeammateNameDisplay` under which Mattermost puts
@@ -580,6 +582,10 @@ class MattermostAdapter(PlatformAdapter):
         self._name_display_read = False
         self._name_display_warned = False
 
+        # The server's `MaxPostSize`, read the first time a message is long
+        # enough for it to matter. Mattermost refuses a longer post outright.
+        self._max_post_size: int | None = None
+
         # This bridge's place on the shared callback listener, installed by the
         # lifecycle service before start. None when the adapter is running
         # without one behind it, which is how most of the tests build it.
@@ -981,7 +987,7 @@ class MattermostAdapter(PlatformAdapter):
             if not self._admin_driver:
                 return None
             bot_driver = self._admin_driver
-        return await self._create_post(bot_driver, channel_id, content, thread_root_id)
+        return await self._create_posts(bot_driver, channel_id, content, thread_root_id)
 
     async def admin_message(
         self,
@@ -1018,7 +1024,7 @@ class MattermostAdapter(PlatformAdapter):
             if driver is None:
                 logger.error("No driver to post admin message in DM %s", channel_id)
                 return None
-            return await self._create_post(
+            return await self._create_posts(
                 driver, channel_id, f"_Switch:_ {content}", thread_root_id
             )
 
@@ -1034,7 +1040,7 @@ class MattermostAdapter(PlatformAdapter):
             await self._ensure_admin_bot_in_channel(channel_id)
         if driver is None:
             return None
-        return await self._create_post(driver, channel_id, content, thread_root_id)
+        return await self._create_posts(driver, channel_id, content, thread_root_id)
 
     async def send_attachment(
         self,
@@ -1188,6 +1194,82 @@ class MattermostAdapter(PlatformAdapter):
             )
             return None
 
+    async def _create_posts(
+        self,
+        driver: Driver,
+        channel_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> str | None:
+        """Post `content` as however many posts the server's limit needs.
+
+        The parts go out in order, each in `thread_root_id`'s thread when there
+        is one. Returns the FIRST post's id: that is the one the bridge maps
+        the room event to, so a reply threads under the start of what was said
+        rather than its tail.
+
+        A part failing mid-sequence leaves the message visibly truncated rather
+        than silently so: what was posted stays, and a short notice says the
+        rest did not make it.
+        """
+        parts = split_markdown(content, await self._post_limit(content))
+        first_id: str | None = None
+        for index, part in enumerate(parts):
+            post_id = await self._create_post(driver, channel_id, part, thread_root_id)
+            if post_id is None:
+                if index:
+                    logger.error(
+                        "Only %d of %d parts of a message reached Mattermost "
+                        "channel %s",
+                        index,
+                        len(parts),
+                        channel_id,
+                    )
+                    await self._create_post(
+                        driver,
+                        channel_id,
+                        f"_Only {index} of {len(parts)} parts of this message "
+                        "could be delivered; Mattermost rejected the rest._",
+                        thread_root_id,
+                    )
+                return first_id
+            if first_id is None:
+                first_id = post_id
+        return first_id
+
+    async def _post_limit(self, content: str) -> int:
+        """The longest post this server accepts, asked for only when `content`
+        is longer than every server accepts, and then once per bridge."""
+        if len(content) <= _MAX_POST:
+            return _MAX_POST
+        if self._max_post_size is None:
+            self._max_post_size = await self._read_max_post_size()
+        return self._max_post_size
+
+    async def _read_max_post_size(self) -> int:
+        """`MaxPostSize` from the client config, which any signed-in user can
+        read; `_MAX_POST` when the server does not answer with one."""
+        try:
+            config = await self._mm_api("get", "/config/client?format=old")
+            size = int(config["MaxPostSize"])
+        except Exception as e:
+            logger.warning(
+                "Could not read MaxPostSize from the Mattermost client config "
+                "(%s); splitting messages at %d characters",
+                e,
+                _MAX_POST,
+            )
+            return _MAX_POST
+        if size <= 0:
+            logger.warning(
+                "Mattermost reported a MaxPostSize of %d; splitting messages at "
+                "%d characters",
+                size,
+                _MAX_POST,
+            )
+            return _MAX_POST
+        return size
+
     async def _create_post(
         self,
         driver: Driver,
@@ -1240,12 +1322,23 @@ class MattermostAdapter(PlatformAdapter):
             logger.error("Cannot update message: Mattermost client not connected")
             return
 
+        limit = await self._post_limit(new_content)
+        parts = split_markdown(new_content, limit)
+        if len(parts) > 1:
+            logger.warning(
+                "The new text for Mattermost post %s is %d characters, over the "
+                "server's %d-character limit; only its first part was written "
+                "and the rest was not updated",
+                message_ref,
+                len(new_content),
+                limit,
+            )
         try:
             await self._main_loop.run_in_executor(
                 None,
                 self._admin_driver.posts.patch_post,
                 message_ref,
-                {"message": new_content},
+                {"message": parts[0]},
             )
         except Exception as e:
             logger.error("Failed to update Mattermost post %s: %s", message_ref, e)
