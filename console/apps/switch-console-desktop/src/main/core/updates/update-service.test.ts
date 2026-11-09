@@ -152,7 +152,7 @@ beforeEach(() => {
 });
 
 describe('what a check reports', () => {
-  it('reports a check that found nothing as up to date', async () => {
+  it('reports a check someone asked for that found nothing as up to date', async () => {
     // The updater answers its not-available branch with the release it just
     // compared this build against, so an `updateInfo` is present either way.
     h.checkForUpdatesAndNotify.mockResolvedValue({
@@ -161,15 +161,14 @@ describe('what a check reports', () => {
       updateInfo: { version: '1.2.3' },
     });
 
-    await expect(updateService.checkForUpdates('scheduled')).resolves.toBeNull();
+    await expect(updateService.checkForUpdates('user')).resolves.toBeNull();
 
-    expect(h.trackEvent).toHaveBeenCalledWith('update_checked', {
-      trigger: 'scheduled',
+    expect(h.trackEvent).toHaveBeenCalledWith('update_check_requested', {
       result: 'up_to_date',
     });
   });
 
-  it('reports a check that found one as available', async () => {
+  it('reports one that found an update as available', async () => {
     h.checkForUpdatesAndNotify.mockResolvedValue({
       isUpdateAvailable: true,
       versionInfo: { version: '1.3.0' },
@@ -180,21 +179,53 @@ describe('what a check reports', () => {
       version: '1.3.0',
     });
 
-    expect(h.trackEvent).toHaveBeenCalledWith('update_checked', {
-      trigger: 'user',
+    expect(h.trackEvent).toHaveBeenCalledWith('update_check_requested', {
       result: 'available',
     });
   });
 
-  it('reports a check that could not run as failed', async () => {
+  it('reports one that could not run as failed, and still hands the failure back', async () => {
     h.checkForUpdatesAndNotify.mockRejectedValue(new Error('HTTP 503'));
 
-    await expect(updateService.checkForUpdates('startup')).rejects.toThrow();
+    await expect(updateService.checkForUpdates('user')).rejects.toThrow();
 
-    expect(h.trackEvent).toHaveBeenCalledWith('update_checked', {
-      trigger: 'startup',
-      result: 'failed',
+    await vi.waitFor(() =>
+      expect(h.trackEvent).toHaveBeenCalledWith('update_check_requested', { result: 'failed' })
+    );
+  });
+
+  it.each(['scheduled', 'startup', 'unknown'] as const)(
+    'reports nothing for a %s check, which nobody asked for',
+    async (trigger) => {
+      h.checkForUpdatesAndNotify.mockResolvedValue({
+        isUpdateAvailable: false,
+        versionInfo: { version: '1.2.3' },
+        updateInfo: { version: '1.2.3' },
+      });
+
+      await updateService.checkForUpdates(trigger);
+
+      expect(h.trackEvent).not.toHaveBeenCalledWith('update_check_requested', expect.anything());
+    }
+  );
+
+  it('reports a request that joins the app’s own check, with that check’s result', async () => {
+    let finish!: (value: unknown) => void;
+    h.checkForUpdatesAndNotify.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+
+    const scheduled = updateService.checkForUpdates('scheduled');
+    const requested = updateService.checkForUpdates('user');
+    finish({
+      isUpdateAvailable: true,
+      versionInfo: { version: '1.3.0' },
+      updateInfo: { version: '1.3.0' },
     });
+    await Promise.all([scheduled, requested]);
+
+    expect(h.checkForUpdatesAndNotify).toHaveBeenCalledTimes(1);
+    expect(h.trackEvent.mock.calls.filter(([name]) => name === 'update_check_requested')).toEqual([
+      ['update_check_requested', { result: 'available' }],
+    ]);
   });
 });
 

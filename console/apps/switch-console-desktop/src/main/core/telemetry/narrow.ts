@@ -2,6 +2,7 @@ import { INSTALL_METHODS } from '@switch-console/core/deps';
 import {
   type SessionProvisionTrigger,
   type SessionStartSource,
+  type UpdateTrigger,
   AGENT_REMOVE_TRIGGERS,
   ROOM_AGENTS_DIRECTIONS,
   SESSION_PROVISION_TRIGGERS,
@@ -15,7 +16,6 @@ import type {
   TelemetryIdentityLinkKind,
   TelemetryInstallMethod,
   TelemetryRoomAgentsDirection,
-  TelemetryUpdateTrigger,
 } from './events';
 
 /**
@@ -70,8 +70,12 @@ export function roomAgentsDirectionOf(value: unknown): TelemetryRoomAgentsDirect
   return oneOf(ROOM_AGENTS_DIRECTIONS, value, 'agents_to_room');
 }
 
-export function updateTriggerOf(value: unknown): TelemetryUpdateTrigger {
-  return oneOf(UPDATE_TRIGGERS, value, 'user');
+/**
+ * `unknown` rather than `user`: only a check somebody asked for is reported,
+ * and a caller that said nothing is not evidence anybody did.
+ */
+export function updateTriggerOf(value: unknown): UpdateTrigger | 'unknown' {
+  return oneOf<UpdateTrigger | 'unknown'>(UPDATE_TRIGGERS, value, 'unknown');
 }
 
 export function installMethodOf(value: unknown): TelemetryInstallMethod {

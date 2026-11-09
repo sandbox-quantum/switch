@@ -188,16 +188,6 @@ export type TelemetryBridgePlatform =
   | 'unknown'
   | (string & { readonly [platformKeyBrand]: true });
 
-/**
- * What asked for an update check.
- *
- * `startup` and `scheduled` are the app's own; `user` is a menu item or a button
- * somebody pressed. Note a manual check that lands while an automatic one is
- * already running joins it rather than starting a new one, so a small number of
- * user checks are reported under the trigger that got there first.
- */
-export type TelemetryUpdateTrigger = 'user' | 'startup' | 'scheduled';
-
 export type TelemetryBridgeFailure = 'none' | 'unauthenticated' | 'forbidden' | 'invalid' | 'error';
 
 /**
@@ -464,11 +454,12 @@ export type TelemetryEventMap = {
     failure_reason: TelemetryServerAddFailure;
   };
   /**
-   * The app checked for an update. `trigger` separates a check someone asked for
-   * from the hourly one, because only the first says anything about intent.
+   * Someone asked for an update check, from the menu or a Check button, and
+   * how the check came out. One that lands while the app's own check is
+   * already running joins it, and reports that check's result. The app's own
+   * checks, on launch and every hour, are not reported.
    */
-  update_checked: {
-    trigger: TelemetryUpdateTrigger;
+  update_check_requested: {
     result: 'available' | 'up_to_date' | 'failed';
   };
   /**
@@ -775,7 +766,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   session_discovered: ['agent_type', 'location'],
   session_ended: ['agent_type', 'location', 'outcome'],
   server_added: ['server_kind', 'outcome', 'failure_reason'],
-  update_checked: ['trigger', 'result'],
+  update_check_requested: ['result'],
   update_download_started: [],
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],

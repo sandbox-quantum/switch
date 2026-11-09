@@ -201,6 +201,14 @@ describe('a check that the user starts', () => {
     localStorage.clear();
   });
 
+  it('tells main the person asked, which is the one check main reports', async () => {
+    const store = await startedStore();
+
+    await store.check();
+
+    expect(rpcUpdate.check).toHaveBeenCalledExactlyOnceWith('user');
+  });
+
   it.each([
     ['fails', () => Promise.resolve({ success: false, error: 'getaddrinfo ENOTFOUND' })],
     ['finds nothing', () => Promise.resolve({ success: true, result: null })],

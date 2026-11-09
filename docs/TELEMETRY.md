@@ -105,7 +105,7 @@ id, no IP field, no Switch identity.
 |---|---|
 | `app_launched` | `install_kind`: `new` (the installation's very first launch) / `updated` (the first launch on a newer version; switching between the canary and stable builds, or going back to an older version, is `same`) / `same` · `from_version`: `0.40.1`, or `unknown` when the previous launch did not record one · `trigger`: `restart_button` (the app restarted itself to install the update) / `other` (installed on quit, or by hand) / `unknown` (that could not be read) — both are `none` unless `install_kind` is `updated` |
 | `renderer_crashed` | *(no fields)* |
-| `update_checked` | `trigger`: `user` / `startup` / `scheduled` · `result`: `available` / `up_to_date` / `failed` |
+| `update_check_requested` | `result`: `available` / `up_to_date` / `failed` — someone asked for an update check, from the menu or a Check button. The app's own checks, at launch and every hour, are not sent |
 | `update_download_started` | *(no fields)* — Download was pressed for an available update |
 | `update_downloaded` | `outcome`: `success` / `failure` |
 | `update_install_started` | `outcome`: `success` / `failure` |

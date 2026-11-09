@@ -293,7 +293,7 @@ export class UpdateStore {
       });
     }
     try {
-      const res = await rpc.update.check();
+      const res = await rpc.update.check('user');
       if (!res) {
         this._setCheckResult({ status: 'error', message: 'Update API unavailable' });
         return;

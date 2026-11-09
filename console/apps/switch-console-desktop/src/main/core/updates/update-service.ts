@@ -5,8 +5,6 @@ import _electronUpdater, {
   type Logger as UpdaterLogger,
 } from 'electron-updater';
 import { resolveAppVersion } from '@main/core/app/utils';
-import type { TelemetryUpdateTrigger } from '@main/core/telemetry/events';
-import { updateTriggerOf } from '@main/core/telemetry/narrow';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -17,6 +15,7 @@ import {
   RELEASE_REPO_OWNER,
   UPDATE_CHANNEL,
 } from '@shared/app-identity';
+import type { UpdateTrigger } from '@shared/core/telemetry/reporting';
 import {
   updateAvailableEvent,
   updateCheckingEvent,
@@ -422,33 +421,29 @@ class UpdateService implements IInitializable, IDisposable {
   /**
    * Check for an update.
    *
-   * `trigger` says who asked. A check that arrives while one is already running
-   * joins it rather than starting a second, so it is reported under the trigger
-   * of the check that actually ran — the alternative is counting one check twice.
+   * `trigger` says who asked, and only a check somebody asked for is reported:
+   * the app's own, at launch and every hour, say nothing about anyone. A check
+   * that arrives while one is already running joins it rather than starting a
+   * second, and a person's request that joins one is still reported, with the
+   * result of the check it joined.
    */
-  async checkForUpdates(trigger: TelemetryUpdateTrigger = 'user'): Promise<UpdateInfo | null> {
+  async checkForUpdates(trigger: UpdateTrigger | 'unknown'): Promise<UpdateInfo | null> {
     // During an install, an error from a check would read as an installer error.
     if (!this.active || this.installRequested) return null;
-    if (this.currentCheckPromise) return this.currentCheckPromise;
 
-    this.currentCheckPromise = this._performCheck()
-      .then((info) => {
-        trackEvent('update_checked', {
-          trigger: updateTriggerOf(trigger),
-          result: info ? 'available' : 'up_to_date',
-        });
-        return info;
-      })
-      .catch((error: unknown) => {
-        trackEvent('update_checked', { trigger: updateTriggerOf(trigger), result: 'failed' });
-        throw error;
-      })
-      .finally(() => {
-        this.currentCheckPromise = null;
-        this.scheduleNextCheck();
-      });
-
-    return this.currentCheckPromise;
+    this.currentCheckPromise ??= this._performCheck().finally(() => {
+      this.currentCheckPromise = null;
+      this.scheduleNextCheck();
+    });
+    const check = this.currentCheckPromise;
+    if (trigger === 'user') {
+      check.then(
+        (info) =>
+          trackEvent('update_check_requested', { result: info ? 'available' : 'up_to_date' }),
+        () => trackEvent('update_check_requested', { result: 'failed' })
+      );
+    }
+    return check;
   }
 
   private async _performCheck(): Promise<UpdateInfo | null> {
