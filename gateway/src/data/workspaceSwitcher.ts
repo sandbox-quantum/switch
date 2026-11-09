@@ -1,4 +1,31 @@
-import type { OrganizationSummary, TenantMembership, WorkspaceCounts } from "./api";
+import {
+  type TenantMembership,
+  type WorkspaceCounts,
+  fetchCurrentOrganization,
+  fetchOrganizations,
+} from "./api";
+
+/** An organization the switcher can name. */
+export interface OrganizationName {
+  id: string;
+  name: string;
+}
+
+/** The organizations the switcher names: those of the workspaces the caller
+ * may enter, and the current workspace's where it is none of those, as when
+ * the platform operator entered it on the operator flag alone. Left out, it
+ * would leave the breadcrumb without its organization and the switcher
+ * without headings. */
+export async function loadOrganizationNames(
+  currentOrganizationId: string | null,
+): Promise<OrganizationName[]> {
+  const listed: OrganizationName[] = await fetchOrganizations();
+  if (currentOrganizationId === null || listed.some((o) => o.id === currentOrganizationId)) {
+    return listed;
+  }
+  const current = await fetchCurrentOrganization();
+  return [...listed, { id: current.id, name: current.name }];
+}
 
 /** The workspaces of one organization, as the switcher lists them. */
 export interface WorkspaceGroup {
@@ -23,7 +50,7 @@ export function switcherWorkspaces(
 /** The name of `organizationId` among `organizations`, or null. */
 export function organizationName(
   organizationId: string | null,
-  organizations: OrganizationSummary[],
+  organizations: OrganizationName[],
 ): string | null {
   if (organizationId === null) return null;
   return organizations.find((o) => o.id === organizationId)?.name ?? null;
@@ -44,7 +71,7 @@ function byName(a: string | null, b: string | null): number {
  * decides it (`organization-groups.ts`). */
 export function switcherSections(
   workspaces: TenantMembership[],
-  organizations: OrganizationSummary[],
+  organizations: OrganizationName[],
 ): { sections: WorkspaceGroup[]; headed: boolean } {
   const sorted = [...workspaces].sort((a, b) => byName(a.name, b.name));
   const groups = new Map<string | null, WorkspaceGroup>();

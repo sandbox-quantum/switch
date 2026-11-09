@@ -6,9 +6,12 @@ import { Alert, Box, Button, Snackbar, Stack, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { Link as RouterLink, useLocation } from "react-router";
-import { type OrganizationSummary, fetchOrganizations } from "../data/api";
 import { useAuth } from "../data/AuthContext";
-import { organizationName } from "../data/workspaceSwitcher";
+import {
+  type OrganizationName,
+  loadOrganizationNames,
+  organizationName,
+} from "../data/workspaceSwitcher";
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
 import { type Layout, areaOf } from "../routes/routeTable";
 import WorkspaceMenu from "./WorkspaceMenu";
@@ -92,15 +95,17 @@ function WorkspaceCrumbs({
   inOrganizationSettings: boolean;
 }) {
   const { session, switchTo } = useAuth();
-  const [organizations, setOrganizations] = useState<OrganizationSummary[]>([]);
+  const [organizations, setOrganizations] = useState<OrganizationName[]>([]);
   const [organizationsError, setOrganizationsError] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [switchError, setSwitchError] = useState<string | null>(null);
 
+  const tenant = session?.tenant ?? null;
+  const currentOrganizationId = tenant?.organization_id ?? null;
   useEffect(() => {
     let cancelled = false;
-    fetchOrganizations().then(
+    loadOrganizationNames(currentOrganizationId).then(
       (rows) => {
         if (!cancelled) setOrganizations(rows);
       },
@@ -113,7 +118,7 @@ function WorkspaceCrumbs({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [currentOrganizationId]);
 
   const switchWorkspace = async (tenantId: string) => {
     setAnchor(null);
@@ -124,8 +129,7 @@ function WorkspaceCrumbs({
     }
   };
 
-  const tenant = session?.tenant ?? null;
-  const organization = organizationName(tenant?.organization_id ?? null, organizations);
+  const organization = organizationName(currentOrganizationId, organizations);
 
   let crumbs: ReactNode;
   if (inOrganizationSettings) {

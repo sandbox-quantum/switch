@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { OrganizationSummary, TenantMembership } from "./api";
+import type { TenantMembership } from "./api";
 import {
+  type OrganizationName,
   countsLabel,
   organizationName,
   switcherSections,
@@ -18,8 +19,8 @@ function workspace(id: string, name: string, organizationId: string | null): Ten
   };
 }
 
-function organization(id: string, name: string): OrganizationSummary {
-  return { id, slug: id, name, role: "member" };
+function organization(id: string, name: string): OrganizationName {
+  return { id, name };
 }
 
 const names = (workspaces: TenantMembership[]) => workspaces.map((w) => w.name);

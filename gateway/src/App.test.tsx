@@ -679,6 +679,54 @@ describe("the new layout (gateway_v2)", () => {
       expect(current.textContent).toContain("Acme");
     });
 
+    it("names the organization of a workspace the operator entered on the operator flag alone", async () => {
+      const entered: TenantMembership = {
+        id: "t9",
+        slug: "gamma",
+        name: "Gamma",
+        role: "admin",
+        organization_role: null,
+        organization_id: "o9",
+      };
+      const operator = signedInAs("operator", { flags: V2, tenants: [beta] });
+      mockFetch({
+        ...operator,
+        "/auth/session": [
+          200,
+          session({
+            state: "ready",
+            tenant: entered,
+            tenants: [acme, beta],
+            user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: true },
+          }),
+        ],
+        "/tenants/current": [
+          200,
+          { ...entered, administers: true, can_delete: false, can_manage_data_protection: false },
+        ],
+        "/organizations/current": [
+          200,
+          {
+            id: "o9",
+            slug: "gamma-corp",
+            name: "Gamma Corp",
+            role: null,
+            members_from_directory: false,
+            directory_takes_changes: false,
+            administers: false,
+            can_manage_members: false,
+          },
+        ],
+      });
+      renderAt("/rooms");
+      fireEvent.click(await screen.findByRole("button", { name: /Gamma Corp\s*\/\s*Gamma/ }));
+      const menu = await screen.findByRole("menu", { name: "Workspaces" });
+      for (const heading of ["Acme Group", "Beta Holdings", "Gamma Corp"]) {
+        expect(within(menu).getByText(heading)).toBeTruthy();
+      }
+      expect(within(menu).getByRole("menuitem", { current: true }).textContent).toContain("Gamma");
+    });
+
     it("says so when the counts cannot be read, and still lists the workspaces", async () => {
       mockFetch({
         ...signedInAs("member", { flags: V2, tenants: [beta] }),

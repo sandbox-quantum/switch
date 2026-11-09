@@ -10,9 +10,14 @@ import {
   Typography,
 } from "@mui/material";
 import { useEffect, useState } from "react";
-import { type OrganizationSummary, type WorkspaceCounts, fetchWorkspaceCounts } from "../data/api";
+import { type WorkspaceCounts, fetchWorkspaceCounts } from "../data/api";
 import { useAuth } from "../data/AuthContext";
-import { countsLabel, switcherSections, switcherWorkspaces } from "../data/workspaceSwitcher";
+import {
+  type OrganizationName,
+  countsLabel,
+  switcherSections,
+  switcherWorkspaces,
+} from "../data/workspaceSwitcher";
 
 type CountsState =
   | { status: "loading" }
@@ -33,7 +38,7 @@ export default function WorkspaceMenu({
 }: {
   anchor: HTMLElement | null;
   onClose: () => void;
-  organizations: OrganizationSummary[];
+  organizations: OrganizationName[];
   organizationsError: string | null;
   onSwitch: (tenantId: string) => void;
   onInvite: () => void;
