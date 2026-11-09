@@ -71,6 +71,15 @@ version of their own to them without also giving them a release of their own.
   redacted had no way to know.
 
 #### Changed
+- **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
+  `GATEWAY_PASSWORD_LOGIN_ENABLED=false` the admin account is seeded without a
+  password, and the first OIDC sign-in with `GATEWAY_ADMIN_EMAIL` links to it.
+  A password set anyway is logged as unused at startup. While password login
+  is on it is still required, and the server now says so at startup instead
+  of failing on a missing setting. The Helm chart follows: with
+  `switchCore.oidc.passwordLoginEnabled: false` (and Mattermost off),
+  `secrets.gatewayAdminPassword` may be left empty, and the Secret key becomes
+  optional.
 - **Switch Trust notices about a person's own message reach only that
   person.** When someone's message is blocked, redacted, flagged or not fully
   checked, the notice used to be posted in the channel, where everyone could
@@ -153,6 +162,10 @@ version of their own to them without also giving them a release of their own.
   anything past that reaches agents unchecked, and the message carries a note
   saying the rest was not checked. switch-core now depends on `pypdf` to read
   PDFs.
+- **Logs no longer carry email addresses.** Signing up, creating a user,
+  creating or deleting an API key, seeding the admin account and finding two
+  accounts with the same address each logged the person's email. They now log
+  the user id. A test fails if a log call passes an email again.
 - **Counts and replies no longer name private rooms either.** Beyond the
   room listings below, a reference, document or package's attached-rooms count
   took in every room it was attached to, an agent's detail named every room

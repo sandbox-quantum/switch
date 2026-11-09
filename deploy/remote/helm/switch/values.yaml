@@ -100,7 +100,8 @@ ingress:
 #      DB_OWNER_PASSWORD (only if postgresql.owner.username is set, and unless
 #        postgresql.owner.existingSecret is set),
 #      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
-#      GATEWAY_ADMIN_PASSWORD,
+#      GATEWAY_ADMIN_PASSWORD (unless switchCore.oidc.enabled with
+#        passwordLoginEnabled false, and Mattermost off),
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
 #      CONTROLLER_TOKEN_SECRET (with the agent_management feature flag on),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
@@ -135,6 +136,8 @@ secrets:
   # under secretKeys. Remove it afterwards.
   jwtSecretKey: ""
   gatewayAdminEmail: ""
+  # Required while password login is on (or with Mattermost); may be left
+  # empty with switchCore.oidc.passwordLoginEnabled false.
   gatewayAdminPassword: ""
   mattermostAdminPassword: ""
   mattermostUserPassword: ""

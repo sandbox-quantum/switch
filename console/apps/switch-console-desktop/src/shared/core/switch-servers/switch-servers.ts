@@ -203,7 +203,9 @@ export type SwitchServerDeclaration = {
  * `type` is `registration` for a key they made to register agents with,
  * `agent` for one of their agents' own keys, or `bootstrap` for the
  * deployment's seeded registration key. `keyPrefix` is the start of the key's
- * hash, which identifies it without revealing it.
+ * hash, which identifies it without revealing it. `expiresAt` is when the key
+ * stops working, or null when it never does (agents' own keys and the
+ * bootstrap key, and every key on a server older than key expiry).
  */
 export type SwitchApiKey = {
   id: string;
@@ -211,10 +213,20 @@ export type SwitchApiKey = {
   type: string;
   keyPrefix: string;
   createdAt: string;
+  expiresAt: string | null;
 };
 
+/** How long a new registration key works: a number of days (1–365), or never. */
+export type ApiKeyLifetime = number | 'never';
+
 /** A registration key just made, with its full value. */
-export type CreatedRegistrationKey = { id: string; label: string; key: string; createdAt: string };
+export type CreatedRegistrationKey = {
+  id: string;
+  label: string;
+  key: string;
+  createdAt: string;
+  expiresAt: string | null;
+};
 
 /** The authenticated user, as returned by `GET /gateway/auth/me`. */
 export type SwitchUser = {

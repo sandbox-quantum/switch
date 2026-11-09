@@ -26,23 +26,19 @@ function Heading({ publicUrl }: { publicUrl: string | null }) {
   );
 }
 
-const NOT_MOUNTED = "not mounted";
-
 /** Every app of `scope`, a card each, under `heading`. A 404 means the
- * routes are not mounted, and shows `notEnabled`, or nothing when it is null. */
+ * routes are not mounted, and shows `notEnabled`. Parents must check the
+ * server's feature flags before rendering it. */
 export function ConnectorAppsList({
   scope,
   notEnabled,
   heading: headingOf,
 }: {
   scope: ConnectorAppScope;
-  notEnabled: string | null;
+  notEnabled: string;
   heading: (publicUrl: string | null) => ReactNode;
 }) {
-  const { data, loading, error, refetch } = useConnectorApps(
-    scope,
-    notEnabled ?? NOT_MOUNTED,
-  );
+  const { data, loading, error, refetch } = useConnectorApps(scope, notEnabled);
   const [checkFailures, setCheckFailures] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<string | null>(null);
 
@@ -54,7 +50,6 @@ export function ConnectorAppsList({
         <CircularProgress />
       </>
     );
-  if (error === NOT_MOUNTED) return null;
   if (error !== null)
     return (
       <>

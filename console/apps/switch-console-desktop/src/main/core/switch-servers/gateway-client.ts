@@ -105,6 +105,7 @@ import {
   type RoomVisibility,
   type RetireOutcome,
   type SwitchApiKey,
+  type ApiKeyLifetime,
   type CreatedRegistrationKey,
   type RoomAutoRoute,
   type SwitchAuthConfig,
@@ -5208,7 +5209,12 @@ export async function deleteManagedAgent(
 }
 
 type ApiKeyJson = { id: string; label: string; type: string };
-type ApiKeyDetailJson = ApiKeyJson & { key_prefix: string; created_at: string };
+// `expires_at` is absent on a server older than key expiry, where no key expires.
+type ApiKeyDetailJson = ApiKeyJson & {
+  key_prefix: string;
+  created_at: string;
+  expires_at?: string | null;
+};
 
 /**
  * The signed-in person's own API keys (`GET /api-keys`): the registration
@@ -5223,21 +5229,38 @@ export async function fetchMyApiKeys(server: SwitchServer): Promise<SwitchApiKey
     type: key.type,
     keyPrefix: key.key_prefix,
     createdAt: key.created_at,
+    expiresAt: key.expires_at ?? null,
   }));
 }
 
-/** Make a registration key (`POST /api-keys`). Its value is in the answer and nowhere else. */
+/**
+ * Make a registration key (`POST /api-keys`) that works for `lifetime`. Its
+ * value is in the answer and nowhere else.
+ */
 export async function createRegistrationKey(
   server: SwitchServer,
-  label: string
+  label: string,
+  lifetime: ApiKeyLifetime
 ): Promise<CreatedRegistrationKey> {
   const res = await gatewayFetch(server, '/api-keys', {
     authenticated: true,
     method: 'POST',
-    body: { label },
+    body: { label, expires_in_days: lifetime },
   });
-  const json = (await res.json()) as { id: string; label: string; key: string; created_at: string };
-  return { id: json.id, label: json.label, key: json.key, createdAt: json.created_at };
+  const json = (await res.json()) as {
+    id: string;
+    label: string;
+    key: string;
+    created_at: string;
+    expires_at?: string | null;
+  };
+  return {
+    id: json.id,
+    label: json.label,
+    key: json.key,
+    createdAt: json.created_at,
+    expiresAt: json.expires_at ?? null,
+  };
 }
 
 /** One of the signed-in person's keys in full (`GET /api-keys/{id}/reveal`). The server audits it. */
