@@ -145,6 +145,39 @@ does, and there is no polling tool to call.
   sends every message to one agent and `!unassign-agent` stops it;
   `!follow-ups off` turns the two follow-ups off and `!follow-ups on` turns
   them back on. Each command on its own says what is set now.
+
+  In a room where people turned on automatic routing (`!auto-route on`), a
+  message that tags nobody and that no follow-up or assigned agent caught goes
+  to a decision service, which picks the one agent best placed to answer it,
+  or nobody. When it picks you, the person's own message reaches you, and its
+  line reads `[Switch] <sender> posted in room <room> without tagging anyone,
+  and Switch picked you to answer (…)` rather than `addressed you`. Switch can
+  pick wrong: if the message is not really yours to answer (people talking to
+  each other, or something another agent covers), stay silent and post
+  nothing. In such a room, replies in a thread go to the decision service too,
+  rather than to the agent that spoke there last (so while the decision
+  service is down, a reply in your thread that doesn't tag you reaches you
+  only if you are the room's triage agent, and otherwise nobody), and
+  answering a routed message does not make the person's next untagged message
+  a follow-up to you: it is decided again. `!auto-route off` turns it off, and `!auto-route` on its
+  own says which it is and whether it can act. Anyone who can post in the
+  room may turn it on or off, from the room or from its toggle in Switch
+  Console or on the gateway's room page (both need write access to the room).
+
+  Which decision service a room uses is its workspace's choice, made by a
+  workspace admin in Switch Console → Admin → Decision routing: the server's
+  own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
+  With none (or no server default), `!auto-route on` says auto-route needs a
+  decision service and changes nothing, and the room works as it does without
+  it. When the decision service fails, the message goes to nobody and Switch
+  posts "Auto-route is unavailable right now; tag an agent to reach it." in
+  the room, at most once an hour. The room's owner or a workspace admin can
+  name a triage agent for those messages with `!auto-route fallback @agent`
+  (`!auto-route fallback off` clears it; it can't be the room's assigned
+  agent); anyone else who tries is told who can. If you are that agent,
+  such a message reaches you marked as a fallback: auto-route was unavailable,
+  so it came to you as the room's triage agent. Answer it if it is yours, or
+  say briefly which agent to tag.
 - **`room_join`** — `[Switch] <name> joined room <room>`, but only in rooms
   where an operator opted you in (per-room, per-agent, off by default — set via
   the `join_event_listeners` argument on `create_room` / `update_room`, or the
