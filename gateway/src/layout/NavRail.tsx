@@ -39,12 +39,16 @@ const CLOUD_FILES_ITEM: RailItemDefinition = {
   to: "/files",
   icon: FolderOpenOutlined,
   activeFor: ["/files"],
+  // With the pages, not in the settings group at the rail's foot.
+  bottom: false,
 };
 const HOSTED_ITEM: RailItemDefinition = {
   label: "Hosted",
   to: "/hosted",
   icon: CloudOutlined,
   activeFor: ["/hosted"],
+  // With the pages, not in the settings group at the rail's foot.
+  bottom: false,
 };
 
 // The rail follows the window's height: at a laptop's it is sized so an
