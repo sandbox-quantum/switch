@@ -25,6 +25,7 @@ from switch_core.db.models import (
     DeploymentIdentity,
     TelemetrySnapshotWatermark,
 )
+from switch_core.telemetry import service as service_module
 from switch_core.telemetry import snapshot as snapshot_module
 from switch_core.telemetry.deployment import (
     DeploymentIdentityMissingError,
@@ -278,11 +279,11 @@ class TestEmitMilestone:
 
         assert sink.sent == []
 
-    async def test_a_disabled_deployment_does_not_use_up_its_claims(
+    async def test_a_disabled_deployment_claims_its_milestones_without_reporting(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Switching telemetry on later must not find every milestone already
-        spent."""
+        """Switching telemetry on later must not report, as a first, what the
+        deployment did long before."""
         sink = _RecordingSink()
         off = self._service(
             sink, session_factory, enabled=False, installed_at=datetime.now(UTC)
@@ -290,7 +291,100 @@ class TestEmitMilestone:
 
         await off.emit_milestone("first_connector_added", bridge_platform="slack")
 
-        assert await claim_milestone(session_factory, "first_connector_added") is True
+        assert sink.sent == []
+        assert await claim_milestone(session_factory, "first_connector_added") is False
+
+    async def test_a_mistake_in_the_event_never_reaches_the_caller(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """It runs on the way to answering a session report, opening a stream
+        and registering an agent: none of them may fail over telemetry."""
+        sink = _RecordingSink()
+        service = self._service(
+            sink, session_factory, enabled=True, installed_at=datetime.now(UTC)
+        )
+
+        await service.emit_milestone("first_agent_registered", known_agent_type="x")
+
+        assert sink.sent == []
+
+    async def test_a_claimed_milestone_costs_nothing_the_next_time(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Asked on every agent connection, so the process remembers once the
+        database has answered, rather than writing a claim each time."""
+        sink = _RecordingSink()
+        service = self._service(
+            sink, session_factory, enabled=True, installed_at=datetime.now(UTC)
+        )
+        writes = 0
+        original = service_module.take_claim
+
+        async def counting(factory: object, name: str) -> bool:
+            nonlocal writes
+            writes += 1
+            return await original(factory, name)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(service_module, "take_claim", counting)
+
+        for _ in range(3):
+            await service.emit_milestone(
+                "first_agent_connected", known_agent_type="codex"
+            )
+
+        assert writes == 1
+        assert len(sink.sent) == 1
+
+
+class TestTheInstallIsReportedWhenItHappened:
+    def _service(
+        self,
+        sink: _RecordingSink,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        enabled: bool,
+    ) -> TelemetryService:
+        return TelemetryService(
+            sink=sink,  # type: ignore[arg-type]
+            enabled=enabled,
+            client_id="deployment-uuid",
+            version="1.0.0",
+            telemetry_environment="prod",
+            telemetry_internal=False,
+            deployment_kind="self_hosted",
+            session_factory=session_factory,
+            installed_at=NOW,
+        )
+
+    async def test_it_is_dated_to_the_install_whenever_it_is_sent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The start of the funnel, and the moment Amplitude counts the
+        deployment as new from, even when telemetry is switched on months in."""
+        sink = _RecordingSink()
+
+        await self._service(sink, session_factory, enabled=True).report_installed()
+
+        [record] = sink.sent
+        assert record.name == "switch_core.deployment_installed"
+        assert record.timestamp_ns == int(NOW.timestamp()) * 10**9
+        assert record.properties["seconds_since_install"] > 0
+
+    async def test_it_waits_for_telemetry_rather_than_being_claimed_while_off(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        off_sink, on_sink = _RecordingSink(), _RecordingSink()
+
+        await self._service(off_sink, session_factory, enabled=False).report_installed()
+        await self._service(on_sink, session_factory, enabled=True).report_installed()
+        await self._service(on_sink, session_factory, enabled=True).report_installed()
+
+        assert off_sink.sent == []
+        assert [record.name for record in on_sink.sent] == [
+            "switch_core.deployment_installed"
+        ]
 
 
 class TestTheSnapshotSchedule:
@@ -450,6 +544,47 @@ class TestTheSnapshotSchedule:
             for record in sink.sent
             if record.name == "switch_core.room_became_active"
         ]
+
+    async def test_a_room_that_went_live_is_dated_when_it_did(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Not when the pass noticed, up to a day later; and the window starts
+        no earlier than reporting began, so a room used while telemetry was
+        off is not reported, dated before the opt-in, once it is on."""
+        went_live = datetime.now(UTC) - timedelta(hours=3)
+        asked: list[datetime] = []
+
+        async def rooms(
+            factory: object, *, since: datetime, now: datetime
+        ) -> list[snapshot_module.NewlyActiveRoom]:
+            asked.append(since)
+            return [
+                snapshot_module.NewlyActiveRoom(
+                    first_active_at=went_live,
+                    seconds_since_room_created=60.0,
+                    bridge_platform="none",
+                    channel_type="none",
+                    agent_count=1,
+                    created_by_kind="agent",
+                )
+            ]
+
+        monkeypatch.setattr("switch_core.telemetry.reporter.newly_active_rooms", rooms)
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, session_factory)
+        # Later than the install, a day ago.
+        switched_on = datetime.now(UTC) - timedelta(hours=12)
+        reporter._telemetry._enabled_since = switched_on
+
+        await reporter.run_once(
+            now=datetime.now(UTC), since=datetime.now(UTC) - timedelta(days=5)
+        )
+
+        assert asked == [switched_on]
+        [record] = [r for r in sink.sent if r.name == "switch_core.room_became_active"]
+        assert record.timestamp_ns == int(went_live.timestamp() * 1_000_000) * 1_000
 
     async def test_the_snapshot_carries_the_live_session_count(
         self, session_factory: async_sessionmaker[AsyncSession]

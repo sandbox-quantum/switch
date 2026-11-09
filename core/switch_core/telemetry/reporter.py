@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import TelemetrySnapshotWatermark
 from switch_core.db.tenant_lookup import all_tenant_ids
-from switch_core.telemetry.deployment import claim_milestone
 from switch_core.telemetry.periods import periods_ending_between
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.session_start import prune_session_start_claims
@@ -157,17 +156,32 @@ class SnapshotReporter:
         """
         try:
             # Skipped entirely on the first pass — see the module docstring.
+            # Nor is a room that went live before reporting began: it was
+            # used while nothing was being reported, and dating it then would
+            # put an event before the deployment's install or opt-in.
+            reporting_since = self._telemetry.reporting_since
+            window_start = (
+                since
+                if since is None or reporting_since is None
+                else max(as_utc(since), reporting_since)
+            )
             active = (
-                await newly_active_rooms(self._session_factory, since=since, now=now)
-                if since is not None
+                await newly_active_rooms(
+                    self._session_factory, since=window_start, now=now
+                )
+                if window_start is not None
                 else []
             )
 
             logger.info("Usage snapshot: %s", summarise(counts, active))
 
+            # Dated when each room went live, not when this pass noticed: a
+            # pass runs up to a day later, and a funnel times its steps from
+            # the events' own times.
             for room in active:
-                self._telemetry.emit(
+                self._telemetry.emit_at(
                     "room_became_active",
+                    room.first_active_at,
                     seconds_since_room_created=room.seconds_since_room_created,
                     bridge_platform=room.bridge_platform,
                     channel_type=room.channel_type,
@@ -243,27 +257,29 @@ class SnapshotReporter:
     async def _report_first_room_active(self, active: list) -> None:
         """The activation milestone: the first room a person actually used.
 
-        Fires once, so all three of these are permanent if wrong. Measured from
-        the interaction, not from this pass, which is always late in the same
-        direction. The *earliest* room, not the quickest. And user-created
-        only, matching `first_room_created`.
+        Fires once, so all three of these are permanent if wrong. Measured and
+        dated from the interaction, not from this pass, which is always late
+        in the same direction. The *earliest* room, not the quickest. And
+        user-created only, matching `first_room_created`.
+
+        Not `emit_milestone`, because the elapsed time and the date come from
+        the room rather than from now. This pass runs only while telemetry is
+        on; a room first used while it was off is settled at the boot that
+        switches it on (`deployment.settle_from_evidence`).
         """
         by_a_person = [room for room in active if room.created_by_kind == "user"]
         if not by_a_person or self._installed_at is None:
-            return
-        # Not `emit_milestone`, because the elapsed time comes from the room
-        # rather than from now — so its enabled gate is applied here instead.
-        if not self._telemetry.enabled:
             return
 
         earliest = min(by_a_person, key=lambda room: room.first_active_at)
         elapsed = (
             earliest.first_active_at - as_utc(self._installed_at)
         ).total_seconds()
-        if not await claim_milestone(self._session_factory, "first_room_active"):
+        if not await self._telemetry.take_milestone("first_room_active"):
             return
-        self._telemetry.emit(
+        self._telemetry.emit_at(
             "first_room_active",
+            earliest.first_active_at,
             seconds_since_install=max(elapsed, 0.0),
             bridge_platform=earliest.bridge_platform,
             seconds_since_room_created=earliest.seconds_since_room_created,

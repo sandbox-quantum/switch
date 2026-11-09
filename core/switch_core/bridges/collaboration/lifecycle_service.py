@@ -72,6 +72,7 @@ from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days, seconds_since
 from switch_core.telemetry.deployment import (
+    CONNECTOR_ADDED_PREFIX,
     claim_milestone,
     milestone_claimed,
     seconds_since_install,
@@ -1550,22 +1551,26 @@ class CollaborationBridgeLifecycleService:
         # about is setup that went unmeasured, and reporting it the day
         # telemetry is switched on would report the connector's whole age.
         first_connect = await claim_milestone(
-            self._session_factory, f"connector_added:{bridge_id}"
+            self._session_factory, f"{CONNECTOR_ADDED_PREFIX}{bridge_id}"
         )
-        # `enabled`, not just `is not None`: off is a real service with a
-        # discarding sink.
-        if self._telemetry is None or not self._telemetry.enabled:
+        if self._telemetry is None:
             return
-        if not first_connect:
-            # This bridge has reported, but the deployment-wide milestone may
-            # not have. `emit_milestone` is itself once-ever.
-            if not preconfigured:
-                await self._telemetry.emit_milestone(
-                    "first_connector_added",
-                    bridge_platform=normalise_platform(platform),
-                )
-            return
+        if first_connect:
+            self._report_connector_added(bridge_id, platform, configured_at)
+        # Claimed while telemetry is off too, so switching it on later does
+        # not report a connector added long before. Once-ever, so a bridge
+        # that already reported still asks, in case the deployment-wide claim
+        # was lost.
+        if not preconfigured:
+            await self._telemetry.emit_milestone(
+                "first_connector_added", bridge_platform=normalise_platform(platform)
+            )
 
+    def _report_connector_added(
+        self, bridge_id: str, platform: str, configured_at: object
+    ) -> None:
+        assert self._telemetry is not None
+        preconfigured = bridge_id in self._preconfigured
         emit_safely(
             self._telemetry,
             "connector_added",
@@ -1584,10 +1589,6 @@ class CollaborationBridgeLifecycleService:
                 ),
             },
         )
-        if not preconfigured:
-            await self._telemetry.emit_milestone(
-                "first_connector_added", bridge_platform=normalise_platform(platform)
-            )
 
     def note_preconfigured(self, bridge_id: str, preconfigured: bool) -> None:
         """Follow a change to the row without a restart. Only a bridge this
@@ -1942,7 +1943,7 @@ class CollaborationBridgeLifecycleService:
         # connect succeeds *in this process*, so a connector that worked for
         # months and was down at removal would report "never connected".
         was_connected = await milestone_claimed(
-            self._session_factory, f"connector_added:{bridge_id}"
+            self._session_factory, f"{CONNECTOR_ADDED_PREFIX}{bridge_id}"
         )
         running = self._bridges.get(bridge_id)
         if running is not None:

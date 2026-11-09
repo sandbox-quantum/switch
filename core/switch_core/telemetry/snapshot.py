@@ -62,6 +62,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.telemetry.catalogue import connector_count_property
+from switch_core.telemetry.deployment import CONNECTOR_ADDED_PREFIX, claims_named
 from switch_core.telemetry.internal import internal_email_condition
 
 logger = logging.getLogger(__name__)
@@ -1140,6 +1141,74 @@ async def collect_period_counts(
         )
     counts.tenant_failed_count = len(failed_tenants)
     return counts
+
+
+async def milestones_passed(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> set[str]:
+    """The milestones the database shows this deployment has passed, for
+    `deployment.settle_from_evidence`.
+
+    - `first_room_created`: a room a person made exists.
+    - `first_room_active`: a person used one of those rooms with an agent in
+      it (`_room_activity_conditions`).
+    - `first_agent_session`: the same, as `SUPERSEDED_MILESTONES` reads it: a
+      person using a room with an agent means sessions have run.
+    - `first_agent_registered`: an agent exists.
+    - `first_agent_connected`: an agent has said something, which it can do
+      only once it has been online.
+    - `first_connector_added`: a connector a person added (not the setup
+      step's own) has connected, as its first-connect claim records.
+
+    Evidence of what is still there, so a deployment whose only room was
+    deleted claims no `first_room_created`, and reports it, late, at its next.
+    Raises if any tenant cannot be read: settling from part of the evidence
+    would report the rest as firsts that are not.
+    """
+    passed: set[str] = set()
+    connected = set(await claims_named(session_factory, CONNECTOR_ADDED_PREFIX))
+    kind = Room.metadata_["created_by_kind"].astext
+    by_a_person = (kind == "user") | kind.is_(None)
+    for tenant_id in await all_tenant_ids(session_factory):
+        async with tenant_session(session_factory, tenant_id) as session:
+            checks: dict[str, Select[Any]] = {
+                "first_room_created": select(Room.id).where(
+                    Room.tenant_id == tenant_id, by_a_person
+                ),
+                "first_room_active": select(Message.id)
+                .join(Client, Client.id == Message.sender_client_id)
+                .join(Room, Room.id == Message.room_id)
+                .where(
+                    Message.tenant_id == tenant_id,
+                    Room.tenant_id == tenant_id,
+                    by_a_person,
+                    *_room_activity_conditions(tenant_id, SNAPSHOT_PERSON_TYPES),
+                ),
+                "first_agent_registered": select(Agent.id).where(
+                    Agent.tenant_id == tenant_id
+                ),
+                "first_agent_connected": select(Message.id)
+                .join(Client, Client.id == Message.sender_client_id)
+                .where(
+                    Message.tenant_id == tenant_id,
+                    Client.tenant_id == tenant_id,
+                    Client.type == AGENT_CLIENT_TYPE,
+                    *_spoken(),
+                ),
+                "first_connector_added": select(CollaborationBridge.id).where(
+                    CollaborationBridge.tenant_id == tenant_id,
+                    CollaborationBridge.preconfigured.is_(False),
+                    CollaborationBridge.id.in_(connected),
+                ),
+            }
+            for milestone, query in checks.items():
+                if milestone in passed:
+                    continue
+                if await session.scalar(select(exists(query))):
+                    passed.add(milestone)
+    if "first_room_active" in passed:
+        passed.add("first_agent_session")
+    return passed
 
 
 async def newly_active_rooms(

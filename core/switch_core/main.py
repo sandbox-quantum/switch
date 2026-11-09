@@ -1804,8 +1804,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # which can report a milestone this settles.
     await telemetry.settle_superseded_milestones()
     telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
-    # The funnel's first step, and only for a deployment with an install date.
-    await telemetry.emit_milestone("deployment_installed")
+    # The funnel's first step, dated to the install, and only for a
+    # deployment with an install date.
+    await telemetry.report_installed()
 
     server_config = uvicorn.Config(
         agent_bridge_app,

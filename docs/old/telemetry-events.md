@@ -583,10 +583,10 @@ deployments installed after this ships — see
 
 | Event | Emitted when | Extra properties |
 |---|---|---|
-| `deployment_installed` | the deployment id is generated on an empty database | — |
+| `deployment_installed` | the deployment id is generated on an empty database; sent at the first boot with telemetry on, dated to the install itself, with `seconds_since_install` saying how long after the install it was sent | — |
 | `first_connector_added` | the first bridge a **person** added reaches connected | `bridge_platform` |
 | `first_room_created` | the first **user-created** room is created | `channel_type`, `bridge_platform` |
-| `first_room_active` | that room sees its first interaction | `bridge_platform`, `seconds_since_room_created` |
+| `first_room_active` | that room sees its first interaction; dated to the interaction, not to the snapshot pass that noticed it | `bridge_platform`, `seconds_since_room_created` |
 | `first_agent_registered` | the first agent registers | `known_agent_type` |
 | `first_session_started` | the first agent comes online: its first live connection. Superseded by `first_agent_connected`, the same moment; sent for one more stable release | `known_agent_type` |
 | `first_agent_connected` | the first agent comes online | `known_agent_type` |
@@ -612,8 +612,21 @@ of that journey — whether the time went on getting a room set up, or on gettin
 anyone to use it once it existed.
 
 Emitted once *ever*, not once per process. Each needs a persisted marker, so a
-restart cannot re-emit one and a deployment that passes a milestone while
-telemetry is switched off does not emit it later as though it had just happened.
+restart cannot re-emit one. The marker is taken whether telemetry is on or not,
+so a deployment that passes a milestone while telemetry is switched off does not
+emit it later as though it had just happened; the one exception is
+`deployment_installed`, which waits for telemetry and is then dated to the
+install. What a deployment did before markers were taken while off is claimed,
+without reporting, from what the database shows: once, at the first boot of a
+version that does this, and again at every boot that switches telemetry on,
+because a room first used while telemetry was off is noticed only by the
+snapshot pass, which does not run then. The evidence is a room a person made
+(`first_room_created`), one a person used with an agent in it
+(`first_room_active`, and `first_agent_session` as above), an agent
+(`first_agent_registered`), an agent having said something
+(`first_agent_connected`), and a connector a person added having connected
+(`first_connector_added`). A process remembers the milestones it has found
+claimed, so asking again costs nothing.
 
 ### Lifecycle events
 
@@ -669,7 +682,9 @@ when Switch is first told about the bridge.
 | `created_by_kind` | `user` \| `agent` \| `system` |
 | `from_template` | boolean |
 
-**`room_became_active`** — the first interaction in a room, once per room.
+**`room_became_active`** — the first interaction in a room, once per room,
+dated to that interaction rather than to the snapshot pass that noticed it. A
+room that went live while telemetry was off is not reported.
 
 | Property | Type |
 |---|---|
@@ -1028,10 +1043,12 @@ and offers the restart rather than taking it.
 
 This interacts with the milestone events in a way worth stating: a deployment
 that enables telemetry three months in has already passed most of its
-activation funnel. Milestones are emitted only when they actually occur, never
-retroactively, so such a deployment simply contributes nothing to time-to-value
-— which is correct, and better than a backfilled figure that would read as an
-instant activation.
+activation funnel. Milestones are claimed while telemetry is off and never
+reported retroactively, so such a deployment sends `deployment_installed`,
+dated to its install, and nothing else of the funnel it already passed — which
+is correct, and better than a backfilled figure that would read as an instant
+activation. Nothing about the time it was off is reported: the period counts
+and room activations start from the moment telemetry was switched on.
 
 This is a setting an operator controls, and it must be documented where they
 will see it before they deploy — not only in this note. What is sent, where it
@@ -1128,8 +1145,9 @@ Two things to set up first, or a third of the list cannot fire at all:
 
 **At boot, with no action at all**
 
-- `deployment_installed` — fires once, on the first boot of a fresh install.
-  `main.py`, after the migration. Absent on an upgraded database, by design.
+- `deployment_installed` — fires once, at the first boot with telemetry on,
+  dated to the install. `main.py`, after the migration. Absent on an upgraded
+  database, by design.
 - `deployment_started` — every boot. Same place.
 - `usage_snapshot` — 60s after boot, then each interval.
   `telemetry/reporter.py` → `run_once`.

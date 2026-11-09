@@ -29,9 +29,9 @@ from switch_core.telemetry.catalogue import (
     wire_name,
 )
 from switch_core.telemetry.deployment import (
-    claim_milestone,
     seconds_since_install,
     settle_superseded_milestones,
+    take_claim,
 )
 from switch_core.telemetry.sink import TelemetryRecord, TelemetrySink
 
@@ -70,6 +70,8 @@ class TelemetryService:
         self._session_factory = session_factory
         self._installed_at = installed_at
         self._enabled_since = enabled_since
+        # Milestones this process knows are claimed (`take_milestone`).
+        self._claimed: set[str] = set()
         self._resource = {
             "flint.client_id": client_id,
             # The relay picks the Amplitude project from this. Sent even as
@@ -146,11 +148,33 @@ class TelemetryService:
     async def settle_superseded_milestones(self) -> None:
         """Claim without reporting the milestones this deployment passed
         before they existed (`deployment.SUPERSEDED_MILESTONES`). Once, at boot,
-        before anything can report one. Nothing while telemetry is off, for the
-        reason `emit_milestone` gives."""
-        if not self._enabled or self._session_factory is None:
+        before anything can report one, whether telemetry is on or not, as
+        every milestone is claimed (`emit_milestone`)."""
+        if self._session_factory is None:
             return
         await settle_superseded_milestones(self._session_factory)
+
+    async def take_milestone(self, name: str) -> bool:
+        """Take a once-ever milestone's claim. True if this call took it.
+
+        Remembered in this process once the database has answered either way,
+        so a milestone asked about on every agent connection costs a write
+        until it is claimed and nothing after. False, and not remembered, when
+        the database could not answer: a lost milestone beats a failed
+        request, and the next ask tries again.
+        """
+        if self._session_factory is None or name in self._claimed:
+            return False
+        try:
+            claimed = await take_claim(self._session_factory, name)
+        except Exception:
+            logger.exception(
+                "Could not record the %s telemetry milestone; not reporting it.",
+                name,
+            )
+            return False
+        self._claimed.add(name)
+        return claimed
 
     async def emit_milestone(self, event: str, **properties: EmittedValue) -> None:
         """Report a once-ever activation milestone, if it has not been reported.
@@ -159,24 +183,55 @@ class TelemetryService:
         once-ever, so a call site only has to say which milestone it is and
         what else it carries.
 
-        Silently does nothing in three cases, each of them correct:
+        **Claimed whether telemetry is on or not.** Reported only while it is
+        on, but claimed either way, so a deployment that switches it on months
+        in does not announce, the next time each happens, a "first" it passed
+        long ago.
 
-        - **telemetry is off**, so there is nothing to report and no claim
-          should be taken — switching it on later must not find every
-          milestone already used up;
-        - **the deployment predates this telemetry** and has no install date,
-          so elapsed time is unknowable and a guess would be worse than
-          silence (see `telemetry/deployment.py`);
-        - **the milestone is already claimed**, which is the whole point.
+        **Never raises.** It is called on the way to answering a host's
+        session report, opening an agent's stream and registering an agent, so
+        a mistake in the event is logged rather than failing any of them, and
+        a database that cannot take the claim costs the milestone, not the
+        request.
+
+        Does nothing for a deployment that predates this telemetry and has no
+        install date, so elapsed time is unknowable and a guess would be worse
+        than silence (see `telemetry/deployment.py`), and for one already
+        claimed, which is the whole point.
         """
-        if not self._enabled or self._session_factory is None:
-            return
         elapsed = seconds_since_install(self._installed_at)
         if elapsed is None:
             return
-        if not await claim_milestone(self._session_factory, event):
+        if not await self.take_milestone(event):
             return
-        self.emit(event, seconds_since_install=elapsed, **properties)
+        emit_safely(self, event, {"seconds_since_install": elapsed, **properties})
+
+    async def report_installed(self) -> None:
+        """Report `deployment_installed`, dated to the install, if it has not
+        been reported.
+
+        The one milestone not claimed while telemetry is off: it is the start
+        of the activation funnel, and the earliest event Amplitude counts a
+        deployment as new from, so a deployment that switches telemetry on
+        months in still needs one, at the moment it was really installed.
+        `seconds_since_install` is how long after the install it was sent.
+        """
+        if not self._enabled or self._installed_at is None:
+            return
+        elapsed = seconds_since_install(self._installed_at)
+        if not await self.take_milestone("deployment_installed"):
+            return
+        try:
+            self.emit_at(
+                "deployment_installed",
+                self._installed_at,
+                seconds_since_install=elapsed,
+            )
+        except Exception:
+            logger.exception(
+                "Telemetry event deployment_installed could not be reported; "
+                "continuing. This is a bug in the event, not a relay problem."
+            )
 
     def _dispatch(self, record: TelemetryRecord) -> None:
         try:

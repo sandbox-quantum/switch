@@ -19,9 +19,11 @@ from switch_core.observability.otlp import OtlpClient
 from switch_core.telemetry.deployment import (
     load_deployment_identity,
     record_telemetry_switch,
+    settle_from_evidence,
 )
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink, OtlpRelaySink, TelemetrySink
+from switch_core.telemetry.snapshot import milestones_passed
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +82,7 @@ async def build_telemetry(
     client_id = config.deployment_id or generated_id
 
     try:
-        enabled_since, _switched_on = await record_telemetry_switch(
+        enabled_since, switched_on = await record_telemetry_switch(
             session_factory, enabled=config.telemetry_enabled
         )
     except Exception:
@@ -91,7 +93,13 @@ async def build_telemetry(
             "about the past this run are clamped to the install date only.",
             exc_info=True,
         )
-        enabled_since = None
+        enabled_since, switched_on = None, False
+    # Before any service that reports a milestone is built.
+    await settle_from_evidence(
+        session_factory,
+        lambda: milestones_passed(session_factory),
+        switched_on=switched_on,
+    )
 
     if not config.telemetry_enabled:
         logger.info(
