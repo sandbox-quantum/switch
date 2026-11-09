@@ -154,6 +154,19 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="cline",
+        label="Cline CLI",
+        sign_in_command="cline auth",
+        tools=(
+            ToolSpec(name="run_commands", description="Executes shell commands"),
+            ToolSpec(name="read_files", description="Reads file contents"),
+            ToolSpec(name="editor", description="Writes and edits files"),
+            ToolSpec(name="apply_patch", description="Applies a patch to files"),
+            ToolSpec(name="search_codebase", description="Searches file contents"),
+            ToolSpec(name="fetch_web_content", description="Fetches web pages"),
+        ),
+    ),
 )
 
 

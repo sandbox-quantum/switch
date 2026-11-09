@@ -274,6 +274,46 @@ it('approves without asking in full access, approves only edits in auto-accept-e
   }
 });
 
+it('takes the kind of an unlabelled tool call from the hooks, and never overrides one the agent gave', async () => {
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    toolKind: (toolCall) => (toolCall.title?.startsWith('patch:') ? 'edit' : undefined),
+  };
+  for (const [kind, title, prompted] of [
+    ['other', 'patch: a.txt', 0],
+    [undefined, 'patch: a.txt', 0],
+    ['execute', 'patch: a.txt', 1],
+    ['other', 'shell: ls', 1],
+  ] as const) {
+    const { adapter, events, server } = await start(hooks, { runtimeMode: 'auto-accept-edits' });
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    server.send({
+      id: 50,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: 'x', kind, title },
+        options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+      },
+    });
+    await flush();
+    expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(prompted);
+  }
+  const { adapter, events, server } = await start(hooks);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send({
+    method: 'session/update',
+    params: {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call', toolCallId: 'p', kind: 'other', title: 'patch: a.txt' },
+    },
+  });
+  await flush();
+  expect(events.find((e) => e.type === 'item.started')).toMatchObject({
+    item: { id: 'p', type: 'file_change' },
+  });
+});
+
 it('lets vendor extensions ask questions and add items, and cancels them outside a turn', async () => {
   const hooks: AcpProviderHooks = {
     ...dummy,
@@ -322,6 +362,36 @@ it('lets vendor extensions ask questions and add items, and cancels them outside
     turnId: 't',
     item: { id: 'note', title: 'Note' },
   });
+});
+
+const switchHttp = {
+  transport: 'http' as const,
+  url: 'http://127.0.0.1:1/mcp',
+  headers: { Authorization: 'Bearer t' },
+};
+
+it('refuses HTTP MCP servers the agent does not declare it can reach', async () => {
+  await expect(start(dummy, { mcpServers: { switch: switchHttp } })).rejects.toThrow(
+    /does not declare MCP over HTTP/
+  );
+});
+
+it('sends no MCP servers to an agent whose launch configured them, and releases it on exit', async () => {
+  const given: unknown[] = [];
+  const release = vi.fn(async () => {});
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    launch: ({ binaryPath, env, mcpServers }) => {
+      given.push(mcpServers);
+      return { command: binaryPath, args: [], env, mcpServersInLaunch: true, release };
+    },
+  };
+  const { adapter, server } = await start(hooks, { mcpServers: { switch: switchHttp } });
+  expect(given).toEqual([{ switch: switchHttp }]);
+  expect(server.received.find((m) => m.method === 'session/new')?.params?.mcpServers).toEqual([]);
+  expect(release).not.toHaveBeenCalled();
+  await adapter.stopSession('s');
+  expect(release).toHaveBeenCalledTimes(1);
 });
 
 it('fills a stdio MCP server environment from the session for its envVars', async () => {

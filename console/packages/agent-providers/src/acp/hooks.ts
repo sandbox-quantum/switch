@@ -1,4 +1,4 @@
-import type { ProviderCapabilities, RuntimeMode } from '../adapter';
+import type { McpServerSpec, ProviderCapabilities, RuntimeMode } from '../adapter';
 import type {
   ApprovalDecision,
   ItemType,
@@ -28,12 +28,22 @@ export interface AcpLaunch {
    * prompt, say).
    */
   rejectOutputLine?: (line: string) => string | undefined;
+  /**
+   * Set when the launch gave the agent the session's MCP servers in its own
+   * configuration, for an agent that ignores ACP's `mcpServers`. The session
+   * then sends none, and the agent need not declare MCP over HTTP.
+   */
+  mcpServersInLaunch?: boolean;
+  /** Removes what the launch prepared, once the process has exited. */
+  release?: () => Promise<void>;
 }
 
 export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /** The session's MCP servers; none for a sign-in check. */
+  mcpServers: Record<string, McpServerSpec>;
 }
 
 /**
@@ -159,6 +169,8 @@ export interface AcpProviderHooks {
   mcpServerOf?(toolCall: AcpToolCall): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
+  /** The ACP `kind` of a tool call the agent sends as `other` or without one. */
+  toolKind?(toolCall: AcpToolCall): string | undefined;
   /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.

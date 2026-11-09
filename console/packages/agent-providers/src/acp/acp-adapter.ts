@@ -78,11 +78,19 @@ export async function checkAcpSignIn(
 ): Promise<ProviderReadiness> {
   let client: StdioJsonRpcClient | undefined;
   const handshake = async () => {
+    const {
+      mcpServersInLaunch: _,
+      release,
+      ...launch
+    } = await hooks.launch({
+      ...input,
+      mcpServers: {},
+    });
     client = new StdioJsonRpcClient({
-      ...(await hooks.launch(input)),
+      ...launch,
       cwd: input.cwd,
       logger: noopLogger,
-      onExit: () => {},
+      onExit: () => void release?.(),
     });
     return await acpInitialize(client, hooks);
   };
@@ -182,16 +190,20 @@ export class AcpAdapter implements ProviderAdapter {
         prefix.legacyMessage
       );
     const binaryPath = this.options.binaryPath ?? hooks.defaultBinary;
-    const launch = await hooks.launch({
+    const { mcpServersInLaunch, release, ...launch } = await hooks.launch({
       binaryPath,
       cwd,
       env: input.env,
+      mcpServers: input.mcpServers,
     });
     const client = new StdioJsonRpcClient({
       ...launch,
       cwd,
       logger: this.logger,
-      onExit: (reason) => this.exited(input.sessionId, reason),
+      onExit: (reason) => {
+        void release?.();
+        this.exited(input.sessionId, reason);
+      },
     });
     const state: State = {
       id: input.sessionId,
@@ -234,7 +246,8 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      if (!mcpServersInLaunch)
+        requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -255,7 +268,7 @@ export class AcpAdapter implements ProviderAdapter {
         }))
       )
         await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = mcpServersInLaunch ? [] : acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
       if (input.resume) {
         method = agent.loadSession
@@ -531,6 +544,7 @@ export class AcpAdapter implements ProviderAdapter {
     const vendor = this.hooks.permission?.(context, request);
     if (vendor) return await vendor;
     const { toolCall } = request;
+    const kind = this.toolKind(toolCall);
     const once = request.options.find((option) => option.kind === 'allow_once');
     const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
     // In auto mode whatever automatic review the agent has ran before it
@@ -539,7 +553,7 @@ export class AcpAdapter implements ProviderAdapter {
       once &&
       ((server !== undefined && state.autoApprovedMcpNames.has(server)) ||
         state.runtimeMode === 'full-access' ||
-        (state.runtimeMode === 'auto-accept-edits' && toolCall.kind === 'edit'))
+        (state.runtimeMode === 'auto-accept-edits' && kind === 'edit'))
     )
       return { outcome: { outcome: 'selected', optionId: once.optionId } };
     const options: Array<{ decision: ApprovalDecision; label: string; response: unknown }> = [];
@@ -570,9 +584,9 @@ export class AcpAdapter implements ProviderAdapter {
     return await context.requestDecision({
       requestType: mcp
         ? 'mcp_tool_approval'
-        : toolCall.kind === 'execute'
+        : kind === 'execute'
           ? 'command_execution_approval'
-          : toolCall.kind === 'edit'
+          : kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
       title: toolCall.title ?? `${this.hooks.label} needs permission`,
@@ -630,8 +644,14 @@ export class AcpAdapter implements ProviderAdapter {
       });
   }
 
+  private toolKind(toolCall: AcpToolCall): string | undefined {
+    if (toolCall.kind && toolCall.kind !== 'other') return toolCall.kind;
+    return this.hooks.toolKind?.(toolCall) ?? toolCall.kind;
+  }
+
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
+    const kind = this.toolKind(update);
     const server = this.hooks.mcpServerOf?.(update);
     if (server !== undefined) state.toolServers.set(update.toolCallId, server);
     const text = (update.content ?? [])
@@ -655,9 +675,9 @@ export class AcpAdapter implements ProviderAdapter {
         this.hooks.itemType?.(update) ??
         (server !== undefined || update.toolCallId.startsWith('mcp_')
           ? 'mcp_tool_call'
-          : update.kind === 'execute'
+          : kind === 'execute'
             ? 'command_execution'
-            : update.kind === 'edit'
+            : kind === 'edit'
               ? 'file_change'
               : 'tool_call'),
       title: update.title ?? old?.title ?? 'Tool',
