@@ -104,21 +104,21 @@ export async function readThisLaunch(): Promise<LaunchInputs> {
   };
 }
 
-type LaunchUpdate = Pick<TelemetryEventMap['app_launched'], 'from_version' | 'trigger'>;
+type LaunchUpdate = Pick<TelemetryEventMap['app_launched'], 'from_version' | 'update_trigger'>;
 
 /**
  * What `app_launched` says about the update an upgrade's launch is the end of:
  * the version it came from, and whether Restart to update installed it.
  */
 async function updateOf(record: LaunchRecord): Promise<LaunchUpdate> {
-  if (record.kind !== 'updated') return { from_version: 'none', trigger: 'none' };
+  if (record.kind !== 'updated') return { from_version: 'none', update_trigger: 'none' };
   const from_version = record.lastVersion === null ? 'unknown' : appVersionOf(record.lastVersion);
   try {
     const handedOver = await pendingInstall.take();
-    return { from_version, trigger: handedOver ? 'restart_button' : 'other' };
+    return { from_version, update_trigger: handedOver ? 'restart_button' : 'other' };
   } catch (error) {
     log.warn('telemetry: could not read how this update was installed', { error });
-    return { from_version, trigger: 'unknown' };
+    return { from_version, update_trigger: 'unknown' };
   }
 }
 

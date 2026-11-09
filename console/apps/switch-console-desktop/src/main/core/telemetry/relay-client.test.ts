@@ -70,7 +70,7 @@ describe('the record that gets built', () => {
     // Without it the relay drops the whole payload — and still answers 200.
     const payload = buildOtlpPayload(
       'app_launched',
-      { install_kind: 'same', from_version: 'none', trigger: 'none' },
+      { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
       CONTEXT
     );
 
@@ -80,7 +80,7 @@ describe('the record that gets built', () => {
   it('says which app and version it is, for both destinations', () => {
     const payload = buildOtlpPayload(
       'app_launched',
-      { install_kind: 'same', from_version: 'none', trigger: 'none' },
+      { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
       CONTEXT
     );
 
@@ -107,7 +107,7 @@ describe('the record that gets built', () => {
     // with a 200 at every step. Both, or nothing arrives and nothing says so.
     const payload = buildOtlpPayload(
       'app_launched',
-      { install_kind: 'same', from_version: 'none', trigger: 'none' },
+      { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
       CONTEXT
     );
 
@@ -190,7 +190,7 @@ describe('the record that gets built', () => {
   it('sends an event as its name, its build and its own properties, and nothing else', () => {
     const payload = buildOtlpPayload(
       'app_launched',
-      { install_kind: 'new', from_version: 'none', trigger: 'none' },
+      { install_kind: 'new', from_version: 'none', update_trigger: 'none' },
       CONTEXT
     );
 
@@ -199,7 +199,7 @@ describe('the record that gets built', () => {
       build: 'stable',
       install_kind: 'new',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
       'flint.insert_id': expect.stringMatching(UUID),
     });
   });
@@ -209,7 +209,7 @@ describe('the record that gets built', () => {
     // the message. It repeats the name rather than adding anything new.
     const payload = buildOtlpPayload(
       'app_launched',
-      { install_kind: 'same', from_version: 'none', trigger: 'none' },
+      { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
       CONTEXT
     );
 
@@ -240,7 +240,7 @@ describe('the record that gets built', () => {
     (internal) => {
       const payload = buildOtlpPayload(
         'app_launched',
-        { install_kind: 'same', from_version: 'none', trigger: 'none' },
+        { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
         { ...CONTEXT, internal }
       );
 
@@ -256,7 +256,7 @@ describe('the record that gets built', () => {
       // requires on the resource.
       const payload = buildOtlpPayload(
         'app_launched',
-        { install_kind: 'same', from_version: 'none', trigger: 'none' },
+        { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
         { ...CONTEXT, flintEnv }
       );
 
@@ -310,7 +310,7 @@ describe('the record that gets built', () => {
   it('stamps the time in nanoseconds, which is what OTLP counts in', () => {
     const payload = buildOtlpPayload(
       'app_launched',
-      { install_kind: 'same', from_version: 'none', trigger: 'none' },
+      { install_kind: 'same', from_version: 'none', update_trigger: 'none' },
       CONTEXT
     );
 

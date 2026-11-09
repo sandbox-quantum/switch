@@ -412,8 +412,9 @@ pnpm run lint
 - **Telemetry consent is a gate, not a preference.** Anything that would send usage data
   must `await isTelemetryAllowed()` (`src/main/core/telemetry/consent.ts`) at the point of
   emission and send nothing when it returns false. Do not read `telemetry.enabled` from
-  settings directly — it does not distinguish "said yes" from "not asked yet" — and do not
-  cache the answer across a send, since the user can revoke it at any time. Consent off
+  settings directly — the gate is the one place that decides, and it fails closed when the
+  setting can't be read — and do not cache the answer across a send, since the user can
+  revoke it at any time. Consent off
   means **no request is made at all**, not a request whose result is discarded.
 - **The answer reaches the managed server too, and never by omission.** "Share usage
   data" is one decision covering this app and a Switch server it runs, so `startStack`

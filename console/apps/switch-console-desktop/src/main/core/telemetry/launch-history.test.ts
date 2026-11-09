@@ -126,8 +126,8 @@ describe('reporting a launch at boot', () => {
     await launches.reportLaunch(firstLaunch);
 
     expect(h.trackEvent.mock.calls).toEqual([
-      ['app_launched', { install_kind: 'new', from_version: 'none', trigger: 'none' }],
-      ['app_launched', { install_kind: 'same', from_version: 'none', trigger: 'none' }],
+      ['app_launched', { install_kind: 'new', from_version: 'none', update_trigger: 'none' }],
+      ['app_launched', { install_kind: 'same', from_version: 'none', update_trigger: 'none' }],
     ]);
   });
 
@@ -148,11 +148,11 @@ describe('reporting a launch at boot', () => {
       // a version nobody wrote down.
       [
         'app_launched',
-        { install_kind: 'updated', from_version: 'unknown', trigger: 'restart_button' },
+        { install_kind: 'updated', from_version: 'unknown', update_trigger: 'restart_button' },
       ],
       [
         'app_launched',
-        { install_kind: 'updated', from_version: '0.40.1', trigger: 'restart_button' },
+        { install_kind: 'updated', from_version: '0.40.1', update_trigger: 'restart_button' },
       ],
     ]);
   });
@@ -164,7 +164,7 @@ describe('reporting a launch at boot', () => {
     await launches.reportLaunch(launchAt('0.41.0'));
 
     expect(h.trackEvent.mock.calls).toEqual([
-      ['app_launched', { install_kind: 'updated', from_version: '0.40.1', trigger: 'other' }],
+      ['app_launched', { install_kind: 'updated', from_version: '0.40.1', update_trigger: 'other' }],
     ]);
   });
 
@@ -176,7 +176,7 @@ describe('reporting a launch at boot', () => {
     await launches.reportLaunch(launchAt('0.41.0'));
 
     expect(h.trackEvent.mock.calls).toEqual([
-      ['app_launched', { install_kind: 'updated', from_version: '0.40.1', trigger: 'unknown' }],
+      ['app_launched', { install_kind: 'updated', from_version: '0.40.1', update_trigger: 'unknown' }],
     ]);
   });
 
@@ -188,7 +188,7 @@ describe('reporting a launch at boot', () => {
     await launches.reportLaunch(launchAt('0.40.1'));
 
     expect(h.trackEvent.mock.calls).toEqual([
-      ['app_launched', { install_kind: 'same', from_version: 'none', trigger: 'none' }],
+      ['app_launched', { install_kind: 'same', from_version: 'none', update_trigger: 'none' }],
     ]);
   });
 
@@ -322,7 +322,7 @@ describe('what boot records the launch from', () => {
     expect(h.trackEvent).toHaveBeenCalledWith('app_launched', {
       install_kind: 'new',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
     });
   });
 

@@ -83,7 +83,7 @@ describe('the consent gate', () => {
     await telemetryService.track('app_launched', {
       install_kind: 'same',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
     });
 
     expect(fetchMock).not.toHaveBeenCalled();
@@ -95,12 +95,12 @@ describe('the consent gate', () => {
     await telemetryService.track('app_launched', {
       install_kind: 'same',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
     });
     await telemetryService.track('app_launched', {
       install_kind: 'same',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
     });
 
     expect(isTelemetryAllowed).toHaveBeenCalledTimes(2);
@@ -145,7 +145,7 @@ describe('a build that cannot send', () => {
     await service.track('app_launched', {
       install_kind: 'same',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
     });
 
     expect(fetchMock).not.toHaveBeenCalled();
@@ -163,17 +163,17 @@ describe('a build that cannot send', () => {
     await service.track('app_launched', {
       install_kind: 'same',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
     });
     await service.track('app_launched', {
       install_kind: 'same',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
     });
     await service.track('app_launched', {
       install_kind: 'same',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
     });
 
     expect(log.info).toHaveBeenCalledTimes(1);
@@ -248,7 +248,7 @@ describe('the payload', () => {
     await telemetryService.track('app_launched', {
       install_kind: 'same',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
     });
 
     expect(sentRecord().timeUnixNano).toBe('1000000000');
@@ -292,7 +292,7 @@ describe('the payload', () => {
     await telemetryService.track('app_launched', {
       install_kind: 'same',
       from_version: 'none',
-      trigger: 'none',
+      update_trigger: 'none',
     });
 
     expect(sentResource()['os.type']).toBe(expected ?? 'other');
@@ -391,7 +391,7 @@ describe('failure', () => {
     fetchMock.mockResolvedValue({ ok: false, status: 503 } as Response);
 
     expect(() =>
-      trackEvent('app_launched', { install_kind: 'same', from_version: 'none', trigger: 'none' })
+      trackEvent('app_launched', { install_kind: 'same', from_version: 'none', update_trigger: 'none' })
     ).not.toThrow();
     await vi.waitFor(() =>
       expect(log.warn).toHaveBeenCalledWith(
@@ -404,7 +404,7 @@ describe('failure', () => {
   it('reports a network failure as such rather than as a send', async () => {
     fetchMock.mockRejectedValue(new Error('getaddrinfo ENOTFOUND'));
 
-    trackEvent('app_launched', { install_kind: 'same', from_version: 'none', trigger: 'none' });
+    trackEvent('app_launched', { install_kind: 'same', from_version: 'none', update_trigger: 'none' });
 
     await vi.waitFor(() =>
       expect(log.warn).toHaveBeenCalledWith(
@@ -418,7 +418,7 @@ describe('failure', () => {
     fetchMock.mockResolvedValue({ ok: false, status: 500 } as Response);
 
     await telemetryService
-      .track('app_launched', { install_kind: 'same', from_version: 'none', trigger: 'none' })
+      .track('app_launched', { install_kind: 'same', from_version: 'none', update_trigger: 'none' })
       .catch(() => {});
 
     expect(fetchMock).toHaveBeenCalledTimes(1);

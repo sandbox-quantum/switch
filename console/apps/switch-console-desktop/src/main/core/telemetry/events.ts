@@ -389,7 +389,7 @@ export type TelemetryEventMap = {
    * A launch on a new version after an update is the end of that update, and
    * says so. `from_version` is the version the previous launch ran; `unknown`
    * for an install from before launches were recorded, or a stored value that
-   * is not a version. `trigger` is `restart_button` when the previous run handed
+   * is not a version. `update_trigger` is `restart_button` when the previous run handed
    * the update to the installer from Restart to update, `other` when the version
    * changed without that (installed when the app quit, or by hand), and
    * `unknown` when that record could not be read. Both are `none` on any launch
@@ -398,7 +398,7 @@ export type TelemetryEventMap = {
   app_launched: {
     install_kind: TelemetryInstallKind;
     from_version: TelemetryAppVersion | 'unknown' | 'none';
-    trigger: 'restart_button' | 'other' | 'unknown' | 'none';
+    update_trigger: 'restart_button' | 'other' | 'unknown' | 'none';
   };
   agent_created: {
     agent_type: TelemetryAgentType;
@@ -777,7 +777,7 @@ export type TelemetryEvent = {
  * checking does not apply — cannot ride along into a payload unnoticed.
  */
 export const TELEMETRY_EVENT_PROPERTIES = {
-  app_launched: ['install_kind', 'from_version', 'trigger'],
+  app_launched: ['install_kind', 'from_version', 'update_trigger'],
   agent_created: ['agent_type', 'location', 'outcome', 'failure_reason', 'entry_point'],
   agent_attached: ['agent_type', 'location'],
   subagent_adopted: ['agent_type', 'location'],
