@@ -303,8 +303,13 @@ export type TelemetrySessionStartSource = Exclude<SessionStartSource, 'adopted'>
  */
 export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 'initial' | 'auto'>;
 
-/** Which setting was changed. The keys of the app's settings, and nothing else. */
-export type TelemetrySettingKey = AppSettingsKeyName;
+/**
+ * Which setting was changed. The keys of the app's settings, and nothing else,
+ * less the two the app writes as it goes rather than a person setting them:
+ * `telemetry`, which the first-run notice records the moment it is shown and
+ * whose own answer is `telemetry_consent_changed`, and `onboarding`.
+ */
+export type TelemetrySettingKey = Exclude<AppSettingsKeyName, 'telemetry' | 'onboarding'>;
 
 /** How a search ended. The search's own union, reused rather than restated. */
 export type TelemetrySearchStatus = SearchStatus;
@@ -688,7 +693,8 @@ export type TelemetryEventMap = {
    * A setting was changed. **The key only, never the value.** Several settings
    * hold free text — a sound file, a default directory, a font, a browser
    * profile — and the useful question is which settings people touch, which the
-   * key answers on its own.
+   * key answers on its own. Only a write that changed the stored value counts:
+   * saving a setting as it already was is not changing it.
    */
   setting_changed: {
     setting_key: TelemetrySettingKey;
