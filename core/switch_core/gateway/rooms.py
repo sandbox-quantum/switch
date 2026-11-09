@@ -255,6 +255,8 @@ async def _build_room_detail(
         write_visibility=room.write_visibility,
         created_at=str(room.created_at),
         archived=room.archived_at is not None,
+        viewer_is_member=takes_part,
+        is_console_chat=_is_console_chat(room),
         transport_room_id=room.transport_room_id,
         matrix_room_id=room.transport_room_id,
         external_channel_id=room.external_channel_id,
@@ -281,6 +283,11 @@ async def _build_room_detail(
         can_change_members=_can_change_members(principal, room),
         auto_route=_auto_route_detail(auto_route),
     )
+
+
+def _is_console_chat(room: Room) -> bool:
+    """Whether `room` is a Switch Console chat, made through the chats API."""
+    return "chat_operation_id" in (room.metadata_ or {})
 
 
 def _can_change_members(principal: Principal, room: Room) -> bool:
@@ -452,7 +459,7 @@ async def list_rooms(
                 created_at=str(room.created_at),
                 archived=room.archived_at is not None,
                 viewer_is_member=room.id in involved,
-                is_console_chat="chat_operation_id" in (room.metadata_ or {}),
+                is_console_chat=_is_console_chat(room),
                 can_write=can(principal, "write", room),
                 can_manage=can(principal, "delete", room),
                 can_unlink=can_unlink_from_room(
