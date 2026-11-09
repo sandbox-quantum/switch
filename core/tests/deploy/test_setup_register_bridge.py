@@ -297,3 +297,141 @@ def test_an_existing_bridge_already_marked_is_left_alone(setup_script: Any) -> N
         assert setup_script.register_bridge(client) == "bridge-1"
 
     assert writes == []
+
+
+def test_the_bundled_bridge_is_found_beside_one_the_user_connected(
+    setup_script: Any,
+) -> None:
+    """A user who connects their own Mattermost to a deployment that bundles
+    one must not have it adopted, repointed or re-marked as the bundled one."""
+    sent: list[Any] = []
+    bridges = [
+        {
+            "bridge_id": "bridge-external",
+            "bridge_type": "mattermost",
+            "is_default": False,
+            "preconfigured": False,
+        },
+        {
+            "bridge_id": "bridge-bundled",
+            "bridge_type": "mattermost",
+            "is_default": True,
+            "preconfigured": True,
+        },
+    ]
+
+    with _client(_recording(bridges, sent)) as client:
+        assert setup_script.register_bridge(client) == "bridge-bundled"
+
+    assert sent == []
+
+
+def test_callbacks_go_to_the_bundled_bridge_only(
+    setup_script: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        setup_script, "MATTERMOST_CALLBACK_BASE_URL", "http://switch-core:8000"
+    )
+    sent: list[Any] = []
+    bridges = [
+        {
+            "bridge_id": "bridge-external",
+            "bridge_type": "mattermost",
+            "is_default": True,
+            "preconfigured": False,
+        },
+        {
+            "bridge_id": "bridge-bundled",
+            "bridge_type": "mattermost",
+            "is_default": False,
+            "preconfigured": True,
+        },
+    ]
+
+    with _client(_recording(bridges, sent)) as client:
+        assert setup_script.register_bridge(client) == "bridge-bundled"
+
+    assert [path for _, path, _ in sent] == ["/gateway/collaborations/bridge-bundled"]
+
+
+def test_several_unmarked_mattermost_bridges_stop_setup_untouched(
+    setup_script: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Nothing says which is bundled, so nothing is adopted, changed or
+    registered beside them — and the job fails saying why."""
+    monkeypatch.setattr(
+        setup_script, "MATTERMOST_CALLBACK_BASE_URL", "http://switch-core:8000"
+    )
+    writes: list[tuple[str, str]] = []
+    bridges = [
+        {"bridge_id": "bridge-a", "bridge_type": "mattermost", "is_default": False},
+        {"bridge_id": "bridge-b", "bridge_type": "mattermost", "is_default": False},
+    ]
+
+    with _client(_listing(bridges, writes)) as client, pytest.raises(SystemExit) as exc:
+        setup_script.register_bridge(client)
+
+    assert exc.value.code == 1
+    assert writes == []
+    out = capsys.readouterr().out
+    assert "ERROR" in out and "bridge-a, bridge-b" in out
+
+
+@pytest.mark.parametrize(
+    ("bridges", "expected"),
+    [
+        ([], None),
+        ([{"bridge_id": "s", "bridge_type": "slack", "preconfigured": True}], None),
+        (
+            [
+                {"bridge_id": "a", "bridge_type": "mattermost", "preconfigured": False},
+                {"bridge_id": "b", "bridge_type": "mattermost", "preconfigured": True},
+            ],
+            "b",
+        ),
+        # A server too old to list the flag at all.
+        ([{"bridge_id": "a", "bridge_type": "mattermost"}], "a"),
+        (
+            [{"bridge_id": "a", "bridge_type": "mattermost", "preconfigured": False}],
+            "a",
+        ),
+        (
+            [
+                {"bridge_id": "s", "bridge_type": "slack", "preconfigured": True},
+                {"bridge_id": "a", "bridge_type": "mattermost"},
+            ],
+            "a",
+        ),
+    ],
+)
+def test_bundled_mattermost_bridge_selection(
+    setup_script: Any, bridges: list[dict[str, Any]], expected: str | None
+) -> None:
+    chosen = setup_script.bundled_mattermost_bridge(bridges)
+    assert (chosen["bridge_id"] if chosen is not None else None) == expected
+
+
+@pytest.mark.parametrize(
+    "bridges",
+    [
+        [
+            {"bridge_id": "a", "bridge_type": "mattermost"},
+            {"bridge_id": "b", "bridge_type": "mattermost"},
+        ],
+        [
+            {"bridge_id": "a", "bridge_type": "mattermost", "preconfigured": False},
+            {"bridge_id": "b", "bridge_type": "mattermost", "preconfigured": False},
+        ],
+        [
+            {"bridge_id": "a", "bridge_type": "mattermost", "preconfigured": True},
+            {"bridge_id": "b", "bridge_type": "mattermost", "preconfigured": True},
+        ],
+    ],
+)
+def test_bundled_mattermost_bridge_refuses_to_guess(
+    setup_script: Any, bridges: list[dict[str, Any]]
+) -> None:
+    chosen = setup_script.bundled_mattermost_bridge(bridges)
+    assert chosen == setup_script.AmbiguousBundledBridge(["a", "b"])

@@ -13,6 +13,8 @@ comes up knowing which chat account its owner is.
 import os
 import sys
 import time
+from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -183,6 +185,50 @@ def setup_mattermost() -> str | None:
     return user_id
 
 
+@dataclass(frozen=True)
+class AmbiguousBundledBridge:
+    """Several Mattermost bridges, none of them singled out as the bundled one."""
+
+    bridge_ids: list[str]
+
+
+def bundled_mattermost_bridge(
+    bridges: list[dict[str, Any]],
+) -> dict[str, Any] | AmbiguousBundledBridge | None:
+    """Which listed bridge is the deployment's own Mattermost.
+
+    The one Mattermost bridge marked ``preconfigured``; failing that, on a
+    deployment that predates the flag (a server too old to list it, or a
+    bridge registered before it existed), the only Mattermost bridge there
+    is. None when there is no Mattermost bridge, so one is to be registered.
+    Several and no single marked one is ambiguous: one of them may be a
+    Mattermost somebody connected by hand, and nothing says which.
+
+    The same rule as ``bundledMattermostBridge`` in Switch Console
+    (``src/shared/core/switch-servers/bundled-bridge.ts``), which repoints the
+    bundled bridge before this runs.
+    """
+    mattermost = [b for b in bridges if b.get("bridge_type") == "mattermost"]
+    marked = [b for b in mattermost if b.get("preconfigured") is True]
+    if len(marked) == 1:
+        return marked[0]
+    if not marked and len(mattermost) == 1:
+        return mattermost[0]
+    if not mattermost:
+        return None
+    return AmbiguousBundledBridge([b["bridge_id"] for b in mattermost])
+
+
+def ambiguous_bundled_bridge_message(bridge_ids: list[str]) -> str:
+    return (
+        f"The server has {len(bridge_ids)} Mattermost bridges "
+        f"({', '.join(bridge_ids)}) and none is marked as the deployment's "
+        "bundled one, so setup cannot tell which to adopt. Mark the bundled "
+        "one by setting preconfigured on it (PATCH "
+        '/gateway/collaborations/<bridge_id> with {"preconfigured": true}).'
+    )
+
+
 def gateway_login() -> httpx.Client:
     """A gateway client authenticated as the seeded admin.
 
@@ -243,49 +289,57 @@ def register_bridge(client: httpx.Client) -> str:
         )
         resp.raise_for_status()
     bridges = resp.json()
-    for bridge in bridges:
-        if bridge.get("bridge_type") == "mattermost":
-            bridge_id = bridge["bridge_id"]
-            print(f"Mattermost bridge already registered: {bridge_id}")
-            # Adopt the default on an instance that predates it, so an
-            # existing deployment gains the invariant on its next setup run
-            # rather than only new ones.
-            if not any(b.get("is_default") for b in bridges):
-                client.post(
-                    f"/gateway/collaborations/{bridge_id}/default"
-                ).raise_for_status()
-                print(f"Set Mattermost bridge as default: {bridge_id}")
-            # And mark it as the deployment's own, for a bridge registered
-            # before the flag existed. Telemetry leaves a preconfigured
-            # connector out of onboarding: it came up because the deployment
-            # booted, not because anybody connected anything. A server that
-            # predates the flag does not list it, and is left alone rather
-            # than sent a field it would ignore.
-            if bridge.get("preconfigured") is False:
-                client.patch(
-                    f"/gateway/collaborations/{bridge_id}",
-                    json={"preconfigured": True},
-                ).raise_for_status()
-                print(f"Marked Mattermost bridge as preconfigured: {bridge_id}")
-            # Same reason: a bridge registered before callbacks existed
-            # would otherwise keep drawing cards with no buttons on them,
-            # and the only cure would be editing a connection field by
-            # hand. Sent every run rather than only when it is missing,
-            # because the config a bridge holds is not readable back — it
-            # carries the admin password, so no endpoint returns it.
-            if MATTERMOST_CALLBACK_BASE_URL:
-                client.patch(
-                    f"/gateway/collaborations/{bridge_id}",
-                    json={
-                        "connection_config": {
-                            "callback_base_url": MATTERMOST_CALLBACK_BASE_URL
-                        }
-                    },
-                ).raise_for_status()
-                print(
-                    f"Set Mattermost callback address: {MATTERMOST_CALLBACK_BASE_URL}"
-                )
-            return bridge_id
+    # A deployment can hold a Mattermost its users connected themselves beside
+    # the bundled one. Adopting the wrong one would repoint, re-default and
+    # mark someone's own chat, and registering another bundled bridge beside
+    # an unidentifiable one only doubles the confusion, so stop instead.
+    bridge = bundled_mattermost_bridge(bridges)
+    if isinstance(bridge, AmbiguousBundledBridge):
+        print(
+            f"ERROR: {ambiguous_bundled_bridge_message(bridge.bridge_ids)} "
+            "Registering no bridge and changing none."
+        )
+        sys.exit(1)
+    if bridge is not None:
+        bridge_id = bridge["bridge_id"]
+        print(f"Mattermost bridge already registered: {bridge_id}")
+        # Adopt the default on an instance that predates it, so an
+        # existing deployment gains the invariant on its next setup run
+        # rather than only new ones.
+        if not any(b.get("is_default") for b in bridges):
+            client.post(
+                f"/gateway/collaborations/{bridge_id}/default"
+            ).raise_for_status()
+            print(f"Set Mattermost bridge as default: {bridge_id}")
+        # And mark it as the deployment's own, for a bridge registered
+        # before the flag existed. Telemetry leaves a preconfigured
+        # connector out of onboarding: it came up because the deployment
+        # booted, not because anybody connected anything. A server that
+        # predates the flag does not list it, and is left alone rather
+        # than sent a field it would ignore.
+        if bridge.get("preconfigured") is False:
+            client.patch(
+                f"/gateway/collaborations/{bridge_id}",
+                json={"preconfigured": True},
+            ).raise_for_status()
+            print(f"Marked Mattermost bridge as preconfigured: {bridge_id}")
+        # Same reason: a bridge registered before callbacks existed
+        # would otherwise keep drawing cards with no buttons on them,
+        # and the only cure would be editing a connection field by
+        # hand. Sent every run rather than only when it is missing,
+        # because the config a bridge holds is not readable back — it
+        # carries the admin password, so no endpoint returns it.
+        if MATTERMOST_CALLBACK_BASE_URL:
+            client.patch(
+                f"/gateway/collaborations/{bridge_id}",
+                json={
+                    "connection_config": {
+                        "callback_base_url": MATTERMOST_CALLBACK_BASE_URL
+                    }
+                },
+            ).raise_for_status()
+            print(f"Set Mattermost callback address: {MATTERMOST_CALLBACK_BASE_URL}")
+        return bridge_id
 
     # Register new bridge
     connection_config: dict[str, str] = {
