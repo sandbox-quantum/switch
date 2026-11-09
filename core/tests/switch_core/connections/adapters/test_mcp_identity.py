@@ -841,6 +841,14 @@ async def test_mcp_identity_refuses_a_repeated_cursor(monkeypatch):
     _over_mock(monkeypatch, vendor)
     _assert_reason(await _identify_error(), "bad_result")
     assert vendor.calls == []
+    # Stopped at the repeat, not by the page limit.
+    listed = [
+        request
+        for request in vendor.requests
+        if request.method == "POST"
+        and json.loads(request.content).get("method") == "tools/list"
+    ]
+    assert len(listed) == 2
 
 
 async def test_mcp_identity_refuses_a_name_listed_on_two_pages(monkeypatch):
