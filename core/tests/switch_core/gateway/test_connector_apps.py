@@ -768,6 +768,7 @@ class TestGitHubReadOnly:
             assert unchanged.updated_at == before.updated_at
             assert (await _github_entry(world, operator))["read_only"] is True
             assert await read_only(broker, "github") == READ_ONLY
+            assert len(await _audit(session_factory)) == 1
 
             # The App is given write at GitHub: the next check says so, and
             # agents can be granted writing at once.
@@ -786,10 +787,12 @@ class TestGitHubReadOnly:
         [row] = await _rows(session_factory)
         assert row.settings["permissions"] == world.github.permissions
         assert row.updated_by == operator.id
-        # A check is not a save: the audit trail holds the one save.
-        assert [event.action for event in await _audit(session_factory)] == [
-            "connector_app.saved"
-        ]
+        # The save, then one event for each check that stored a change.
+        events = await _audit(session_factory)
+        assert [event.action for event in events] == ["connector_app.saved"] * 3
+        for event in events[1:]:
+            assert event.actor_user_id == operator.id
+            assert event.details["fields_changed"] == ["permissions"]
 
     async def test_a_check_that_fails_the_read_level_stores_nothing(
         self, world: World, operator, session_factory

@@ -348,6 +348,7 @@ class TestSaving:
             assert unchanged.updated_at == before.updated_at
             assert (await github_entry(client))["read_only"] is True
             assert organization_apps.changes == [(TENANT_ZERO_ID, "github")]
+            assert len(await _audit(session_factory)) == 1
 
             # The App is given write at GitHub: the next check stores that,
             # and every process hears of it.
@@ -373,10 +374,13 @@ class TestSaving:
         }
         assert row.updated_by == admin.id
         assert organization_apps.changes == [(TENANT_ZERO_ID, "github")] * 2
-        # A check is not a save: the audit trail holds the one save.
-        assert [event.action for event in await _audit(session_factory)] == [
+        # The save, then one event for the check that stored a change.
+        events = await _audit(session_factory)
+        assert [event.action for event in events] == [
             OrganizationAuditAction.CONNECTOR_APP_SAVED
-        ]
+        ] * 2
+        assert events[1].actor_user_id == admin.id
+        assert events[1].details["fields_changed"] == ["permissions"]
 
 
 class TestRemoving:

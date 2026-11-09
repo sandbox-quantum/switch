@@ -819,8 +819,8 @@ async def check_connector_app(
     admin: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any]:
     """Ask the vendor about the app in use. What it says of a saved app that
-    passes the check is stored again where it changed, and in use at once.
-    Nothing of an app from configuration is stored."""
+    passes the check is stored again where it changed, audited as a save, and
+    in use at once. Nothing of an app from configuration is stored."""
     spec = app_spec(apps, service)
     effective = apps.effective(service)
     # A configured GitHub App is called back at its own origin, not this URL.
@@ -847,6 +847,20 @@ async def check_connector_app(
             settings=result.settings,
             updated_by=admin.id,
         )
+        changed = fields_changed(values, values.client_id, result.settings, {})
+        if recorded is not None:
+            await record_server_audit_event(
+                session,
+                actor_user_id=admin.id,
+                action=ServerAuditAction.CONNECTOR_APP_SAVED,
+                target_type="service",
+                target_id=service,
+                details={
+                    "service": service,
+                    "fields_changed": changed,
+                    "client_id": values.client_id,
+                },
+            )
         await session.commit()
         if recorded is not None:
             await apps.apply(service, broker=broker, state=request.app.state)
@@ -856,7 +870,7 @@ async def check_connector_app(
                 "fields=%s",
                 spec.name,
                 admin.id,
-                fields_changed(values, values.client_id, result.settings, {}),
+                changed,
             )
     return {"ok": result.ok, "checks": checks_body(result)}
 

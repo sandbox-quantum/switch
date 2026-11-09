@@ -357,8 +357,8 @@ async def check_organization_connector_app(
     user: Annotated[User, Depends(get_current_user)],
 ) -> dict[str, Any]:
     """Ask the vendor about the organization's app. What it says of an app
-    that passes the check is stored again where it changed, and in use at
-    once, as the server's check does."""
+    that passes the check is stored again where it changed, audited as a
+    save, and in use at once, as the server's check does."""
     organization_id = await _admin_of(session, user_store, organization_store, user)
     spec = app_spec(apps, service)
     refuse_while_blocked(spec, apps.public_url)
@@ -381,6 +381,21 @@ async def check_organization_connector_app(
             settings=result.settings,
             updated_by=user.id,
         )
+        changed = fields_changed(values, values.client_id, result.settings, {})
+        if recorded is not None:
+            await record_organization_audit_event(
+                session,
+                organization_id=organization_id,
+                actor_user_id=user.id,
+                action=OrganizationAuditAction.CONNECTOR_APP_SAVED,
+                target_type="service",
+                target_id=service,
+                details={
+                    "service": service,
+                    "fields_changed": changed,
+                    "client_id": values.client_id,
+                },
+            )
         await session.commit()
         if recorded is not None:
             organization_apps.changed(organization_id, service)
@@ -390,7 +405,7 @@ async def check_organization_connector_app(
                 spec.name,
                 organization_id,
                 user.id,
-                fields_changed(values, values.client_id, result.settings, {}),
+                changed,
             )
     return {"ok": result.ok, "checks": checks_body(result)}
 
