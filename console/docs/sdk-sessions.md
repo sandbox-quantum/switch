@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity and Cursor. Local sessions and sessions reached through SSH run
+Antigravity, Cursor and Kimi Code. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -250,6 +250,7 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity ad
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
 | Antigravity (`agy acp`) | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
+| Kimi Code (`kimi acp`) | Yes | ACP model config option | Unavailable | Images as bytes; embedded file resources |
 
 Controls depend on the connected provider's reported support. OpenCode models
 that report no image input are labelled in the selector and reject images before
