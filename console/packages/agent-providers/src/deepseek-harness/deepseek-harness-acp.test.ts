@@ -179,6 +179,61 @@ it('cancels the native turn on interrupt', async () => {
   });
 });
 
+it('waits for the cancelled prompt to settle before starting the queued turn', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 'first', text: 'first request' });
+  const first = await server.waitFor('session/prompt');
+  await adapter.interruptTurn('s');
+  await adapter.sendTurn({ sessionId: 's', turnId: 'second', text: 'follow-up request' });
+  await flush();
+
+  // The provider may flush an update while the cancelled prompt is settling.
+  // The follow-up must not start until the prompt response has been received.
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old output' } },
+  });
+  await flush();
+
+  server.send({ id: first.id, result: { stopReason: 'cancelled' } });
+  await vi.waitFor(() =>
+    expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(2)
+  );
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: 'turn.completed',
+      turnId: 'first',
+      outcome: 'interrupted',
+    })
+  );
+  const second = server.received.filter((m) => m.method === 'session/prompt')[1]!;
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'new output' } },
+  });
+  server.send({ id: second.id, result: { stopReason: 'end_turn' } });
+  await vi.waitFor(() =>
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'turn.completed',
+        turnId: 'second',
+        outcome: 'completed',
+      })
+    )
+  );
+  const deltas = events.filter((event) => event.type === 'content.delta');
+  expect(deltas.filter((event) => event.turnId === 'second').map((event) => event.delta)).toEqual([
+    'new output',
+  ]);
+  expect(
+    deltas
+      .filter((event) => event.delta === 'old output')
+      .every((event) => event.turnId === 'first')
+  ).toBe(true);
+  await adapter.stopSession('s');
+});
+
 describe('sign-in check', () => {
   let root: string;
   beforeEach(async () => {
