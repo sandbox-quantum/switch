@@ -7,6 +7,7 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { isEditableTarget } from '@renderer/lib/hooks/use-arrow-key-navigation';
+import { toast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { modalStore } from '@renderer/lib/modal/modal-store';
@@ -119,6 +120,8 @@ const CONTROL_LABEL: Record<ControlRequest['command'], string> = {
   reset: 'Reset',
   compact: 'Compact',
 };
+
+const CONTEXT_BLOCKED = 'Waiting for the previous command to be sent.';
 
 /**
  * Where each Stop, Reset or Compact sent from here stands: being posted,
@@ -521,22 +524,40 @@ export const ChatComposer = observer(function ChatComposer({
   const status = stopping ? 'sending' : hasRunningAgent && !hasContent ? 'running' : 'idle';
   const showSeparateStop = hasRunningAgent && hasContent;
   // Not blocked while working: a turn whose host died stays running in the feed, and Reset is the way out.
-  const contextBlocked = activities.some((activity) => activity.pendingControl)
-    ? 'Waiting for the previous command to be sent.'
-    : null;
-  const runContext = (command: 'reset' | 'compact', targets: AgentActivity[]) => {
+  const blocked = (targets: AgentActivity[]) =>
+    targets.some((activity) => activity.pendingControl) ? CONTEXT_BLOCKED : null;
+  // A group opens the menu while any one agent is free; the agent list blocks each one.
+  const contextBlocked =
+    activities.length > 0 && activities.every((activity) => activity.pendingControl)
+      ? CONTEXT_BLOCKED
+      : null;
+  const runContext = async (command: 'reset' | 'compact', targets: AgentActivity[]) => {
     setContextOpen(false);
     setContextStep(null);
-    for (const activity of targets) void activity.control(command);
+    const results = await Promise.allSettled(targets.map((activity) => activity.control(command)));
+    // control() records a failed post on the agent instead of rejecting, so check both.
+    const failed = targets.filter(
+      (activity, index) =>
+        results[index]!.status === 'rejected' ||
+        activity.controls.some(
+          (each) =>
+            each.command === command && (each.state === 'failed' || each.state === 'unknown')
+        )
+    );
+    if (failed.length)
+      toast({
+        title: `${CONTROL_LABEL[command]} failed for ${failed.map(labelOf).join(', ')}.`,
+        variant: 'destructive',
+      });
   };
   const pickContext = (command: 'reset' | 'compact') => {
     if (group) setContextStep({ command, targets: null });
     else if (command === 'reset') setContextStep({ command, targets: activities });
-    else runContext(command, activities);
+    else void runContext(command, activities);
   };
   const choose = (targets: AgentActivity[]) => {
     if (contextStep?.command === 'reset') setContextStep({ command: 'reset', targets });
-    else runContext('compact', targets);
+    else void runContext('compact', targets);
   };
   const resetTargets = contextStep?.command === 'reset' ? contextStep.targets : null;
 
@@ -802,8 +823,8 @@ export const ChatComposer = observer(function ChatComposer({
                       </Button>
                       <Button
                         size="sm"
-                        disabled={contextBlocked !== null}
-                        onClick={() => runContext('reset', resetTargets)}
+                        disabled={blocked(resetTargets) !== null}
+                        onClick={() => void runContext('reset', resetTargets)}
                       >
                         Start fresh
                       </Button>
@@ -813,7 +834,7 @@ export const ChatComposer = observer(function ChatComposer({
                   <>
                     <Button
                       variant="ghost"
-                      disabled={contextBlocked !== null}
+                      disabled={blocked(activities) !== null}
                       className="justify-start px-2"
                       onClick={() => choose(activities)}
                     >
@@ -825,7 +846,7 @@ export const ChatComposer = observer(function ChatComposer({
                         <Button
                           key={activity.agentId}
                           variant="ghost"
-                          disabled={contextBlocked !== null}
+                          disabled={blocked([activity]) !== null}
                           className="justify-start gap-2 px-2"
                           onClick={() => choose([activity])}
                         >
@@ -841,8 +862,8 @@ export const ChatComposer = observer(function ChatComposer({
                         </Button>
                       );
                     })}
-                    {contextBlocked && (
-                      <p className="text-xs text-foreground-muted">{contextBlocked}</p>
+                    {blocked(activities) && (
+                      <p className="text-xs text-foreground-muted">{blocked(activities)}</p>
                     )}
                   </>
                 ) : (

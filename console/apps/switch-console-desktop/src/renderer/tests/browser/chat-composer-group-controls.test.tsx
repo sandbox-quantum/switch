@@ -11,6 +11,8 @@ vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
   rpc: { chats: { commands: async () => [] } },
 }));
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
 vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
   useFeatureFlags: () => ({ group_chats: true }),
 }));
@@ -31,6 +33,7 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 afterEach(async () => {
+  toast.mockClear();
   if (root) await act(async () => root!.unmount());
   container?.remove();
   container = null;
@@ -67,8 +70,8 @@ const runningTurn: ChatActivityItem = {
   updatedAt: '2026-01-01T00:00:00Z',
 };
 
-async function render() {
-  const control = vi.fn<ActivityApi['control']>(async (input) => `cmd-${input.requestId}`);
+async function render(post: ActivityApi['control'] = async (input) => `cmd-${input.requestId}`) {
+  const control = vi.fn<ActivityApi['control']>(post);
   const api: ActivityApi = {
     resolve: async () => ({ kind: 'none' }) as never,
     reasoning: async () => null,
@@ -195,4 +198,37 @@ it('shows Stop next to Send when agent is working and user has attached a file',
   expect(sendButton).toBeDefined();
   await click('Stop reply');
   expect(sent(control)).toEqual([['agent-b', 'interrupt']]);
+});
+
+it('names the agent a command failed for when all agents are picked', async () => {
+  const control = await render(async (input) => {
+    if (input.agentId === 'agent-a') throw new Error('offline');
+    return `cmd-${input.requestId}`;
+  });
+  await click('Context actions');
+  await click(/^Compact context/);
+  await click('All agents');
+  expect(sent(control)).toEqual([
+    ['agent-a', 'compact'],
+    ['agent-b', 'compact'],
+  ]);
+  await vi.waitFor(() =>
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Compact failed for Alpha.', variant: 'destructive' })
+    )
+  );
+});
+
+it('blocks only the agent whose command is still being sent', async () => {
+  await render((input) =>
+    input.agentId === 'agent-a' ? new Promise(() => {}) : Promise.resolve(`cmd-${input.requestId}`)
+  );
+  await click('Context actions');
+  await click(/^Compact context/);
+  await click(/Alpha$/);
+  await click('Context actions');
+  await click(/^Compact context/);
+  expect(button(/Alpha$/)?.disabled).toBe(true);
+  expect(button('All agents')?.disabled).toBe(true);
+  expect(button(/Beta$/)?.disabled).toBe(false);
 });
