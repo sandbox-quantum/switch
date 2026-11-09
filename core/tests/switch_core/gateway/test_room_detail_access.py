@@ -30,6 +30,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.gateway.rooms import get_room, list_rooms
+from switch_core.gateway.schemas import RoomSummary
 
 _ROOM_STORE = RoomStore()
 _USER_STORE = UserStore()
@@ -115,15 +116,15 @@ class TestRoomDetailOwner:
             assert detail.owner_name == "owner"
 
 
-class TestViewerTakesPart:
-    """`viewer_is_member` is what the Overview's member counts and the lists
-    narrow by, so the detail says the same as the list: the owner takes part
-    in their room, and neither someone who can only read it nor an admin who
-    is not in it does."""
+class TestDetailMatchesList:
+    """A room's detail carries every field of its list entry with the same
+    value. Clients read the two interchangeably: Console's room settings read
+    `is_console_chat` from the detail, and the Overview's member counts and
+    the lists narrow by `viewer_is_member`."""
 
-    async def _detail_and_listing(
+    async def _detail_and_summary(
         self, session: AsyncSession, room: Room, viewer: User, is_admin: bool
-    ) -> tuple[bool, bool]:
+    ) -> tuple[dict[str, object], dict[str, object]]:
         detail = await get_room(
             room.id,
             session,
@@ -146,9 +147,11 @@ class TestViewerTakesPart:
             is_admin,
         )
         summary = next(r for r in listed if r.id == room.id)
-        return detail.viewer_is_member, summary.viewer_is_member
+        return detail.model_dump(
+            include=set(RoomSummary.model_fields)
+        ), summary.model_dump()
 
-    async def test_detail_and_list_agree_on_who_takes_part(
+    async def test_the_detail_says_what_the_list_says_to_each_viewer(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
@@ -159,15 +162,28 @@ class TestViewerTakesPart:
                 session, name="r1", owner_id=owner.id, read_visibility="public"
             )
 
-            assert await self._detail_and_listing(session, room, owner, False) == (
-                True,
-                True,
+            for viewer, is_admin, takes_part in [
+                (owner, False, True),
+                (reader, False, False),
+                (admin, True, False),
+            ]:
+                detail, summary = await self._detail_and_summary(
+                    session, room, viewer, is_admin
+                )
+                assert detail == summary
+                assert detail["viewer_is_member"] is takes_part
+
+    async def test_the_detail_names_a_console_chat(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            chat = await _add_room(session, name="chat", owner_id=owner.id)
+            chat.metadata_ = {"chat_operation_id": "op-1"}
+            await session.flush()
+
+            detail, summary = await self._detail_and_summary(
+                session, chat, owner, False
             )
-            assert await self._detail_and_listing(session, room, reader, False) == (
-                False,
-                False,
-            )
-            assert await self._detail_and_listing(session, room, admin, True) == (
-                False,
-                False,
-            )
+            assert detail == summary
+            assert detail["is_console_chat"] is True

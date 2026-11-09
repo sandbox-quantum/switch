@@ -133,6 +133,10 @@ export default function OverviewPage() {
   const { session, capabilities } = useAuth();
   const tenant = session?.tenant;
   if (!session || !tenant) return <CircularProgress />;
+  // A role can change while the page is open (the session is read again when
+  // the tab comes back), and the server lists an admin rooms it hides from a
+  // member, so the counts are read again under the new scope.
+  const scope = listScopeOf(capabilities);
 
   return (
     <Box>
@@ -147,7 +151,7 @@ export default function OverviewPage() {
           View graph
         </Button>
       </Stack>
-      <Counts tenantId={tenant.id} userId={session.user.id} scope={listScopeOf(capabilities)} />
+      <Counts key={scope} tenantId={tenant.id} userId={session.user.id} scope={scope} />
     </Box>
   );
 }

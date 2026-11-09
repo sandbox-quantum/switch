@@ -145,6 +145,26 @@ describe("OverviewPage", () => {
     ).toBeTruthy();
   });
 
+  it("reads the counts again when the role changes while the page is open", async () => {
+    signedInAs("member");
+    // A member is not listed the private rooms they take no part in.
+    answer({ ...WORKSPACE, "/rooms": [200, [room("r1", true), room("r2", true)]] });
+    const page = () => (
+      <MemoryRouter>
+        <OverviewPage />
+      </MemoryRouter>
+    );
+    const { rerender } = render(page());
+    expect(await counts()).toEqual({ Agents: "2", Users: "3", Rooms: "2" });
+
+    signedInAs("workspace_admin");
+    answer(WORKSPACE);
+    rerender(page());
+    await waitFor(async () =>
+      expect(await counts()).toEqual({ Agents: "4", Users: "3", Rooms: "3" }),
+    );
+  });
+
   it("opens each list from its card, and the graph from the page", async () => {
     signedInAs("member");
     answer(WORKSPACE);

@@ -845,9 +845,12 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
-- **A room's detail says whether the caller takes part in it.** The
-  gateway's `GET /rooms/{id}` always answered `viewer_is_member: false`; it
-  now says the same as the room list.
+- **A room's detail says whether the caller takes part in it, and whether
+  it is a Switch Console chat.** The gateway's `GET /rooms/{id}`, and the
+  room it returns from a create or change, always answered
+  `viewer_is_member: false` and `is_console_chat: false`, so Console's room
+  settings named a Console chat's messaging app "None". Both now say what
+  the room list says.
 - **The dashboard's addressing policy editor judges rules as the server
   does.** A rule letting in only the agent's owner, or its owner's agents,
   was taken for one that lets in nobody, and Save was held; the editor now
