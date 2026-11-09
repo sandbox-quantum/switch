@@ -1685,12 +1685,17 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 own_restart_sweep(ownership, session_factory, router.post_as_agent)
             # A pause or resume Core stopped part-way through is recorded
             # failed at the step it reached (visibility V3). Once, at start.
-            if management is not None and v2:
+            # Held, so the loop keeps a reference until it ends (a bare
+            # `create_task` may be collected mid-run), and cancelled at shutdown.
+            hosted_actions_task = (
                 asyncio.create_task(
                     _sweep_hosted_actions(
                         gateway_app, session_factory, management, config.keyring
                     )
                 )
+                if management is not None and v2
+                else None
+            )
             data_retention_task = asyncio.create_task(
                 retention_loop(session_factory, history_sessions)
             )
@@ -1724,6 +1729,8 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 attachment_group_task.cancel()
                 if decision_task is not None:
                     decision_task.cancel()
+                if hosted_actions_task is not None:
+                    hosted_actions_task.cancel()
                 router.close()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()

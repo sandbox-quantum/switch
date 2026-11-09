@@ -498,6 +498,23 @@ def _cloud_machine_waking_message(machine: str) -> str:
     )
 
 
+def _waking_notice_once(
+    notices: set[tuple[str, int]],
+    meta: RoomMeta,
+    machine: CloudMachineState,
+    controller_name: str,
+) -> str | None:
+    """The waking line, once per room for each start: the next messages just
+    wait with it. A function on the recipient's notice set, not a method, so
+    the reply path with hosted agents v2 off calls nothing on the recipient
+    that it didn't before v2."""
+    notice = (meta.room_id, machine.revision)
+    if notice in notices:
+        return None
+    notices.add(notice)
+    return _cloud_machine_waking_message(controller_name)
+
+
 #: An operator's pause and an admin's turn-off (visibility V3): the agreed room
 #: lines, posted at most once per room per
 #: hour in each process, and the message isn't kept.
@@ -1630,7 +1647,9 @@ class AgentRecipient:
                 or machine.owner_stopped
             ):
                 return _machine_removed_message(binding.controller_name, owner)
-            return self._waking_notice_once(meta, machine, binding.controller_name)
+            return _waking_notice_once(
+                self._cloud_waking_notices, meta, machine, binding.controller_name
+            )
         if not controllers.is_live(self.agent.id):
             machine = await self._wake_cloud_machine(binding.controller_id)
             if not process_hosted_v2() and (
@@ -1651,19 +1670,10 @@ class AgentRecipient:
                 return room_line(StopReason.CANT_REACH, owner)
             if machine.owner_stopped:
                 return _cloud_machine_stopped_message(binding.controller_name, owner)
-            return self._waking_notice_once(meta, machine, binding.controller_name)
+            return _waking_notice_once(
+                self._cloud_waking_notices, meta, machine, binding.controller_name
+            )
         return None
-
-    def _waking_notice_once(
-        self, meta: RoomMeta, machine: CloudMachineState, controller_name: str
-    ) -> str | None:
-        """The waking line, once per room for each start: the next messages
-        just wait with it."""
-        notice = (meta.room_id, machine.revision)
-        if notice in self._cloud_waking_notices:
-            return None
-        self._cloud_waking_notices.add(notice)
-        return _cloud_machine_waking_message(controller_name)
 
     async def _controller_host_failed_reply(
         self, session: AsyncSession, agent: Agent, meta: RoomMeta

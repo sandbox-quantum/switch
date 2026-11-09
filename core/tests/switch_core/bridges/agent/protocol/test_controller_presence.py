@@ -393,7 +393,6 @@ def _client(
         woken_lifted=woken_lifted,
     )
     ns._is_available = AgentRecipient._is_available.__get__(ns)
-    ns._waking_notice_once = AgentRecipient._waking_notice_once.__get__(ns)
     ns._wake_for_follow_up = AgentRecipient._wake_for_follow_up.__get__(ns)
     ns._reply_when_unavailable_here = (
         AgentRecipient._reply_when_unavailable_here.__get__(ns)
