@@ -13,7 +13,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from functools import partial
 from typing import Any, ClassVar
 from urllib.parse import SplitResult, urlsplit
 
@@ -116,14 +115,6 @@ _MM_SOCKET_CLOSE_TIMEOUT_SECONDS = 2.0
 # directory dialog, the setup scripts), and connecting is a log-in and two
 # reads, so it is normally under a second.
 _CONNECT_WAIT_SECONDS = 15.0
-# Posts handed from the sockets to Switch's loop and not yet handed in, at most;
-# a post arriving past it is fetched once the backlog drains.
-_HANDOFF_LIMIT = 1000
-# A catch-up reads a channel this many posts at a time, and at most this many pages.
-_CATCH_UP_PAGE_SIZE = 200
-_CATCH_UP_MAX_PAGES = 10
-# A catch-up whose fetch failed is tried again this often while marks remain.
-_CATCH_UP_RETRY_S = 60
 
 # Mattermost channel types a bot can be *added* to: open and private channels.
 # Membership of a DM ("D") or group DM ("G") is a property of the conversation
@@ -554,25 +545,6 @@ class MattermostAdapter(PlatformAdapter):
         self._seen_post_ids: OrderedDict[str, None] = OrderedDict()
         self._seen_post_ids_max = 1000
         self._seen_lock = threading.Lock()
-        # Per channel, the newest post being handed in: the next one waits for
-        # it, so posts reach Switch in the order they were claimed.
-        self._channel_tails: dict[str, asyncio.Task[None]] = {}
-        # Posts handed to Switch's loop and not yet handed in. A socket thread
-        # waits for a free place rather than queue without end or drop one.
-        # Posts handed to Switch's loop and not yet handed in, at most
-        # `_handoff_limit`: past it, a post is left unclaimed and fetched later.
-        self._handoff_limit = _HANDOFF_LIMIT
-        self._in_flight = 0
-        self._overflowed = 0
-        self._overflow_said = False
-        # Per channel, when the newest post claimed in it was sent (Mattermost
-        # milliseconds), and from when the next catch-up fetches it.
-        self._heard_until: dict[str, int] = {}
-        self._catch_up_from: dict[str, int] = {}
-        self._catching_up = False
-        # A catch-up whose fetch failed tries again on a timer (`_retry_catch_up_later`).
-        self._retry_pending: asyncio.TimerHandle | None = None
-        self._retry_said = False
 
         # (agent_name, post_id) currently carrying the working reaction. A
         # reaction belongs to the bot that added it, so two agents on the same
@@ -2471,23 +2443,11 @@ class MattermostAdapter(PlatformAdapter):
                 # Read per event: a rename moves the bot to a new name while
                 # this socket keeps running.
                 current = self._bot_id_to_username.get(bot_id, name)
-                try:
-                    await self._ws_handler(event_data, current)
-                except asyncio.CancelledError:
-                    # The socket library's keep-alive cancels its read loop
-                    # every 30 seconds, whatever it is doing. A post is handed
-                    # off before anything here can be cancelled; anything else
-                    # cut short is said, not dropped quietly.
-                    logger.warning(
-                        "Mattermost socket for %s cut short its handling of an event",
-                        current,
-                    )
-                    raise
+                await self._ws_handler(event_data, current)
 
             if stopped.wait(1):
                 return
             backoff = 2
-            reopened = 0
             while not stopped.is_set():
                 # `init_websocket` is synchronous: it runs the thread's current
                 # loop until the socket closes, so each connection gets a loop
@@ -2497,8 +2457,7 @@ class MattermostAdapter(PlatformAdapter):
                 try:
                     driver.init_websocket(_handler)
                 except Exception as e:
-                    # The exception's type only: its text can quote what was sent.
-                    reason = type(e).__name__
+                    reason = str(e)
                     backoff_next = min(backoff * 2, 30)
                 else:
                     # It returns only once an established connection closed.
@@ -2508,16 +2467,11 @@ class MattermostAdapter(PlatformAdapter):
                     _close_loop(ws_loop)
                 if stopped.is_set():
                     break
-                reopened += 1
-                # Posts sent while a socket is closed are fetched on the reopen,
-                # so a reopen is worth seeing in the logs.
-                logger.warning(
-                    "Mattermost socket for %s disconnected (%s); reopening in "
-                    "%ds, reopen %d",
+                logger.debug(
+                    "WebSocket for %s disconnected: %s, retrying in %ds",
                     name,
                     reason,
                     backoff,
-                    reopened,
                 )
                 stopped.wait(backoff)
                 backoff = backoff_next
@@ -2840,17 +2794,6 @@ class MattermostAdapter(PlatformAdapter):
             await self._handle_user_added(event)
             return
 
-        if event_type == "hello":
-            # Sent each time a bot's socket (re)opens. Posts sent while it was
-            # closed never arrive on it, so they are fetched.
-            loop = self._main_loop
-            if loop is not None and self._admin_driver is not None:
-                with self._seen_lock:
-                    for channel_id, heard in self._heard_until.items():
-                        self._mark_for_catch_up(channel_id, heard)
-                self._dispatch(self._catch_up(agent_name), loop)
-            return
-
         if event_type != "posted":
             return
 
@@ -2864,283 +2807,22 @@ class MattermostAdapter(PlatformAdapter):
         except (json.JSONDecodeError, TypeError):
             return
 
-        loop = self._main_loop
-        if loop is None or self._admin_driver is None:
-            raise RuntimeError("Cannot handle posted event: adapter not started")
-        self._claim_post(post, data, agent_name, loop)
-
-    def _claim_post(
-        self,
-        post: dict[str, Any],
-        data: dict[str, Any],
-        agent_name: str,
-        loop: asyncio.AbstractEventLoop,
-    ) -> bool:
-        """Claim a person's post, heard live or fetched, and hand it to
-        Switch's loop; False when it is not one to hand in, another copy of it
-        was claimed first, or the hand-off is full.
-
-        Claimed and handed over in one step, with nothing awaited and nothing
-        waited for: the socket library cancels whatever its read loop is doing
-        every 30 seconds (its keep-alive), and a socket whose loop stops
-        reading is closed by Mattermost, so neither may stand between a
-        claimed post and Switch. Dispatching under the lock keeps posts in the
-        order they were claimed. A post that finds the hand-off full is left
-        unclaimed and its channel marked: it is fetched once the backlog drains.
-        """
         user_id = post.get("user_id", "")
-        if post.get("type", ""):
-            return False
+        post_type = post.get("type", "")
+        if post_type:
+            return
+
         if user_id in self._bridge_bot_ids or user_id == self._admin_user_id:
-            return False
+            return
+
         post_id = post.get("id", "")
-        channel_id = str(post.get("channel_id", ""))
-        created = post.get("create_at")
         with self._seen_lock:
             if post_id in self._seen_post_ids:
-                return False
-            if self._in_flight >= self._handoff_limit:
-                if isinstance(created, int) and channel_id:
-                    self._mark_for_catch_up(channel_id, created - 1)
-                self._overflowed += 1
-                if not self._overflow_said:
-                    self._overflow_said = True
-                    logger.warning(
-                        "Mattermost posts reach Switch slower than they arrive (%d in "
-                        "flight); later posts are fetched once the backlog drains",
-                        self._in_flight,
-                    )
-                return False
+                return
             self._seen_post_ids[post_id] = None
             if len(self._seen_post_ids) > self._seen_post_ids_max:
                 self._seen_post_ids.popitem(last=False)
-            self._in_flight += 1
-            try:
-                self._dispatch(self._hand_in_post(post, data, agent_name), loop)
-            except BaseException:
-                # Not handed over (Switch's loop is closing): not claimed either.
-                self._seen_post_ids.pop(post_id, None)
-                self._in_flight -= 1
-                raise
-            if channel_id and isinstance(created, int):
-                self._heard_until[channel_id] = max(
-                    created, self._heard_until.get(channel_id, 0)
-                )
-        return True
 
-    def _mark_for_catch_up(self, channel_id: str, since: int) -> None:
-        """Fetch the channel's posts sent after `since` at the next catch-up.
-        Called with the seen lock held."""
-        current = self._catch_up_from.get(channel_id)
-        self._catch_up_from[channel_id] = (
-            since if current is None else min(current, since)
-        )
-
-    def _handed_off(self) -> None:
-        """A place in the hand-off is free again; once the backlog has drained
-        to half the limit, posts left unclaimed while it was full are fetched.
-        Runs on Switch's loop."""
-        with self._seen_lock:
-            self._in_flight -= 1
-            drained = self._in_flight <= self._handoff_limit // 2
-            owed = bool(self._catch_up_from)
-            if drained and self._overflow_said:
-                logger.warning(
-                    "Mattermost hand-off to Switch has drained; %d post(s) left "
-                    "unclaimed while it was full are fetched now",
-                    self._overflowed,
-                )
-                self._overflow_said = False
-                self._overflowed = 0
-        if drained and owed and not self._catching_up:
-            asyncio.ensure_future(self._catch_up(None))
-
-    async def _catch_up(self, agent_name: str | None) -> None:
-        """Fetch, for every channel marked, the posts sent since its mark, and
-        hand in those no copy of was.
-
-        One at a time: a mark made while a catch-up runs makes it go round once
-        more rather than start a second.
-        """
-        if self._catching_up:
-            return
-        self._catching_up = True
-        # Channels whose fetch failed wait for the next catch-up (a drain or a
-        # reopen), not this one, so a fetch that keeps failing is not retried
-        # in a loop.
-        failed: dict[str, int] = {}
-        try:
-            while True:
-                with self._seen_lock:
-                    marked = dict(self._catch_up_from)
-                    self._catch_up_from.clear()
-                if not marked:
-                    return
-                for channel_id, since in marked.items():
-                    if not await self._catch_up_channel(channel_id, since, agent_name):
-                        failed[channel_id] = since
-                with self._seen_lock:
-                    if self._in_flight >= self._handoff_limit:
-                        # Full again: the next drain carries on from the marks.
-                        return
-        finally:
-            with self._seen_lock:
-                for channel_id, since in failed.items():
-                    self._mark_for_catch_up(channel_id, since)
-            self._catching_up = False
-            if failed:
-                self._retry_catch_up_later()
-            else:
-                self._retry_said = False
-
-    def _retry_catch_up_later(self) -> None:
-        """A channel whose fetch failed is tried again on a slow timer: on a
-        quiet box no drain or reopen may come for a long time. One retry is
-        pending at most, and it is said once until a catch-up gets through."""
-        if self._retry_pending is not None and not self._retry_pending.cancelled():
-            return
-        if not self._retry_said:
-            self._retry_said = True
-            logger.warning(
-                "Mattermost posts could not be fetched; trying again every %ds "
-                "until they are",
-                _CATCH_UP_RETRY_S,
-            )
-
-        def retry() -> None:
-            self._retry_pending = None
-            asyncio.ensure_future(self._catch_up(None))
-
-        self._retry_pending = asyncio.get_running_loop().call_later(
-            _CATCH_UP_RETRY_S, retry
-        )
-
-    async def _catch_up_channel(
-        self, channel_id: str, since: int, agent_name: str | None
-    ) -> bool:
-        """Fetch and claim one marked channel's posts; False when they could
-        not be fetched, to be tried at the next catch-up."""
-        driver = self._admin_driver
-        if driver is None:
-            return False
-        loop = asyncio.get_running_loop()
-        sent: list[dict[str, Any]] = []
-        covered = False
-        try:
-            channel = await loop.run_in_executor(
-                None, driver.channels.get_channel, channel_id
-            )
-            # Newest first, a page at a time, until a post from before `since`
-            # shows the gap is covered.
-            for page in range(_CATCH_UP_MAX_PAGES):
-                listing: dict[str, Any] = await loop.run_in_executor(
-                    None,
-                    partial(
-                        driver.posts.get_posts_for_channel,
-                        channel_id,
-                        params={"page": page, "per_page": _CATCH_UP_PAGE_SIZE},
-                    ),
-                )
-                posts = dict(listing.get("posts") or {})
-                order = list(listing.get("order") or [])
-                for post_id in order:
-                    post = posts.get(post_id)
-                    if not isinstance(post, dict):
-                        continue
-                    created = post.get("create_at")
-                    if not isinstance(created, int):
-                        continue
-                    if created <= since:
-                        covered = True
-                    elif not post.get("delete_at"):
-                        sent.append(post)
-                if covered or len(order) < _CATCH_UP_PAGE_SIZE:
-                    covered = True
-                    break
-        except Exception as e:
-            logger.warning(
-                "Could not fetch the posts Mattermost channel %s had while they "
-                "could not be heard (%s); a later catch-up tries again",
-                channel_id,
-                type(e).__name__,
-            )
-            return False
-        if not covered:
-            logger.warning(
-                "Fetched the newest %d pages of Mattermost channel %s and did not "
-                "reach the posts already heard; older posts in the gap are not "
-                "handed in",
-                _CATCH_UP_MAX_PAGES,
-                channel_id,
-            )
-        data = {
-            "channel_type": channel.get("type", ""),
-            "channel_display_name": channel.get("display_name", ""),
-        }
-        name = agent_name or ""
-        fetched = 0
-        # A post that finds the hand-off full again marks the channel from
-        # itself, so the next drain carries on from there.
-        for post in sorted(sent, key=lambda p: (p["create_at"], str(p.get("id", "")))):
-            if self._claim_post(post, data, name, loop):
-                fetched += 1
-        if fetched:
-            logger.warning(
-                "Fetched %d post(s) Mattermost channel %s had while they could "
-                "not be heard",
-                fetched,
-                channel_id,
-            )
-        return True
-
-    def _release_post(self, post_id: str) -> None:
-        """Forget a claim whose post was not handed in, so a later copy of it
-        can still be."""
-        with self._seen_lock:
-            self._seen_post_ids.pop(post_id, None)
-
-    async def _hand_in_post(
-        self, post: dict[str, Any], data: dict[str, Any], agent_name: str
-    ) -> None:
-        """Hand a claimed post to Switch, on Switch's loop, after every earlier
-        post claimed in its channel.
-
-        The post stays claimed once handed in. When handing it in fails, the
-        claim is released, so a later copy of the post can still be handed in.
-        """
-        post_id = str(post.get("id", ""))
-        channel_id = str(post.get("channel_id", ""))
-        me = asyncio.current_task()
-        before = self._channel_tails.get(channel_id)
-        if me is not None:
-            self._channel_tails[channel_id] = me
-        try:
-            if before is not None and not before.done():
-                await asyncio.wait([before])
-            await self._handle_posted(post, data, agent_name)
-        except Exception as exc:
-            self._release_post(post_id)
-            # Ids and the error's type only: a traceback can carry message text.
-            logger.error(
-                "Could not hand Mattermost post %s in channel %s to Switch (%s); "
-                "a later copy of it can still be handed in",
-                post_id,
-                channel_id,
-                type(exc).__name__,
-            )
-        except BaseException:
-            self._release_post(post_id)
-            raise
-        finally:
-            self._handed_off()
-            if me is not None and self._channel_tails.get(channel_id) is me:
-                del self._channel_tails[channel_id]
-
-    async def _handle_posted(
-        self, post: dict[str, Any], data: dict[str, Any], agent_name: str
-    ) -> None:
-        user_id = post.get("user_id", "")
-        post_id = post.get("id", "")
         channel_id = post.get("channel_id", "")
         message = post.get("message", "")
         # Mattermost sets root_id to the thread root for replies, "" otherwise.
@@ -3148,14 +2830,16 @@ class MattermostAdapter(PlatformAdapter):
         mm_channel_type = data.get("channel_type", "")
         channel_name = str(data.get("channel_display_name", "")) or None
 
-        driver = self._admin_driver
-        if driver is None:
+        loop = self._main_loop
+        if loop is None or self._admin_driver is None:
             raise RuntimeError("Cannot handle posted event: adapter not started")
 
-        loop = asyncio.get_running_loop()
+        ws_loop = asyncio.get_event_loop()
         user_is_bot = False
         try:
-            user = await loop.run_in_executor(None, driver.users.get_user, user_id)
+            user = await ws_loop.run_in_executor(
+                None, self._admin_driver.users.get_user, user_id
+            )
             username: str = user.get("username", user_id)
             user_is_bot = bool(user.get("is_bot", False))
         except Exception:
@@ -3197,7 +2881,7 @@ class MattermostAdapter(PlatformAdapter):
             parts = stripped.split(None, 1)
             command = parts[0].lstrip("!")
             args = parts[1].strip() if len(parts) > 1 else ""
-            await self._on_command(
+            coro = self._on_command(
                 InboundCommand(
                     channel_id=channel_id,
                     channel_type=channel_type,
@@ -3211,28 +2895,29 @@ class MattermostAdapter(PlatformAdapter):
                     channel_name=channel_name,
                 )
             )
+            self._dispatch(coro, loop)  # type: ignore[arg-type]
             return
 
         if self._on_message:
             attachments, attachment_failures = await self._fetch_attachments(
-                post.get("file_ids", []), loop
+                post.get("file_ids", []), ws_loop
             )
-            await self._on_message(
-                InboundMessage(
-                    channel_id=channel_id,
-                    channel_type=channel_type,
-                    sender_id=user_id,
-                    sender_name=username,
-                    content=message,
-                    message_ref=post_id,
-                    root_id=root_id,
-                    agent_name=agent_name,
-                    channel_name=channel_name,
-                    attachments=attachments,
-                    attachment_failures=attachment_failures,
-                    sender_is_app=sender_is_app,
-                )
+            inbound = InboundMessage(
+                channel_id=channel_id,
+                channel_type=channel_type,
+                sender_id=user_id,
+                sender_name=username,
+                content=message,
+                message_ref=post_id,
+                root_id=root_id,
+                agent_name=agent_name,
+                channel_name=channel_name,
+                attachments=attachments,
+                attachment_failures=attachment_failures,
+                sender_is_app=sender_is_app,
             )
+            coro = self._on_message(inbound)
+            self._dispatch(coro, loop)  # type: ignore[arg-type]
 
     async def _fetch_attachments(
         self, file_ids: list[str], loop: asyncio.AbstractEventLoop
