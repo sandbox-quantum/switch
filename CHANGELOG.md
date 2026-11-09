@@ -45,6 +45,19 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A one-screen Datadog board and alerts that say what to do.**
+  `deploy/observability/signal-board.json` shows the four golden signals
+  (latency, traffic, errors, saturation) plus whether agents are connected and
+  messaging apps are up, grey while normal and red only past a limit. The
+  monitors are rewritten to what a user would notice: each says what users see
+  and what to check, posts when it fires, every hour while it stays firing and
+  once on recovery, and error
+  alerts count failures instead of taking a percentage, so low traffic doesn't
+  page on noise. Causes such as slow queries stay on the dashboards.
+  `deploy/observability/apply.sh` creates or updates them in Datadog by name.
+- **switch-core reports which bridge crashed.** `switch.bridges.crashed` is 1
+  per crashed collaboration bridge, tagged with its platform and display name,
+  and 0 once it runs again, so the bridge alert can name it.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption

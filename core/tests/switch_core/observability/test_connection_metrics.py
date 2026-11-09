@@ -8,6 +8,7 @@ metric.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator
 from typing import Any
 
@@ -162,6 +163,7 @@ def _probes(agents_connected: Any) -> RuntimeProbes:
         bridges_running=lambda: 0,
         bridges_running_by_platform=lambda: {},
         bridges_configured=lambda: 0,
+        bridges_crashed=lambda: [],
         consumers_running=lambda: 0,
         agents_connected=agents_connected,
         pool_stats=lambda: None,
@@ -189,6 +191,27 @@ def test_the_gauge_carries_transport_and_client_but_never_the_version() -> None:
         (("client", "agent-runtime"), ("transport", "websocket")): 2.0,
         (("client", "unknown"), ("transport", "websocket")): 0.0,
     }
+
+
+def test_a_crashed_bridge_reads_one_and_zero_once_it_runs_again() -> None:
+    """Named, so the alert says which bridge; and back to 0 rather than gone,
+    so the alert recovers instead of going quiet."""
+    crashed = [("teams", "SAQ Teams")]
+    probes = dataclasses.replace(
+        _probes(lambda: {}), bridges_crashed=lambda: list(crashed)
+    )
+    readings = _state_readings(probes)
+
+    def now() -> dict[tuple, float]:
+        return {
+            tuple(sorted(r.attributes.items())): r.value
+            for r in readings()
+            if r.spec.name == "switch.bridges.crashed"
+        }
+
+    assert now() == {(("bridge_name", "SAQ Teams"), ("platform", "teams")): 1.0}
+    crashed.clear()
+    assert now() == {(("bridge_name", "SAQ Teams"), ("platform", "teams")): 0.0}
 
 
 def test_the_gauge_still_reports_zero_with_nobody_connected() -> None:
