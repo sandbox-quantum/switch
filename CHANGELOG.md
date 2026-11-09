@@ -73,6 +73,14 @@ version of their own to them without also giving them a release of their own.
   answers for every workspace the caller may enter, counting people as the
   workspace's members list shows them: its members, and its organization's
   admins who are not one. The dashboard's new workspace switcher reads it.
+- **A dev-only role switcher for the dashboard.** `just seed-dev-roles`
+  creates local test accounts for an org admin, a workspace admin and a
+  member, plus a second workspace only the org admin can open, and
+  `just gateway-dev`, on a server with `gateway_v2` on, shows a **Role:**
+  control in the top bar that signs in as any of them, or as the operator from
+  `.env`, so a page can be checked as each role. Switching is an ordinary
+  sign-in, so every check is the server's own. A production build leaves the
+  switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
 - **The dashboard no longer claims the system is healthy.** The "System
