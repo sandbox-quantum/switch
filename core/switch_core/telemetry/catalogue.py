@@ -394,11 +394,14 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
             "reported",
         ),
     },
-    "cloud_machine_woken": {
-        "trigger": one_of("message", "agent_placed", "owner"),
-        "stopped_by": one_of("idle", "owner", "unknown"),
-    },
-    "cloud_machine_stopped": {"reason": one_of("idle", "owner")},
+    # A person's starts and stops apart from Switch's own, so the two can be
+    # told apart by name: Switch waking a machine it put to sleep because its
+    # agent was addressed or placed, and putting it to sleep when idle, are
+    # not anyone using it.
+    "cloud_machine_woken": {"trigger": one_of("message", "agent_placed")},
+    "cloud_machine_idle_stopped": {},
+    "cloud_machine_started": {"stopped_by": one_of("idle", "owner", "unknown")},
+    "cloud_machine_stopped": {},
     # ── Milestones ───────────────────────────────────────────────────────────
     # At most once per deployment, and only for one installed after this
     # shipped. Together they are the activation funnel.

@@ -571,10 +571,17 @@ then rolls back is never reported.
 | `signup_refused` | `reason`: `disabled` / `rate_limited` (the hourly cap) / `email_taken` | the sign-up page was refused |
 | `workspace_created` | `new_organization` (boolean): an organization was created with it | a workspace and its owner's membership exist |
 | `cloud_machine_requested` | `change`: `new` / `joined_workspace` (the owner's machine now serves another workspace) / `unretained` (a machine kept after its agents left, running again) / `restarted` (a stopped machine started by a claim) | a claim changed something; a claim on a machine already running is not reported. One event per claim, naming the first of these that applies, so a retained machine joined from another workspace is `joined_workspace` though it also runs again |
-| `cloud_machine_ready` | `new_machine` (boolean) · `provisioning_seconds`: from the claim to the first controller report for a new machine, left out for a later start | the machine's controller reported at its current revision |
+| `cloud_machine_ready` | `new_machine` (boolean): the machine has never been ready before, however many attempts that took · `provisioning_seconds`: from the claim to the first controller report for a new machine, left out for a later start | the machine's controller reported at its current revision |
 | `cloud_machine_failed` | `reason`: `not_scheduled` / `never_started` / `never_connected` (each after 10 minutes) / `owner_left` (its owner is in none of its workspaces) / `needs_attention` / `reported` (any other error the machine reported) | the machine went into error; not again while it stays there |
-| `cloud_machine_woken` | `trigger`: `message` (its agent was addressed) / `agent_placed` / `owner` · `stopped_by`: `idle` / `owner` / `unknown` | a stopped machine was started again |
-| `cloud_machine_stopped` | `reason`: `idle` / `owner` | a running machine was told to stop |
+| `cloud_machine_woken` | `trigger`: `message` (its agent was addressed) / `agent_placed` | Switch started a machine it had put to sleep when idle |
+| `cloud_machine_idle_stopped` | — | Switch put a running machine to sleep because it was idle |
+| `cloud_machine_started` | `stopped_by`: `idle` / `owner` / `unknown` (how it came to be stopped) | its owner started a stopped machine |
+| `cloud_machine_stopped` | — | its owner stopped a running machine |
+
+What Switch does to a machine on its own (`cloud_machine_woken`,
+`cloud_machine_idle_stopped`) has its own events, apart from what a person does
+(`cloud_machine_started`, `cloud_machine_stopped`), so the two can be told apart
+by name.
 
 ### Milestone events — at most once per deployment
 
