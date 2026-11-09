@@ -440,6 +440,16 @@ class ActivityMarkRefused(RuntimeError):
 #: meaning for the first.
 ActivityMark = Literal["working", "queued"]
 
+#: How a platform refused a send, for a caller deciding whether to send it again.
+#:
+#: "permanent": sending the same thing again is refused again (the request is
+#: too large, the method is not allowed). "bounded": a refusal that is usually
+#: final but can clear on its own, such as a bot not yet added to the channel
+#: or a post not yet visible, so worth a few more attempts and no more.
+#: "transient": a timeout, a dropped connection, a server error, a rate limit,
+#: an expired session, or anything the adapter cannot recognise.
+RefusalKind = Literal["permanent", "bounded", "transient"]
+
 
 @runtime_checkable
 class SupportsSharedConnection(Protocol):
@@ -833,17 +843,15 @@ class PlatformAdapter(ABC):
         return None
 
     @classmethod
-    def refused_for_good(cls, exc: BaseException) -> bool:
-        """Whether this platform refused a send in a way no retry will change.
+    def classify_refusal(cls, exc: BaseException) -> RefusalKind:
+        """How this platform refused a send: see `RefusalKind`.
 
-        True only for a client error the platform answered with — a request it
-        read and rejected, a post or channel it says is not there, a permission
-        the bot does not have. A timeout, a dropped connection, a server error
-        or a rate limit is worth another attempt, and so is anything this
-        adapter cannot recognise. The session activity publisher drops a
-        publication refused for good instead of retrying it for ever.
+        The session activity publisher drops a "permanent" refusal at once,
+        gives a "bounded" one a few attempts, and retries a "transient" one for
+        as long as it takes. An adapter that cannot tell its platform's errors
+        apart answers "transient", which keeps every failure retried.
         """
-        return False
+        return "transient"
 
     @classmethod
     async def prepare_config(
