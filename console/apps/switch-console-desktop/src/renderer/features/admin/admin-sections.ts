@@ -1,4 +1,4 @@
-export type AdminSection = 'messaging-apps' | 'connectors' | 'switch-trust' | 'apps';
+export type AdminSection = 'messaging-apps' | 'connectors' | 'decision' | 'switch-trust' | 'apps';
 
 export type AdminScope = 'workspace' | 'server';
 
@@ -6,6 +6,7 @@ export const ADMIN_MENU_LABELS = {
   'messaging-apps': 'Messaging apps',
   connectors: 'Connectors',
   'switch-trust': 'Switch Trust',
+  decision: 'Decision routing',
   apps: 'Connector apps',
 } as const satisfies Record<AdminSection, string>;
 
@@ -23,6 +24,9 @@ export type AdminGroup = { scope: AdminScope; items: AdminSection[] };
  *   Your own accounts are linked in Settings.
  * - Connectors: the workspace's connector switches, for its admins, where
  *   the server has service connections on.
+ * - Decision routing: which decision service the workspace's auto-route
+ *   rooms ask, for its admins. It is not about connectors, so it is there
+ *   whether or not the server has service connections on.
  * - Switch Trust: the deployment's guardrails, for the server's operator.
  * - Connector apps: the apps connectors sign in through, for the operator of
  *   a Switch that serves no gateway (one this Console runs without Docker),
@@ -42,7 +46,7 @@ export function adminGroups(person: {
     {
       scope: 'workspace',
       items: person.administers
-        ? ['messaging-apps', ...(serviceConnections ? (['connectors'] as const) : [])]
+        ? ['messaging-apps', ...(serviceConnections ? (['connectors'] as const) : []), 'decision']
         : [],
     },
     {
