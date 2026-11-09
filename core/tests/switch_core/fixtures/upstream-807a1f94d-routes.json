@@ -1,5 +1,5 @@
 {
- "source": "upstream main 0f7f96732: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
+ "source": "upstream main 807a1f94d: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
  "gateway": [
   [
    "DELETE",
@@ -44,6 +44,10 @@
   [
    "DELETE",
    "/collaborations/{bridge_id}/teams/{team_id}"
+  ],
+  [
+   "DELETE",
+   "/decision-settings"
   ],
   [
    "DELETE",
@@ -135,6 +139,10 @@
   ],
   [
    "DELETE",
+   "/tenants/{tenant_id}"
+  ],
+  [
+   "DELETE",
    "/tenants/{tenant_id}/budgets/{budget_id}"
   ],
   [
@@ -151,7 +159,15 @@
   ],
   [
    "DELETE",
+   "/tenants/{tenant_id}/retention"
+  ],
+  [
+   "DELETE",
    "/trust-settings"
+  ],
+  [
+   "DELETE",
+   "/users/{user_id}"
   ],
   [
    "GET",
@@ -212,6 +228,14 @@
   [
    "GET",
    "/auth/session"
+  ],
+  [
+   "GET",
+   "/auth/workos/callback"
+  ],
+  [
+   "GET",
+   "/auth/workos/organization"
   ],
   [
    "GET",
@@ -288,6 +312,10 @@
   [
    "GET",
    "/collaborations/{bridge_id}/users"
+  ],
+  [
+   "GET",
+   "/decision-settings"
   ],
   [
    "GET",
@@ -384,6 +412,10 @@
   [
    "GET",
    "/organizations/current/audit-events"
+  ],
+  [
+   "GET",
+   "/organizations/current/issues"
   ],
   [
    "GET",
@@ -535,6 +567,10 @@
   ],
   [
    "GET",
+   "/tenants/{tenant_id}/erasures"
+  ],
+  [
+   "GET",
    "/tenants/{tenant_id}/invitations"
   ],
   [
@@ -544,6 +580,18 @@
   [
    "GET",
    "/tenants/{tenant_id}/members"
+  ],
+  [
+   "GET",
+   "/tenants/{tenant_id}/people"
+  ],
+  [
+   "GET",
+   "/tenants/{tenant_id}/retention"
+  ],
+  [
+   "GET",
+   "/tenants/{tenant_id}/retention/preview"
   ],
   [
    "GET",
@@ -580,6 +628,10 @@
   [
    "PATCH",
    "/agents/{agent_id}/options"
+  ],
+  [
+   "PATCH",
+   "/auth/me"
   ],
   [
    "PATCH",
@@ -675,6 +727,10 @@
   ],
   [
    "POST",
+   "/auth/sessions/revoke"
+  ],
+  [
+   "POST",
    "/auth/signup"
   ],
   [
@@ -747,6 +803,10 @@
   ],
   [
    "POST",
+   "/decision-settings/test"
+  ],
+  [
+   "POST",
    "/documents"
   ],
   [
@@ -808,6 +868,10 @@
   [
    "POST",
    "/organizations/current/workspaces"
+  ],
+  [
+   "POST",
+   "/ownership/transfer"
   ],
   [
    "POST",
@@ -931,6 +995,10 @@
   ],
   [
    "POST",
+   "/tenants/{tenant_id}/erasures"
+  ],
+  [
+   "POST",
    "/tenants/{tenant_id}/invitations"
   ],
   [
@@ -944,6 +1012,10 @@
   [
    "POST",
    "/users"
+  ],
+  [
+   "POST",
+   "/users/{user_id}/sessions/revoke"
   ],
   [
    "PUT",
@@ -983,6 +1055,10 @@
   ],
   [
    "PUT",
+   "/decision-settings"
+  ],
+  [
+   "PUT",
    "/management/agents/{agent_id}"
   ],
   [
@@ -992,6 +1068,10 @@
   [
    "PUT",
    "/room-groups/{group_id}/rooms"
+  ],
+  [
+   "PUT",
+   "/rooms/{room_id}/auto-route"
   ],
   [
    "PUT",
@@ -1008,6 +1088,10 @@
   [
    "PUT",
    "/tenants/{tenant_id}/budgets/{budget_id}"
+  ],
+  [
+   "PUT",
+   "/tenants/{tenant_id}/retention"
   ],
   [
    "PUT",
@@ -1142,10 +1226,6 @@
   [
    "POST",
    "/agents/register-known-bulk"
-  ],
-  [
-   "POST",
-   "/agents/{agent_id}/connection/beat"
   ],
   [
    "POST",
