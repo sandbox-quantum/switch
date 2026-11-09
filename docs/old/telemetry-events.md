@@ -707,11 +707,14 @@ a slow average.
 
 **`room_archived`** — `bridge_platform`, `age_days` (number), `was_ever_active`
 (tri-state: `true` | `false` | `unknown` — `unknown` when the activity count
-itself could not be run, which is not evidence the room was never used).
+itself could not be run, which is not evidence the room was never used). Not
+sent for a room that was already archived.
 
 **`room_agents_added`** — `agent_count` (number), `added_by_kind` (`user` | `agent` | `system`).
 
-**`room_agents_removed`** — `agent_count` (number), `removed_by_kind` (as above).
+**`room_agents_removed`** — `agent_count` (number): the agents that were in
+the room and are now out of it, not the number asked for; `removed_by_kind` (as
+above). Not sent when none was in it.
 
 ### Removals
 
@@ -928,19 +931,21 @@ to nobody or to the room's triage agent.
 
 What each one is for, and how to make it fire, is under
 [Every event, and how to make it fire](#every-event-and-how-to-make-it-fire).
-This is what each carries.
+This is what each carries. The resource and role events are sent once the
+change is committed, never for one that rolled back, and a detach or a removal
+only when there was something to detach or remove.
 
 | Event | Properties |
 |---|---|
-| `reference_created` | `reference_type`; `read_visibility` (`private` \| `public`); `created_by_kind` (`user` \| `agent` \| `system`) |
+| `reference_created` | `reference_type`; `read_visibility` (`private` \| `public`); `created_by_kind` (`user` \| `agent` \| `system`): `agent` for an agent's tool, or a template an agent ran; `system` for a template a person ran, which asked for the room rather than for each reference in it. Released servers sent `user` for all three |
 | `reference_attached_to_room` | `reference_type` |
-| `reference_detached_from_room` | `reference_type` |
+| `reference_detached_from_room` | `reference_type`. Only when it was attached; likewise the other detaches and `room_link_removed` |
 | `reference_deleted` | `reference_type`; `age_days` (number) |
 | `document_created` | `scope` (`library` \| `room`); `created_by_kind` (`user` \| `agent` \| `system`); `has_instructions` (boolean) |
 | `document_attached_to_room` | none |
 | `document_detached_from_room` | none |
 | `document_deleted` | `scope` (`library` \| `room`); `age_days` (number) |
-| `package_created` | `created_by_kind` (`user` \| `agent` \| `system`) |
+| `package_created` | none. Only a person can make one, so it does not say who did; released servers sent `created_by_kind`, always `user` |
 | `package_attached_to_room` | `reference_count` (number); `document_count` (number) |
 | `package_detached_from_room` | none |
 | `package_deleted` | `age_days` (number) |
@@ -1160,9 +1165,10 @@ Two things to set up first, or a third of the list cannot fire at all:
 **Rooms** — `room_service.py` throughout; gateway routes under `/gateway/rooms`
 
 - `room_created` — `POST /gateway/rooms`. Check `created_by_kind` is `user`
-  here, `agent` when an agent creates one through its MCP tool, and `system`
-  when Switch is invited to a channel on a bridged platform. Those three paths
-  are the whole point of the property; test at least the first two.
+  here, `agent` when an agent creates one through its MCP tool or a template
+  it runs, and `system` when Switch is invited to a channel on a bridged
+  platform. Those three paths are the whole point of the property; test at
+  least the first two.
 - `first_room_created` — the same call, first time only, and only for a
   user-created room.
 - `room_agents_added` — `POST /gateway/rooms/{id}/agents`. Adding an agent

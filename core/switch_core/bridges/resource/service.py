@@ -37,7 +37,7 @@ from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_store import AttachedRooms
-from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry import TelemetryService, emit_after_commit
 from switch_core.telemetry.ages import age_days
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ class ReferenceTypeRow:
 
 class ResourceService:
     # Class-level default: several tests build this without `__init__`, and
-    # `emit_safely` treats None as "report nothing".
+    # `emit_after_commit` treats None as "report nothing".
     _telemetry: TelemetryService | None = None
 
     """Business logic for References, Documents, and Packages.
@@ -346,7 +346,7 @@ class ResourceService:
         # No slug: the type's name is free text whoever registered it chose,
         # and that is exactly what a user-defined type is — the fact that one
         # was registered is the whole reportable content.
-        emit_safely(self._telemetry, "reference_type_created", {})
+        emit_after_commit(session, self._telemetry, "reference_type_created", {})
         return created
 
     async def update_reference_type(
@@ -416,7 +416,9 @@ class ResourceService:
                 )
         age = age_days(reference_type.created_at)
         await self._reference_types.delete(session, type_)
-        emit_safely(self._telemetry, "reference_type_deleted", {"age_days": age})
+        emit_after_commit(
+            session, self._telemetry, "reference_type_deleted", {"age_days": age}
+        )
 
     async def log_builtin_shadowing(self, session: AsyncSession) -> None:
         """Report every stored type a built-in shadows.
@@ -532,6 +534,7 @@ class ResourceService:
         description: str,
         instructions: str,
         value: dict[str, Any],
+        created_by_kind: Literal["user", "agent", "system"],
     ) -> Reference:
         await self.resolve_type_for_principal(
             session, type, user_id=owner_id, is_admin=is_admin
@@ -549,19 +552,17 @@ class ResourceService:
             value=normalised_value,
         )
         created = await self._references.create(session, ref)
-        # Deliberate trade: `create` above flushes, so a validation failure
-        # (a bad visibility pair, an unknown type) has already raised before
-        # this line runs — what remains uncommitted is the gateway route's
-        # own `session.commit()`, called on the same session right after this
-        # returns. This service does not own that transaction boundary, so
-        # the residual risk is a bare commit failure, not a business-rule one.
-        emit_safely(
+        # Every event here is sent once the caller's transaction commits:
+        # this service does not own that boundary, and a change rolled back
+        # after it returns must not be counted.
+        emit_after_commit(
+            session,
             self._telemetry,
             "reference_created",
             {
                 "reference_type": _reference_type(type),
                 "read_visibility": _visibility(read_visibility),
-                "created_by_kind": "user",
+                "created_by_kind": created_by_kind,
             },
         )
         return created
@@ -670,7 +671,8 @@ class ResourceService:
         require(Principal(user_id, is_admin), "delete", ref)
         kind, age = _reference_type(ref.type), age_days(ref.created_at)
         detached = await self._references.delete(session, reference_id)
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "reference_deleted",
             {"reference_type": kind, "age_days": age},
@@ -691,7 +693,8 @@ class ResourceService:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "read", ref)
         if await self._references.attach_to_room(session, room_id, reference_id):
-            emit_safely(
+            emit_after_commit(
+                session,
                 self._telemetry,
                 "reference_attached_to_room",
                 {"reference_type": _reference_type(ref.type)},
@@ -701,8 +704,10 @@ class ResourceService:
         self, session: AsyncSession, room_id: str, reference_id: str
     ) -> None:
         ref = await self._references.get(session, reference_id)
-        await self._references.detach_from_room(session, room_id, reference_id)
-        emit_safely(
+        if not await self._references.detach_from_room(session, room_id, reference_id):
+            return
+        emit_after_commit(
+            session,
             self._telemetry,
             "reference_detached_from_room",
             {"reference_type": _reference_type(ref.type) if ref else "other"},
@@ -839,7 +844,7 @@ class ResourceService:
         await self._room_links.attach(session, source_room_id, target_room_id, label)
         # No label: it is free text describing why two rooms relate, which is
         # exactly the kind of thing that names a customer's work.
-        emit_safely(self._telemetry, "room_link_created", {})
+        emit_after_commit(session, self._telemetry, "room_link_created", {})
         return {
             "target_room_id": target.id,
             "target_room_name": target.name,
@@ -857,7 +862,8 @@ class ResourceService:
         detached = await self._room_links.detach(
             session, source_room_id, target_room_id
         )
-        emit_safely(self._telemetry, "room_link_removed", {})
+        if detached:
+            emit_after_commit(session, self._telemetry, "room_link_removed", {})
         return detached
 
     # ── Document CRUD (gateway) ───────────────────────────────────────────
@@ -885,9 +891,8 @@ class ResourceService:
             content=content,
         )
         created = await self._documents.create(session, doc)
-        # Same trade as `reference_created` above: flushed, not yet committed,
-        # and the commit is the gateway route's to call.
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "document_created",
             {
@@ -971,7 +976,8 @@ class ResourceService:
         require(Principal(user_id, is_admin), "delete", doc)
         age = age_days(doc.created_at)
         detached = await self._documents.delete(session, document_id)
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "document_deleted",
             {"scope": "library", "age_days": age},
@@ -998,13 +1004,15 @@ class ResourceService:
                 "to another room"
             )
         if await self._documents.attach_to_room(session, room_id, document_id):
-            emit_safely(self._telemetry, "document_attached_to_room", {})
+            emit_after_commit(session, self._telemetry, "document_attached_to_room", {})
 
     async def detach_document_from_room(
         self, session: AsyncSession, room_id: str, document_id: str
     ) -> None:
-        await self._documents.detach_from_room(session, room_id, document_id)
-        emit_safely(self._telemetry, "document_detached_from_room", {})
+        if await self._documents.detach_from_room(session, room_id, document_id):
+            emit_after_commit(
+                session, self._telemetry, "document_detached_from_room", {}
+            )
 
     async def list_room_documents(
         self, session: AsyncSession, room_id: str
@@ -1072,9 +1080,8 @@ class ResourceService:
             content=content,
         )
         created = await self._documents.create(session, doc)
-        # Same trade as `reference_created` above: flushed, not yet committed,
-        # and the commit is the MCP handler's to call.
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "document_created",
             {
@@ -1120,9 +1127,8 @@ class ResourceService:
             content=content,
         )
         created = await self._documents.create(session, doc)
-        # Same trade as `reference_created` above: flushed, not yet committed,
-        # and the commit is the caller's to call.
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "document_created",
             {
@@ -1196,8 +1202,11 @@ class ResourceService:
             )
         age = age_days(doc.created_at)
         await self._documents.delete(session, document_id)
-        emit_safely(
-            self._telemetry, "document_deleted", {"scope": "room", "age_days": age}
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "document_deleted",
+            {"scope": "room", "age_days": age},
         )
 
     async def delete_room_document_by_user(
@@ -1216,8 +1225,11 @@ class ResourceService:
             )
         age = age_days(doc.created_at)
         await self._documents.delete(session, document_id)
-        emit_safely(
-            self._telemetry, "document_deleted", {"scope": "room", "age_days": age}
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "document_deleted",
+            {"scope": "room", "age_days": age},
         )
 
     async def get_room_scoped_document(
@@ -1280,9 +1292,7 @@ class ResourceService:
             instructions=instructions,
         )
         created = await self._packages.create(session, pkg)
-        # Same trade as `reference_created` above: flushed, not yet committed,
-        # and the commit is the gateway route's to call.
-        emit_safely(self._telemetry, "package_created", {"created_by_kind": "user"})
+        emit_after_commit(session, self._telemetry, "package_created", {})
         return created
 
     async def get_package_for_user(
@@ -1356,7 +1366,9 @@ class ResourceService:
         require(Principal(user_id, is_admin), "delete", pkg)
         age = age_days(pkg.created_at)
         detached = await self._packages.delete(session, package_id)
-        emit_safely(self._telemetry, "package_deleted", {"age_days": age})
+        emit_after_commit(
+            session, self._telemetry, "package_deleted", {"age_days": age}
+        )
         return detached
 
     async def attach_package_to_room(
@@ -1376,7 +1388,8 @@ class ResourceService:
             return
         # What the package brought with it, which is the whole point of
         # attaching one rather than its parts.
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "package_attached_to_room",
             {
@@ -1392,8 +1405,10 @@ class ResourceService:
     async def detach_package_from_room(
         self, session: AsyncSession, room_id: str, package_id: str
     ) -> None:
-        await self._packages.detach_from_room(session, room_id, package_id)
-        emit_safely(self._telemetry, "package_detached_from_room", {})
+        if await self._packages.detach_from_room(session, room_id, package_id):
+            emit_after_commit(
+                session, self._telemetry, "package_detached_from_room", {}
+            )
 
     async def list_room_packages(
         self, session: AsyncSession, room_id: str

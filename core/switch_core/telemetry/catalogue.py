@@ -627,7 +627,8 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     },
     "document_attached_to_room": {},
     "document_deleted": {"scope": DOCUMENT_SCOPE, "age_days": optional(NUMBER)},
-    "package_created": {"created_by_kind": ACTOR_KIND},
+    # No `created_by_kind`: only a person can make one.
+    "package_created": {},
     "package_attached_to_room": {"reference_count": NUMBER, "document_count": NUMBER},
     "package_deleted": {"age_days": optional(NUMBER)},
     "api_key_created": {"key_type": API_KEY_TYPE},

@@ -111,6 +111,7 @@ async def test_a_user_defined_type_reaches_the_connected_agent(
         )
         ref = await resources.create_reference(
             session,
+            created_by_kind="user",
             owner_id=harness.owner_id,
             is_admin=False,
             read_visibility="private",
@@ -171,6 +172,7 @@ async def test_a_type_private_to_another_user_still_reaches_the_agent(
         )
         ref = await resources.create_reference(
             session,
+            created_by_kind="user",
             owner_id=author_id,
             is_admin=False,
             read_visibility="public",

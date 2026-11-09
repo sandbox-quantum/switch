@@ -3856,6 +3856,7 @@ class AgentCore:
                 description=description,
                 instructions=instructions,
                 value=value,
+                created_by_kind="agent",
             )
             await session.commit()
         return ref

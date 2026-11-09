@@ -5,6 +5,7 @@ a chat is reported."""
 from __future__ import annotations
 
 from tests.switch_core.gateway.conftest import _Harness
+from tests.telemetry_records import recording_telemetry
 
 
 async def test_a_post_is_told_to_the_message_observer_once(chats: _Harness) -> None:
@@ -53,3 +54,37 @@ async def test_adding_a_person_is_reported_once(chats: _Harness) -> None:
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
     assert chats.telemetry_sink.events("room_users_added") == [{"user_count": 1}]
+
+
+# ── Only real changes ────────────────────────────────────────────────────────
+
+
+async def test_archiving_an_archived_room_reports_nothing_more(
+    chats: _Harness,
+) -> None:
+    telemetry, sink = recording_telemetry()
+    chats.room_service._telemetry = telemetry
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    await chats.room_service.set_room_archived(room_id, True)
+    await chats.room_service.set_room_archived(room_id, True)
+
+    assert len(sink.events("room_archived")) == 1
+
+
+async def test_removing_agents_counts_those_that_were_in_the_room(
+    chats: _Harness,
+) -> None:
+    telemetry, sink = recording_telemetry()
+    chats.room_service._telemetry = telemetry
+    helper = await chats.agent("helper", owner=chats.alice)
+    stranger = await chats.agent("stranger", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, helper, "c1")
+
+    await chats.room_service.remove_agents_from_room(room_id, [helper.id, stranger.id])
+    await chats.room_service.remove_agents_from_room(room_id, [helper.id])
+
+    assert sink.events("room_agents_removed") == [
+        {"agent_count": 1, "removed_by_kind": "user"}
+    ]

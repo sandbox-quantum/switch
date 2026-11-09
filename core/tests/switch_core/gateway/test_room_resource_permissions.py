@@ -377,6 +377,7 @@ async def test_a_reference_follows_the_same_rules(
         world = await _world(session)
         ref = await svc.create_reference(
             session,
+            created_by_kind="user",
             owner_id=world.owner.id,
             is_admin=False,
             read_visibility="public",
@@ -571,6 +572,7 @@ async def test_removing_from_a_package_names_only_readable_rooms(
         world = await _world(session)
         ref = await svc.create_reference(
             session,
+            created_by_kind="user",
             owner_id=world.owner.id,
             is_admin=False,
             read_visibility="public",

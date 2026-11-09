@@ -1083,6 +1083,7 @@ class RoomYamlService:
             bridge_id=bridge_id,
             group_id=group_id,
             created_by=user_id,
+            created_by_kind="agent" if origin is not None else "user",
             from_template=True,
             created_by_agent_id=origin.agent_id if origin else None,
             parent_room_id=origin.parent_room_id if origin else None,
@@ -1104,7 +1105,12 @@ class RoomYamlService:
         failures: list[dict[str, Any]] = list(result.failed_attachments)
 
         created_ref_ids = await self._create_inline_references(
-            room_id, inline_refs, user_id=user_id, is_admin=is_admin, failures=failures
+            room_id,
+            inline_refs,
+            user_id=user_id,
+            is_admin=is_admin,
+            created_by_kind="agent" if origin is not None else "system",
+            failures=failures,
         )
         created_doc_ids = await self._create_inline_docs(
             room_id, spec.docs, user_id=user_id, failures=failures
@@ -1349,8 +1355,13 @@ class RoomYamlService:
         *,
         user_id: str,
         is_admin: bool,
+        created_by_kind: Literal["agent", "system"],
         failures: list[dict[str, Any]],
     ) -> list[str]:
+        """The references a template declares inline, made and attached to
+        the room. `created_by_kind` is who ran the template: an agent, or
+        Switch on the person's behalf, since the person asked for the room
+        rather than for each reference in it."""
         created: list[str] = []
         async with self._session_factory() as session:
             for entry in entries:
@@ -1366,6 +1377,7 @@ class RoomYamlService:
                         description=entry.description,
                         instructions=entry.instructions,
                         value=entry.value,
+                        created_by_kind=created_by_kind,
                     )
                     await self._resources.attach_reference_to_room(
                         session, room_id, ref.id, user_id=user_id, is_admin=is_admin
