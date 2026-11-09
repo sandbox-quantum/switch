@@ -224,6 +224,11 @@ e2e-provider *args:
 e2e-browser *args:
     SWITCH_E2E_LANE=browser console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
 
+# As e2e-browser, with the dashboard's new layout turned on (gateway_v2): the
+# same scenarios, the role matrix checked against the new layout's pages.
+e2e-browser-v2 *args:
+    SWITCH_E2E_LANE=browser SWITCH_E2E_GATEWAY_LAYOUT=v2 console/tooling-e2e/scripts/ephemeral-stack.sh {{ args }}
+
 # ── End-to-end harness, explore lane, on a throwaway stack ─────────────────────
 # As e2e-browser, but Bombadil drives the gateway UI at random for
 # SWITCH_E2E_EXPLORE_TIME_LIMIT (default 5m), checking the properties in
