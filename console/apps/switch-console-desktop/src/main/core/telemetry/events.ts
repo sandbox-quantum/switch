@@ -108,6 +108,14 @@ export type TelemetryAgentRemoveFailure =
  */
 export type TelemetryAgentRemoveTrigger = 'user' | 'server_teardown';
 
+/**
+ * Why an agent its Switch server no longer has was removed from this app:
+ * `gone_from_server` when a pass found it deleted there, by anyone, anywhere;
+ * `managed_agent_deleted` when the managed agent it had moved to was deleted
+ * from this app, which takes the agent it moved from with it.
+ */
+export type TelemetryAgentPruneCause = 'gone_from_server' | 'managed_agent_deleted';
+
 /** Installing, updating or removing an agent's own CLI. */
 export type TelemetryCliAction = 'install' | 'update' | 'uninstall';
 
@@ -530,6 +538,16 @@ export type TelemetryEventMap = {
     failure_reason: TelemetryAgentRemoveFailure;
   };
   /**
+   * An agent its Switch server no longer has was removed from this app by the
+   * pass that keeps the two in step, rather than by a person removing it.
+   */
+  agent_pruned: {
+    agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
+    cause: TelemetryAgentPruneCause;
+    outcome: TelemetryOutcome;
+  };
+  /**
    * A server was removed from this install.
    *
    * It carries no count of agents removed with it, because removing a server
@@ -773,6 +791,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'outcome',
     'failure_reason',
   ],
+  agent_pruned: ['agent_type', 'location', 'cause', 'outcome'],
   server_removed: ['server_kind'],
   session_provision_retried: ['agent_type', 'location', 'trigger', 'outcome'],
   session_reopened: ['agent_type', 'location', 'outcome'],

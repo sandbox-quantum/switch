@@ -13,6 +13,7 @@ import {
 } from '@main/core/switch-servers/gateway-client';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type {
+  TelemetryAgentPruneCause,
   TelemetryAgentRemoveFailure,
   TelemetryAgentRemoveTrigger,
   TelemetryLocationKind,
@@ -207,13 +208,9 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  * uses any more stops being probed.
  */
 export async function deleteAgent(agentId: string, options: DeleteAgentOptions): Promise<void> {
-  const agent = await getAgentById(agentId);
-  const location = agent ? await getAgentLocation(agent).catch(() => null) : null;
-  // Captured before the row goes: after the delete below there is nothing left
-  // to describe what was removed.
-  const shape = {
-    agent_type: agent ? agentTypeOf(agent.providerId) : ('unknown' as const),
-    location: locationKindOfRow(location),
+  const { agent, location, shape } = await describeRemoval(agentId);
+  const reported = {
+    ...shape,
     delete_in_switch: options.deleteInSwitch,
     trigger: agentRemoveTriggerOf(options.trigger),
   };
@@ -222,20 +219,54 @@ export async function deleteAgent(agentId: string, options: DeleteAgentOptions):
     await removeAgent(agentId, agent, location, options);
   } catch (error) {
     trackEvent('agent_removed', {
-      ...shape,
+      ...reported,
       outcome: 'failure',
       failure_reason: removeFailureReason(error),
     });
     throw error;
   }
-  trackEvent('agent_removed', { ...shape, outcome: 'success', failure_reason: 'none' });
+  trackEvent('agent_removed', { ...reported, outcome: 'success', failure_reason: 'none' });
+}
+
+/**
+ * Remove an agent its Switch server no longer has, as a plain remove does: the
+ * Console's row only, with the working directory and the host left as they
+ * are. Reported as `agent_pruned`, with why, rather than as a person removing
+ * an agent.
+ */
+export async function pruneAgent(agentId: string, cause: TelemetryAgentPruneCause): Promise<void> {
+  const { agent, location, shape } = await describeRemoval(agentId);
+  try {
+    await removeAgent(agentId, agent, location, {
+      deleteInSwitch: false,
+      removeProvisionedFiles: false,
+    });
+  } catch (error) {
+    trackEvent('agent_pruned', { ...shape, cause, outcome: 'failure' });
+    throw error;
+  }
+  trackEvent('agent_pruned', { ...shape, cause, outcome: 'success' });
+}
+
+/**
+ * The agent about to be removed, read before the row goes: after the delete
+ * there is nothing left to describe what was removed.
+ */
+async function describeRemoval(agentId: string) {
+  const agent = await getAgentById(agentId);
+  const location = agent ? await getAgentLocation(agent).catch(() => null) : null;
+  const shape = {
+    agent_type: agent ? agentTypeOf(agent.providerId) : ('unknown' as const),
+    location: locationKindOfRow(location),
+  };
+  return { agent, location, shape };
 }
 
 async function removeAgent(
   agentId: string,
   agent: Agent | undefined,
   location: Location | null,
-  options: DeleteAgentOptions
+  options: Pick<DeleteAgentOptions, 'deleteInSwitch' | 'removeProvisionedFiles'>
 ): Promise<void> {
   // A remote agent deleted in Switch has nothing left to run, so it is removed
   // from its host too.
