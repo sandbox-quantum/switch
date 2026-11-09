@@ -46,6 +46,7 @@ from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.room_service import RoleSpec, RoomCreateConfig
+from switch_core.telemetry import TelemetryService, emit_after_commit
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -585,8 +586,10 @@ class RoomYamlService:
         session_factory: async_sessionmaker[AsyncSession],
         room_group_store: RoomGroupStore,
         client_lifecycle: ClientLifecycleService | None = None,
+        telemetry: TelemetryService | None,
     ) -> None:
         self._rooms = room_service
+        self._telemetry = telemetry
         self._resources = resource_service
         self._room_store = room_store
         self._agent_store = agent_store
@@ -1082,6 +1085,7 @@ class RoomYamlService:
             bridge_id=bridge_id,
             group_id=group_id,
             created_by=user_id,
+            created_by_kind="agent" if origin is not None else "user",
             from_template=True,
             created_by_agent_id=origin.agent_id if origin else None,
             parent_room_id=origin.parent_room_id if origin else None,
@@ -1103,7 +1107,12 @@ class RoomYamlService:
         failures: list[dict[str, Any]] = list(result.failed_attachments)
 
         created_ref_ids = await self._create_inline_references(
-            room_id, inline_refs, user_id=user_id, is_admin=is_admin, failures=failures
+            room_id,
+            inline_refs,
+            user_id=user_id,
+            is_admin=is_admin,
+            created_by_kind="agent" if origin is not None else "system",
+            failures=failures,
         )
         created_doc_ids = await self._create_inline_docs(
             room_id, spec.docs, user_id=user_id, failures=failures
@@ -1165,6 +1174,9 @@ class RoomYamlService:
                 description=spec.group.description,
                 color=spec.group.color,
                 parent_group_id=None,
+            )
+            emit_after_commit(
+                session, self._telemetry, "room_group_created", {"has_parent": False}
             )
             await session.commit()
             group_id = group.id
@@ -1348,8 +1360,13 @@ class RoomYamlService:
         *,
         user_id: str,
         is_admin: bool,
+        created_by_kind: Literal["agent", "system"],
         failures: list[dict[str, Any]],
     ) -> list[str]:
+        """The references a template declares inline, made and attached to
+        the room. `created_by_kind` is who ran the template: an agent, or
+        Switch on the person's behalf, since the person asked for the room
+        rather than for each reference in it."""
         created: list[str] = []
         async with self._session_factory() as session:
             for entry in entries:
@@ -1365,6 +1382,7 @@ class RoomYamlService:
                         description=entry.description,
                         instructions=entry.instructions,
                         value=entry.value,
+                        created_by_kind=created_by_kind,
                     )
                     await self._resources.attach_reference_to_room(
                         session, room_id, ref.id, user_id=user_id, is_admin=is_admin

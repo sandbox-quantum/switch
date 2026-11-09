@@ -160,18 +160,18 @@ class TestSettling:
 
         assert sink.sent == []
 
-    async def test_nothing_is_settled_while_telemetry_is_off(
+    async def test_it_is_settled_while_telemetry_is_off_too(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """For the reason `emit_milestone` claims nothing while off: switching
-        it on later must find the right claims, not ones taken in the dark."""
+        """Milestones are claimed while telemetry is off (`emit_milestone`), so
+        these are too: switching it on later must not report them as new."""
         await claim_milestone(session_factory, "first_session_started")
         off = _service(_RecordingSink(), session_factory, enabled=False)
 
         await off.settle_superseded_milestones()
 
         assert await milestone_claimed(session_factory, "first_agent_connected") == (
-            "false"
+            "true"
         )
 
 
@@ -200,6 +200,29 @@ class TestTheFirstRealSession:
         assert milestone.properties["start_source"] == "room"
         assert "seconds_since_install" in milestone.properties
 
+    async def test_a_session_while_telemetry_is_off_claims_it_silently(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Nothing is sent, and no per-session claim is taken, but switching
+        telemetry on later must not report a session long past as the first."""
+        sink = _RecordingSink()
+        off = _service(sink, session_factory, enabled=False)
+
+        sent = await report_session_started(
+            off,
+            session_factory,
+            default_session_start_limiter(),
+            _agent(),
+            str(uuid.uuid4()),
+            "user",
+        )
+
+        assert sent is False
+        assert sink.sent == []
+        assert await milestone_claimed(session_factory, "first_agent_session") == (
+            "true"
+        )
+
     async def test_a_deployment_that_already_had_sessions_does_not_report_one(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -223,11 +246,10 @@ class TestTheFirstRealSession:
 
 
 class TestComingOnline:
-    async def test_the_first_connection_reports_both_names_once(
+    async def test_the_first_connection_reports_the_milestone_once(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Until `first_session_started` is retired, a new deployment reports the
-        moment under both names, and each only once."""
+        """Under its one name: `first_session_started` is no longer sent."""
         registry = AgentConnectionRegistry()
         sink = _RecordingSink()
         service = _service(sink, session_factory)
@@ -259,4 +281,4 @@ class TestComingOnline:
             for record in sink.sent
             if record.name.removeprefix("switch_core.").startswith("first_")
         ]
-        assert milestones == ["first_session_started", "first_agent_connected"]
+        assert milestones == ["first_agent_connected"]

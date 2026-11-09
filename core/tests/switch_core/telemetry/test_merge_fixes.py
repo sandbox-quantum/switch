@@ -20,7 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.api import session_reporter
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.protocol.agent_connections import (
+    AGENT_DELETED,
     HEARTBEAT_LAPSED,
+    KEY_REISSUED,
+    TAKEN_OVER,
+    UNRECORDED,
     AgentConnectionRegistry,
     ClientDeclaration,
     Closure,
@@ -216,7 +220,7 @@ class TestASessionIsTheAgentNotTheConnection:
             await asyncio.sleep(0.01)  # well inside the grace period
         await _settle()
 
-        assert self._names(sink) == ["agent_session_started", "agent_connected"]
+        assert self._names(sink) == ["agent_connected"]
 
     async def test_the_session_ends_once_the_agent_stays_away(
         self, monkeypatch: pytest.MonkeyPatch
@@ -232,14 +236,8 @@ class TestASessionIsTheAgentNotTheConnection:
         await asyncio.sleep(0.15)
         await _settle()
 
-        assert self._names(sink) == [
-            "agent_session_started",
-            "agent_connected",
-            "agent_session_ended",
-            "agent_disconnected",
-        ]
-        assert sink.sent[2].properties["reason"] == "heartbeat_lapsed"
-        assert sink.sent[3].properties == sink.sent[2].properties
+        assert self._names(sink) == ["agent_connected", "agent_disconnected"]
+        assert sink.sent[1].properties["reason"] == "heartbeat_lapsed"
 
     async def test_the_duration_spans_the_whole_session(
         self, monkeypatch: pytest.MonkeyPatch
@@ -258,7 +256,7 @@ class TestASessionIsTheAgentNotTheConnection:
         await asyncio.sleep(0.15)
         await _settle()
 
-        ended = next(r for r in sink.sent if r.name.endswith("session_ended"))
+        ended = next(r for r in sink.sent if r.name.endswith("agent_disconnected"))
         assert float(ended.properties["duration_seconds"]) > 299.0
 
     async def test_a_second_connection_does_not_start_a_second_session(
@@ -273,7 +271,7 @@ class TestASessionIsTheAgentNotTheConnection:
             await self._stream(reporter, registry, cid)
         await _settle()
 
-        assert self._names(sink) == ["agent_session_started", "agent_connected"]
+        assert self._names(sink) == ["agent_connected"]
 
     async def test_closing_one_of_several_connections_ends_nothing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -291,7 +289,7 @@ class TestASessionIsTheAgentNotTheConnection:
         await asyncio.sleep(0.15)
         await _settle()
 
-        assert self._names(sink) == ["agent_session_started", "agent_connected"]
+        assert self._names(sink) == ["agent_connected"]
 
     async def test_two_agents_are_two_sessions(self) -> None:
         registry = AgentConnectionRegistry()
@@ -303,12 +301,46 @@ class TestASessionIsTheAgentNotTheConnection:
             await self._stream(reporter, registry, cid)
         await _settle()
 
-        assert self._names(sink) == [
-            "agent_session_started",
-            "agent_connected",
-            "agent_session_started",
-            "agent_connected",
-        ]
+        assert self._names(sink) == ["agent_connected", "agent_connected"]
+
+    async def test_the_grace_is_neither_in_the_duration_nor_the_date(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The grace is how long the reporter waits to be sure the agent is
+        gone, not time the agent spent online."""
+        monkeypatch.setattr(session_reporter, "_RECONNECT_GRACE_SECONDS", 0.3)
+        registry = AgentConnectionRegistry()
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, registry)
+
+        cid = self._open(registry)
+        await self._stream(reporter, registry, cid)
+        closed_ns = time.time_ns()
+        registry.close(cid, HEARTBEAT_LAPSED)
+        await asyncio.sleep(0.45)
+        await _settle()
+
+        ended = next(r for r in sink.sent if r.name.endswith("agent_disconnected"))
+        assert float(ended.properties["duration_seconds"]) < 0.2
+        assert abs(ended.timestamp_ns - closed_ns) < 200_000_000
+
+    @pytest.mark.parametrize(
+        ("closure", "reason"),
+        [
+            (AGENT_DELETED, "normal"),
+            (KEY_REISSUED, "normal"),
+            (TAKEN_OVER, "replaced"),
+            (_ROOM_REFUSED, "room_claimed"),
+            (UNRECORDED, "error"),
+            (HEARTBEAT_LAPSED, "heartbeat_lapsed"),
+        ],
+    )
+    def test_each_ending_has_its_own_reason(
+        self, closure: Closure, reason: str
+    ) -> None:
+        """A deliberate close (the agent deleted, its key re-issued, moved to
+        a controller) is `normal`, not `error`."""
+        assert session_reporter.end_reason(closure) == reason
 
     async def test_shutdown_reports_no_ends(self) -> None:
         """Every agent disconnects at once when the process stops; a burst of
@@ -322,7 +354,7 @@ class TestASessionIsTheAgentNotTheConnection:
         await reporter.aclose()
         await _settle()
 
-        assert self._names(sink) == ["agent_session_started", "agent_connected"]
+        assert self._names(sink) == ["agent_connected"]
 
     def test_a_listener_that_raises_does_not_break_the_close(self) -> None:
         """The registry's contract — the connection is closed and handed back —

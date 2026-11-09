@@ -230,7 +230,7 @@ async def _reported(
     return [(record.name, declared(record)) for record in sink.sent]
 
 
-class TestRoomMessageSent:
+class TestMessageSent:
     async def test_a_person_speaking_is_reported_with_the_room_it_was_said_in(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -243,7 +243,7 @@ class TestRoomMessageSent:
 
         assert await _reported(messages, service, sink) == [
             (
-                "switch_core.room_message_sent",
+                "switch_core.message_sent",
                 {
                     "sender_kind": "user",
                     "bridge_platform": "slack",
@@ -274,6 +274,30 @@ class TestRoomMessageSent:
 
         reported = await _reported(messages, service, sink)
         assert [p["sender_kind"] for _, p in reported] == ["bot"]
+
+    async def test_a_person_in_switch_console_is_a_member(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A Console chat post, as the chat service reports it. Its people are
+        counted in the room's size beside those on a platform."""
+        async with session_factory() as session:
+            room = await _room(session, bridge_platform=None, channel_type="direct")
+            member = await _client(session, "member")
+            agent = await _client(session, "agent")
+            await _join(session, member.id, room)
+            await _join(session, agent.id, room)
+            await session.commit()
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        messages.observe(_said_in(room.id, sender_role="member"))
+
+        [(_, properties)] = await _reported(messages, service, sink)
+        assert properties["sender_kind"] == "member"
+        assert "known_agent_type" not in properties
+        assert properties["room_user_count"] == 1
+        assert properties["room_agent_count"] == 1
 
     async def test_an_internal_room_has_no_platform(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -329,12 +353,12 @@ class TestRoomMessageSent:
         [(_, properties)] = await _reported(messages, service, sink)
         assert properties["bridge_platform"] == "unknown"
         assert properties["channel_type"] == "unknown"
-        assert properties["room_user_count"] == -1
-        assert properties["room_agent_count"] == -1
+        assert "room_user_count" not in properties
+        assert "room_agent_count" not in properties
 
 
-class TestAgentMessageSent:
-    async def test_an_agent_speaking_is_also_reported_with_its_runtime(
+class TestAnAgentsMessage:
+    async def test_an_agent_speaking_is_one_event_carrying_its_runtime(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         world = await _world(session_factory)
@@ -344,20 +368,21 @@ class TestAgentMessageSent:
 
         messages.observe(_said(world, world.agent.client_id, "agent"))
 
-        reported = await _reported(messages, service, sink)
-        assert [name for name, _ in reported] == [
-            "switch_core.room_message_sent",
-            "switch_core.agent_message_sent",
+        assert await _reported(messages, service, sink) == [
+            (
+                "switch_core.message_sent",
+                {
+                    "sender_kind": "agent",
+                    "known_agent_type": "codex",
+                    "bridge_platform": "slack",
+                    "channel_type": "channel_private",
+                    "room_user_count": 2,
+                    "room_agent_count": 1,
+                    "has_attachment": False,
+                    "in_thread": False,
+                },
+            )
         ]
-        assert reported[0][1]["sender_kind"] == "agent"
-        assert reported[1][1] == {
-            "known_agent_type": "codex",
-            "bridge_platform": "slack",
-            "channel_type": "channel_private",
-            "room_user_count": 2,
-            "has_attachment": False,
-            "in_thread": False,
-        }
 
     async def test_an_agent_that_cannot_be_found_has_an_unknown_runtime(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -375,7 +400,7 @@ class TestAgentMessageSent:
         messages.observe(_said(world, unregistered.id, "agent"))
 
         reported = await _reported(messages, service, sink)
-        assert reported[1][1]["known_agent_type"] == "unknown"
+        assert reported[0][1]["known_agent_type"] == "unknown"
 
 
 class TestAgentMessageReceived:
@@ -421,10 +446,12 @@ class TestAgentMessageReceived:
         messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
         async with session_factory() as session:
             sender_agent = await _client(session, "agent")
+            sender_member = await _client(session, "member")
             await session.commit()
 
         for sender, from_platform in (
             (sender_agent.transport_user_id, False),
+            (sender_member.transport_user_id, False),
             ("@admin:test", True),
             ("@nobody-we-know:test", False),
         ):
@@ -442,6 +469,7 @@ class TestAgentMessageReceived:
         reported = await _reported(messages, service, sink)
         assert [p["sender_kind"] for _, p in reported] == [
             "agent",
+            "member",
             "platform",
             "unknown",
         ]
@@ -665,7 +693,7 @@ class TestCaching:
         assert [
             p["known_agent_type"]
             for name, p in reported
-            if name == "switch_core.agent_message_sent"
+            if name == "switch_core.message_sent" and "known_agent_type" in p
         ] == ["codex", "codex"]
 
     async def test_a_room_that_cannot_be_found_is_looked_up_once(self) -> None:
@@ -742,7 +770,7 @@ class TestCaching:
         assert [
             p["known_agent_type"]
             for name, p in reported
-            if name == "switch_core.agent_message_sent"
+            if name == "switch_core.message_sent" and "known_agent_type" in p
         ] == ["unknown", "unknown"]
 
 
@@ -786,12 +814,12 @@ class TestTheWholeWorkspace:
             (name, p.get("bridge_platform"), p.get("room_user_count"))
             for name, p in reported
         }
-        assert ("switch_core.room_message_sent", "slack", 2) in facts
-        assert ("switch_core.room_message_sent", "none", 1) in facts
+        assert ("switch_core.message_sent", "slack", 2) in facts
+        assert ("switch_core.message_sent", "none", 1) in facts
         assert [
             p["known_agent_type"]
             for name, p in reported
-            if name == "switch_core.agent_message_sent"
+            if name == "switch_core.message_sent" and "known_agent_type" in p
         ] == ["codex"]
         assert [
             p["sender_kind"]
@@ -982,7 +1010,7 @@ class TestFailingSenderAndRuntimeLookups:
         assert [
             p["known_agent_type"]
             for name, p in reported
-            if name == "switch_core.agent_message_sent"
+            if name == "switch_core.message_sent" and "known_agent_type" in p
         ] == ["unknown", "unknown"]
         assert database.attempts == 1
         assert "could not look up an agent's runtime" in caplog.text

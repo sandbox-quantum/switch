@@ -209,12 +209,12 @@ class TestOnlyARoomAPersonMade:
         assert record.properties["bridge_platform"] == "discord"
 
 
-class TestTheClaimIsNotSpentWhenNobodyIsListening:
-    async def test_a_disabled_deployment_keeps_its_claim(
+class TestTheClaimIsSpentWhenNobodyIsListening:
+    async def test_a_disabled_deployment_claims_without_reporting(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Otherwise a deployment that opts in later has already used up the
-        milestone and can never report its activation."""
+        """Otherwise a deployment that opts in later reports, as its first, a
+        room it first used long before."""
         await _clear(session_factory)
         sink = _RecordingSink()
         reporter = _reporter(sink, session_factory, enabled=False)
@@ -222,7 +222,24 @@ class TestTheClaimIsNotSpentWhenNobodyIsListening:
         await _report(reporter, [_room(first_active_at=INSTALLED + timedelta(hours=1))])
 
         assert sink.sent == []
-        assert await claim_milestone(session_factory, "first_room_active") is True
+        assert await claim_milestone(session_factory, "first_room_active") is False
+
+
+class TestItIsDatedWhenTheRoomWentLive:
+    async def test_the_event_carries_the_moment_of_the_interaction(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A funnel times its steps from the events' own times, and the pass
+        runs up to a day after the room went live."""
+        await _clear(session_factory)
+        sink = _RecordingSink()
+        reporter = _reporter(sink, session_factory)
+        went_live = INSTALLED + timedelta(hours=3)
+
+        await _report(reporter, [_room(first_active_at=went_live)])
+
+        [record] = [r for r in sink.sent if r.name.endswith("first_room_active")]
+        assert record.timestamp_ns == int(went_live.timestamp() * 1_000_000) * 1_000
 
 
 class TestItFiresOnce:

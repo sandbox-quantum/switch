@@ -1,10 +1,11 @@
-"""People, bots and accounts are counted apart.
+"""People and integrations are counted apart, and an integration alone does not
+make a room active.
 
 A messaging platform relays an integration's posts — an alerting app, CI,
 another Switch server's agent — through the same kind of chat identity a person
-gets. `chat_identity_active_*` counted both; `person_identity_active_*` and
-`bot_identity_active_*` split them on the mark the bridge puts on an app's post,
-and `account_active_*` is `user_active_*` under the name it keeps.
+gets. The snapshot's `chat_identity_active_*` counts both. The period counts
+split them on the mark the bridge puts on an app's post, and every room-activity
+figure leaves a marked post out.
 """
 
 from __future__ import annotations
@@ -27,7 +28,13 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.telemetry.snapshot import collect_usage
+from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.telemetry.snapshot import (
+    collect_period_counts,
+    collect_usage,
+    newly_active_rooms,
+    room_had_human_activity,
+)
 
 
 async def _identity_posts(
@@ -36,9 +43,10 @@ async def _identity_posts(
     posts: list[tuple[bool, timedelta]],
     claimed_by: str | None = None,
     agent_in_room: bool = True,
-) -> None:
-    """One chat identity posts in a room of its own. Each post is `(as_app,
-    age)`: whether the bridge marked it as an app's, and how long ago."""
+) -> str:
+    """One chat identity posts in a room of its own, whose id is returned. Each
+    post is `(as_app, age)`: whether the bridge marked it as an app's, and how
+    long ago."""
     suffix = uuid.uuid4().hex[:8]
     async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
         bridge_client = Client(
@@ -80,7 +88,13 @@ async def _identity_posts(
         )
         session.add(chat_account)
         if agent_in_room:
-            session.add(ClientRoom(client_id=agent.id, room_id=room.id))
+            session.add(
+                ClientRoom(
+                    client_id=agent.id,
+                    room_id=room.id,
+                    joined_at=datetime.now(UTC) - timedelta(days=7),
+                )
+            )
         await session.flush()
         if claimed_by is not None:
             session.add(
@@ -105,6 +119,7 @@ async def _identity_posts(
                 )
             )
         await session.commit()
+        return room.id
 
 
 async def _account(session_factory: async_sessionmaker[AsyncSession]) -> str:
@@ -117,6 +132,26 @@ async def _account(session_factory: async_sessionmaker[AsyncSession]) -> str:
         return user.id
 
 
+async def _last_week(session_factory: async_sessionmaker[AsyncSession]):  # type: ignore[no-untyped-def]
+    now = datetime.now(UTC)
+    return await collect_period_counts(
+        session_factory,
+        tenant_ids=await all_tenant_ids(session_factory),
+        start=now - timedelta(days=7),
+        end=now,
+    )
+
+
+async def _last_day(session_factory: async_sessionmaker[AsyncSession]):  # type: ignore[no-untyped-def]
+    now = datetime.now(UTC)
+    return await collect_period_counts(
+        session_factory,
+        tenant_ids=await all_tenant_ids(session_factory),
+        start=now - timedelta(days=1),
+        end=now,
+    )
+
+
 HOUR = timedelta(hours=1)
 THREE_DAYS = timedelta(days=3)
 
@@ -127,13 +162,11 @@ async def test_a_person_and_an_integration_are_one_of_each(
     await _identity_posts(session_factory, posts=[(False, HOUR)])
     await _identity_posts(session_factory, posts=[(True, HOUR)])
 
-    counts = await collect_usage(session_factory)
+    counts = await _last_week(session_factory)
 
-    assert counts.chat_identity_active_1d == 2
-    assert counts.person_identity_active_1d == 1
-    assert counts.bot_identity_active_1d == 1
-    assert counts.person_identity_active_7d == 1
-    assert counts.bot_identity_active_7d == 1
+    assert counts.person_identity_active == 1
+    assert counts.bot_identity_active == 1
+    assert (await collect_usage(session_factory)).chat_identity_active_1d == 2
 
 
 async def test_an_integration_with_unmarked_older_posts_is_still_a_bot(
@@ -143,27 +176,24 @@ async def test_an_integration_with_unmarked_older_posts_is_still_a_bot(
     post in the window makes the whole identity a bot, not a person as well."""
     await _identity_posts(session_factory, posts=[(False, THREE_DAYS), (True, HOUR)])
 
-    counts = await collect_usage(session_factory)
+    counts = await _last_week(session_factory)
 
-    assert counts.person_identity_active_7d == 0
-    assert counts.bot_identity_active_7d == 1
-    assert counts.chat_identity_active_7d == 1
+    assert counts.person_identity_active == 0
+    assert counts.bot_identity_active == 1
 
 
-async def test_the_day_and_the_week_are_judged_on_their_own_posts(
+async def test_each_period_is_judged_on_its_own_posts(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """An identity whose only marked post is days old is a bot for the week and,
-    with an unmarked post today, a person for the day: each window decides from
-    what it can see."""
+    with an unmarked post today, a person for the day."""
     await _identity_posts(session_factory, posts=[(True, THREE_DAYS), (False, HOUR)])
 
-    counts = await collect_usage(session_factory)
+    day = await _last_day(session_factory)
+    week = await _last_week(session_factory)
 
-    assert counts.person_identity_active_1d == 1
-    assert counts.bot_identity_active_1d == 0
-    assert counts.person_identity_active_7d == 0
-    assert counts.bot_identity_active_7d == 1
+    assert (day.person_identity_active, day.bot_identity_active) == (1, 0)
+    assert (week.person_identity_active, week.bot_identity_active) == (0, 1)
 
 
 async def test_neither_counts_without_an_agent_in_the_room(
@@ -172,36 +202,67 @@ async def test_neither_counts_without_an_agent_in_the_room(
     await _identity_posts(session_factory, posts=[(False, HOUR)], agent_in_room=False)
     await _identity_posts(session_factory, posts=[(True, HOUR)], agent_in_room=False)
 
-    counts = await collect_usage(session_factory)
+    counts = await _last_week(session_factory)
 
-    assert counts.person_identity_active_7d == 0
-    assert counts.bot_identity_active_7d == 0
+    assert counts.person_identity_active == 0
+    assert counts.bot_identity_active == 0
 
 
-async def test_account_active_is_user_active_under_its_new_name(
+async def test_accounts_are_counted_per_period(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     someone = await _account(session_factory)
     await _identity_posts(session_factory, posts=[(False, HOUR)], claimed_by=someone)
     await _identity_posts(session_factory, posts=[(False, THREE_DAYS)])
 
-    counts = await collect_usage(session_factory)
+    counts = await _last_week(session_factory)
 
-    assert counts.account_active_1d == counts.user_active_1d == 1
-    assert counts.account_active_7d == counts.user_active_7d == 1
-    assert counts.person_identity_active_7d == 2
+    assert counts.account_active == 1
+    assert counts.person_identity_active == 2
 
 
-async def test_the_snapshot_event_carries_all_three(
+async def test_an_integration_alone_does_not_make_a_room_active(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    await _identity_posts(session_factory, posts=[(False, HOUR)])
-    await _identity_posts(session_factory, posts=[(True, HOUR)])
+    """Nor does it make the room ever-active, or reported as gone live: which
+    would also settle the first-session milestone from nobody using it."""
+    bot_room = await _identity_posts(session_factory, posts=[(True, HOUR)])
+    person_room = await _identity_posts(session_factory, posts=[(False, HOUR)])
 
+    usage = await collect_usage(session_factory)
+    period = await _last_week(session_factory)
+    went_live = await newly_active_rooms(
+        session_factory, since=datetime.now(UTC) - timedelta(days=2)
+    )
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        bot_room_used = await room_had_human_activity(session, TENANT_ZERO_ID, bot_room)
+        person_room_used = await room_had_human_activity(
+            session, TENANT_ZERO_ID, person_room
+        )
+
+    assert usage.room_active_1d == 1
+    assert period.room_active == 1
+    assert len(went_live) == 1
+    assert (bot_room_used, person_room_used) == (False, True)
+
+
+async def test_the_snapshot_no_longer_carries_the_split(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The split lives on the period events; the snapshot keeps only what a
+    released server already sent."""
     properties = (await collect_usage(session_factory)).as_event_properties(
         session_live_count=0
     )
 
-    assert properties["person_identity_active_7d"] == 1
-    assert properties["bot_identity_active_7d"] == 1
-    assert properties["account_active_7d"] == 0
+    for gone in (
+        "person_identity_active_1d",
+        "person_identity_active_7d",
+        "bot_identity_active_1d",
+        "bot_identity_active_7d",
+        "account_active_1d",
+        "account_active_7d",
+    ):
+        assert gone not in properties
+    assert "chat_identity_active_7d" in properties
+    assert "user_active_7d" in properties

@@ -161,6 +161,31 @@ class TestTheConnectorAPersonAdds:
         ]
         assert milestone["bridge_platform"] == "slack"
 
+    async def test_it_is_claimed_while_telemetry_is_off(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """So switching telemetry on later does not report, as the first, a
+        connector a person added long before."""
+        service, sink = _service_with_telemetry(session_factory, installed_at=INSTALLED)
+        service._telemetry = TelemetryService(
+            sink=sink,  # type: ignore[arg-type]
+            enabled=False,
+            client_id="deployment-uuid",
+            version=None,
+            telemetry_environment="prod",
+            telemetry_internal=False,
+            deployment_kind="self_hosted",
+            session_factory=session_factory,
+            installed_at=INSTALLED,
+        )
+        slack = f"slack-{uuid.uuid4().hex[:8]}"
+        _running(service, slack, preconfigured=False)
+
+        await service._report_connector_up(slack, "slack", INSTALLED)
+
+        assert sink.sent == []
+        assert await claim_milestone(session_factory, "first_connector_added") is False
+
     async def test_a_second_one_is_not_the_first(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
