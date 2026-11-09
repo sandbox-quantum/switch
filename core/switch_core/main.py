@@ -1493,6 +1493,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         bridges_running=collab_lifecycle.running_count,
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
+        bridges_crashed=collab_lifecycle.crashed,
         consumers_running=client_lifecycle.running_count,
         agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
