@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from switch_core.db.models import Room, RoomGroup, User
+from switch_core.db.models import Room, RoomGroup, Tenant, User
 from tests.switch_core.gateway.conftest import _Harness
 from tests.switch_core.gateway.test_chats_routes import TENANT, _code
 
@@ -116,6 +116,27 @@ async def test_a_group_that_is_not_there_is_refused(chats: _Harness) -> None:
         agentIds=[agent.id],
         groupId="00000000-0000-0000-0000-00000000dead",
     )
+    assert created.status_code == 404
+    assert _code(created) == "GROUP_NOT_FOUND"
+
+
+async def test_an_id_of_any_shape_is_a_group_not_found(chats: _Harness) -> None:
+    agent = await chats.agent("helper", owner=chats.admin)
+    created = await _create(chats, chats.admin, agentIds=[agent.id], groupId="no-such")
+    assert created.status_code == 404
+    assert _code(created) == "GROUP_NOT_FOUND"
+
+
+async def test_another_workspaces_group_is_not_found(chats: _Harness) -> None:
+    async with chats.factory() as session:
+        session.add(Tenant(id="tenant-b", slug="tenant-b", name="Tenant B"))
+        await session.flush()
+        group = RoomGroup(tenant_id="tenant-b", name="Theirs")
+        session.add(group)
+        await session.commit()
+        foreign_id = group.id
+    agent = await chats.agent("helper", owner=chats.admin)
+    created = await _create(chats, chats.admin, agentIds=[agent.id], groupId=foreign_id)
     assert created.status_code == 404
     assert _code(created) == "GROUP_NOT_FOUND"
 

@@ -1522,7 +1522,9 @@ class ChatService:
                             "GROUP_FILING_NOT_ALLOWED",
                             "Only a workspace admin can put a room in a room group.",
                         )
-                    if await session.get(RoomGroup, group_id) is None:
+                    group = await session.get(RoomGroup, group_id)
+                    # Another workspace's group is no group here, however the session is scoped.
+                    if group is None or group.tenant_id != tenant_id:
                         raise ChatError(404, "GROUP_NOT_FOUND", "No such room group.")
                 agents = [
                     await self._require_may_use_agent(
