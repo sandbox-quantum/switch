@@ -59,6 +59,37 @@ async def test_a_savepoint_rolling_back_does_not_cancel_it(
     assert sink.events("cloud_machine_stopped") == [STOPPED]
 
 
+async def test_a_savepoint_committing_does_not_count_when_the_transaction_rolls_back(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service, sink = recording_telemetry()
+    async with session_factory() as session:
+        await session.execute(text("SELECT 1"))
+        emit_after_commit(session, service, "cloud_machine_stopped", STOPPED)
+        nested = await session.begin_nested()
+        await session.execute(text("SELECT 1"))
+        await nested.commit()
+        await session.rollback()
+    await service.aclose()
+
+    assert sink.sent == []
+
+
+async def test_a_savepoint_committing_inside_a_committed_transaction_sends_once(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service, sink = recording_telemetry()
+    async with session_factory() as session:
+        await session.execute(text("SELECT 1"))
+        emit_after_commit(session, service, "cloud_machine_stopped", STOPPED)
+        nested = await session.begin_nested()
+        await nested.commit()
+        await session.commit()
+    await service.aclose()
+
+    assert sink.events("cloud_machine_stopped") == [STOPPED]
+
+
 async def test_nothing_is_wired_where_there_is_no_service(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

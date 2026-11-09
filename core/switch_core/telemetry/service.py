@@ -232,9 +232,12 @@ def emit_after_commit(
     committed = False
     decided = False
 
-    def on_commit(_session: Session) -> None:
+    def on_commit(session: Session) -> None:
         nonlocal committed
-        committed = True
+        # A savepoint's commit fires this too, with the savepoint still
+        # current; only the outermost commit makes the change durable.
+        if not session.in_nested_transaction():
+            committed = True
 
     def on_end(_session: Session, transaction: SessionTransaction) -> None:
         nonlocal decided
