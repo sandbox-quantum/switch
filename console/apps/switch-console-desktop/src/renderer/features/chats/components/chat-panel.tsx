@@ -207,7 +207,7 @@ export const ChatPanel = observer(function ChatPanel({
         // Everyone but the viewer can be mentioned from here.
         people={people.members.filter((person) => person.userId !== chatsStore.userId)}
         groupName={chat && chat.channelType !== 'direct' ? chat.name : null}
-        activity={activities[0] ?? null}
+        activities={activities}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
         disabled={

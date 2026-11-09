@@ -297,7 +297,7 @@ def resolve_params(
                 + ", ".join(missing)
                 + " (none of the candidates listed for "
                 + ", ".join(chains)
-                + " is set up on this server)"
+                + " is set up here)"
             )
         raise ValueError(f"Missing required param(s): {', '.join(missing)}")
     return resolved
@@ -794,7 +794,7 @@ class RoomYamlService:
                 for param, value in wanted["agent"]:
                     if value not in known:
                         raise ValueError(
-                            f"param {param!r}: no agent named {value!r} on this server"
+                            f"param {param!r}: no agent named {value!r} here"
                         )
             if "bridge" in wanted:
                 bridges = {
@@ -804,8 +804,7 @@ class RoomYamlService:
                     bridge = bridges.get(value)
                     if bridge is None:
                         raise ValueError(
-                            f"param {param!r}: no messaging app named {value!r} "
-                            "on this server"
+                            f"param {param!r}: no messaging app named {value!r} here"
                         )
                     if bridge.status != "active":
                         raise ValueError(
@@ -816,7 +815,7 @@ class RoomYamlService:
                 for param, value in wanted["room"]:
                     if value not in rooms:
                         raise ValueError(
-                            f"param {param!r}: no room named {value!r} on this server"
+                            f"param {param!r}: no room named {value!r} here"
                         )
 
         if "user" in wanted:
@@ -1242,7 +1241,7 @@ class RoomYamlService:
             if spec.users and bridge_id is None:
                 raise ValueError(
                     f"Room {spec.name!r} names users ({', '.join(spec.users)}), and "
-                    "it is on no messaging app: this server has none set up. Leave "
+                    "it is on no messaging app: none is set up here. Leave "
                     "users out, or make them depend on a bridge."
                 )
 
@@ -1437,7 +1436,7 @@ class RoomYamlService:
             failures.append({"kind": "kickoff", "id": "kickoff", "error": error})
 
         if self._client_lifecycle is None:
-            fail("kickoff posting is not configured on this server")
+            fail("kickoff posting is not configured here")
             return
         admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
         admin = next((c for c in admins if isinstance(c, SystemActor)), None)

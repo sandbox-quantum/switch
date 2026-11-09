@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CONNECTORS_NOT_ENABLED, type ConnectorApp, type ConnectorApps } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import ConnectorAppsPage from "./ConnectorAppsPage";
-import { audienceText, ONLY_THE_OPERATOR, PUBLIC_URL_BANNER } from "./connectorApps";
+import { audienceText, PUBLIC_URL_BANNER } from "./connectorApps";
 import { app } from "./testFixtures";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
@@ -63,8 +63,12 @@ function listOf(...apps: ConnectorApp[]): ConnectorApps {
   };
 }
 
-function operator(isOperator = true) {
-  vi.mocked(useAuth).mockReturnValue({ isOperator } as ReturnType<typeof useAuth>);
+// Only the operator reaches this page (the route table guards it); what it
+// reads is whether the server runs connectors at all.
+function connectors(enabled = true) {
+  vi.mocked(useAuth).mockReturnValue({
+    capabilities: { features: { service_connections: enabled } },
+  } as ReturnType<typeof useAuth>);
 }
 
 function card(slug: string) {
@@ -72,25 +76,19 @@ function card(slug: string) {
 }
 
 describe("ConnectorAppsPage", () => {
-  beforeEach(() => operator());
+  beforeEach(() => connectors());
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
   });
 
-  it("tells anyone but the operator whose page it is, and asks nothing of the server", () => {
-    operator(false);
+  it("says what to turn on where the server has no connectors, and asks nothing of it", () => {
+    connectors(false);
     const calls = serve(listOf());
     render(<ConnectorAppsPage />);
-    expect(screen.getByText(ONLY_THE_OPERATOR)).toBeTruthy();
-    expect(calls).toEqual([]);
-  });
-
-  it("says what to turn on where the server has no connectors at all", async () => {
-    serve(listOf(), { "GET /gateway/connector-apps": [404, { detail: "Not Found" }] });
-    render(<ConnectorAppsPage />);
-    expect(await screen.findByText(CONNECTORS_NOT_ENABLED)).toBeTruthy();
+    expect(screen.getByText(CONNECTORS_NOT_ENABLED)).toBeTruthy();
     expect(screen.queryAllByTestId(/connector-app-/)).toEqual([]);
+    expect(calls).toEqual([]);
   });
 
   it("lists every app, what needs setting up first, and who sets themselves up", async () => {
@@ -366,7 +364,7 @@ describe("ConnectorAppsPage", () => {
       },
     });
     render(<ConnectorAppsPage />);
-    const chip = (await screen.findByText("Set on the server")).closest(".MuiChip-root")!;
+    const chip = (await screen.findByText("Set in configuration")).closest(".MuiChip-root")!;
     expect(chip.className).toContain("MuiChip-colorSuccess");
     expect(chip.className).toContain("MuiChip-filled");
     expect(
