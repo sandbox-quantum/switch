@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, SquareIcon, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react';
-import { reportBuddyMessage } from '@renderer/features/switch-buddy/buddy-telemetry';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
@@ -478,11 +477,6 @@ export const ChatComposer = observer(function ChatComposer({
   const send = () => {
     const body = draft.trim();
     if (disabled || (!body && !files.length)) return;
-    reportBuddyMessage(
-      agents,
-      timeline.messages.filter((message) => message.sender.kind === 'human').length +
-        timeline.pending.length
-    );
     const sent = allowed(composeMentions(body, shiftMentions(draft, body, picked), targets));
     const threadRootId = replyTo?.messageId ?? null;
     const requestId = timeline.send({

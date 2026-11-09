@@ -686,7 +686,6 @@ export type TelemetryEventMap = {
   add_server_step: RendererTelemetryEvents['add_server_step'];
   onboarding_page: RendererTelemetryEvents['onboarding_page'];
   buddy_step: RendererTelemetryEvents['buddy_step'];
-  buddy_message_sent: RendererTelemetryEvents['buddy_message_sent'];
   /** A screen failed. A count, with nothing of what failed or where. */
   renderer_crashed: RendererTelemetryEvents['renderer_crashed'];
   /**
@@ -820,7 +819,6 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   add_server_step: ['step', 'choice', 'first_run'],
   onboarding_page: ['page', 'path'],
   buddy_step: ['action', 'provider'],
-  buddy_message_sent: ['nth'],
   renderer_crashed: [],
   telemetry_consent_changed: ['source', 'install_kind'],
   session_attached: ['agent_type', 'outcome'],

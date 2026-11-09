@@ -81,8 +81,6 @@ export type RendererTelemetryEvents = {
       | 'intro_dismissed';
     provider: 'claude' | 'codex' | 'opencode' | 'cursor' | 'antigravity' | 'none';
   };
-  /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */
-  buddy_message_sent: { nth: '1' | '2' | '3' | '4' | '5' | '6+' };
   /** A screen failed and the error boundary caught it. */
   renderer_crashed: Record<never, never>;
 };

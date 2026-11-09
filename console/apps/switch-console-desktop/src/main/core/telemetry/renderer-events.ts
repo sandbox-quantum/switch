@@ -80,7 +80,6 @@ const RENDERER_TELEMETRY_SCHEMAS = {
     ]),
     provider: z.enum(['claude', 'codex', 'opencode', 'cursor', 'antigravity', 'none']),
   }),
-  buddy_message_sent: z.object({ nth: z.enum(['1', '2', '3', '4', '5', '6+']) }),
   renderer_crashed: z.object({}),
 } as const satisfies {
   [K in RendererTelemetryEvent]: z.ZodType<TelemetryEventMap[K]>;
@@ -142,7 +141,6 @@ export type RendererTelemetryEvent =
   | 'add_server_step'
   | 'onboarding_page'
   | 'buddy_step'
-  | 'buddy_message_sent'
   | 'renderer_crashed';
 
 export type RendererTelemetryRequest = {
