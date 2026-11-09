@@ -6,6 +6,7 @@ import { getWindowsEnvValue } from '@switch-console/core/exec';
 import { withWindowsAgyBinDir } from '@switch-console/plugins/agents';
 import { log } from '@main/lib/logger';
 import { buildExternalToolEnv } from './childProcessEnv';
+import { detectSshAuthSock } from './shellEnv';
 import { getWindowsPathEnvKey, prependWindowsPathEntry } from './windows-env';
 
 /**
@@ -115,6 +116,22 @@ export function ensureWindowsUserBinDirsInPath(env: NodeJS.ProcessEnv = process.
 }
 
 /**
+ * Windows OpenSSH's agent is a named pipe and never sets `SSH_AUTH_SOCK`, so
+ * everything that looks for an agent there (SSH auth, agent forwarding, child
+ * processes) would find none. Points it at the pipe when the agent is running.
+ */
+export function ensureWindowsSshAuthSock(
+  env: NodeJS.ProcessEnv,
+  detect: () => string | undefined
+): string | null {
+  if (getWindowsEnvValue(env, 'SSH_AUTH_SOCK')) return null;
+  const socket = detect();
+  if (!socket) return null;
+  env.SSH_AUTH_SOCK = socket;
+  return socket;
+}
+
+/**
  * Spawns `$SHELL -ilc 'env'` with a 5 s timeout. On any error (timeout,
  * missing shell, restricted environment) the function logs a warning and
  * returns — the app continues with whatever `process.env` already contains.
@@ -128,6 +145,7 @@ export async function resolveUserEnv(): Promise<void> {
     // Windows PATH is managed differently; no login-shell capture needed.
     ensureWindowsNpmGlobalBinInPath();
     ensureWindowsUserBinDirsInPath();
+    ensureWindowsSshAuthSock(process.env, detectSshAuthSock);
     return;
   }
 
