@@ -41,7 +41,6 @@ import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { retireDashboardFallbacks } from './core/switch-servers/server-address';
-import { startActivationTracking } from './core/telemetry/activation';
 import { currentInternalFlag } from './core/telemetry/internal-account';
 import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
@@ -167,7 +166,6 @@ void app.whenReady().then(async () => {
   registerTelemetryListeners();
   telemetryService.setInternalSource(currentInternalFlag);
   void reportLaunch(readThisLaunch);
-  startActivationTracking();
 
   // Kept off the boot path: this can open an SSH/SFTP connection per remote
   // agent, so awaiting it here delayed the window opening. Session relaunch below

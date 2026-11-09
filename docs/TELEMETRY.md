@@ -140,31 +140,11 @@ id, no IP field, no Switch identity.
 | `session_ended` | `agent_type` · `location` · `outcome`: `normal` / `failed` |
 | `session_attached` | `agent_type` · `outcome` |
 | `session_provision_retried` | `agent_type` · `location` · `trigger`: `auto` / `retry_button` · `outcome` |
-| `managed_session_started` | `agent_type`: `claude` · `start_source`: `user` / `room` / `automation` / `unknown` — a session of an agent on the agent controller this app runs on this computer started |
-| `activation_milestone` | `milestone`: `server_ready` / `agent_ready` / `first_agent_session` · `path`: `buddy` / `manual` / `unknown` — a step towards an agent doing work, the first time this installation reaches it |
 
 Note the shape of `failure_reason` everywhere: a short enumerated code such as
 `permission_denied` or `docker_daemon_down`. It is **never** an exception message,
 a stack trace, or a command's stderr — those are mapped to `error` if they don't
 match a known code.
-
-`managed_session_started` counts sessions this app has no session of its own
-for: those of the agents it runs on the agent controller on this computer. That
-controller tells the app, over the channel between the two processes on this
-machine, once the agent's Switch server has taken the session's start, and the
-app reports it under the same consent setting as everything else. The session's
-id is used only to count a start told twice once, and goes no further. A
-controller on another machine — an SSH host, or one run on its own — sends
-nothing here, because it cannot ask this setting.
-
-`activation_milestone` marks three steps the first time an installation reaches
-each: `server_ready` (signed in to a server, or a server this app runs started),
-`agent_ready` (an agent created) and `first_agent_session` (a session of one of
-its agents started, here or on the controller above). Each is sent once for the
-life of the installation, and only by one that was installed on a version that
-sends them. `path` says which way it went at Meet switch-buddy: `buddy` if the
-buddy was started, `manual` if it was skipped, `unknown` before either; it is
-recorded on this machine and sent only on these events.
 
 `duration_ms` on `agent_cli_action` is how long the operation took, in whole
 milliseconds, measured on a monotonic clock around the operation itself. Like

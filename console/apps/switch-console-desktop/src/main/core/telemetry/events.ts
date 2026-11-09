@@ -328,27 +328,6 @@ export type TelemetryServerAddFailure =
   | 'error';
 
 /**
- * How a session of an agent on this computer's agent controller started, as
- * its session host told Switch (`host/session-start.ts`): a person in Console,
- * the agent being addressed in a room, or the automation API. `unknown` is a
- * launcher that did not say.
- */
-export type TelemetryManagedSessionStartSource = 'user' | 'room' | 'automation' | 'unknown';
-
-/**
- * The steps from installing the app to an agent doing work, each reported
- * once for the life of an install (`./activation`).
- */
-export type TelemetryActivationMilestone = 'server_ready' | 'agent_ready' | 'first_agent_session';
-
-/**
- * Which way the install went at Meet switch-buddy: `buddy` started the buddy,
- * `manual` skipped it. `unknown` until one of the two happens, which is after
- * a server is ready, so `server_ready` normally carries it.
- */
-export type TelemetryActivationPath = 'buddy' | 'manual' | 'unknown';
-
-/**
  * A setup step's kind, reused from the remote-host model rather than restated.
  *
  * `unknown` is this catalogue's own addition, not the model's: a step in a plan
@@ -540,25 +519,6 @@ export type TelemetryEventMap = {
     location: TelemetryLocationKind;
     trigger: TelemetrySessionProvisionTrigger;
     outcome: TelemetryOutcome;
-  };
-  /**
-   * A session of an agent on the agent controller this app runs on this
-   * computer started, and its Switch server took the report. These agents
-   * have no session of their own in the app, so `session_started` never sees
-   * them; a session on another machine's controller is not reported at all.
-   */
-  managed_session_started: {
-    agent_type: TelemetryAgentType;
-    start_source: TelemetryManagedSessionStartSource;
-  };
-  /**
-   * A step towards an agent doing work, the first time this install reaches
-   * it. Derived from the events that mark each one, never sent twice, and only
-   * by an install that began on a version that reports them (`./activation`).
-   */
-  activation_milestone: {
-    milestone: TelemetryActivationMilestone;
-    path: TelemetryActivationPath;
   };
   /**
    * A remote session's terminal was attached, or could not be.
@@ -811,8 +771,6 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   renderer_crashed: [],
   telemetry_consent_changed: ['source', 'install_kind'],
   session_attached: ['agent_type', 'outcome'],
-  managed_session_started: ['agent_type', 'start_source'],
-  activation_milestone: ['milestone', 'path'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };
 
 /**
