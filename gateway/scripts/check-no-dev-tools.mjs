@@ -9,7 +9,7 @@
  *
  * Run: npm run build (or node scripts/check-no-dev-tools.mjs after one)
  */
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,15 +27,12 @@ export function devToolsIn(files) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const dist = fileURLToPath(new URL("../dist", import.meta.url));
-  const entries = await readdir(dist, { recursive: true, withFileTypes: true });
-  const files = await Promise.all(
-    entries
-      .filter((entry) => entry.isFile())
-      .map(async (entry) => {
-        const path = join(entry.parentPath, entry.name);
-        return [relative(process.cwd(), path), await readFile(path, "utf8")];
-      }),
-  );
+  const paths = (await readdir(dist, { recursive: true })).map((name) => join(dist, name));
+  const files = [];
+  for (const path of paths) {
+    if (!(await stat(path)).isFile()) continue;
+    files.push([relative(process.cwd(), path), await readFile(path, "utf8")]);
+  }
   const found = devToolsIn(files);
   for (const [path, marker] of found) console.error(`${path} carries "${marker}"`);
   if (found.length > 0) {

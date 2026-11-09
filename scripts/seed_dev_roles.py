@@ -5,7 +5,7 @@ The switcher (`gateway/src/dev/`) shows the dashboard as each permission level
 by signing in as a real account that holds it, so every check it meets is the
 server's own. This makes those accounts on a local switch-core and writes their
 logins to `gateway/.dev-role-accounts.json`, which only the Vite dev server
-reads (`gateway/vite.config.ts`):
+reads (`gateway/scripts/dev-role-accounts.mjs`):
 
 - Operator: the gateway admin from `.env`, the server's operator.
 - Org admin: `org_admin` of the default workspace's organization.
@@ -196,11 +196,8 @@ def seed(operator_email: str, operator_password: str) -> None:
         for account in SEEDED
     }
 
-    workspace_roles = {
-        "org_admin": "member",
-        "workspace_admin": "admin",
-        "member": "member",
-    }
+    # The organization role first: it decides what someone holds in every
+    # workspace, and an org admin's own workspace role cannot be changed at all.
     organization_roles = {
         "org_admin": "org_admin",
         "workspace_admin": "member",
@@ -209,13 +206,15 @@ def seed(operator_email: str, operator_password: str) -> None:
     for role, user_id in ids.items():
         operator.call(
             "PATCH",
-            f"/tenants/{DEFAULT_WORKSPACE_ID}/members/{user_id}",
-            {"role": workspace_roles[role]},
-        )
-        operator.call(
-            "PATCH",
             f"/organizations/current/members/{user_id}",
             {"role": organization_roles[role]},
+        )
+    workspace_roles = {"workspace_admin": "admin", "member": "member"}
+    for role, workspace_role in workspace_roles.items():
+        operator.call(
+            "PATCH",
+            f"/tenants/{DEFAULT_WORKSPACE_ID}/members/{ids[role]}",
+            {"role": workspace_role},
         )
     ensure_second_workspace(operator)
     write_accounts(operator_email, operator_password, password)

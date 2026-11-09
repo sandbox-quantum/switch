@@ -9,8 +9,9 @@ export interface DevAccount {
   password: string;
 }
 
-/** Where the dev server serves them (`vite.config.ts`). No build serves it,
- * and `scripts/check-no-dev-tools.mjs` refuses a build whose code names it. */
+/** Where the dev server serves them (`scripts/dev-role-accounts.mjs`). No
+ * build serves it, and `scripts/check-no-dev-tools.mjs` refuses a build whose
+ * code names it. */
 export const DEV_ROLE_ACCOUNTS_PATH = "/__dev/role-accounts";
 
 /** The seeded accounts, or null when `just seed-dev-roles` has not been run. */
