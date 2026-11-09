@@ -6,8 +6,12 @@ Two nullable columns, both read only by product telemetry:
   telemetry on when it is empty, and emptied at a boot with it off
   (`telemetry/setup.py`). The period counts are dated no earlier than it, and
   report no period that ended before it, so nothing is dated before the
-  deployment agreed to report. Backfilled from the snapshot watermark, the one
-  moment an upgraded deployment is known to have been reporting.
+  deployment agreed to report. Backfilled from the best evidence of when an
+  upgraded deployment began reporting: when it claimed `deployment_installed`,
+  which a released server does at its first boot with telemetry on; failing
+  that, for one that has sent a snapshot, its install, or else its last
+  snapshot. One with no sign of having reported is left empty, for its first
+  boot with telemetry on to set.
 - `cloud_machines.first_ready_at`: when the machine first became ready, so
   `cloud_machine_ready` can tell a new machine from one starting again by
   whether it has been ready before, where it asked whether the machine was at
@@ -41,8 +45,20 @@ def upgrade() -> None:
         sa.Column("telemetry_enabled_since", sa.DateTime(timezone=True), nullable=True),
     )
     op.execute(
-        "UPDATE deployment_identity SET telemetry_enabled_since = "
-        "(SELECT last_sent_at FROM telemetry_snapshot_watermark LIMIT 1)"
+        """
+        UPDATE deployment_identity SET telemetry_enabled_since = COALESCE(
+            (
+                SELECT emitted_at FROM telemetry_milestones
+                WHERE name = 'deployment_installed'
+            ),
+            CASE WHEN EXISTS (SELECT 1 FROM telemetry_snapshot_watermark) THEN
+                COALESCE(
+                    installed_at,
+                    (SELECT last_sent_at FROM telemetry_snapshot_watermark LIMIT 1)
+                )
+            END
+        )
+        """
     )
     op.add_column(
         "cloud_machines",

@@ -1,6 +1,13 @@
-"""`861ff8767cf4` adds `deployment_identity.telemetry_enabled_since` and
-`cloud_machines.first_ready_at`, backfilling each from the one moment an
-upgraded deployment can vouch for."""
+"""An upgraded server reads as reporting since it began, not since its last pass.
+
+The period counts are dated no earlier than `telemetry_enabled_since`, and a
+period that began before it is partial. The `861ff8767cf4` migration backfills
+it for a server that already reports, from the best evidence of when that
+began: when it claimed `deployment_installed` (a released server does at its
+first boot with telemetry on), else its install, else its last snapshot. One
+with no sign of ever having reported is left empty for its first boot with
+telemetry on to set.
+"""
 
 from __future__ import annotations
 
@@ -14,10 +21,12 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from tests.switch_core.test_migration_oidc_identities_backfill import _upgrade_to
 
 _DB = "migration_telemetry_enabled_since"
-_BEFORE = "689d7d8ff913"
-_UNDER_TEST = "861ff8767cf4"
-_LAST_SENT = datetime(2026, 11, 1, 9, 30, tzinfo=UTC)
-_HEARTBEAT = datetime(2026, 11, 2, 10, 0, tzinfo=UTC)
+_PRE_MIGRATION_REVISION = "689d7d8ff913"
+_MIGRATION_UNDER_TEST = "861ff8767cf4"
+
+_INSTALLED = datetime(2026, 3, 1, tzinfo=UTC)
+_FIRST_REPORTED = datetime(2026, 4, 1, tzinfo=UTC)
+_LAST_SNAPSHOT = datetime(2026, 11, 8, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -38,72 +47,61 @@ async def migration_url(postgres_url: str) -> Any:
         await admin.dispose()
 
 
-async def test_both_columns_start_from_what_is_already_known(
+@pytest.mark.parametrize(
+    ("installed_at", "claimed_installed", "last_snapshot", "expected"),
+    [
+        pytest.param(
+            _INSTALLED, True, _LAST_SNAPSHOT, _FIRST_REPORTED, id="claimed-install"
+        ),
+        pytest.param(_INSTALLED, False, _LAST_SNAPSHOT, _INSTALLED, id="install"),
+        pytest.param(None, False, _LAST_SNAPSHOT, _LAST_SNAPSHOT, id="last-snapshot"),
+        pytest.param(_INSTALLED, False, None, None, id="never-reported"),
+    ],
+)
+async def test_reporting_is_dated_from_when_it_began(
     migration_url: str,
+    installed_at: datetime | None,
+    claimed_installed: bool,
+    last_snapshot: datetime | None,
+    expected: datetime | None,
 ) -> None:
     engine = create_async_engine(migration_url)
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(_upgrade_to(_BEFORE))
+            await connection.run_sync(_upgrade_to(_PRE_MIGRATION_REVISION))
 
         async with engine.begin() as connection:
             await connection.execute(
-                text("SET LOCAL session_replication_role = replica")
+                text("UPDATE deployment_identity SET installed_at = :at"),
+                {"at": installed_at},
             )
-            await connection.execute(
-                text(
-                    "INSERT INTO telemetry_snapshot_watermark (id, last_sent_at) "
-                    "VALUES (1, :at)"
-                ),
-                {"at": _LAST_SENT},
-            )
-            for machine_id, heartbeat in (("up", _HEARTBEAT), ("queued", None)):
+            if claimed_installed:
                 await connection.execute(
                     text(
-                        "INSERT INTO cloud_machines (id, owner_id, state, "
-                        "active_at, heartbeat_at) VALUES (:id, :id, :state, "
-                        "now(), :heartbeat)"
+                        "INSERT INTO telemetry_milestones (name, emitted_at) "
+                        "VALUES ('deployment_installed', :at)"
                     ),
-                    {
-                        "id": machine_id,
-                        "state": "ready" if heartbeat else "queued",
-                        "heartbeat": heartbeat,
-                    },
+                    {"at": _FIRST_REPORTED},
+                )
+            if last_snapshot is not None:
+                await connection.execute(
+                    text(
+                        "INSERT INTO telemetry_snapshot_watermark (id, last_sent_at) "
+                        "VALUES (1, :at)"
+                    ),
+                    {"at": last_snapshot},
                 )
 
         async with engine.begin() as connection:
-            await connection.run_sync(_upgrade_to(_UNDER_TEST))
+            await connection.run_sync(_upgrade_to(_MIGRATION_UNDER_TEST))
 
         async with engine.connect() as connection:
-            enabled_since = await connection.scalar(
-                text("SELECT telemetry_enabled_since FROM deployment_identity")
-            )
-            ready = dict(
-                (
-                    await connection.execute(
-                        text("SELECT id, first_ready_at FROM cloud_machines")
-                    )
-                ).all()
-            )
+            since = (
+                await connection.execute(
+                    text("SELECT telemetry_enabled_since FROM deployment_identity")
+                )
+            ).scalar_one()
     finally:
         await engine.dispose()
 
-    assert enabled_since == _LAST_SENT
-    assert ready == {"up": _HEARTBEAT, "queued": None}
-
-
-async def test_a_deployment_that_never_reported_has_no_start(
-    migration_url: str,
-) -> None:
-    engine = create_async_engine(migration_url)
-    try:
-        async with engine.begin() as connection:
-            await connection.run_sync(_upgrade_to(_UNDER_TEST))
-        async with engine.connect() as connection:
-            enabled_since = await connection.scalar(
-                text("SELECT telemetry_enabled_since FROM deployment_identity")
-            )
-    finally:
-        await engine.dispose()
-
-    assert enabled_since is None
+    assert since == expected

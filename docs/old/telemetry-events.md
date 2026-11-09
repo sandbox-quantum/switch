@@ -549,7 +549,10 @@ Amplitude counts a deployment as new from its earliest event, so a period dated
 before either would make it new before it existed or agreed to report. The
 moment telemetry was switched on is recorded at the first boot with it on and
 forgotten at a boot with it off, so it is always the start of the current run
-of reporting; an upgraded server starts from its last snapshot. A period that
+of reporting. An upgraded server starts from the best evidence its database
+holds of when it began reporting: when it claimed `deployment_installed`, which
+it did at its first boot with telemetry on; else, if it has sent a snapshot,
+its install, or failing that its last snapshot. A period that
 began before that moment carries `is_partial = true` and, when its middle is
 earlier still, is dated at that moment instead, which is inside the period, so
 it stays in its bucket at UTC (a chart drawn in a timezone east of UTC can
