@@ -447,8 +447,10 @@ pnpm run lint
   Permitted: which of the catalogued things happened, agent type, local-vs-remote,
   success-vs-failure, how long an operation took, app version, operating system, the
   random install id, a random id made fresh for each record (`flint.insert_id`, which
-  only keeps two alike events apart), which kind of launch it was (first, after an
-  update, or neither),
+  only keeps two alike events apart), the session the event is in (`flint.session_id`:
+  when the run of things someone did began, in epoch milliseconds, or `-1` for an event
+  nobody caused — `BACKGROUND_EVENTS` in `events.ts`), which kind of launch it was
+  (first, after an update, or neither),
   and whether a signed-in account is on a company email domain — the yes/no only, read
   from the domain, never the address. A duration is a number rather than a value from a fixed set,
   so it is held to `TelemetryDurationMs`: measured on a monotonic clock, whole

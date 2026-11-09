@@ -16,6 +16,7 @@ const CONTEXT: TelemetryContext = {
   flintEnv: 'prod',
   internal: 'false',
   timeMs: 1_700_000_000_000,
+  sessionId: 1_699_999_000_000,
 };
 
 const CONFIG: TelemetryConfig = {
@@ -128,6 +129,24 @@ describe('the record that gets built', () => {
       build: 'stable',
       'flint.insert_id': expect.stringMatching(UUID),
     });
+  });
+
+  it('carries the session as a number, for the relay to hand Amplitude as one', () => {
+    const payload = buildOtlpPayload(
+      'session_ended',
+      { agent_type: 'codex', location: 'remote', outcome: 'normal' },
+      CONTEXT
+    );
+    const background = buildOtlpPayload(
+      'session_reopened',
+      { agent_type: 'codex', location: 'remote', outcome: 'success' },
+      { ...CONTEXT, sessionId: -1 }
+    );
+
+    expect(rawLogAttributes(payload)['flint.session_id']).toEqual({
+      doubleValue: 1_699_999_000_000,
+    });
+    expect(rawLogAttributes(background)['flint.session_id']).toEqual({ doubleValue: -1 });
   });
 
   it('gives every record an id of its own, so two alike in the same millisecond stay two', () => {

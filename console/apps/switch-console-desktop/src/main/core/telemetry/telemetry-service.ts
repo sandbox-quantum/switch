@@ -7,6 +7,7 @@ import type { TelemetryEventMap, TelemetryEventName } from './events';
 import { getInstallId } from './install-id';
 import type { TelemetryInternal } from './internal-account';
 import { buildOtlpPayload, postTelemetryEvent, TelemetrySendError } from './relay-client';
+import { TelemetrySession } from './session';
 
 /** OpenTelemetry's names for what `process.platform` calls darwin/win32/linux. */
 const OS_TYPES: Record<string, string> = {
@@ -18,6 +19,8 @@ const OS_TYPES: Record<string, string> = {
 class TelemetryService {
   private reportedDisabled = new Set<TelemetryDisabledReason>();
   private appVersion: Promise<string> | null = null;
+  /** Only events that are sent shape a session, so it is read after the gate. */
+  private session = new TelemetrySession();
   /**
    * Whether the person is staff. Registered at boot rather than imported,
    * because it reads the servers store, which reports through this service.
@@ -58,6 +61,7 @@ class TelemetryService {
     }
 
     if (!(await isTelemetryAllowed())) return;
+    const sessionId = this.session.idFor(name, timeMs);
 
     const payload = buildOtlpPayload(name, properties, {
       clientId: await getInstallId(),
@@ -68,6 +72,7 @@ class TelemetryService {
       flintEnv: resolution.config.flintEnv,
       internal: await this.resolveInternal(),
       timeMs,
+      sessionId,
     });
 
     await postTelemetryEvent(payload, resolution.config);

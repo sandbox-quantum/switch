@@ -755,6 +755,23 @@ export type TelemetryEventMap = {
 
 export type TelemetryEventName = keyof TelemetryEventMap;
 
+/**
+ * The events nobody caused: the app noticing, retrying or tidying up on its
+ * own, or recording an answer it took rather than was given. Amplitude counts
+ * activity per event name, and these are the names it should count as
+ * inactive. They carry no session (`flint.session_id` is -1, `./session`) and
+ * never start or prolong one.
+ */
+export const BACKGROUND_EVENTS: ReadonlySet<TelemetryEventName> = new Set<TelemetryEventName>([
+  'session_discovered',
+  'session_reopened',
+  'subagent_adopted',
+  'agent_pruned',
+  'update_install_started',
+  'telemetry_consent_changed',
+  'renderer_crashed',
+]);
+
 /** One event and what it carries, as a union a `switch` on `name` narrows. */
 export type TelemetryEvent = {
   [K in TelemetryEventName]: { name: K; properties: TelemetryEventMap[K] };

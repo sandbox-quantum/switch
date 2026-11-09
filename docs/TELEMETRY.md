@@ -47,6 +47,7 @@ abbreviated:
   "attributes": {
     "build": "stable",
     "flint.insert_id": "9d0c5e7a-41b2-4f3e-8a6d-2b7c1e94f0a3",
+    "flint.session_id": 1789571950042,
     "agent_type": "claude",
     "location": "local",
     "outcome": "success",
@@ -81,6 +82,7 @@ machine, in what repository, or what the prompt said.
 | `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
 | `flint.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
 | `flint.insert_id` | a random UUID made for this one event, so that two events alike in every field and sent in the same millisecond are not taken for one. A new one every event; kept nowhere | `9d0c5e7a-41b2-4f3e-8a6d-2b7c1e94f0a3` |
+| `flint.session_id` | which visit to the app the event belongs to: the time, in milliseconds, of the first thing someone did in it. A visit ends after 30 minutes with nothing done, and is kept only in memory. `-1` on the events nobody caused — `session_discovered`, `session_reopened`, `subagent_adopted`, `agent_pruned`, `update_install_started`, `telemetry_consent_changed`, `renderer_crashed` — which neither start nor prolong a visit | `1789571950042`, `-1` |
 | `event.name` | the event | `session_started` |
 | timestamp | event time | `1789572278158000000` |
 
@@ -327,7 +329,10 @@ the first time telemetry runs, stored in the app's local database.
 
 Each event also carries `flint.insert_id`, a random UUID made for that event
 alone. It identifies the event and nothing else: it is never reused, never
-stored on the machine, and connects no event to any other.
+stored on the machine, and connects no event to any other. And it carries
+`flint.session_id`, a time: when the visit it belongs to began. It groups an
+installation's events into visits, which `flint.client_id` already groups
+them into installations, and is derived from nothing but the clock.
 
 - **Generated randomly.** Not derived from hardware, MAC address, disk serial, OS
   account, network, email, licence, or any Switch identity.

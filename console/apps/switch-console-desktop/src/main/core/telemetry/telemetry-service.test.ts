@@ -280,6 +280,7 @@ describe('the payload', () => {
       duration_ms: durationMs(4200),
       build: 'dev',
       'flint.insert_id': expect.any(String),
+      'flint.session_id': expect.any(Number),
     });
   });
 
@@ -322,9 +323,62 @@ describe('the payload', () => {
       'build',
       'event.name',
       'flint.insert_id',
+      'flint.session_id',
       'location',
       'outcome',
     ]);
+  });
+});
+
+describe('the session an event is in', () => {
+  /**
+   * The service is one per process and keeps its session, so these run well
+   * after anything the other tests sent, where none of that can reach.
+   */
+  const far = Date.now() + 10 * 365 * 24 * 60 * 60_000;
+  const VIEW = { view_id: 'home' } as const;
+
+  function sentSessionIds(): unknown[] {
+    return fetchMock.mock.calls.map(([, init]) => {
+      const body = JSON.parse((init as { body: string }).body) as {
+        resourceLogs: [{ scopeLogs: [{ logRecords: [{ attributes: Attribute[] }] }] }];
+      };
+      const attribute = body.resourceLogs[0].scopeLogs[0].logRecords[0].attributes.find(
+        (a) => a.key === 'flint.session_id'
+      );
+      return attribute ? attributeValue(attribute) : undefined;
+    });
+  }
+
+  beforeEach(() => {
+    vi.mocked(isTelemetryAllowed).mockResolvedValue(true);
+  });
+
+  it('is named for when someone first did something, and holds what they do next', async () => {
+    await telemetryService.trackAt('view_opened', VIEW, far);
+    await telemetryService.trackAt('view_opened', VIEW, far + 60_000);
+
+    expect(sentSessionIds()).toEqual([far, far]);
+  });
+
+  it('is none for an event nobody caused', async () => {
+    await telemetryService.trackAt(
+      'session_reopened',
+      { agent_type: 'claude', location: 'local', outcome: 'success' },
+      far + 2 * 60_000
+    );
+
+    expect(sentSessionIds()).toEqual([-1]);
+  });
+
+  it('is not started by an event consent kept from being sent', async () => {
+    const later = far + 365 * 24 * 60 * 60_000;
+    vi.mocked(isTelemetryAllowed).mockResolvedValueOnce(false);
+
+    await telemetryService.trackAt('view_opened', VIEW, later);
+    await telemetryService.trackAt('view_opened', VIEW, later + 1_000);
+
+    expect(sentSessionIds()).toEqual([later + 1_000]);
   });
 });
 

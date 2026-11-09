@@ -54,6 +54,13 @@ const EVENT_NAME_ATTRIBUTE = 'event.name';
  */
 const INSERT_ID_ATTRIBUTE = 'flint.insert_id';
 
+/**
+ * The session the event belongs to, for the relay to put where Amplitude reads
+ * a session: the time its first event happened in epoch milliseconds, or -1
+ * for an event nobody caused (`./session`).
+ */
+const SESSION_ID_ATTRIBUTE = 'flint.session_id';
+
 export type TelemetrySendErrorCode =
   | 'timeout'
   | 'network'
@@ -88,6 +95,8 @@ export type TelemetryContext = {
   /** Whether the person is staff, from their account's email domain. */
   internal: TelemetryInternal;
   timeMs: number;
+  /** When the session began, in epoch milliseconds; -1 for an event nobody caused. */
+  sessionId: number;
 };
 
 /**
@@ -207,6 +216,7 @@ export function buildOtlpPayload<K extends TelemetryEventName>(
                   ...allowedProperties(name, properties),
                   build: context.build,
                   [INSERT_ID_ATTRIBUTE]: randomUUID(),
+                  [SESSION_ID_ATTRIBUTE]: context.sessionId,
                 }),
               },
             ],
