@@ -44,7 +44,7 @@ from tests.switch_core.management.harness import (
 
 KEYS = {"api_key": "api-key-xxxxxxxx", "region": "eu.example.test"}
 NEVER_EXPIRES = (
-    "Example keys do not expire and only Example can revoke them, so Switch "
+    "Example keys are long-lived and only Example can revoke them, so Switch "
     "does not hand them to agents."
 )
 

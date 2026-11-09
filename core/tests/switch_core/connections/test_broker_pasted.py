@@ -56,7 +56,7 @@ SITE = "eu.example.test"
 TOKEN = "expat_ab12_SYNTHETICTOKENVALUE"
 KEYS = ("SYNTHETIC-API-KEY", "SYNTHETIC-APP-KEY")
 NEVER_EXPIRES = (
-    "Example keys do not expire and only Example can revoke them, so Switch "
+    "Example keys are long-lived and only Example can revoke them, so Switch "
     "does not hand them to agents."
 )
 

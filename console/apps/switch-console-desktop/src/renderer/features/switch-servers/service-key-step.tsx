@@ -236,8 +236,8 @@ export function ServiceKeyStep({
         )}
         <p className="text-xs text-foreground-muted">
           Switch checks the key with {name}, stores it encrypted, and never shows it again. The
-          agent can do whatever this key allows. Keys don't expire; disconnecting removes the key
-          from Switch but can't revoke it at {name} — revoke it there too.
+          agent can do whatever this key allows. Keys are long-lived; disconnecting removes the key
+          from Switch but can't revoke it at {name}, so revoke it there too.
         </p>
         {connection.unavailable_reason && (
           <p className="text-sm text-foreground-muted">{connection.unavailable_reason}</p>

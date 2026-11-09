@@ -189,7 +189,7 @@ it('is a form built from the catalog entry, not the sign-in', async () => {
   expect(step.textContent).toContain('Organization Settings, API Keys.');
   expect(step.textContent).toContain('The address you open Datadog at.');
   expect(step.textContent).toContain(
-    "Switch checks the key with Datadog, stores it encrypted, and never shows it again. The agent can do whatever this key allows. Keys don't expire; disconnecting removes the key from Switch but can't revoke it at Datadog — revoke it there too."
+    "Switch checks the key with Datadog, stores it encrypted, and never shows it again. The agent can do whatever this key allows. Keys are long-lived; disconnecting removes the key from Switch but can't revoke it at Datadog, so revoke it there too."
   );
   expect(switchServers.startServiceConnection).not.toHaveBeenCalled();
   await act(async () => button(/How to make a Datadog key/, step)!.click());

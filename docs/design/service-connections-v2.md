@@ -644,7 +644,7 @@ for a later server-side use of the key.
 - **Grants** are on or off, as for any pass-through service, at the highest
   level: what the agent can do is what the key allows.
 - **Disconnecting** forgets the key, and says that only the vendor can revoke
-  it. Keys do not expire and are not refreshed.
+  it. Keys are long-lived and are not refreshed.
 
 Datadog was the first entry built this way. Its remote MCP server takes an
 API key and an application key in headers named with underscores

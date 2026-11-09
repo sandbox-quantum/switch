@@ -524,7 +524,7 @@ class TestUse:
 
 
 NEVER_EXPIRES = (
-    "Datadog keys do not expire and only Datadog can revoke them, so Switch "
+    "Datadog keys are long-lived and only Datadog can revoke them, so Switch "
     "does not hand them to agents."
 )
 
