@@ -1739,6 +1739,27 @@ it('posts nothing for a room turn in which the agent acted through a Switch tool
   expect(await roomReplyRecords(root)).toEqual([]);
 });
 
+it('tells the room a turn failed after the agent acted, when no post landed', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.command(roomMessage('acted', 'thread'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  host.agentActedInSwitch();
+  emit({
+    type: 'turn.completed',
+    turnId: 'acted',
+    outcome: 'error',
+    message: 'Upgrade your plan to continue',
+    usage: [],
+  });
+  await until(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply).toHaveBeenCalledWith({
+    roomId: 'room',
+    threadId: 'thread',
+    body: 'I finished without replying. The turn failed: Upgrade your plan to continue',
+  });
+});
+
 it('posts nothing when a message nobody tagged finished without a post', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, root, adapter } = await startReplying(reply);

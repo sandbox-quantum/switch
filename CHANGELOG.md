@@ -2989,8 +2989,9 @@ version of their own to them without also giving them a release of their own.
   usage limit — the room saw only "Worked for …" and kept waiting. Its
   session now posts "I finished without replying." in the message's thread,
   as it already did for a turn that failed. None of the agent's final text
-  is posted. A turn in which the agent used a Switch tool that acts (posting,
-  changing a room, and so on; reading context does not count), a turn
+  is posted. A turn that finished after the agent used a Switch tool that
+  acts (posting, changing a room, and so on; reading context does not
+  count), a turn
   someone stopped, a turn for a message that tagged nobody (one Switch routed
   to the agent, or a follow-up it got by following the conversation or as
   the room's assigned agent), and a turn started from Console still post

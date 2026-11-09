@@ -1276,9 +1276,10 @@ export class HostedSession {
    * doing anything in Switch — a provider that failed on a quota or sign-in
    * error, or an agent that finished with its answer, or a usage-limit
    * notice, only in its final text — since the room would otherwise hear
-   * nothing about it (`unpostedReply`). A turn in which the agent acted
-   * through a Switch tool says nothing, nor does one someone stopped, nor
-   * one that finished on a message nobody tagged (Switch routed it here, or
+   * nothing about it (`unpostedReply`). A failed turn says so whenever no
+   * post landed. A turn that finished after the agent acted through a Switch
+   * tool says nothing, nor does one someone stopped, nor one that finished on
+   * a message nobody tagged (Switch routed it here, or
    * following the conversation did), which the agent may rightly leave
    * alone; one the host cut short on purpose (stopping, parking, a reset) is
    * left alone too.
@@ -1308,7 +1309,7 @@ export class HostedSession {
     const body =
       failedPost !== null && outcome !== 'error'
         ? postFailedReply(failedPost)
-        : acted || (unasked && outcome === 'completed')
+        : (acted || unasked) && outcome === 'completed'
           ? null
           : unpostedReply(outcome, detail);
     if (body === null) return;
