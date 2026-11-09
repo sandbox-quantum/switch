@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { PEOPLE_WORDS } from '@renderer/features/cloud-agents/people-words';
+import { useAnsweredFlags } from '@renderer/features/switch-buddy/use-this-computer';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -96,6 +97,13 @@ function CloudFilesPanel() {
   const { params } = useParams('cloudFiles');
   const { navigate } = useNavigate();
   const visible = useCloudFilesVisible(serverId);
+  // With hosted agents v2 off (a good flags read that says so), this page doesn't
+  // exist: a saved view or an old link goes to Your Agents, as v1 has it.
+  const flags = useAnsweredFlags(serverId);
+  const v2Off = flags.answered && flags.readOk && flags.hostedV2 !== true;
+  useEffect(() => {
+    if (v2Off) navigate('serverAgents', { serverId });
+  }, [v2Off, navigate, serverId]);
   const root = useCloudFolder(serverId, '', visible);
   const [folder, setFolder] = useState<string | null>(null);
   const motionSet = useExplorerTransitions();
@@ -126,6 +134,7 @@ function CloudFilesPanel() {
     setFolder(given ?? (own ? own.name : ''));
   }, [folder, root.state, params.path, params.agent]);
 
+  if (v2Off) return null;
   if (!visible)
     return (
       <ServerPage width={1100} title="Your cloud files" description={DESCRIPTION}>

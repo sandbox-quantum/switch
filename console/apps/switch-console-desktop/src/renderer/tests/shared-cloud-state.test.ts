@@ -167,9 +167,20 @@ describe('the session state the controller reports (F5)', () => {
             },
     }) as unknown as Parameters<typeof sharedCloudFromSession>[0];
 
-  it('shows a parked session as Resting and a waking one as Back in a moment', () => {
-    expect(sharedCloudFromSession(agent('parked'))).toEqual({ agent_id: 'a1', state: 'resting' });
-    expect(sharedCloudFromSession(agent('waking'))).toEqual({ agent_id: 'a1', state: 'waking' });
+  it('shows a parked session as Resting and a waking one as Back in a moment, on a shared box', () => {
+    expect(sharedCloudFromSession(agent('parked'), true)).toEqual({
+      agent_id: 'a1',
+      state: 'resting',
+    });
+    expect(sharedCloudFromSession(agent('waking'), true)).toEqual({
+      agent_id: 'a1',
+      state: 'waking',
+    });
+  });
+
+  it('off the shared cloud (hosted agents v2 off) a reported session changes nothing', () => {
+    expect(sharedCloudFromSession(agent('parked'))).toBeNull();
+    expect(sharedCloudFromSession(agent('waking'), false)).toBeNull();
   });
 
   // B48: a host its controller gave up on stays down until its owner restarts it.
@@ -261,8 +272,8 @@ describe('the session state the controller reports (F5)', () => {
     expect(shown.label).toBe('Back in a moment');
     expect(shown.detail).toBe('Waiting for room');
     expect(shown.tone).toBe('waking');
-    // Off a shared-cloud box it reads as before.
-    expect(sharedCloudFromSession(waiting, false)).toEqual({ agent_id: 'a1', state: 'resting' });
+    // Off a shared-cloud box nothing new shows: the card keeps today's status.
+    expect(sharedCloudFromSession(waiting, false)).toBeNull();
   });
 
   // L2-IS-1: a box stopped on purpose after a quiet spell, and starting again.

@@ -329,7 +329,9 @@ export function sharedCloudFromSession(
   // A conversation queued in a full box: it starts by itself when room frees.
   if (onSharedBox && (agent.status?.waitingForRoom?.count ?? 0) > 0)
     return { agent_id: agent.agentId, state: 'waking', waiting_for_room: true };
-  const session = agent.status?.session;
+  // Only a box's controller reports its session; off the shared cloud (hosted
+  // agents v2 off, or not a box) the card keeps today's status whatever arrives.
+  const session = onSharedBox ? agent.status?.session : undefined;
   if (session === 'parked') return { agent_id: agent.agentId, state: 'resting' };
   if (session === 'waking') return { agent_id: agent.agentId, state: 'waking' };
   return null;

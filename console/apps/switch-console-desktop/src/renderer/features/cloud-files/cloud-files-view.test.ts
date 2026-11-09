@@ -536,6 +536,29 @@ describe('Your cloud files', () => {
     view.done();
   });
 
+  it('with hosted agents v2 off, the page goes to Your Agents and shows nothing of its own', async () => {
+    flagsState.set('s1', {
+      serverId: 's1',
+      flags: { ...allFeatureFlagsOff(), hosted_cloud_files: true },
+      fetchedAt: 1,
+      error: null,
+    });
+    const view = await open();
+    expect(navigate).toHaveBeenCalledWith('serverAgents', { serverId: 's1' });
+    expect(text(view.host)).toBe('');
+    expect(list).not.toHaveBeenCalled();
+    view.done();
+  });
+
+  it('if the flags read failed, it stays put and says nothing is here yet (never v2 pages)', async () => {
+    flagsState.set('s1', { ...on('s1'), fetchedAt: null, error: 'unreachable' });
+    const view = await open();
+    expect(navigate).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    expect(text(view.host)).toContain('once you have an agent in your cloud');
+    view.done();
+  });
+
   it('with hosted_cloud_files off, nothing is listed and it points to Your Agents', async () => {
     flagsState.set('s1', on('s1', false));
     const view = await open();
