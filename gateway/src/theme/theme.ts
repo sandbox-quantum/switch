@@ -342,6 +342,20 @@ export const APP_THEME = () =>
           },
         },
       },
+      // MUI offsets a label by -11px to take back the padding around its
+      // control. Hoot's pill has none, so beside a switch that offset pulled
+      // the switch out of line and left the label touching it.
+      MuiFormControlLabel: {
+        styleOverrides: {
+          root: {
+            "&:has(> .MuiSwitch-root)": {
+              gap: 8,
+              "&:not(.MuiFormControlLabel-labelPlacementStart)": { marginLeft: 0 },
+              "&.MuiFormControlLabel-labelPlacementStart": { marginRight: 0 },
+            },
+          },
+        },
+      },
       // Underline tabs with a foreground indicator — chrome recedes.
       MuiTabs: {
         styleOverrides: {
