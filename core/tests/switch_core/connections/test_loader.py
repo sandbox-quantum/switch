@@ -39,6 +39,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "notion",
         "sentry",
         "linear",
+        "snowflake",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -50,6 +51,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "linear",
         "notion",
         "sentry",
+        "snowflake",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
@@ -61,6 +63,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
     assert "SKILL.md" in CATALOG["linear"].skill_files
+    assert "SKILL.md" in CATALOG["snowflake"].skill_files
 
 
 def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages():
@@ -1785,6 +1788,58 @@ def test_the_shipped_datadog_entry_signs_in_at_the_site_people_pick():
     assert (access.consent.read, access.consent.write) == ("mcp_read", "mcp_write")
     assert definition.tools is not None and definition.tools.mode == "pass_through"
     assert "SKILL.md" in CATALOG["datadog"].skill_files
+
+
+def test_the_shipped_snowflake_entry_holds_the_account_to_snowflakes_domain():
+    definition = CATALOG["snowflake"].definition
+    assert definition.enabled is True
+    assert definition.adapter == "api_key"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("account", False),
+        ("database", False),
+        ("schema", False),
+        ("server", False),
+        ("pat", True),
+    ]
+    assert sign_in.pattern_names() == {"account", "database", "schema", "server"}
+    url = (
+        "https://{account}.snowflakecomputing.com/api/v2/databases/{database}"
+        "/schemas/{schema}/mcp-servers/{server}"
+    )
+    assert sign_in.identity.url == url
+    assert url_placements(url) == {
+        "account": {"host"},
+        "database": {"path"},
+        "schema": {"path"},
+        "server": {"path"},
+    }
+    # Snowflake answers a server it cannot use with 200 and a JSON-RPC error.
+    assert sign_in.identity.requires == "result.tools"
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.url == url
+    assert server.headers == {"Authorization": "Bearer {pat}"}
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+    assert definition.access is None
+
+
+def test_a_key_entry_takes_at_most_five_fields(catalog_copy):
+    extra = "".join(
+        f"      - {{ name: extra{n}, label: Extra, secret: true }}\n" for n in range(4)
+    )
+    _write_example(
+        catalog_copy,
+        API_KEY_ENTRY.replace(
+            "      - { name: api_key, label: API key, secret: true }\n",
+            "      - { name: api_key, label: API key, secret: true }\n" + extra,
+        ),
+    )
+    with pytest.raises(CatalogError, match="at most 5"):
+        load_catalog(catalog_copy)
 
 
 def test_loads_an_api_key_entry(catalog_copy):

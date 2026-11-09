@@ -30,6 +30,7 @@ const MARK_COLOR: Record<string, string> = {
   notion: 'text-foreground',
   vercel: 'text-foreground',
   linear: 'text-[#5E6AD2]',
+  snowflake: 'text-[#29B5E8]',
   asana: 'text-[#F06A6A]',
   gitlab: 'text-[#FC6D26]',
   atlassian: 'text-[#0052CC] emdark:text-foreground',

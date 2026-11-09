@@ -403,7 +403,7 @@ class ApiKeySignIn(BaseModel):
     call that checks them, and where they make the key (`help_url`)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    fields: list[ApiKeyField] = Field(min_length=1, max_length=4)
+    fields: list[ApiKeyField] = Field(min_length=1, max_length=5)
     identity: ApiKeyIdentity
     help_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
 

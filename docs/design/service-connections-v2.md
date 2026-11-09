@@ -653,6 +653,30 @@ with every key, it now signs in instead (see [Datadog](#datadog)), and no
 shipped entry is connected with a key; the key tests run against an entry of
 their own.
 
+### Snowflake
+
+Snowflake's MCP server is per account and per object, at
+`https://<account>.snowflakecomputing.com/api/v2/databases/<db>/schemas/<schema>/mcp-servers/<name>`,
+made by an administrator with `CREATE MCP SERVER`, and takes a programmatic
+access token as `Authorization: Bearer`. A person types the account
+(`orgname-accountname`, one DNS label, so a region or privatelink address is
+not supported), the database, schema and server (one path segment each, as
+unquoted identifiers) and the token. Snowflake has no OAuth client one Switch
+server could share, so the token is the shape for now; like Datadog's keys it
+is never handed to an agent, and the card says so.
+
+The identity call is the server's `tools/list`. Measured against a Snowflake
+account: a wrong token is 401, but a server that does not exist, or that the
+token's role may not use, is 200 with a JSON-RPC error, so the check
+`requires` `result.tools` and repeats Snowflake's own reason. The
+`X-Snowflake-Authorization-Token-Type` header is not needed. Snowflake names
+no user in that answer, so the account is the token's SHA-256. A token
+restricted to a role with only `SELECT` cannot write, which Snowflake enforces
+("Insufficient privileges"); the server's tools are the administrator's
+choice, so Switch has one level and the role decides. A token needs a network
+policy covering its user, or an authentication policy that waives that, and
+lasts 15 days by default, up to 365.
+
 ## Adding a connector
 
 A connector is a catalog entry and a skill, with no code, when the vendor fits
