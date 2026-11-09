@@ -308,11 +308,13 @@ export type TelemetrySettingKey = AppSettingsKeyName;
 export type TelemetrySearchStatus = SearchStatus;
 
 /**
- * The kinds of server this install can hold. Named once, used by five events.
+ * The kinds of server this install can hold. Named once, used by six events.
  * `cloud` is Switch Cloud, the server this build offers by name; `external` is
- * any other server someone registered by address.
+ * any other server someone registered by address. `unknown` is a server
+ * registered by address while this build names a Cloud whose address it cannot
+ * read, so neither of those two could be told apart.
  */
-export type TelemetryServerKind = 'local' | 'remote_managed' | 'external' | 'cloud';
+export type TelemetryServerKind = 'local' | 'remote_managed' | 'external' | 'cloud' | 'unknown';
 
 /**
  * Why registering a server by address failed: the address is already another
@@ -411,16 +413,18 @@ export type TelemetryEventMap = {
   /**
    * A server was added to this install.
    *
-   * `outcome: 'failure'` is reported only for `external` — registering a URL is
-   * the one add that is a discrete action able to fail on its own. Bringing up a
-   * managed stack fails in ways of its own (no Docker, a version downgrade),
-   * which `managed_server_action` reports with the dimension that explains them;
-   * counting those here as well would double-count the same wall.
+   * `outcome: 'failure'` is reported only for a server registered by address
+   * (`external` or `cloud`) — registering one is the one add that is a discrete
+   * action able to fail on its own. Bringing up a managed stack fails in ways of
+   * its own (no Docker, a version downgrade), which `managed_server_action`
+   * reports with the dimension that explains them; counting those here as well
+   * would double-count the same wall.
    */
   server_added: {
     /**
      * `external` is a server the user registered by URL: Switch Console does not
-     * run it. `cloud` is Switch Cloud, registered from its own button.
+     * run it. `cloud` is Switch Cloud, registered from its own button or by its
+     * address.
      */
     server_kind: TelemetryServerKind;
     outcome: TelemetryOutcome;

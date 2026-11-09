@@ -92,7 +92,7 @@ id, no IP field, no Switch identity.
 | `outcome` | `success`, `failure` (on `session_ended`: `normal`, `failed`; on `bridge_identity_claimed`, also `pending`) |
 | `agent_type` | the AI provider, from a fixed registry: `claude`, `codex`, `gemini`, `cursor`, `copilot`, `opencode`, `grok`, `devin`, `qwen`, `droid`, `amp`, `goose`, `cline`, `continue`, `mistral`, `kiro`, `junie`, … and `unknown`. **Never an agent's name.** |
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
-| `server_kind` | `local`, `remote_managed`, `external`, `cloud` (Switch Cloud, the server this build offers by name). **Never a server name or URL.** |
+| `server_kind` | `local`, `remote_managed`, `external`, `cloud` (Switch Cloud, the server this build offers by name), `unknown` (a server added by address while this build's own Switch Cloud address cannot be read). **Never a server name or URL.** |
 | `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
 | `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `template`, `switch_buddy`, `unknown` |
 | `target` | `local`, `remote`, `unknown` |
