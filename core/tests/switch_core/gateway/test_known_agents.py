@@ -372,6 +372,12 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ["shell", "read_file", "write", "str_replace", "grep", "glob"],
             [],
         ),
+        (
+            "goose",
+            "Goose CLI",
+            ["shell", "write", "edit", "tree", "read_image", "delegate"],
+            [],
+        ),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(
