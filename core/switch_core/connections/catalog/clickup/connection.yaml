@@ -1,0 +1,33 @@
+slug: clickup
+name: ClickUp
+category: Project management
+description: Read and update ClickUp tasks, lists, and docs.
+# A placeholder: ClickUp's OAuth tokens do not expire and cannot be renewed,
+# so Switch does not issue them (#836). Switch limits the risk of a token
+# handed to an agent leaking by how long it lives, and the loader requires an
+# enabled OAuth entry to name a finite token.max_lifetime with refresh:
+# rotating or reusable. A ClickUp token has neither: only ClickUp can revoke
+# it, the case docs/design/service-connections-v2.md describes under "Keys".
+#
+# Evidence:
+# - https://mcp.clickup.com/.well-known/oauth-authorization-server advertises
+#   "grant_types_supported": ["authorization_code"] only (no refresh_token)
+#   and no revocation_endpoint (checked 2026-11-04 and 2026-11-07).
+# - POST https://mcp.clickup.com/oauth/token with grant_type=refresh_token
+#   answered {"error": "unsupported_grant_type", "error_description": "Only
+#   authorization_code grant type is supported"} (probed 2026-11-04).
+# - ClickUp's OAuth documentation says access tokens do not currently expire
+#   unless revoked: https://developer.clickup.com/docs/authentication
+#
+# What an enabled entry would use, should ClickUp add expiry and refresh:
+# - MCP server https://mcp.clickup.com/mcp, OAuth 2.1 with RFC 7591 dynamic
+#   registration at https://mcp.clickup.com/oauth/register (public client,
+#   token_endpoint_auth_method "none", PKCE S256, loopback redirects).
+# - Scopes "read" and "write" (scopes_supported in both
+#   /.well-known/oauth-authorization-server and
+#   /.well-known/oauth-protected-resource).
+# - Identity from https://api.clickup.com/api/v2/user (user.id, user.email).
+# - No revocation endpoint: access is removed in ClickUp's own settings.
+enabled: false
+auth:
+  type: oauth

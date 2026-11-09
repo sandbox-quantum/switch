@@ -23,6 +23,7 @@ PLACEHOLDERS = {
     "box",
     "canva",
     "vercel",
+    "clickup",
 }
 
 
@@ -176,6 +177,21 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_clickup_is_a_placeholder_until_its_tokens_expire():
+    # ClickUp's OAuth grants only authorization_code and its tokens do not
+    # expire, so it is listed but cannot be connected (#836).
+    entry = CATALOG["clickup"]
+    definition = entry.definition
+    assert definition.enabled is False
+    assert definition.auth.type == "oauth"
+    assert (definition.adapter, definition.token, definition.auth.refresh) == (
+        None,
+        None,
+        None,
+    )
+    assert entry.skill_files == {}
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
