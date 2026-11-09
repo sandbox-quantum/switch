@@ -41,7 +41,7 @@ import { Textarea } from '@renderer/lib/ui/textarea';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { CreateRoomOptions, RoomChannelField } from './create-room-options';
 import { MessagingAppSelector, SWITCH_CONSOLE } from './messaging-app-selector';
-import { linkFirst, optionsForBridge } from './room-channel-choices';
+import { optionsForBridge } from './room-channel-choices';
 import {
   CreateRequestIds,
   canCreate,
@@ -432,11 +432,6 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               }
               fixed={fixed}
             />
-            {fixed[0]?.warning && selectedBridge && (
-              <p className="text-xs text-destructive">
-                {`A private channel is open only to the people in it. ${linkFirst(selectedBridge)}`}
-              </p>
-            )}
             {leftOut.length > 0 && (
               <p className="text-xs text-foreground-muted">
                 {selectedBridge

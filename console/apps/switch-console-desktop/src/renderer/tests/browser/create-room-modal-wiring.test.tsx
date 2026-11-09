@@ -336,13 +336,12 @@ describe('New room dialog', () => {
     expect(options(host).some((each) => each.includes('@bob.s'))).toBe(true);
   });
 
-  it('says a private channel needs a linked account from someone who has none', async () => {
+  it('marks the creator of a private channel who has no linked account, in their chip', async () => {
     const host = await render();
     await chooseApp(host, 'b1');
     await act(async () => card(host, 'New private channel').click());
 
-    expect(host.textContent).toContain('No linked Acme Slack account');
-    expect(host.textContent).toContain('Link your Acme Slack account first, so Switch can add you');
+    expect(host.textContent).toContain('YouNo linked Acme Slack account');
   });
 
   it('carries a picked person to an app they are linked on, and names who is not', async () => {
