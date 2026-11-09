@@ -50,7 +50,8 @@ version of their own to them without also giving them a release of their own.
   (latency, traffic, errors, saturation) plus whether agents are connected and
   messaging apps are up, grey while normal and red only past a limit. The
   monitors are rewritten to what a user would notice: each says what users see
-  and what to check, posts once per incident and again on recovery, and error
+  and what to check, posts when it fires, every hour while it stays firing and
+  once on recovery, and error
   alerts count failures instead of taking a percentage, so low traffic doesn't
   page on noise. Causes such as slow queries stay on the dashboards.
   `deploy/observability/apply.sh` creates or updates them in Datadog by name.
