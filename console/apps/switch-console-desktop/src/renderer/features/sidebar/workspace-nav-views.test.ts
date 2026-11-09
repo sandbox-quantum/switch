@@ -2,37 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { workspaceNavViews } from './workspace-nav-views';
 
 describe('Your cloud files in the nav', () => {
-  it('follows Connectors when it shows', () => {
-    expect(
-      workspaceNavViews({
-        managed: false,
-        serviceConnections: true,
-        administers: false,
-        cloudFiles: true,
-      })
-    ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'cloudFiles', 'templates']);
+  it('follows Rooms when it shows', () => {
+    expect(workspaceNavViews({ serviceConnections: true, admin: false, cloudFiles: true })).toEqual(
+      ['server', 'serverAgents', 'serverRooms', 'cloudFiles', 'library', 'templates', 'connectors']
+    );
   });
 
-  it('follows Your Rooms where there are no connectors', () => {
-    expect(
-      workspaceNavViews({
-        managed: false,
-        serviceConnections: false,
-        administers: false,
-        cloudFiles: true,
-      })
-    ).toEqual(['server', 'serverAgents', 'serverRooms', 'cloudFiles', 'templates']);
+  it('is in the same place where there are no connectors', () => {
+    expect(workspaceNavViews({ serviceConnections: false, admin: true, cloudFiles: true })).toEqual(
+      ['server', 'serverAgents', 'serverRooms', 'cloudFiles', 'library', 'templates', 'admin']
+    );
   });
 
-  it('is left out while it is hidden, or not said', () => {
+  it("is left out while it is hidden, or not said, so the nav is main's", () => {
     for (const cloudFiles of [false, undefined])
-      expect(
-        workspaceNavViews({
-          managed: false,
-          serviceConnections: true,
-          administers: false,
-          cloudFiles,
-        })
-      ).not.toContain('cloudFiles');
+      expect(workspaceNavViews({ serviceConnections: true, admin: true, cloudFiles })).toEqual([
+        'server',
+        'serverAgents',
+        'serverRooms',
+        'library',
+        'templates',
+        'connectors',
+        'admin',
+      ]);
   });
 });

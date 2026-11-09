@@ -3,6 +3,9 @@
 Hosted agents v2's migrations started from upstream's `c7715ebb95c9`, and
 upstream added 12 of its own from the same point. `4e634b519462` merges the two
 heads, and `f3b937246dcd` joins that merge with main's later head (`10f6d02ac5bc`).
+`31ab60609360` then joins `f3b937246dcd` with main's next head (`689d7d8ff913`),
+after main's ten revisions from `10f6d02ac5bc`; a database at `f3b937246dcd`
+(the test server since 9 Nov) upgrades through exactly those ten and the merge.
 The test server's database is stamped `a90e3df4fe3f`, inside our chain,
 so its next upgrade must run our remaining revision (`e11b7c3d9a2f`) and all 12
 of upstream's, then the merge. This builds a database of its own (never the
@@ -28,7 +31,9 @@ from switch_core.db.schema_version import record_expand_only
 
 _CORE = Path(__file__).resolve().parents[2]
 _MIGRATION_DB = "migration_upstream_merge"
-_HEAD = "f3b937246dcd"
+_HEAD = "31ab60609360"
+_FIRST_MAIN_MERGE = "f3b937246dcd"
+_SECOND_MAIN_HEAD = "689d7d8ff913"
 _UPSTREAM_MERGE = "4e634b519462"
 _MAIN_HEAD = "10f6d02ac5bc"
 _TEST_SERVER = "a90e3df4fe3f"
@@ -63,6 +68,21 @@ _MAIN = (
     "3b81c0e5d9a7",  # external user link requests
     "22e1d92cfd4c",  # drop older links to shared accounts
     _MAIN_HEAD,  # organization connector apps
+)
+
+# Main's 10 revisions between `0f7f96732` and `807a1f94d`, from `_MAIN_HEAD` to
+# `_SECOND_MAIN_HEAD`, which `_HEAD` joins with `_FIRST_MAIN_MERGE`.
+_MAIN_AGAIN = (
+    "f2b8d6c1a4e9",  # directory organizations of a user
+    "a7c3e9f15b20",  # directory mirror
+    "c3d9a1f7b246",  # tenants of organization
+    "a3c5e7f9b1d2",  # merge owner into admin
+    "a3d9f6c2b871",  # audit events outlive their tenant
+    "d8a4e2c61f07",  # data retention
+    "e5c1b7a93d28",  # person erasures
+    "c7b2e9f4a1d6",  # session version
+    "f3a8d1c6b927",  # api key expiry
+    _SECOND_MAIN_HEAD,  # decision settings and pending decisions
 )
 
 # (revision, what to look for, SQL returning 1 when it is there)
@@ -200,7 +220,10 @@ def test_there_is_exactly_one_head_and_it_is_the_merge() -> None:
     assert script.get_heads() == [_HEAD]
     merge = script.get_revision(_HEAD)
     assert merge is not None
-    assert set(merge._all_down_revisions) == {_UPSTREAM_MERGE, _MAIN_HEAD}
+    assert set(merge._all_down_revisions) == {_FIRST_MAIN_MERGE, _SECOND_MAIN_HEAD}
+    first = script.get_revision(_FIRST_MAIN_MERGE)
+    assert first is not None
+    assert set(first._all_down_revisions) == {_UPSTREAM_MERGE, _MAIN_HEAD}
     upstream_merge = script.get_revision(_UPSTREAM_MERGE)
     assert upstream_merge is not None
     assert set(upstream_merge._all_down_revisions) == {
@@ -238,7 +261,8 @@ async def test_the_test_servers_database_upgrades_through_both_chains(
 ) -> None:
     """Stopped at `a90e3df4fe3f`, as the test server was: the next upgrade runs
     our `e11b7c3d9a2f`, all 12 of upstream's and their merge, main's 8 and the
-    merge with main, and nothing else."""
+    merge with main, then main's next 10 and the second merge, and nothing
+    else."""
     engine = await _engine(postgres_url)
     try:
         async with engine.begin() as connection:
@@ -255,12 +279,33 @@ async def test_the_test_servers_database_upgrades_through_both_chains(
             _OURS_AFTER_TEST_SERVER,
             _UPSTREAM_MERGE,
             *_MAIN,
+            _FIRST_MAIN_MERGE,
+            *_MAIN_AGAIN,
             _HEAD,
         }
-        assert len(ran) == len(_UPSTREAM) + len(_MAIN) + 3
+        assert len(ran) == len(_UPSTREAM) + len(_MAIN) + len(_MAIN_AGAIN) + 4
         assert ran[-1] == _HEAD
         assert await _version(engine) == [_HEAD]
         assert await _missing(engine) == []
+    finally:
+        await engine.dispose()
+        await _drop(postgres_url)
+
+
+async def test_a_database_at_the_first_merge_runs_mains_ten_then_the_merge(
+    postgres_url: str,
+) -> None:
+    """At `f3b937246dcd`, as the test server is since 9 November: the next
+    upgrade runs main's ten revisions and the second merge, and nothing else."""
+    engine = await _engine(postgres_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade(_FIRST_MAIN_MERGE))
+        ran: list[str] = []
+        async with engine.begin() as connection:
+            await connection.run_sync(_upgrade("head", ran))
+        assert ran == [*_MAIN_AGAIN, _HEAD]
+        assert await _version(engine) == [_HEAD]
     finally:
         await engine.dispose()
         await _drop(postgres_url)

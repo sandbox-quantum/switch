@@ -36,6 +36,8 @@ function controller(over: Partial<Controller>): Controller {
     assignment_revision: 1,
     created_at: "2026-11-05T00:00:00Z",
     revoked_at: null,
+    can_edit: true,
+    can_remove: true,
     ...over,
   };
 }

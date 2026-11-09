@@ -7,9 +7,17 @@ import MembersSection, {
   personSwitch,
 } from "./MembersSection";
 
+// Whether the signed-in person is a workspace admin: main reads it from the
+// session (`canAdminTenant`) rather than a prop.
+const auth = vi.hoisted(() => ({ canAdmin: false }));
 vi.mock("../../data/AuthContext", () => ({
-  useAuth: () => ({ refresh: async () => {} }),
+  useAuth: () => ({ refresh: async () => {}, canAdminTenant: auth.canAdmin }),
 }));
+
+function renderMembers(selfId: string, canAdmin: boolean) {
+  auth.canAdmin = canAdmin;
+  return render(<MembersSection tenantId="t1" selfId={selfId} />);
+}
 
 const members = [
   { user_id: "u1", name: "Sam Example", email: "sam@example.com", role: "member", created_at: "2026-10-01" },
@@ -67,20 +75,20 @@ describe("the Members page's hosted columns (spec A1)", () => {
 
   it("never asks for hosted fields for an ordinary member", async () => {
     const fetchMock = serve();
-    render(<MembersSection tenantId="t1" selfId="u1" canAdmin={false} isOwner={false} />);
+    renderMembers("u1", false);
     await waitFor(() => expect(asked(fetchMock, "/members")).toBe(true));
     expect(asked(fetchMock, "/hosted-people")).toBe(false);
   });
 
   it("asks for them for a workspace admin", async () => {
     const fetchMock = serve();
-    render(<MembersSection tenantId="t1" selfId="u2" canAdmin isOwner={false} />);
+    renderMembers("u2", true);
     await waitFor(() => expect(asked(fetchMock, "/tenants/t1/hosted-people")).toBe(true));
   });
 
   it("shows \"Not enabled by Switch (switch disabled)\" with no working switch for someone the server doesn't admit", async () => {
     serve(200, { ...hostedPeople.people[0], switchable: false });
-    render(<MembersSection tenantId="t1" selfId="u2" canAdmin isOwner={false} />);
+    renderMembers("u2", true);
     await screen.findByText("Not enabled by Switch (switch disabled)");
     const toggle = screen.getByLabelText("Hosted agents for sam@example.com");
     expect((toggle as HTMLInputElement).disabled).toBe(true);
@@ -89,7 +97,7 @@ describe("the Members page's hosted columns (spec A1)", () => {
   it("shows a paused person's box as the red Paused badge, and the switch note in full", async () => {
     // Designer's screenshot fix list, items 4 and 9 (copy doc rows "paused" and "Switch note, paused").
     serve(200, { ...hostedPeople.people[0], box_state: "paused", paused_by_switch: true });
-    render(<MembersSection tenantId="t1" selfId="u2" canAdmin isOwner={false} />);
+    renderMembers("u2", true);
     await screen.findByText("Paused by Switch (switch disabled)");
     const badge = screen.getByText("Paused").closest(".MuiChip-root");
     expect(badge?.className).toContain("MuiChip-colorError");
@@ -98,7 +106,7 @@ describe("the Members page's hosted columns (spec A1)", () => {
 
   it("keeps \"(you)\" on your own name", async () => {
     serve();
-    render(<MembersSection tenantId="t1" selfId="u2" canAdmin isOwner={false} />);
+    renderMembers("u2", true);
     expect(await screen.findByText("Robin Admin (you)")).toBeTruthy();
   });
 });
@@ -157,7 +165,7 @@ describe("the Members page with hosted agents v2 off", () => {
     vi.unstubAllGlobals();
   });
   const LINE =
-    "Owners and admins can change roles, remove people, and turn hosted agents on or off for each person. Every change is recorded.";
+    "Admins can change roles, remove people, and turn hosted agents on or off for each person. Every change is recorded.";
 
   for (const [what, hostedV2] of [
     ["off", false],
@@ -165,7 +173,7 @@ describe("the Members page with hosted agents v2 off", () => {
   ] as const) {
     it(`shows an admin the members as upstream, with no hosted columns, when the flag is ${what}`, async () => {
       const fetchMock = serve(200, undefined, hostedV2);
-      render(<MembersSection tenantId="t1" selfId="u2" canAdmin isOwner={false} />);
+      renderMembers("u2", true);
       expect(await screen.findByText("Sam Example")).toBeTruthy();
       await waitFor(() => expect(asked(fetchMock, "/feature-flags")).toBe(true));
       expect(asked(fetchMock, "/hosted-people")).toBe(false);
@@ -195,17 +203,17 @@ describe("the Members description", () => {
     vi.unstubAllGlobals();
   });
   const LINE =
-    "Owners and admins can change roles, remove people, and turn hosted agents on or off for each person. Every change is recorded.";
+    "Admins can change roles, remove people, and turn hosted agents on or off for each person. Every change is recorded.";
 
   it("shows to admins with the hosted view", async () => {
     serve();
-    render(<MembersSection tenantId="t1" selfId="u2" canAdmin isOwner={false} />);
+    renderMembers("u2", true);
     expect(await screen.findByText(LINE)).toBeTruthy();
   });
 
   it("never shows to an ordinary member", async () => {
     const fetchMock = serve();
-    render(<MembersSection tenantId="t1" selfId="u1" canAdmin={false} isOwner={false} />);
+    renderMembers("u1", false);
     await waitFor(() => expect(asked(fetchMock, "/members")).toBe(true));
     expect(screen.queryByText(LINE)).toBeNull();
   });
@@ -245,7 +253,7 @@ describe("the switch, end to end on the page (QA)", () => {
   }
 
   async function turnOffSam() {
-    render(<MembersSection tenantId="t1" selfId="u2" canAdmin isOwner={false} />);
+    renderMembers("u2", true);
     const toggle = await screen.findByLabelText("Hosted agents for sam@example.com");
     fireEvent.click(toggle);
     await screen.findByText("Turn off hosted agents for Sam Example?");
@@ -292,14 +300,14 @@ describe("when the hosted list fails for another reason", () => {
 
   it("tells the admin with a fixed line and still shows the members", async () => {
     serve(500);
-    render(<MembersSection tenantId="t1" selfId="u2" canAdmin isOwner={false} />);
+    renderMembers("u2", true);
     expect(await screen.findByText(HOSTED_LIST_FAILED)).toBeTruthy();
     expect((await screen.findAllByText("Sam Example")).length).toBeGreaterThan(0);
   });
 
   it("says nothing when the server simply has no hosted view", async () => {
     const fetchMock = serve(404);
-    render(<MembersSection tenantId="t1" selfId="u2" canAdmin isOwner={false} />);
+    renderMembers("u2", true);
     await waitFor(() => expect(asked(fetchMock, "/hosted-people")).toBe(true));
     await screen.findAllByText("Sam Example");
     expect(screen.queryByText(HOSTED_LIST_FAILED)).toBeNull();

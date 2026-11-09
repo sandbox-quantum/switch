@@ -52,6 +52,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from switch_core.attachments import parse_attachment_group
+from switch_core.clients.admin_messages import SENDER_IS_APP_MARKER
 from switch_core.db.models import (
     ClientRoom,
     MediaBlob,
@@ -1186,6 +1187,7 @@ class PostgresTransport:
         caption: str | None = None,
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
+        extra_content: dict[str, object] | None = None,
     ) -> SendResult:
         content = media_content(
             uri,
@@ -1197,6 +1199,7 @@ class PostgresTransport:
             caption=caption,
             thread_root_id=thread_root_id,
             group=group,
+            extra_content=extra_content,
         )
         return await self._send(
             room_id, "m.room.message", content, sender_name, metered=metered
@@ -1368,6 +1371,7 @@ class PostgresTransport:
                     room_id=room_id,
                     sender_client_id=self.client_id,
                     sender_role=self._actor_role,
+                    sender_is_app=content.get(SENDER_IS_APP_MARKER) is True,
                     has_attachment=kind == "media",
                     in_thread=thread_root_of(content) is not None,
                 )

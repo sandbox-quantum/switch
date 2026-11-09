@@ -8,6 +8,7 @@ const flags = vi.hoisted(() => ({ group_chats: true }));
 vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({ useFeatureFlags: () => flags }));
 vi.mock('@renderer/lib/ipc', () => ({ events: { on: vi.fn() }, rpc: {} }));
 vi.mock('@renderer/features/chats/stores/chats', () => ({ chatsStore: {} }));
+vi.mock('./workspace-admin', () => ({ administersWorkspaceById: () => true }));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: {
     workspaces: [{ id: 'ws', tenantId: null }],

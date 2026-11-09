@@ -33,7 +33,7 @@ from switch_core.connections.app_signals import (
     ConnectorAppSignals,
 )
 from switch_core.connections.broker import ServiceBroker, ServiceError
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, Connection, with_access_profiles
 from switch_core.connections.organization_apps import OrganizationApp, OrganizationApps
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db.models import Organization, OrganizationAppCredential, Tenant, User
@@ -58,6 +58,8 @@ pytestmark = pytest.mark.no_ambient_tenant
 PUBLIC_URL = "https://switch.example.test"
 GOOGLE = "google-workspace"
 SERVER_CLIENT = "server-client-id"
+GOOGLE_SCOPE = "https://www.googleapis.com/auth/"
+DRIVE_FILE = with_access_profiles(CATALOG, {GOOGLE: "drive-file"})
 DELIVERY_TIMEOUT = 10.0
 
 
@@ -127,6 +129,7 @@ class _Server:
         session_factory: async_sessionmaker[AsyncSession],
         tmp_path: Path,
         public_url: str = PUBLIC_URL,
+        catalog: dict[str, Connection] = CATALOG,
     ) -> None:
         client_file = tmp_path / f"google-{uuid.uuid4().hex[:6]}.json"
         client_file.write_text(
@@ -143,7 +146,7 @@ class _Server:
             server_name="switch.local",
         )
         self.apps = ConnectorApps(
-            catalog=CATALOG,
+            catalog=catalog,
             config=settings,
             environ={"GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH": str(client_file)},
             session_factory=session_factory,
@@ -156,6 +159,7 @@ class _Server:
             store=OrganizationAppCredentialStore(TEST_KEYRING),
         )
         self._session_factory = session_factory
+        self._catalog = catalog
 
     async def lookup(self, tenant_id: str, service: str) -> OrganizationApp | None:
         async with tenant_session(self._session_factory, tenant_id) as session:
@@ -168,9 +172,9 @@ class _Server:
         return ServiceBroker(
             session_factory=self._session_factory,
             keyring=TEST_KEYRING,
-            catalog=CATALOG,
+            catalog=self._catalog,
             adapters=build_adapters(
-                CATALOG,
+                self._catalog,
                 github_app=self.apps.github_app(),
                 oauth_clients=self.apps.oauth_clients(),
                 http=self.http,
@@ -314,6 +318,32 @@ class TestWhichApp:
 
         assert app.adapter is None
         assert app.problem == cannot_work_here("GitHub")
+
+
+class TestTheAccessProfile:
+    async def test_an_organizations_app_asks_for_what_the_server_chose(
+        self, rls_harness: RLSHarness, tmp_path: Path
+    ) -> None:
+        organization_id, tenant_id = await _workspace(
+            rls_harness.owner, in_organization=True
+        )
+        assert organization_id is not None
+        await _save(rls_harness.owner, organization_id, "organization-client-id")
+        broker = await _Server(
+            rls_harness.restricted, tmp_path, catalog=DRIVE_FILE
+        ).start()
+
+        async with tenant_session(rls_harness.restricted, tenant_id) as session:
+            definition, adapter = await broker.sign_in(session, GOOGLE)
+
+        assert adapter.current_client_id() == "organization-client-id"
+        profile = CATALOG[GOOGLE].definition.access_profiles["drive-file"]
+        assert definition.access == profile.access
+        assert adapter._definition.access == profile.access
+        assert definition.access.write is not None
+        scopes = set(definition.access.write.scopes or [])
+        assert GOOGLE_SCOPE + "drive.file" in scopes
+        assert not {GOOGLE_SCOPE + "drive", GOOGLE_SCOPE + "drive.readonly"} & scopes
 
 
 class TestRevoking:

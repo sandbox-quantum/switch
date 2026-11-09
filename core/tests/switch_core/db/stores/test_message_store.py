@@ -499,6 +499,38 @@ class TestConversationHistory:
 
         assert [r.transport_event_id for r in rows] == ["$c", "$b"]
 
+    async def test_both_read_only_what_came_before_a_row_when_asked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = MessageStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "alpha")
+            await store.create(session, _message(room.id, "$root"), [])
+            await store.create(
+                session, _message(room.id, "$r1", thread_root_event_id="$root"), []
+            )
+            await store.create(session, _message(room.id, "$top"), [])
+            await store.create(
+                session, _message(room.id, "$r2", thread_root_event_id="$root"), []
+            )
+            await store.create(session, _message(room.id, "$later"), [])
+            await session.commit()
+            [top] = await store.list_by_transport_event_ids(session, room.id, ["$top"])
+
+            thread = await store.list_thread_newest_first(
+                session,
+                room.id,
+                thread_root_event_id="$root",
+                limit=10,
+                before_seq=top.seq,
+            )
+            channel = await store.list_top_level_newest_first(
+                session, room.id, limit=10, before_seq=top.seq
+            )
+
+        assert [r.transport_event_id for r in thread] == ["$r1", "$root"]
+        assert [r.transport_event_id for r in channel] == ["$root"]
+
 
 class TestForeignKeyBehaviour:
     async def test_deleting_the_room_cascades_its_messages(

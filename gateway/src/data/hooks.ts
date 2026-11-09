@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  ApiError,
   type ConnectorAppScope,
   type ConnectorApps,
   fetchConnectorApps,
@@ -14,7 +13,6 @@ import {
   type BridgeDetail,
   type BridgeTypeInfo,
   type ExternalUserSummary,
-  type DocumentDetail,
   type DocumentSummary,
   type InboundLinkedRoomDetail,
   type InstallablePlatforms,
@@ -29,15 +27,17 @@ import {
   type ReferenceTypeInfo,
   type ResourceRoom,
   type RoomDetail,
+  type RoomDocumentDetail,
+  type RoomDocumentSummary,
   type RoomGroupDetail,
   type RoomSummary,
   type TemplateSummary,
-  type UserInfo,
+  type ListedUser,
   fetchAgent,
   fetchAgents,
   fetchApiKeys,
   fetchBudgets,
-  fetchFeatureFlags,
+  fetchFeatureFlagMap,
   fetchHostedUsage,
   fetchCurrentTenant,
   fetchUsage,
@@ -187,12 +187,8 @@ export function useKnownAgentTypes(): UseQueryResult<KnownAgentType[]> {
 }
 
 /** The connector apps of `scope`: the server's, which only its operator
- * reads, or the current organization's, which only its org admins do. A 404
- * is the routes not being mounted: `notEnabled` says so. */
-export function useConnectorApps(
-  scope: ConnectorAppScope,
-  notEnabled: string,
-): UseQueryResult<ConnectorApps> {
+ * reads, or the current organization's, which only its org admins do. */
+export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<ConnectorApps> {
   const [data, setData] = useState<ConnectorApps | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -211,25 +207,19 @@ export function useConnectorApps(
       },
       (err: unknown) => {
         if (cancelled) return;
-        setError(
-          err instanceof ApiError && err.status === 404
-            ? notEnabled
-            : err instanceof Error
-              ? err.message
-              : String(err),
-        );
+        setError(err instanceof Error ? err.message : String(err));
         setLoading(false);
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [scope, notEnabled, tick]);
+  }, [scope, tick]);
 
   return { data, loading, error, refetch };
 }
 
-export function useUsers(): UseQueryResult<UserInfo[]> {
+export function useUsers(): UseQueryResult<ListedUser[]> {
   return useQuery(fetchUsers);
 }
 
@@ -293,7 +283,7 @@ export function useRoomReferences(
 
 export function useRoomDocuments(
   roomId: string | undefined,
-): UseQueryResult<DocumentSummary[]> {
+): UseQueryResult<RoomDocumentSummary[]> {
   const fetcher = useCallback(
     () => (roomId ? fetchRoomDocuments(roomId) : Promise.resolve(null)),
     [roomId],
@@ -304,7 +294,7 @@ export function useRoomDocuments(
 export function useRoomDocument(
   roomId: string | undefined,
   documentId: string | undefined,
-): UseQueryResult<DocumentDetail> {
+): UseQueryResult<RoomDocumentDetail> {
   const fetcher = useCallback(
     () =>
       roomId && documentId
@@ -419,7 +409,7 @@ export function useHostedUsage(
 }
 
 export function useFeatureFlags(): UseQueryResult<Record<string, boolean>> {
-  return useQuery(fetchFeatureFlags);
+  return useQuery(fetchFeatureFlagMap);
 }
 
 /** Whether this server runs hosted agents v2, as Core says in its `hosted_v2`
@@ -428,7 +418,7 @@ export function useFeatureFlags(): UseQueryResult<Record<string, boolean>> {
  * unless Core says otherwise. */
 export function useHostedV2(): boolean | null {
   const fetcher = useCallback(
-    () => fetchFeatureFlags().catch((): Record<string, boolean> => ({})),
+    () => fetchFeatureFlagMap().catch((): Record<string, boolean> => ({})),
     [],
   );
   const { data, loading } = useQuery(fetcher);

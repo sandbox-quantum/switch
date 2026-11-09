@@ -2,59 +2,34 @@ export type WorkspaceNavView =
   | 'server'
   | 'serverAgents'
   | 'serverRooms'
-  | 'connectors'
   | 'cloudFiles'
+  | 'library'
   | 'templates'
+  | 'connectors'
   | 'admin';
 
 /**
- * The active server's destinations, in order. Connectors follows Your Rooms
+ * The active server's destinations, in order. Connectors follows Templates
  * only where the server has service connections on: with them off its routes
- * are not mounted, so there is nothing to show. Admin is for whoever
- * administers the workspace (the server's operator among them) where service
- * connections are on, its connector settings needing them, and for whoever
- * runs the server from this Console, whose status is under Admin's Server
- * heading: the others are run by someone else, and there is nothing here to
- * start, stop or update.
+ * are not mounted, so there is nothing to show. Admin is there when it holds
+ * something the person may use (`adminGroups`).
  */
 export function workspaceNavViews(server: {
-  managed: boolean;
   serviceConnections: boolean;
-  administers: boolean;
-  /** The server shows this person, a Switch operator, the shared machines. */
-  sharedCloud?: boolean;
-  /** Your cloud files shows for this person (`useCloudFilesVisible`). */
+  /** Whether Admin has any section for this person. */
+  admin: boolean;
+  /** Your cloud files shows for this person (`useCloudFilesVisible`: hosted v2 on). */
   cloudFiles?: boolean;
 }): WorkspaceNavView[] {
-  const admin =
-    (server.serviceConnections && server.administers) ||
-    server.managed ||
-    server.sharedCloud === true;
   return [
     'server',
     'serverAgents',
     'serverRooms',
-    ...(server.serviceConnections ? (['connectors'] as const) : []),
+    // Hosted agents v2's Your cloud files, beside the person's agents and rooms.
     ...(server.cloudFiles ? (['cloudFiles'] as const) : []),
+    'library',
     'templates',
-    ...(admin ? (['admin'] as const) : []),
+    ...(server.serviceConnections ? (['connectors'] as const) : []),
+    ...(server.admin ? (['admin'] as const) : []),
   ];
-}
-
-/**
- * Where the sidebar's Admin opens: the Admin page, on the first section the
- * person may use, or the status of the server this Console runs where they
- * have no section of their own. While that server can't answer it is always
- * the status, the one entry that works without it.
- */
-export function adminNavTarget(server: {
-  serviceConnections: boolean;
-  administers: boolean;
-  frozen: boolean;
-  sharedCloud?: boolean;
-}): 'admin' | 'managedServer' {
-  return ((server.serviceConnections && server.administers) || server.sharedCloud === true) &&
-    !server.frozen
-    ? 'admin'
-    : 'managedServer';
 }

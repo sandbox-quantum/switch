@@ -51,10 +51,16 @@ export default function RoomScopedDocumentView() {
     );
   }
 
+  const isRoomScoped = doc.scope === "room";
+
+  // A room-scoped document lives only here, so removing it deletes it. An
+  // attached one is only unlinked from the room.
   const handleDelete = async () => {
     if (
       !window.confirm(
-        `Delete room document “${doc.name}”? This cannot be undone.`,
+        isRoomScoped
+          ? `Delete room document “${doc.name}”? This cannot be undone.`
+          : `Unlink “${doc.name}” from this room? The document itself is kept.`,
       )
     )
       return;
@@ -68,8 +74,6 @@ export default function RoomScopedDocumentView() {
       setDeleting(false);
     }
   };
-
-  const isRoomScoped = doc.scope === "room";
 
   return (
     <Box>
@@ -135,16 +139,24 @@ export default function RoomScopedDocumentView() {
           <Divider />
 
           {deleteError && <Alert severity="error">{deleteError}</Alert>}
-          <Stack direction="row" justifyContent="flex-end">
-            <Button
-              color="error"
-              startIcon={<DeleteOutline />}
-              onClick={handleDelete}
-              disabled={deleting}
-            >
-              Delete
-            </Button>
-          </Stack>
+          {doc.can_remove && (
+            <Stack direction="row" justifyContent="flex-end">
+              {isRoomScoped ? (
+                <Button
+                  color="error"
+                  startIcon={<DeleteOutline />}
+                  onClick={handleDelete}
+                  disabled={deleting}
+                >
+                  Delete
+                </Button>
+              ) : (
+                <Button onClick={handleDelete} disabled={deleting}>
+                  Unlink from room
+                </Button>
+              )}
+            </Stack>
+          )}
         </Stack>
       </Paper>
     </Box>

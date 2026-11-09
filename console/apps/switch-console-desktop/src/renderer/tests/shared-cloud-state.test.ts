@@ -12,7 +12,7 @@ import {
   sharedCloudPresentation,
   showsSharedCloudState,
 } from '@renderer/features/shared-cloud/shared-cloud-state';
-import { adminNavTarget, workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
+import { workspaceNavViews } from '@renderer/features/sidebar/workspace-nav-views';
 
 const now = new Date('2026-10-22T12:00:00Z');
 
@@ -66,7 +66,14 @@ describe('an agent on the shared cloud, as a person reads it', () => {
 });
 
 describe('the shared machines in Admin', () => {
-  const person = { administers: false, operator: false, serviceConnections: false, managed: false };
+  const person = {
+    administers: false,
+    operator: false,
+    operatesGatewaylessServer: false,
+    serviceConnections: false,
+  };
+  const inAnyGroup = (groups: ReturnType<typeof adminGroups>, item: string) =>
+    groups.some((group) => (group.items as string[]).includes(item));
 
   it('lists them under Server, for the operator the server shows them to', () => {
     expect(adminGroups({ ...person, sharedCloud: true })).toEqual([
@@ -75,35 +82,22 @@ describe('the shared machines in Admin', () => {
     expect(
       adminGroups({ ...person, administers: true, serviceConnections: true, sharedCloud: true })
     ).toEqual([
-      { scope: 'workspace', items: ['connectors'] },
+      { scope: 'workspace', items: ['messaging-apps', 'connectors', 'decision'] },
       { scope: 'server', items: ['cloud'] },
     ]);
   });
 
   it('never offers them to a workspace admin the server does not show them to', () => {
-    expect(adminGroups({ ...person, administers: true })).toEqual([]);
+    expect(inAnyGroup(adminGroups({ ...person, administers: true }), 'cloud')).toBe(false);
+    expect(inAnyGroup(adminGroups({ ...person, operator: true }), 'cloud')).toBe(false);
   });
 
   it('shows the sidebar Admin entry for an operator, even without service connections', () => {
-    expect(
-      workspaceNavViews({
-        managed: false,
-        serviceConnections: false,
-        administers: false,
-        sharedCloud: true,
-      })
-    ).toContain('admin');
-    expect(
-      workspaceNavViews({ managed: false, serviceConnections: false, administers: true })
-    ).not.toContain('admin');
-    expect(
-      adminNavTarget({
-        serviceConnections: false,
-        administers: false,
-        frozen: false,
-        sharedCloud: true,
-      })
-    ).toBe('admin');
+    const admin = (sharedCloud: boolean) => adminGroups({ ...person, sharedCloud }).length > 0;
+    expect(workspaceNavViews({ serviceConnections: false, admin: admin(true) })).toContain('admin');
+    expect(workspaceNavViews({ serviceConnections: false, admin: admin(false) })).not.toContain(
+      'admin'
+    );
   });
 });
 

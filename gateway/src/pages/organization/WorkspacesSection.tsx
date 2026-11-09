@@ -20,7 +20,7 @@ import {
   createOrganizationWorkspace,
   fetchOrganizationWorkspaces,
 } from "../../data/api";
-import { titleCase } from "../../theme/hootFormat";
+import { sentenceCase } from "../../theme/hootFormat";
 import { useLoad } from "../workspace/useLoad";
 
 interface Props {
@@ -51,7 +51,7 @@ export default function WorkspacesSection({ currentId, canAdd }: Props) {
         field: "role",
         headerName: "Your role",
         width: 140,
-        valueFormatter: (value) => titleCase(String(value)),
+        valueFormatter: (value) => sentenceCase(String(value)),
       },
       {
         field: "actions",
@@ -160,7 +160,7 @@ function AddWorkspaceDialog({
               label="Workspace name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              helperText="You become its owner. Every organization admin administers it."
+              helperText="You become its admin. Every organization admin administers it."
               required
               autoFocus
             />

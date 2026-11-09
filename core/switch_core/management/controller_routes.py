@@ -121,7 +121,7 @@ class ControllerRoute(ManagementRoute):
                     error_body(
                         reason_codes.PROTOCOL_UNSUPPORTED,
                         f"Controller protocol {requested!r} is not supported; "
-                        f"this server accepts {SUPPORTED_PROTOCOLS}.",
+                        f"Switch accepts {SUPPORTED_PROTOCOLS}.",
                         retryable=False,
                     ),
                     status_code=426,
@@ -340,13 +340,14 @@ async def post_restart_notice(
             404, reason_codes.NOT_FOUND, "No agent of this controller has that id."
         )
     try:
-        event_id = await protocol.send_message(
+        sent = await protocol.send_message(
             agent_id,
             request.room_id,
             RESTART_NOTICE_TEXT,
             request.thread_id,
             client_txn_id=restart_notice_key(request.turn_id),
         )
+        event_id = sent.event_id
     except PermissionError as exc:
         raise ManagementError(403, reason_codes.FORBIDDEN, str(exc)) from exc
     except ValueError as exc:
@@ -447,13 +448,14 @@ async def post_rest_notice(
             404, reason_codes.NOT_FOUND, "No agent of this controller has that id."
         )
     try:
-        event_id = await protocol.send_message(
+        sent = await protocol.send_message(
             agent_id,
             request.room_id,
             rest_notice_text(request.stopped),
             request.thread_id,
             client_txn_id=rest_notice_key(request.key),
         )
+        event_id = sent.event_id
     except PermissionError as exc:
         raise ManagementError(403, reason_codes.FORBIDDEN, str(exc)) from exc
     except ValueError as exc:
@@ -530,13 +532,14 @@ async def post_reset_refused(
             404, reason_codes.NOT_FOUND, "No agent of this controller has that id."
         )
     try:
-        event_id = await protocol.send_message(
+        sent = await protocol.send_message(
             agent_id,
             request.room_id,
             RESET_NOT_SENT,
             request.thread_id,
             client_txn_id=f"reset-refused:{request.command_id}",
         )
+        event_id = sent.event_id
     except PermissionError as exc:
         raise ManagementError(403, reason_codes.FORBIDDEN, str(exc)) from exc
     except ValueError as exc:
@@ -976,7 +979,7 @@ def _socket_principal(websocket: WebSocket, controller_id: str) -> ControllerPri
             426,
             reason_codes.PROTOCOL_UNSUPPORTED,
             f"Controller protocol {requested!r} is not supported; "
-            f"this server accepts {SUPPORTED_PROTOCOLS}.",
+            f"Switch accepts {SUPPORTED_PROTOCOLS}.",
         )
     return require_controller(controller_id, get_controller_principal(websocket))
 

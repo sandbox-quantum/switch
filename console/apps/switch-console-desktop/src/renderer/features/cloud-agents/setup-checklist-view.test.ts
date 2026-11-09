@@ -102,7 +102,7 @@ describe('BoxSetupChecklist', () => {
     expect(gave.provider).toBe('claude');
     expect(buttons(view.host)).not.toContain('Give login');
     await click(view.host, 'Add agent');
-    expect(showAddAgent).toHaveBeenCalledWith({ entryPoint: 'server_page' });
+    expect(showAddAgent).toHaveBeenCalledWith({ entryPoint: 'server_page', machine: null });
     view.done();
   });
 

@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity ACP and Cursor. Local sessions and sessions reached through SSH run
+Antigravity and Cursor. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -111,6 +111,106 @@ Adopted sessions do not launch providers. Open their location and select the ses
 to load its transcript. Existing older Console binaries need an update to receive
 these discovery fixes.
 
+## Continuing a Claude Code CLI conversation
+
+A Claude Code agent's session can continue a conversation that was started in
+Claude Code's own terminal or IDE clients in the agent's folder. Pick it under
+**Conversation** in the new-session dialog. The list is read when that picker
+first opens, not with the dialog, on the session's execution host, local or
+SSH, with the Agent SDK's `listSessions`. Conversations a program started
+through the SDK are left out, Switch's own sessions included, and so are the
+copies Console made (below). Only Claude Code conversations can be continued;
+Codex runs each session in a private `CODEX_HOME` and records no running
+conversations to check against.
+
+Conversations are looked for where the session's Claude Code will look: the
+host applies the agent's shell setup and inherited variables, as it does before
+starting the provider, so a `CLAUDE_CONFIG_DIR` set there is honoured. Console
+sends that request as a private file, in a directory only the user can read
+beside a launch's configuration, not on a command line. Listing only reads the
+host. On an SSH host that does not yet have this Console's host bundle the
+dialog says so instead of deploying it; starting a session, which copies the
+conversation, deploys it as any launch does. A Room watcher that does not run
+this Console's host bundle cannot start such a session. Before the
+conversation is copied, and again before the session's first start, Console
+asks which bundle the agent's watcher runs (its `health.json`, written by the
+process alive now, or while that process is down its supervisor's record of
+the file it starts) and, when it names another build, refuses and says to
+update the watcher. A session that cannot start this way never gets a copy. A
+watcher whose bundle cannot be told yet (its process has written no record of
+its own, or its supervisor names no file) is not refused, nor is a host with
+no watcher; a relaunch of a session that has started is not asked about.
+
+The session never writes to the CLI's conversation. Starting the session copies
+it under a new id (the SDK's `forkSession`), and the session resumes the copy.
+The source is read with `getSessionInfo`, and a copy Console made is refused as
+one. Each copy is tagged `switch-console:<session id>` (`tagSession`) as soon as
+it is made; a copy that cannot be tagged is removed at once. The session is
+recorded before the copy is made. Something that starts it while the copy is
+being made waits for the copy. If the copy fails, or the session's row was
+deleted while it was made, the session is removed again and Console removes the
+conversations in the folder tagged with that session's id, and nothing else; a
+copy the host refused, saying why, leaves nothing tagged to remove. When the
+copy's outcome is unknown (a timeout or a dropped connection, so it may be made
+after Console stopped waiting), or removing it fails, Console tries again in the
+background with each list or copy in that location, never holding either up, and
+asks the host about every such session in one request. A session is tried until
+a removal finds its copy, or until one finds none 15 minutes after it was
+recorded, by when a copy still being made would have finished; a removal that
+fails does not count. A session read before its copy was recorded finds the copy
+in its row. One whose copy was never recorded (Console stopped while copying)
+refuses to start rather than open a new conversation. The copy is titled
+`… (continued in Switch Console)`, so Claude Code's own `/resume` list shows it
+is taken. The dialog never offers a copy, by its tag (a renamed one included)
+or by that title (one made before copies were tagged), whether or not its
+session still exists. The original stays the terminal's. Continuing it there
+afterwards starts a separate branch that does not include what happened in
+Console.
+
+A conversation that a running Claude Code process has open cannot be picked, and
+the copy is refused if one has opened it since. Claude Code records each running
+process under its config directory's `sessions/<pid>.json`, rewriting it as the
+process goes busy or idle; a record read half-written is read again. A record
+counts while its process is alive and is Claude Code, whatever its recorded start
+time says, since a stepped clock moves that. A live process that is something
+else no longer holds the conversation unless it started at the recorded time
+(`ps -o lstart=` in UTC). A live process `ps` cannot describe is taken to hold
+its conversation. When a live Claude Code process's record cannot be read, or
+this Claude Code keeps no records, the dialog asks for confirmation that the
+conversation is closed. The check runs again when the copy is made: without
+that confirmation, a Claude Code that keeps no records refuses the copy and
+asks for it, and a record that cannot be read just then refuses it and asks to
+try again.
+
+No earlier prompt is sent again. Before the provider starts, the session's
+transcript is filled with the copy's earlier turns, up to the last 500 items:
+prompts, slash and `!` commands as they were typed (a prompt that quotes Claude
+Code's command tags among other text is shown as typed), Claude's replies, and
+the tools it ran, with a failed tool marked as failed. Reasoning, subagents' own
+messages, the entries Claude Code marks as hidden (a loaded skill's
+instructions, say), the context it adds on its own (in its own tags; markup a
+person pasted stays) and its notes that a turn was stopped are left out, as they
+are from a live transcript. Imported turns carry ids starting `imported:`
+(`isImportedTurn` in `@switch-console/shared/session-v1`), and nothing that asks
+whether a session has run anything counts them: its initial prompt is still
+delivered, its first room message still opens the conversation, and its agent
+instructions are not announced as changed. Where the conversation was compacted,
+an item marks it instead of showing the summary as a prompt. Text is scrubbed of
+service tokens before it is cut into parts, and an item the conversation repeats
+is shown once. A notice after those turns says how many items were not shown,
+and settles the import: the host reads it back from its event journal on
+restart. Items are recorded in batches bounded in count and bytes. An import cut
+short by a crash runs again and publishes only what it had not. A saved
+transcript is read whole or not at all: only a last line cut short by a write in
+progress is left out. If the conversation cannot be read, or its turns cannot be
+recorded, a warning says so once and the session goes on to resume it, which
+decides whether it is there. Because the session continues a conversation that
+already had answers, a copy that cannot be resumed is never quietly replaced
+with a new conversation. Console asks for the explicit fresh start instead. Once
+the person has taken it, a restart before the fresh conversation has run a turn
+starts another without asking, since that one was never the copy and never
+answered.
+
 ## Context, models and attachments
 
 Reset starts a fresh native conversation under a new server-issued epoch. The
@@ -141,14 +241,14 @@ the native thread setting. Choose an explicit effort to replace it. Claude
 Compaction uses a native operation: Claude's `/compact` with a completed compaction
 boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
 `session.summarize` with native busy/idle completion. Console shows progress and the
-outcome. A timeout or interrupted completion remains unknown. The Antigravity ACP adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
+outcome. A timeout or interrupted completion remains unknown. The Antigravity adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
 
 | Provider | Reset | Model selection | Native compaction | Attachments |
 | --- | --- | --- | --- | --- |
 | Claude Code | Yes | Native catalog and effort | When `/compact` is advertised | Images as bytes; other files staged |
 | Codex | Yes | Native catalog and reasoning effort | App-server compaction | Local images and staged file mentions |
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
-| Antigravity ACP | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
+| Antigravity (`agy acp`) | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
 
 Controls depend on the connected provider's reported support. OpenCode models
@@ -183,12 +283,22 @@ workspace permissions in Codex and restart the host before using file tools.
 
 ## Capability and deployment limits
 
-Antigravity uses Google's standalone ACP runtime, installed as `antigravity-acp`.
-It requires a separate sign-in with `antigravity-acp --login` on the execution
-host; an existing `agy` login is not reused. The runtime supports Apple Silicon
-macOS and Linux x64/ARM64. Approvals, offered-answer questions and cancellation
-use ACP. Saved conversations from the older CLI runtime cannot be resumed by ACP;
-reset the conversation to start fresh while preserving its transcript.
+Antigravity runs Google's Antigravity CLI, `agy`, as `agy acp` on macOS, Linux
+and Windows. Install it with Google's installer (`curl -fsSL
+https://antigravity.google/cli/install.sh | bash`, or on Windows `irm
+https://antigravity.google/cli/install.ps1 | iex`, which puts `agy.exe` in
+`%LOCALAPPDATA%\agy\bin`). It uses the person's own `agy` sign-in: sign in with
+`agy acp --login` on the execution host, or set `GEMINI_API_KEY`, which a
+session uses only when `agy` is not signed in itself. The sign-in check asks
+`agy acp` for its sessions, which it refuses while signed out, and never signs
+in itself. A hosted Antigravity login made for the older runtime cannot sign
+`agy` in; a session given one fails with an error saying how to sign in on the
+machine instead. Approvals and cancellation use ACP; questions arrive as
+ACP form elicitations. A machine that only has the `antigravity-acp` runtime
+Switch Console used to install keeps using it, with its own `antigravity-acp
+--login`, until `agy` is installed. Conversations saved by that runtime, or by
+the older CLI runtime, cannot be resumed by `agy`; reset the conversation to
+start fresh while preserving its transcript.
 Other capability limits remain explicit
 in the session contract. Terminal sessions (tmux/PTY) were removed; SDK adapters
 are the only session runtime. Lifecycle scripts use noninteractive commands.

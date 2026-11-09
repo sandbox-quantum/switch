@@ -90,6 +90,7 @@ import {
   offlineSharedCloudMachine,
   SHARED_CLOUD_LABEL,
   sharedCloudMachine,
+  type MachineRunLocation,
   sshHostIsMachine,
   thisComputerIsMachine,
 } from './server-run-locations';
@@ -99,7 +100,8 @@ export type NewAgentFormProps = {
   onBack: (() => void) | null;
   entryPoint: UiEntryPoint;
   serverId: string | null;
-  initialRunLocation: 'local' | 'cloud';
+  /** Where the agent runs at first: this computer, Switch cloud, or one of the server's machines. */
+  initialRunLocation: 'local' | 'cloud' | MachineRunLocation;
 };
 
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
@@ -399,7 +401,9 @@ export const NewAgentForm = observer(function NewAgentForm({
     if (runHost === 'cloud') return;
     const id = machineIdOf(runHost);
     if (!serverMachines) {
-      if (id !== null) setRunHost(LOCAL_RUN_LOCATION);
+      // A machine picked before the list arrives keeps its place until the list says otherwise.
+      if (id !== null && (!askForMachines || machinesQuery.isFetched))
+        setRunHost(LOCAL_RUN_LOCATION);
       return;
     }
     if (id !== null) {
@@ -408,7 +412,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     }
     const enrolled = machineFor(runHost, serverMachines);
     if (enrolled) setRunHost(machineRunLocation(enrolled.id));
-  }, [serverMachines, runHost]);
+  }, [serverMachines, runHost, askForMachines, machinesQuery.isFetched]);
 
   // Everything chosen below the run location belongs to the machine it was
   // chosen on, so changing machines clears it.

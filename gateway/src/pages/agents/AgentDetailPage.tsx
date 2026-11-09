@@ -1,4 +1,5 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import EditOutlined from "@mui/icons-material/EditOutlined";
 import FolderOpenOutlined from "@mui/icons-material/FolderOpenOutlined";
 import {
@@ -29,15 +30,15 @@ import {
   renameAgent,
   updateAgentOptions,
 } from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import { useAgent, useHostedV2, useKnownAgentTypes } from "../../data/hooks";
 import { useCloudView } from "../../data/hostedCloud";
 import {
   EM_DASH,
   MONO_SX,
   formatDateTime,
-  titleCase,
+  sentenceCase,
 } from "../../theme/hootFormat";
+import { useAuth } from "../../data/AuthContext";
 import { useCloudFilesBox } from "../files/useCloudFiles";
 import AddressingPolicySection from "./AddressingPolicySection";
 import AgentManagementSection from "./AgentManagementSection";
@@ -82,7 +83,7 @@ function StatusDot({ color, title }: { color: string; title?: string }) {
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { capabilities, user } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
   // With hosted agents v2 on: the person's box, so an agent on it gets the
   // cloud start, stop, restart, rename and delete. Nothing is read with it off.
@@ -119,6 +120,15 @@ export default function AgentDetailPage() {
     );
   }
 
+  // Every control follows the server's answer for this agent. Who may address
+  // it is open to whoever may manage it (its owner or an admin); agent
+  // management and service access stay with the owner alone, because the
+  // agent then acts on the owner's own machines and credentials. Service
+  // access shows only to its owner: the server answers anyone else's request
+  // for its grants as not found.
+  const canManage = agent.can_manage;
+  // v2's cloud agent section is its owner's alone: the box it runs on is
+  // theirs, and Core refuses anyone else.
   const isOwner = !!user && user.id === agent.owner_id;
 
   return (
@@ -128,7 +138,7 @@ export default function AgentDetailPage() {
           <ArrowBack />
         </IconButton>
         <Typography variant="h5">{agent.name}</Typography>
-        {isOwner && !agent.parent_agent_id && agent.children.length === 0 && (
+        {agent.can_rename && (
           <Tooltip title="Rename agent">
             <IconButton
               size="small"
@@ -144,7 +154,7 @@ export default function AgentDetailPage() {
         <Chip label={agent.connector_type} size="small" variant="outlined" />
         {agent.connection_model && (
           <Chip
-            label={titleCase(agent.connection_model)}
+            label={sentenceCase(agent.connection_model)}
             size="small"
             variant="outlined"
           />
@@ -208,7 +218,7 @@ export default function AgentDetailPage() {
             <Divider />
             <OptionsSection
               agent={agent}
-              canEdit={isOwner}
+              canEdit={agent.can_edit_options}
               onUpdated={refetch}
             />
           </>
@@ -216,15 +226,34 @@ export default function AgentDetailPage() {
         <Divider />
         <AddressingPolicySection
           agent={agent}
-          canEdit={isOwner}
+          canEdit={canManage}
           onUpdated={refetch}
         />
         <AgentManagementSection
           agent={agent}
-          canEdit={isOwner}
+          canEdit={agent.can_change_manage_agents}
           onUpdated={refetch}
         />
-        {isOwner && <ServiceAccessSection agent={agent} onAgentUpdated={refetch} />}
+        {capabilities.features.service_connections && (
+          <ServiceAccessSection
+            agent={agent}
+            canGrant={agent.can_grant_services}
+            onAgentUpdated={refetch}
+          />
+        )}
+        {(agent.can_transfer || agent.transfer_blocked_reason !== null) && (
+          <>
+            <Divider />
+            <TransferOwnershipSection
+              kind="agent"
+              resourceId={agent.id}
+              resourceLabel={agent.name}
+              ownerId={agent.owner_id}
+              blockedReason={agent.can_transfer ? null : agent.transfer_blocked_reason}
+              onTransferred={refetch}
+            />
+          </>
+        )}
         <Divider />
         <SessionsSection sessions={agent.sessions} />
         <Divider />
@@ -446,8 +475,8 @@ function InfoSection({ agent }: { agent: AgentDetail }) {
       )}
       <InfoLine label="Agent type" value={agent.connector_type} />
       <InfoLine
-        label="Connection type"
-        value={agent.connection_model ? titleCase(agent.connection_model) : null}
+        label="Availability"
+        value={agent.connection_model ? sentenceCase(agent.connection_model) : null}
       />
       <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />
       <InfoLine label="Created" value={formatDateTime(agent.created_at)} />
@@ -530,14 +559,14 @@ function OptionsSection({
       </Typography>
       {!spec ? (
         <Alert severity="warning">
-          Unknown agent type "{agent.known_agent_type}" — its schema is no
-          longer registered on this server.
+          Unknown agent type "{agent.known_agent_type}" — Switch no longer
+          describes its options.
         </Alert>
       ) : (
         <>
           {!canEdit && (
             <Typography variant="body2" color="text.secondary">
-              Only the agent's owner can edit these options.
+              Only the agent's owner and admins can edit these options.
             </Typography>
           )}
           <Box sx={{ pointerEvents: canEdit ? "auto" : "none", opacity: canEdit ? 1 : 0.6 }}>
@@ -595,7 +624,7 @@ export function SessionsSection({ sessions }: { sessions: AgentSessionDetail[] }
 function SessionRow({ session }: { session: AgentSessionDetail }) {
   const navigate = useNavigate();
   const meta = SESSION_STATE_META[session.state] ?? {
-    label: titleCase(session.state),
+    label: sentenceCase(session.state),
     color: NEUTRAL_STATUS_COLOR,
   };
   const isLive = session.state === "live";
@@ -680,7 +709,7 @@ function RoomsSection({ rooms }: { rooms: AgentRoomMembership[] }) {
       </Typography>
       {rooms.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          Not a member of any room.
+          Not in any room.
         </Typography>
       ) : (
         <Stack spacing={0.5}>
@@ -696,7 +725,7 @@ function RoomsSection({ rooms }: { rooms: AgentRoomMembership[] }) {
 function RoomRow({ room }: { room: AgentRoomMembership }) {
   const navigate = useNavigate();
   const meta = ROOM_STATUS_META[room.status] ?? {
-    label: titleCase(room.status),
+    label: sentenceCase(room.status),
     color: NEUTRAL_STATUS_COLOR,
   };
   return (

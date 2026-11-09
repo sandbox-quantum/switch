@@ -217,7 +217,7 @@ export function RoomFilters({
         <TextField
           size="small"
           select
-          label="Connected User"
+          label="Connected user"
           value={state.userFilter}
           onChange={(e) => state.setUserFilter(e.target.value)}
           sx={{ width: 200 }}

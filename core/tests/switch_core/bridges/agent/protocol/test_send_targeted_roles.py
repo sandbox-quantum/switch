@@ -10,6 +10,7 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import (
     AgentStatus,
     RoomWideMentionStatus,
+    SentMessage,
 )
 
 
@@ -106,9 +107,9 @@ def _build_service(
         *,
         extra_content: dict[str, object] | None = None,
         client_txn_id: str | None = None,
-    ) -> str:
+    ) -> SentMessage:
         sent_bodies.append(body)
-        return "evt-1"
+        return SentMessage(event_id="evt-1", trust=None)
 
     svc.list_participants = _list_participants  # type: ignore[assignment]
     svc.send_message = _send_message  # type: ignore[assignment]

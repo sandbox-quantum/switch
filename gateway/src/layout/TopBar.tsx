@@ -8,12 +8,21 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/rooms", "Rooms"],
   ["/resources", "Resources"],
   ["/agents", "Agents"],
-  ["/collaborations", "Messaging Apps"],
-  ["/registration-keys", "API Keys"],
+  ["/collaborations", "Messaging apps"],
+  ["/registration-keys", "API keys"],
+  ["/machines", "Devices"],
+  ["/connectors", "Connectors"],
   ["/users", "Users"],
   ["/workspace", "Workspace"],
   ["/organization", "Organization"],
   ["/operator/workspaces", "All workspaces"],
+  ["/usage", "Usage"],
+  // The new layout's own (`gateway_v2`).
+  ["/overview", "Overview"],
+  ["/templates", "Templates"],
+  ["/settings/org", "Organization settings"],
+  ["/settings", "Settings"],
+  ["/platform", "Platform"],
 ];
 
 const DOCS_URL = "https://docs.switchagents.ai/switch-rooms/getting-started";

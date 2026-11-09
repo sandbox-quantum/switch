@@ -102,8 +102,8 @@ def management_off_reason() -> str:
     if _port is not None:
         return WORKSPACE_NOT_ENABLED_MESSAGE
     return (
-        "agent management is not enabled on this Switch server, "
-        "so it cannot create agents on a machine."
+        "agent management is not turned on here, "
+        "so it cannot create agents on a device."
     )
 
 

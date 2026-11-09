@@ -83,7 +83,7 @@ export function SetupChecklist({
               <Button
                 variant="outline"
                 size="xs"
-                onClick={() => showAddAgentModal({ entryPoint: 'server_page' })}
+                onClick={() => showAddAgentModal({ entryPoint: 'server_page', machine: null })}
               >
                 {W.addAgent}
               </Button>

@@ -131,6 +131,11 @@
       ]
     },
     {
+      "route": "DELETE /gateway/decision-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/documents/{document_id}",
       "auth": "session",
       "flags": []
@@ -277,6 +282,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/tenants/{tenant_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/tenants/{tenant_id}/budgets/{budget_id}",
       "auth": "session",
       "flags": []
@@ -297,7 +307,17 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/tenants/{tenant_id}/retention",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/trust-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/users/{user_id}",
       "auth": "session",
       "flags": []
     },
@@ -391,6 +411,16 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/auth/workos/callback",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/workos/organization",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/chats",
       "auth": "session",
       "flags": []
@@ -444,6 +474,27 @@
       "route": "GET /gateway/chats/{room_id}/threads/{root_id}/messages",
       "auth": "session",
       "flags": []
+    },
+    {
+      "route": "GET /gateway/cloud-files/content",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "GET /gateway/cloud-files/list",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "GET /gateway/cloud-files/zip",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "GET /gateway/collaborations",
@@ -500,6 +551,11 @@
       ]
     },
     {
+      "route": "GET /gateway/decision-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/docs",
       "auth": "none",
       "flags": []
@@ -537,7 +593,9 @@
     {
       "route": "GET /gateway/hosted-controller/actions",
       "auth": "none",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "GET /gateway/hosted-controller/machines",
@@ -664,6 +722,11 @@
         "organization_connector_apps",
         "service_connections"
       ]
+    },
+    {
+      "route": "GET /gateway/organizations/current/issues",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "GET /gateway/organizations/current/members",
@@ -861,22 +924,30 @@
     {
       "route": "GET /gateway/shared-cloud/agents",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "GET /gateway/shared-cloud/audit-events",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "GET /gateway/shared-cloud/operators",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "GET /gateway/shared-cloud/overview",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "GET /gateway/template-runs",
@@ -919,14 +990,23 @@
       "flags": []
     },
     {
-      "route": "GET /gateway/tenants/{tenant_id}/hosted-people",
+      "route": "GET /gateway/tenants/{tenant_id}/erasures",
       "auth": "session",
       "flags": []
     },
     {
+      "route": "GET /gateway/tenants/{tenant_id}/hosted-people",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
       "route": "GET /gateway/tenants/{tenant_id}/hosted-usage",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "GET /gateway/tenants/{tenant_id}/invitations",
@@ -940,6 +1020,21 @@
     },
     {
       "route": "GET /gateway/tenants/{tenant_id}/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/people",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/retention",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/retention/preview",
       "auth": "session",
       "flags": []
     },
@@ -972,6 +1067,11 @@
     },
     {
       "route": "PATCH /gateway/agents/{agent_id}/options",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/auth/me",
       "auth": "session",
       "flags": []
     },
@@ -1095,6 +1195,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/auth/sessions/revoke",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/auth/signup",
       "auth": "none",
       "flags": []
@@ -1199,6 +1304,11 @@
       ]
     },
     {
+      "route": "POST /gateway/decision-settings/test",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/documents",
       "auth": "session",
       "flags": []
@@ -1206,12 +1316,16 @@
     {
       "route": "POST /gateway/hosted-controller/actions/{action_id}/steps",
       "auth": "none",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "POST /gateway/hosted-controller/cluster",
       "auth": "operator-token",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "POST /gateway/hosted-controller/machines/{machine_id}/observation",
@@ -1236,12 +1350,16 @@
     {
       "route": "POST /gateway/hosted-provisioner/actions/{action_id}/result",
       "auth": "none",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "POST /gateway/hosted-provisioner/claim",
       "auth": "none",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "POST /gateway/invitations/accept",
@@ -1311,6 +1429,11 @@
     },
     {
       "route": "POST /gateway/organizations/current/workspaces",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/ownership/transfer",
       "auth": "session",
       "flags": []
     },
@@ -1451,27 +1574,37 @@
     {
       "route": "POST /gateway/shared-cloud/boxes/{box_keyed_id}/restart",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "POST /gateway/shared-cloud/machines/{machine_keyed_id}/drain",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "POST /gateway/shared-cloud/reveal",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "POST /gateway/shared-cloud/users/{user_keyed_id}/pause",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "POST /gateway/shared-cloud/users/{user_keyed_id}/resume",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "hosted_v2"
+      ]
     },
     {
       "route": "POST /gateway/template-runs/{root_room_id}/continue",
@@ -1504,6 +1637,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/tenants/{tenant_id}/erasures",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/tenants/{tenant_id}/invitations",
       "auth": "session",
       "flags": []
@@ -1520,6 +1658,11 @@
     },
     {
       "route": "POST /gateway/users",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/users/{user_id}/sessions/revoke",
       "auth": "session",
       "flags": []
     },
@@ -1583,6 +1726,11 @@
       ]
     },
     {
+      "route": "PUT /gateway/decision-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PUT /gateway/management/agents/{agent_id}",
       "auth": "session",
       "flags": [
@@ -1618,6 +1766,11 @@
       "flags": []
     },
     {
+      "route": "PUT /gateway/rooms/{room_id}/auto-route",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PUT /gateway/rooms/{room_id}/group",
       "auth": "session",
       "flags": []
@@ -1646,6 +1799,13 @@
     },
     {
       "route": "PUT /gateway/tenants/{tenant_id}/hosted-people/{user_id}",
+      "auth": "session",
+      "flags": [
+        "hosted_v2"
+      ]
+    },
+    {
+      "route": "PUT /gateway/tenants/{tenant_id}/retention",
       "auth": "session",
       "flags": []
     },

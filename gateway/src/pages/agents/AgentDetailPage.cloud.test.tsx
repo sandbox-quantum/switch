@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentDetail } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import { ALL_OFF } from "../../data/featureFlags";
 import * as hooks from "../../data/hooks";
 import * as hostedCloud from "../../data/hostedCloud";
 import AgentDetailPage from "./AgentDetailPage";
@@ -63,6 +64,14 @@ const agent = {
   children: [],
   addressing_policy: null,
   can_manage_agents: false,
+  // Main's per-agent answers, as for its owner.
+  can_manage: true,
+  can_rename: true,
+  can_edit_options: true,
+  can_transfer: true,
+  can_change_manage_agents: true,
+  can_grant_services: true,
+  transfer_blocked_reason: null,
 } as AgentDetail;
 
 function view(onBox: boolean) {
@@ -76,7 +85,7 @@ function view(onBox: boolean) {
 }
 
 beforeEach(() => {
-  vi.mocked(useAuth).mockReturnValue({ user: { id: "u1" } } as unknown as ReturnType<
+  vi.mocked(useAuth).mockReturnValue({ user: { id: "u1" }, capabilities: { features: ALL_OFF } } as unknown as ReturnType<
     typeof useAuth
   >);
   vi.mocked(hooks.useAgent).mockReturnValue({
@@ -127,7 +136,7 @@ describe("AgentDetailPage for an agent on the person's cloud box", () => {
   });
 
   it("shows no cloud controls to someone who doesn't own the agent", () => {
-    vi.mocked(useAuth).mockReturnValue({ user: { id: "u2" } } as unknown as ReturnType<
+    vi.mocked(useAuth).mockReturnValue({ user: { id: "u2" }, capabilities: { features: ALL_OFF } } as unknown as ReturnType<
       typeof useAuth
     >);
     vi.mocked(hooks.useHostedV2).mockReturnValue(true);

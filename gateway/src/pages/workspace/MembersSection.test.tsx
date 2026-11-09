@@ -1,8 +1,9 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import MembersSection from "./MembersSection";
 
-vi.mock("../../data/AuthContext", () => ({ useAuth: () => ({ refresh: vi.fn() }) }));
+const refresh = vi.hoisted(() => vi.fn());
+vi.mock("../../data/AuthContext", () => ({ useAuth: () => ({ refresh }) }));
 
 vi.mock("../../components/DataTable", () => import("../../test/FakeDataTable"));
 
@@ -13,6 +14,9 @@ const member = (overrides: Record<string, unknown>) => ({
   created_at: "2026-01-01",
   organization_role: "member",
   via_organization: false,
+  can_change_role: false,
+  can_remove: false,
+  can_receive_transfer: true,
   ...overrides,
 });
 
@@ -22,6 +26,65 @@ describe("MembersSection", () => {
     vi.unstubAllGlobals();
   });
 
+  it("offers each row only what the server says the caller may do", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify([
+              member({ user_id: "u1", name: "Me", email: "me@example.com", role: "admin" }),
+              member({
+                user_id: "u2",
+                name: "Bob",
+                email: "bob@example.com",
+                can_change_role: true,
+                can_remove: true,
+              }),
+            ]),
+          ),
+      ),
+    );
+
+    render(<MembersSection tenantId="t1" selfId="u1" />);
+
+    expect(await screen.findByLabelText("Role for bob@example.com")).toBeTruthy();
+    expect(screen.getByLabelText("Remove bob@example.com")).toBeTruthy();
+    // Your own row, where the server says no: as the last admin, say.
+    expect(screen.queryByLabelText("Role for me@example.com")).toBeNull();
+    expect(screen.queryByLabelText("Leave this workspace")).toBeNull();
+  });
+
+  it("lets an admin leave from their own row, then follows the session", async () => {
+    refresh.mockReset();
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === "DELETE"
+        ? new Response(JSON.stringify({ ok: true, warning: null }))
+        : new Response(
+            JSON.stringify([
+              member({
+                user_id: "u1",
+                name: "Me",
+                email: "me@example.com",
+                role: "admin",
+                can_change_role: true,
+                can_remove: true,
+              }),
+            ]),
+          ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MembersSection tenantId="t1" selfId="u1" />);
+    expect(await screen.findByLabelText("Role for me@example.com")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Leave this workspace"));
+
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    const reads = fetchMock.mock.calls.filter(([, init]) => init?.method !== "DELETE");
+    // Read once, and not again for a workspace the session has moved off.
+    expect(reads).toHaveLength(1);
+  });
+
   it("shows organization admins read-only, and the rest manageable", async () => {
     vi.stubGlobal(
       "fetch",
@@ -29,7 +92,13 @@ describe("MembersSection", () => {
         async () =>
           new Response(
             JSON.stringify([
-              member({ user_id: "u2", name: "Bob", email: "bob@example.com" }),
+              member({
+                user_id: "u2",
+                name: "Bob",
+                email: "bob@example.com",
+                can_change_role: true,
+                can_remove: true,
+              }),
               member({
                 user_id: "u3",
                 name: "Cy",
@@ -42,7 +111,7 @@ describe("MembersSection", () => {
                 user_id: "u4",
                 name: "Dee",
                 email: "dee@example.com",
-                role: "owner",
+                role: "admin",
                 organization_role: "org_admin",
               }),
             ]),
@@ -50,10 +119,10 @@ describe("MembersSection", () => {
       ),
     );
 
-    render(<MembersSection tenantId="t1" selfId="u1" canAdmin isOwner />);
+    render(<MembersSection tenantId="t1" selfId="u1" />);
 
-    expect(await screen.findByText("Org Admin, via organization")).toBeTruthy();
-    expect(screen.getByText("Owner · Org Admin")).toBeTruthy();
+    expect(await screen.findByText("Org admin, via organization")).toBeTruthy();
+    expect(screen.getByText("Admin · Org admin")).toBeTruthy();
     expect(screen.queryByLabelText("Remove dee@example.com")).toBeNull();
     expect(screen.queryByLabelText("Role for cy@example.com")).toBeNull();
     expect(screen.queryByLabelText("Remove cy@example.com")).toBeNull();

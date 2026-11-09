@@ -51,6 +51,7 @@ from switch_core.observability.catalogue import (
     BRIDGE_EVENTS_IN,
 )
 from switch_core.observability.metrics import metrics
+from switch_core.room_service import MembershipFixed
 from switch_core.trust.client import GuardrailBlockedError
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,10 @@ def refusal_status(exc: Exception) -> int | None:
         # (B62), as for any 503, rather than taking it as refused. With hosted
         # agents v2 off, upstream's 422, as any ValueError (sweep row 9).
         return 503 if process_hosted_v2() else 422
+    if isinstance(exc, MembershipFixed):
+        # As the room routes answer it: nothing is wrong with the request, the
+        # room is a direct or group conversation.
+        return 409
     if isinstance(exc, ValueError):
         # Operations raise ValueError for "you asked for something that is not
         # there or not allowed yet" - surfaced rather than swallowed.

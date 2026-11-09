@@ -2,6 +2,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAuth } from "../data/AuthContext";
+import { capabilitiesOf } from "../data/capabilities";
+import { ALL_OFF } from "../data/featureFlags";
 import NavRail from "./NavRail";
 
 vi.mock("../data/AuthContext", () => ({ useAuth: vi.fn() }));
@@ -20,11 +22,13 @@ function renderAs(flags: { isOperator: boolean; isHostedOperator: boolean }) {
     session: null,
     logout: vi.fn(),
     switchTo: vi.fn(),
+    // Main's rail lists what these allow; with none, only v2's own entries are in question.
+    capabilities: { ...capabilitiesOf(null, null, ALL_OFF), isOperator: flags.isOperator },
     ...flags,
   } as unknown as ReturnType<typeof useAuth>);
   render(
     <MemoryRouter>
-      <NavRail />
+      <NavRail layout="current" />
     </MemoryRouter>,
   );
 }

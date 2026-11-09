@@ -73,6 +73,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -460,6 +461,9 @@ class MattermostAdapter(PlatformAdapter):
     #: carried over: it is the one that reaches the person who can do something.
     notifies_only_by_mention: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "@channel"
+    #: `POST /posts/ephemeral`, made as the admin the bridge connects as: the
+    #: endpoint needs `create_post_ephemeral`, which a system admin holds.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "ephemeral"
 
     #: The status is the turn's one post, not a line beside it, so the clock
     #: advancing is not on its own worth rewriting what a reader is reading.
@@ -960,6 +964,33 @@ class MattermostAdapter(PlatformAdapter):
             notices.append(text)
             return
         await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """An ephemeral post: shown in the channel, in the message's thread,
+        to the person who posted it and to nobody else, and gone on reload."""
+        loop = self._main_loop
+        driver = self._admin_driver
+        if loop is None or driver is None:
+            raise RuntimeError("Mattermost is not connected")
+        post: dict[str, Any] = {
+            "channel_id": channel_id,
+            "message": self.translate_outbound(content),
+        }
+        if thread_root_id is not None:
+            post["root_id"] = thread_root_id
+        await loop.run_in_executor(
+            None,
+            driver.posts.create_ephemeral_post,
+            {"user_id": user_id, "post": post},
+        )
 
     # ── Messaging ────────────────────────────────────────────────────────────
 
@@ -3122,14 +3153,24 @@ class MattermostAdapter(PlatformAdapter):
             raise RuntimeError("Cannot handle posted event: adapter not started")
 
         loop = asyncio.get_running_loop()
+        user_is_bot = False
         try:
             user = await loop.run_in_executor(None, driver.users.get_user, user_id)
             username: str = user.get("username", user_id)
+            user_is_bot = bool(user.get("is_bot", False))
         except Exception:
             logger.exception("Failed to resolve Mattermost user %s", user_id)
             username = user_id
         props = post.get("props") or {}
-        if str(props.get("from_webhook", "")).lower() == "true":
+        from_webhook = str(props.get("from_webhook", "")).lower() == "true"
+        # An integration rather than a person: an incoming webhook, or a bot
+        # account other than the bridge's own (those never reach here).
+        sender_is_app = (
+            from_webhook
+            or user_is_bot
+            or str(props.get("from_bot", "")).lower() == "true"
+        )
+        if from_webhook:
             # An incoming webhook's post (or a custom slash command's reply)
             # carries the user id of whoever set the integration up, though
             # anyone holding its URL may have sent it. It is the integration
@@ -3189,6 +3230,7 @@ class MattermostAdapter(PlatformAdapter):
                     channel_name=channel_name,
                     attachments=attachments,
                     attachment_failures=attachment_failures,
+                    sender_is_app=sender_is_app,
                 )
             )
 

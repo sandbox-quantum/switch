@@ -113,7 +113,7 @@ export default function RegisterAgentDialog({
           : await registerOtherAgent(name, description);
       setAgentResult(res);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration failed.");
+      setError(err instanceof Error ? err.message : "Could not add the agent.");
     } finally {
       setSubmitting(false);
     }
@@ -160,7 +160,7 @@ export default function RegisterAgentDialog({
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
       <DialogTitle>
-        {hasResult ? "Registration Complete" : "Register Agent"}
+        {hasResult ? "Agent added" : "Add agent"}
       </DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
@@ -170,16 +170,16 @@ export default function RegisterAgentDialog({
                 Copy these credentials now. They will not be shown again.
               </Alert>
               <TextField
-                label="API Key"
+                label="API key"
                 value={agentResult.api_key}
                 fullWidth
                 slotProps={{
                   input: {
                     readOnly: true,
-                    endAdornment: copyAdornment(agentResult.api_key, "API Key"),
+                    endAdornment: copyAdornment(agentResult.api_key, "API key"),
                   },
                 }}
-                helperText={copied === "API Key" ? "Copied!" : undefined}
+                helperText={copied === "API key" ? "Copied!" : undefined}
               />
               <TextField
                 label="Agent ID"
@@ -189,30 +189,30 @@ export default function RegisterAgentDialog({
               />
               {agentResult.oauth_client_id && (
                 <TextField
-                  label="OAuth Client ID"
+                  label="OAuth client ID"
                   value={agentResult.oauth_client_id}
                   fullWidth
                   slotProps={{
                     input: {
                       readOnly: true,
-                      endAdornment: copyAdornment(agentResult.oauth_client_id, "OAuth Client ID"),
+                      endAdornment: copyAdornment(agentResult.oauth_client_id, "OAuth client ID"),
                     },
                   }}
-                  helperText={copied === "OAuth Client ID" ? "Copied!" : undefined}
+                  helperText={copied === "OAuth client ID" ? "Copied!" : undefined}
                 />
               )}
               {agentResult.oauth_client_secret && (
                 <TextField
-                  label="OAuth Client Secret"
+                  label="OAuth client secret"
                   value={agentResult.oauth_client_secret}
                   fullWidth
                   slotProps={{
                     input: {
                       readOnly: true,
-                      endAdornment: copyAdornment(agentResult.oauth_client_secret, "OAuth Client Secret"),
+                      endAdornment: copyAdornment(agentResult.oauth_client_secret, "OAuth client secret"),
                     },
                   }}
-                  helperText={copied === "OAuth Client Secret" ? "Copied!" : undefined}
+                  helperText={copied === "OAuth client secret" ? "Copied!" : undefined}
                 />
               )}
             </>
@@ -233,7 +233,7 @@ export default function RegisterAgentDialog({
                 }
               >
                 {hasKnown && (
-                  <ListSubheader>Known Agents</ListSubheader>
+                  <ListSubheader>Known agents</ListSubheader>
                 )}
                 {(knownTypes ?? []).map((t: KnownAgentType) => (
                   <MenuItem key={t.key} value={t.key}>
@@ -292,7 +292,7 @@ export default function RegisterAgentDialog({
                 submitting ? <CircularProgress size={16} /> : undefined
               }
             >
-              Register
+              Add
             </Button>
           </>
         )}

@@ -23,14 +23,14 @@ import {
   type HostedPerson,
   type Member,
   type TenantRole,
+  fetchFeatureFlagMap,
   fetchHostedPeople,
   fetchMembers,
   removeMember,
   setHostedEnabled,
   updateMemberRole,
 } from "../../data/api";
-import { useHostedV2 } from "../../data/hooks";
-import { formatDate, titleCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase } from "../../theme/hootFormat";
 import HostedSwitchDialog from "./HostedSwitchDialog";
 import { useLoad } from "./useLoad";
 
@@ -110,26 +110,27 @@ export async function loadHosted(
 interface Props {
   tenantId: string;
   selfId: string;
-  canAdmin: boolean;
-  isOwner: boolean;
 }
 
-/** An admin may manage members and admins; only an owner may grant the owner
- * role or touch an existing owner. The server enforces the same, and refuses
- * the last owner — its message is shown as is.
- *
- * An organization admin administers every workspace of the organization, so
- * their row here is read-only: the role comes from the organization, and is
- * changed on its page. One with no membership of their own here is listed
- * "via the organization". */
-export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: Props) {
+/** Each row offers what the server says the caller may do with it: an admin
+ * may change and remove every member, other admins included, but not their
+ * own row (another admin steps them down) and not an organization admin's,
+ * whose role comes from the organization and is changed on its page. One
+ * with no membership of their own here is listed "via the organization". The
+ * server refuses to demote or remove the last admin when asked — its message
+ * is shown as is. */
+export default function MembersSection({ tenantId, selfId }: Props) {
   const load = useCallback(() => fetchMembers(tenantId), [tenantId]);
   const { data: members, error, loading, refetch } = useLoad(load);
-  const hostedV2 = useHostedV2() === true;
-  const loadHostedPeople = useCallback(
-    () => loadHosted(tenantId, canAdmin, hostedV2),
-    [tenantId, canAdmin, hostedV2],
-  );
+  // Only workspace admins ask for the hosted columns (spec A1).
+  const { refresh, canAdminTenant: canAdmin } = useAuth();
+  // Core's `hosted_v2` flag is read only for an admin, so everyone else
+  // makes exactly the requests main does.
+  const loadHostedPeople = useCallback(async () => {
+    if (!canAdmin) return null;
+    const flags = await fetchFeatureFlagMap().catch((): Record<string, boolean> => ({}));
+    return loadHosted(tenantId, true, flags.hosted_v2 === true);
+  }, [tenantId, canAdmin]);
   const {
     data: hosted,
     error: hostedError,
@@ -143,14 +144,19 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const { refresh } = useAuth();
 
   const act = useCallback(
-    async (userId: string, action: () => Promise<unknown>) => {
+    async (userId: string, action: () => Promise<unknown>, leaving = false) => {
       setBusy(userId);
       setActionError(null);
       try {
         await action();
+        if (leaving) {
+          // The session is on another workspace now, or none, and the page
+          // follows it rather than reading this one's members again.
+          await refresh();
+          return;
+        }
         await refetch();
         // Your own role decides what this page offers you.
         if (userId === selfId) await refresh();
@@ -164,9 +170,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
   );
 
   const columns = useMemo<GridColDef<MemberRow>[]>(() => {
-    const mayManage = (row: MemberRow) =>
-      canAdmin && row.organization_role !== "org_admin" && (isOwner || row.role !== "owner");
-    const roles: TenantRole[] = isOwner ? ["owner", "admin", "member"] : ["admin", "member"];
+    const roles: TenantRole[] = ["admin", "member"];
     return [
       {
         field: "name",
@@ -184,7 +188,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
         headerName: "Role",
         width: 210,
         renderCell: ({ row }) =>
-          mayManage(row) ? (
+          row.can_change_role ? (
             <Select
               size="small"
               value={row.role}
@@ -199,7 +203,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
             >
               {roles.map((role) => (
                 <MenuItem key={role} value={role}>
-                  {titleCase(role)}
+                  {sentenceCase(role)}
                 </MenuItem>
               ))}
             </Select>
@@ -207,15 +211,15 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
             <Tooltip
               title={
                 row.via_organization
-                  ? "Administers this workspace through the organization. Change it on the Organization page."
-                  : "An organization admin, and so an admin of every workspace in it. Change it on the Organization page."
+                  ? "Administers this workspace through the organization. Change it in the organization's settings."
+                  : "An organization admin, and so an admin of every workspace in it. Change it in the organization's settings."
               }
             >
               <Chip
                 label={
                   row.via_organization
-                    ? "Org Admin, via organization"
-                    : `${titleCase(row.role)} · Org Admin`
+                    ? "Org admin, via organization"
+                    : `${sentenceCase(row.role)} · Org admin`
                 }
                 size="small"
                 color="primary"
@@ -224,7 +228,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
             </Tooltip>
           ) : (
             <Chip
-              label={titleCase(row.role)}
+              label={sentenceCase(row.role)}
               size="small"
               color={row.role === "member" ? "default" : "primary"}
             />
@@ -253,14 +257,20 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
         width: 60,
         sortable: false,
         renderCell: ({ row }) =>
-          mayManage(row) && row.user_id !== selfId ? (
-            <Tooltip title="Remove from workspace">
+          row.can_remove ? (
+            <Tooltip title={row.user_id === selfId ? "Leave workspace" : "Remove from workspace"}>
               <span>
                 <IconButton
                   size="small"
                   disabled={busy !== null}
-                  onClick={() => act(row.user_id, () => removeMember(tenantId, row.user_id))}
-                  aria-label={`Remove ${row.email}`}
+                  onClick={() =>
+                    act(
+                      row.user_id,
+                      () => removeMember(tenantId, row.user_id),
+                      row.user_id === selfId,
+                    )
+                  }
+                  aria-label={row.user_id === selfId ? "Leave this workspace" : `Remove ${row.email}`}
                 >
                   <DeleteOutline fontSize="small" />
                 </IconButton>
@@ -269,7 +279,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
           ) : null,
       },
     ];
-  }, [act, busy, canAdmin, hosted, isOwner, refetchHosted, selfId, tenantId]);
+  }, [act, busy, hosted, selfId, tenantId]);
 
   const confirmSwitch = useCallback(
     async (reason: string) => {
@@ -292,10 +302,10 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
 
   return (
     <Stack spacing={1.5}>
-      <Typography variant="h6">Members</Typography>
+      <Typography variant="h6">Users</Typography>
       {hosted && (
         <Typography variant="body2" color="text.secondary">
-          Owners and admins can change roles, remove people, and turn hosted agents on or off for each person. Every change is recorded.
+          Admins can change roles, remove people, and turn hosted agents on or off for each person. Every change is recorded.
         </Typography>
       )}
       {error && <Alert severity="error">{error}</Alert>}

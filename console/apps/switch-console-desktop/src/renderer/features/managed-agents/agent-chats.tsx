@@ -18,7 +18,7 @@ import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
 import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
-import { useParams } from '@renderer/lib/layout/navigation-provider';
+import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
@@ -180,6 +180,7 @@ export function openAgentRoom(
  */
 export const AgentChats = observer(function AgentChats({ agent }: { agent: ManagedAgentView }) {
   const { params, setParams } = useParams('managedAgent');
+  const { navigate } = useNavigate();
   const { serverId, workspaceId, agentId } = agent;
   useEffect(() => {
     return switchRoomsStore.watchMembership(workspaceId, agentId);
@@ -229,6 +230,8 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- runs when the decision turns true, not when newChat is redefined
   }, [autoStart]);
 
+  const machine = agent.machine;
+
   return (
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
@@ -246,6 +249,11 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
                   appState.navigation.navigate('cloudFiles', { serverId, agent: filesAgent }),
               }
             : {})}
+          onOpenMachine={
+            machine
+              ? () => navigate('machine', { serverId, machineId: machine.id, name: machine.name })
+              : null
+          }
         />
         {/* Why it stopped (visibility V2): hosted agents v2 only, on a v2 box, as the cards are. */}
         <AgentStatus agent={agent} />
@@ -352,6 +360,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
                     serverId={serverId}
                     workspaceId={workspaceId}
                     agentId={agentId}
+                    agentName={agent.name}
                     roomId={roomId}
                   />
                 ) : null

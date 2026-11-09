@@ -17,6 +17,9 @@ interface DataTableProps<T extends { id: string | number }> {
   fillHeight?: boolean;
   pageSize?: number;
   checkboxSelection?: boolean;
+  // Rows that may be ticked, when not every one may (the viewer cannot act
+  // on the rest).
+  isRowSelectable?: (row: T) => boolean;
   onRowSelectionModelChange?: (ids: GridRowId[]) => void;
   onRowClick?: (params: GridRowParams<T>) => void;
   sx?: SxProps<Theme>;
@@ -73,6 +76,7 @@ export default function DataTable<T extends { id: string | number }>({
   fillHeight = false,
   pageSize = 25,
   checkboxSelection = false,
+  isRowSelectable,
   onRowSelectionModelChange,
   onRowClick,
   sx,
@@ -91,6 +95,9 @@ export default function DataTable<T extends { id: string | number }>({
       // the grid must not try to compile its filters with `new Function`.
       disableEval
       checkboxSelection={checkboxSelection}
+      isRowSelectable={
+        isRowSelectable ? (params: GridRowParams<T>) => isRowSelectable(params.row) : undefined
+      }
       onRowSelectionModelChange={
         onRowSelectionModelChange
           ? (model: GridRowSelectionModel) => onRowSelectionModelChange([...model.ids])

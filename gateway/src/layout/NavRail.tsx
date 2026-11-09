@@ -1,21 +1,8 @@
 import AddOutlined from "@mui/icons-material/AddOutlined";
-import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
-import ApartmentOutlined from "@mui/icons-material/ApartmentOutlined";
-import DnsOutlined from "@mui/icons-material/DnsOutlined";
-import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
 import CloudOutlined from "@mui/icons-material/CloudOutlined";
-import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
-import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
-import PowerOutlined from "@mui/icons-material/PowerOutlined";
-import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import FolderOpenOutlined from "@mui/icons-material/FolderOpenOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
-import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
-import PeopleOutlined from "@mui/icons-material/PeopleOutlined";
-import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
-import VpnKeyOutlined from "@mui/icons-material/VpnKeyOutlined";
-import WorkspacesOutlined from "@mui/icons-material/WorkspacesOutlined";
 import {
   Alert,
   Box,
@@ -30,65 +17,34 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { memo, useEffect, useState } from "react";
+import { memo, useState } from "react";
 import { NavLink, useLocation } from "react-router";
-import type { ComponentType, MouseEvent } from "react";
+import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
-import { useCurrentTenant, useHostedV2 } from "../data/hooks";
-import { fetchManagementAvailable } from "../data/management";
+import { useHostedV2 } from "../data/hooks";
 import { useCloudFilesShown } from "../pages/files/useCloudFiles";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
+import { type Layout, type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
 import ChangePasswordDialog from "./ChangePasswordDialog";
 import ThemeModeToggle from "./ThemeModeToggle";
 
-interface NavItem {
-  label: string;
-  path: string;
-  icon: ComponentType<{ sx?: object }>;
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { label: "Ecosystem", path: "/ecosystem", icon: AccountTreeOutlined },
-  { label: "Rooms", path: "/rooms", icon: MeetingRoomOutlined },
-  { label: "Resources", path: "/resources", icon: FolderOutlined },
-  { label: "Agents", path: "/agents", icon: SmartToyOutlined },
-  { label: "Apps", path: "/collaborations", icon: ChatBubbleOutlineOutlined },
-  { label: "API Keys", path: "/registration-keys", icon: VpnKeyOutlined },
-  { label: "Workspace", path: "/workspace", icon: WorkspacesOutlined },
-];
-
-// Your cloud files: shown only with hosted agents v2 and `hosted_cloud_files`
-// on, to someone with an agent in their cloud. The operator Hosted area never
-// shows files.
-const CLOUD_FILES_ITEMS: NavItem[] = [
-  { label: "Your cloud files", path: "/files", icon: FolderOpenOutlined },
-];
-
-// Shown when the current workspace belongs to an organization.
-const ORGANIZATION_ITEMS: NavItem[] = [
-  { label: "Organization", path: "/organization", icon: ApartmentOutlined },
-];
-
-// Shown only when the server runs with agent management enabled.
-const MANAGEMENT_ITEMS: NavItem[] = [
-  { label: "Machines", path: "/machines", icon: ComputerOutlined },
-];
-
-const WORKSPACE_ADMIN_ITEMS: NavItem[] = [
-  { label: "Usage", path: "/usage", icon: DataUsageOutlined },
-];
-
-const ADMIN_ITEMS: NavItem[] = [
-  { label: "All workspaces", path: "/operator/workspaces", icon: DnsOutlined },
-  { label: "Users", path: "/users", icon: PeopleOutlined },
-  { label: "Connectors", path: "/connectors", icon: PowerOutlined },
-];
-
-// People on Core's Switch operator list (`hosted_operator`), not the server
-// admin flag. The page itself asks Core.
-const HOSTED_ITEMS: NavItem[] = [
-  { label: "Hosted", path: "/hosted", icon: CloudOutlined },
-];
+// Hosted agents v2's rail items, after the route table's own. Core's flags decide
+// them, as their pages' elements do (`routes/hostedRoutes.tsx`): Your cloud files
+// with v2 and `hosted_cloud_files` on, to someone with an agent in their cloud;
+// Hosted with v2 on, to people on Core's Switch operator list (`hosted_operator`,
+// not the server admin flag). The operator Hosted area never shows files.
+const CLOUD_FILES_ITEM: RailItemDefinition = {
+  label: "Your cloud files",
+  to: "/files",
+  icon: FolderOpenOutlined,
+  activeFor: ["/files"],
+};
+const HOSTED_ITEM: RailItemDefinition = {
+  label: "Hosted",
+  to: "/hosted",
+  icon: CloudOutlined,
+  activeFor: ["/hosted"],
+};
 
 // The rail follows the window's height: at a laptop's it is sized so an
 // operator's eleven labelled items and the account button fit, and it grows
@@ -101,11 +57,11 @@ const LABEL = "clamp(0.6875rem, 1.05vh, 0.75rem)";
 // against thin-stroke icons, so matching the container would read as heavier.
 const LOGO = "clamp(24px, 2.6vh, 28px)";
 
-function RailItem({ item, active }: { item: NavItem; active: boolean }) {
+function RailItem({ item, active }: { item: RailItemDefinition; active: boolean }) {
   return (
     <Box
       component={NavLink}
-      to={item.path}
+      to={item.to}
       aria-current={active ? "page" : undefined}
       sx={{
         display: "flex",
@@ -149,9 +105,12 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
   );
 }
 
-export default memo(function NavRail() {
+export default memo(function NavRail({ layout }: { layout: Layout }) {
   const location = useLocation();
-  const { user, session, isOperator, isHostedOperator, logout, switchTo } = useAuth();
+  const { user, session, isOperator, isHostedOperator, capabilities, logout, logoutEverywhere, switchTo } =
+    useAuth();
+  const hostedV2 = useHostedV2() === true;
+  const cloudFiles = useCloudFilesShown() === true;
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -166,34 +125,10 @@ export default memo(function NavRail() {
     }
   };
 
-  const { data: tenant } = useCurrentTenant();
-  // The Hosted menu item is hosted agents v2's: shown only when Core says v2 is on.
-  const hostedV2 = useHostedV2() === true;
-  const cloudFiles = useCloudFilesShown() === true;
-  const [managementAvailable, setManagementAvailable] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchManagementAvailable()
-      .then((available) => {
-        if (!cancelled) setManagementAvailable(available);
-      })
-      .catch((err: unknown) => {
-        console.error("Could not tell whether agent management is enabled:", err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const items = [
-    ...NAV_ITEMS,
-    ...(cloudFiles ? CLOUD_FILES_ITEMS : []),
-    ...(session?.tenant?.organization_id ? ORGANIZATION_ITEMS : []),
-    ...(managementAvailable ? MANAGEMENT_ITEMS : []),
-    ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),
-    ...(isOperator ? ADMIN_ITEMS : []),
-    ...(isHostedOperator && hostedV2 ? HOSTED_ITEMS : []),
+    ...railFor(layout, capabilities),
+    ...(cloudFiles ? [CLOUD_FILES_ITEM] : []),
+    ...(isHostedOperator && hostedV2 ? [HOSTED_ITEM] : []),
   ];
   const current = session?.tenant ?? null;
   const others = (session?.tenants ?? []).filter((t) => t.id !== current?.id);
@@ -271,9 +206,9 @@ export default memo(function NavRail() {
       >
         {items.map((item) => (
           <RailItem
-            key={item.path}
+            key={item.to}
             item={item}
-            active={location.pathname.startsWith(item.path)}
+            active={item.activeFor.some((prefix) => location.pathname.startsWith(prefix))}
           />
         ))}
       </Stack>
@@ -378,6 +313,10 @@ export default memo(function NavRail() {
         <MenuItem onClick={logout} sx={{ gap: 1 }}>
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out
+        </MenuItem>
+        <MenuItem onClick={logoutEverywhere} sx={{ gap: 1 }}>
+          <LogoutOutlined sx={{ fontSize: 16 }} />
+          Sign out of all devices
         </MenuItem>
       </Menu>
 

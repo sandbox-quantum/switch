@@ -70,9 +70,9 @@ describe("the admin's hosted agents switch (spec A2)", () => {
   });
 
   it("shows the refusal it is given", () => {
-    renderDialog(true, vi.fn(), "Only workspace owners and admins can do this.");
+    renderDialog(true, vi.fn(), "Only workspace admins can do this.");
     expect(screen.getByRole("alert").textContent).toBe(
-      "Only workspace owners and admins can do this.",
+      "Only workspace admins can do this.",
     );
   });
 
@@ -91,7 +91,7 @@ describe("the admin's hosted agents switch (spec A2)", () => {
   it("turns a refusal into a fixed message, never the server's own text", async () => {
     const MARKER = "zebra-marker-7f3c";
     for (const [status, fixed] of [
-      [403, "Only workspace owners and admins can do this."],
+      [403, "Only workspace admins can do this."],
       [404, "This person isn't a member of this workspace."],
       [409, "Switch has paused this person. Their switch can change once Switch resumes them."],
       [422, "The reason wasn't accepted. Use up to 500 characters, with no names, messages or secrets."],
