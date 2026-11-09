@@ -1248,3 +1248,63 @@ class TestIncarnationsDrawnAtOnce:
 
         generations = [conn.stream_generation for conn in opened]
         assert len(set(generations)) == 2
+
+    async def test_a_move_reaching_the_draw_does_not_starve_one_already_inside(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One agent's move is inside its slots with numbers still to draw
+        when another agent's move begins. That agent's recorded connection is
+        later than every number held, so its move empties the list and goes
+        to the database for more. The first move opens meanwhile: it draws a
+        number, it does not fail for want of one."""
+        a, b = processes
+        await seed_agent(session_factory, "agent-2")
+        await _open(a, connection_id="conn-1")  # a holds the rest of a batch
+        await _open(b, agent_id="agent-2", connection_id="conn-b")  # later than it
+
+        draw = AgentConnectionStore.incarnations
+        drawing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def held_draw(
+            store: AgentConnectionStore, session: AsyncSession, count: int
+        ) -> list[int]:
+            drawing.set()
+            await release.wait()
+            return await draw(store, session, count)
+
+        inside = asyncio.Event()
+        go = asyncio.Event()
+
+        async def first_move() -> AgentConnection:
+            with tenant_scope(TENANT_ZERO_ID):
+                async with a.registry.slots(AGENT), a.registry.recorded(AGENT):
+                    inside.set()
+                    await go.wait()
+                    return a.registry.open(
+                        agent_id=AGENT,
+                        connection_id="conn-2",
+                        scope="single",
+                        delivery_filter="addressed",
+                        spawn_capable=False,
+                        position={OWN_EVENTS: 0},
+                        declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+                        expected_generation=None,
+                    )
+
+        first = asyncio.create_task(first_move())
+        await asyncio.wait_for(inside.wait(), WAIT_SECONDS)
+        monkeypatch.setattr(AgentConnectionStore, "incarnations", held_draw)
+        second = asyncio.create_task(
+            _open(a, agent_id="agent-2", connection_id="conn-c")
+        )
+        await asyncio.wait_for(drawing.wait(), WAIT_SECONDS)
+        go.set()
+        opened_first = await asyncio.wait_for(first, WAIT_SECONDS)
+        release.set()
+        opened_second = await asyncio.wait_for(second, WAIT_SECONDS)
+
+        assert opened_first.stream_generation != opened_second.stream_generation

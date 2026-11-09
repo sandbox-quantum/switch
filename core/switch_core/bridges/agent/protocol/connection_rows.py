@@ -231,11 +231,14 @@ class SharedConnections:
                 (row.incarnation for row in rows.connections.values()), default=0
             )
             async with self._incarnation_lock:
-                self._incarnations = [n for n in self._incarnations if n > latest]
-                if not self._incarnations:
-                    self._incarnations = await self._store.incarnations(
-                        session, INCARNATION_BATCH
-                    )
+                # The list is only replaced once the new one is in hand: another
+                # agent's recorded move may be mid-way through its own, and
+                # `next_incarnation` takes no lock, so an emptied list left
+                # standing across the draw would fail that move's open.
+                fresh = [n for n in self._incarnations if n > latest]
+                if not fresh:
+                    fresh = await self._store.incarnations(session, INCARNATION_BATCH)
+                self._incarnations = fresh
             self._apply(agent_id, tenant_id, rows)
             # Compared with what is recorded rather than with the copy just
             # set from it: a claim of a connection this process has closed,
