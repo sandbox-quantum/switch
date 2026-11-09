@@ -1143,6 +1143,33 @@ async def collect_period_counts(
     return counts
 
 
+async def collect_each_period_counts(
+    session_factory: async_sessionmaker[AsyncSession],
+    spans: Sequence[tuple[datetime, datetime]],
+) -> list[PeriodCounts | None]:
+    """`collect_period_counts` for each `(start, end)` in `spans`, in order,
+    reading which tenants there are once for all of them rather than once a
+    period. None for a span whose counts could not be collected at all, which
+    is logged; a tenant that fails is contained within its span as usual."""
+    tenant_ids = await all_tenant_ids(session_factory)
+    counted: list[PeriodCounts | None] = []
+    for start, end in spans:
+        try:
+            counted.append(
+                await collect_period_counts(
+                    session_factory, tenant_ids=tenant_ids, start=start, end=end
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Usage period %s to %s could not be counted.",
+                start.isoformat(),
+                end.isoformat(),
+            )
+            counted.append(None)
+    return counted
+
+
 async def milestones_passed(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> set[str]:

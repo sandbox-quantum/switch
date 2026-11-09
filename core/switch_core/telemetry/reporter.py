@@ -26,14 +26,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import TelemetrySnapshotWatermark
-from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.telemetry.periods import periods_ending_between
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.session_start import prune_session_start_claims
 from switch_core.telemetry.snapshot import (
     UsageCounts,
     as_utc,
-    collect_period_counts,
+    collect_each_period_counts,
     collect_usage,
     newly_active_rooms,
     summarise,
@@ -216,22 +215,21 @@ class SnapshotReporter:
         if not periods:
             return
         try:
-            tenant_ids = await all_tenant_ids(self._session_factory)
+            counted = await collect_each_period_counts(
+                self._session_factory,
+                [(period.start, period.end) for period, _ in periods],
+            )
         except Exception:
             logger.exception(
-                "Usage period: could not read the tenants, so the %d period(s) "
-                "that ended in this window are not reported.",
+                "Usage period: the %d period(s) that ended in this window could "
+                "not be counted, and are not reported.",
                 len(periods),
             )
             return
-        for period, (at, partial) in periods:
+        for (period, (at, partial)), counts in zip(periods, counted, strict=True):
+            if counts is None:
+                continue
             try:
-                counts = await collect_period_counts(
-                    self._session_factory,
-                    tenant_ids=tenant_ids,
-                    start=period.start,
-                    end=period.end,
-                )
                 self._telemetry.emit_at(
                     period.event,
                     at,

@@ -29,7 +29,7 @@ from switch_core.db.models import (
     TelemetrySnapshotWatermark,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.telemetry import reporter as reporter_module
+from switch_core.telemetry import snapshot as snapshot_module
 from switch_core.telemetry.periods import BACKFILL, Period, periods_ending_between
 from switch_core.telemetry.reporter import SnapshotReporter
 from switch_core.telemetry.service import TelemetryService
@@ -422,17 +422,17 @@ class TestThePassReportsThem:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         reads = 0
-        original = reporter_module.all_tenant_ids
+        original = snapshot_module.all_tenant_ids
 
         async def counting(factory: object) -> list[str]:
             nonlocal reads
             reads += 1
             return await original(factory)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(reporter_module, "all_tenant_ids", counting)
+        monkeypatch.setattr(snapshot_module, "all_tenant_ids", counting)
         sink = _RecordingSink()
 
-        await _reporter(sink, session_factory).run_once(
+        await _reporter(sink, session_factory)._report_periods(
             now=_at("2026-12-01T10:00:00"), since=_at("2026-11-20T10:00:00")
         )
 

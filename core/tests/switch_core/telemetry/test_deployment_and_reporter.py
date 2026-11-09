@@ -744,7 +744,7 @@ class TestOneProcessSendsTheSnapshot:
             raise asyncio.CancelledError
 
         monkeypatch.setattr(
-            "switch_core.telemetry.reporter.collect_period_counts", cancelled
+            "switch_core.telemetry.reporter.collect_each_period_counts", cancelled
         )
         sink = _RecordingSink()
         reporter = self._reporter(sink, session_factory)
