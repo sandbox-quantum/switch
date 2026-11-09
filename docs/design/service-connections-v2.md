@@ -583,9 +583,11 @@ auth:
         label: Site
         secret: false
         choices: [example.com, eu.example.com]
+      # or a value held to a pattern (an account, a subdomain), in place of
+      # choices: `pattern: "[a-z0-9][a-z0-9-]{0,62}"`, matched in full
     identity:                   # checks the key, before anything is stored
       method: GET               # or POST, with a JSON body
-      url: "https://api.{site}/me"          # a URL names only choices
+      url: "https://api.{site}/me"          # a URL names choices and patterns
       headers: { X-Api-Key: "{api_key}" }
       account_id: user.id       # optional: without it, the key's SHA-256
       label: user.email         # optional: without it, the name and choices
@@ -604,6 +606,16 @@ The loader refuses a template naming an unknown field, a URL naming a secret
 one, a server without headers, an entry naming `access` (a key reaches
 whatever its vendor let it), and a `max_lifetime` other than null.
 
+**A field held to a pattern** is typed freely, so a URL may hold it only where
+it can pick an account and never another host: as a whole host label followed
+by labels the template fixes (`https://{account}.example.com/...`, at least a
+domain and its suffix), or as a whole path segment (`.../v1/{database}/...`).
+The loader refuses it anywhere else: beside other text in a label or segment,
+in the domain itself, or in the query. Its pattern must compile and must not
+match an empty value. When someone connects, Core holds the value to the
+pattern in full and, whatever the pattern allows, to one DNS label where it is
+a host label and one unreserved path segment where it is a segment.
+
 **A key is never handed to an agent.** It does not expire and only its vendor
 can revoke it, so whatever ran beside the agent could keep it for good, past a
 removed grant or a disconnect. The broker refuses to issue one (403
@@ -615,8 +627,9 @@ for a later server-side use of the key.
 - **Connecting.** Switch Console shows the entry's fields (the services list
   carries them as `key`) and sends them to
   `PUT /gateway/service-connections/{service}/key`. Core holds each field to
-  the entry (a choice among its choices, a secret one printable line without
-  spaces), makes the identity call, and stores the fields encrypted only when
+  the entry (a choice among its choices, a pattern field to its pattern and
+  its place in the URL, a secret one printable line without spaces), makes
+  the identity call, and stores the fields encrypted only when
   the vendor accepts them; a refusal names the fields to check. One account
   is linked to one person in a workspace, as for a sign-in. Re-pasting
   replaces the key in place, keeping the grants.

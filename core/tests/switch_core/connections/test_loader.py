@@ -12,6 +12,7 @@ from switch_core.connections.loader import (
     ChoicesError,
     choice_key,
     load_catalog,
+    url_placements,
     with_access_profiles,
 )
 
@@ -1185,7 +1186,7 @@ def test_rejects_an_identity_that_is_not_one_clear_source(
             CHOICES_ENTRY,
             "        choices: [example.test, eu.example.test]\n",
             "",
-            "one of the two",
+            "exactly one of those",
         ),
         (
             CHOICES_ENTRY,
@@ -1847,7 +1848,13 @@ def test_loads_an_api_key_entry_whose_tool_is_a_cli(catalog_copy):
         (
             "        secret: false\n",
             "        secret: true\n",
-            "one of the two",
+            "exactly one of those",
+        ),
+        (
+            "        choices: [us.example.test, eu.example.test]\n",
+            "        choices: [us.example.test, eu.example.test]\n"
+            '        pattern: "[a-z]+"\n',
+            "exactly one of those",
         ),
         ("  refresh: none\n", "  refresh: rotating\n", "refresh is none"),
         (
@@ -1872,6 +1879,67 @@ def test_rejects_an_inconsistent_api_key_entry(catalog_copy, old, new, message):
     _write_example(catalog_copy, API_KEY_ENTRY.replace(old, new))
     with pytest.raises(CatalogError, match=message):
         load_catalog(catalog_copy)
+
+
+PATTERN_ENTRY = API_KEY_ENTRY.replace(
+    "        choices: [us.example.test, eu.example.test]\n",
+    '        pattern: "[a-z0-9][a-z0-9-]{0,62}"\n',
+).replace("https://api.{region}/me", "https://{region}.example.test/api/me")
+
+
+def test_loads_a_field_held_to_a_pattern(catalog_copy):
+    _write_example(
+        catalog_copy,
+        PATTERN_ENTRY.replace(
+            "https://mcp.{region}/mcp", "https://mcp.example.test/{region}/mcp"
+        ),
+    )
+    sign_in = load_catalog(catalog_copy)["example"].definition.auth.api_key
+    assert sign_in is not None
+    assert sign_in.pattern_names() == {"region"}
+    assert sign_in.choice_names() == set()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Beside other text in a label, or in the domain itself.
+        "https://mcp-{region}.example.test/mcp",
+        "https://mcp.{region}/mcp",
+        "https://mcp.{region}.test/mcp",
+        "https://{region}.{region}.example.test/mcp",
+        # Beside other text in a path segment, or in the query.
+        "https://mcp.example.test/v{region}/mcp",
+        "https://mcp.example.test/mcp?account={region}",
+    ],
+)
+def test_a_pattern_field_cannot_move_the_host(catalog_copy, url):
+    _write_example(catalog_copy, PATTERN_ENTRY.replace("https://mcp.{region}/mcp", url))
+    with pytest.raises(CatalogError, match="only as a whole host label"):
+        load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "message"),
+    [("[a-z", "not a regular expression"), ("[a-z]*", "matches an empty value")],
+)
+def test_a_pattern_must_compile_and_need_a_value(catalog_copy, pattern, message):
+    _write_example(
+        catalog_copy,
+        PATTERN_ENTRY.replace('"[a-z0-9][a-z0-9-]{0,62}"', f'"{pattern}"').replace(
+            "https://mcp.{region}/mcp", "https://mcp.example.test/mcp"
+        ),
+    )
+    with pytest.raises(CatalogError, match=message):
+        load_catalog(catalog_copy)
+
+
+def test_url_placements_names_where_each_field_lands():
+    assert url_placements("https://{account}.example.com/v1/{database}/x?q=1") == {
+        "account": {"host"},
+        "database": {"path"},
+    }
+    assert url_placements("https://{account}.com/") == {"account": {"other"}}
 
 
 def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
