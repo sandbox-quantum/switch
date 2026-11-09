@@ -120,3 +120,97 @@ def test_help_shaped_output_over_the_cap_splits() -> None:
     assert len(chunks) >= 2
     assert all(len(c) <= MAX_MESSAGE for c in chunks)
     assert _rejoin(chunks) == body
+
+
+def _only_an_empty_fence(chunk: str) -> bool:
+    lines = chunk.split("\n")
+    return len(lines) == 2 and lines[0].startswith("```") and lines[1].strip() == "```"
+
+
+@pytest.mark.parametrize("language", ["", "python", "typescriptreact"])
+@pytest.mark.parametrize("length", [1950, 1985, 1990, 1999, 2000, 5000])
+def test_a_long_line_inside_a_code_block_fits_every_part(
+    language: str, length: int
+) -> None:
+    # A line wrapped to the old budget filled a part that already started with
+    # the reopened fence, so the next flush emitted that fence on its own and
+    # the part after it overshot the cap by the language's length.
+    body = f"intro\n```{language}\n" + "z" * length + "\nshort\n```\noutro"
+
+    chunks = chunk_message(body)
+
+    assert all(len(c) <= MAX_MESSAGE for c in chunks), [len(c) for c in chunks]
+    assert not any(_only_an_empty_fence(c) for c in chunks)
+    assert all(c.count("```") % 2 == 0 for c in chunks)
+    assert "".join(chunks).count("z") == length
+
+
+def test_a_code_block_ending_at_a_part_boundary_does_not_reopen() -> None:
+    # The block's own closing line, trailing spaces and all, would not fit, so
+    # the part's closing fence stands in for it and the next part starts
+    # outside the block.
+    code = "\n".join("a" * 99 for _ in range(19))
+    body = "```\n" + code + "\n" + "b" * 92 + "\n```  \nafter"
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) == 2
+    assert not any(_only_an_empty_fence(c) for c in chunks)
+    assert chunks[0].endswith("b" * 92 + "\n```")
+    assert chunks[1] == "after"
+
+
+def test_an_opening_fence_is_not_left_alone_at_the_end_of_a_part() -> None:
+    body = "x" * 1990 + "\n```python\n" + "y = 1\n" * 10 + "```"
+
+    chunks = chunk_message(body)
+
+    assert chunks[0] == "x" * 1990
+    assert chunks[1].startswith("```python\ny = 1")
+
+
+def test_a_one_line_fenced_span_does_not_open_a_block() -> None:
+    # Taken as an opener, ```npm test``` started a block with the language
+    # "npm test```", and every later part was reopened with that.
+    prose = "\n".join(f"prose line {i} " + "p" * 50 for i in range(80))
+    body = "Run this:\n```npm test```\n" + prose
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert not any(c.startswith("```npm") for c in chunks[1:])
+    assert not any(c.endswith("\n```") for c in chunks)
+    assert _rejoin(chunks) == body
+
+
+def test_a_fence_line_with_trailing_text_does_not_close_the_block() -> None:
+    # CommonMark: a closing fence carries nothing but whitespace after the
+    # backticks, so "``` not a close" is a line of code.
+    code = "\n".join(f"line {i}" for i in range(400))
+    body = "```text\n``` not a close\n" + code + "\n```"
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert all(c.startswith("```text") for c in chunks)
+    assert all(c.endswith("```") for c in chunks)
+
+
+def test_a_closing_fence_may_carry_trailing_whitespace() -> None:
+    body = "```\ncode\n```   \n" + "\n".join(f"prose {i}" for i in range(400))
+
+    chunks = chunk_message(body)
+
+    assert not any(c.startswith("```") for c in chunks[1:])
+    assert _rejoin(chunks) == body
+
+
+def test_a_longer_fence_is_reopened_and_closed_with_its_own_length() -> None:
+    code = "\n".join(f"```inner {i}" for i in range(300))
+    body = "````md\n" + code + "\n````"
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert all(c.startswith("````md") for c in chunks)
+    assert all(c.endswith("\n````") for c in chunks)
