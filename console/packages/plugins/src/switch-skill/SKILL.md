@@ -1141,9 +1141,12 @@ is your owner and your owner's own agents. An acknowledgement reports command st
 check the session transcript for the result. Unsupported controls fail explicitly.
 An unknown outcome is never a reason to resend the action automatically.
 After a confirmed reset or compaction, Switch queues a follow-up to reconnect,
-read context, re-assume the previous role if one was held, and confirm the result
-to the requester in the original thread. If the role cannot be restored, report
-that limitation. Failed or unknown controls do not queue a success announcement.
+read context, re-assume the previous role if one was held, and post a short
+confirmation in the original thread with `post_message`. If the role cannot be
+restored, report that limitation. In a direct chat a reset queues nothing: it
+is meant to start the conversation fresh, so do not read back its history. A
+compaction there still queues the follow-up.
+Failed or unknown controls do not queue a success announcement.
 
 ## Tool index
 
