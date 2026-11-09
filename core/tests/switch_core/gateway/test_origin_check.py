@@ -171,9 +171,8 @@ def test_a_multipart_upload_is_checked_like_json() -> None:
 
 
 def test_a_cookie_websocket_from_another_origin_is_closed() -> None:
-    """QA's case 4. Core has no cookie WebSocket today (the two it has take a
-    controller's or an agent's bearer on the agent bridge), but one added to
-    the gateway would get this check."""
+    """QA's case 4. A browser's cookie WebSocket from another origin, or with
+    no Origin at all, is closed."""
     client, calls = _client()
     with pytest.raises(WebSocketDisconnect) as closed:
         with client.websocket_connect(
@@ -182,9 +181,22 @@ def test_a_cookie_websocket_from_another_origin_is_closed() -> None:
             pass
     assert closed.value.code == 4403
     with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect("/socket", headers=COOKIE):
+        with client.websocket_connect(
+            "/socket", headers={**COOKIE, "sec-fetch-site": "same-site"}
+        ):
             pass
     with client.websocket_connect("/socket", headers={**COOKIE, "origin": SERVER}):
+        pass
+    assert calls == ["socket"]
+
+
+def test_console_s_change_socket_shape_passes() -> None:
+    """Switch Console's main process opens `/changes/ws` with Node's WebSocket:
+    the cookie, no Origin, Referer or Sec-Fetch-Site (rule 3, as for its
+    fetch calls). Refusing it would turn off Console's live list updates."""
+    client, calls = _client()
+    node_handshake = {**COOKIE, "sec-fetch-mode": "websocket", "user-agent": "node"}
+    with client.websocket_connect("/socket", headers=node_handshake):
         pass
     assert calls == ["socket"]
 

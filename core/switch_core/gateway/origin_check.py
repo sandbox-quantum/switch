@@ -16,7 +16,8 @@ carries the cookie passes only if:
    needs the browser to carry the cookie. That's how Switch Console's main
    process keeps working: Node's fetch sends the cookie with only
    `sec-fetch-mode: cors`. Temporary, until Console sends `Origin` (the tech
-   lead's follow-up).
+   lead's follow-up). A WebSocket handshake follows the same three rules, as
+   Console's change socket (`/changes/ws`) is opened the same way.
 
 A cookie request is checked whatever else it carries, an `Authorization`
 header included, so a bad or empty bearer can never carry it past the check.
@@ -213,11 +214,15 @@ def refusal_rule(scope: Scope, allowed: frozenset[str]) -> str | None:
     referer = headers.get("referer")
     if referer is not None:
         return None if ok(normalise_origin(referer)) else "referer"
-    if scope["type"] == "websocket":
-        # A browser always sends Origin on a WebSocket handshake.
-        return "websocket_no_origin"
     if "sec-fetch-site" in headers:
+        # A browser: it sends Origin on every change and on every WebSocket
+        # handshake, so one without is refused.
+        if scope["type"] == "websocket":
+            return "websocket_no_origin"
         return "browser_no_origin"
+    # Rule 3, for a WebSocket too: Switch Console's main process opens the
+    # change socket (`/changes/ws`) with Node's WebSocket, which sends the
+    # cookie with no Origin, Referer or Sec-Fetch-Site.
     return None
 
 
