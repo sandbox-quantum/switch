@@ -22,8 +22,8 @@ export const kiroAcp: AcpProviderHooks = {
   },
   launch: ({ binaryPath, env }) => ({ command: binaryPath, args: ['acp'], env }),
   loginCommand: KIRO_LOGIN,
-  // Kiro reads its saved login first, then KIRO_API_KEY.
-  inheritEnv: ['KIRO_API_KEY'],
+  // Kiro reads its saved login (under XDG_DATA_HOME when set) first, then KIRO_API_KEY.
+  inheritEnv: ['KIRO_API_KEY', 'XDG_DATA_HOME'],
   // `initialize` lists `kiro-login` signed in or out, and that method only
   // tells a person to run `kiro-cli login`. Kiro 3.1.0 refuses a read-only
   // `session/list` with `auth_required` while it holds no login or key.
@@ -49,9 +49,15 @@ export const kiroAcp: AcpProviderHooks = {
   },
   // Kiro 3.1.0 titles an MCP call `@<server>/<tool>` and names the server in
   // `_meta.kiro.serverName`; its permission request carries the title only.
+  // Kiro's ACP docs also name it in `_meta.kiro.mcpTool.identity.serverName`.
   mcpServerOf: (toolCall) => {
-    const meta = (toolCall._meta as { kiro?: { serverName?: unknown } } | undefined)?.kiro;
-    if (typeof meta?.serverName === 'string') return meta.serverName;
+    const meta = (
+      toolCall._meta as
+        | { kiro?: { serverName?: unknown; mcpTool?: { identity?: { serverName?: unknown } } } }
+        | undefined
+    )?.kiro;
+    const named = meta?.mcpTool?.identity?.serverName ?? meta?.serverName;
+    if (typeof named === 'string') return named;
     return /^@([^/\s]+)\//.exec(toolCall.title ?? '')?.[1];
   },
 };

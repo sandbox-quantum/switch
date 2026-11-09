@@ -62,7 +62,7 @@ describe('Kiro CLI ACP hooks', () => {
     expect(launch.args).toEqual(['acp']);
     expect(kiroAcp.loginCommand).toBe('kiro-cli login');
     expect(kiroAcp.authMethodId).toBeUndefined();
-    expect(kiroAcp.inheritEnv).toContain('KIRO_API_KEY');
+    expect(kiroAcp.inheritEnv).toEqual(['KIRO_API_KEY', 'XDG_DATA_HOME']);
   });
 
   it('sets no session mode, as Kiro modes are agent configurations', () => {
@@ -96,6 +96,13 @@ describe('Kiro CLI ACP hooks', () => {
     expect(kiroAcp.mcpServerOf!({ toolCallId: 'tooluse_1', title: '@echo/switch_echo' })).toBe(
       'echo'
     );
+    expect(
+      kiroAcp.mcpServerOf!({
+        toolCallId: 'tooluse_1',
+        title: 'switch_echo',
+        _meta: { kiro: { mcpTool: { identity: { serverName: 'echo' } } } },
+      })
+    ).toBe('echo');
     expect(
       kiroAcp.mcpServerOf!({
         toolCallId: 'run_command_1',
