@@ -279,6 +279,7 @@ describe('the payload', () => {
       // the far end can average it without parsing it back.
       duration_ms: durationMs(4200),
       build: 'dev',
+      'flint.insert_id': expect.any(String),
     });
   });
 
@@ -320,6 +321,7 @@ describe('the payload', () => {
       'agent_type',
       'build',
       'event.name',
+      'flint.insert_id',
       'location',
       'outcome',
     ]);

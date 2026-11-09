@@ -51,6 +51,8 @@ function rawLogAttributes(payload: Record<string, unknown>): Record<string, unkn
   return Object.fromEntries(attributes.map((a) => [a.key, a.value]));
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 const SESSION_STARTED = {
   agent_type: 'codex',
   location: 'local',
@@ -124,7 +126,29 @@ describe('the record that gets built', () => {
       location: 'remote',
       outcome: 'failed',
       build: 'stable',
+      'flint.insert_id': expect.stringMatching(UUID),
     });
+  });
+
+  it('gives every record an id of its own, so two alike in the same millisecond stay two', () => {
+    // The relay's de-duplication key is a hash of the record's attributes and
+    // its millisecond. Without this, the rooms one template run made, or the
+    // sessions of an agent deleted at once, would arrive as one event.
+    const build = () =>
+      logAttributes(
+        buildOtlpPayload(
+          'session_ended',
+          { agent_type: 'codex', location: 'remote', outcome: 'normal' },
+          CONTEXT
+        )
+      )['flint.insert_id'];
+
+    const first = build();
+    const second = build();
+
+    expect(first).toMatch(UUID);
+    expect(second).toMatch(UUID);
+    expect(first).not.toBe(second);
   });
 
   it('drops a property the catalogue does not name', () => {
@@ -157,6 +181,7 @@ describe('the record that gets built', () => {
       install_kind: 'new',
       from_version: 'none',
       trigger: 'none',
+      'flint.insert_id': expect.stringMatching(UUID),
     });
   });
 
