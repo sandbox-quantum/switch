@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gzip
 import json
 import logging
 import time
@@ -28,6 +30,7 @@ from switch_core.connections.adapters.oauth import (
     OAuthAdapter,
     OAuthClientCredentials,
     StaticClient,
+    _McpBudget,
 )
 from switch_core.connections.loader import ConnectionDefinition, ConnectionIdentity
 from switch_core.logging_context import MCP_IDENTITY_DIAGNOSTICS
@@ -187,6 +190,9 @@ def _adapter_url():
 async def test_mcp_identity_malformed_http_does_not_log_token(
     monkeypatch, payload, caplog
 ):
+    # The SDK drops a body it cannot parse and waits for the deadline.
+    monkeypatch.setattr(oauth, "MCP_IDENTITY_SECONDS", 0.5)
+
     def handler(request):
         return httpx.Response(
             200, content=payload, headers={"content-type": "application/json"}
@@ -463,18 +469,18 @@ GET_USER = {
 class _ScriptedMcp:
     """An MCP server over `httpx.MockTransport` that answers `tools/list`
     from `pages`: a cursor to its tools and the next cursor. `status` answers
-    every request with that status instead."""
+    every request with that status instead, and `compressed` gzips answers."""
 
     def __init__(
         self,
         pages: dict[str | None, tuple[list[dict[str, Any]], str | None]] | None = None,
         *,
         status: int | None = None,
-        headers: dict[str, str] | None = None,
+        compressed: bool = False,
     ) -> None:
         self.pages = pages or {None: ([GET_USER], None)}
         self.status = status
-        self.headers = headers or {}
+        self.compressed = compressed
         self.requests: list[httpx.Request] = []
         self.calls: list[dict[str, Any]] = []
 
@@ -512,10 +518,15 @@ class _ScriptedMcp:
                     "error": {"code": -32601, "message": MARKER},
                 },
             )
+        body = json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result})
+        if not self.compressed:
+            return httpx.Response(
+                200, content=body, headers={"content-type": "application/json"}
+            )
         return httpx.Response(
             200,
-            json={"jsonrpc": "2.0", "id": message["id"], "result": result},
-            headers=self.headers,
+            content=gzip.compress(body.encode()),
+            headers={"content-type": "application/json", "content-encoding": "gzip"},
         )
 
 
@@ -675,5 +686,122 @@ async def test_mcp_failure_unwraps_exception_groups(nested):
     if nested:
         group = ExceptionGroup("outer", [group])
     adapter = _adapter(None)
-    failure = adapter._mcp_failure(group, asyncio.timeout(None))
+    failure = adapter._mcp_failure(group, _McpBudget(1, 1, asyncio.timeout(None)))
     assert type(failure) is ReauthorizationRequiredError
+
+
+# ── The byte and page budget ─────────────────────────────────────────────────
+
+
+@contextlib.asynccontextmanager
+async def _over_http(monkeypatch, server: FastMCP, *, json_response: bool):
+    """The identity call to `server`'s real HTTP app, through Core's client."""
+    app = server.http_app(path="/v1/mcp", json_response=json_response)
+    factory = oauth._mcp_http_client
+    monkeypatch.setattr(
+        oauth,
+        "_mcp_http_client",
+        lambda **kw: factory(transport=httpx.ASGITransport(app=app), **kw),
+    )
+    async with app.router.lifespan_context(app):
+        yield
+
+
+def _paged_server(tools: int, *, page_size: int, description: str = "") -> FastMCP:
+    """`tools` other tools, then `get_user`, listed `page_size` at a time."""
+    server = FastMCP("paged-identity", list_page_size=page_size)
+    for index in range(tools):
+        server.tool(
+            lambda: {},
+            name=f"tool_{index}",
+            description=description,
+            annotations={"readOnlyHint": True},
+        )
+
+    @server.tool(annotations={"readOnlyHint": True})
+    def get_user() -> dict:
+        return {"data": {"gid": "account-example"}}
+
+    return server
+
+
+@pytest.mark.parametrize("json_response", [True, False], ids=["json", "sse"])
+async def test_mcp_identity_refuses_an_oversized_response_quickly(
+    monkeypatch, json_response
+):
+    monkeypatch.setattr(oauth, "MCP_RESPONSE_BYTES", 4096)
+    server = _paged_server(1, page_size=100, description="x" * 8192)
+    started = time.monotonic()
+    async with _over_http(monkeypatch, server, json_response=json_response):
+        _assert_reason(await _identify_error(), "bad_result")
+    assert time.monotonic() - started < 1
+
+
+async def test_mcp_identity_refuses_pages_over_the_total_budget(monkeypatch):
+    monkeypatch.setattr(oauth, "MCP_IDENTITY_BYTES", 16 * 1024)
+    server = _paged_server(40, page_size=5, description="x" * 1024)
+    started = time.monotonic()
+    async with _over_http(monkeypatch, server, json_response=True):
+        _assert_reason(await _identify_error(), "bad_result")
+    assert time.monotonic() - started < 1
+
+
+async def test_mcp_identity_reads_a_small_server_over_http(monkeypatch):
+    async with _over_http(
+        monkeypatch, _paged_server(3, page_size=2), json_response=False
+    ):
+        async with httpx.AsyncClient() as http:
+            identity = await _adapter(http).identify("example-bearer-value")
+    assert identity.account_id == "account-example"
+
+
+@pytest.mark.parametrize("pages, succeeds", [(5, False), (6, True)])
+async def test_mcp_identity_page_limit(monkeypatch, pages, succeeds):
+    monkeypatch.setattr(oauth, "MCP_TOOL_PAGES", pages)
+    server = _paged_server(10, page_size=2)
+    monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
+    if succeeds:
+        async with httpx.AsyncClient() as http:
+            identity = await _adapter(http).identify("example-bearer-value")
+        assert identity.account_id == "account-example"
+    else:
+        _assert_reason(await _identify_error(), "bad_result")
+
+
+async def test_mcp_identity_finds_the_tool_on_a_later_page(monkeypatch):
+    server = _paged_server(7, page_size=2)
+    monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
+    async with httpx.AsyncClient() as http:
+        identity = await _adapter(http).identify("example-bearer-value")
+    assert identity.account_id == "account-example"
+
+
+async def test_mcp_identity_refuses_a_repeated_cursor(monkeypatch):
+    vendor = _ScriptedMcp({None: ([], "page-1"), "page-1": ([], "page-1")})
+    _over_mock(monkeypatch, vendor)
+    _assert_reason(await _identify_error(), "bad_result")
+    assert vendor.calls == []
+
+
+async def test_mcp_identity_refuses_a_name_listed_on_two_pages(monkeypatch):
+    vendor = _ScriptedMcp({None: ([GET_USER], "page-1"), "page-1": ([GET_USER], None)})
+    _over_mock(monkeypatch, vendor)
+    _assert_reason(await _identify_error(), "tool_not_found")
+    assert vendor.calls == []
+
+
+async def test_mcp_identity_refuses_a_compressed_response(monkeypatch):
+    vendor = _ScriptedMcp(compressed=True)
+    _over_mock(monkeypatch, vendor)
+    started = time.monotonic()
+    _assert_reason(await _identify_error(), "bad_result")
+    assert time.monotonic() - started < 1
+
+
+async def test_mcp_identity_asks_for_identity_encoding(monkeypatch):
+    vendor = _ScriptedMcp()
+    _over_mock(monkeypatch, vendor)
+    async with httpx.AsyncClient() as http:
+        await _adapter(http).identify("example-bearer-value")
+    assert vendor.requests
+    assert {r.headers.get("accept-encoding") for r in vendor.requests} == {"identity"}

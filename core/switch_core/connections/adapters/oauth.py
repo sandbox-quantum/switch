@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import hashlib
 import json
 import logging
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
@@ -34,7 +35,7 @@ from fastmcp import Client
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.transports import StreamableHttpTransport
 from mcp.shared.exceptions import McpError
-from mcp.types import CONNECTION_CLOSED, CallToolResult, TextContent
+from mcp.types import CONNECTION_CLOSED, CallToolResult, TextContent, Tool
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -53,7 +54,12 @@ from switch_core.logging_context import (
 )
 
 MAX_METADATA_BYTES = 64 * 1024
+# The MCP identity call's limits: its whole time, the bytes of one response
+# and of all of them, the tools/list pages it reads, and the tool's result.
 MCP_IDENTITY_SECONDS: float = 15
+MCP_RESPONSE_BYTES = 1024 * 1024
+MCP_IDENTITY_BYTES = 4 * 1024 * 1024
+MCP_TOOL_PAGES = 20
 MCP_RESULT_BYTES = 64 * 1024
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
@@ -233,7 +239,79 @@ def _resource_covers(resource: str, url: str) -> bool:
     return f"{server.path.rstrip('/')}/".startswith(f"{advertised.path.rstrip('/')}/")
 
 
+class _BudgetExceeded(Exception):
+    def __init__(self) -> None:
+        super().__init__("The MCP identity call read more than its byte budget.")
+
+
+@dataclass
+class _McpBudget:
+    """The bytes the MCP identity call may read, per response and in total."""
+
+    per_response: int
+    total: int
+    deadline: asyncio.Timeout
+    used: int = 0
+    tripped: bool = False
+
+    def trip(self) -> None:
+        self.tripped = True
+        # The SDK swallows a read error in its task group and waits for an
+        # answer that never comes, so the call ends now instead.
+        self.deadline.reschedule(asyncio.get_running_loop().time())
+
+
+class _BudgetStream(httpx.AsyncByteStream):
+    def __init__(self, inner: httpx.AsyncByteStream, budget: _McpBudget) -> None:
+        self._inner = inner
+        self._budget = budget
+        self._seen = 0
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for chunk in self._inner:
+            self._seen += len(chunk)
+            self._budget.used += len(chunk)
+            if (
+                self._seen > self._budget.per_response
+                or self._budget.used > self._budget.total
+            ):
+                self._budget.trip()
+                raise _BudgetExceeded()
+            yield chunk
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+class _BudgetTransport(httpx.AsyncBaseTransport):
+    """Counts the bytes of each response as they arrive, JSON or SSE."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport, budget: _McpBudget) -> None:
+        self._inner = inner
+        self._budget = budget
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await self._inner.handle_async_request(request)
+        # Compressed bytes do not bound the decoded size.
+        if response.headers.get("content-encoding", "identity").lower() != "identity":
+            await response.aclose()
+            self._budget.trip()
+            raise _BudgetExceeded()
+        assert isinstance(response.stream, httpx.AsyncByteStream)
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            stream=_BudgetStream(response.stream, self._budget),
+            extensions=response.extensions,
+        )
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 def _mcp_http_client(
+    *,
+    budget: _McpBudget,
     headers: dict[str, str] | None = None,
     timeout: httpx.Timeout | None = None,
     auth: httpx.Auth | None = None,
@@ -242,7 +320,13 @@ def _mcp_http_client(
     kwargs["follow_redirects"] = False
     if timeout is not None:
         kwargs["timeout"] = timeout
-    return httpx.AsyncClient(headers=headers, auth=auth, **kwargs)
+    inner = kwargs.pop("transport", None) or httpx.AsyncHTTPTransport()
+    return httpx.AsyncClient(
+        headers={**(headers or {}), "Accept-Encoding": "identity"},
+        auth=auth,
+        transport=_BudgetTransport(inner, budget),
+        **kwargs,
+    )
 
 
 async def _drop_vendor_log(message: LogMessage) -> None:
@@ -675,20 +759,21 @@ class OAuthAdapter:
         if self._mcp_url is None or self._identity.mcp_tool is None:
             raise ServiceAdapterError(f"{self._name} has no MCP identity source.")
         deadline = asyncio.timeout(MCP_IDENTITY_SECONDS)
+        budget = _McpBudget(MCP_RESPONSE_BYTES, MCP_IDENTITY_BYTES, deadline)
         failure: ServiceAdapterError | None = None
         result: CallToolResult | None = None
         diagnostics = MCP_IDENTITY_DIAGNOSTICS.set(True)
         try:
             async with deadline:
-                result = await self._call_identity_tool(access_token)
+                result = await self._call_identity_tool(access_token, budget)
         except Exception as error:
-            failure = self._mcp_failure(error, deadline)
+            failure = self._mcp_failure(error, budget)
         except BaseExceptionGroup as group:
             # A cancel the SDK's task group wrapped: ours if the deadline
             # passed, otherwise the caller's, which must go on.
-            if not deadline.expired():
+            if not (budget.tripped or deadline.expired()):
                 raise
-            failure = self._mcp_failure(group, deadline)
+            failure = self._mcp_failure(group, budget)
         finally:
             MCP_IDENTITY_DIAGNOSTICS.reset(diagnostics)
         # Raised here, not in the handler, so the error carries no SDK
@@ -705,12 +790,14 @@ class OAuthAdapter:
             raise McpIdentityError(self._name, "bad_result")
         return body
 
-    async def _call_identity_tool(self, access_token: str) -> CallToolResult:
+    async def _call_identity_tool(
+        self, access_token: str, budget: _McpBudget
+    ) -> CallToolResult:
         assert self._mcp_url is not None and self._identity.mcp_tool is not None
         transport = StreamableHttpTransport(
             self._mcp_url,
             headers={"Authorization": f"Bearer {access_token}"},
-            httpx_client_factory=_mcp_http_client,
+            httpx_client_factory=functools.partial(_mcp_http_client, budget=budget),
         )
         async with Client(
             transport,
@@ -718,7 +805,22 @@ class OAuthAdapter:
             init_timeout=MCP_IDENTITY_SECONDS,
             log_handler=_drop_vendor_log,
         ) as client:
-            tools = await client.list_tools()
+            # Paged here, not by the SDK, which stops quietly on a repeated
+            # cursor and reads any number of pages.
+            tools: list[Tool] = []
+            cursor: str | None = None
+            seen: set[str] = set()
+            for _ in range(MCP_TOOL_PAGES):
+                page = await client.list_tools_mcp(cursor=cursor)
+                tools.extend(page.tools)
+                cursor = page.nextCursor
+                if not cursor:
+                    break
+                if cursor in seen:
+                    raise McpIdentityError(self._name, "bad_result")
+                seen.add(cursor)
+            else:
+                raise McpIdentityError(self._name, "bad_result")
             matches = [tool for tool in tools if tool.name == self._identity.mcp_tool]
             if len(matches) != 1:
                 raise McpIdentityError(self._name, "tool_not_found")
@@ -738,9 +840,11 @@ class OAuthAdapter:
             return result
 
     def _mcp_failure(
-        self, error: BaseException, deadline: asyncio.Timeout
+        self, error: BaseException, budget: _McpBudget
     ) -> ServiceAdapterError:
         """A new error, of fixed text, for what failed in the identity call."""
+        if budget.tripped:
+            return McpIdentityError(self._name, "bad_result")
         leaves = list(_leaves(error))
         for leaf in leaves:
             if isinstance(leaf, McpIdentityError):
@@ -758,7 +862,7 @@ class OAuthAdapter:
                         "Please try again."
                     )
                 return McpIdentityError(self._name, "protocol_error")
-        if deadline.expired() or any(
+        if budget.deadline.expired() or any(
             isinstance(leaf, (TimeoutError, httpx.TransportError))
             or (
                 isinstance(leaf, McpError)
