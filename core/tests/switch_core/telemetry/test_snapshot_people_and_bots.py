@@ -28,6 +28,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.telemetry.snapshot import (
     collect_period_counts,
     collect_usage,
@@ -134,14 +135,20 @@ async def _account(session_factory: async_sessionmaker[AsyncSession]) -> str:
 async def _last_week(session_factory: async_sessionmaker[AsyncSession]):  # type: ignore[no-untyped-def]
     now = datetime.now(UTC)
     return await collect_period_counts(
-        session_factory, start=now - timedelta(days=7), end=now
+        session_factory,
+        tenant_ids=await all_tenant_ids(session_factory),
+        start=now - timedelta(days=7),
+        end=now,
     )
 
 
 async def _last_day(session_factory: async_sessionmaker[AsyncSession]):  # type: ignore[no-untyped-def]
     now = datetime.now(UTC)
     return await collect_period_counts(
-        session_factory, start=now - timedelta(days=1), end=now
+        session_factory,
+        tenant_ids=await all_tenant_ids(session_factory),
+        start=now - timedelta(days=1),
+        end=now,
     )
 
 

@@ -255,9 +255,10 @@ the relay receives for it.
 **A daily snapshot**, one per deployment, carrying the counts that describe the
 installation. This answers "how much".
 
-**Period counts**, one per deployment per finished day, week and month, each
-counting distinct rooms and people over exactly that period. This answers "how
-many this week" in a way that adds up across deployments.
+**Period counts**, one per deployment per finished day, week and month
+(`usage_day_counted`, `usage_week_counted`, `usage_month_counted`), each
+counting distinct rooms, people and agents over exactly that period. This
+answers "how many this week" in a way that adds up across deployments.
 
 **Milestone events**, emitted at most once per deployment, each carrying the
 seconds elapsed since install. This answers "how fast to value".
@@ -492,30 +493,42 @@ near-complete, not exact. That is fine for "how much, and is it growing", and it
 should be said plainly wherever the number is presented rather than discovered
 later.
 
-### `usage_period` — once per finished day, week and month
+### `usage_day_counted`, `usage_week_counted`, `usage_month_counted` — once per finished period
 
 The snapshot's `*_7d` counts are a trailing week, sent every day. A chart that
 adds them up at a weekly interval counts a room once for every day it was in
 the window, up to seven times. A daily interval avoids that, but a server that
-is off on a given day, as laptops often are, sends nothing for it. `usage_period` is counted over a fixed
-calendar period instead, and sent once per period, so at the matching interval
-the sum across deployments is the real figure.
+is off on a given day, as laptops often are, sends nothing for it. These three
+are counted over a fixed calendar period instead, and sent once per period, so
+at the matching interval the sum across deployments is the real figure:
+`usage_day_counted` for a UTC day, `usage_week_counted` for an ISO week
+(Monday to Monday, UTC), `usage_month_counted` for a calendar month. Three
+events rather than one with a property naming the period, because no chart can
+add two kinds of period together correctly. All three carry the same
+properties.
 
 | Property | Type | Meaning |
 |---|---|---|
-| `period` | `day` / `week` / `month` | a UTC day, an ISO week (Monday to Monday, UTC), or a calendar month |
-| `room_active` | number | distinct rooms a person used with an agent in the period: `room_active_*`'s definition |
-| `person_identity_active` | number | distinct people who did, bots excluded: `person_identity_active_*`'s definition |
-| `account_active` | number | distinct Switch accounts among them: `account_active_*`'s definition, deduplicated across tenants |
-| `tenant_failed_count` | number | tenants whose counts could not be read, left out of the three above, as on the snapshot |
+| `room_active` | number | distinct rooms a person used with an agent in the period: `room_active_*`'s definition, with a person in Switch Console counted too |
+| `person_identity_active` | number | distinct people who did, integrations excluded: a chat identity that never posted as an app in the period, or a person in Switch Console. One person on two platforms, or on a platform and in Console, is two. See "People, bots and accounts" |
+| `bot_identity_active` | number | distinct chat identities that posted as an app in a room with an agent in the period: an integration such as an alerting or CI app, or another Switch server's agent |
+| `account_active` | number | distinct Switch accounts whose claimed chat identity used a room with an agent: `user_active_*`'s definition, deduplicated across tenants. Not someone who used only Switch Console |
+| `agent_active` | number | distinct agents that said something in the period: `agent_active_7d`'s definition |
+| `message_count` | number | messages participants said in the period, read from the message table: `message_count_1d`'s definition. The check on the message events: set it against `message_sent` received for the same period to see how many were lost on the way |
+| `turn_human_to_agent` | number | agent messages answering a person, as `turn_human_to_agent_1d`, with a person in Switch Console counted as a person |
+| `turn_agent_to_human` | number | person messages answering an agent, likewise |
+| `turn_agent_to_agent` | number | agent messages answering another agent |
+| `is_partial` | boolean | the period began before the deployment was installed or before telemetry was last switched on, so its counts cover only part of it |
+| `tenant_failed_count` | number | tenants whose counts could not be read, left out of every count above, as on the snapshot |
 
-**Chart it at its own interval.** Filter on one `period`, set the interval to
-match, and sum each property: weekly active rooms is the sum of
-`room_active` over `usage_period` where `period = week`, at a weekly interval.
-At any other interval the sum is wrong again — weeks summed into a month count a
-room once per week — so each interval has its own chart. Across deployments the
-sum counts a person who uses two servers twice, as every per-deployment figure
-does.
+**Chart each at its own interval.** Set the interval to match the event and
+sum each property: weekly active rooms is the sum of `room_active` over
+`usage_week_counted`, at a weekly interval. At any other interval the sum is
+wrong again — weeks summed into a month count a room once per week — so each
+interval has its own chart. Across deployments the sum counts a person who uses
+two servers twice, as every per-deployment figure does. Don't segment these by
+user properties: an event dated in the past takes the user's properties as
+they are when it arrives.
 
 **Dated to the middle of the period**, not to when it was sent: noon for a day,
 Thursday noon for a week, the middle of the month. A server that was off sends
@@ -525,13 +538,22 @@ month whichever day a chart starts its weeks on and in any timezone it is drawn
 in. Datadog's log intake refuses records dated more than 18 hours back, so its
 copy of the relay's events has few of these; Amplitude takes them.
 
+**Never dated before the install or the moment telemetry was switched on.**
+Amplitude counts a deployment as new from its earliest event, so a period dated
+before either would make it new before it existed or agreed to report. The
+moment telemetry was switched on is recorded at the first boot with it on and
+forgotten at a boot with it off, so it is always the start of the current run
+of reporting; an upgraded server starts from its last snapshot. A period that
+began before that moment carries `is_partial = true` and, when its middle is
+earlier still, is dated at that moment instead, which is inside the period, so
+it stays in its bucket. A period that ended before it is not sent at all.
+
 **Sent with the snapshot**, for every period that ended since the previous
 snapshot, so each is sent once. Not on a deployment's first pass, which has no
 previous snapshot to measure from. A server back after a long time off sends
 only the periods that ended in the last 35 days, which still covers the month
-before for a laptop that was off for most of the month after. Like
-`room_became_active`, a server whose telemetry was switched off and on again
-sends the periods that ended in between, within those 35 days.
+before for a laptop that was off for most of the month after. A recent week or
+month is therefore not final until 35 days on.
 
 ### Accounts, workspaces and cloud machines
 

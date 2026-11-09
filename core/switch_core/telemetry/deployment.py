@@ -16,7 +16,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -75,6 +75,40 @@ async def load_deployment_identity(
             "early enough to tell a new deployment from an existing one."
         )
     return row.client_id, row.installed_at
+
+
+async def record_telemetry_switch(
+    session_factory: async_sessionmaker[AsyncSession], *, enabled: bool
+) -> tuple[datetime | None, bool]:
+    """Keep `telemetry_enabled_since` in step with this boot's setting.
+
+    With telemetry on, sets it to now if it is empty and leaves it alone
+    otherwise; with telemetry off, empties it, so the next boot with it on
+    starts it again. Returns `(since, switched_on)`: when reporting began, or
+    None while it is off, and whether this boot is the one that switched it on
+    — the deployment was off, or new, until now.
+    """
+    async with session_factory() as session:
+        if not enabled:
+            await session.execute(
+                update(DeploymentIdentity).values(telemetry_enabled_since=None)
+            )
+            await session.commit()
+            return None, False
+        started = await session.scalar(
+            update(DeploymentIdentity)
+            .where(DeploymentIdentity.telemetry_enabled_since.is_(None))
+            .values(telemetry_enabled_since=func.now())
+            .returning(DeploymentIdentity.telemetry_enabled_since)
+        )
+        if started is None:
+            started = await session.scalar(
+                select(DeploymentIdentity.telemetry_enabled_since)
+            )
+            await session.commit()
+            return started, False
+        await session.commit()
+        return started, True
 
 
 def seconds_since_install(installed_at: datetime | None) -> float | None:

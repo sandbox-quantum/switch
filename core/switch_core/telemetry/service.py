@@ -60,14 +60,16 @@ class TelemetryService:
         deployment_kind: DeploymentKind,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         installed_at: datetime | None = None,
+        enabled_since: datetime | None = None,
     ) -> None:
         self._sink = sink
         self._enabled = enabled
         self._deployment_kind = deployment_kind
-        # Only the milestone path needs these. Optional so the ordinary
-        # `emit` is usable from a test that has no database at all.
+        # Only the milestone path and the reporter need these. Optional so the
+        # ordinary `emit` is usable from a test that has no database at all.
         self._session_factory = session_factory
         self._installed_at = installed_at
+        self._enabled_since = enabled_since
         self._resource = {
             "flint.client_id": client_id,
             # The relay picks the Amplitude project from this. Sent even as
@@ -91,6 +93,20 @@ class TelemetryService:
     def installed_at(self) -> datetime | None:
         """When this deployment was installed, or None if that is unknown."""
         return self._installed_at
+
+    @property
+    def reporting_since(self) -> datetime | None:
+        """The earliest moment an event about the past may be dated: the later
+        of the install and the moment telemetry was last switched on, or None
+        if neither is known. Nothing before it was watched, and dating an
+        event earlier would make Amplitude count the deployment as new before
+        it was installed or agreed to report."""
+        known = [
+            moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+            for moment in (self._installed_at, self._enabled_since)
+            if moment is not None
+        ]
+        return max(known) if known else None
 
     def emit(self, event: str, **properties: EmittedValue) -> None:
         """Report one event. Never blocks; raises only on a malformed event."""

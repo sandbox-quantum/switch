@@ -170,12 +170,18 @@ class TestTagging:
 
         service.emit("deployment_started", tenant_count=1)
         service.emit_at(
-            "usage_period",
+            "usage_day_counted",
             datetime(2026, 11, 2, 12, tzinfo=UTC),
-            period="day",
             room_active=0,
             person_identity_active=0,
+            bot_identity_active=0,
             account_active=0,
+            agent_active=0,
+            message_count=0,
+            turn_human_to_agent=0,
+            turn_agent_to_human=0,
+            turn_agent_to_agent=0,
+            is_partial=False,
             tenant_failed_count=0,
         )
         await service.aclose()

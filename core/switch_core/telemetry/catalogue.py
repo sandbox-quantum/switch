@@ -323,6 +323,25 @@ _SNAPSHOT_COUNTS = (
     "api_key_count",
 )
 
+# What each period event counts (`snapshot.PeriodCounts`). `is_partial` says
+# the period began before the deployment was installed or before telemetry
+# was last switched on, so its counts cover only part of it.
+_PERIOD_COUNTS: Mapping[str, PropertyType] = {
+    "room_active": NUMBER,
+    "person_identity_active": NUMBER,
+    "bot_identity_active": NUMBER,
+    "account_active": NUMBER,
+    "agent_active": NUMBER,
+    # From the message table, so it can be set against the message events
+    # received to see how many were lost on the way.
+    "message_count": NUMBER,
+    "turn_human_to_agent": NUMBER,
+    "turn_agent_to_human": NUMBER,
+    "turn_agent_to_agent": NUMBER,
+    "is_partial": BOOLEAN,
+    "tenant_failed_count": NUMBER,
+}
+
 # Every milestone answers "how long after install did this first happen", so
 # they share a property and differ only in what else they carry.
 _SINCE_INSTALL: Mapping[str, PropertyType] = {"seconds_since_install": NUMBER}
@@ -342,15 +361,11 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     },
     # One per finished UTC day, ISO week and calendar month, dated to its
     # middle: distinct use over exactly that period, so the events of one
-    # period kind add up across deployments where the snapshot's trailing
-    # `*_7d` counts, summed over days, count each room up to seven times.
-    "usage_period": {
-        "period": one_of("day", "week", "month"),
-        "room_active": NUMBER,
-        "person_identity_active": NUMBER,
-        "account_active": NUMBER,
-        "tenant_failed_count": NUMBER,
-    },
+    # kind add up across deployments where the snapshot's trailing `*_7d`
+    # counts, summed over days, count each room up to seven times.
+    "usage_day_counted": dict(_PERIOD_COUNTS),
+    "usage_week_counted": dict(_PERIOD_COUNTS),
+    "usage_month_counted": dict(_PERIOD_COUNTS),
     # ── Accounts, workspaces and cloud machines ─────────────────────────────
     # Switch Cloud's funnel, though any server that has them sends them:
     # `deployment_kind`, on every event, says which kind of server it was.

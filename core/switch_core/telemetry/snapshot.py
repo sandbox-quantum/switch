@@ -88,7 +88,7 @@ SPOKEN_EVENT_TYPES = ("m.room.message", "com.switch.command")
 
 _DAY = timedelta(days=1)
 # How far back the turn pairing looks for a message's predecessor. See
-# `_collect_turns`.
+# `_turns`.
 _TURN_LOOKBACK = timedelta(days=2)
 _WEEK = timedelta(days=7)
 
@@ -673,16 +673,7 @@ async def collect_tenant_counts(
         counts.agent_count += count
 
     counts.agent_active_7d += await _count(
-        session,
-        select(distinct(Message.sender_client_id))
-        .join(Client, Client.id == Message.sender_client_id)
-        .where(
-            Message.tenant_id == tenant_id,
-            Message.sent_at >= week_ago,
-            Client.type == AGENT_CLIENT_TYPE,
-            Client.tenant_id == tenant_id,
-            *_spoken(),
-        ),
+        session, _active_agents(tenant_id, week_ago, now)
     )
 
     # Connectors, by platform. Configured, not connected — whether each is
@@ -701,15 +692,7 @@ async def collect_tenant_counts(
     # Messages in the last day, and who sent them. Only live messages: `seq`
     # is negative for reconstructed history, and a backfill is not traffic.
     counts.message_count_1d += await _scalar(
-        session,
-        select(func.count())
-        .select_from(Message)
-        .where(
-            Message.tenant_id == tenant_id,
-            Message.sent_at >= day_ago,
-            Message.seq > 0,
-            *_spoken(),
-        ),
+        session, _message_count(tenant_id, day_ago, now)
     )
     by_sender = await session.execute(
         select(Client.type, func.count())
@@ -732,7 +715,14 @@ async def collect_tenant_counts(
 
     await _collect_resource_counts(session, tenant_id, counts)
 
-    await _collect_turns(session, tenant_id, counts, day_ago)
+    (
+        human_to_agent,
+        agent_to_human,
+        agent_to_agent,
+    ) = await _turns(session, tenant_id, day_ago, now, SNAPSHOT_PERSON_TYPES)
+    counts.turn_human_to_agent_1d += human_to_agent
+    counts.turn_agent_to_human_1d += agent_to_human
+    counts.turn_agent_to_agent_1d += agent_to_agent
 
     counts.attachment_count_1d += await _scalar(
         session,
@@ -793,10 +783,15 @@ async def _collect_resource_counts(
         )
 
 
-async def _collect_turns(
-    session: AsyncSession, tenant_id: str, counts: UsageCounts, since: datetime
-) -> None:
-    """Who replied to whom, in the window.
+async def _turns(
+    session: AsyncSession,
+    tenant_id: str,
+    since: datetime,
+    until: datetime,
+    person_types: tuple[str, ...],
+) -> tuple[int, int, int]:
+    """Who replied to whom in `[since, until)`: turns from a person to an
+    agent, from an agent to a person, and from one agent to another.
 
     A turn is a message paired with the one before it in the same room, so the
     pairing is read off `seq` — which is a total order within a room with no
@@ -804,10 +799,10 @@ async def _collect_turns(
     "the previous message" means what it says. A timestamp would tie.
 
     Only three pairings are counted, and the ones left out are deliberate:
-    human→human is two people talking with no agent involved, and a turn whose
-    predecessor is a bridge relay or the admin client is machinery rather than
-    conversation. The first message in a room has no predecessor and is not a
-    turn at all.
+    person→person is two people talking with no agent involved, and a turn
+    whose predecessor is a bridge relay or the admin client is machinery
+    rather than conversation. The first message in a room has no predecessor
+    and is not a turn at all.
 
     The window is applied to the *current* message, not the pair, so a reply
     this morning to a question asked last night still counts — which is the
@@ -815,7 +810,7 @@ async def _collect_turns(
     between two windows.
     """
     kind = case(
-        (Client.type == HUMAN_CLIENT_TYPE, "human"),
+        (Client.type.in_(person_types), "human"),
         (Client.type == AGENT_CLIENT_TYPE, "agent"),
         else_="other",
     )
@@ -842,11 +837,14 @@ async def _collect_turns(
             # answer is paired with.
             *_spoken(),
             # Bounded, or the window covers the tenant's whole history every
-            # pass. The outer `sent_at` filter cannot be pushed in: the window
-            # partitions by room, so narrowing the input would change which
-            # message counts as the predecessor. The lookback is wider than the
-            # window so a reply to yesterday still finds what it answered.
+            # pass. The outer `sent_at` filter cannot be pushed in at the
+            # start: the window partitions by room, so narrowing the input
+            # would change which message counts as the predecessor. The
+            # lookback is wider than the window so a reply to yesterday still
+            # finds what it answered. The end can be: nothing after it is
+            # anything's predecessor.
             Message.sent_at >= since - _TURN_LOOKBACK,
+            Message.sent_at < until,
         )
         .subquery()
     )
@@ -861,13 +859,48 @@ async def _collect_turns(
         )
         .group_by(paired.c.sender, paired.c.previous)
     )
-    for sender, previous, count in rows.all():
-        if sender == "agent" and previous == "human":
-            counts.turn_human_to_agent_1d += count
-        elif sender == "human" and previous == "agent":
-            counts.turn_agent_to_human_1d += count
-        elif sender == "agent" and previous == "agent":
-            counts.turn_agent_to_agent_1d += count
+    by_pair = {(sender, previous): count for sender, previous, count in rows.all()}
+    return (
+        by_pair.get(("agent", "human"), 0),
+        by_pair.get(("human", "agent"), 0),
+        by_pair.get(("agent", "agent"), 0),
+    )
+
+
+def _active_agents(
+    tenant_id: str, since: datetime, until: datetime
+) -> Select[tuple[str | None]]:
+    """Distinct agents that said something in `[since, until)`."""
+    return (
+        select(distinct(Message.sender_client_id))
+        .join(Client, Client.id == Message.sender_client_id)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= since,
+            Message.sent_at < until,
+            Client.type == AGENT_CLIENT_TYPE,
+            Client.tenant_id == tenant_id,
+            *_spoken(),
+        )
+    )
+
+
+def _message_count(
+    tenant_id: str, since: datetime, until: datetime
+) -> Select[tuple[int]]:
+    """Messages participants said in `[since, until)`, from the message table.
+    Live traffic only: `seq` is negative for reconstructed history."""
+    return (
+        select(func.count())
+        .select_from(Message)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.sent_at >= since,
+            Message.sent_at < until,
+            Message.seq > 0,
+            *_spoken(),
+        )
+    )
 
 
 async def room_had_human_activity(
@@ -1022,15 +1055,23 @@ async def collect_usage(
 
 @dataclass
 class PeriodCounts:
-    """Distinct use over one finished period (`periods.Period`). Rooms and
-    accounts by the snapshot's definitions of `room_active_*` and
-    `user_active_*`; `chat_identity_active_*` split into people and
-    integrations (`_identity_activity`)."""
+    """Distinct use over one finished period (`periods.Period`).
+
+    By the snapshot's definitions, with two differences. People are anyone
+    who said something in a room with an agent, on a messaging platform or in
+    Switch Console (`PERSON_CLIENT_TYPES`), where the snapshot counts only the
+    first; the rooms and turns follow. And `chat_identity_active_*` is split
+    into people and integrations (`_identity_activity`)."""
 
     room_active: int = 0
     person_identity_active: int = 0
     bot_identity_active: int = 0
     account_ids: set[str] = field(default_factory=set)
+    agent_active: int = 0
+    message_count: int = 0
+    turn_human_to_agent: int = 0
+    turn_agent_to_human: int = 0
+    turn_agent_to_agent: int = 0
     tenant_failed_count: int = 0
 
     @property
@@ -1041,22 +1082,23 @@ class PeriodCounts:
 async def collect_period_counts(
     session_factory: async_sessionmaker[AsyncSession],
     *,
+    tenant_ids: Sequence[str],
     start: datetime,
     end: datetime,
 ) -> PeriodCounts:
-    """Every tenant's distinct use in `[start, end)`, summed like
+    """`tenant_ids`' distinct use in `[start, end)`, summed like
     `collect_usage`: one tenant's failure leaves nothing of it behind and is
     disclosed in `tenant_failed_count`. Accounts are a set across tenants, so
-    one account active in two counts once."""
+    one account active in two counts once. The tenants are the caller's, read
+    once for every period a pass reports."""
     counts = PeriodCounts()
-    tenant_ids = await all_tenant_ids(session_factory)
     failed_tenants: list[str] = []
     for tenant_id in tenant_ids:
         try:
             async with tenant_session(session_factory, tenant_id) as session:
                 rooms = await _count(
                     session,
-                    _human_interaction(tenant_id, start, end, SNAPSHOT_PERSON_TYPES),
+                    _human_interaction(tenant_id, start, end, PERSON_CLIENT_TYPES),
                 )
                 people, bots = (
                     await session.execute(_identity_activity(tenant_id, start, end))
@@ -1065,6 +1107,11 @@ async def collect_period_counts(
                     (
                         await session.execute(_active_accounts(tenant_id, start, end))
                     ).scalars()
+                )
+                agents = await _count(session, _active_agents(tenant_id, start, end))
+                messages = await _scalar(session, _message_count(tenant_id, start, end))
+                turns = await _turns(
+                    session, tenant_id, start, end, PERSON_CLIENT_TYPES
                 )
         except Exception:
             logger.exception(
@@ -1076,6 +1123,11 @@ async def collect_period_counts(
         counts.person_identity_active += people
         counts.bot_identity_active += bots
         counts.account_ids |= accounts
+        counts.agent_active += agents
+        counts.message_count += messages
+        counts.turn_human_to_agent += turns[0]
+        counts.turn_agent_to_human += turns[1]
+        counts.turn_agent_to_agent += turns[2]
     if failed_tenants:
         logger.error(
             "Usage period %s to %s: excluded %d of %d tenant(s): %s. Its counts "

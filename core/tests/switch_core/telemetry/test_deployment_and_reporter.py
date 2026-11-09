@@ -30,6 +30,7 @@ from switch_core.telemetry.deployment import (
     DeploymentIdentityMissingError,
     claim_milestone,
     load_deployment_identity,
+    record_telemetry_switch,
     seconds_since_install,
 )
 from switch_core.telemetry.reporter import SnapshotReporter
@@ -115,6 +116,76 @@ class TestDeploymentIdentity:
             async with session_factory() as session:
                 session.add(DeploymentIdentity(id=2, client_id=str(uuid.uuid4())))
                 await session.commit()
+
+
+class TestWhenTelemetryWasSwitchedOn:
+    async def test_the_first_boot_with_it_on_starts_the_clock(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _seed_identity(session_factory, installed_at=NOW)
+
+        since, switched_on = await record_telemetry_switch(
+            session_factory, enabled=True
+        )
+
+        assert since is not None
+        assert switched_on is True
+
+    async def test_a_later_boot_with_it_on_keeps_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _seed_identity(session_factory, installed_at=NOW)
+        first, _ = await record_telemetry_switch(session_factory, enabled=True)
+
+        again, switched_on = await record_telemetry_switch(
+            session_factory, enabled=True
+        )
+
+        assert again == first
+        assert switched_on is False
+
+    async def test_a_boot_with_it_off_forgets_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """So the next boot with it on starts again from then: what happened
+        while it was off is never dated as reported."""
+        await _seed_identity(session_factory, installed_at=NOW)
+        first, _ = await record_telemetry_switch(session_factory, enabled=True)
+
+        assert await record_telemetry_switch(session_factory, enabled=False) == (
+            None,
+            False,
+        )
+        again, switched_on = await record_telemetry_switch(
+            session_factory, enabled=True
+        )
+
+        assert switched_on is True
+        assert again is not None and first is not None and again >= first
+
+    def test_events_about_the_past_are_dated_no_earlier_than_either(self) -> None:
+        installed = datetime(2026, 9, 1, tzinfo=UTC)
+        switched_on = datetime(2026, 10, 1, tzinfo=UTC)
+
+        def service(
+            installed_at: datetime | None, enabled_since: datetime | None
+        ) -> TelemetryService:
+            return TelemetryService(
+                sink=_RecordingSink(),  # type: ignore[arg-type]
+                enabled=True,
+                client_id="deployment-uuid",
+                version="1.0.0",
+                telemetry_environment="prod",
+                telemetry_internal=False,
+                deployment_kind="self_hosted",
+                installed_at=installed_at,
+                enabled_since=enabled_since,
+            )
+
+        assert service(installed, switched_on).reporting_since == switched_on
+        assert service(switched_on, installed).reporting_since == switched_on
+        assert service(installed, None).reporting_since == installed
+        assert service(None, None).reporting_since is None
 
 
 class TestTheInstallClock:

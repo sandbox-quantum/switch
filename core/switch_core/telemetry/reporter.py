@@ -10,8 +10,8 @@ same minute would otherwise both read "due" and both send the day's snapshot.
 
 The first pass sends the snapshot but not the room-activation events: with no
 watermark, "first interaction since then" means every room that ever went
-active, arriving at once and all dated today. Nor the finished periods
-(`periods.py`): with no watermark there is no telling which were sent before.
+active, arriving at once. Nor the finished periods (`periods.py`): with no
+watermark there is no telling which were sent before.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import TelemetrySnapshotWatermark
+from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.telemetry.deployment import claim_milestone
 from switch_core.telemetry.periods import periods_ending_between
 from switch_core.telemetry.service import TelemetryService
@@ -187,21 +188,49 @@ class SnapshotReporter:
             await self._report_periods(since=since, now=now)
 
     async def _report_periods(self, *, since: datetime, now: datetime) -> None:
-        """One `usage_period` for every day, week and month that ended in this
-        pass's window. Each is contained, so one that fails costs only itself;
-        it is not reported, and the next window starts after it."""
-        for period in periods_ending_between(since, now):
+        """One period event for every day, week and month that ended in this
+        pass's window, other than one that ended before the deployment was
+        installed or telemetry was switched on (`Period.dated`). Each is
+        contained, so one that fails costs only itself; it is not reported,
+        and the next window starts after it."""
+        reporting_since = self._telemetry.reporting_since
+        periods = [
+            (period, dated)
+            for period in periods_ending_between(since, now)
+            if (dated := period.dated(reporting_since)) is not None
+        ]
+        if not periods:
+            return
+        try:
+            tenant_ids = await all_tenant_ids(self._session_factory)
+        except Exception:
+            logger.exception(
+                "Usage period: could not read the tenants, so the %d period(s) "
+                "that ended in this window are not reported.",
+                len(periods),
+            )
+            return
+        for period, (at, partial) in periods:
             try:
                 counts = await collect_period_counts(
-                    self._session_factory, start=period.start, end=period.end
+                    self._session_factory,
+                    tenant_ids=tenant_ids,
+                    start=period.start,
+                    end=period.end,
                 )
                 self._telemetry.emit_at(
-                    "usage_period",
-                    period.midpoint,
-                    period=period.kind,
+                    period.event,
+                    at,
                     room_active=counts.room_active,
                     person_identity_active=counts.person_identity_active,
+                    bot_identity_active=counts.bot_identity_active,
                     account_active=counts.account_active,
+                    agent_active=counts.agent_active,
+                    message_count=counts.message_count,
+                    turn_human_to_agent=counts.turn_human_to_agent,
+                    turn_agent_to_human=counts.turn_agent_to_human,
+                    turn_agent_to_agent=counts.turn_agent_to_agent,
+                    is_partial=partial,
                     tenant_failed_count=counts.tenant_failed_count,
                 )
             except Exception:
