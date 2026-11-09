@@ -328,7 +328,9 @@ async def test_optional_identity_selector_is_never_supplied(monkeypatch):
     assert calls == ["me"]
 
 
-@pytest.mark.parametrize("paths", [[], ["data.id[0]"], [""], [False], "data.id[0]"])
+@pytest.mark.parametrize(
+    "paths", [[], ["data.id"], ["data.id[0]"], [""], [False], "data.id[0]"]
+)
 def test_composite_identity_rejects_invalid_paths(paths):
     with pytest.raises(ValidationError):
         ConnectionIdentity(mcp_tool="get_user", account_id=paths, label="name")

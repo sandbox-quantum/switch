@@ -188,7 +188,7 @@ class ConnectionIdentity(BaseModel):
         Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
         | Annotated[
             list[Annotated[str, Field(pattern=JSON_PATH_PATTERN)]],
-            Field(min_length=1, max_length=8),
+            Field(min_length=2, max_length=8),
         ]
     )
     label: str = Field(pattern=JSON_PATH_PATTERN)
