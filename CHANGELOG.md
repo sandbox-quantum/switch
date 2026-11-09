@@ -260,6 +260,11 @@ version of their own to them without also giving them a release of their own.
   being built, so turn it on for development and staging only. With it off,
   the dashboard is laid out as before, and the new URLs lead back to today's
   pages.
+- **The new layout's Overview counts the workspace's agents, users and
+  rooms.** Each card opens its list, and View graph opens the ecosystem
+  graph, which leaves the new rail. A workspace's admins see its totals; a
+  member sees the agents they own and the rooms they take part in, marked
+  "Yours", and every user. A count that cannot be read shows a dash and why.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
@@ -847,6 +852,12 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **A room's detail says whether the caller takes part in it, and whether
+  it is a Switch Console chat.** The gateway's `GET /rooms/{id}`, and the
+  room it returns from a create or change, always answered
+  `viewer_is_member: false` and `is_console_chat: false`, so Console's room
+  settings named a Console chat's messaging app "None". Both now say what
+  the room list says.
 - **`!list-documents` and `!list-references` answer again.** Since they began
   listing what a room's packages bring, both failed on the admin client that
   runs them, and the channel got no answer at all.
