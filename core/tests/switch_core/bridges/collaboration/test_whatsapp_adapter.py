@@ -71,6 +71,10 @@ class FakeGraph:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url).split("?")[0]
+        if request.headers.get("authorization") not in (None, f"Bearer {TOKEN}"):
+            return _graph_error(
+                400, 190, "Invalid OAuth access token - Cannot parse access token"
+            )
         if request.method == "GET" and str(request.url) in self.files:
             assert request.headers["authorization"] == f"Bearer {TOKEN}"
             return httpx.Response(200, content=self.files[str(request.url)])
@@ -197,6 +201,15 @@ async def test_an_expired_token_is_said_plainly(meta: FakeGraph) -> None:
     meta.token_valid = False
     with pytest.raises(BridgeCredentialError, match="does not accept the access token"):
         await WhatsAppAdapter.verify_credentials(_config().model_dump())
+
+
+async def test_a_token_meta_cannot_read_is_said_to_be_the_token(
+    meta: FakeGraph,
+) -> None:
+    with pytest.raises(BridgeCredentialError, match="does not accept the access token"):
+        await WhatsAppAdapter.verify_credentials(
+            _config(access_token="EAAnotatoken").model_dump()
+        )
 
 
 async def test_a_token_without_messaging_is_refused(meta: FakeGraph) -> None:

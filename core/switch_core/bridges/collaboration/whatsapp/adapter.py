@@ -91,6 +91,10 @@ _OUTSIDE_WINDOW_TEXT = (
     "WhatsApp allows a free-form reply only within 24 hours of the person's "
     "last message; they have to write again first"
 )
+_BAD_TOKEN = (
+    "WhatsApp does not accept the access token: it has expired, was revoked or "
+    "was mistyped. Generate a new one in your Meta app."
+)
 # Meta serves downloaded media only from its own hosts.
 _MEDIA_HOSTS = (".fbsbx.com", ".facebook.com", ".whatsapp.net")
 # What WhatsApp sends as each media type, and the most it takes of each
@@ -247,10 +251,7 @@ class WhatsAppAdapter(PlatformAdapter):
         if not isinstance(token, dict):
             token = {}
         if token.get("is_valid") is False:
-            raise BridgeCredentialError(
-                "WhatsApp does not accept the access token: it has expired, was "
-                "revoked or was mistyped. Generate a new one in your Meta app."
-            )
+            raise BridgeCredentialError(_BAD_TOKEN)
         scopes = token.get("scopes")
         if isinstance(scopes, list) and "whatsapp_business_messaging" not in scopes:
             raise BridgeCredentialError(
@@ -258,6 +259,8 @@ class WhatsAppAdapter(PlatformAdapter):
             )
         if number.status_code != 200:
             refused = _error(number)
+            if refused.code == 190:
+                raise BridgeCredentialError(_BAD_TOKEN)
             if "appsecret_proof" in refused.message:
                 raise BridgeCredentialError(
                     "The app secret is not this app's: copy it again from App "
