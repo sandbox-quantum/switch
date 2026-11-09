@@ -109,11 +109,15 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
 async function providerChecks(inputs: DoctorInputs, bundle: string | null): Promise<Check[]> {
   const checks: Check[] = [];
   let ready = 0;
+  let installed = 0;
+  let authUnknown = 0;
   for (const provider of PROVIDERS) {
     const located = await inputs.locate(provider);
     if (!located) continue;
+    installed++;
     const version = located.version ? ` ${located.version}` : '';
     if (!bundle) {
+      authUnknown++;
       checks.push({
         name: provider,
         status: 'warn',
@@ -124,12 +128,14 @@ async function providerChecks(inputs: DoctorInputs, bundle: string | null): Prom
     try {
       const readiness = await inputs.probe(bundle, provider, located.path);
       if (readiness.status === 'authenticated') ready++;
+      else if (readiness.status !== 'unauthenticated') authUnknown++;
       checks.push({
         name: provider,
         status: readiness.status === 'authenticated' ? 'ok' : 'warn',
         detail: `Installed${version}, ${readiness.status}${readiness.message ? `: ${readiness.message}` : ''}`,
       });
     } catch (error) {
+      authUnknown++;
       checks.push({
         name: provider,
         status: 'warn',
@@ -142,7 +148,11 @@ async function providerChecks(inputs: DoctorInputs, bundle: string | null): Prom
       name: 'Providers',
       status: 'fail',
       detail:
-        'No provider CLI is installed and signed in on PATH for this user, so no agent can run here. Install one (claude, codex, opencode, cursor or antigravity) and sign in, or set its API key in the --env-file the service runs with.',
+        installed === 0
+          ? 'No provider CLI is installed on PATH for this user, so no agent can run here. Install one (claude, codex, opencode, cursor or antigravity) and sign in, or set its API key in the --env-file the service runs with.'
+          : authUnknown > 0
+            ? 'A provider CLI is installed on PATH but its sign-in could not be fully verified for this user, so no agent can run here. Restore the shared-host bundle or fix sign-in checks, sign in to an installed provider (claude, codex, opencode, cursor or antigravity), or set its API key in the --env-file the service runs with.'
+            : 'A provider CLI is installed on PATH but none is signed in for this user, so no agent can run here. Sign in to an installed provider (claude, codex, opencode, cursor or antigravity), or set its API key in the --env-file the service runs with.',
     });
   return checks;
 }

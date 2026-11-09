@@ -72,6 +72,105 @@ describe('doctor', () => {
     expect(status(checks, 'Node')).toBe('fail');
     expect(status(checks, 'claude')).toBe('warn');
     expect(status(checks, 'Providers')).toBe('fail');
+    expect(checks.find((check) => check.name === 'Providers')?.detail).toMatch(
+      /installed on PATH but none is signed in/
+    );
+  });
+
+  it('fails Providers with an install message when no provider CLI is on PATH', async () => {
+    const checks = await runDoctor(inputs({ locate: async () => null }));
+    expect(status(checks, 'Providers')).toBe('fail');
+    expect(checks.find((check) => check.name === 'Providers')?.detail).toMatch(
+      /No provider CLI is installed on PATH/
+    );
+    expect(checks.find((check) => check.name === 'Providers')?.detail).not.toMatch(
+      /none is signed in/
+    );
+  });
+
+  it('fails Providers with a sign-in message when a CLI is installed but unauthenticated', async () => {
+    const checks = await runDoctor(
+      inputs({
+        probe: async () => ({
+          status: 'unauthenticated',
+          message: 'Run claude auth login',
+          models: [],
+        }),
+      })
+    );
+    expect(status(checks, 'claude')).toBe('warn');
+    expect(status(checks, 'Providers')).toBe('fail');
+    expect(checks.find((check) => check.name === 'Providers')?.detail).toMatch(
+      /installed on PATH but none is signed in/
+    );
+    expect(checks.find((check) => check.name === 'Providers')?.detail).not.toMatch(
+      /No provider CLI is installed on PATH|could not be fully verified/
+    );
+  });
+
+  it('fails Providers with incomplete verification when sign-in is skipped without a shared-host bundle', async () => {
+    const checks = await runDoctor(
+      inputs({
+        bundle: () => {
+          throw new Error('no shared-host bundle');
+        },
+      })
+    );
+    expect(status(checks, 'claude')).toBe('warn');
+    expect(status(checks, 'Providers')).toBe('fail');
+    expect(checks.find((check) => check.name === 'Providers')?.detail).toMatch(
+      /could not be fully verified/
+    );
+    expect(checks.find((check) => check.name === 'Providers')?.detail).not.toMatch(
+      /none is signed in/
+    );
+  });
+
+  it('fails Providers with incomplete verification when an auth probe throws', async () => {
+    const checks = await runDoctor(
+      inputs({
+        probe: async () => {
+          throw new Error('probe failed');
+        },
+      })
+    );
+    expect(status(checks, 'claude')).toBe('warn');
+    expect(status(checks, 'Providers')).toBe('fail');
+    expect(checks.find((check) => check.name === 'Providers')?.detail).toMatch(
+      /could not be fully verified/
+    );
+    expect(checks.find((check) => check.name === 'Providers')?.detail).not.toMatch(
+      /none is signed in/
+    );
+  });
+
+  it('fails Providers with incomplete verification when unauthenticated and unknown providers are mixed', async () => {
+    const checks = await runDoctor(
+      inputs({
+        locate: async (provider) =>
+          provider === 'claude' || provider === 'codex'
+            ? { path: `/usr/bin/${provider}`, version: '1.0.0', versionProblem: null }
+            : null,
+        probe: async (_bundle, provider) => {
+          if (provider === 'claude')
+            return {
+              status: 'unauthenticated',
+              message: 'Run claude auth login',
+              models: [],
+            };
+          return { status: 'unknown', message: 'Could not determine sign-in', models: [] };
+        },
+      })
+    );
+    expect(status(checks, 'claude')).toBe('warn');
+    expect(status(checks, 'codex')).toBe('warn');
+    expect(status(checks, 'Providers')).toBe('fail');
+    expect(checks.find((check) => check.name === 'Providers')?.detail).toMatch(
+      /could not be fully verified/
+    );
+    expect(checks.find((check) => check.name === 'Providers')?.detail).not.toMatch(
+      /none is signed in/
+    );
   });
 
   it('points at the proxy when the server answers, but not as the Switch API', async () => {
