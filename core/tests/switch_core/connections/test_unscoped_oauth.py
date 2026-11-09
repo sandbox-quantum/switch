@@ -15,6 +15,7 @@ from switch_core.connections.loader import ConnectionAccess, ConnectionDefinitio
 from switch_core.connections.sign_in_flows import SignInFlows, StoredFlow
 from tests.switch_core.connections.adapters.test_oauth import REDIRECT, STATIC, _adapter
 from tests.switch_core.connections.fake_vendor import FakeOAuthServer
+from tests.switch_core.connections.test_loader import OAUTH_ENTRY
 
 
 def _definition(unscoped=True):
@@ -161,6 +162,31 @@ def test_consent_does_not_mistake_empty_scopes_for_read_only(
             flows.consent(exchange)
     else:
         assert flows.consent(exchange) == expected
+
+
+SCOPED = {"read": {"scopes": ["read:items"]}, "write": {"scopes": ["write:items"]}}
+UNSCOPED = {"unscoped": True, "read": {"scopes": []}, "write": {"scopes": []}}
+
+
+def _with_profile(entry_access, profile_access):
+    body = yaml.safe_load(OAUTH_ENTRY)
+    body["access"] = entry_access
+    body["access_profiles"] = {
+        "alt": {"skill": "alt/SKILL.md", "access": profile_access}
+    }
+    return ConnectionDefinition.model_validate(body)
+
+
+def test_an_unscoped_entry_has_no_access_profiles():
+    with pytest.raises(
+        ValidationError, match="an unscoped entry has no access profiles"
+    ):
+        _with_profile(UNSCOPED, SCOPED)
+
+
+def test_an_access_profile_cannot_be_unscoped():
+    with pytest.raises(ValidationError, match="access profile alt cannot be unscoped"):
+        _with_profile(SCOPED, UNSCOPED)
 
 
 @pytest.mark.parametrize("adapter", [None, "github", "api_key"])

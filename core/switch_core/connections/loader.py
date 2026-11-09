@@ -652,7 +652,13 @@ class ConnectionDefinition(BaseModel):
             raise ValueError(
                 "only an oauth entry with access levels has access profiles"
             )
+        # An unscoped profile names no scopes, so any scope the vendor grants
+        # looks changed, and every grant would ask to reconnect.
+        if self.access.unscoped:
+            raise ValueError("an unscoped entry has no access profiles")
         for name, profile in self.access_profiles.items():
+            if profile.access.unscoped:
+                raise ValueError(f"access profile {name} cannot be unscoped")
             # A grant keeps its level when the server changes profile.
             if (profile.access.write is None) != (self.access.write is None):
                 raise ValueError(
