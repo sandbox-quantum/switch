@@ -31,6 +31,7 @@ from switch_core.telemetry.periods import periods_ending_between
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.session_start import prune_session_start_claims
 from switch_core.telemetry.snapshot import (
+    UsageCounts,
     as_utc,
     collect_period_counts,
     collect_usage,
@@ -95,13 +96,17 @@ class SnapshotReporter:
         if not await self._claim(now, last_sent):
             return False
         try:
-            await self.run_once(now=now, since=last_sent)
+            counts = await self._send_snapshot(now)
         except BaseException:
-            # Nothing was sent: `run_once` raises only before its emit. The
-            # claim is handed back so the next poll, here or in another
+            # Nothing was sent: `_send_snapshot` raises only before its emit.
+            # The claim is handed back so the next poll, here or in another
             # process, tries again rather than skipping the day.
             await self._release(now, last_sent)
             raise
+        # The snapshot is out, so nothing from here hands the claim back, a
+        # shutdown cancelling the pass included: the next pass would send the
+        # snapshot, and every room and period already reported, again.
+        await self._report_window(counts, now=now, since=last_sent)
         await self._prune(now)
         return True
 
@@ -120,26 +125,35 @@ class SnapshotReporter:
 
     async def run_once(self, *, now: datetime, since: datetime | None) -> None:
         """Collect and report one snapshot, plus any room that just went live."""
-        counts = await collect_usage(self._session_factory, now=now)
+        counts = await self._send_snapshot(now)
+        await self._report_window(counts, now=now, since=since)
 
-        # Emitted before the room half runs: per-tenant failures in either
-        # call are contained inside `snapshot.py`, and a broader failure there
-        # must not discard a snapshot that has already been collected.
+    async def _send_snapshot(self, now: datetime) -> UsageCounts:
+        """Collect and emit the snapshot. Raises only before the emit."""
+        counts = await collect_usage(self._session_factory, now=now)
         self._telemetry.emit(
             "usage_snapshot",
             **counts.as_event_properties(
                 session_live_count=int(self._live_session_count())
             ),
         )
+        return counts
 
-        # And nothing after that emit may raise out of this method. A raise
-        # hands the claimed watermark back, and the loop retries every poll
-        # interval, so a raise here would re-send the same snapshot
-        # every five minutes for as long as the condition lasted, turning one
-        # lost pass into hundreds of duplicates of a figure meant to be daily.
-        # The rooms are the part that is given up instead: the window has moved
-        # past them, which is the trade the docstring on `newly_active_rooms`
-        # already describes, and it keeps "no room is reported twice" true.
+    async def _report_window(
+        self, counts: UsageCounts, *, now: datetime, since: datetime | None
+    ) -> None:
+        """What happened since the last pass: rooms that went live, and the
+        periods that ended.
+
+        Run after the snapshot is emitted, and no exception leaves it: the
+        loop retries every poll interval, so a pass that failed here and ran
+        again would re-send the same snapshot every five minutes for as long
+        as the condition lasted, turning one lost pass into hundreds of
+        duplicates of a figure meant to be daily. The rooms are the part that
+        is given up instead: the window has moved past them, which is the
+        trade the docstring on `newly_active_rooms` already describes, and it
+        keeps "no room is reported twice" true.
+        """
         try:
             # Skipped entirely on the first pass — see the module docstring.
             active = (
@@ -174,9 +188,8 @@ class SnapshotReporter:
 
     async def _report_periods(self, *, since: datetime, now: datetime) -> None:
         """One `usage_period` for every day, week and month that ended in this
-        pass's window. Contained like the rooms above, for the same reason: a
-        raise would hand the watermark back and send the snapshot again. A
-        period that fails is not reported; the next window starts after it."""
+        pass's window. Each is contained, so one that fails costs only itself;
+        it is not reported, and the next window starts after it."""
         for period in periods_ending_between(since, now):
             try:
                 counts = await collect_period_counts(

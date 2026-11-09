@@ -520,6 +520,39 @@ class TestOneProcessSendsTheSnapshot:
         assert await reporter.run_once_if_due() is True
         assert await self._sent(sink) == 1
 
+    async def test_a_shutdown_after_the_snapshot_keeps_the_claim(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cancellation is not an `Exception`, so it passes every guard in
+        the pass. Once the snapshot is out it must not hand the claim back, or
+        the next process to start sends the snapshot and every period again."""
+        before = datetime.now(UTC) - timedelta(days=2)
+        async with session_factory() as session:
+            await session.execute(delete(TelemetrySnapshotWatermark))
+            session.add(TelemetrySnapshotWatermark(id=1, last_sent_at=before))
+            await session.commit()
+
+        async def cancelled(*args: object, **kwargs: object) -> object:
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(
+            "switch_core.telemetry.reporter.collect_period_counts", cancelled
+        )
+        sink = _RecordingSink()
+        reporter = self._reporter(sink, session_factory)
+
+        with pytest.raises(asyncio.CancelledError):
+            await reporter.run_once_if_due()
+
+        assert await self._sent(sink) == 1
+        watermark = await reporter._read_watermark()
+        assert watermark is not None and watermark > before
+        monkeypatch.undo()
+        assert await reporter.run_once_if_due() is False
+        assert await self._sent(sink) == 1
+
     async def test_a_first_pass_that_fails_leaves_no_watermark(
         self,
         session_factory: async_sessionmaker[AsyncSession],
