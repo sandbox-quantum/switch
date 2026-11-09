@@ -8,6 +8,16 @@ Built with Node/Vite and served via nginx. Development commands live in the
 repository-root `justfile`: `just gateway-install` (deps, first time only),
 `just gateway-dev` (dev server), `just gateway-build` (production build).
 
+## Dev-only tools
+
+`src/dev/` holds tools for the dev server alone, such as the role switcher
+that shows the dashboard as an operator, org admin, workspace admin or member
+(seed its accounts with `just seed-dev-roles`; see
+[LOCAL_DEVELOPMENT.md](../docs/old/LOCAL_DEVELOPMENT.md#viewing-the-dashboard-as-each-role)).
+Import them only behind `import.meta.env.DEV`, as `src/layout/DevRoleSlot.tsx`
+does: a production build then leaves them out, and `npm run build` fails if
+one gets in anyway (`scripts/check-no-dev-tools.mjs`).
+
 ## Design system
 
 The UI follows the Hoot design system. `src/theme/hoot.css` is vendored from

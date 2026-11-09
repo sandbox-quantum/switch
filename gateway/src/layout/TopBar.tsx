@@ -14,6 +14,7 @@ import {
 } from "../data/workspaceSwitcher";
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
 import { type Layout, areaOf } from "../routes/routeTable";
+import { DevRoleSlot } from "./DevRoleSlot";
 import WorkspaceMenu from "./WorkspaceMenu";
 
 const SECTION_LABELS: [prefix: string, label: string][] = [
@@ -247,6 +248,7 @@ export default function TopBar({ layout }: { layout: Layout }) {
       )}
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
+        <DevRoleSlot />
         {layout === "v2" && (
           <LinkButton href={HELP_URL} icon={<HelpOutlineOutlined sx={{ fontSize: 18 }} />}>
             Help
