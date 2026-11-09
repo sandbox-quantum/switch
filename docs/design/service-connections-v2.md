@@ -42,7 +42,9 @@ auth:
     #   include_granted_scopes)
     revocation_discovered: true   # or revocation_url: https://…; with neither,
                                   # remove_access: where people remove Switch
-  identity:                   # GET with the token; dotted paths in its JSON
+  identity:                   # JSON with the token; dotted paths in its response
+    method: GET               # GET (default) or POST
+    # body: { query: "{ me { id email } }" }  # optional static JSON, POST only
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
@@ -431,6 +433,9 @@ one of three shapes. Pick the first that fits:
 
 Then:
 
+- A disabled entry naming an adapter may stage its skill for later enablement.
+  The loader validates it but publishes no skill files to sessions; short
+  placeholders without an adapter still must not ship a skill.
 - `connections/catalog/<slug>/connection.yaml`, and `skill/SKILL.md` with
   `name: <slug>` and a description in its frontmatter. The skill describes
   tasks, tools and limits, never credentials: the loader refuses one that

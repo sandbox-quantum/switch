@@ -3,8 +3,9 @@
 Each ``catalog/<slug>/connection.yaml`` describes one service a user can
 connect. Enabled entries ship a skill under ``catalog/<slug>/skill/``, which
 each session of an agent granted the service is given; placeholder entries
-ship none. The catalog is validated once, at import, so a malformed
-entry stops the server rather than surfacing on the first launch.
+ship none. A disabled entry naming an adapter may stage a skill, validated
+but never published to sessions. The catalog is validated once, at import,
+so a malformed entry stops the server rather than surfacing on the first launch.
 
 An enabled entry also names the adapter that reaches the vendor (``adapter``:
 ``github``, the generic ``oauth``, or ``api_key`` for a vendor whose people
@@ -32,7 +33,14 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationError,
+    model_validator,
+)
 
 CATALOG_ROOT = Path(__file__).parent / "catalog"
 MAX_SKILL_BYTES = 32 * 1024
@@ -179,14 +187,24 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Read the account's id and label from a fixed JSON GET or POST.
+
+    GET remains the default for existing definitions. A POST may send a
+    static JSON object; it is never interpolated with credentials.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"] = "GET"
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    body: dict[str, JsonValue] | None = None
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _body_for_post(self) -> "ConnectionIdentity":
+        if self.body is not None and self.method != "POST":
+            raise ValueError("only a POST identity call sends a body")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -850,7 +868,7 @@ def load_catalog(root: Path) -> dict[str, Connection]:
                 f"Connection {directory.name} declares a different slug: {definition.slug}"
             )
         skill = directory / "skill"
-        if definition.enabled:
+        if definition.enabled or (definition.adapter is not None and skill.exists()):
             if not skill.is_dir() or skill.is_symlink():
                 raise CatalogError(
                     f"Connection {definition.slug} is enabled but has no skill."
@@ -863,6 +881,8 @@ def load_catalog(root: Path) -> dict[str, Connection]:
                         f"a skill file it does not ship: {profile.skill}"
                     )
                 _check_frontmatter(definition.slug, profile.skill, files[profile.skill])
+            if not definition.enabled:
+                files = {}
         else:
             if skill.exists():
                 raise CatalogError(
