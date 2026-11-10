@@ -370,6 +370,12 @@ export type RemoteRoomSummary = {
   viewerIsMember: boolean;
   /** A Switch Console chat: only its members can open it. False from a server that does not say. */
   isConsoleChat: boolean;
+  /**
+   * The server counts its people as its Switch members (a Console chat on no
+   * app), so its count is right even when 0. Absent from a server too old to
+   * count a chat's members, whose count for a chat always reads 0.
+   */
+  peopleAreMembers?: boolean;
   archived: boolean;
   createdAt: string;
   /** Who may write to the room, when the server says (see `RoomDetail`); absent from an older server. */

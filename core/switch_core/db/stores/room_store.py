@@ -32,6 +32,7 @@ from switch_core.db.models import (
     ExternalUserClaim,
     Room,
     RoomGroup,
+    User,
     require_tenant_id,
     room_agents,
 )
@@ -836,6 +837,34 @@ class RoomStore:
         by_room: dict[str, list[str]] = {}
         for room_id, client_id in result.all():
             by_room.setdefault(room_id, []).append(client_id)
+        return by_room
+
+    async def member_users_by_room(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """The people in each room through their Switch Console member client,
+        as `(user id, user name)` sorted by name, for many rooms in one query.
+        A room with no such people has no key.
+
+        Sorted here rather than in SQL, so the order is Python's, the same as
+        a bridged room's names in the gateway, whatever the database's
+        collation."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(ClientRoom.room_id, User.id, User.name)
+            .join(Client, Client.id == ClientRoom.client_id)
+            .join(User, User.id == Client.user_id)
+            .where(
+                any_of(ClientRoom.room_id, room_ids),
+                Client.type == MEMBER_CLIENT_TYPE,
+            )
+        )
+        by_room: dict[str, list[tuple[str, str]]] = {}
+        for room_id, user_id, name in result.all():
+            by_room.setdefault(room_id, []).append((user_id, name))
+        for members in by_room.values():
+            members.sort(key=lambda member: (member[1], member[0]))
         return by_room
 
     async def get_member_agent_clients(

@@ -40,6 +40,10 @@ export interface RoomSummary {
   // The viewer takes part in it: owns it, is in it (in Switch Console or
   // through a platform account they claimed), or owns an agent in it.
   viewer_is_member: boolean;
+  // Made in Switch Console as a chat: its people are its members, named by
+  // their Switch name, rather than accounts on a messaging app. Absent from
+  // servers that predate it.
+  is_console_chat?: boolean;
   // What the viewer may do, as the server decides it. `can_write` covers the
   // room's settings, roles, links and attaching resources;
   // `can_change_members` covers adding and removing its agents and people,
