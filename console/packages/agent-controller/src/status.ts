@@ -32,11 +32,6 @@ import type { GivenLogin, LoginProblem, SealedLogins } from './sealed-logins';
 import type { AgentRow, ControllerStore } from './store';
 
 export const PROVIDER_TTL_MS = 10 * 60 * 1000;
-/** Retry a check deferred for memory sooner than an ordinary cached result. */
-export const PROVIDER_MEMORY_RETRY_MS = 30 * 1000;
-// OpenCode's readiness server has been observed using over 600 MiB by itself.
-// Leave space for its parent probe host and transient allocations under a cgroup cap.
-export const OPENCODE_PROBE_HEADROOM_BYTES = 768 * 1024 * 1024;
 // A first run may unpack the CLI's own runtime (OpenCode's Bun) before printing.
 const VERSION_TIMEOUT_MS = 30_000;
 // Keep repeated direct requests from starving the provider status refresh.
@@ -97,10 +92,7 @@ async function gitHubToolStatuses(
 
 /** Finds a provider's CLI on this machine. */
 export interface ProviderLocator {
-  locate(
-    provider: Provider,
-    options?: { skipVersionProbe?: boolean }
-  ): Promise<LocatedProvider | null>;
+  locate(provider: Provider): Promise<LocatedProvider | null>;
 }
 
 /**
@@ -120,10 +112,7 @@ export class PathProviderLocator implements ProviderLocator {
     private readonly probeHome: string
   ) {}
 
-  async locate(
-    provider: Provider,
-    options: { skipVersionProbe?: boolean } = {}
-  ): Promise<LocatedProvider | null> {
+  async locate(provider: Provider): Promise<LocatedProvider | null> {
     const plugin = pluginRegistry.get(provider);
     if (!plugin) throw new Error(`No provider plugin is registered for '${provider}'.`);
     const dependency = plugin.capabilities.hostDependency;
@@ -133,12 +122,6 @@ export class PathProviderLocator implements ProviderLocator {
       if (candidate === null) continue;
       if (dependency.skipVersionProbe)
         return { path: candidate, version: null, versionProblem: null };
-      if (options.skipVersionProbe)
-        return {
-          path: candidate,
-          version: null,
-          versionProblem: 'Version check deferred due to low memory.',
-        };
       return {
         path: candidate,
         ...(await readVersion(candidate, dependency.versionArgs ?? ['--version'], this.probeHome)),
@@ -260,8 +243,6 @@ type ProviderEntry = {
   at: number;
   login: GivenLogin | null;
   problem: LoginProblem | { code: 'provider_login_expired'; message: string } | null;
-  /** A memory-deferred check is retried sooner than an ordinary status. */
-  memoryDeferred: boolean;
   /** Which check this is, in the order they started. */
   sequence: number;
 };
@@ -278,7 +259,6 @@ type ProviderEntry = {
 export class ProviderStatuses {
   private readonly entries = new Map<Provider, ProviderEntry>();
   private refreshing: Promise<void> | null = null;
-  private memoryRetrying: Promise<void> | null = null;
   // Version and sign-in probes can each start a large CLI. Keep them from
   // running together, including on-demand checks while a refresh is in flight.
   private probeActive = false;
@@ -302,8 +282,6 @@ export class ProviderStatuses {
       sealed: SealedLogins | null;
       probeCwd: string;
       now: () => number;
-      /** Process limit/headroom; injected for testing the low-memory path. */
-      probeMemory?: () => { constrained: number; available: number; physical: number };
       log: Logger;
       onChange: () => void;
     }
@@ -332,7 +310,6 @@ export class ProviderStatuses {
         at,
         login: null,
         problem: null,
-        memoryDeferred: false,
         sequence: 0,
       });
       changed = true;
@@ -363,26 +340,9 @@ export class ProviderStatuses {
     background: boolean
   ): Promise<ProviderStatus> {
     const sequence = ++this.checks;
-    let memoryDeferred = false;
-    const located = await this.withProbeLock(() => {
-      memoryDeferred = provider === 'opencode' && this.insufficientOpenCodeHeadroom();
-      return this.deps.locator.locate(provider, { skipVersionProbe: memoryDeferred });
-    }, background);
-    if (!located) memoryDeferred = false;
+    const located = await this.withProbeLock(() => this.deps.locator.locate(provider), background);
     let readiness = located
-      ? await this.withProbeLock(() => {
-          if (memoryDeferred || (provider === 'opencode' && this.insufficientOpenCodeHeadroom())) {
-            memoryDeferred = true;
-            return Promise.resolve<ProviderReadiness>({
-              status: 'unknown',
-              message:
-                'OpenCode sign-in check deferred because available memory under this controller’s limit is below 768 MiB or could not be measured. Free memory or raise the limit, then recheck.',
-              models: [],
-              loginHelps: false,
-            });
-          }
-          return this.probe(provider, located.path, null);
-        }, background)
+      ? await this.withProbeLock(() => this.probe(provider, located.path, null), background)
       : null;
     const knownToWork = this.entries.get(provider)?.status;
     if (
@@ -399,15 +359,11 @@ export class ProviderStatuses {
       readiness,
       new Date(this.deps.now()).toISOString()
     );
-    // Keep a previously verified sealed login when this check cannot run.
-    // Its status remains unknown until it is checked again.
-    const held = memoryDeferred ? this.entries.get(provider) : undefined;
-    let login: GivenLogin | null = held?.login ?? null;
-    let problem: ProviderEntry['problem'] = held?.problem ?? null;
+    let login: GivenLogin | null = null;
+    let problem: ProviderEntry['problem'] = null;
     if (
       located &&
       readiness?.status !== 'authenticated' &&
-      !memoryDeferred &&
       this.deps.sealed &&
       !this.givenDisabled
     ) {
@@ -473,7 +429,6 @@ export class ProviderStatuses {
       at,
       login,
       problem,
-      memoryDeferred,
       sequence,
     });
     if (
@@ -492,7 +447,7 @@ export class ProviderStatuses {
    */
   async givenLogin(provider: Provider): Promise<GivenLogin | null> {
     const entry = this.entries.get(provider);
-    if (!entry || this.isStale(entry)) await this.check(provider);
+    if (!entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS) await this.check(provider);
     return this.entries.get(provider)?.login ?? null;
   }
 
@@ -559,26 +514,6 @@ export class ProviderStatuses {
     }
   }
 
-  /** Limit this guard to a known process memory cap; unknown/unconstrained hosts retain the normal check. */
-  private insufficientOpenCodeHeadroom(): boolean {
-    const memory = this.deps.probeMemory?.() ?? {
-      constrained: process.constrainedMemory(),
-      available: process.availableMemory(),
-      physical: totalmem(),
-    };
-    return (
-      memory.constrained > 0 &&
-      memory.constrained < memory.physical &&
-      memory.available >= 0 &&
-      memory.available < OPENCODE_PROBE_HEADROOM_BYTES
-    );
-  }
-
-  private isStale(entry: ProviderEntry): boolean {
-    const ttl = entry.memoryDeferred ? PROVIDER_MEMORY_RETRY_MS : PROVIDER_TTL_MS;
-    return this.deps.now() - entry.at >= ttl;
-  }
-
   /** Run one CLI probe at a time, letting direct requests pass background work. */
   private async withProbeLock<T>(run: () => Promise<T>, background = false): Promise<T> {
     if (this.probeActive) {
@@ -627,38 +562,15 @@ export class ProviderStatuses {
 
   /** Checks every provider whose last check is older than the TTL. */
   async refreshStale(): Promise<void> {
-    this.refreshing ??= Promise.all([
-      this.checkProviders(
-        PROVIDERS.filter((provider) => {
-          const entry = this.entries.get(provider);
-          return !entry || (!entry.memoryDeferred && this.isStale(entry));
-        })
-      ),
-      this.retryMemoryDeferred(),
-    ])
-      .then(() => {})
-      .finally(() => {
-        this.refreshing = null;
-      });
+    this.refreshing ??= this.checkProviders(
+      PROVIDERS.filter((provider) => {
+        const entry = this.entries.get(provider);
+        return !entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS;
+      })
+    ).finally(() => {
+      this.refreshing = null;
+    });
     return this.refreshing;
-  }
-
-  /** True while a memory retry is still waiting on a provider check or network call. */
-  memoryRetryPending(): boolean {
-    return this.memoryRetrying !== null;
-  }
-
-  /** Retry memory-deferred checks on the controller's status poll, without speeding up ordinary checks. */
-  async retryMemoryDeferred(): Promise<void> {
-    const due = PROVIDERS.filter((provider) => {
-      const entry = this.entries.get(provider);
-      return entry?.memoryDeferred && this.isStale(entry);
-    });
-    if (!due.length) return;
-    this.memoryRetrying ??= this.checkProviders(due).finally(() => {
-      this.memoryRetrying = null;
-    });
-    return this.memoryRetrying;
   }
 
   /** What is known now; providers not checked yet are left out rather than guessed. */
@@ -678,8 +590,7 @@ export class ProviderStatuses {
       const current = this.entries.get(provider);
       if (current && this.deps.now() - current.at < PROVIDER_TTL_MS && current.path)
         return current.path;
-      const skipVersionProbe = provider === 'opencode' && this.insufficientOpenCodeHeadroom();
-      const located = await this.deps.locator.locate(provider, { skipVersionProbe });
+      const located = await this.deps.locator.locate(provider);
       return located?.path ?? null;
     });
   }
