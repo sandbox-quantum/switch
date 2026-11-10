@@ -393,43 +393,16 @@ def _leaves(error: BaseException) -> Iterator[BaseException]:
             pending.append(current.__cause__)
 
 
-_NO_ARGUMENT_KEYS = frozenset(
-    {
-        "type",
-        "properties",
-        "required",
-        "additionalProperties",
-        "minProperties",
-        "maxProperties",
-        "title",
-        "description",
-        "$schema",
-        "$comment",
-        "default",
-        "examples",
-        "deprecated",
-    }
-)
-
-
 def _accepts_no_arguments(schema: object) -> bool:
-    """Whether a tool's input schema takes `{}`. This says nothing about
-    what the tool does: read-only rests on its annotation and the catalog.
-
-    Only top-level keywords that cannot refuse `{}` are allowed, and nothing
-    nested is read. On a small hostile schema, a JSON Schema validator can
-    spend minutes of CPU time on the event loop."""
-    if not isinstance(schema, dict) or schema.get("type") != "object":
-        return False
-    if not _NO_ARGUMENT_KEYS.issuperset(schema):
-        return False
-    min_properties = schema.get("minProperties", 0)
+    """Whether a tool's input schema says it needs no arguments: an object
+    schema with no required property. Nothing else is read, so a vendor's
+    schema costs no work: a JSON Schema validator can spend minutes of CPU
+    time on a small hostile schema. A tool that still refuses `{}` fails
+    loudly when called (`tool_error`)."""
     return (
-        schema.get("required", []) == []
-        and type(min_properties) is int
-        and min_properties == 0
-        and isinstance(schema.get("properties", {}), dict)
-        and isinstance(schema.get("additionalProperties", True), bool | dict)
+        isinstance(schema, dict)
+        and schema.get("type") == "object"
+        and schema.get("required", []) == []
     )
 
 

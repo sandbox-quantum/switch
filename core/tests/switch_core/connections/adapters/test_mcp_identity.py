@@ -421,6 +421,13 @@ async def test_optional_identity_selector_is_never_supplied(monkeypatch):
 EVIL_PATTERN = {"type": "string", "pattern": "^(a+)+$"}
 
 
+def _unevaluated_chain(levels: int, keyword: str) -> dict[str, Any]:
+    schema: dict[str, Any] = {}
+    for _ in range(levels):
+        schema = {"type": "object", keyword: [schema], "unevaluatedProperties": False}
+    return schema
+
+
 @pytest.mark.parametrize(
     "schema",
     [
@@ -442,17 +449,22 @@ EVIL_PATTERN = {"type": "string", "pattern": "^(a+)+$"}
             "examples": [{}],
             "deprecated": False,
         },
+        # Not read: a tool that still refuses {} fails when called.
+        {"type": "object", "minProperties": 1},
+        {"type": "object", "anyOf": [{}, {"required": ["a"]}]},
+        {"type": "object", "x-vendor": 1},
+        {"type": "object", "$ref": "https://schemas.example.test/s.json"},
+        # Hostile shapes that make a JSON Schema validator take minutes.
+        _unevaluated_chain(16, "allOf"),
+        _unevaluated_chain(16, "anyOf"),
+        {"type": "object", "allOf": [{}] * 21000},
     ],
+    ids=lambda schema: str(schema)[:40],
 )
 def test_accepts_no_arguments_takes_a_safe_shape(schema):
+    started = time.monotonic()
     assert oauth._accepts_no_arguments(schema) is True
-
-
-def _unevaluated_chain(levels: int, keyword: str) -> dict[str, Any]:
-    schema: dict[str, Any] = {}
-    for _ in range(levels):
-        schema = {"type": "object", keyword: [schema], "unevaluatedProperties": False}
-    return schema
+    assert time.monotonic() - started < 0.1
 
 
 @pytest.mark.parametrize(
@@ -464,50 +476,32 @@ def _unevaluated_chain(levels: int, keyword: str) -> dict[str, Any]:
         {"type": ["object"]},
         {"type": "object", "required": ["a"]},
         {"type": "object", "required": "a"},
-        {"type": "object", "minProperties": 1},
-        {"type": "object", "minProperties": True},
-        {"type": "object", "minProperties": "one"},
-        {"type": "object", "properties": ["a"]},
-        {"type": "object", "additionalProperties": "no"},
-        {"type": "object", "not": {"maxProperties": 0}},
-        {"type": "object", "if": {}, "then": {"required": ["a"]}},
-        {"type": "object", "anyOf": [{}, {"required": ["a"]}]},
-        {"type": "object", "dependentRequired": {"a": ["b"]}},
-        {"type": "object", "patternProperties": {"^a$": {}}},
-        {"type": "object", "x-vendor": 1},
-        {"type": "object", "$ref": "https://schemas.example.test/s.json"},
-        {"type": "object", "$defs": {"x": {}}},
-        _unevaluated_chain(16, "allOf"),
-        _unevaluated_chain(16, "anyOf"),
-        _unevaluated_chain(16, "oneOf"),
-        {"type": "object", "allOf": [{}] * 21000},
     ],
     ids=lambda schema: str(schema)[:40],
 )
 def test_accepts_no_arguments_refuses_other_shapes(schema):
-    started = time.monotonic()
     assert oauth._accepts_no_arguments(schema) is False
-    assert time.monotonic() - started < 1
 
 
 async def test_mcp_identity_refuses_a_schema_that_rejects_empty_arguments(
     monkeypatch,
 ):
-    tool = {**GET_USER, "inputSchema": {"type": "object", "minProperties": 1}}
+    tool = {**GET_USER, "inputSchema": {"type": "object", "required": ["id"]}}
     vendor = _ScriptedMcp({None: ([tool], None)})
     _over_mock(monkeypatch, vendor)
     _assert_reason(await _identify_error(), "needs_arguments")
     assert vendor.calls == []
 
 
-async def test_mcp_identity_refuses_an_unevaluated_chain_quickly(monkeypatch):
+async def test_mcp_identity_spends_no_time_on_a_hostile_schema(monkeypatch):
     tool = {**GET_USER, "inputSchema": _unevaluated_chain(16, "allOf")}
     vendor = _ScriptedMcp({None: ([tool], None)})
     _over_mock(monkeypatch, vendor)
     started = time.monotonic()
-    _assert_reason(await _identify_error(), "needs_arguments")
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
+        identity = await _adapter(http).identify("example-bearer-value")
     assert time.monotonic() - started < 1
-    assert vendor.calls == []
+    assert identity.account_id == "account-example"
 
 
 @pytest.mark.parametrize(
