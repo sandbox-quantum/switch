@@ -9,8 +9,10 @@ import inspect
 import json
 import logging
 import socket
+import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import httpcore
@@ -877,6 +879,81 @@ async def test_mcp_identity_asks_for_identity_encoding(monkeypatch):
         await _adapter(http).identify("example-bearer-value")
     assert vendor.requests
     assert {r.headers.get("accept-encoding") for r in vendor.requests} == {"identity"}
+
+
+@contextlib.contextmanager
+def _fetch_recorder() -> Iterator[tuple[str, list[str]]]:
+    """A loopback URL that records every GET of it, served from a thread
+    because a fetch from the event loop's thread would block it."""
+    hits: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            hits.append(self.path)
+            body = b'{"type": "object"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/internal", hits
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+async def test_mcp_identity_never_fetches_an_output_schema_reference(monkeypatch):
+    with _fetch_recorder() as (url, hits):
+        output = {"type": "object", "properties": {"data": {"$ref": url}}}
+        vendor = _ScriptedMcp({None: ([{**GET_USER, "outputSchema": output}], None)})
+        _over_mock(monkeypatch, vendor)
+        async with guarded_async_client(_NOTHING_ALLOWED) as http:
+            identity = await _adapter(http).identify("example-bearer-value")
+    assert hits == []
+    assert identity.account_id == "account-example"
+
+
+async def test_mcp_identity_reads_a_tool_with_an_output_schema(monkeypatch):
+    output = {
+        "type": "object",
+        "properties": {"data": {"type": "object"}},
+        "required": ["data"],
+    }
+    vendor = _ScriptedMcp({None: ([{**GET_USER, "outputSchema": output}], None)})
+    _over_mock(monkeypatch, vendor)
+    async with guarded_async_client(_NOTHING_ALLOWED) as http:
+        identity = await _adapter(http).identify("example-bearer-value")
+    assert identity.account_id == "account-example"
+    assert len(vendor.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "status, expected",
+    [(401, ReauthorizationRequiredError), (500, ServiceUnavailableError)],
+)
+async def test_mcp_identity_maps_http_status_on_the_tool_call(
+    monkeypatch, status, expected
+):
+    # The plain request is not watched for the SDK's transport failure, so
+    # the error arrives when the deadline ends.
+    monkeypatch.setattr(oauth, "MCP_IDENTITY_SECONDS", 0.5)
+    vendor = _ScriptedMcp()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and b'"tools/call"' in request.content:
+            return httpx.Response(status, text=MARKER)
+        return vendor(request)
+
+    _over_mock(monkeypatch, handler)
+    assert type(await _identify_error()) is expected
 
 
 # ── The outbound policy ──────────────────────────────────────────────────────

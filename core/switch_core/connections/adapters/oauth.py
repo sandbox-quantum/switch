@@ -36,7 +36,15 @@ from fastmcp.client.logging import LogMessage
 from fastmcp.client.transports import StreamableHttpTransport
 from jsonschema import Draft202012Validator, validators
 from mcp.shared.exceptions import McpError
-from mcp.types import CONNECTION_CLOSED, CallToolResult, TextContent, Tool
+from mcp.types import (
+    CONNECTION_CLOSED,
+    CallToolRequest,
+    CallToolRequestParams,
+    CallToolResult,
+    ClientRequest,
+    TextContent,
+    Tool,
+)
 from referencing import Registry
 
 from switch_core.connections.adapters import (
@@ -869,8 +877,17 @@ class OAuthAdapter:
                 raise McpIdentityError(self._name, "not_read_only")
             if not _accepts_no_arguments(tool.inputSchema):
                 raise McpIdentityError(self._name, "needs_arguments")
-            result: CallToolResult = await client.call_tool_mcp(
-                self._identity.mcp_tool, {}
+            # Sent as a plain request: the SDK's `call_tool` checks the result
+            # against the vendor's outputSchema, which can fetch any URL.
+            result: CallToolResult = await client.session.send_request(
+                ClientRequest(
+                    CallToolRequest(
+                        params=CallToolRequestParams(
+                            name=self._identity.mcp_tool, arguments={}
+                        )
+                    )
+                ),
+                CallToolResult,
             )
             return result
 
