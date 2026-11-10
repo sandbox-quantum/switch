@@ -47,8 +47,6 @@ export const providerCustomConfigEntrySchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
 });
 
-export const providerConfigDefaults: Record<string, unknown> = {};
-
 export const interfaceSettingsSchema = z.object({
   sessionHoverAction: z.enum(['delete', 'archive']),
   autoRightSidebarBehavior: z.boolean(),

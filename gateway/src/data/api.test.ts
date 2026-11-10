@@ -99,12 +99,12 @@ describe("fetchTeamPlacements", () => {
   });
 
   it("throws the server's own words on a connection that is not running", async () => {
-    respond(409, { detail: "The Teams connection is not running; try again in a moment." });
+    respond(409, { detail: "The Teams messaging app is not running; try again in a moment." });
     const err = await fetchTeamPlacements("b1").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(409);
     expect((err as ApiError).message).toBe(
-      "The Teams connection is not running; try again in a moment.",
+      "The Teams messaging app is not running; try again in a moment.",
     );
   });
 });
