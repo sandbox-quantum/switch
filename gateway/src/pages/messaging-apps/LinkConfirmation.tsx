@@ -3,6 +3,7 @@ import ContentCopyOutlined from "@mui/icons-material/ContentCopyOutlined";
 import OpenInNewOutlined from "@mui/icons-material/OpenInNewOutlined";
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
 import {
   ApiError,
   type BridgeDetail,
@@ -80,6 +81,7 @@ export default function LinkConfirmation({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
+  const [appGone, setAppGone] = useState(false);
   const expired = code !== null && now >= code.deadline;
 
   // Watched for as long as the code is up, expired or not: the expiry is read
@@ -91,7 +93,7 @@ export default function LinkConfirmation({
     pendingReadAt,
     error: watchError,
     refresh,
-  } = useMyAccounts(gone ? null : CONFIRMATION_POLL_MS);
+  } = useMyAccounts(gone || appGone ? null : CONFIRMATION_POLL_MS);
   const [settleError, setSettleError] = useState<string | null>(null);
   const confirmed = linked?.some((i) => i.id === target.identityId && i.verified) ?? false;
 
@@ -103,7 +105,8 @@ export default function LinkConfirmation({
       setCode(shown(await issueLinkCode(app.bridge_id, target.identityId)));
       setCopied(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not get a new code.");
+      if (isAppGone(e)) setAppGone(true);
+      else setError(e instanceof Error ? e.message : "Could not get a new code.");
     } finally {
       // Either way the lists may have moved: a refusal may mean the link was
       // confirmed or cancelled meanwhile.
@@ -131,9 +134,13 @@ export default function LinkConfirmation({
   // of the linked accounts begun now settles whether it was confirmed or
   // cancelled. Asked again after every pending read while it looks so, so a
   // settling read that fails is retried rather than left unanswered.
+  // Not while this screen's own Cancel is in flight: a read landing between
+  // the server dropping the request and its answer would call it cancelled
+  // somewhere else.
   const absent =
     !gone &&
     !confirmed &&
+    !cancelling &&
     looksCancelled({ target, linked, pending, pendingReadAt, openedAt });
   useEffect(() => {
     if (!absent) return;
@@ -174,10 +181,22 @@ export default function LinkConfirmation({
       await cancelLinkRequest(app.bridge_id, target.identityId);
       onCancelled();
     } catch (e) {
-      // Nothing was waiting: cancelled meanwhile, or no code was ever issued
-      // for it. Either way nothing is left to cancel, which is what was asked.
-      if (e instanceof ApiError && e.status === 404) onCancelled();
-      else {
+      if (isAppGone(e)) setAppGone(true);
+      else if (e instanceof ApiError && e.status === 404) {
+        // Nothing was waiting. Either the code was posted a moment ago, and
+        // the link is now confirmed, or it was cancelled meanwhile or never
+        // had a code. Only the second is what Cancel asked for.
+        const fresh = await fetchMyIdentities().catch((read: unknown) => {
+          setError(read instanceof Error ? read.message : "Could not cancel.");
+          return null;
+        });
+        if (fresh === null) return;
+        const nowConfirmed = fresh.some(
+          (i) => i.id === target.identityId && (target.kind === "pending" || i.verified),
+        );
+        if (nowConfirmed) refresh();
+        else onCancelled();
+      } else {
         setError(e instanceof Error ? e.message : "Could not cancel.");
         refresh();
       }
@@ -202,145 +221,197 @@ export default function LinkConfirmation({
     }
   };
 
+  const linkedText = target.kind === "pending" ? `Linked to ${handle}.` : `${handle} is confirmed.`;
+  const goneText = `The link to ${handle} was cancelled, so its code no longer works.`;
+  const appGoneText = `${app.display_name} is no longer connected to this workspace, so this link can't be finished.`;
+  // One region, there from the start, whose words change: a status inserted
+  // together with its text is often not read out, and "Linked" stays up only
+  // a moment before the dialog closes.
+  const announcement = confirmed
+    ? linkedText
+    : appGone
+      ? appGoneText
+      : gone
+        ? goneText
+        : code === null
+          ? issuing
+            ? "Getting a code."
+            : ""
+          : expired
+            ? "This code has expired."
+            : `Waiting for the code to be posted from ${handle}.`;
+  const live = (
+    <Box role="status" aria-live="polite" sx={SCREEN_READER_ONLY}>
+      {announcement}
+    </Box>
+  );
+
   if (confirmed) {
     return (
-      <Stack direction="row" spacing={1} alignItems="center" role="status" sx={{ color: "success.main" }}>
-        <CheckCircleOutline fontSize="small" />
-        <Typography variant="body2" sx={{ color: "inherit", fontWeight: 600 }}>
-          {target.kind === "pending" ? `Linked to ${handle}.` : `${handle} is confirmed.`}
-        </Typography>
-      </Stack>
+      <>
+        {live}
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ color: "success.main" }}>
+          <CheckCircleOutline fontSize="small" />
+          <Typography variant="body2" sx={{ color: "inherit", fontWeight: 600 }}>
+            {linkedText}
+          </Typography>
+        </Stack>
+      </>
+    );
+  }
+
+  if (appGone) {
+    return (
+      <>
+        {live}
+        <Alert severity="warning">{appGoneText}</Alert>
+      </>
     );
   }
 
   if (gone) {
     return (
-      <Stack spacing={2} alignItems="flex-start" role="status">
-        <Typography variant="body2">
-          The link to {handle} was cancelled, so its code no longer works.
-        </Typography>
-        <Button variant="contained" onClick={onStartAgain}>
-          Start again
-        </Button>
-      </Stack>
+      <>
+        {live}
+        <Stack spacing={2} alignItems="flex-start">
+          <Typography variant="body2">{goneText}</Typography>
+          <Button variant="contained" onClick={onStartAgain}>
+            Start again
+          </Button>
+        </Stack>
+      </>
     );
   }
 
   const busy = issuing || cancelling;
   return (
-    <Stack spacing={2}>
-      <Typography variant="body2">
-        {target.kind === "pending"
-          ? `To finish linking ${handle}, post this from that account in ${app.display_name}.`
-          : `Confirm ${handle} is yours by posting this from that account in ${app.display_name}. The link keeps working meanwhile.`}
-      </Typography>
-
-      <Stack
-        direction="row"
-        alignItems="center"
-        justifyContent="space-between"
-        spacing={2}
-        sx={{ px: 2, py: 1.5, border: "1px solid var(--sw-border)", borderRadius: "12px", bgcolor: "var(--sw-muted)" }}
-      >
-        {code === null ? (
-          issuing ? (
-            <Stack direction="row" spacing={1} alignItems="center">
-              <CircularProgress size={16} />
-              <Typography variant="body2" color="text.secondary">
-                Getting a code…
-              </Typography>
-            </Stack>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              No code yet.
-            </Typography>
-          )
-        ) : (
-          <Typography
-            data-testid="link-code"
-            sx={{
-              ...MONO_SX,
-              fontSize: "1.25rem",
-              letterSpacing: "0.15em",
-              userSelect: "all",
-              ...(expired && { color: "text.disabled", textDecoration: "line-through" }),
-            }}
-          >
-            {code.code.code}
-          </Typography>
-        )}
-        <Button
-          variant="outlined"
-          size="small"
-          startIcon={<ContentCopyOutlined fontSize="small" />}
-          disabled={command === null || expired}
-          onClick={() => void copy()}
-          sx={{ flexShrink: 0 }}
-        >
-          {copied ? "Copied" : "Copy command"}
-        </Button>
-      </Stack>
-
-      {code !== null && (
-        <Typography variant="body2" color="text.secondary">
-          <InlineCode text={code.code.instructions} />
+    <>
+      {live}
+      <Stack spacing={2}>
+        <Typography variant="body2">
+          {target.kind === "pending"
+            ? `To finish linking ${handle}, post this from that account in ${app.display_name}.`
+            : `Confirm ${handle} is yours by posting this from that account in ${app.display_name}. The link keeps working meanwhile.`}
         </Typography>
-      )}
 
-      {code !== null &&
-        (expired ? (
-          <Typography variant="body2" sx={{ color: "warning.main" }} role="status">
-            This code has expired. Get a new one to{" "}
-            {target.kind === "pending" ? "finish linking" : "confirm the link"}.
-          </Typography>
-        ) : (
-          <Stack direction="row" spacing={1} alignItems="center" role="status">
-            <CircularProgress size={12} />
-            <Typography variant="body2" color="text.secondary">
-              Waiting for the code. It expires at {timeOfDay(code.deadline)}.
-            </Typography>
-          </Stack>
-        ))}
-
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-        <Button
-          variant={expired ? "contained" : "outlined"}
-          disabled={busy}
-          loading={issuing}
-          onClick={() => void issue()}
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="space-between"
+          spacing={2}
+          sx={{ px: 2, py: 1.5, border: "1px solid var(--sw-border)", borderRadius: "12px", bgcolor: "var(--sw-muted)" }}
         >
-          Get a new code
-        </Button>
-        {app.home_url && (
+          {code === null ? (
+            issuing ? (
+              <Stack direction="row" spacing={1} alignItems="center">
+                <CircularProgress size={16} />
+                <Typography variant="body2" color="text.secondary">
+                  Getting a code…
+                </Typography>
+              </Stack>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                No code yet.
+              </Typography>
+            )
+          ) : (
+            <Typography
+              data-testid="link-code"
+              sx={{
+                ...MONO_SX,
+                fontSize: "1.25rem",
+                letterSpacing: "0.15em",
+                userSelect: "all",
+                ...(expired && { color: "text.disabled", textDecoration: "line-through" }),
+              }}
+            >
+              {code.code.code}
+            </Typography>
+          )}
           <Button
             variant="outlined"
-            startIcon={<OpenInNewOutlined fontSize="small" />}
-            href={app.home_url}
-            target="_blank"
-            rel="noreferrer noopener"
+            size="small"
+            startIcon={<ContentCopyOutlined fontSize="small" />}
+            disabled={command === null || expired}
+            onClick={() => void copy()}
+            sx={{ flexShrink: 0 }}
           >
-            Open {app.display_name}
+            {copied ? "Copied" : "Copy command"}
           </Button>
+        </Stack>
+
+        {code !== null && (
+          <Typography variant="body2" color="text.secondary">
+            <InlineCode text={code.code.instructions} />
+          </Typography>
         )}
-        <Button color="inherit" disabled={busy} loading={cancelling} onClick={() => void cancel()}>
-          {target.kind === "pending" ? "Cancel link" : "Cancel confirmation"}
-        </Button>
+
+        {code !== null &&
+          (expired ? (
+            <Typography variant="body2" sx={{ color: "warning.main" }}>
+              This code has expired. Get a new one to{" "}
+              {target.kind === "pending" ? "finish linking" : "confirm the link"}.
+            </Typography>
+          ) : (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <CircularProgress size={14} />
+              <Typography variant="body2" color="text.secondary">
+                Waiting for the code. It expires at {timeOfDay(code.deadline)}.
+              </Typography>
+            </Stack>
+          ))}
+
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Button
+            variant={expired ? "contained" : "outlined"}
+            disabled={busy}
+            loading={issuing}
+            onClick={() => void issue()}
+          >
+            Get a new code
+          </Button>
+          {app.home_url && (
+            <Button
+              variant="outlined"
+              startIcon={<OpenInNewOutlined fontSize="small" />}
+              href={app.home_url}
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              Open {app.display_name}
+            </Button>
+          )}
+          <Button color="inherit" disabled={busy} loading={cancelling} onClick={() => void cancel()}>
+            {target.kind === "pending" ? "Cancel link" : "Cancel confirmation"}
+          </Button>
+        </Stack>
+
+        {error !== null && (
+          <Alert severity="error" sx={{ overflowWrap: "anywhere" }}>
+            {error}
+          </Alert>
+        )}
+
+        {/* Without these the screen would go on saying it is waiting while it
+            can no longer tell whether the code was posted. */}
+        {(watchError ?? settleError) !== null && (
+          <Alert severity="warning" sx={{ overflowWrap: "anywhere" }}>
+            Can&apos;t check whether the code was posted: {watchError ?? settleError}
+          </Alert>
+        )}
       </Stack>
+    </>
+  );
+}
 
-      {error !== null && (
-        <Alert severity="error" sx={{ overflowWrap: "anywhere" }}>
-          {error}
-        </Alert>
-      )}
-
-      {/* Without these the screen would go on saying it is waiting while it
-          can no longer tell whether the code was posted. */}
-      {(watchError ?? settleError) !== null && (
-        <Alert severity="warning" sx={{ overflowWrap: "anywhere" }}>
-          Can&apos;t check whether the code was posted: {watchError ?? settleError}
-        </Alert>
-      )}
-    </Stack>
+/** A refusal saying the app, or the account's record with it, is gone: the
+ * app was deleted while the screen was open. Switch words both as a 404 with
+ * these details. */
+function isAppGone(e: unknown): boolean {
+  return (
+    e instanceof ApiError &&
+    e.status === 404 &&
+    (e.detail === "Bridge not found" || e.detail === "Identity not found")
   );
 }
 

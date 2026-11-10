@@ -103,4 +103,14 @@ describe("InstalledAppsSection", () => {
     expect(await screen.findByText("No chats connected.")).toBeTruthy();
     expect(screen.queryByText(/an admin deletes it above/)).toBeNull();
   });
+
+  it("says the chats could not be loaded instead of showing nothing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("bad gateway", { status: 502 })),
+    );
+    render(<InstalledAppsSection onConnectionsChanged={() => {}} memberView />);
+
+    expect(await screen.findByText(/Could not load your chats/)).toBeTruthy();
+  });
 });

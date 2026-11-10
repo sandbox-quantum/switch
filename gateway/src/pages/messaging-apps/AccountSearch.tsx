@@ -1,5 +1,6 @@
 import { Alert, Box, Button, Chip, CircularProgress, Stack, TextField, Typography } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
+import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
 import {
   type BridgeDetail,
   claimBridgeIdentity,
@@ -9,6 +10,7 @@ import {
   type PendingIdentity,
   searchBridgeDirectory,
 } from "../../data/api";
+import { pluralize } from "../../theme/format";
 import { afterClaim, type LinkTarget } from "./chatAccounts";
 import { useMyAccounts } from "./useMyAccounts";
 
@@ -50,7 +52,7 @@ export default function AccountSearch({
   currentUserId: string | null;
   onBusy: (busy: boolean) => void;
   /** The claim came back linked and confirmed: nothing to wait for. */
-  onLinked: () => void;
+  onLinked: (username: string) => void;
   /** A link that waits on a code: one just made, one already waiting, or an
    *  older one to confirm. `code` is the one a claim came back with, else
    *  null. */
@@ -98,7 +100,7 @@ export default function AccountSearch({
     setError(null);
     try {
       const next = afterClaim(await claimBridgeIdentity(app.bridge_id, person));
-      if (next.kind === "linked") onLinked();
+      if (next.kind === "linked") onLinked(person.username);
       else onConfirm(next.target, next.code);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not link this account.");
@@ -122,6 +124,9 @@ export default function AccountSearch({
           setError(null);
         }}
       />
+      <Box role="status" aria-live="polite" sx={SCREEN_READER_ONLY}>
+        {searchAnnouncement(result)}
+      </Box>
       <Results
         app={app}
         result={result}
@@ -138,6 +143,23 @@ export default function AccountSearch({
       )}
     </Stack>
   );
+}
+
+/** What a screen reader hears as a search runs and answers: the list
+ * itself appears silently. */
+function searchAnnouncement(result: Result): string {
+  switch (result.state) {
+    case "idle":
+      return "";
+    case "searching":
+      return "Searching…";
+    case "failed":
+      return "";
+    case "found":
+      return result.search.users.length === 0
+        ? "Nobody matches."
+        : `${pluralize(result.search.users.length, "person", "people")} found.`;
+  }
 }
 
 function Results({
@@ -237,7 +259,7 @@ function Results({
                   {person.display_name}
                 </Typography>
                 <Typography variant="caption" color="text.secondary" noWrap component="div">
-                  @{person.username.replace(/^@/, "")}
+                  @{handleOf(person)}
                   {person.email ? ` · ${person.email}` : ""}
                 </Typography>
                 {others.length > 0 && (
@@ -253,6 +275,7 @@ function Results({
                     <Button
                       size="small"
                       variant="outlined"
+                      aria-label={`Confirm @${handleOf(person)}`}
                       disabled={claiming !== null}
                       onClick={() =>
                         onConfirm({ identityId: rowId, username: person.username, kind: "unverified" })
@@ -268,6 +291,7 @@ function Results({
                   <Button
                     size="small"
                     variant="outlined"
+                    aria-label={`Show code for @${handleOf(person)}`}
                     disabled={claiming !== null}
                     onClick={() =>
                       onConfirm({
@@ -284,6 +308,7 @@ function Results({
                 <Button
                   size="small"
                   variant="contained"
+                  aria-label={`This is me: ${person.display_name}, @${handleOf(person)}`}
                   disabled={claiming !== null}
                   loading={claiming === person.external_user_id}
                   onClick={() => onClaim(person)}
@@ -298,4 +323,9 @@ function Results({
       </Box>
     </Stack>
   );
+}
+
+/** A person's username without the sigil some platforms report it with. */
+function handleOf(person: DirectoryPerson): string {
+  return person.username.replace(/^@/, "");
 }

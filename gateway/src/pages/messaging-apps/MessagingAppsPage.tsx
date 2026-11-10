@@ -17,8 +17,9 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import ConfirmDialog from "../../components/ConfirmDialog";
+import InfoTip from "../../components/InfoTip";
 import DataTable, { type TableColumn, TableEmptyState } from "../../components/DataTable";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import {
@@ -41,17 +42,11 @@ import InstalledAppsSection from "../collaborations/InstalledAppsSection";
 import RegisterMessagingAppDialog from "../collaborations/RegisterMessagingAppDialog";
 import TeamsPlacementDialog from "../collaborations/TeamsPlacementDialog";
 import { useAppLogos } from "./appLogos";
-import { accountHandle } from "./chatAccounts";
+import { accountHandle, statusColor } from "./chatAccounts";
 import { useMyAccounts } from "./useMyAccounts";
 import YourAccountsSection from "./YourAccountsSection";
 
 type AppRow = BridgeDetail & { id: string };
-
-const STATUS_COLOR: Record<string, "success" | "error" | "default"> = {
-  active: "success",
-  error: "error",
-  inactive: "default",
-};
 
 /** Older links per app: how many, or why they could not be counted. */
 type OlderLinks = Record<string, { links: UnconfirmedLink[] } | { error: string }>;
@@ -59,6 +54,29 @@ type OlderLinks = Record<string, { links: UnconfirmedLink[] } | { error: string 
 type Notice = { severity: "success" | "error"; text: string };
 
 const PINNED = ["actions"];
+
+const SEARCH = {
+  label: "Search apps",
+  text: (row: AppRow) => `${row.display_name} ${platformLabel(row.bridge_type)}`,
+};
+
+/** What a row's controls need that changes as the admin works: which app is
+ * saving, how to save, what its menu offers. Read from context by the cells,
+ * so the table's columns never depend on it: a new column model drops any
+ * width the admin dragged. */
+interface RowControls {
+  savingId: string | null;
+  save: (app: BridgeDetail, update: BridgeUpdateInput) => Promise<void>;
+  actionsOf: (row: AppRow) => RowAction[];
+}
+
+const RowControlsContext = createContext<RowControls | null>(null);
+
+function useRowControls(): RowControls {
+  const controls = useContext(RowControlsContext);
+  if (controls === null) throw new Error("a messaging app row rendered outside its table");
+  return controls;
+}
 
 /**
  * Workspace settings › Messaging apps, in the new layout.
@@ -74,6 +92,9 @@ export default function MessagingAppsPage() {
   const { capabilities, session, user } = useAuth();
   const isAdmin = capabilities.administersWorkspace;
   const workspaceName = session?.tenant?.name ?? "this workspace";
+  // Whether this workspace is one of the viewer's own: the platform operator
+  // may be in one they entered without belonging to it.
+  const standsHere = session?.tenants.some((t) => t.id === session.tenant?.id) ?? false;
   const { data: bridges, loading, error: loadError, refetch } = useBridges();
   const accounts = useMyAccounts(null);
   const logos = useAppLogos();
@@ -115,6 +136,7 @@ export default function MessagingAppsPage() {
           bridges={bridges}
           loading={loading && bridges === null}
           failed={appsFailed}
+          staleError={bridges !== null ? loadError : null}
           logos={logos}
           onChanged={refreshAll}
           onChatsChanged={() => setInstallsVersion((v) => v + 1)}
@@ -128,6 +150,7 @@ export default function MessagingAppsPage() {
           accounts={accounts}
           logos={logos}
           currentUserId={user?.id ?? null}
+          standsHere={standsHere}
           showHeading={isAdmin}
         />
       </Box>
@@ -150,6 +173,7 @@ function ConnectedApps({
   bridges,
   loading,
   failed,
+  staleError,
   logos,
   onChanged,
   onChatsChanged,
@@ -158,6 +182,8 @@ function ConnectedApps({
   bridges: BridgeDetail[] | null;
   loading: boolean;
   failed: boolean;
+  /** A re-read that failed after the list loaded, which still shows. */
+  staleError: string | null;
   logos: ReadonlyMap<string, string>;
   onChanged: () => void;
   onChatsChanged: () => void;
@@ -234,6 +260,22 @@ function ConnectedApps({
     }
   };
 
+  // Read again on opening, as the admin is about to agree to exactly the
+  // list shown: links confirmed since the page loaded drop out of it.
+  const reviewOlderLinks = async (app: BridgeDetail) => {
+    try {
+      const links = await fetchUnconfirmedLinks(app.bridge_id);
+      setOlderLinks((current) => ({ ...current, [app.bridge_id]: { links } }));
+      if (links.length > 0) setOlderTarget({ app, links });
+      else setNotice({ severity: "success", text: `No older links are left in ${app.display_name}.` });
+    } catch (e) {
+      setNotice({
+        severity: "error",
+        text: `Could not read the older links in ${app.display_name}: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  };
+
   const copyWebhook = async (app: BridgeDetail, url: string) => {
     try {
       await navigator.clipboard.writeText(url);
@@ -294,7 +336,7 @@ function ConnectedApps({
           actions.push({
             label: `Require confirmation for older links (${older.links.length})…`,
             icon: <VerifiedUserOutlined fontSize="small" />,
-            onClick: () => setOlderTarget({ app: row, links: older.links }),
+            onClick: () => void reviewOlderLinks(row),
           });
         }
       }
@@ -357,7 +399,7 @@ function ConnectedApps({
         width: 120,
         filter: { value: (row) => sentenceCase(row.status) },
         renderCell: ({ row }) => (
-          <Chip size="small" label={sentenceCase(row.status)} color={STATUS_COLOR[row.status] ?? "default"} />
+          <Chip size="small" label={sentenceCase(row.status)} color={statusColor(row.status)} />
         ),
       },
       {
@@ -372,40 +414,14 @@ function ConnectedApps({
         headerName: "Agent greetings",
         width: 150,
         sortable: false,
-        renderCell: ({ row }) => (
-          <Switch
-            size="small"
-            checked={row.agent_greetings_enabled}
-            disabled={!row.can_manage || savingId === row.bridge_id}
-            slotProps={{ input: { "aria-label": `Agent greetings for ${row.display_name}` } }}
-            onChange={(e) => void save(row, { agent_greetings_enabled: e.target.checked })}
-          />
-        ),
+        renderCell: ({ row, tabIndex }) => <GreetingsSwitch row={row} tabIndex={tabIndex} />,
       },
       {
         field: "channel_creation_enabled",
         headerName: "Channel creation",
         width: 160,
         sortable: false,
-        renderCell: ({ row }) => {
-          const control = (
-            <Switch
-              size="small"
-              checked={row.channel_creation_supported && row.channel_creation_enabled}
-              disabled={!row.can_manage || savingId === row.bridge_id || !row.channel_creation_supported}
-              slotProps={{ input: { "aria-label": `Channel creation for ${row.display_name}` } }}
-              onChange={(e) => void save(row, { channel_creation_enabled: e.target.checked })}
-            />
-          );
-          if (row.channel_creation_supported) return control;
-          return (
-            <Tooltip
-              title={`${platformLabel(row.bridge_type)} can't create channels from Switch. Make the chat in the app and add the bot to it.`}
-            >
-              <span>{control}</span>
-            </Tooltip>
-          );
-        },
+        renderCell: ({ row, tabIndex }) => <ChannelCreationSwitch row={row} tabIndex={tabIndex} />,
       },
       {
         field: "created_at",
@@ -418,13 +434,12 @@ function ConnectedApps({
         headerName: "",
         width: 56,
         sortable: false,
-        renderCell: ({ row, tabIndex }) => (
-          <RowActionsMenu label={`Actions for ${row.display_name}`} actions={actionsOf(row)} tabIndex={tabIndex} />
-        ),
+        renderCell: ({ row, tabIndex }) => <RowMenu row={row} tabIndex={tabIndex} />,
       },
     ],
-    [logos, savingId, save, actionsOf],
+    [logos],
   );
+  const controls = useMemo<RowControls>(() => ({ savingId, save, actionsOf }), [savingId, save, actionsOf]);
 
   const needsAttention = rows.filter((row) => row.attention);
 
@@ -449,23 +464,31 @@ function ConnectedApps({
         />
       ))}
 
+      {staleError !== null && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Couldn&apos;t refresh the messaging apps, so this may be out of date. Reload the page to try again.
+        </Alert>
+      )}
+
       {loading ? (
         <CircularProgress />
       ) : failed ? (
         <Alert severity="error">Could not load the messaging apps. Reload the page to try again.</Alert>
       ) : (
-        <DataTable
-          rows={rows}
-          columns={columns}
-          height={480}
-          search={{ label: "Search apps", text: (row) => `${row.display_name} ${platformLabel(row.bridge_type)}` }}
-          pinnedRight={PINNED}
-          emptyState={
-            <TableEmptyState title="No messaging apps yet">
-              Add one to bring a Slack, Mattermost, Discord, Teams or Telegram workspace into rooms.
-            </TableEmptyState>
-          }
-        />
+        <RowControlsContext.Provider value={controls}>
+          <DataTable
+            rows={rows}
+            columns={columns}
+            height={480}
+            search={SEARCH}
+            pinnedRight={PINNED}
+            emptyState={
+              <TableEmptyState title="No messaging apps yet">
+                Add one to bring a Slack, Mattermost, Discord, Teams or Telegram workspace into rooms.
+              </TableEmptyState>
+            }
+          />
+        </RowControlsContext.Provider>
       )}
 
       <AddToChatDialog bridge={installTarget} onClose={() => setInstallTarget(null)} />
@@ -528,6 +551,47 @@ function ConnectedApps({
       </Snackbar>
     </Box>
   );
+}
+
+function GreetingsSwitch({ row, tabIndex }: { row: AppRow; tabIndex: number }) {
+  const { savingId, save } = useRowControls();
+  return (
+    <Switch
+      size="small"
+      checked={row.agent_greetings_enabled}
+      disabled={!row.can_manage || savingId === row.bridge_id}
+      slotProps={{ input: { "aria-label": `Agent greetings for ${row.display_name}`, tabIndex } }}
+      onChange={(e) => void save(row, { agent_greetings_enabled: e.target.checked })}
+    />
+  );
+}
+
+function ChannelCreationSwitch({ row, tabIndex }: { row: AppRow; tabIndex: number }) {
+  const { savingId, save } = useRowControls();
+  return (
+    <Stack direction="row" alignItems="center" spacing={0.5} sx={{ height: "100%" }}>
+      <Switch
+        size="small"
+        checked={row.channel_creation_supported && row.channel_creation_enabled}
+        disabled={!row.can_manage || savingId === row.bridge_id || !row.channel_creation_supported}
+        slotProps={{ input: { "aria-label": `Channel creation for ${row.display_name}`, tabIndex } }}
+        onChange={(e) => void save(row, { channel_creation_enabled: e.target.checked })}
+      />
+      {/* "Off" and "this platform has no such thing" look alike as a greyed
+          switch, so the second says so, where a keyboard can reach it. */}
+      {!row.channel_creation_supported && (
+        <InfoTip label={`Why channel creation is off for ${row.display_name}`}>
+          {platformLabel(row.bridge_type)} can&apos;t create channels from Switch. Make the chat in the app and add
+          the bot to it.
+        </InfoTip>
+      )}
+    </Stack>
+  );
+}
+
+function RowMenu({ row, tabIndex }: { row: AppRow; tabIndex: number }) {
+  const { actionsOf } = useRowControls();
+  return <RowActionsMenu label={`Actions for ${row.display_name}`} actions={actionsOf(row)} tabIndex={tabIndex} />;
 }
 
 /** Who stops being recognised, and until when, before an admin agrees to it. */

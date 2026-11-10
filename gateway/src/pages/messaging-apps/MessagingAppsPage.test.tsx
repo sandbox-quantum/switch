@@ -26,25 +26,28 @@ vi.mock("../../data/hooks", () => ({
 vi.mock("../../data/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../data/api")>()),
   updateBridge: vi.fn(),
+  deleteBridge: vi.fn(),
+  beginAppInstall: vi.fn(),
   fetchUnconfirmedLinks: vi.fn(),
   requireLinkConfirmation: vi.fn(),
   fetchMyIdentities: vi.fn(),
   fetchMyPendingIdentities: vi.fn(),
 }));
 
-function signIn(isAdmin: boolean) {
+function signIn(isAdmin: boolean, standsHere = true) {
+  const workspace = {
+    id: "t1",
+    slug: "acme",
+    name: "Acme",
+    role: isAdmin ? "admin" : "member",
+    organization_role: null,
+    organization_id: null,
+  };
   vi.mocked(useAuth).mockReturnValue({
     session: {
       user: { id: "u-ada", name: "ada", email: "ada@example.com", is_operator: false },
-      tenant: {
-        id: "t1",
-        slug: "acme",
-        name: "Acme",
-        role: isAdmin ? "admin" : "member",
-        organization_role: null,
-        organization_id: null,
-      },
-      tenants: [],
+      tenant: workspace,
+      tenants: standsHere ? [workspace] : [],
     },
     user: { id: "u-ada", name: "ada", email: "ada@example.com", is_operator: false },
     capabilities: {
@@ -63,8 +66,12 @@ function queryResult<T>(data: T | null, error: string | null = null): UseQueryRe
   return { data, loading: false, error, refetch: vi.fn() };
 }
 
-function setup({ isAdmin = true, bridges = [bridgeDetail()] }: { isAdmin?: boolean; bridges?: BridgeDetail[] } = {}) {
-  signIn(isAdmin);
+function setup({
+  isAdmin = true,
+  standsHere = true,
+  bridges = [bridgeDetail()],
+}: { isAdmin?: boolean; standsHere?: boolean; bridges?: BridgeDetail[] } = {}) {
+  signIn(isAdmin, standsHere);
   vi.mocked(hooks.useBridges).mockReturnValue(
     queryResult(isAdmin ? bridges : bridges.map((b) => ({ ...b, can_manage: false, can_delete: false }))),
   );
@@ -198,7 +205,9 @@ describe("MessagingAppsPage", () => {
     await waitFor(() => expect(api.fetchUnconfirmedLinks).toHaveBeenCalledWith("b1"));
     openMenu("Acme Slack");
     fireEvent.click(await screen.findByText("Require confirmation for older links (1)…"));
-    const dialog = screen.getByRole("dialog", { name: "Require confirmation for older links?" });
+    // Read again on opening, so the admin agrees to the list as it is now.
+    const dialog = await screen.findByRole("dialog", { name: "Require confirmation for older links?" });
+    expect(api.fetchUnconfirmedLinks).toHaveBeenCalledTimes(2);
     expect(within(dialog).getByText("Bob as @bob")).toBeTruthy();
     await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Require confirmation" })));
 
@@ -234,5 +243,69 @@ describe("MessagingAppsPage", () => {
     render(<MessagingAppsPage />);
 
     expect(await screen.findByText(/@ada · linked/)).toBeTruthy();
+  });
+
+  it("deletes an app after asking, and keeps the dialog open with Switch's refusal", async () => {
+    vi.mocked(api.deleteBridge)
+      .mockRejectedValueOnce(new Error("Disconnect the app instead."))
+      .mockResolvedValue({ ok: true });
+    setup({ bridges: [bridgeDetail({ display_name: "Acme Slack", bridge_type: "slack" })] });
+    render(<MessagingAppsPage />);
+
+    openMenu("Acme Slack");
+    fireEvent.click(screen.getByText("Delete…"));
+    const dialog = screen.getByRole("dialog", { name: "Delete messaging app" });
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Delete" })));
+    expect(within(dialog).getByText("Disconnect the app instead.")).toBeTruthy();
+
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Delete" })));
+    expect(api.deleteBridge).toHaveBeenLastCalledWith("b1");
+  });
+
+  it("starts approving again from the needs-attention banner", async () => {
+    vi.mocked(api.beginAppInstall).mockResolvedValue("https://login.example.com/consent");
+    const original = window.location;
+    Object.defineProperty(window, "location", { configurable: true, writable: true, value: { ...original, href: "" } });
+    setup({
+      bridges: [
+        bridgeDetail({ display_name: "Acme Teams", team_placement_supported: true, attention: "Approval was withdrawn." }),
+      ],
+    });
+    vi.mocked(hooks.useInstallablePlatforms).mockReturnValue(
+      queryResult(Object.assign(["teams"], { claimable: [] })),
+    );
+    render(<MessagingAppsPage />);
+
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Approve again" })));
+
+    expect(api.beginAppInstall).toHaveBeenCalledWith("teams");
+    expect(window.location.href).toBe("https://login.example.com/consent");
+    Object.defineProperty(window, "location", { configurable: true, writable: true, value: original });
+  });
+
+  it("says why channel creation is off where the platform has none, where a keyboard reaches it", () => {
+    setup({ bridges: [bridgeDetail({ display_name: "Our Telegram", bridge_type: "telegram", channel_creation_supported: false })] });
+    render(<MessagingAppsPage />);
+
+    expect(screen.getByRole("button", { name: "Why channel creation is off for Our Telegram" })).toBeTruthy();
+  });
+
+  it("says when the apps could not be refreshed, rather than looking current", () => {
+    setup({ bridges: [bridgeDetail({ display_name: "Acme Slack" })] });
+    vi.mocked(hooks.useBridges).mockReturnValue(
+      queryResult([bridgeDetail({ display_name: "Acme Slack" })], "Failed to fetch data"),
+    );
+    render(<MessagingAppsPage />);
+
+    expect(screen.getByText(/Couldn't refresh the messaging apps/)).toBeTruthy();
+    expect(screen.getAllByText("Acme Slack").length).toBeGreaterThan(0);
+  });
+
+  it("offers the platform operator no linking in a workspace they entered without belonging to it", async () => {
+    setup({ standsHere: false, bridges: [bridgeDetail({ display_name: "Acme Slack" })] });
+    render(<MessagingAppsPage />);
+
+    expect(await screen.findByText(/You're here as the platform operator/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Link an account/ })).toBeNull();
   });
 });

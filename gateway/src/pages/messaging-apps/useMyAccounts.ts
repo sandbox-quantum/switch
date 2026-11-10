@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ApiError,
   fetchMyIdentities,
   fetchMyPendingIdentities,
   type LinkedIdentity,
@@ -38,34 +39,42 @@ export function useMyAccounts(pollMs: number | null): MyAccounts {
   const [linkedError, setLinkedError] = useState<string | null>(null);
   const [pendingError, setPendingError] = useState<string | null>(null);
   const alive = useRef(true);
-  // Reads are numbered so a slow one never lands over a newer one's answer.
+  // Reads are numbered so a slow one, answer or failure, never lands over a
+  // newer one's.
   const issued = useRef(0);
-  const appliedLinked = useRef(0);
-  const appliedPending = useRef(0);
+  const settledLinked = useRef(0);
+  const settledPending = useRef(0);
   const running = useRef(0);
 
   const load = useCallback(async () => {
     const seq = ++issued.current;
     running.current += 1;
+    const newest = (settled: { current: number }) => {
+      if (!alive.current || seq < settled.current) return false;
+      settled.current = seq;
+      return true;
+    };
     try {
       await Promise.all([
         fetchMyIdentities().then(
           (list) => {
-            if (!alive.current || seq < appliedLinked.current) return;
-            appliedLinked.current = seq;
+            if (!newest(settledLinked)) return;
             setLinked({ list, at: Date.now() });
             setLinkedError(null);
           },
-          (e: unknown) => alive.current && setLinkedError(messageOf(e)),
+          (e: unknown) => {
+            if (newest(settledLinked)) setLinkedError(messageOf(e));
+          },
         ),
         fetchMyPendingIdentities().then(
           (list) => {
-            if (!alive.current || seq < appliedPending.current) return;
-            appliedPending.current = seq;
+            if (!newest(settledPending)) return;
             setPending({ list, at: Date.now() });
             setPendingError(null);
           },
-          (e: unknown) => alive.current && setPendingError(messageOf(e)),
+          (e: unknown) => {
+            if (newest(settledPending)) setPendingError(messageOf(e));
+          },
         ),
       ]);
     } finally {
@@ -104,5 +113,6 @@ export function useMyAccounts(pollMs: number | null): MyAccounts {
 }
 
 function messageOf(e: unknown): string {
+  if (e instanceof ApiError && e.status === 401) return "Your session has ended. Sign in again.";
   return e instanceof Error ? e.message : String(e);
 }

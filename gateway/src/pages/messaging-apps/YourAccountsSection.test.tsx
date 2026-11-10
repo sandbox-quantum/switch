@@ -20,7 +20,7 @@ function accounts(linked: LinkedIdentity[] | null, pending: PendingIdentity[] | 
   return { linked, pending, linkedReadAt: 1, pendingReadAt: 1, error: null, refresh: vi.fn() };
 }
 
-function section(apps: BridgeDetail[] | null, mine: MyAccounts, showHeading = true) {
+function section(apps: BridgeDetail[] | null, mine: MyAccounts, showHeading = true, standsHere = true) {
   render(
     <YourAccountsSection
       apps={apps}
@@ -28,6 +28,7 @@ function section(apps: BridgeDetail[] | null, mine: MyAccounts, showHeading = tr
       accounts={mine}
       logos={new Map()}
       currentUserId="u-ada"
+      standsHere={standsHere}
       showHeading={showHeading}
     />,
   );
@@ -53,7 +54,7 @@ describe("YourAccountsSection", () => {
 
     expect(screen.getByText("Slack · Acme Slack")).toBeTruthy();
     expect(screen.getByText("Not linked")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Link account" }));
+    fireEvent.click(screen.getByRole("button", { name: "Link an account in Acme Slack" }));
     expect(screen.getByRole("dialog", { name: "Link your Slack account" })).toBeTruthy();
   });
 
@@ -72,23 +73,23 @@ describe("YourAccountsSection", () => {
     const lines = screen.getAllByTestId("account-line");
     expect(lines).toHaveLength(3);
     expect(within(lines[0]!).getByText(/@ada · linked/)).toBeTruthy();
-    expect(within(lines[0]!).getByRole("button", { name: "Unlink" })).toBeTruthy();
+    expect(within(lines[0]!).getByRole("button", { name: "Unlink @ada in Acme Slack" })).toBeTruthy();
     expect(within(lines[1]!).getByText("Not confirmed")).toBeTruthy();
-    expect(within(lines[1]!).getByRole("button", { name: "Confirm" })).toBeTruthy();
-    expect(within(lines[1]!).getByRole("button", { name: "Unlink" })).toBeTruthy();
+    expect(within(lines[1]!).getByRole("button", { name: "Confirm @ada.old in Acme Slack" })).toBeTruthy();
+    expect(within(lines[1]!).getByRole("button", { name: "Unlink @ada.old in Acme Slack" })).toBeTruthy();
     expect(within(lines[2]!).getByText("@ada.new · Waiting for confirmation · started by bob")).toBeTruthy();
-    expect(within(lines[2]!).getByRole("button", { name: "Show code" })).toBeTruthy();
-    expect(within(lines[2]!).getByRole("button", { name: "Cancel link" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Link another account" })).toBeTruthy();
+    expect(within(lines[2]!).getByRole("button", { name: "Show code for @ada.new in Acme Slack" })).toBeTruthy();
+    expect(within(lines[2]!).getByRole("button", { name: "Cancel link to @ada.new in Acme Slack" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link another account in Acme Slack" })).toBeTruthy();
   });
 
   it("asks before unlinking, then unlinks that account", async () => {
     const mine = accounts([linkedIdentity({ id: "a1", external_username: "ada" })], []);
     section([slack], mine);
 
-    fireEvent.click(screen.getByRole("button", { name: "Unlink" }));
+    fireEvent.click(screen.getByRole("button", { name: "Unlink @ada in Acme Slack" }));
     const dialog = screen.getByRole("dialog", { name: "Unlink chat account" });
-    expect(within(dialog).getByText(/@ada in Acme Slack will stop being recognised as you/)).toBeTruthy();
+    expect(within(dialog).getByText(/@ada in Acme Slack will stop being recognised as you. Agents there will treat/)).toBeTruthy();
     await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Unlink" })));
 
     expect(api.releaseBridgeIdentity).toHaveBeenCalledWith("b1", "a1");
@@ -99,9 +100,12 @@ describe("YourAccountsSection", () => {
     const mine = accounts([], [pendingIdentity({ id: "a3" })]);
     section([slack], mine);
 
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Cancel link" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Cancel link to/ })));
 
     expect(api.cancelLinkRequest).toHaveBeenCalledWith("b1", "a3");
+    // Its row goes once the list is read again; focus waits on the app's own
+    // button rather than falling to the top of the page.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Link an account in Acme Slack" }));
     expect(api.releaseBridgeIdentity).not.toHaveBeenCalled();
     expect(mine.refresh).toHaveBeenCalled();
   });
@@ -116,7 +120,7 @@ describe("YourAccountsSection", () => {
     });
     section([slack], accounts([], [pendingIdentity({ id: "a3" })]));
 
-    fireEvent.click(screen.getByRole("button", { name: "Show code" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Show code for/ }));
 
     expect(screen.getByRole("dialog", { name: "Confirm your Slack account" })).toBeTruthy();
     expect(await screen.findByTestId("link-code")).toBeTruthy();
@@ -130,9 +134,11 @@ describe("YourAccountsSection", () => {
     );
 
     expect(screen.getByText("Error")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Link another account" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Show code" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Cancel link" }) as HTMLButtonElement).disabled).toBe(false);
+    // Said in the row, where a keyboard can reach it.
+    expect(screen.getByText(/Acme Slack isn't running, so Switch can't look accounts up/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Link an account in Acme Slack" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /^Show code for/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: /^Cancel link to/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("says when there are no apps, and when the accounts could not be read", () => {
@@ -147,5 +153,45 @@ describe("YourAccountsSection", () => {
   it("leaves the heading out where the list is the whole page", () => {
     section([slack], accounts([], []), false);
     expect(screen.queryByRole("heading", { name: "Your accounts" })).toBeNull();
+  });
+
+  it("says what unlinking leaves when another account in the app stays linked", () => {
+    section(
+      [slack],
+      accounts(
+        [
+          linkedIdentity({ id: "a1", external_username: "ada" }),
+          linkedIdentity({ id: "a2", external_username: "ada.work" }),
+        ],
+        [],
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Unlink @ada in Acme Slack" }));
+    expect(screen.getByText(/You stay linked there as @ada.work/)).toBeTruthy();
+  });
+
+  it("offers a waiting link's app another account only once one counts", () => {
+    section([slack], accounts([], [pendingIdentity({ id: "a3" })]));
+    expect(screen.getByRole("button", { name: "Link an account in Acme Slack" })).toBeTruthy();
+  });
+
+  it("says when the accounts could not be refreshed, rather than looking current", () => {
+    section([slack], { ...accounts([linkedIdentity({ bridge_id: "b1" })], []), error: "Bad gateway" });
+
+    expect(screen.getByText(/@ada · linked/)).toBeTruthy();
+    expect(screen.getByText(/Couldn't refresh your accounts, so this may be out of date: Bad gateway/)).toBeTruthy();
+  });
+
+  it("offers the platform operator nothing to link in a workspace they don't belong to", () => {
+    section([slack], accounts([], []), true, false);
+
+    expect(screen.getByText(/You're here as the platform operator/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Link/ })).toBeNull();
+  });
+
+  it("opens the app in its platform, for everyone", () => {
+    section([{ ...slack, home_url: "https://acme.slack.com" }], accounts([], []));
+    expect(screen.getByRole("link", { name: "Open Acme Slack" }).getAttribute("href")).toBe("https://acme.slack.com");
   });
 });

@@ -1,7 +1,8 @@
 import AddLinkOutlined from "@mui/icons-material/AddLinkOutlined";
+import OpenInNewOutlined from "@mui/icons-material/OpenInNewOutlined";
 import ScheduleOutlined from "@mui/icons-material/ScheduleOutlined";
-import { Alert, Box, Button, Chip, CircularProgress, Divider, Stack, Tooltip, Typography } from "@mui/material";
-import { Fragment, type ReactElement, useState } from "react";
+import { Alert, Box, Button, Chip, CircularProgress, Divider, Snackbar, Stack, Typography } from "@mui/material";
+import { Fragment, useEffect, useRef, useState } from "react";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import BrandTile from "../../components/connectors/BrandTile";
 import InfoTip from "../../components/InfoTip";
@@ -12,9 +13,10 @@ import {
   accountHandle,
   accountsByApp,
   findableNote,
+  statusColor,
   unavailableReason,
 } from "./chatAccounts";
-import LinkAccountDialog, { type LinkDialogOpen } from "./LinkAccountDialog";
+import LinkAccountDialog, { type LinkDialogOpen, type LinkOutcome } from "./LinkAccountDialog";
 import type { MyAccounts } from "./useMyAccounts";
 
 /** Beside a link made before links had to be confirmed. */
@@ -41,6 +43,7 @@ export default function YourAccountsSection({
   accounts,
   logos,
   currentUserId,
+  standsHere,
   showHeading,
 }: {
   /** The workspace's messaging apps, null until they have loaded. */
@@ -50,14 +53,24 @@ export default function YourAccountsSection({
   accounts: MyAccounts;
   logos: ReadonlyMap<string, string>;
   currentUserId: string | null;
+  /** Whether the viewer belongs to the workspace. The platform operator can
+   *  enter one they do not, and Switch links accounts only to its people. */
+  standsHere: boolean;
   /** The heading tells this section apart from the admin's table; on a page
    *  holding only this list it is left out. */
   showHeading: boolean;
 }) {
   const [dialog, setDialog] = useState<LinkDialogOpen | null>(null);
-  const [toUnlink, setToUnlink] = useState<{ app: BridgeDetail; line: AccountLine } | null>(null);
+  const [toUnlink, setToUnlink] = useState<{ app: BridgeDetail; line: AccountLine; others: string[] } | null>(
+    null,
+  );
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // The app whose block takes focus next: after an account's row is removed,
+  // the button that opened the dialog is gone, and focus would fall to the
+  // top of the page.
+  const [focusApp, setFocusApp] = useState<string | null>(null);
   const { linked, pending, refresh } = accounts;
 
   const cancel = async (app: BridgeDetail, line: AccountLine) => {
@@ -65,12 +78,26 @@ export default function YourAccountsSection({
     setError(null);
     try {
       await cancelLinkRequest(app.bridge_id, line.id);
+      setFocusApp(app.bridge_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not cancel the link.");
     } finally {
       setCancelling(null);
       // Either way: a refusal means it was confirmed or cancelled meanwhile.
       refresh();
+    }
+  };
+
+  const closeDialog = (outcome: LinkOutcome | null) => {
+    if (dialog !== null) setFocusApp(dialog.app.bridge_id);
+    setDialog(null);
+    refresh();
+    if (outcome !== null) {
+      setNotice(
+        outcome.kind === "linked"
+          ? `Linked ${outcome.handle} in ${outcome.app.display_name}.`
+          : `${outcome.handle} in ${outcome.app.display_name} is confirmed.`,
+      );
     }
   };
 
@@ -84,7 +111,14 @@ export default function YourAccountsSection({
   );
 
   let body;
-  if (apps === null || linked === null || pending === null) {
+  if (!standsHere) {
+    body = (
+      <Typography variant="body2" color="text.secondary">
+        You&apos;re here as the platform operator, not as a member of this workspace, so there are no accounts of
+        yours to link here.
+      </Typography>
+    );
+  } else if (apps === null || linked === null || pending === null) {
     body =
       appsFailed || accounts.error !== null ? (
         <Alert severity="error">Could not load your accounts. Reload the page to try again.</Alert>
@@ -100,32 +134,51 @@ export default function YourAccountsSection({
   } else {
     const groups = accountsByApp(apps, linked, pending);
     body = (
-      <Box sx={{ border: "1px solid var(--sw-border)", borderRadius: "16px", px: 2 }}>
-        {groups.map(({ app, accounts: lines }, i) => (
-          <Fragment key={app.bridge_id}>
-            {i > 0 && <Divider />}
-            <AppAccounts
-              app={app}
-              lines={lines}
-              logoUrl={logos.get(app.bridge_type) ?? null}
-              cancelling={cancelling}
-              onLink={() => setDialog({ app, confirm: null })}
-              onConfirm={(line) =>
-                setDialog({
-                  app,
-                  confirm: {
-                    identityId: line.id,
-                    username: line.username,
-                    kind: line.kind === "pending" ? "pending" : "unverified",
-                  },
-                })
-              }
-              onCancel={(line) => void cancel(app, line)}
-              onUnlink={(line) => setToUnlink({ app, line })}
-            />
-          </Fragment>
-        ))}
-      </Box>
+      <>
+        {/* A re-read that failed after the lists loaded: what is shown may
+            be out of date, and the page says so rather than looking fine. */}
+        {accounts.error !== null && (
+          <Alert severity="warning" sx={{ mb: 2, overflowWrap: "anywhere" }}>
+            Couldn&apos;t refresh your accounts, so this may be out of date: {accounts.error}
+          </Alert>
+        )}
+        <Box sx={{ border: "1px solid var(--sw-border)", borderRadius: "16px", px: 2 }}>
+          {groups.map(({ app, accounts: lines }, i) => (
+            <Fragment key={app.bridge_id}>
+              {i > 0 && <Divider />}
+              <AppAccounts
+                app={app}
+                lines={lines}
+                logoUrl={logos.get(app.bridge_type) ?? null}
+                cancelling={cancelling}
+                takeFocus={focusApp === app.bridge_id}
+                onFocusTaken={() => setFocusApp(null)}
+                onLink={() => setDialog({ app, confirm: null })}
+                onConfirm={(line) =>
+                  setDialog({
+                    app,
+                    confirm: {
+                      identityId: line.id,
+                      username: line.username,
+                      kind: line.kind === "pending" ? "pending" : "unverified",
+                    },
+                  })
+                }
+                onCancel={(line) => void cancel(app, line)}
+                onUnlink={(line) =>
+                  setToUnlink({
+                    app,
+                    line,
+                    others: lines
+                      .filter((other) => other.id !== line.id && other.kind !== "pending")
+                      .map((other) => accountHandle(other.username)),
+                  })
+                }
+              />
+            </Fragment>
+          ))}
+        </Box>
+      </>
     );
   }
 
@@ -139,36 +192,44 @@ export default function YourAccountsSection({
       )}
       {body}
 
-      <LinkAccountDialog
-        open={dialog}
-        currentUserId={currentUserId}
-        onClose={() => {
-          setDialog(null);
-          refresh();
-        }}
-      />
+      <LinkAccountDialog open={dialog} currentUserId={currentUserId} onClose={closeDialog} />
 
       <ConfirmDialog
         open={toUnlink !== null}
         title="Unlink chat account"
-        description={
-          toUnlink &&
-          `${accountHandle(toUnlink.line.username)} in ${toUnlink.app.display_name} will stop being recognised as you. Agents there will treat your messages as coming from an unknown person until you link it again.`
-        }
+        description={toUnlink && unlinkText(toUnlink.app, toUnlink.line, toUnlink.others)}
         confirmLabel="Unlink"
         tone="destructive"
         onConfirm={async () => {
           if (toUnlink === null) return;
           try {
             await releaseBridgeIdentity(toUnlink.app.bridge_id, toUnlink.line.id);
+            setFocusApp(toUnlink.app.bridge_id);
           } finally {
             refresh();
           }
         }}
         onClose={() => setToUnlink(null)}
       />
+
+      <Snackbar open={notice !== null} autoHideDuration={6000} onClose={() => setNotice(null)}>
+        {notice !== null ? (
+          <Alert severity="success" onClose={() => setNotice(null)}>
+            {notice}
+          </Alert>
+        ) : undefined}
+      </Snackbar>
     </Box>
   );
+}
+
+/** What unlinking costs, said for the case at hand: with another account
+ * still linked in the same app, agents there go on recognising the person. */
+function unlinkText(app: BridgeDetail, line: AccountLine, others: string[]): string {
+  const handle = accountHandle(line.username);
+  return others.length === 0
+    ? `${handle} in ${app.display_name} will stop being recognised as you. Agents there will treat your messages as coming from an unknown person until you link it again.`
+    : `${handle} in ${app.display_name} will stop being recognised as you. You stay linked there as ${others.join(", ")}.`;
 }
 
 function AppAccounts({
@@ -176,6 +237,8 @@ function AppAccounts({
   lines,
   logoUrl,
   cancelling,
+  takeFocus,
+  onFocusTaken,
   onLink,
   onConfirm,
   onCancel,
@@ -185,6 +248,8 @@ function AppAccounts({
   lines: AccountLine[];
   logoUrl: string | null;
   cancelling: string | null;
+  takeFocus: boolean;
+  onFocusTaken: () => void;
   onLink: () => void;
   onConfirm: (line: AccountLine) => void;
   onCancel: (line: AccountLine) => void;
@@ -193,30 +258,73 @@ function AppAccounts({
   const platform = platformLabel(app.bridge_type);
   const unavailable = unavailableReason(app);
   const findable = findableNote(app);
+  const counting = lines.some((line) => line.kind !== "pending");
+  // The bundled Mattermost is named after its platform, and "Mattermost ·
+  // Mattermost" says nothing twice.
+  const title = app.display_name === platform ? platform : `${platform} · ${app.display_name}`;
+  const linkButton = useRef<HTMLButtonElement>(null);
+  const block = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!takeFocus) return;
+    // The link button, unless it is disabled; then the block itself.
+    (linkButton.current && !linkButton.current.disabled ? linkButton.current : block.current)?.focus();
+    onFocusTaken();
+  }, [takeFocus, onFocusTaken]);
 
   return (
-    <Stack direction="row" spacing={2} sx={{ py: 2 }} alignItems="flex-start">
+    <Stack
+      ref={block}
+      tabIndex={-1}
+      direction="row"
+      spacing={2}
+      sx={{ py: 2, outline: "none" }}
+      alignItems="flex-start"
+      aria-label={title}
+      role="group"
+    >
       <BrandTile slug={app.bridge_type} name={platform} size={36} logoUrl={logoUrl} />
       <Box sx={{ minWidth: 0, flexGrow: 1 }}>
         <Stack direction="row" spacing={1} alignItems="center" sx={{ minHeight: 36 }}>
           <Typography variant="body2" noWrap sx={{ fontWeight: 500, flexGrow: 1, minWidth: 0 }}>
-            {/* The bundled Mattermost is named after its platform, and
-                "Mattermost · Mattermost" says nothing twice. */}
-            {app.display_name === platform ? platform : `${platform} · ${app.display_name}`}
+            {title}
           </Typography>
-          {app.status !== "active" && <Chip size="small" label={sentenceCase(app.status)} />}
-          <Guarded reason={unavailable}>
+          {app.status !== "active" && (
+            <Chip size="small" label={sentenceCase(app.status)} color={statusColor(app.status)} />
+          )}
+          {app.home_url && (
             <Button
-              variant={lines.length === 0 ? "outlined" : "text"}
               size="small"
-              startIcon={<AddLinkOutlined fontSize="small" />}
-              disabled={unavailable !== null}
-              onClick={onLink}
+              color="inherit"
+              startIcon={<OpenInNewOutlined fontSize="small" />}
+              href={app.home_url}
+              target="_blank"
+              rel="noreferrer noopener"
+              aria-label={`Open ${app.display_name}`}
             >
-              {lines.length === 0 ? "Link account" : "Link another account"}
+              Open
             </Button>
-          </Guarded>
+          )}
+          <Button
+            ref={linkButton}
+            variant={lines.length === 0 ? "outlined" : "text"}
+            size="small"
+            startIcon={<AddLinkOutlined fontSize="small" />}
+            disabled={unavailable !== null}
+            aria-label={counting ? `Link another account in ${app.display_name}` : `Link an account in ${app.display_name}`}
+            onClick={onLink}
+          >
+            {counting ? "Link another account" : "Link account"}
+          </Button>
         </Stack>
+
+        {/* Said in the row, not in a tooltip on the greyed buttons, which a
+            keyboard cannot reach. */}
+        {unavailable !== null && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+            {unavailable}
+          </Typography>
+        )}
 
         {lines.length === 0 ? (
           <Stack direction="row" spacing={0.5} alignItems="center">
@@ -229,8 +337,9 @@ function AppAccounts({
           lines.map((line) => (
             <AccountRow
               key={`${line.kind}:${line.id}`}
+              app={app}
               line={line}
-              unavailable={unavailable}
+              unavailable={unavailable !== null}
               cancelling={cancelling === line.id}
               onConfirm={() => onConfirm(line)}
               onCancel={() => onCancel(line)}
@@ -244,6 +353,7 @@ function AppAccounts({
 }
 
 function AccountRow({
+  app,
   line,
   unavailable,
   cancelling,
@@ -251,14 +361,18 @@ function AccountRow({
   onCancel,
   onUnlink,
 }: {
+  app: BridgeDetail;
   line: AccountLine;
-  unavailable: string | null;
+  unavailable: boolean;
   cancelling: boolean;
   onConfirm: () => void;
   onCancel: () => void;
   onUnlink: () => void;
 }) {
   const handle = accountHandle(line.username);
+  // Every row's buttons say whose they are: "Unlink" ten times over tells a
+  // screen reader nothing.
+  const whose = `${handle} in ${app.display_name}`;
   return (
     <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 0.5 }} data-testid="account-line">
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0, flexGrow: 1 }}>
@@ -274,32 +388,25 @@ function AccountRow({
         )}
       </Stack>
       {line.kind !== "linked" && (
-        <Guarded reason={unavailable}>
-          <Button size="small" variant="outlined" disabled={unavailable !== null} onClick={onConfirm}>
-            {line.kind === "pending" ? "Show code" : "Confirm"}
-          </Button>
-        </Guarded>
+        <Button
+          size="small"
+          variant="outlined"
+          disabled={unavailable}
+          aria-label={line.kind === "pending" ? `Show code for ${whose}` : `Confirm ${whose}`}
+          onClick={onConfirm}
+        >
+          {line.kind === "pending" ? "Show code" : "Confirm"}
+        </Button>
       )}
       {line.kind === "pending" ? (
-        <Button size="small" color="inherit" loading={cancelling} onClick={onCancel}>
+        <Button size="small" color="inherit" loading={cancelling} aria-label={`Cancel link to ${whose}`} onClick={onCancel}>
           Cancel link
         </Button>
       ) : (
-        <Button size="small" variant="outlined" color="error" onClick={onUnlink}>
+        <Button size="small" variant="outlined" color="error" aria-label={`Unlink ${whose}`} onClick={onUnlink}>
           Unlink
         </Button>
       )}
     </Stack>
-  );
-}
-
-/** A control that may be unavailable, with the reason a hover away: a greyed
- * button with no explanation is the thing people file bugs about. */
-function Guarded({ reason, children }: { reason: string | null; children: ReactElement }) {
-  if (reason === null) return children;
-  return (
-    <Tooltip title={reason}>
-      <span>{children}</span>
-    </Tooltip>
   );
 }

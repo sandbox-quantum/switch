@@ -1,10 +1,10 @@
 import CloseOutlined from "@mui/icons-material/CloseOutlined";
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton } from "@mui/material";
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { BridgeDetail, LinkCode } from "../../data/api";
 import { platformLabel } from "../../theme/format";
 import AccountSearch from "./AccountSearch";
-import type { LinkTarget } from "./chatAccounts";
+import { accountHandle, type LinkTarget } from "./chatAccounts";
 import LinkConfirmation from "./LinkConfirmation";
 
 /** What the dialog is for: finding your account, or confirming a link that
@@ -12,6 +12,15 @@ import LinkConfirmation from "./LinkConfirmation";
 export type LinkDialogOpen =
   | { app: BridgeDetail; confirm: null }
   | { app: BridgeDetail; confirm: LinkTarget };
+
+/** How the dialog ended, when it ended in a link that counts: what the page
+ * says once the dialog has gone. */
+export interface LinkOutcome {
+  app: BridgeDetail;
+  handle: string;
+  /** A new link, or an older one now confirmed. */
+  kind: "linked" | "confirmed";
+}
 
 /**
  * Link the signed-in person to their own account in a messaging app, on the
@@ -33,33 +42,42 @@ export default function LinkAccountDialog({
 }: {
   open: LinkDialogOpen | null;
   currentUserId: string | null;
-  /** Called whenever the dialog closes, linked or not; the caller re-reads
-   *  the accounts either way. */
-  onClose: () => void;
+  /** Called whenever the dialog closes, with the link it made if it made
+   *  one; the caller re-reads the accounts either way. */
+  onClose: (outcome: LinkOutcome | null) => void;
 }) {
-  // Held while a request is in flight: closing then would abandon a claim or
-  // a code half-way. The flow's own buttons are disabled meanwhile; this
-  // holds Escape and the backdrop too.
-  const [busy, setBusy] = useState(false);
-  const close = () => {
-    if (!busy) onClose();
-  };
+  // Requests in flight, counted rather than flagged: a request from a screen
+  // already left behind must not clear the hold for one still running.
+  // Closing mid-request would abandon a claim or a code half-way, so the
+  // flow's buttons are disabled meanwhile and this holds Escape and the
+  // backdrop too.
+  const [inFlight, setInFlight] = useState(0);
+  const onBusy = useCallback((busy: boolean) => setInFlight((n) => n + (busy ? 1 : -1)), []);
+  const busy = inFlight > 0;
+  // Kept through the closing transition, so the dialog fades out with its
+  // contents rather than as an empty box.
+  const last = useRef(open);
+  if (open !== null) last.current = open;
+  const showing = last.current;
+
   return (
     <Dialog
       open={open !== null}
-      onClose={close}
+      onClose={() => {
+        if (!busy) onClose(null);
+      }}
       maxWidth="sm"
       fullWidth
       slotProps={{ paper: { sx: { borderRadius: "16px" } } }}
     >
       {/* Remounted per opening, so a new app or target starts clean. */}
-      {open !== null && (
+      {showing !== null && (
         <LinkAccountFlow
-          key={`${open.app.bridge_id}:${open.confirm?.identityId ?? ""}`}
-          open={open}
+          key={`${showing.app.bridge_id}:${showing.confirm?.identityId ?? ""}`}
+          open={showing}
           currentUserId={currentUserId}
           busy={busy}
-          onBusy={setBusy}
+          onBusy={onBusy}
           onClose={onClose}
         />
       )}
@@ -78,7 +96,7 @@ function LinkAccountFlow({
   currentUserId: string | null;
   busy: boolean;
   onBusy: (busy: boolean) => void;
-  onClose: () => void;
+  onClose: (outcome: LinkOutcome | null) => void;
 }) {
   const { app } = open;
   const [waiting, setWaiting] = useState<{ target: LinkTarget; code: LinkCode | null } | null>(
@@ -93,7 +111,7 @@ function LinkAccountFlow({
       </DialogTitle>
       <IconButton
         aria-label="Close"
-        onClick={onClose}
+        onClick={() => onClose(null)}
         disabled={busy}
         sx={{ position: "absolute", top: 16, right: 16, width: 36, height: 36 }}
       >
@@ -105,7 +123,7 @@ function LinkAccountFlow({
             app={app}
             currentUserId={currentUserId}
             onBusy={onBusy}
-            onLinked={onClose}
+            onLinked={(username) => onClose({ app, handle: accountHandle(username), kind: "linked" })}
             onConfirm={(target, code) => setWaiting({ target, code })}
           />
         ) : (
@@ -115,14 +133,20 @@ function LinkAccountFlow({
             target={waiting.target}
             initialCode={waiting.code}
             onBusy={onBusy}
-            onConfirmed={onClose}
-            onCancelled={() => (open.confirm === null ? setWaiting(null) : onClose())}
+            onConfirmed={() =>
+              onClose({
+                app,
+                handle: accountHandle(waiting.target.username),
+                kind: waiting.target.kind === "pending" ? "linked" : "confirmed",
+              })
+            }
+            onCancelled={() => (open.confirm === null ? setWaiting(null) : onClose(null))}
             onStartAgain={() => setWaiting(null)}
           />
         )}
       </DialogContent>
       <DialogActions sx={{ px: 3, py: 2, borderTop: "1px solid var(--sw-border)" }}>
-        <Button variant="outlined" onClick={onClose} disabled={busy}>
+        <Button variant="outlined" onClick={() => onClose(null)} disabled={busy}>
           Close
         </Button>
       </DialogActions>

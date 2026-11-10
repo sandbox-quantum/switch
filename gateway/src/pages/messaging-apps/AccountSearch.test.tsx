@@ -81,7 +81,7 @@ describe("AccountSearch", () => {
     const { onConfirm } = search();
     type("ada");
 
-    const thisIsMe = await screen.findByRole("button", { name: "This is me" });
+    const thisIsMe = await screen.findByRole("button", { name: "This is me: Ada Lovelace, @ada" });
     await act(async () => fireEvent.click(thisIsMe));
 
     expect(api.claimBridgeIdentity).toHaveBeenCalledWith("b1", person());
@@ -104,10 +104,10 @@ describe("AccountSearch", () => {
     const { onLinked, onConfirm } = search();
     type("ada");
 
-    const thisIsMe = await screen.findByRole("button", { name: "This is me" });
+    const thisIsMe = await screen.findByRole("button", { name: "This is me: Ada Lovelace, @ada" });
     await act(async () => fireEvent.click(thisIsMe));
 
-    expect(onLinked).toHaveBeenCalledOnce();
+    expect(onLinked).toHaveBeenCalledWith("ada");
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
@@ -132,7 +132,7 @@ describe("AccountSearch", () => {
 
     expect(await screen.findByText("Also linked to bob")).toBeTruthy();
     expect(screen.getByText("Linked, not confirmed")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm @ada.two" }));
     expect(onConfirm).toHaveBeenCalledWith(
       { identityId: "acct-2", username: "ada.two", kind: "unverified" },
       null,
@@ -148,7 +148,7 @@ describe("AccountSearch", () => {
     await waitFor(() => expect(api.fetchMyPendingIdentities).toHaveBeenCalled());
     type("ada");
 
-    fireEvent.click(await screen.findByRole("button", { name: "Show code" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Show code for @ada" }));
     expect(onConfirm).toHaveBeenCalledWith({ identityId: "acct-1", username: "ada", kind: "pending" }, null);
     expect(api.claimBridgeIdentity).not.toHaveBeenCalled();
   });
@@ -167,7 +167,7 @@ describe("AccountSearch", () => {
     expect(screen.getByText("Nobody Switch has seen in Acme Slack matches “ada”.")).toBeTruthy();
   });
 
-  it("shows Switch's reason when a search or a claim is refused", async () => {
+  it("shows Switch's reason when a search is refused", async () => {
     vi.mocked(api.searchBridgeDirectory).mockRejectedValueOnce(
       new Error("Slack is answering too many searches. Try again in 30 seconds."),
     );
@@ -179,12 +179,46 @@ describe("AccountSearch", () => {
 
   it("reads which links are waiting each time the search opens, not from before", async () => {
     vi.mocked(api.searchBridgeDirectory).mockResolvedValue({ source: "directory", note: null, users: [person()] });
+    vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([
+      pendingIdentity({ id: "acct-1", bridge_id: "b1", external_user_id: "U-ada" }),
+    ]);
+    search();
+    type("ada");
+    expect(await screen.findByRole("button", { name: "Show code for @ada" })).toBeTruthy();
+    cleanup();
+
+    // The link was cancelled while its code was up; the search opened again
+    // after that offers to link, not the dead code.
     vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
     search();
     type("ada");
+    expect(await screen.findByRole("button", { name: "This is me: Ada Lovelace, @ada" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Show code for @ada" })).toBeNull();
+  });
 
-    expect(await screen.findByRole("button", { name: "This is me" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Show code" })).toBeNull();
+  it("shows Switch's reason when a claim is refused, and lets another be tried", async () => {
+    vi.mocked(api.searchBridgeDirectory).mockResolvedValue({ source: "directory", note: null, users: [person()] });
+    vi.mocked(api.claimBridgeIdentity).mockRejectedValue(
+      new Error("This account cannot be linked to anyone. It is a bot."),
+    );
+    const { onBusy, onConfirm } = search();
+    type("ada");
+
+    const thisIsMe = await screen.findByRole("button", { name: "This is me: Ada Lovelace, @ada" });
+    await act(async () => fireEvent.click(thisIsMe));
+
+    expect(screen.getByText("This account cannot be linked to anyone. It is a bot.")).toBeTruthy();
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onBusy.mock.calls).toEqual([[true], [false]]);
+    expect((thisIsMe as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("tells a screen reader how many people a search found", async () => {
+    vi.mocked(api.searchBridgeDirectory).mockResolvedValue({ source: "directory", note: null, users: [person()] });
+    search();
+    type("ada");
+
+    expect(await screen.findByText("1 person found.")).toBeTruthy();
   });
 
   it("drops a search that comes back after the query got too short", async () => {

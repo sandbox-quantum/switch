@@ -150,3 +150,8 @@ export function findableNote(app: BridgeDetail): string | null {
   if (app.directory_search_supported) return null;
   return `${app.display_name} has no directory to search, so Switch only knows people who have written in a chat connected to it. Send a message in a connected group first, then link your account.`;
 }
+
+/** A messaging app's status as a chip colour, the same wherever it shows. */
+export function statusColor(status: string): "success" | "error" | "default" {
+  return status === "active" ? "success" : status === "error" ? "error" : "default";
+}

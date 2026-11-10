@@ -85,8 +85,8 @@ interface Props {
 }
 
 export default function InstalledAppsSection({ onConnectionsChanged, memberView }: Props) {
-  const { data: offered, refetch: refetchOffered } = useInstallablePlatforms();
-  const { data: installs, loading, refetch } = useInstalledApps();
+  const { data: offered, error: offeredError, refetch: refetchOffered } = useInstallablePlatforms();
+  const { data: installs, error: installsError, loading, refetch } = useInstalledApps();
   const [starting, setStarting] = useState<string | null>(null);
   const [claim, setClaim] = useState<{
     platform: string;
@@ -166,7 +166,10 @@ export default function InstalledAppsSection({ onConnectionsChanged, memberView 
     onConnectionsChanged();
   }, [refetch, refetchOffered, onConnectionsChanged]);
 
-  if (platforms.length === 0) {
+  // Nothing to offer and nothing to show, unless that is only because a list
+  // failed to load: then say so, rather than look like there is nothing.
+  const failed = (offered === null && offeredError !== null) || (installs === null && installsError !== null);
+  if (platforms.length === 0 && !failed) {
     return null;
   }
 
@@ -184,7 +187,7 @@ export default function InstalledAppsSection({ onConnectionsChanged, memberView 
         </>
       ) : (
         <>
-          <Typography variant="h5" mb={1}>
+          <Typography variant="h6" component="h2" mb={1}>
             Installed apps
           </Typography>
           <Typography variant="body2" color="text.secondary" mb={2}>
@@ -198,6 +201,13 @@ export default function InstalledAppsSection({ onConnectionsChanged, memberView 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
           {error}
+        </Alert>
+      )}
+
+      {failed && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {memberView ? "Could not load your chats." : "Could not load the installed apps."} Reload the page to try
+          again.
         </Alert>
       )}
 
