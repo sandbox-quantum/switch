@@ -912,6 +912,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: {{ $signupMode | quote }}
 - name: GATEWAY_MAX_WORKSPACES_PER_USER
   value: {{ .Values.switchCore.signup.maxWorkspacesPerUser | quote }}
+{{- with .Values.switchCore.signup.refusedHeader }}
+- name: GATEWAY_SIGNUP_REFUSED_HEADER
+  value: {{ . | quote }}
+{{- end }}
 {{- include "switch.organizationDirectoryEnv" . }}
 - name: GATEWAY_TENANT_CHOICE_ENABLED
   value: {{ .Values.switchCore.tenantChoiceEnabled | quote }}

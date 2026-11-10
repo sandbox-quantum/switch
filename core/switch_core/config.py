@@ -346,6 +346,15 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # The name of a request header that a trusted edge in front of the server
+    # (prod's WAF) adds to requests from countries where new accounts are not
+    # offered. A request carrying it, with any value, may not create an
+    # account: neither a first OIDC sign-in nor a password sign-up. Existing
+    # accounts sign in as before. Trusting the header's presence is safe,
+    # since a client that sends it only refuses itself; its absence proves
+    # nothing, because the edge decides where a request comes from and this
+    # server never checks. None turns the check off.
+    gateway_signup_refused_header: str | None = None
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
     # Cloud machines run the agent controller, so above 0 this needs the

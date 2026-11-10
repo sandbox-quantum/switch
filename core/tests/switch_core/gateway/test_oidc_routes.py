@@ -634,6 +634,81 @@ class TestOidcCallback:
             assert exc.value.headers is not None
             assert exc.value.headers.get("Retry-After") == "1"
 
+    async def test_a_first_sign_in_the_edge_marks_as_refused_creates_no_account(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token = {
+            "userinfo": {
+                "email": "far.away@example.com",
+                "email_verified": True,
+                "sub": "okta|far-away",
+                "name": "Far",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as refused:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(  # type: ignore[arg-type]
+                        session={}, headers={"x-amzn-waf-signup-refused": "country"}
+                    ),
+                    config=_config(
+                        gateway_signup_refused_header="x-amzn-waf-signup-refused"
+                    ),
+                    session=session,
+                    session_factory=session_factory,
+                    user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
+                )
+            stored = await UserStore().get_by_email(session, "far.away@example.com")
+
+        assert refused.value.status_code == 403
+        assert refused.value.detail == (
+            "New Switch accounts are not available in your country."
+        )
+        assert stored is None
+
+    async def test_an_existing_account_signs_in_where_new_ones_are_refused(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        token = {
+            "userinfo": {
+                "email": "traveller@example.com",
+                "email_verified": True,
+                "sub": "okta|traveller",
+                "name": "Traveller",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+        config = _config(gateway_signup_refused_header="x-amzn-waf-signup-refused")
+
+        async with session_factory() as session:
+            first = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(session={}, headers={}),  # type: ignore[arg-type]
+                config=config,
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=LocalDirectory(),
+            )
+            assert first.status_code == 303
+            again = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(  # type: ignore[arg-type]
+                    session={}, headers={"x-amzn-waf-signup-refused": "country"}
+                ),
+                config=config,
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=LocalDirectory(),
+            )
+            assert again.status_code == 303
+
     async def test_missing_email_claim_raises_401(
         self,
         session_factory: async_sessionmaker[AsyncSession],
