@@ -263,6 +263,9 @@ switchCore:
   # a collector expects to group and filter on.
   # rootLevel governs everything, libraries included; logLevel above is
   # switch-core's own and is usually the one to change.
+  #
+  # The decision service (decision.enabled) follows format, rootLevel and
+  # environment too, under the service name switch-decision.
   logging:
     format: text
     rootLevel: INFO
@@ -270,7 +273,8 @@ switchCore:
     environment: ""
     serviceName: switch-core
 
-  # Where this deployment reports metrics and logs.
+  # Where this deployment reports metrics and logs. The decision service
+  # (decision.enabled) uses the same collector for its logs.
   #
   # Empty endpoint means it reports nowhere, which is the default: nothing
   # leaves the deployment until an operator names a collector. Readiness
@@ -939,6 +943,11 @@ decision:
     region: ""
   # Extra container env for the decision container (DECISION_TIMEOUT_S,
   # DECISION_HISTORY_LIMIT, SYSTEMONE_URL, ...), as Kubernetes env entries.
+  # The service's logging has no settings here: it follows
+  # switchCore.logging (format, rootLevel, environment) as service
+  # switch-decision, and switchCore.observability (otlpEndpoint, deploymentId,
+  # logs, timeoutSeconds, and secrets.otlpHeaders) to ship its logs, never
+  # metrics. An entry here replaces any of those.
   env: []
   resources:
     requests:

@@ -599,6 +599,39 @@ def test_refuses_contradictions() -> None:
     )
 
 
+def test_the_service_logs_and_ships_like_switch_core() -> None:
+    def decision_env(*args: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        docs = render("--set", "decision.enabled=true", *FLAGS, *args)
+        container = containers(decision_objects(docs)["Deployment"])["decision"]
+        env = {e["name"]: e for e in container["env"]}
+        return env, secret_refs_of(container)
+
+    env, secrets = decision_env()
+    assert env["SERVICE_NAME"]["value"] == "switch-decision"
+    assert env["POD_NAME"]["valueFrom"]["fieldRef"]["fieldPath"] == "metadata.name"
+    assert "LOG_FORMAT" in env and "LOG_LEVEL" in env
+    assert not any(name.startswith("OTLP_") for name in env), sorted(env)
+
+    env, secrets = decision_env(
+        "--set",
+        "switchCore.logging.format=json",
+        "--set",
+        "switchCore.observability.otlpEndpoint=https://collector.example",
+        "--set",
+        "switchCore.observability.deploymentId=0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10",
+        "--set",
+        "switchCore.observability.logs=true",
+        "--set",
+        "secrets.otlpHeaders=x-scope=example",
+    )
+    assert env["LOG_FORMAT"]["value"] == "json"
+    assert env["OTLP_ENDPOINT"]["value"] == "https://collector.example"
+    assert env["OTLP_LOGS_ENABLED"]["value"] == "true"
+    assert env["DEPLOYMENT_ID"]["value"] == "0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10"
+    assert "OTLP_METRICS_ENABLED" not in env
+    assert "OTLP_HEADERS" in secrets
+
+
 TESTS: list[Callable[[], None]] = [
     test_off_by_default_renders_nothing_and_sets_no_endpoint,
     test_on_runs_the_service_and_points_switch_core_at_it,
@@ -617,6 +650,7 @@ TESTS: list[Callable[[], None]] = [
     test_the_qwen_weights_are_pinned_and_a_bad_file_is_deleted,
     test_the_strands_checkpoint_and_base_are_pinned,
     test_compose_pins_the_same_weights_as_the_chart,
+    test_the_service_logs_and_ships_like_switch_core,
     test_refuses_contradictions,
 ]
 
