@@ -297,11 +297,19 @@ const TABLE_COLUMN_MENU = {
   slotProps: { columnMenuTableFilterItem: { displayOrder: 20 } },
 };
 
+/** The table's own message in place of rows. It sits inside the grid, which
+ *  may hold only rows, so it is one row and one cell: the "Clear filters"
+ *  button or a page's "Add agent" inside it stays valid markup. */
 function TableOverlay({ tableEmpty }: GridOverlayProps & { tableEmpty?: ReactNode }) {
   return (
-    <Stack sx={{ height: "100%", alignItems: "center", justifyContent: "center", p: 3, textAlign: "center" }}>
-      {tableEmpty}
-    </Stack>
+    <Box role="row" sx={{ height: "100%" }}>
+      <Stack
+        role="gridcell"
+        sx={{ height: "100%", alignItems: "center", justifyContent: "center", p: 3, textAlign: "center" }}
+      >
+        {tableEmpty}
+      </Stack>
+    </Box>
   );
 }
 

@@ -374,6 +374,18 @@ export const APP_THEME = () =>
             lineHeight: 1.4,
             color: hootVar("muted-foreground"),
             "&.Mui-error": { color: hootVar("destructive-text") },
+            // Under a disabled field the helper is usually why it is
+            // disabled, which has to stay readable.
+            "&.Mui-disabled": { color: hootVar("muted-foreground") },
+          },
+        },
+      },
+      // MUI's toggle text is a 54% black, under 4.5:1 on Hoot's sand.
+      MuiToggleButton: {
+        styleOverrides: {
+          root: {
+            color: hootVar("muted-foreground"),
+            "&.Mui-selected, &.Mui-selected:hover": { color: hootVar("foreground") },
           },
         },
       },

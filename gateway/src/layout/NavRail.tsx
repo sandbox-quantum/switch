@@ -127,8 +127,10 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
         {/* Two assets rather than one recoloured mark: the swap is done in CSS
             off the colour-scheme attribute so there is no flash on first paint,
             and a future coloured logo drops in without rework. The file names
-            describe the ink — `dark` is the black mark, for the light theme. */}
+            describe the ink — `dark` is the black mark, for the light theme.
+            An image, so the name the tooltip gives it is allowed on it. */}
         <Box
+          role="img"
           sx={{
             width: TARGET,
             height: TARGET,
