@@ -92,11 +92,11 @@ interface DataTableProps<T extends { id: string | number }> {
   emptyState?: ReactNode;
 }
 
-/** A hovered or selected row is a lighter wash than the muted fill, which
- *  is also a grey chip's, so a chip in the row keeps its edge. Opaque, so a
+/** A hovered or selected row takes the muted fill. A grey chip shares that
+ *  fill but keeps its hairline, so it still reads as a chip. Opaque, so a
  *  pinned cell can take it too. */
-const ROW_HOVER = "color-mix(in oklch, var(--sw-muted) 50%, var(--sw-card))";
-const ROW_SELECTED = "color-mix(in oklch, var(--sw-muted) 75%, var(--sw-card))";
+const ROW_HOVER = "var(--sw-accent)";
+const ROW_SELECTED = "var(--sw-muted)";
 
 /** The grid treatment: a bordered 16px-radius surface with a cream header
  *  band, generous 52px rows, and tabular figures so numeric columns line up.
@@ -310,11 +310,29 @@ function TableOverlay({ tableEmpty }: GridOverlayProps & { tableEmpty?: ReactNod
     <Box role="row" sx={{ height: "100%" }}>
       <Stack
         role="gridcell"
-        sx={{ height: "100%", alignItems: "center", justifyContent: "center", p: 3, textAlign: "center" }}
+        sx={{ height: "100%", alignItems: "center", justifyContent: "center", p: 2, textAlign: "center" }}
       >
         {tableEmpty}
       </Stack>
     </Box>
+  );
+}
+
+/** A table's message for when it has no rows: what is missing, in a line,
+ *  and what to do about it, if anything. Pages word both for the viewer,
+ *  from their capabilities. */
+export function TableEmptyState({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <Stack spacing={0.5} sx={{ alignItems: "center", maxWidth: 440 }}>
+      <Typography variant="body2" sx={{ fontWeight: 600, color: "text.primary" }}>
+        {title}
+      </Typography>
+      {children && (
+        <Typography variant="body2" color="text.secondary">
+          {children}
+        </Typography>
+      )}
+    </Stack>
   );
 }
 
