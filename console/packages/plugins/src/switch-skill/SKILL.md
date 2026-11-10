@@ -1132,6 +1132,13 @@ Your messages render on whatever platform the room is bridged to
 
 When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 
+To link to a Slack message, call **`get_permalinks`** with its message ids (the
+`id` from `read_context` or an event, up to 50 per call) and use the URL it
+returns. **Never build a Slack link yourself.** An id with no link comes back
+under `unavailable` with a reason: `not_found`, `not_slack`,
+`no_slack_record`, `deleted_in_slack` or `bridge_not_running`. Say plainly that
+there is no link; do not guess one.
+
 ## Session controls
 
 In a room your session is connected to, `!reset`, `!compact`, and `!interrupt`
@@ -1161,6 +1168,7 @@ Every Switch tool you call in normal operation, one line each.
 - `send_targeted_message` — broadcast addressed to names, roles, or `everyone` (the room's people).
 - `send_attachment` — post one or more files to the room.
 - `download_attachment` — fetch a file seen in history, by `mxc`.
+- `get_permalinks` — Slack's own link for up to 50 message ids; never build one.
 - `list_roles` — the room's assumable roles and who holds them.
 - `get_role_detail` — one role's full untruncated instructions.
 - `assume_role` — take a role and its instruction bundle.

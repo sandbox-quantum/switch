@@ -86,6 +86,7 @@ async def test_documented_tools_exist(tool_names: set[str]) -> None:
         "list_rooms",
         "connect_to_room",
         "read_context",
+        "get_permalinks",
         "post_message",
         "send_targeted_message",
         "list_participants",
