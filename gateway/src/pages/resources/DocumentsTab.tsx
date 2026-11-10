@@ -1,116 +1,79 @@
-import { Alert, Box, CircularProgress } from "@mui/material";
-import type { GridColDef } from "@mui/x-data-grid";
-import { useEffect, useMemo, useState } from "react";
+import { Box } from "@mui/material";
+import { useMemo } from "react";
 import { useNavigate } from "react-router";
-import DataTable, { TableEmptyState } from "../../components/DataTable";
-import { AccessChip } from "../../components/AccessControls";
-import type { DocumentSummary } from "../../data/api";
-import { useDocuments } from "../../data/hooks";
-import ResourceFiltersBar from "./ResourceFiltersBar";
-import { formatDate } from "../../theme/format";
+import DataTable, {
+  type SelectFilter,
+  type TableColumn,
+  TableEmptyState,
+} from "../../components/DataTable";
+import { useAuth } from "../../data/AuthContext";
+import { type DocumentSummary, loadDocuments } from "../../data/api";
+import { useLoad } from "../workspace/useLoad";
+import {
+  ListBody,
+  accessColumn,
+  countColumn,
+  createdColumn,
+  descriptionColumn,
+  nameColumn,
+  ownerColumn,
+  resourceSearchText,
+  useRefetchOnRefresh,
+} from "./resourceList";
 
 interface Props {
   refreshKey: number;
 }
 
+const NOUN = { one: "document", other: "documents" };
+
+const SELECT_FILTERS: SelectFilter[] = [{ field: "owner_name", label: "Owner", allLabel: "All owners" }];
+
+const SEARCH = { label: "Search documents", text: resourceSearchText };
+
+const documentPath = (doc: { id: string }) => `/resources/documents/${doc.id}`;
+
 export default function DocumentsTab({ refreshKey }: Props) {
   const navigate = useNavigate();
-  const { data: docs, loading, error, refetch } = useDocuments();
-  const [search, setSearch] = useState("");
-  const [ownerId, setOwnerId] = useState<string>("");
+  const { session } = useAuth();
+  const { data, error, loading, refetch } = useLoad(loadDocuments);
+  useRefetchOnRefresh(refreshKey, refetch);
+  const rows = useMemo(() => data ?? [], [data]);
+  const workspace = session?.tenant?.name ?? "this workspace";
 
-  useEffect(() => {
-    refetch();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
-
-  const owners = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const d of docs ?? []) {
-      if (d.owner_id) m.set(d.owner_id, d.owner_name ?? d.owner_id);
-    }
-    return [...m.entries()].map(([id, name]) => ({ id, name }));
-  }, [docs]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (docs ?? []).filter((d) => {
-      if (ownerId && d.owner_id !== ownerId) return false;
-      if (q && !d.name.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [docs, search, ownerId]);
-
-  const columns = useMemo<GridColDef<DocumentSummary>[]>(
+  const columns = useMemo<TableColumn<DocumentSummary>[]>(
     () => [
-      { field: "name", headerName: "Name", flex: 1, minWidth: 180 },
-      { field: "description", headerName: "Description", flex: 2, minWidth: 280 },
-      {
-        field: "read_visibility",
-        headerName: "Access",
-        width: 110,
-        renderCell: ({ row }) => <AccessChip pair={row} />,
-      },
-      {
-        field: "owner_name",
-        headerName: "Owner",
-        width: 150,
-        renderCell: ({ value, row }) => value ?? row.owner_id ?? "—",
-      },
-      {
-        field: "attached_rooms_count",
-        headerName: "Rooms",
-        width: 90,
-        type: "number",
-      },
-      {
-        field: "created_at",
-        headerName: "Created",
-        width: 116,
-        valueFormatter: (value) => formatDate(value as string),
-      },
+      nameColumn<DocumentSummary>(documentPath),
+      descriptionColumn(),
+      accessColumn(rows),
+      ownerColumn(rows),
+      countColumn("attached_rooms_count", "Rooms", 90),
+      createdColumn(),
     ],
-    [],
+    [rows],
   );
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <ResourceFiltersBar
-        search={search}
-        onSearchChange={setSearch}
-        ownerId={ownerId}
-        onOwnerChange={setOwnerId}
-        owners={owners}
-      />
-
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
-        </Alert>
-      )}
-
-      {loading ? (
-        <CircularProgress />
-      ) : (
+      <ListBody what="documents" loaded={data !== null} error={error} loading={loading} onRetry={refetch}>
         <DataTable
-          rows={filtered}
+          rows={rows}
           columns={columns}
           fillHeight
+          noun={NOUN}
+          search={SEARCH}
+          selectFilters={SELECT_FILTERS}
+          initialSort={{ field: "created_at", sort: "desc" }}
           emptyState={
-            search || ownerId ? (
-              <TableEmptyState title="No documents match these filters">
-                Clear the search or owner to see every one.
-              </TableEmptyState>
-            ) : (
-              <TableEmptyState title="No documents yet">Create one to give agents text to read in rooms.</TableEmptyState>
-            )
+            <TableEmptyState title="No documents yet">
+              Yours and the public ones in {workspace} show here. Create one to give agents text to read
+              in rooms.
+            </TableEmptyState>
           }
-          onRowClick={(params) =>
-            navigate(`/resources/documents/${params.id}`)
-          }
+          onRowClick={(params) => navigate(documentPath(params.row))}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
         />
-      )}
+      </ListBody>
     </Box>
   );
 }
