@@ -17,15 +17,15 @@ vi.hoisted(() => {
 
 const deleteAccount = vi.hoisted(() => vi.fn());
 const resetTestAccount = vi.hoisted(() => vi.fn());
-const replayAsFreshInstall = vi.hoisted(() => vi.fn());
+const confirmFreshInstall = vi.hoisted(() => vi.fn());
 const rehearse = vi.hoisted(() => vi.fn());
 const navigate = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { deleteAccount, resetTestAccount },
 }));
-vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { app: { replayAsFreshInstall } },
+vi.mock('@renderer/features/settings/components/ReplayOnboardingRow', () => ({
+  useConfirmFreshInstall: () => confirmFreshInstall,
 }));
 vi.mock('@renderer/features/onboarding/onboarding-store', () => ({
   onboardingStore: { rehearse },
@@ -140,26 +140,14 @@ describe('DeleteAccountModal in reset mode', () => {
     );
   });
 
-  it('resets, then replays as a fresh install', async () => {
+  it('resets, then asks to replay as a fresh install', async () => {
     resetTestAccount.mockResolvedValueOnce(undefined);
-    replayAsFreshInstall.mockResolvedValueOnce({ success: true });
     await render('reset');
     await type('ada@example.test');
     await act(async () => button('Reset test account').click());
     expect(resetTestAccount).toHaveBeenCalledWith('srv-1', 'ada@example.test');
     expect(document.body.textContent).toContain('The test account is reset');
     await act(async () => button('Replay as a fresh install').click());
-    expect(replayAsFreshInstall).toHaveBeenCalled();
-    expect(document.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  it('says why a replay failed', async () => {
-    resetTestAccount.mockResolvedValueOnce(undefined);
-    replayAsFreshInstall.mockResolvedValueOnce({ success: false, error: 'Could not relaunch.' });
-    await render('reset');
-    await type('ada@example.test');
-    await act(async () => button('Reset test account').click());
-    await act(async () => button('Replay as a fresh install').click());
-    expect(document.querySelector('[role="alert"]')?.textContent).toBe('Could not relaunch.');
+    expect(confirmFreshInstall).toHaveBeenCalled();
   });
 });

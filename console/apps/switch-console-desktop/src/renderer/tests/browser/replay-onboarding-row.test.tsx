@@ -10,6 +10,8 @@ const state = vi.hoisted(() => ({
   devTools: true,
   navigate: vi.fn(),
   replayAsFreshInstall: vi.fn(),
+  showModal: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 vi.hoisted(() => {
@@ -25,6 +27,12 @@ vi.mock('@renderer/lib/dev-tools', () => ({ showDevTools: () => state.devTools }
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: { app: { replayAsFreshInstall: state.replayAsFreshInstall } },
 }));
+
+vi.mock('@renderer/lib/modal/modal-provider', () => ({
+  useShowModal: (id: string) => (args: unknown) => state.showModal(id, args),
+}));
+
+vi.mock('sonner', () => ({ toast: { error: state.toastError } }));
 
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({
   useNavigate: () => ({ navigate: state.navigate }),
@@ -48,6 +56,8 @@ beforeEach(() => {
   state.devTools = true;
   state.navigate.mockReset();
   state.replayAsFreshInstall.mockReset();
+  state.showModal.mockReset();
+  state.toastError.mockReset();
   onboardingStore.reset();
 });
 
@@ -80,13 +90,27 @@ describe('the replay onboarding row', () => {
     expect(state.navigate).toHaveBeenCalledWith('home');
   });
 
-  it('restarts as a fresh install', async () => {
-    state.replayAsFreshInstall.mockResolvedValue({ success: true });
+  it('asks before a fresh install, and does nothing until confirmed', async () => {
     const el = await render();
 
     await act(async () => button(el, 'Fresh install').click());
 
+    expect(state.showModal).toHaveBeenCalledWith(
+      'confirmActionModal',
+      expect.objectContaining({ title: 'Restart as a fresh install?', confirmLabel: 'Restart' })
+    );
+    expect(state.replayAsFreshInstall).not.toHaveBeenCalled();
+  });
+
+  it('restarts as a fresh install once confirmed', async () => {
+    state.replayAsFreshInstall.mockResolvedValue({ success: true });
+    const el = await render();
+    await act(async () => button(el, 'Fresh install').click());
+
+    await act(async () => state.showModal.mock.calls[0][1].onSuccess());
+
     expect(state.replayAsFreshInstall).toHaveBeenCalled();
+    expect(state.toastError).not.toHaveBeenCalled();
   });
 
   it('shows why a fresh install could not start', async () => {
@@ -95,9 +119,12 @@ describe('the replay onboarding row', () => {
       error: 'Only in dev and Canary builds.',
     });
     const el = await render();
-
     await act(async () => button(el, 'Fresh install').click());
 
-    expect(el.textContent).toContain('Only in dev and Canary builds.');
+    await act(async () => state.showModal.mock.calls[0][1].onSuccess());
+
+    expect(state.toastError).toHaveBeenCalledWith('Could not restart as a fresh install.', {
+      description: 'Only in dev and Canary builds.',
+    });
   });
 });

@@ -1,8 +1,8 @@
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
+import { useConfirmFreshInstall } from '@renderer/features/settings/components/ReplayOnboardingRow';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
@@ -40,7 +40,7 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleted, setDeleted] = useState(false);
-  const [replaying, setReplaying] = useState(false);
+  const confirmFreshInstall = useConfirmFreshInstall();
   const matches = typed.trim().toLowerCase() === email.toLowerCase();
 
   const confirm = async () => {
@@ -63,20 +63,6 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
     }
   };
 
-  const replay = async () => {
-    setReplaying(true);
-    setError(null);
-    try {
-      const result = await rpc.app.replayAsFreshInstall();
-      if (!result.success) setError(result.error ?? 'Could not replay as a fresh install.');
-    } catch (cause) {
-      const { headline, detail } = describeFailure(cause, 'Could not replay as a fresh install.');
-      setError(detail ?? headline);
-    } finally {
-      setReplaying(false);
-    }
-  };
-
   if (deleted && reset)
     return (
       <>
@@ -87,20 +73,12 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
           <p className="text-sm text-foreground-muted">
             {email} and everything it owned on {serverName} is gone.
           </p>
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          )}
         </DialogContentArea>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={replaying}>
+          <Button variant="outline" onClick={onClose}>
             Close
           </Button>
-          <Button onClick={() => void replay()} disabled={replaying}>
-            {replaying && <Spinner className="size-3.5" />}
-            Replay as a fresh install
-          </Button>
+          <Button onClick={confirmFreshInstall}>Replay as a fresh install</Button>
         </DialogFooter>
       </>
     );
