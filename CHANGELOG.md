@@ -102,6 +102,19 @@ version of their own to them without also giving them a release of their own.
   `.env`, so a page can be checked as each role. Switching is an ordinary
   sign-in, so every check is the server's own. A production build leaves the
   switcher out, and `npm run build` now fails if it gets in.
+- **A workspace can be renamed.** `PATCH /gateway/tenants/{tenant_id}` with
+  `{"name": ...}` renames the workspace the session is in, for whoever
+  administers it: its admins, its organization's admins and the operator.
+  The name is trimmed and at most 255 characters, and the workspace's slug
+  does not change. Each rename is recorded in the workspace's audit log
+  (`tenant.renamed`) and in its organization's
+  (`organization.workspace_renamed`, shown as "Workspace renamed"), with the
+  new and previous names. In the dashboard's new layout (`gateway_v2`),
+  Workspace settings › General shows the name with a pencil to rename it in
+  place, and the breadcrumb and workspace switcher show the new name at once;
+  a member sees the name read-only, with who can change it. Switch Console
+  shows the old name until it next reads its workspace list, at launch or
+  sign-in.
 
 #### Changed
 - **The operator dashboard follows the current design.** A field's label sits
