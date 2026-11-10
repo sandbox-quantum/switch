@@ -5,6 +5,8 @@
 #     SERVICE=<service> ENV=<env> ./apply.sh
 #
 # Optional: DD_SITE (default datadoghq.com), DRY_RUN=1 to print what would change.
+# ALLOW_DEFAULT_SERVICE=1 for the one deployment that keeps the default
+# SERVICE_NAME `switch-core`.
 #
 # Monitors are matched by name and dashboards by title, so running it again
 # updates them in place instead of making copies. NOTIFY replaces the
@@ -12,11 +14,12 @@
 # it, because a monitor left with the placeholder imports cleanly and notifies
 # nobody.
 #
-# SERVICE and ENV scope every monitor to one deployment: its `service` tag
-# (SERVICE_NAME) and its `env` tag (ENVIRONMENT). ENV also goes in each
-# monitor's name, so several deployments can share one Datadog org without
-# one's restart or test paging another's on-call. The script refuses to run
-# without both.
+# SERVICE scopes every monitor to one deployment, by its `service` tag
+# (SERVICE_NAME), the one tag Core sets that Datadog keeps: the `env` tag on
+# the metrics isn't set from ENVIRONMENT and can't separate deployments. ENV names
+# and tags each copy, so several deployments can share one Datadog org
+# without one's restart or test paging another's on-call, or overwriting
+# another's monitors. The script refuses to run without both.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -25,7 +28,14 @@ cd "$(dirname "$0")"
 : "${NOTIFY:?set NOTIFY to the notification handle, e.g. @slack-workspace-channel}"
 case "$NOTIFY" in @*) ;; *) echo "NOTIFY must start with @" >&2; exit 1 ;; esac
 : "${SERVICE:?set SERVICE to the service tag of this deployment (its SERVICE_NAME)}"
-: "${ENV:?set ENV to the env tag of this deployment (its ENVIRONMENT), e.g. prod}"
+: "${ENV:?set ENV to a short name for this deployment, e.g. prod}"
+# `switch-core` is the default SERVICE_NAME. Two deployments sharing it would
+# share alerts, so it's refused unless ALLOW_DEFAULT_SERVICE=1 says this is
+# the one deployment that keeps the default.
+if [[ "$SERVICE" == "switch-core" && "${ALLOW_DEFAULT_SERVICE:-}" != "1" ]]; then
+  echo "SERVICE=switch-core is the default; give this deployment its own SERVICE_NAME, or set ALLOW_DEFAULT_SERVICE=1 if it is the one that keeps the default" >&2
+  exit 1
+fi
 for value in "$SERVICE" "$ENV"; do
   [[ "$value" =~ ^[a-z0-9][a-z0-9_.-]{0,63}$ ]] || {
     echo "SERVICE and ENV must be lower-case letters, digits, '.', '_' or '-'" >&2

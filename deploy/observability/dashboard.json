@@ -5,11 +5,6 @@
   "reflow_type": "fixed",
   "template_variables": [
     {
-      "name": "env",
-      "prefix": "env",
-      "default": "*"
-    },
-    {
       "name": "service",
       "prefix": "service",
       "default": "switch-core"
@@ -44,7 +39,7 @@
         "legend_layout": "horizontal",
         "requests": [
           {
-            "q": "min:switch.health.check{$env,$service} by {check}",
+            "q": "min:switch.health.check{$service} by {check}",
             "display_type": "line",
             "style": {
               "palette": "cool",
@@ -71,7 +66,7 @@
         "title": "Agents connected",
         "requests": [
           {
-            "q": "sum:switch.agents.connected{$env,$service}",
+            "q": "sum:switch.agents.connected{$service}",
             "aggregator": "last"
           }
         ],
@@ -91,7 +86,7 @@
         "title": "Bridges running",
         "requests": [
           {
-            "q": "sum:switch.bridges.running{$env,$service}",
+            "q": "sum:switch.bridges.running{$service}",
             "aggregator": "last"
           }
         ],
@@ -111,7 +106,7 @@
         "title": "Consumers running (read loops)",
         "requests": [
           {
-            "q": "sum:switch.consumers.running{$env,$service}",
+            "q": "sum:switch.consumers.running{$service}",
             "aggregator": "last"
           }
         ],
@@ -131,7 +126,7 @@
         "title": "Event-loop lag (ms, worst)",
         "requests": [
           {
-            "q": "max:switch.runtime.event_loop_lag{$env,$service}",
+            "q": "max:switch.runtime.event_loop_lag{$service}",
             "aggregator": "max",
             "conditional_formats": [
               {
@@ -189,7 +184,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.http.requests{$env,$service} by {status_class}.as_rate()",
+            "q": "sum:switch.http.requests{$service} by {status_class}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -208,7 +203,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.http.requests{$env,$service,status_class:5xx} by {route}.as_rate()",
+            "q": "sum:switch.http.requests{$service,status_class:5xx} by {route}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -230,7 +225,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.http.request.duration{$env,$service} by {route}",
+            "q": "p95:switch.http.request.duration{$service} by {route}",
             "display_type": "line"
           }
         ]
@@ -269,11 +264,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.messages.sent{$env,$service} by {actor}.as_rate()",
+            "q": "sum:switch.messages.sent{$service} by {actor}.as_rate()",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.messages.delivered{$env,$service} by {actor}.as_rate()",
+            "q": "sum:switch.messages.delivered{$service} by {actor}.as_rate()",
             "display_type": "line"
           }
         ]
@@ -292,28 +287,28 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.messages.delivery_failures{$env,$service}.as_rate()",
+            "q": "sum:switch.messages.delivery_failures{$service}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
             }
           },
           {
-            "q": "sum:switch.messages.routing_failures{$env,$service} by {stage}.as_rate()",
+            "q": "sum:switch.messages.routing_failures{$service} by {stage}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "purple"
             }
           },
           {
-            "q": "sum:switch.messages.observer_failures{$env,$service} by {actor}.as_rate()",
+            "q": "sum:switch.messages.observer_failures{$service} by {actor}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "orange"
             }
           },
           {
-            "q": "sum:switch.messages.backlog_skipped{$env,$service} by {actor}.as_rate()",
+            "q": "sum:switch.messages.backlog_skipped{$service} by {actor}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "cool"
@@ -335,11 +330,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.messages.delivery_lag{$env,$service}",
+            "q": "p95:switch.messages.delivery_lag{$service}",
             "display_type": "line"
           },
           {
-            "q": "p99:switch.messages.delivery_lag{$env,$service}",
+            "q": "p99:switch.messages.delivery_lag{$service}",
             "display_type": "line"
           }
         ]
@@ -378,7 +373,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.events_in{$env,$service} by {bridge,platform}.as_rate()",
+            "q": "sum:switch.bridge.events_in{$service} by {bridge,platform}.as_rate()",
             "display_type": "area"
           }
         ]
@@ -397,7 +392,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.events_out{$env,$service} by {bridge,platform}.as_rate()",
+            "q": "sum:switch.bridge.events_out{$service} by {bridge,platform}.as_rate()",
             "display_type": "area"
           }
         ]
@@ -416,7 +411,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridge.errors{$env,$service} by {bridge,platform,direction}.as_rate()",
+            "q": "sum:switch.bridge.errors{$service} by {bridge,platform,direction}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -458,15 +453,15 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.db.pool.in_use{$env,$service}",
+            "q": "sum:switch.db.pool.in_use{$service}",
             "display_type": "area"
           },
           {
-            "q": "sum:switch.db.pool.size{$env,$service}",
+            "q": "sum:switch.db.pool.size{$service}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.db.pool.overflow{$env,$service}",
+            "q": "sum:switch.db.pool.overflow{$service}",
             "display_type": "line"
           }
         ]
@@ -485,11 +480,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.runtime.event_loop_lag{$env,$service}",
+            "q": "max:switch.runtime.event_loop_lag{$service}",
             "display_type": "bars"
           },
           {
-            "q": "count:switch.runtime.event_loop_stalls{$env,$service}.as_count()",
+            "q": "count:switch.runtime.event_loop_stalls{$service}.as_count()",
             "display_type": "line",
             "on_right_yaxis": true
           }
@@ -509,7 +504,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "sum:switch.runtime.memory_rss{$env,$service}",
+            "q": "sum:switch.runtime.memory_rss{$service}",
             "display_type": "area"
           }
         ]
@@ -528,7 +523,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.runtime.cpu_seconds{$env,$service} by {mode}.as_rate()",
+            "q": "sum:switch.runtime.cpu_seconds{$service} by {mode}.as_rate()",
             "display_type": "area"
           }
         ]
@@ -547,7 +542,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "sum:switch.runtime.open_fds{$env,$service}",
+            "q": "sum:switch.runtime.open_fds{$service}",
             "display_type": "line"
           }
         ]
@@ -566,11 +561,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p99:switch.runtime.gc_pause{$env,$service} by {generation}",
+            "q": "p99:switch.runtime.gc_pause{$service} by {generation}",
             "display_type": "line"
           },
           {
-            "q": "avg:switch.runtime.gc_pause{$env,$service} by {generation}",
+            "q": "avg:switch.runtime.gc_pause{$service} by {generation}",
             "display_type": "bars"
           }
         ]
@@ -609,7 +604,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.messages.send_failures{$env,$service} by {kind}.as_rate()",
+            "q": "sum:switch.messages.send_failures{$service} by {kind}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -631,7 +626,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agent.events_dropped{$env,$service} by {reason}.as_rate()",
+            "q": "sum:switch.agent.events_dropped{$service} by {reason}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -653,7 +648,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agent.connections_expired{$env,$service}.as_rate()",
+            "q": "sum:switch.agent.connections_expired{$service}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -672,11 +667,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.db.query.duration{$env,$service} by {operation}",
+            "q": "p95:switch.db.query.duration{$service} by {operation}",
             "display_type": "line"
           },
           {
-            "q": "p99:switch.db.query.duration{$env,$service} by {operation}",
+            "q": "p99:switch.db.query.duration{$service} by {operation}",
             "display_type": "line"
           }
         ]
@@ -695,7 +690,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.bridge.call.duration{$env,$service} by {bridge,platform}",
+            "q": "p95:switch.bridge.call.duration{$service} by {bridge,platform}",
             "display_type": "line"
           }
         ]
@@ -714,7 +709,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.bridge.throttle.held{$env,$service} by {platform,delivery}",
+            "q": "p95:switch.bridge.throttle.held{$service} by {platform,delivery}",
             "display_type": "line"
           }
         ]
@@ -733,7 +728,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.bridges.running{$env,$service} by {platform}",
+            "q": "sum:switch.bridges.running{$service} by {platform}",
             "display_type": "line"
           }
         ]
@@ -751,7 +746,7 @@
         "title": "Crashed bridges, by name (empty while all run)",
         "requests": [
           {
-            "q": "max:switch.bridges.crashed{$env,$service} by {platform,bridge_name}",
+            "q": "max:switch.bridges.crashed{$service} by {platform,bridge_name}",
             "aggregator": "last"
           }
         ]
@@ -770,7 +765,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.messaging.events_ignored{$env,$service} by {platform,reason}.as_count()",
+            "q": "sum:switch.messaging.events_ignored{$service} by {platform,reason}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -789,7 +784,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "sum:switch.db.pool.timeouts{$env,$service}.as_count()",
+            "q": "sum:switch.db.pool.timeouts{$service}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -808,7 +803,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agents.connected{$env,$service} by {transport,client}",
+            "q": "sum:switch.agents.connected{$service} by {transport,client}",
             "display_type": "line"
           }
         ]
@@ -827,7 +822,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agent.connections_refused{$env,$service} by {reason}.as_rate()",
+            "q": "sum:switch.agent.connections_refused{$service} by {reason}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -849,7 +844,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.http.refusals_throttled{$env,$service} by {route}.as_rate()",
+            "q": "sum:switch.http.refusals_throttled{$service} by {route}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -871,7 +866,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agent.opens_deferred{$env,$service} by {route}.as_rate()",
+            "q": "sum:switch.agent.opens_deferred{$service} by {route}.as_rate()",
             "display_type": "bars",
             "style": {
               "palette": "warm"
@@ -893,7 +888,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.db.server.connections{$env,$service} by {state}",
+            "q": "max:switch.db.server.connections{$service} by {state}",
             "display_type": "area"
           }
         ]
@@ -912,7 +907,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "avg:switch.db.server.transactions{$env,$service}.as_rate()",
+            "q": "avg:switch.db.server.transactions{$service}.as_rate()",
             "display_type": "line"
           }
         ]
@@ -931,11 +926,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p50:switch.agent.buffer.scanned{$env,$service} by {operation}",
+            "q": "p50:switch.agent.buffer.scanned{$service} by {operation}",
             "display_type": "line"
           },
           {
-            "q": "p95:switch.agent.buffer.scanned{$env,$service} by {operation}",
+            "q": "p95:switch.agent.buffer.scanned{$service} by {operation}",
             "display_type": "line"
           }
         ]
@@ -954,11 +949,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.agent.buffer.scan.duration{$env,$service} by {operation}",
+            "q": "p95:switch.agent.buffer.scan.duration{$service} by {operation}",
             "display_type": "line"
           },
           {
-            "q": "p99:switch.agent.buffer.scan.duration{$env,$service} by {operation}",
+            "q": "p99:switch.agent.buffer.scan.duration{$service} by {operation}",
             "display_type": "line"
           }
         ]
@@ -977,11 +972,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.db.pool.hold.duration{$env,$service} by {caller}",
+            "q": "p95:switch.db.pool.hold.duration{$service} by {caller}",
             "display_type": "line"
           },
           {
-            "q": "p99:switch.db.pool.hold.duration{$env,$service} by {caller}",
+            "q": "p99:switch.db.pool.hold.duration{$service} by {caller}",
             "display_type": "line"
           }
         ]
@@ -1000,11 +995,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.db.pool.wait.duration{$env,$service}",
+            "q": "p95:switch.db.pool.wait.duration{$service}",
             "display_type": "line"
           },
           {
-            "q": "p99:switch.db.pool.wait.duration{$env,$service}",
+            "q": "p99:switch.db.pool.wait.duration{$service}",
             "display_type": "line"
           }
         ]
@@ -1023,7 +1018,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.agent.connections_opened{$env,$service} by {kind}.as_rate()",
+            "q": "sum:switch.agent.connections_opened{$service} by {kind}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1042,7 +1037,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "sum:switch.runtime.starts{$env,$service}.as_count()",
+            "q": "sum:switch.runtime.starts{$service}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -1081,7 +1076,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.delivery_cache.reads{$env,$service} by {outcome}.as_rate()",
+            "q": "sum:switch.delivery_cache.reads{$service} by {outcome}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1100,15 +1095,15 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.delivery_cache.fills{$env,$service} by {outcome}.as_rate()",
+            "q": "sum:switch.delivery_cache.fills{$service} by {outcome}.as_rate()",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.delivery_cache.rows_read{$env,$service}.as_rate()",
+            "q": "sum:switch.delivery_cache.rows_read{$service}.as_rate()",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.messages.delivered{$env,$service}.as_rate()",
+            "q": "sum:switch.messages.delivered{$service}.as_rate()",
             "display_type": "line"
           }
         ]
@@ -1127,11 +1122,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.delivery_cache.bytes{$env,$service}",
+            "q": "sum:switch.delivery_cache.bytes{$service}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.delivery_cache.rooms{$env,$service}",
+            "q": "sum:switch.delivery_cache.rooms{$service}",
             "display_type": "line"
           }
         ]
@@ -1150,7 +1145,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.delivery_cache.evictions{$env,$service} by {reason}.as_rate()",
+            "q": "sum:switch.delivery_cache.evictions{$service} by {reason}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1169,7 +1164,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.service_tokens.requests{$env,$service} by {connector,outcome}.as_rate()",
+            "q": "sum:switch.service_tokens.requests{$service} by {connector,outcome}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1208,7 +1203,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.agents{$env,$service} by {process,session,backend}",
+            "q": "sum:switch.hosted.agents{$service} by {process,session,backend}",
             "display_type": "area"
           }
         ]
@@ -1227,15 +1222,15 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.agents_stopped{$env,$service} by {reason,backend}",
+            "q": "sum:switch.hosted.agents_stopped{$service} by {reason,backend}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.hosted.guard_stops{$env,$service}.as_count()",
+            "q": "sum:switch.hosted.guard_stops{$service}.as_count()",
             "display_type": "bars"
           },
           {
-            "q": "sum:switch.hosted.valve_parks{$env,$service}.as_count()",
+            "q": "sum:switch.hosted.valve_parks{$service}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -1254,11 +1249,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.sessions{$env,$service} by {kind,backend}",
+            "q": "sum:switch.hosted.sessions{$service} by {kind,backend}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.hosted.waiting_for_room{$env,$service}",
+            "q": "sum:switch.hosted.waiting_for_room{$service}",
             "display_type": "bars"
           }
         ]
@@ -1277,11 +1272,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.hosted.box_memory_used{$env,$service}",
+            "q": "p95:switch.hosted.box_memory_used{$service}",
             "display_type": "line"
           },
           {
-            "q": "max:switch.hosted.box_memory_used{$env,$service}",
+            "q": "max:switch.hosted.box_memory_used{$service}",
             "display_type": "line"
           }
         ]
@@ -1300,11 +1295,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "p95:switch.hosted.box_anon_memory{$env,$service}",
+            "q": "p95:switch.hosted.box_anon_memory{$service}",
             "display_type": "line"
           },
           {
-            "q": "max:switch.hosted.box_anon_memory{$env,$service}",
+            "q": "max:switch.hosted.box_anon_memory{$service}",
             "display_type": "line"
           }
         ]
@@ -1323,15 +1318,15 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.agent_restarts_10m{$env,$service}",
+            "q": "sum:switch.hosted.agent_restarts_10m{$service}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.hosted.agent_oom_kills{$env,$service}",
+            "q": "sum:switch.hosted.agent_oom_kills{$service}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.hosted.box_evictions{$env,$service}.as_count()",
+            "q": "sum:switch.hosted.box_evictions{$service}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -1350,11 +1345,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.gateway{$env,$service} by {kind}",
+            "q": "sum:switch.hosted.gateway{$service} by {kind}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.hosted.boxes_valve_memory{$env,$service} by {state}",
+            "q": "sum:switch.hosted.boxes_valve_memory{$service} by {state}",
             "display_type": "bars"
           }
         ]
@@ -1373,11 +1368,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.boxes_reporting{$env,$service} by {backend}",
+            "q": "sum:switch.hosted.boxes_reporting{$service} by {backend}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.hosted.boxes_expected{$env,$service} by {backend}",
+            "q": "sum:switch.hosted.boxes_expected{$service} by {backend}",
             "display_type": "line"
           }
         ]
@@ -1396,7 +1391,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.controller.credential_refusals{$env,$service} by {reason,route}.as_rate()",
+            "q": "sum:switch.controller.credential_refusals{$service} by {reason,route}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1415,7 +1410,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.alerts_open{$env,$service} by {condition}",
+            "q": "sum:switch.hosted.alerts_open{$service} by {condition}",
             "display_type": "bars"
           }
         ]
@@ -1434,7 +1429,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.machine_events{$env,$service} by {event,backend}.as_count()",
+            "q": "sum:switch.hosted.machine_events{$service} by {event,backend}.as_count()",
             "display_type": "bars"
           }
         ]
@@ -1453,7 +1448,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "min:switch.hosted.reconciler_silence{$env,$service}",
+            "q": "min:switch.hosted.reconciler_silence{$service}",
             "display_type": "line"
           }
         ]

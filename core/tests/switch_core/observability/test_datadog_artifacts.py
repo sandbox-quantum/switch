@@ -84,13 +84,15 @@ def test_monitors_are_individually_importable() -> None:
 
 
 def test_every_monitor_watches_one_deployment_only() -> None:
-    """Scoped to one deployment's `service` and `env`, so a test slot or
-    staging reporting into the same Datadog org can never fire another
-    deployment's alerts. `apply.sh` fills both blanks, and refuses to run
-    without them."""
+    """Scoped to one deployment's `service`, the one tag Core sets that
+    Datadog keeps, so a test slot or staging reporting into the same org can
+    never fire another deployment's alerts. Never by `env`, which isn't set
+    from `ENVIRONMENT` and can't separate deployments. `apply.sh` fills the blanks,
+    and refuses to run without them."""
     for monitor in _load("monitors.json"):  # type: ignore[union-attr]
         query, name = monitor["query"], monitor["name"]
         assert "service:switch-core" not in query, name
+        assert "env:" not in query, name
         scopes = [
             scope.split(",")
             for scope in re.findall(r"\{([^}]*)\}", query)
@@ -99,7 +101,6 @@ def test_every_monitor_watches_one_deployment_only() -> None:
         assert scopes, name
         for scope in scopes:
             assert "service:REPLACE-WITH-SERVICE" in scope, (name, scope)
-            assert "env:REPLACE-WITH-ENV" in scope, (name, scope)
         assert "REPLACE-WITH-ENV" in name, name
         assert {"service:REPLACE-WITH-SERVICE", "env:REPLACE-WITH-ENV"} <= set(
             monitor["tags"]
@@ -109,6 +110,19 @@ def test_every_monitor_watches_one_deployment_only() -> None:
     assert "${ENV:?" in script
     assert "monitor=${monitor//REPLACE-WITH-SERVICE/$SERVICE}" in script
     assert "monitor=${monitor//REPLACE-WITH-ENV/$ENV}" in script
+    # The default service is refused without an explicit opt-in, and no
+    # deployment of ours is named in the public script.
+    assert 'ALLOW_DEFAULT_SERVICE:-}" != "1"' in script
+    assert "pilot" not in script
+
+
+def test_the_dashboard_filters_by_service_not_env() -> None:
+    """`env` can't separate deployments, so the dashboard picks one by
+    `$service` only."""
+    board = _load("dashboard.json")
+    assert "$env" not in json.dumps(board)
+    names = [v["name"] for v in board["template_variables"]]  # type: ignore[index]
+    assert "service" in names and "env" not in names
 
 
 def test_the_refusals_alerts_split_guessing_from_retries() -> None:

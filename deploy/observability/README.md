@@ -7,9 +7,9 @@ the panel reading it land in the same review.
 Nothing here contains an account, an API key, a team handle or a URL. The
 monitors carry `@REPLACE-WITH-NOTIFICATION-HANDLE` where a destination belongs;
 `apply.sh` fills it in from `NOTIFY` when importing. They also carry
-`REPLACE-WITH-SERVICE` and `REPLACE-WITH-ENV` in their scope (and the env in
-their name), which `apply.sh` fills in from `SERVICE` and `ENV`: every
-monitor watches one deployment only (see "`env`" below).
+`REPLACE-WITH-SERVICE` in their scope and `REPLACE-WITH-ENV` in their name and
+tags, which `apply.sh` fills in from `SERVICE` and `ENV`: every monitor
+watches one deployment only (see "`service`" below).
 
 **Do not skip that.** Datadog does not validate notification handles: a monitor
 carrying the placeholder imports cleanly, shows as healthy in the UI, triggers
@@ -134,31 +134,34 @@ than a panel does: an alert over a percentile that is not enabled evaluates
 against no series and sits healthy for ever. Check them after enabling
 percentiles, not before.
 
-**`env` is a filter, not a grouping.** The dashboard's `$env` variable defaults
-to `*` and works whether or not anything sets it. The monitors are **scoped**
-to one deployment, never grouped by `env`: every query filters on
-`service:REPLACE-WITH-SERVICE,env:REPLACE-WITH-ENV`, which `apply.sh` replaces
-with `SERVICE` and `ENV`, and the name carries the env too, so each
-deployment imports its own copy. Without that, any
-deployment reporting `switch-core` into the same org (a test slot, staging, a
-developer's server) could fire production's alerts: an ordinary restart of a
-test server reads as "switch-core has stopped reporting".
+**Monitors are scoped by `service`, never by `env`.** The `env` tag Datadog
+shows on these metrics is set downstream of Core, not from the deployment's
+`ENVIRONMENT`: one deployment's points have
+been seen under several `env` values at once. So `env` can't separate
+deployments, and a monitor scoped by it could watch the wrong ones or nothing.
+`service` (the deployment's `SERVICE_NAME`, sent as OTLP's `service.name`) is
+the one tag Core sets that Datadog keeps, so every query filters on
+`service:REPLACE-WITH-SERVICE`, which `apply.sh` replaces with `SERVICE`.
+**Give every deployment its own `SERVICE_NAME`** (for example
+`switch-core-prod`, `switch-core-staging`); two deployments sharing one would
+share their alerts. `apply.sh` refuses the default `switch-core` unless
+`ALLOW_DEFAULT_SERVICE=1` is set, for the one deployment meant to keep it.
+
+`ENV` still names each copy (`[Switch <env>] …`) and tags it, so each
+deployment imports its own set and they never overwrite each other. Without
+the scoping, any deployment reporting into the same org (a test slot,
+staging, a developer's server) could fire production's alerts: an ordinary
+restart of a test server reads as "switch-core has stopped reporting".
 
 **Monitors imported before this change** are named `[Switch] …` with no
 environment, so the first import with `ENV` creates new ones beside them
 rather than updating them. Delete the old ones by hand after that import, or
 both copies alert.
 
-So **set `ENVIRONMENT` on every deployment that reports metrics**, before
-importing. The tag only exists when it is set (it becomes OTLP's
-`deployment.environment`, which Datadog reads as `env`). A monitor scoped to an
-`env` no data carries sees nothing: the no-data canary fires at once, which
-says so, and every other monitor sits quiet.
-
-**`service` is one of the two tags everything depends on.** Every monitor
-filters on the deployment's `service` (its `SERVICE_NAME`, `switch-core` unless
-set). Import with the `SERVICE` it really sends: a wrong one leaves every
-monitor silent at once, apart from the no-data canary.
+**`service` is the tag everything depends on.** Import with the `SERVICE` the
+deployment really sends: a wrong one leaves every monitor silent at once,
+apart from the no-data canary, which fires and says so. The dashboard's
+`$env` variable is a convenience filter only; pick by `$service`.
 
 ## The odd-looking first monitor
 
