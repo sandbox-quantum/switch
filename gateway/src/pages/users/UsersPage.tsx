@@ -15,7 +15,7 @@ import { useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import type { ListedUser } from "../../data/api";
 import { useUsers } from "../../data/hooks";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 import CreateUserDialog from "./CreateUserDialog";
 import DeleteUserDialog from "./DeleteUserDialog";
 

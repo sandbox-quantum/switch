@@ -16,7 +16,7 @@ export function brandSvg(slug: string): string | undefined {
   return svgBySlug.get(slug)?.replace(/<svg(?=[\s>])/, '<svg width="100%" height="100%"');
 }
 
-const FOREGROUND = "var(--hoot-foreground)";
+const FOREGROUND = "var(--sw-foreground)";
 
 /** The single-colour marks draw in `currentColor`. Each takes its brand
  *  colour, except on the scheme where that colour would vanish into the tile:

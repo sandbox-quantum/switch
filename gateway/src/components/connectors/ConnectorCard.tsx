@@ -68,10 +68,10 @@ export default function ConnectorCard({
         alignItems: "flex-start",
         gap: 1.5,
         p: 2,
-        border: "1px solid var(--hoot-border)",
+        border: "1px solid var(--sw-border)",
         borderRadius: "10px",
-        backgroundColor: "var(--hoot-card)",
-        ...(onOpen && { transition: "background-color 150ms", "&:hover": { backgroundColor: "var(--hoot-muted)" } }),
+        backgroundColor: "var(--sw-card)",
+        ...(onOpen && { transition: "background-color 150ms", "&:hover": { backgroundColor: "var(--sw-muted)" } }),
       }}
     >
       <BrandTile slug={connector.slug} name={connector.name} size={56} />
@@ -93,7 +93,7 @@ export default function ConnectorCard({
               // The focus ring goes round the card it opens, not the text.
               "&.Mui-focusVisible, &:focus-visible": { outline: "none" },
               "&.Mui-focusVisible::after, &:focus-visible::after": {
-                outline: "2px solid var(--hoot-ring)",
+                outline: "2px solid var(--sw-ring)",
                 outlineOffset: "2px",
               },
             }}

@@ -41,7 +41,7 @@ export default function ConnectorAvailability({
       <Typography
         variant="body2"
         aria-hidden
-        sx={{ fontWeight: 500, color: available ? "var(--hoot-success-text)" : "var(--hoot-muted-foreground)" }}
+        sx={{ fontWeight: 500, color: available ? "var(--sw-success-text)" : "var(--sw-muted-foreground)" }}
       >
         {word}
       </Typography>
@@ -52,7 +52,7 @@ export default function ConnectorAvailability({
           slotProps={{ input: { "aria-label": `${connectorName} available in ${scopeName}` } }}
           // On is the green the word beside it uses: here the switch is a
           // status as much as a control.
-          sx={{ "& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track": { backgroundColor: "var(--hoot-success)" } }}
+          sx={{ "& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track": { backgroundColor: "var(--sw-success)" } }}
         />
       ) : (
         <Box component="span" sx={SCREEN_READER_ONLY}>

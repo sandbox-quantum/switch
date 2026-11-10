@@ -1,6 +1,6 @@
-/* Generates `src/theme/hoot-tokens.ts` from `src/theme/hoot.css`.
+/* Generates `src/theme/tokens.ts` from `src/theme/tokens.css`.
  *
- * `hoot.css` is vendored verbatim from the Hoot design system and is the single
+ * `tokens.css` is copied from the design prototype's token file and is the single
  * source of truth for token values. Its colours are authored in oklch, often as
  * var() references to other tokens or color-mix() washes of them, none of which
  * MUI's colour manipulators (alpha/lighten/darken/contrast) can parse, so the
@@ -14,8 +14,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CSS_PATH = resolve(HERE, "../src/theme/hoot.css");
-const OUT_PATH = resolve(HERE, "../src/theme/hoot-tokens.ts");
+const CSS_PATH = resolve(HERE, "../src/theme/tokens.css");
+const OUT_PATH = resolve(HERE, "../src/theme/tokens.ts");
 
 /** oklch(L C H [/ A]) -> { L, C, H, alpha }. Throws on anything else. */
 function parseOklch(raw) {
@@ -66,13 +66,13 @@ function toSrgb({ L, C, H, alpha }) {
 
 const OVERRIDE_SELECTOR = ':root, [data-mui-color-scheme="light"], [data-mui-color-scheme="dark"]';
 
-/** Every top-level block in the file: its selector and its `--hoot-*` declarations. */
+/** Every top-level block in the file: its selector and its `--sw-*` declarations. */
 function readBlocks(css) {
   const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
   const blocks = [];
   for (const match of withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const tokens = {};
-    for (const decl of match[2].matchAll(/--hoot-([a-z0-9_-]+)\s*:\s*([^;]+);/g)) {
+    for (const decl of match[2].matchAll(/--sw-([a-z0-9_-]+)\s*:\s*([^;]+);/g)) {
       tokens[decl[1]] = decl[2].replace(/\s+/g, " ").trim();
     }
     blocks.push({ selector: match[1].replace(/\s+/g, " ").trim(), tokens });
@@ -100,20 +100,20 @@ function schemeScopes(blocks) {
   }
   const unexpected = blocks.filter((b) => ![...light, ...dark, ...shared, ...overrides].includes(b));
   if (unexpected.length > 0) {
-    throw new Error(`unexpected selector(s) in hoot.css: ${unexpected.map((b) => b.selector).join(", ")}`);
+    throw new Error(`unexpected selector(s) in tokens.css: ${unexpected.map((b) => b.selector).join(", ")}`);
   }
 
   const sharedTokens = {};
   for (const block of shared) {
     for (const [name, value] of Object.entries(block.tokens)) {
-      if (name in sharedTokens) throw new Error(`--hoot-${name} is declared in two :root blocks`);
+      if (name in sharedTokens) throw new Error(`--sw-${name} is declared in two :root blocks`);
       sharedTokens[name] = value;
     }
   }
   for (const scheme of [light[0], dark[0]]) {
     const clash = Object.keys(scheme.tokens).filter((name) => name in sharedTokens);
     if (clash.length > 0) {
-      throw new Error(`declared both per scheme and in :root: ${clash.map((n) => `--hoot-${n}`).join(", ")}`);
+      throw new Error(`declared both per scheme and in :root: ${clash.map((n) => `--sw-${n}`).join(", ")}`);
     }
   }
 
@@ -121,7 +121,7 @@ function schemeScopes(blocks) {
   for (const block of overrides) {
     for (const [name, value] of Object.entries(block.tokens)) {
       if (!(name in light[0].tokens || name in sharedTokens)) {
-        throw new Error(`--hoot-${name} is overridden but upstream does not declare it`);
+        throw new Error(`--sw-${name} is overridden but upstream does not declare it`);
       }
       overrideTokens[name] = value;
     }
@@ -141,14 +141,14 @@ function schemeScopes(blocks) {
  * can never be silently dropped.
  */
 function resolveColour(scope, name, seen = []) {
-  if (seen.includes(name)) throw new Error(`var() cycle: ${[...seen, name].map((n) => `--hoot-${n}`).join(" -> ")}`);
+  if (seen.includes(name)) throw new Error(`var() cycle: ${[...seen, name].map((n) => `--sw-${n}`).join(" -> ")}`);
   const raw = scope[name];
-  if (raw === undefined) throw new Error(`--hoot-${seen.at(-1)} refers to undefined --hoot-${name}`);
+  if (raw === undefined) throw new Error(`--sw-${seen.at(-1)} refers to undefined --sw-${name}`);
   return resolveValue(scope, raw, [...seen, name]);
 }
 
 function resolveValue(scope, raw, seen) {
-  const ref = /^var\(--hoot-([a-z0-9_-]+)\)$/.exec(raw);
+  const ref = /^var\(--sw-([a-z0-9_-]+)\)$/.exec(raw);
   if (ref) return resolveColour(scope, ref[1], seen);
 
   const mix = /^color-mix\(in oklch,\s*(.+?)\s+([\d.]+)%,\s*transparent\)$/.exec(raw);
@@ -220,7 +220,7 @@ function emit(scope) {
     .join("\n");
 }
 
-/** The contents of `hoot-tokens.ts` for the given `hoot.css`. */
+/** The contents of `tokens.ts` for the given `tokens.css`. */
 export function generateTokens(css) {
   const scopes = schemeScopes(readBlocks(css));
   const light = emit(scopes.light);
@@ -230,28 +230,28 @@ export function generateTokens(css) {
     throw new Error("the light and dark schemes resolve to different sets of colour tokens");
   }
 
-  return `/* GENERATED by scripts/gen-hoot-tokens.mjs from src/theme/hoot.css — do not edit.
-   hoot.css is the source of truth; these are its colour tokens resolved per
+  return `/* GENERATED by scripts/gen-tokens.mjs from src/theme/tokens.css — do not edit.
+   tokens.css is the source of truth; these are its colour tokens resolved per
    scheme and converted to sRGB, because MUI's palette and colour manipulators
    cannot parse oklch, var() or color-mix().
    Regenerate with: npm run gen:tokens */
 
-export const HOOT_LIGHT = {
+export const TOKENS_LIGHT = {
 ${light}
 } as const;
 
-export const HOOT_DARK = {
+export const TOKENS_DARK = {
 ${dark}
 } as const;
 
-export type HootColorToken = keyof typeof HOOT_LIGHT;
+export type ColorToken = keyof typeof TOKENS_LIGHT;
 
-/** Reference a Hoot token as a live CSS variable (follows the active scheme). */
-export const hootVar = (token: string) => \`var(--hoot-\${token})\`;
+/** Reference a token as a live CSS variable (follows the active scheme). */
+export const tokenVar = (token: string) => \`var(--sw-\${token})\`;
 `;
 }
 
-/** What `hoot.css` generates beside the checked-in `hoot-tokens.ts`, read
+/** What `tokens.css` generates beside the checked-in `tokens.ts`, read
  *  here because the gateway's tests have no Node types to read them with. */
 export function currentTokens() {
   return {

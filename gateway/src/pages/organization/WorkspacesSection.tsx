@@ -20,7 +20,7 @@ import {
   createOrganizationWorkspace,
   fetchOrganizationWorkspaces,
 } from "../../data/api";
-import { sentenceCase } from "../../theme/hootFormat";
+import { sentenceCase } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 
 interface Props {

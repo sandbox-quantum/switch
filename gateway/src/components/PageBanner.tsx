@@ -16,10 +16,10 @@ const TONES = {
   neutral: {
     severity: "info",
     icon: <InfoOutlined fontSize="small" />,
-    iconColor: "var(--hoot-muted-foreground)",
-    borderColor: "var(--hoot-border)",
-    backgroundColor: "var(--hoot-muted)",
-    color: "var(--hoot-foreground)",
+    iconColor: "var(--sw-muted-foreground)",
+    borderColor: "var(--sw-border)",
+    backgroundColor: "var(--sw-muted)",
+    color: "var(--sw-foreground)",
   },
 } as const;
 

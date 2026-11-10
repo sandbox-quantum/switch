@@ -8,7 +8,7 @@ import type { TemplateSummary } from "../../data/api";
 import { useTemplates } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
 import { formatBytes } from "./templateFormat";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 interface Props {
   refreshKey: number;

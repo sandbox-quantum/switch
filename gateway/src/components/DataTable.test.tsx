@@ -86,7 +86,7 @@ describe("DataTable toolbar", () => {
     const { container } = render(table());
     const header = getComputedStyle(container.querySelector(".MuiDataGrid-columnHeaders") as HTMLElement);
 
-    expect(header.backgroundColor).toBe("var(--hoot-card)");
+    expect(header.backgroundColor).toBe("var(--sw-card)");
     expect(header.backgroundImage).toContain("var(--table-band)");
   });
 

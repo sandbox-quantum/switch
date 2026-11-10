@@ -25,7 +25,7 @@ import {
   signInAfterAccessEnded,
   updateOrganizationRole,
 } from "../../data/api";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 
 type MemberRow = OrganizationMember & { id: string };

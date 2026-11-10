@@ -24,7 +24,7 @@ import { useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { type ApiKeyDetail, deleteApiKey, revealApiKey } from "../../data/api";
 import { useApiKeys } from "../../data/hooks";
-import { MONO_SX, formatDate } from "../../theme/hootFormat";
+import { MONO_SX, formatDate } from "../../theme/format";
 import CreateKeyDialog from "./CreateKeyDialog";
 import { formatKeyExpiry } from "./keyExpiry";
 

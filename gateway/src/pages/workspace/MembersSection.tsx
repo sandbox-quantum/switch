@@ -21,7 +21,7 @@ import {
   removeMember,
   updateMemberRole,
 } from "../../data/api";
-import { formatDate, sentenceCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase } from "../../theme/format";
 import { useLoad } from "./useLoad";
 
 type MemberRow = Member & { id: string };

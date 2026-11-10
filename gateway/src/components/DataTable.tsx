@@ -92,29 +92,29 @@ interface DataTableProps<T extends { id: string | number }> {
   emptyState?: ReactNode;
 }
 
-/** A hovered or selected row is a lighter wash than Hoot's muted fill, which
+/** A hovered or selected row is a lighter wash than the muted fill, which
  *  is also a grey chip's, so a chip in the row keeps its edge. Opaque, so a
  *  pinned cell can take it too. */
-const ROW_HOVER = "color-mix(in oklch, var(--hoot-muted) 50%, var(--hoot-card))";
-const ROW_SELECTED = "color-mix(in oklch, var(--hoot-muted) 75%, var(--hoot-card))";
+const ROW_HOVER = "color-mix(in oklch, var(--sw-muted) 50%, var(--sw-card))";
+const ROW_SELECTED = "color-mix(in oklch, var(--sw-muted) 75%, var(--sw-card))";
 
-/** Hoot's grid treatment: a bordered 16px-radius surface with a cream header
+/** The grid treatment: a bordered 16px-radius surface with a cream header
  *  band, generous 52px rows, and tabular figures so numeric columns line up.
- *  Ported from the Hoot design system's DataTable. */
-const HOOT_GRID_SX: SxProps<Theme> = {
-  border: "1px solid var(--hoot-border)",
-  // The header and footer band: Hoot's cream wash, half as strong in dark
+ *  Ported from the design prototype's DataTable. */
+const GRID_SX: SxProps<Theme> = {
+  border: "1px solid var(--sw-border)",
+  // The header and footer band: the cream wash, half as strong in dark
   // mode, where the full wash lifts the band a step above the table.
-  "--table-band": "var(--hoot-cream)",
-  '[data-mui-color-scheme="dark"] &': { "--table-band": "color-mix(in oklch, var(--hoot-cream) 50%, transparent)" },
+  "--table-band": "var(--sw-cream)",
+  '[data-mui-color-scheme="dark"] &': { "--table-band": "color-mix(in oklch, var(--sw-cream) 50%, transparent)" },
   borderRadius: "16px",
-  "--DataGrid-rowBorderColor": "var(--hoot-border)",
+  "--DataGrid-rowBorderColor": "var(--sw-border)",
   // The band is painted on the header row and the cells let it through: the
   // grid paints each header cell with its own opaque background otherwise.
   // Cream is a wash, so it is laid over the card fill: the header stays put
   // while the rows scroll under it, and must hide them.
   "& .MuiDataGrid-columnHeaders": {
-    backgroundColor: "var(--hoot-card)",
+    backgroundColor: "var(--sw-card)",
     backgroundImage: "linear-gradient(var(--table-band), var(--table-band))",
   },
   "& .MuiDataGrid-columnHeader, & .MuiDataGrid-columnHeaders .MuiDataGrid-filler": {
@@ -141,28 +141,28 @@ const HOOT_GRID_SX: SxProps<Theme> = {
     minHeight: 52,
     fontSize: "0.9375rem",
     fontVariantNumeric: "tabular-nums",
-    borderTopColor: "var(--hoot-border)",
+    borderTopColor: "var(--sw-border)",
   },
   "& .MuiDataGrid-footerContainer": {
     backgroundColor: "var(--table-band)",
     // The hairline is drawn inside the footer, so it stays the 52px pages
     // count rather than 52px plus a border.
     borderTop: "none",
-    boxShadow: "inset 0 1px 0 var(--hoot-border)",
+    boxShadow: "inset 0 1px 0 var(--sw-border)",
     borderBottomLeftRadius: "16px",
     borderBottomRightRadius: "16px",
   },
   "& .MuiDataGrid-columnSeparator": { display: "none" },
   "& .MuiDataGrid-cell:focus, & .MuiDataGrid-cell:focus-within, & .MuiDataGrid-columnHeader:focus, & .MuiDataGrid-columnHeader:focus-within":
-    { outline: "2px solid var(--hoot-ring)", outlineOffset: "-2px" },
+    { outline: "2px solid var(--sw-ring)", outlineOffset: "-2px" },
   "& .MuiDataGrid-overlay": {
     fontSize: "0.875rem",
-    color: "var(--hoot-muted-foreground)",
+    color: "var(--sw-muted-foreground)",
     backgroundColor: "transparent",
   },
 };
 
-const FILTERABLE = "hoot-filterable";
+const FILTERABLE = "table-filterable";
 
 /** A table that filters its own rows keeps a filterable column's menu button
  *  in view, faintly, since that menu is where the column is filtered. Other
@@ -181,7 +181,7 @@ const ROW_HEIGHT = 52;
  *  empty table has no footer: there is nothing to page through. */
 const EMPTY_TABLE_HEIGHT = HEADER_HEIGHT + 2 * ROW_HEIGHT;
 
-const PINNED = "hoot-pinned-right";
+const PINNED = "table-pinned-right";
 
 /** The default for `pinnedRight`, kept stable: a fresh `[]` on every render
  *  would rebuild the grid's columns, and the grid would rebuild its whole
@@ -197,11 +197,11 @@ const PINNED_SX: SxProps<Theme> = {
   [`& .${PINNED}`]: {
     position: "sticky",
     zIndex: 1,
-    backgroundColor: "var(--hoot-card)",
-    boxShadow: "inset 1px 0 0 var(--hoot-border)",
+    backgroundColor: "var(--sw-card)",
+    boxShadow: "inset 1px 0 0 var(--sw-border)",
   },
   [`& .MuiDataGrid-columnHeader.${PINNED}`]: {
-    background: "linear-gradient(var(--table-band), var(--table-band)), var(--hoot-card)",
+    background: "linear-gradient(var(--table-band), var(--table-band)), var(--sw-card)",
   },
   [`& .MuiDataGrid-row:hover .${PINNED}`]: { backgroundColor: ROW_HOVER },
   [`& .MuiDataGrid-row.Mui-selected .${PINNED}`]: { backgroundColor: ROW_SELECTED },
@@ -494,7 +494,7 @@ export default function DataTable<T extends { id: string | number }>({
         },
       }}
       sx={[
-        HOOT_GRID_SX,
+        GRID_SX,
         ...(ownFiltering ? [OWN_FILTERING_SX] : []),
         ...pinnedSx,
         fillHeight
@@ -575,7 +575,7 @@ export default function DataTable<T extends { id: string | number }>({
               component="button"
               underline="always"
               onClick={() => setSelection({})}
-              sx={{ fontSize: "0.875rem", color: "var(--hoot-muted-foreground)" }}
+              sx={{ fontSize: "0.875rem", color: "var(--sw-muted-foreground)" }}
             >
               Clear filters
             </Link>
@@ -604,7 +604,7 @@ export default function DataTable<T extends { id: string | number }>({
             {filterOptions(pickerColumn, rows).map((option) => (
               <FormControlLabel
                 key={option.value}
-                sx={{ mx: 0, px: 1, borderRadius: 1.5, "&:hover": { backgroundColor: "var(--hoot-accent)" } }}
+                sx={{ mx: 0, px: 1, borderRadius: 1.5, "&:hover": { backgroundColor: "var(--sw-accent)" } }}
                 control={
                   <Checkbox
                     size="small"
@@ -628,19 +628,19 @@ export default function DataTable<T extends { id: string | number }>({
   );
 }
 
-/** A picked filter, as Hoot's filter chip: the column in the label's weight,
+/** A picked filter, as the design system's filter chip: the column in the label's weight,
  *  the value bold, on the muted fill with a small cross. */
 const FILTER_CHIP_SX: SxProps<Theme> = {
   height: 34,
   borderRadius: "12px",
-  backgroundColor: "var(--hoot-muted)",
-  color: "var(--hoot-foreground)",
+  backgroundColor: "var(--sw-muted)",
+  color: "var(--sw-foreground)",
   fontSize: "0.875rem",
   fontWeight: 500,
   "& .MuiChip-label": { pl: 1.5, pr: 1 },
   "& strong": { fontWeight: 700 },
-  "& .MuiChip-deleteIcon": { fontSize: 16, color: "var(--hoot-muted-foreground)", mr: 1, ml: -0.5 },
-  "&:hover, &:focus-visible": { backgroundColor: "var(--hoot-accent)" },
+  "& .MuiChip-deleteIcon": { fontSize: 16, color: "var(--sw-muted-foreground)", mr: 1, ml: -0.5 },
+  "&:hover, &:focus-visible": { backgroundColor: "var(--sw-accent)" },
 };
 
 /** Quick filters share a text field's 36px height and hairline so the toolbar
@@ -649,15 +649,15 @@ const QUICK_FILTER_SX: SxProps<Theme> = {
   height: 36,
   px: 1.5,
   borderRadius: "8px",
-  borderColor: "var(--hoot-field-border)",
-  color: "var(--hoot-foreground)",
+  borderColor: "var(--sw-field-border)",
+  color: "var(--sw-foreground)",
   fontSize: "0.875rem",
   fontWeight: 500,
   textTransform: "none",
   "&.Mui-selected, &.Mui-selected:hover": {
-    backgroundColor: "var(--hoot-primary-muted)",
-    borderColor: "var(--hoot-primary-border)",
-    color: "var(--hoot-foreground)",
+    backgroundColor: "var(--sw-primary-muted)",
+    borderColor: "var(--sw-primary-border)",
+    color: "var(--sw-foreground)",
   },
 };
 

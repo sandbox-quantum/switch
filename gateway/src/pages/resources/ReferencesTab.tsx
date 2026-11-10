@@ -7,7 +7,7 @@ import { AccessChip } from "../../components/AccessControls";
 import type { ReferenceDetail } from "../../data/api";
 import { useReferences, useReferenceTypes } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 interface Props {
   refreshKey: number;

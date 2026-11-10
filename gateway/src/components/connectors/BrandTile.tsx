@@ -22,10 +22,10 @@ export default function BrandTile({ slug, name, size }: { slug: string; name: st
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        border: "1px solid var(--hoot-border)",
+        border: "1px solid var(--sw-border)",
         borderRadius: size >= 48 ? "12px" : "10px",
-        backgroundColor: "var(--hoot-muted)",
-        color: "var(--hoot-muted-foreground)",
+        backgroundColor: "var(--sw-muted)",
+        color: "var(--sw-muted-foreground)",
         fontSize: Math.round(size * 0.36),
         fontWeight: 600,
       }}

@@ -56,7 +56,7 @@ import {
   channelTypeLabel,
   formatDateTime,
   sentenceCase,
-} from "../../theme/hootFormat";
+} from "../../theme/format";
 import RoomAutoRouteSection from "./RoomAutoRouteSection";
 import RoomGroupSection from "./RoomGroupSection";
 import RoomGraphView from "./RoomGraphView";
@@ -939,22 +939,22 @@ const STATUS_META: Record<
 > = {
   live: {
     label: "Live",
-    color: "var(--hoot-success)",
+    color: "var(--sw-success)",
     description: "Connected and receiving events",
   },
   awaiting_manual_poll: {
     label: "Idle",
-    color: "var(--hoot-warning)",
+    color: "var(--sw-warning)",
     description: "Session open — awaiting manual poll",
   },
   no_session: {
     label: "No session",
-    color: "var(--hoot-muted-foreground)",
+    color: "var(--sw-muted-foreground)",
     description: "Not currently connected to this room",
   },
   disconnected: {
     label: "Disconnected",
-    color: "var(--hoot-destructive)",
+    color: "var(--sw-destructive)",
     description: "Always-on agent is not connected",
   },
 };
@@ -978,7 +978,7 @@ function AgentRow({
   const navigate = useNavigate();
   const meta = (status && STATUS_META[status]) || {
     label: status ? sentenceCase(status) : "Unknown",
-    color: "var(--hoot-muted-foreground)",
+    color: "var(--sw-muted-foreground)",
     description: "",
   };
   return (

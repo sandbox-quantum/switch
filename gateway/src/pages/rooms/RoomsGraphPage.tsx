@@ -248,7 +248,7 @@ export default function RoomsGraphPage() {
               p: 1.25,
               borderRadius: "12px",
               backgroundColor: "background.paper",
-              boxShadow: "var(--hoot-shadow-popover)",
+              boxShadow: "var(--sw-shadow-popover)",
               border: "1px solid",
               borderColor: "divider",
               maxWidth: 220,

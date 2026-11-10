@@ -2,7 +2,7 @@ import { Checkbox, FormControlLabel, Menu, MenuItem, Stack, Switch, TextField, T
 import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it } from "vitest";
-import { APP_THEME, HOOT_ELEVATION } from "./theme";
+import { APP_THEME, ELEVATION } from "./theme";
 
 const labelled = (control: ReactElement, labelPlacement?: "start") =>
   render(
@@ -49,8 +49,8 @@ describe("theme", () => {
     );
     const paper = getComputedStyle(screen.getByRole("menu").closest(".MuiPaper-root") as HTMLElement);
 
-    expect(paper.backgroundColor).toBe("var(--hoot-popover)");
-    expect(paper.boxShadow.replace(/,\s*/g, ", ")).toBe(HOOT_ELEVATION.popover);
+    expect(paper.backgroundColor).toBe("var(--sw-popover)");
+    expect(paper.boxShadow.replace(/,\s*/g, ", ")).toBe(ELEVATION.popover);
   });
 
   it("leaves a checkbox's label as MUI lays it out", () => {

@@ -1,7 +1,7 @@
 import { createTheme } from "@mui/material";
 import type { PaletteOptions, Shadows, Theme } from "@mui/material";
 import type {} from "@mui/x-data-grid/themeAugmentation";
-import { HOOT_DARK, HOOT_LIGHT, hootVar } from "./hoot-tokens";
+import { TOKENS_DARK, TOKENS_LIGHT, tokenVar } from "./tokens";
 
 declare module "@mui/material/styles" {
   interface TypeBackground {
@@ -15,7 +15,7 @@ declare module "@mui/material/styles" {
 }
 
 /** Identity tint — Switch's own accent, used for avatars and org badges only.
- *  Hoot has no brand accent: `primary` is a near-black reserved for the single
+ *  The design system has no brand accent: `primary` is a near-black reserved for the single
  *  primary action per view (DESIGN.md, "Colors"). */
 export const IDENTITY_TINT = "#A1C9D2";
 
@@ -32,7 +32,7 @@ const RADIUS_XL = 16;
  *  MUI's 25 elevation slots so nothing can stack heavier shadows to fake importance. */
 const SURFACE = "0 0 12px 0 rgb(0 0 0 / 0.04)";
 const CARD = "0 1px 2px 0 rgb(0 0 0 / 0.04)";
-/** Firmer than Hoot's own popover glow: a menu shares the card's fill, so
+/** Firmer than the design system's own popover glow: a menu shares the card's fill, so
  *  over a table of the same colour only its shadow sets it apart. */
 const POPOVER = "0 2px 6px 0 rgb(0 0 0 / 0.08), 0 10px 28px 0 rgb(0 0 0 / 0.14)";
 const MODAL = "0 0 8px 0 rgb(0 0 0 / 0.12), 0 8px 32px 0 rgb(0 0 0 / 0.12)";
@@ -61,14 +61,14 @@ export const statusTone = (tone: StatusTone) => ({
  *  a firm edge and a shadow set them apart from what they cover. */
 const floating = (theme: Theme) => ({
   borderRadius: RADIUS_LG,
-  border: `1px solid ${hootVar("field-border")}`,
-  backgroundColor: hootVar("popover"),
+  border: `1px solid ${tokenVar("field-border")}`,
+  backgroundColor: tokenVar("popover"),
   backgroundImage: "none",
   boxShadow: POPOVER,
   ...theme.applyStyles("dark", { boxShadow: POPOVER_DARK }),
 });
 
-const HOOT_SHADOWS = [
+const SHADOWS = [
   "none",
   CARD,
   SURFACE,
@@ -77,19 +77,19 @@ const HOOT_SHADOWS = [
   ...Array<string>(20).fill(MODAL),
 ] as unknown as Shadows;
 
-type HootTokens = { [K in keyof typeof HOOT_LIGHT]: string };
+type Tokens = { [K in keyof typeof TOKENS_LIGHT]: string };
 
-const palette = (t: HootTokens, mode: "light" | "dark"): PaletteOptions => ({
+const palette = (t: Tokens, mode: "light" | "dark"): PaletteOptions => ({
   mode,
   contrastThreshold: 4.5,
   primary: { main: t.primary, contrastText: t.primaryForeground },
   secondary: { main: t.secondary, contrastText: t.secondaryForeground },
   // Red as text and icons is the darker-in-light, lighter-in-dark mix, which
-  // reads at small sizes in both schemes; a filled button keeps Hoot's red
+  // reads at small sizes in both schemes; a filled button keeps the design system's red
   // (see MuiButton).
   error: { main: t.destructiveText, contrastText: t.destructiveForeground },
   success: { main: t.success, contrastText: t.successForeground },
-  // Hoot pairs brand black, never white, with its orange.
+  // The design system pairs brand black, never white, with its orange.
   warning: { main: t.warning, contrastText: t.brandBlack },
   background: {
     default: t.background,
@@ -98,7 +98,7 @@ const palette = (t: HootTokens, mode: "light" | "dark"): PaletteOptions => ({
     nav: t.sidebar,
     surface: t.surface,
   },
-  // Disabled text is Hoot's disabled-field grey, not the secondary text
+  // Disabled text is the disabled-field grey, not the secondary text
   // colour: a control that is disabled has to look it, since "disabled, with
   // the reason" is how the gateway shows an action the viewer may not take.
   text: { primary: t.foreground, secondary: t.mutedForeground, disabled: t.fieldDisabledForeground },
@@ -108,7 +108,7 @@ const palette = (t: HootTokens, mode: "light" | "dark"): PaletteOptions => ({
 /** Every focusable control carries a visible ring (DESIGN.md §12). */
 const focusRing = {
   "&.Mui-focusVisible, &:focus-visible": {
-    outline: `2px solid ${hootVar("ring")}`,
+    outline: `2px solid ${tokenVar("ring")}`,
     outlineOffset: "2px",
   },
 } as const;
@@ -135,11 +135,11 @@ export const APP_THEME = () =>
     cssVariables: { colorSchemeSelector: "data-mui-color-scheme" },
     defaultColorScheme: "light",
     colorSchemes: {
-      light: { palette: palette(HOOT_LIGHT, "light") },
-      dark: { palette: palette(HOOT_DARK, "dark") },
+      light: { palette: palette(TOKENS_LIGHT, "light") },
+      dark: { palette: palette(TOKENS_DARK, "dark") },
     },
     shape: { borderRadius: RADIUS },
-    shadows: HOOT_SHADOWS,
+    shadows: SHADOWS,
     typography: {
       fontFamily: FONT_SANS,
       // Hierarchy comes from weight and a tight ramp, not size jumps (DESIGN.md).
@@ -148,7 +148,7 @@ export const APP_THEME = () =>
       h3: { fontSize: "1.1875rem", lineHeight: "1.75rem", fontWeight: 600, letterSpacing: "-0.02em" },
       h4: { fontSize: "1.0625rem", lineHeight: "1.625rem", fontWeight: 600, letterSpacing: "-0.02em" },
       // Gateway's existing convention is h5 for a page title and h6 for a
-      // section title, so those two variants carry Hoot's page and section
+      // section title, so those two variants carry the design system's page and section
       // rungs rather than continuing the ramp downwards.
       h5: { fontSize: "1.8125rem", lineHeight: "2.25rem", fontWeight: 700, letterSpacing: "-0.02em" },
       h6: { fontSize: "1.1875rem", lineHeight: "1.75rem", fontWeight: 600, letterSpacing: "-0.02em" },
@@ -171,7 +171,7 @@ export const APP_THEME = () =>
     components: {
       MuiCssBaseline: {
         styleOverrides: {
-          body: { backgroundColor: hootVar("canvas") },
+          body: { backgroundColor: tokenVar("canvas") },
           // Monospace is reserved for identifiers, hashes, IPs and code.
           "code, kbd, samp, pre, .mono": { fontFamily: FONT_MONO },
           // Numbers in tables and metrics line up.
@@ -201,20 +201,20 @@ export const APP_THEME = () =>
               {
                 props: { variant: "outlined" },
                 style: {
-                  borderColor: hootVar("input"),
-                  backgroundColor: hootVar("card"),
-                  color: hootVar("foreground"),
+                  borderColor: tokenVar("input"),
+                  backgroundColor: tokenVar("card"),
+                  color: tokenVar("foreground"),
                   boxShadow: CARD,
-                  "&:hover": { borderColor: hootVar("input"), backgroundColor: hootVar("accent") },
+                  "&:hover": { borderColor: tokenVar("input"), backgroundColor: tokenVar("accent") },
                 },
               },
-              { props: { variant: "outlined", color: "inherit" }, style: { borderColor: hootVar("input") } },
+              { props: { variant: "outlined", color: "inherit" }, style: { borderColor: tokenVar("input") } },
               {
                 props: { variant: "contained", color: "error" },
                 style: {
-                  backgroundColor: hootVar("destructive"),
-                  color: hootVar("destructive-foreground"),
-                  "&:hover": { backgroundColor: hootVar("destructive") },
+                  backgroundColor: tokenVar("destructive"),
+                  color: tokenVar("destructive-foreground"),
+                  "&:hover": { backgroundColor: tokenVar("destructive") },
                 },
               },
             ],
@@ -226,14 +226,14 @@ export const APP_THEME = () =>
         styleOverrides: {
           root: {
             borderRadius: RADIUS,
-            borderColor: hootVar("border"),
-            backgroundColor: hootVar("card"),
+            borderColor: tokenVar("border"),
+            backgroundColor: tokenVar("card"),
             boxShadow: CARD,
             backgroundImage: "none",
           },
         },
       },
-      // Hoot's Badge: a small rounded pill driven by a semantic variant, never
+      // The design system's Badge: a small rounded pill driven by a semantic variant, never
       // a hand-picked colour.
       MuiChip: {
         styleOverrides: {
@@ -252,9 +252,9 @@ export const APP_THEME = () =>
               {
                 props: { variant: "filled", color: "default" },
                 style: {
-                  backgroundColor: hootVar("muted"),
-                  color: hootVar("muted-foreground"),
-                  boxShadow: `inset 0 0 0 1px color-mix(in oklch, ${hootVar("foreground")} 14%, transparent)`,
+                  backgroundColor: tokenVar("muted"),
+                  color: tokenVar("muted-foreground"),
+                  boxShadow: `inset 0 0 0 1px color-mix(in oklch, ${tokenVar("foreground")} 14%, transparent)`,
                 },
               },
               ...(["success", "warning", "error", "info"] as const).map((tone) => ({
@@ -263,7 +263,7 @@ export const APP_THEME = () =>
               })),
             ],
           },
-          outlined: { borderColor: hootVar("border"), backgroundColor: "transparent" },
+          outlined: { borderColor: tokenVar("border"), backgroundColor: "transparent" },
         },
       },
       // A banner's edge is its tone a step darker than its wash, as a status
@@ -280,13 +280,13 @@ export const APP_THEME = () =>
           },
         },
       },
-      MuiDivider: { styleOverrides: { root: { borderColor: hootVar("border") } } },
+      MuiDivider: { styleOverrides: { root: { borderColor: tokenVar("border") } } },
       MuiDrawer: {
         defaultProps: {
           elevation: 0,
-          slotProps: { backdrop: { sx: { backgroundColor: hootVar("overlay") } } },
+          slotProps: { backdrop: { sx: { backgroundColor: tokenVar("overlay") } } },
         },
-        styleOverrides: { paper: { backgroundColor: hootVar("canvas"), borderRight: "none" } },
+        styleOverrides: { paper: { backgroundColor: tokenVar("canvas"), borderRight: "none" } },
       },
       // Modals rest above a dimmed backdrop. Scoped to Dialog and Drawer —
       // menus and popovers mount an invisible backdrop that must stay invisible.
@@ -294,17 +294,17 @@ export const APP_THEME = () =>
         defaultProps: {
           slotProps: {
             backdrop: {
-              // Hoot's overlay is its warm black at 60%, which barely dims a
+              // The design system's overlay is its warm black at 60%, which barely dims a
               // page that is already near-black; dark mode dims with black.
               sx: (theme: Theme) => ({
-                backgroundColor: hootVar("overlay"),
+                backgroundColor: tokenVar("overlay"),
                 ...theme.applyStyles("dark", { backgroundColor: "rgb(0 0 0 / 0.7)" }),
               }),
             },
           },
         },
         styleOverrides: {
-          paper: { borderRadius: RADIUS_LG, boxShadow: MODAL, backgroundColor: hootVar("card") },
+          paper: { borderRadius: RADIUS_LG, boxShadow: MODAL, backgroundColor: tokenVar("card") },
         },
       },
       MuiIconButton: {
@@ -315,7 +315,7 @@ export const APP_THEME = () =>
         styleOverrides: {
           root: {
             borderRadius: RADIUS,
-            "&.Mui-selected": { backgroundColor: hootVar("muted"), fontWeight: 500 },
+            "&.Mui-selected": { backgroundColor: tokenVar("muted"), fontWeight: 500 },
           },
         },
       },
@@ -334,7 +334,7 @@ export const APP_THEME = () =>
       MuiPaper: {
         defaultProps: { variant: "outlined", elevation: 0 },
         styleOverrides: {
-          root: { backgroundImage: "none", borderColor: hootVar("border") },
+          root: { backgroundImage: "none", borderColor: tokenVar("border") },
           rounded: { borderRadius: RADIUS },
         },
       },
@@ -346,21 +346,21 @@ export const APP_THEME = () =>
         styleOverrides: {
           paper: ({ theme }) => floating(theme),
           // A chip on a field shares its fill in dark mode, so it keeps an edge.
-          tag: { border: `1px solid ${hootVar("border")}` },
+          tag: { border: `1px solid ${tokenVar("border")}` },
           // 36px like every other field: the list's own input padding plus
           // this makes the 20px of text the same 8px from the edge.
           inputRoot: {
             "&.MuiInputBase-sizeSmall": { paddingTop: 5.5, paddingBottom: 5.5, paddingLeft: 8 },
           },
-          popupIndicator: { color: hootVar("muted-foreground") },
+          popupIndicator: { color: tokenVar("muted-foreground") },
         },
       },
       MuiDataGrid: {
         styleOverrides: { paper: ({ theme }) => floating(theme) },
       },
-      // Hoot's field chrome: a white field on a hairline with one soft shadow,
+      // The field chrome: a white field on a hairline with one soft shadow,
       // and on focus a full-strength border with a soft ring hugging it.
-      // Hoot's field label sits above the box, 14px and medium, 6px clear of
+      // The field label sits above the box, 14px and medium, 6px clear of
       // it, as in DESIGN.md's form fields: never a label floating inside the
       // box that reads as placeholder text, and so no notch in the border.
       MuiInputLabel: {
@@ -374,12 +374,12 @@ export const APP_THEME = () =>
             fontSize: "0.875rem",
             fontWeight: 500,
             lineHeight: 1.25,
-            color: hootVar("foreground"),
-            "&.Mui-focused": { color: hootVar("foreground") },
+            color: tokenVar("foreground"),
+            "&.Mui-focused": { color: tokenVar("foreground") },
             // The box and the message below it carry the error; the label
-            // stays in ink, as Hoot's does.
-            "&.Mui-error": { color: hootVar("foreground") },
-            "&.Mui-disabled": { color: hootVar("field-disabled-foreground") },
+            // stays in ink, as the design system's does.
+            "&.Mui-error": { color: tokenVar("foreground") },
+            "&.Mui-disabled": { color: tokenVar("field-disabled-foreground") },
           },
         },
       },
@@ -389,20 +389,20 @@ export const APP_THEME = () =>
             margin: "6px 0 0",
             fontSize: "0.875rem",
             lineHeight: 1.4,
-            color: hootVar("muted-foreground"),
-            "&.Mui-error": { color: hootVar("destructive-text") },
+            color: tokenVar("muted-foreground"),
+            "&.Mui-error": { color: tokenVar("destructive-text") },
             // Under a disabled field the helper is usually why it is
             // disabled, which has to stay readable.
-            "&.Mui-disabled": { color: hootVar("muted-foreground") },
+            "&.Mui-disabled": { color: tokenVar("muted-foreground") },
           },
         },
       },
-      // MUI's toggle text is a 54% black, under 4.5:1 on Hoot's sand.
+      // MUI's toggle text is a 54% black, under 4.5:1 on the sand page.
       MuiToggleButton: {
         styleOverrides: {
           root: {
-            color: hootVar("muted-foreground"),
-            "&.Mui-selected, &.Mui-selected:hover": { color: hootVar("foreground") },
+            color: tokenVar("muted-foreground"),
+            "&.Mui-selected, &.Mui-selected:hover": { color: tokenVar("foreground") },
           },
         },
       },
@@ -412,38 +412,38 @@ export const APP_THEME = () =>
           notchedOutline: { top: 0, "& legend": { display: "none" } },
           root: {
             borderRadius: RADIUS - 2,
-            backgroundColor: hootVar("field"),
-            boxShadow: hootVar("field-shadow"),
+            backgroundColor: tokenVar("field"),
+            boxShadow: tokenVar("field-shadow"),
             transition: "box-shadow 150ms",
             "& .MuiOutlinedInput-notchedOutline": {
-              borderColor: hootVar("field-border"),
+              borderColor: tokenVar("field-border"),
               transition: "border-color 150ms",
             },
-            "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: hootVar("field-border-hover") },
-            "&.Mui-focused": { boxShadow: `${hootVar("field-shadow")}, 0 0 0 2px ${hootVar("field-ring")}` },
+            "&:hover .MuiOutlinedInput-notchedOutline": { borderColor: tokenVar("field-border-hover") },
+            "&.Mui-focused": { boxShadow: `${tokenVar("field-shadow")}, 0 0 0 2px ${tokenVar("field-ring")}` },
             "&.Mui-focused .MuiOutlinedInput-notchedOutline": {
-              borderColor: hootVar("field-border-focus"),
+              borderColor: tokenVar("field-border-focus"),
               borderWidth: 1,
             },
-            "&.Mui-error .MuiOutlinedInput-notchedOutline": { borderColor: hootVar("destructive") },
+            "&.Mui-error .MuiOutlinedInput-notchedOutline": { borderColor: tokenVar("destructive") },
             "&.Mui-error.Mui-focused": {
-              boxShadow: `${hootVar("field-shadow")}, 0 0 0 2px ${hootVar("destructive-muted")}`,
+              boxShadow: `${tokenVar("field-shadow")}, 0 0 0 2px ${tokenVar("destructive-muted")}`,
             },
             "&.Mui-disabled": {
-              backgroundColor: hootVar("field-disabled"),
-              color: hootVar("field-disabled-foreground"),
+              backgroundColor: tokenVar("field-disabled"),
+              color: tokenVar("field-disabled-foreground"),
               boxShadow: "none",
             },
-            "&.Mui-disabled .MuiOutlinedInput-notchedOutline": { borderColor: hootVar("field-border") },
+            "&.Mui-disabled .MuiOutlinedInput-notchedOutline": { borderColor: tokenVar("field-border") },
             // A disabled multi-line field is usually content to read that the
             // viewer may not change (a template's document), so its text stays
             // readable; the grey fill still says it cannot be edited.
             "&.Mui-disabled.MuiInputBase-multiline .MuiInputBase-input": {
-              color: hootVar("muted-foreground"),
-              WebkitTextFillColor: hootVar("muted-foreground"),
+              color: tokenVar("muted-foreground"),
+              WebkitTextFillColor: tokenVar("muted-foreground"),
             },
           },
-          // Hoot's field is 36px tall whatever it holds: 20px of text with 8px
+          // A field is 36px tall whatever it holds: 20px of text with 8px
           // above and below, and 12px in from its edge.
           input: {
             fontSize: "0.875rem",
@@ -451,7 +451,7 @@ export const APP_THEME = () =>
             height: 20,
             padding: "8px 12px",
             // Placeholder text in the muted ink: MUI's 42% black is 2.7:1.
-            "&::placeholder": { color: hootVar("muted-foreground"), opacity: 1 },
+            "&::placeholder": { color: tokenVar("muted-foreground"), opacity: 1 },
           },
           multiline: { padding: "8px 12px" },
           inputMultiline: { padding: 0, height: "auto" },
@@ -462,7 +462,7 @@ export const APP_THEME = () =>
         },
       },
       MuiSvgIcon: { defaultProps: { fontSize: "inherit" } },
-      // Hoot's switch: a 36x20 pill, ink when on, the field hairline's grey
+      // The switch: a 36x20 pill, ink when on, the field hairline's grey
       // when off, with a canvas-coloured thumb inside it rather than
       // overhanging it. Nested under root so it outranks MUI's size styles.
       MuiSwitch: {
@@ -473,17 +473,17 @@ export const APP_THEME = () =>
             height: 20,
             padding: 0,
             borderRadius: 10,
-            // Disabled dims the whole switch, as Hoot does, rather than
+            // Disabled dims the whole switch, as the design system does, rather than
             // MUI's near-invisible track.
             "&:has(.Mui-disabled)": { opacity: 0.5 },
             // One ring, round the pill, rather than the thumb's own as well.
-            "&:has(.Mui-focusVisible)": { outline: `2px solid ${hootVar("ring")}`, outlineOffset: "2px" },
+            "&:has(.Mui-focusVisible)": { outline: `2px solid ${tokenVar("ring")}`, outlineOffset: "2px" },
             "& .MuiSwitch-switchBase": {
               padding: 2,
               "&.Mui-focusVisible": { outline: "none" },
               "&.Mui-checked": {
                 transform: "translateX(16px)",
-                "& + .MuiSwitch-track": { backgroundColor: hootVar("primary"), opacity: 1 },
+                "& + .MuiSwitch-track": { backgroundColor: tokenVar("primary"), opacity: 1 },
               },
               "&.Mui-disabled + .MuiSwitch-track": { opacity: 1 },
             },
@@ -491,29 +491,29 @@ export const APP_THEME = () =>
               width: 16,
               height: 16,
               boxShadow: "0 1px 3px rgb(0 0 0 / 0.25)",
-              backgroundColor: hootVar("card"),
+              backgroundColor: tokenVar("card"),
             },
             // An off switch is a grey that holds 3:1 against the card, so it
-            // can be seen at all; Hoot's input grey all but vanishes.
+            // can be seen at all; the input grey all but vanishes.
             "& .MuiSwitch-track": {
               borderRadius: 10,
-              backgroundColor: `color-mix(in oklch, ${hootVar("foreground")} 45%, ${hootVar("card")})`,
+              backgroundColor: `color-mix(in oklch, ${tokenVar("foreground")} 45%, ${tokenVar("card")})`,
               opacity: 1,
             },
             // On, the dark track is light and takes the dark thumb; off, the
             // thumb stays light on the grey.
             ...theme.applyStyles("dark", {
-              "& .MuiSwitch-switchBase:not(.Mui-checked) .MuiSwitch-thumb": { backgroundColor: hootVar("foreground") },
+              "& .MuiSwitch-switchBase:not(.Mui-checked) .MuiSwitch-thumb": { backgroundColor: tokenVar("foreground") },
             }),
           }),
         },
       },
       // MUI offsets a label by -11px to take back the padding around its
-      // control. Hoot's pill has none, so beside a switch that offset pulled
+      // control. The pill has none, so beside a switch that offset pulled
       // the switch out of line and left the label touching it.
       MuiFormControlLabel: {
         styleOverrides: {
-          // Hoot labels a checkbox or switch the way it labels a field.
+          // The design system labels a checkbox or switch the way it labels a field.
           label: { fontSize: "0.875rem", fontWeight: 500 },
           // Weak selectors (`:where`), so a Stack's spacing between the label
           // and what comes before it still applies.
@@ -528,7 +528,7 @@ export const APP_THEME = () =>
       MuiTabs: {
         styleOverrides: {
           root: { minHeight: 40 },
-          indicator: { height: 2, backgroundColor: hootVar("foreground") },
+          indicator: { height: 2, backgroundColor: tokenVar("foreground") },
         },
       },
       MuiTab: {
@@ -538,8 +538,8 @@ export const APP_THEME = () =>
             minHeight: 40,
             padding: "4px 16px 12px",
             fontSize: "0.875rem",
-            color: hootVar("muted-foreground"),
-            "&.Mui-selected": { color: hootVar("foreground"), fontWeight: 500 },
+            color: tokenVar("muted-foreground"),
+            "&.Mui-selected": { color: tokenVar("foreground"), fontWeight: 500 },
           },
         },
       },
@@ -549,7 +549,7 @@ export const APP_THEME = () =>
       // box; it shows its "" option instead ("All", "None"), where it has one.
       MuiSelect: {
         defaultProps: { displayEmpty: true },
-        styleOverrides: { icon: { color: hootVar("muted-foreground") } },
+        styleOverrides: { icon: { color: tokenVar("muted-foreground") } },
       },
       MuiTooltip: {
         defaultProps: { arrow: true },
@@ -560,14 +560,14 @@ export const APP_THEME = () =>
             textAlign: "center",
             borderRadius: RADIUS,
             padding: "8px 12px",
-            backgroundColor: hootVar("foreground"),
-            color: hootVar("background"),
+            backgroundColor: tokenVar("foreground"),
+            color: tokenVar("background"),
           },
-          arrow: { color: hootVar("foreground") },
+          arrow: { color: tokenVar("foreground") },
         },
       },
     },
   });
 
-export const HOOT_RADIUS = { base: RADIUS, lg: RADIUS_LG, xl: RADIUS_XL };
-export const HOOT_ELEVATION = { card: CARD, surface: SURFACE, popover: POPOVER, modal: MODAL };
+export const RADII = { base: RADIUS, lg: RADIUS_LG, xl: RADIUS_XL };
+export const ELEVATION = { card: CARD, surface: SURFACE, popover: POPOVER, modal: MODAL };

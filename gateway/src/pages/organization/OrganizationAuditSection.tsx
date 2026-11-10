@@ -7,7 +7,7 @@ import {
   type OrganizationAuditEvent,
   fetchOrganizationAuditEvents,
 } from "../../data/api";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 const ACTION_LABELS: Record<string, string> = {
   "organization.created": "Organization created",

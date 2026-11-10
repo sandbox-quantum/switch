@@ -60,7 +60,7 @@ export default function RowActionsMenu({
           event.stopPropagation();
           setAnchor(event.currentTarget);
         }}
-        sx={{ width: 28, height: 28, color: "var(--hoot-foreground)" }}
+        sx={{ width: 28, height: 28, color: "var(--sw-foreground)" }}
       >
         <MoreHorizOutlined sx={{ fontSize: 16 }} />
       </IconButton>
@@ -82,9 +82,9 @@ export default function RowActionsMenu({
         {actions.map((action) => {
           const disabled = action.disabledReason != null;
           const tone = disabled
-            ? "var(--hoot-field-disabled-foreground)"
+            ? "var(--sw-field-disabled-foreground)"
             : action.destructive
-              ? "var(--hoot-destructive-text)"
+              ? "var(--sw-destructive-text)"
               : undefined;
           return (
             <MenuItem
@@ -104,7 +104,7 @@ export default function RowActionsMenu({
                 color: tone,
                 // A destructive action hovers in its own red wash.
                 ...(action.destructive &&
-                  !disabled && { "&:hover, &.Mui-focusVisible": { backgroundColor: "var(--hoot-destructive-muted)" } }),
+                  !disabled && { "&:hover, &.Mui-focusVisible": { backgroundColor: "var(--sw-destructive-muted)" } }),
                 ...(disabled && { cursor: "default", "&:hover": { backgroundColor: "transparent" } }),
               }}
             >

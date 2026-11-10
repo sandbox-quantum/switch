@@ -104,21 +104,20 @@ version of their own to them without also giving them a release of their own.
   switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
-- **The operator dashboard follows the current Hoot design.** A field's
-  label sits above it rather than floating inside the box, and the field has
-  a white fill and a firm border and ring when focused; switches are Hoot's
-  pill, and one that is off can be seen; errors and delete buttons use Hoot's
-  softer red, with red and green text kept readable in both themes; captions,
-  section labels and tooltips are 13px; the backdrop behind a dialog is
-  Hoot's warm black, and black in dark mode; menus, popovers and dropdown
-  lists have a firm edge and shadow, so they stand out from the page under
-  them; table headers show the cream band they were always meant to, and an
-  empty table has no footer. A status chip ("Active", "device offline",
-  "Archived") looks like a small banner of its colour, with a slightly darker
-  edge, and a warning chip matches the warning banner. Warnings stay amber,
-  so they remain easy to tell from errors. Google Workspace shows Google's
-  full-colour G, and the Atlassian connector the Atlassian logo rather than
-  Jira's.
+- **The operator dashboard follows the current design.** A field's label sits
+  above it rather than floating inside the box, and the field has a white fill
+  and a firm border and ring when focused; switches are pills, and one that is
+  off can be seen; errors and delete buttons use a softer red, with red and
+  green text kept readable in both themes; captions, section labels and tooltips
+  are 13px; the backdrop behind a dialog is a warm black, and black in dark
+  mode; menus, popovers and dropdown lists have a firm edge and shadow, so they
+  stand out from the page under them; table headers show the cream band they
+  were always meant to, and an empty table has no footer. A status chip
+  ("Active", "device offline", "Archived") looks like a small banner of its
+  colour, with a slightly darker edge, and a warning chip matches the warning
+  banner. Warnings stay amber, so they remain easy to tell from errors. Google
+  Workspace shows Google's full-colour G, and the Atlassian connector the
+  Atlassian logo rather than Jira's.
 - **Disabled controls in the operator dashboard look disabled.** A disabled
   field, its label, and a disabled checkbox or switch looked almost the same
   as enabled ones; they are now greyed out, so an action you may not take
@@ -2823,7 +2822,7 @@ version of their own to them without also giving them a release of their own.
  (#84).
 
 #### Changed
-- Restyle the Switch Gateway web UI onto the Hoot design system — new light/dark
+- Restyle the Switch Gateway web UI onto a new design system — new light/dark
   theme, icon-rail shell, and consistent formatting conventions; nav
   destinations unchanged (#87).
 

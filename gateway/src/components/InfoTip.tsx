@@ -16,7 +16,7 @@ export default function InfoTip({ children, label = "More information" }: { chil
       describeChild
       enterTouchDelay={0}
       leaveTouchDelay={4000}
-      // Hoot's info tip opens above the mark, 6px off it and with no arrow,
+      // The design system's info tip opens above the mark, 6px off it and with no arrow,
       // and flips below only when there is no room.
       placement="top"
       arrow={false}

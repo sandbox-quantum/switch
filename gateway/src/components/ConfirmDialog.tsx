@@ -67,7 +67,7 @@ export default function ConfirmDialog({
         paper: { sx: { borderRadius: "16px" } },
       }}
     >
-      {/* Hoot's modal: a 17px title, the description 4px under it, a close
+      {/* The design system's modal: a 17px title, the description 4px under it, a close
           button that takes focus first (the safe control, in a dialog whose
           main action may delete something), and a hairline over the buttons. */}
       <DialogTitle sx={{ fontSize: "1.0625rem", fontWeight: 600, pt: 3, pr: 8, pb: description || error ? 0.5 : 3 }}>
@@ -96,7 +96,7 @@ export default function ConfirmDialog({
           )}
         </DialogContent>
       )}
-      <DialogActions sx={{ px: 3, py: 2, borderTop: "1px solid var(--hoot-border)" }}>
+      <DialogActions sx={{ px: 3, py: 2, borderTop: "1px solid var(--sw-border)" }}>
         <Button variant="outlined" onClick={onClose} disabled={busy}>
           Cancel
         </Button>
@@ -109,8 +109,8 @@ export default function ConfirmDialog({
           // confirm would read as refused while the action is still running.
           sx={{
             "&.MuiButton-loading": {
-              backgroundColor: tone === "destructive" ? "var(--hoot-destructive)" : "primary.main",
-              color: tone === "destructive" ? "var(--hoot-destructive-foreground)" : "primary.contrastText",
+              backgroundColor: tone === "destructive" ? "var(--sw-destructive)" : "primary.main",
+              color: tone === "destructive" ? "var(--sw-destructive-foreground)" : "primary.contrastText",
               opacity: 0.85,
             },
           }}
