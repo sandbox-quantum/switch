@@ -426,8 +426,10 @@ export const APP_THEME = () =>
               borderWidth: 1,
             },
             "&.Mui-error .MuiOutlinedInput-notchedOutline": { borderColor: tokenVar("destructive") },
+            // Focus shows on a field in error as on any other: the error's red
+            // edge stays, and the ring is a firm red, not a faint wash.
             "&.Mui-error.Mui-focused": {
-              boxShadow: `${tokenVar("field-shadow")}, 0 0 0 2px ${tokenVar("destructive-muted")}`,
+              boxShadow: `${tokenVar("field-shadow")}, 0 0 0 2px color-mix(in oklch, ${tokenVar("destructive-text")} 45%, transparent)`,
             },
             "&.Mui-disabled": {
               backgroundColor: tokenVar("field-disabled"),

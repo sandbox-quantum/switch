@@ -13,7 +13,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import {
   type TenantMembership,
@@ -98,6 +98,11 @@ export default function WorkspacesSection({ currentId, canAdd }: Props) {
         <DataTable
           rows={workspaces ?? []}
           columns={columns}
+          emptyState={
+            <TableEmptyState title="No workspaces in this organization yet">
+              {canAdd ? "Add one to give a team its own agents and rooms." : undefined}
+            </TableEmptyState>
+          }
           height={Math.min(420, 108 + (workspaces?.length ?? 0) * 52)}
           pageSize={25}
         />

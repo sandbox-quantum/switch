@@ -88,6 +88,7 @@ export default function ReferenceDetailPage() {
         <IconButton
           onClick={() => navigate("/resources?tab=references")}
           size="small"
+          aria-label="Back"
         >
           <ArrowBack />
         </IconButton>

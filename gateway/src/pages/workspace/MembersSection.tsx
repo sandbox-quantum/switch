@@ -12,7 +12,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import {
   type Member,
@@ -95,7 +95,8 @@ export default function MembersSection({ tenantId, selfId }: Props) {
                   updateMemberRole(tenantId, row.user_id, e.target.value as TenantRole),
                 )
               }
-              aria-label={`Role for ${row.email}`}
+              // The name goes on the input: on the Select it labels nothing.
+              inputProps={{ "aria-label": `Role for ${row.email}` }}
               sx={{ fontSize: "0.875rem" }}
             >
               {roles.map((role) => (
@@ -182,6 +183,7 @@ export default function MembersSection({ tenantId, selfId }: Props) {
         <DataTable
           rows={(members ?? []).map((m) => ({ ...m, id: m.user_id }))}
           columns={columns}
+          emptyState={<TableEmptyState title="No users in this workspace yet" />}
           height={Math.min(520, 108 + (members?.length ?? 0) * 52)}
           pageSize={25}
         />

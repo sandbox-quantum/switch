@@ -119,7 +119,7 @@ export default function AgentDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/agents")} size="small">
+        <IconButton onClick={() => navigate("/agents")} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5">{agent.name}</Typography>

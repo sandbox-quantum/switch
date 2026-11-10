@@ -151,7 +151,7 @@ export default function RegisterAgentDialog({
 
   const copyAdornment = (value: string, label: string) => (
     <InputAdornment position="end">
-      <IconButton onClick={() => handleCopy(value, label)} size="small">
+      <IconButton onClick={() => handleCopy(value, label)} size="small" aria-label={`Copy ${label}`}>
         <ContentCopy fontSize="small" />
       </IconButton>
     </InputAdornment>

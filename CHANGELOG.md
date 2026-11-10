@@ -118,6 +118,15 @@ version of their own to them without also giving them a release of their own.
   banner. Warnings stay amber, so they remain easy to tell from errors. Google
   Workspace shows Google's full-colour G, and the Atlassian connector the
   Atlassian logo rather than Jira's.
+- **Every empty table in the operator dashboard says what is missing.** In
+  place of "No rows", a table with nothing in it says what is missing and what
+  to do about it ("No devices yet. Add one to start running agents on it."),
+  and one narrowed by its page's search or filters says nothing matches them.
+  A table whose rows all fit on one page has no footer and is only as tall as
+  its rows.
+- **Every control in the operator dashboard has a name a screen reader can
+  read**, including the back arrows, copy and delete buttons, the role and
+  period selects, and the messaging app switches.
 - **Disabled controls in the operator dashboard look disabled.** A disabled
   field, its label, and a disabled checkbox or switch looked almost the same
   as enabled ones; they are now greyed out, so an action you may not take
@@ -133,8 +142,9 @@ version of their own to them without also giving them a release of their own.
   `GATEWAY_OIDC_LOGIN_OPTIONS` lists several (Google and Microsoft, say), the
   dashboard's sign-in page now offers a button for each, going straight to that
   provider and carrying its mark for Google, Microsoft and GitHub, as Switch
-  Console already does. Without any, it keeps the single button. When the page cannot read how sign-in is set up, it says so above
-  the password form instead of quietly offering only that.
+  Console already does. Without any, it keeps the single button. When the page
+  cannot read how sign-in is set up, it says so above the password form instead
+  of quietly offering only that.
 - **The workspace picker lists workspaces by organization.** Someone in
   workspaces of more than one organization sees them under each organization's
   name, in the same order as the top bar's workspace switcher.

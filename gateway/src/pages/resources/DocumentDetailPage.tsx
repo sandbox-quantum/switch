@@ -82,6 +82,7 @@ export default function DocumentDetailPage() {
         <IconButton
           onClick={() => navigate("/resources?tab=documents")}
           size="small"
+          aria-label="Back"
         >
           <ArrowBack />
         </IconButton>

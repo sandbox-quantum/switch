@@ -81,6 +81,7 @@ export default function PackageDetailPage() {
         <IconButton
           onClick={() => navigate("/resources?tab=packages")}
           size="small"
+          aria-label="Back"
         >
           <ArrowBack />
         </IconButton>

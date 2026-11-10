@@ -1,4 +1,5 @@
 import { Box } from "@mui/material";
+import { useId } from "react";
 import { brandSvg, MARK_COLOR, monogram } from "./brandMarks";
 
 /**
@@ -10,7 +11,11 @@ import { brandSvg, MARK_COLOR, monogram } from "./brandMarks";
  * visibly the same object. A service with no logo shows its initials.
  */
 export default function BrandTile({ slug, name, size }: { slug: string; name: string; size: number }) {
-  const svg = brandSvg(slug);
+  // A full-colour logo names its gradients by id, and an id must be unique
+  // in the page, so each tile gives its copy's ids its own suffix: two tiles
+  // for one connector would otherwise share, and lose, one gradient.
+  const suffix = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const svg = brandSvg(slug)?.replace(/(id="|url\(#)([\w-]+)/g, `$1$2-${suffix}`);
   const color = MARK_COLOR[slug];
   return (
     <Box

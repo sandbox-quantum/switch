@@ -92,11 +92,11 @@ interface DataTableProps<T extends { id: string | number }> {
   emptyState?: ReactNode;
 }
 
-/** A hovered or selected row is a lighter wash than the muted fill, which
- *  is also a grey chip's, so a chip in the row keeps its edge. Opaque, so a
+/** A hovered or selected row takes the muted fill. A grey chip shares that
+ *  fill but keeps its hairline, so it still reads as a chip. Opaque, so a
  *  pinned cell can take it too. */
-const ROW_HOVER = "color-mix(in oklch, var(--sw-muted) 50%, var(--sw-card))";
-const ROW_SELECTED = "color-mix(in oklch, var(--sw-muted) 75%, var(--sw-card))";
+const ROW_HOVER = "var(--sw-accent)";
+const ROW_SELECTED = "var(--sw-muted)";
 
 /** The grid treatment: a bordered 16px-radius surface with a cream header
  *  band, generous 52px rows, and tabular figures so numeric columns line up.
@@ -310,11 +310,29 @@ function TableOverlay({ tableEmpty }: GridOverlayProps & { tableEmpty?: ReactNod
     <Box role="row" sx={{ height: "100%" }}>
       <Stack
         role="gridcell"
-        sx={{ height: "100%", alignItems: "center", justifyContent: "center", p: 3, textAlign: "center" }}
+        sx={{ height: "100%", alignItems: "center", justifyContent: "center", p: 2, textAlign: "center" }}
       >
         {tableEmpty}
       </Stack>
     </Box>
+  );
+}
+
+/** A table's message for when it has no rows: what is missing, in a line,
+ *  and what to do about it, if anything. Pages word both for the viewer,
+ *  from their capabilities. */
+export function TableEmptyState({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <Stack spacing={0.5} sx={{ alignItems: "center", maxWidth: 440 }}>
+      <Typography variant="body2" sx={{ fontWeight: 600, color: "text.primary" }}>
+        {title}
+      </Typography>
+      {children && (
+        <Typography variant="body2" color="text.secondary">
+          {children}
+        </Typography>
+      )}
+    </Stack>
   );
 }
 
@@ -426,10 +444,15 @@ export default function DataTable<T extends { id: string | number }>({
     });
   });
 
-  // Everything on one page: no footer, since there is nothing to page
-  // through, and no taller than its rows, so a short or narrowed table
-  // leaves no blank card under it.
-  const fitsOnePage = shown.length <= pageSize;
+  // Every row on one page and in view: no footer, since there is nothing to
+  // page through, and no taller than its rows, so a short or narrowed table
+  // leaves no blank card under it. Rows that fit the page size but not the
+  // height keep the footer and its count, so none sit unseen below the fold.
+  // A table filling its parent can't know its height here, so it keeps its
+  // footer whenever it has rows.
+  const rowsHeight = HEADER_HEIGHT + ROW_HEIGHT * shown.length;
+  const fitsOnePage =
+    shown.length === 0 || (!fillHeight && shown.length <= pageSize && rowsHeight <= height);
 
   // Tables that leave filtering to the grid keep its own overlays.
   const tableOverlay = emptyState !== undefined || (ownFiltering && rows.length > 0);
@@ -479,7 +502,7 @@ export default function DataTable<T extends { id: string | number }>({
       disableRowSelectionOnClick
       // A sticky column only sticks while it is rendered, and the grid drops
       // a column once it scrolls out of view, so with one pinned every cell
-      // renders. A page holds at most 50 rows, so that stays cheap.
+      // renders. A page holds at most 100 rows, so that stays cheap.
       disableVirtualization={pinnedRight.length > 0}
       disableColumnFilter={ownFiltering}
       hideFooter={fitsOnePage}
@@ -508,7 +531,7 @@ export default function DataTable<T extends { id: string | number }>({
                 shown.length === 0
                   ? Math.max(height, EMPTY_TABLE_HEIGHT)
                   : fitsOnePage
-                    ? Math.min(height, HEADER_HEIGHT + ROW_HEIGHT * shown.length)
+                    ? rowsHeight
                     : height,
             },
         ...extraSx,

@@ -78,7 +78,7 @@ export default function RoomScopedDocumentView() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate(`/rooms/${roomId}`)} size="small">
+        <IconButton onClick={() => navigate(`/rooms/${roomId}`)} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
