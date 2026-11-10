@@ -65,7 +65,7 @@ export const organizations: FastScenario = {
     }
 
     try {
-      await member.renameTenant(defaultWorkspace, names.name('not-theirs'));
+      await member.renameTenant(defaultWorkspace, names.name('misnamed'));
       throw new Error('a member renamed the workspace');
     } catch (error) {
       if (!(error instanceof SwitchHttpError)) throw error;
