@@ -747,6 +747,24 @@
     },
     {
       "definition": {
+        "type": "toplist",
+        "title": "Crashed bridges, by name (empty while all run)",
+        "requests": [
+          {
+            "q": "max:switch.bridges.crashed{$env,$service} by {platform,bridge_name}",
+            "aggregator": "last"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 101,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
         "type": "timeseries",
         "title": "Messaging events from unclaimed chats, by platform",
         "show_legend": true,

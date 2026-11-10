@@ -181,6 +181,31 @@ class RoomCreateResult(BaseModel):
 ROOM_NAME_MAX = 200
 
 
+# The channel types whose members their platform fixes.
+FIXED_MEMBERSHIP = ("direct", "group")
+
+
+class MembershipFixed(ValueError):
+    """Who is in a direct or group conversation is not changed from outside it."""
+
+
+def require_membership_changeable_from_outside(room: Room) -> None:
+    """Raise `MembershipFixed` for a direct or group conversation.
+
+    Its platform fixes who is in it, and a direct one is one person and one
+    agent by rule, so its agents and people are changed only from inside it:
+    by its platform, by the commands its own participants post in it, and for
+    a Switch Console chat through the chat's own routes. The Gateway's room
+    routes, the agent tools and a template's `join:` act from outside, and
+    refuse it."""
+    if room.channel_type in FIXED_MEMBERSHIP:
+        raise MembershipFixed(
+            f"This is a {room.channel_type} conversation: who is in it is fixed "
+            "by its platform, so its agents and people can't be changed from "
+            "outside it."
+        )
+
+
 class RoomService:
     # Class-level defaults so a caller that builds this without `__init__` —
     # several tests assemble a minimal instance directly — still has the
@@ -486,9 +511,9 @@ class RoomService:
             return
         raise ChannelCreationUnsupported(
             f"Creating channels is turned off for the '{bridge.display_name}' "
-            "connection. Create the channel on the platform and add the Switch "
+            "messaging app. Create the channel on the platform and add the Switch "
             "app to it — Switch adopts it as a room — or ask an administrator to "
-            "allow channel creation for this connection."
+            "allow channel creation for this messaging app."
         )
 
     @staticmethod
@@ -988,7 +1013,7 @@ class RoomService:
         collaboration_core = self._collab_lifecycle.get(bridge_id)
         if collaboration_core is None:
             outcome = RetireOutcome.failed(
-                "The messaging connection is not running, so Switch could not "
+                "The messaging app is not running, so Switch could not "
                 "reach the channel"
             )
         else:

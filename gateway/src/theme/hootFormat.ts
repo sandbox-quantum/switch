@@ -81,14 +81,22 @@ export const CHANNEL_TYPE_LABELS: Record<string, string> = {
 };
 
 export const channelTypeLabel = (value: string | null | undefined): string =>
-  value ? (CHANNEL_TYPE_LABELS[value] ?? titleCase(value)) : EM_DASH;
+  value ? (CHANNEL_TYPE_LABELS[value] ?? sentenceCase(value)) : EM_DASH;
 
-/** `session_addressable` -> `Session Addressable`. Status labels are Title Case. */
+/** `session_addressable` -> `Session Addressable`, for names, such as a
+ *  platform's where it has no label of its own. */
 export function titleCase(value: string): string {
   return value
     .replace(/[_-]+/g, " ")
     .trim()
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** `session_addressable` -> `Session addressable`, for states, roles and
+ *  kinds: labels are sentence case. */
+export function sentenceCase(value: string): string {
+  const words = value.replace(/[_-]+/g, " ").trim().toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** A messaging platform's own name for itself, where title-casing its key

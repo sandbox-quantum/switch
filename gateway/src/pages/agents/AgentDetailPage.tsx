@@ -29,14 +29,14 @@ import {
   renameAgent,
   updateAgentOptions,
 } from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import { useAgent, useKnownAgentTypes } from "../../data/hooks";
 import {
   EM_DASH,
   MONO_SX,
   formatDateTime,
-  titleCase,
+  sentenceCase,
 } from "../../theme/hootFormat";
+import { useAuth } from "../../data/AuthContext";
 import AddressingPolicySection from "./AddressingPolicySection";
 import MidTurnDeliverySection from "./MidTurnDeliverySection";
 import AgentManagementSection from "./AgentManagementSection";
@@ -80,7 +80,7 @@ function StatusDot({ color, title }: { color: string; title?: string }) {
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
-  const { user, canAdminTenant } = useAuth();
+  const { user, capabilities } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
@@ -109,11 +109,12 @@ export default function AgentDetailPage() {
     );
   }
 
-  const isOwner = !!user && user.id === agent.owner_id;
-  // Renaming and editing options are open to whoever the server says may
-  // manage the agent (its owner or an admin); agent management and service
-  // access stay with the owner alone, because the agent then acts on the
-  // owner's own machines and credentials.
+  // Every control follows the server's answer for this agent. Who may address
+  // it is open to whoever may manage it (its owner or an admin); agent
+  // management and service access stay with the owner alone, because the
+  // agent then acts on the owner's own machines and credentials. Service
+  // access shows only to its owner: the server answers anyone else's request
+  // for its grants as not found.
   const canManage = agent.can_manage;
 
   return (
@@ -123,7 +124,7 @@ export default function AgentDetailPage() {
           <ArrowBack />
         </IconButton>
         <Typography variant="h5">{agent.name}</Typography>
-        {canManage && !agent.parent_agent_id && agent.children.length === 0 && (
+        {agent.can_rename && (
           <Tooltip title="Rename agent">
             <IconButton
               size="small"
@@ -138,7 +139,7 @@ export default function AgentDetailPage() {
         <Chip label={agent.connector_type} size="small" variant="outlined" />
         {agent.connection_model && (
           <Chip
-            label={titleCase(agent.connection_model)}
+            label={sentenceCase(agent.connection_model)}
             size="small"
             variant="outlined"
           />
@@ -177,7 +178,7 @@ export default function AgentDetailPage() {
             <Divider />
             <OptionsSection
               agent={agent}
-              canEdit={canManage}
+              canEdit={agent.can_edit_options}
               onUpdated={refetch}
             />
           </>
@@ -188,14 +189,20 @@ export default function AgentDetailPage() {
           canEdit={canManage}
           onUpdated={refetch}
         />
-        <MidTurnDeliverySection agent={agent} canEdit={isOwner} onUpdated={refetch} />
+        <MidTurnDeliverySection agent={agent} canEdit={agent.owner_id === user?.id} onUpdated={refetch} />
         <AgentManagementSection
           agent={agent}
-          canEdit={isOwner}
+          canEdit={agent.can_change_manage_agents}
           onUpdated={refetch}
         />
-        {isOwner && <ServiceAccessSection agent={agent} onAgentUpdated={refetch} />}
-        {(isOwner || canAdminTenant) && (
+        {capabilities.features.service_connections && (
+          <ServiceAccessSection
+            agent={agent}
+            canGrant={agent.can_grant_services}
+            onAgentUpdated={refetch}
+          />
+        )}
+        {(agent.can_transfer || agent.transfer_blocked_reason !== null) && (
           <>
             <Divider />
             <TransferOwnershipSection
@@ -203,6 +210,7 @@ export default function AgentDetailPage() {
               resourceId={agent.id}
               resourceLabel={agent.name}
               ownerId={agent.owner_id}
+              blockedReason={agent.can_transfer ? null : agent.transfer_blocked_reason}
               onTransferred={refetch}
             />
           </>
@@ -428,8 +436,8 @@ function InfoSection({ agent }: { agent: AgentDetail }) {
       )}
       <InfoLine label="Agent type" value={agent.connector_type} />
       <InfoLine
-        label="Connection type"
-        value={agent.connection_model ? titleCase(agent.connection_model) : null}
+        label="Availability"
+        value={agent.connection_model ? sentenceCase(agent.connection_model) : null}
       />
       <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />
       <InfoLine label="Created" value={formatDateTime(agent.created_at)} />
@@ -512,8 +520,8 @@ function OptionsSection({
       </Typography>
       {!spec ? (
         <Alert severity="warning">
-          Unknown agent type "{agent.known_agent_type}" — its schema is no
-          longer registered on this server.
+          Unknown agent type "{agent.known_agent_type}" — Switch no longer
+          describes its options.
         </Alert>
       ) : (
         <>
@@ -577,7 +585,7 @@ export function SessionsSection({ sessions }: { sessions: AgentSessionDetail[] }
 function SessionRow({ session }: { session: AgentSessionDetail }) {
   const navigate = useNavigate();
   const meta = SESSION_STATE_META[session.state] ?? {
-    label: titleCase(session.state),
+    label: sentenceCase(session.state),
     color: NEUTRAL_STATUS_COLOR,
   };
   const isLive = session.state === "live";
@@ -662,7 +670,7 @@ function RoomsSection({ rooms }: { rooms: AgentRoomMembership[] }) {
       </Typography>
       {rooms.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          Not a member of any room.
+          Not in any room.
         </Typography>
       ) : (
         <Stack spacing={0.5}>
@@ -678,7 +686,7 @@ function RoomsSection({ rooms }: { rooms: AgentRoomMembership[] }) {
 function RoomRow({ room }: { room: AgentRoomMembership }) {
   const navigate = useNavigate();
   const meta = ROOM_STATUS_META[room.status] ?? {
-    label: titleCase(room.status),
+    label: sentenceCase(room.status),
     color: NEUTRAL_STATUS_COLOR,
   };
   return (

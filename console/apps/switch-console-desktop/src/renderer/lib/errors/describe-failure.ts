@@ -94,9 +94,11 @@ export function describeFailure(error: unknown, fallback: string): FailureDescri
       case 'DuplicateServerUrlError':
       case 'NoDashboardError':
       case 'NoManagementApiError':
+      case 'PasswordChangedSessionNotSavedError':
         // Already a modeled, actionable sentence: the server and the page to
         // fix it on, who is changing the server and when to try again, which
-        // agents to bring back first, or which address to enter instead.
+        // agents to bring back first, which address to enter instead, or that a
+        // password changed but its new session could not be kept.
         return { headline: error.message, detail: null };
     }
   }

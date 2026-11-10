@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from contextlib import AbstractContextManager, nullcontext
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -382,7 +383,7 @@ async def oidc_callback(
             status_code=503,
             detail=(
                 "Sign-in is misconfigured: the identity provider's issuer "
-                "does not match this server's configuration"
+                "does not match Switch's configuration"
             ),
         )
     # A first sign-in provisions the account just in time. Where it lands is
@@ -455,6 +456,7 @@ async def oidc_callback(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return response
 
@@ -499,5 +501,6 @@ async def oidc_exchange(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return response

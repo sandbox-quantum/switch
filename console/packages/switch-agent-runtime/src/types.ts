@@ -43,6 +43,14 @@ export interface MessagePayload {
   sender_role?: 'admin' | 'member' | 'owner' | null;
   sender_owns_agent?: boolean;
   mid_turn_delivery?: 'steer' | 'queue';
+  /** True when nobody was tagged and Switch's decision service picked this agent to answer. */
+  routed?: boolean;
+  /**
+   * Why a routed message reached this agent: `decided` when the decision
+   * service picked it, `fallback` when auto-route was unavailable and it is
+   * the room's triage agent. Absent from servers that predate it.
+   */
+  routed_reason?: 'decided' | 'fallback' | null;
 }
 
 export interface CommandPayload {

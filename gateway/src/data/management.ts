@@ -140,6 +140,10 @@ export interface Controller {
   assignment_revision: number;
   created_at: string;
   revoked_at: string | null;
+  /** What the caller may do to it: rename, describe and ask it to re-check
+   * its providers; and revoke it. */
+  can_edit: boolean;
+  can_remove: boolean;
 }
 
 export interface Definition {
@@ -170,6 +174,10 @@ export interface ManagedAgent {
   status: AgentStatus | null;
   created_at: string;
   updated_at: string;
+  /** What the caller may do to it: start, stop, restart and edit it; and
+   * stop managing it. */
+  can_edit: boolean;
+  can_delete: boolean;
 }
 
 export interface Operation {
@@ -232,19 +240,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) throw await managementError(res);
   return (await res.json()) as T;
-}
-
-/**
- * Whether this server has agent management turned on. With it off the routes
- * are not mounted at all, so the probe sees the framework's own 404 (no error
- * envelope) rather than a management refusal.
- */
-export async function fetchManagementAvailable(): Promise<boolean> {
-  const res = await fetch(`${BASE}/controllers`, { credentials: "include" });
-  if (res.ok) return true;
-  const error = await managementError(res);
-  if (res.status === 404 && error.code === "http_error") return false;
-  throw error;
 }
 
 export function fetchControllers(): Promise<Controller[]> {

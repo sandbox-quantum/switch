@@ -582,7 +582,13 @@ export async function runSharedHost(
     type Followup = Extract<(typeof state.journal.records)[number], { type: 'followup' }>;
     const followups = (): Followup[] =>
       state.journal.records.filter((record): record is Followup => record.type === 'followup');
-    const followupFor = (command: Command, requesterName: string | null): Followup | null => {
+    const followupFor = (
+      command: Command,
+      requesterName: string | null,
+      direct: boolean
+    ): Followup | null => {
+      // A direct chat's reset is meant to forget the conversation; its placement survives, so nothing is owed.
+      if (direct && command.body.type === 'session.reset') return null;
       const action =
         command.body.type === 'session.reset'
           ? 'reset'
@@ -626,7 +632,8 @@ export async function runSharedHost(
             delivery: 'queue',
           },
         },
-        null
+        null,
+        false
       );
     };
     /** Tells the parent whenever the session's busy state changes. */
@@ -726,6 +733,7 @@ export async function runSharedHost(
     const run = async (
       value: unknown,
       requesterName: string | null,
+      direct: boolean,
       senderOwnsAgent = false
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
@@ -745,7 +753,7 @@ export async function runSharedHost(
       // about a conversation a reset or a restart has since replaced.
       if (command.epoch !== host!.snapshot().session.epoch)
         return 'STALE_EPOCH: the session has been reset or restarted since this command was made.';
-      const owed = followupFor(command, requesterName);
+      const owed = followupFor(command, requesterName, direct);
       if (owed && !followups().some((record) => record.commandId === command.commandId))
         await state.journal.append(owed);
       const repeated = host!
@@ -853,7 +861,7 @@ export async function runSharedHost(
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        const outcome = await run(command, null, message.data.payload.sender_owns_agent);
+        const outcome = await run(command, null, false, message.data.payload.sender_owns_agent);
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)
@@ -887,7 +895,8 @@ export async function runSharedHost(
           },
           body: { type: 'session.reset' },
         },
-        null
+        null,
+        false
       );
       if (typeof outcome === 'string')
         throw new Error(`Could not start a fresh conversation for a room message: ${outcome}`);
@@ -904,8 +913,8 @@ export async function runSharedHost(
     parent?.serve({
       // Busy is announced before the reply, so a parent that has the reply has
       // already heard any change the command made.
-      command: async ({ command, requesterName }) => {
-        const outcome = await run(command, requesterName);
+      command: async ({ command, requesterName, direct }) => {
+        const outcome = await run(command, requesterName, direct === true);
         announceBusy();
         if (typeof outcome === 'string') throw new Error(outcome);
         return outcome;

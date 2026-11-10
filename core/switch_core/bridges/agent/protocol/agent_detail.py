@@ -352,7 +352,7 @@ def agent_facing_summary(summary: AgentSummary) -> dict[str, Any]:
     """`summary` as an agent may read it: without the raw addressing policy,
     whose rules name the users, agents and rooms the owner let in. An agent
     learns who may address it from `describe_addressing` instead."""
-    return summary.model_dump(exclude={"addressing_policy", "can_manage"})
+    return summary.model_dump(exclude={"addressing_policy"})
 
 
 def agent_facing_detail(detail: AgentDetail) -> dict[str, Any]:
@@ -361,8 +361,7 @@ def agent_facing_detail(detail: AgentDetail) -> dict[str, Any]:
     return detail.model_dump(
         exclude={
             "addressing_policy": True,
-            "can_manage": True,
-            "children": {"__all__": {"addressing_policy", "can_manage"}},
+            "children": {"__all__": {"addressing_policy"}},
         }
     )
 

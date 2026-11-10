@@ -106,6 +106,14 @@ from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.content import media_content, message_content
 from switch_core.transport.types import MessageFormat
+from switch_core.trust.attachments import AttachmentsVerdict, check_attachments
+from switch_core.trust.client import (
+    TrustCheckResult,
+    TrustClient,
+    check_message,
+    trust_annotation,
+    trust_is_active,
+)
 
 if TYPE_CHECKING:
     from switch_core.chats.signals import ChatSignals
@@ -180,8 +188,10 @@ class ChatService:
         group_chats_enabled: bool,
         buddy_slack_handoff_enabled: bool,
         connections: AgentConnectionRegistry,
+        trust_client: TrustClient,
     ) -> None:
         self.session_factory = session_factory
+        self._trust_client = trust_client
         self._connections = connections
         self.agent_chats_enabled = agent_chats_enabled
         self.group_chats_enabled = group_chats_enabled
@@ -280,7 +290,7 @@ class ChatService:
         that turned it off (or never on) says so rather than half-serving it."""
         if not self.group_chats_enabled:
             raise ChatError(
-                409, "GROUP_CHATS_OFF", "Group chats are not turned on for this server."
+                409, "GROUP_CHATS_OFF", "Group chats are not turned on here."
             )
 
     def _lock(self, *key: str) -> asyncio.Lock:
@@ -1404,7 +1414,7 @@ class ChatService:
             raise ChatError(
                 409,
                 "BUDDY_SLACK_HANDOFF_OFF",
-                "Chats on a bridge are not turned on for this server.",
+                "Chats on a messaging app are not turned on here.",
             )
         if bridge_id is not None and not direct:
             raise ChatError(
@@ -1747,6 +1757,10 @@ class ChatService:
         `mention_spans` say where in `body` each mention is written (UTF-16
         offsets, as the Console's strings count); an agent's span is for it as
         `mention_agent_ids` is, a person's addresses no agent.
+
+        Switch Trust checks the text and each file first, as it does a
+        message from any other platform, and a refusal of either raises
+        ChatError TRUST_BLOCKED with nothing posted.
         """
         mentions = sorted(set(mention_agent_ids))
         people = sorted(set(mention_user_ids))
@@ -1774,6 +1788,14 @@ class ChatService:
         )
         people = sorted(
             {*people, *(span.id for span in mention_spans if span.kind == "user")}
+        )
+        body = await self._checked_by_trust(
+            tenant_id,
+            user,
+            room_id,
+            request_id=request_id,
+            body=body,
+            upload_ids=upload_ids,
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, client = await self.require_member(session, tenant_id, user, room_id)
@@ -2116,6 +2138,105 @@ class ChatService:
             session, room.id, ids
         )
         return sorted(rows, key=lambda m: m.seq)
+
+    async def _checked_by_trust(
+        self,
+        tenant_id: str,
+        user: User,
+        room_id: str,
+        *,
+        request_id: str,
+        body: str,
+        upload_ids: list[str],
+    ) -> str:
+        """The body to post once Switch Trust has checked it and the files
+        (`trust/attachments.py`): redacted if it redacted the text, with a
+        note for anything flagged or not checked. Runs before the send's own
+        transaction, so no database work waits on Switch Trust."""
+        if not await trust_is_active(self._trust_client):
+            return body
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            room, _ = await self.require_member(session, tenant_id, user, room_id)
+            if await self._operation(session, user.id, request_id) is not None:
+                # A retry: `send` answers it with what was posted the first time.
+                return body
+            files: list[tuple[bytes, str, str]] = []
+            for upload_id in upload_ids:
+                upload = await self._staged_upload(session, user.id, room.id, upload_id)
+                blob = await self._media_store.get(session, upload.uri)
+                if blob is None:
+                    raise ChatError(
+                        422,
+                        "UPLOAD_NOT_FOUND",
+                        f"No file was uploaded to this chat as {upload_id}.",
+                    )
+                files.append((blob.data, upload.filename, upload.mimetype))
+
+        text_check: TrustCheckResult | None = None
+        files_check = AttachmentsVerdict()
+        if body.strip() and files:
+            text_check, files_check = await asyncio.gather(
+                check_message(
+                    self._trust_client, role="user", content=body, room_id=room.id
+                ),
+                check_attachments(
+                    self._trust_client, role="user", files=files, room_id=room.id
+                ),
+            )
+        elif body.strip():
+            text_check = await check_message(
+                self._trust_client, role="user", content=body, room_id=room.id
+            )
+        elif files:
+            files_check = await check_attachments(
+                self._trust_client, role="user", files=files, room_id=room.id
+            )
+
+        if text_check is not None and (
+            text_check.blocked
+            or (
+                text_check.outcome == "redacted" and text_check.redacted_content is None
+            )
+        ):
+            categories = (
+                ", ".join(sorted({f.category for f in text_check.findings}))
+                or "policy violation"
+            )
+            logger.warning(
+                "Chat message from user %s in room %s not posted: Switch Trust "
+                "outcome=%s (%s)",
+                user.id,
+                room.id,
+                text_check.outcome,
+                categories,
+            )
+            raise ChatError(
+                422,
+                "TRUST_BLOCKED",
+                f"Switch Trust blocked this message ({categories}). Nothing was sent.",
+            )
+        if files_check.blocked:
+            reasons = "; ".join(files_check.block_reasons)
+            logger.warning(
+                "Chat message from user %s in room %s not posted: Switch Trust "
+                "blocked its files: %s",
+                user.id,
+                room.id,
+                reasons,
+            )
+            raise ChatError(
+                422,
+                "TRUST_BLOCKED",
+                f"Switch Trust blocked this message: {reasons}. Nothing was sent.",
+            )
+        if text_check is not None and text_check.redacted_content is not None:
+            body = text_check.redacted_content
+        annotation = trust_annotation(text_check) if text_check is not None else None
+        notes = [*([annotation] if annotation is not None else []), *files_check.notes]
+        if notes:
+            notes_text = "\n".join(notes)
+            body = f"{body}\n\n{notes_text}" if body.strip() else notes_text
+        return body
 
     async def _staged_upload(
         self, session: AsyncSession, user_id: str, room_id: str, upload_id: str
