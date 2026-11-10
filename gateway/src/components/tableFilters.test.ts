@@ -5,6 +5,8 @@ import {
   type FilterableColumn,
   filterOptions,
   isQuickFilterOn,
+  pickOnly,
+  pruneSelection,
   toggleQuickFilter,
   toggleValue,
 } from "./tableFilters";
@@ -113,5 +115,43 @@ describe("countLabel", () => {
 
   it("says how many of them show while something does", () => {
     expect(countLabel(3, 12, noun, true)).toBe("3 of 12 agents");
+  });
+});
+
+describe("pickOnly", () => {
+  it("narrows the column to the one value, replacing what it had", () => {
+    expect(pickOnly({ status: ["Active", "Idle"], rooms: ["Support"] }, "status", "Idle")).toEqual({
+      status: ["Idle"],
+      rooms: ["Support"],
+    });
+  });
+
+  it("clears the column for every value", () => {
+    expect(pickOnly({ status: ["Active"], rooms: ["Support"] }, "status", null)).toEqual({ rooms: ["Support"] });
+  });
+});
+
+describe("pruneSelection", () => {
+  it("drops a value no row holds any more, and the column once it has none", () => {
+    const remaining = rows.filter((row) => row.id !== 2);
+    expect(pruneSelection({ rooms: ["Triage", "Support"], status: ["Idle"] }, columns, remaining)).toEqual({
+      rooms: ["Support"],
+    });
+  });
+
+  it("keeps a value the column's own options offer, whatever the rows hold", () => {
+    const fixed: FilterableColumn<Row>[] = [
+      { field: "status", filter: { value: (row) => row.status, options: [{ value: "Paused", label: "Paused" }] } },
+    ];
+    expect(pruneSelection({ status: ["Paused"] }, fixed, rows)).toEqual({ status: ["Paused"] });
+  });
+
+  it("drops a pick on a column that is gone or has no filter", () => {
+    expect(pruneSelection({ name: ["release-bot"], owner: ["x"] }, columns, rows)).toEqual({});
+  });
+
+  it("answers the same selection when nothing is dropped, so a caller can skip the update", () => {
+    const selection = { status: ["Active"] };
+    expect(pruneSelection(selection, columns, rows)).toBe(selection);
   });
 });
