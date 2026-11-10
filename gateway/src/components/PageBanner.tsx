@@ -2,14 +2,16 @@ import InfoOutlined from "@mui/icons-material/InfoOutlined";
 import WarningAmberOutlined from "@mui/icons-material/WarningAmberOutlined";
 import { Alert } from "@mui/material";
 import type { ReactNode } from "react";
+import { statusEdge, statusTone } from "../theme/theme";
 
 const TONES = {
+  // The warning banner's own treatment, as on every warning in the dashboard.
   warning: {
     severity: "warning",
     icon: <WarningAmberOutlined fontSize="small" />,
-    iconColor: "var(--hoot-warning)",
-    borderColor: "color-mix(in oklch, var(--hoot-warning) 40%, transparent)",
-    backgroundColor: "color-mix(in oklch, var(--hoot-warning) 14%, transparent)",
+    iconColor: "var(--mui-palette-warning-main)",
+    borderColor: statusEdge("warning"),
+    ...statusTone("warning"),
   },
   neutral: {
     severity: "info",
@@ -17,6 +19,7 @@ const TONES = {
     iconColor: "var(--hoot-muted-foreground)",
     borderColor: "var(--hoot-border)",
     backgroundColor: "var(--hoot-muted)",
+    color: "var(--hoot-foreground)",
   },
 } as const;
 
@@ -38,7 +41,7 @@ export default function PageBanner({
   /** A control at the banner's end, such as the link to where it is fixed. */
   action?: ReactNode;
 }) {
-  const { severity, icon, iconColor, borderColor, backgroundColor } = TONES[tone];
+  const { severity, icon, iconColor, borderColor, backgroundColor, color } = TONES[tone];
   return (
     <Alert
       severity={severity}
@@ -51,7 +54,7 @@ export default function PageBanner({
         borderRadius: "6px",
         borderColor,
         backgroundColor,
-        color: "text.primary",
+        color,
         fontSize: "0.875rem",
         fontWeight: 600,
         "& .MuiAlert-icon": { color: iconColor, py: 0 },

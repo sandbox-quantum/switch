@@ -135,8 +135,8 @@ function schemeScopes(blocks) {
 
 /**
  * A token's value as a colour, following var() references,
- * `color-mix(in oklch, <colour> N%, transparent)` washes and mixes of two
- * opaque colours. Null for a token that is not a colour (a length, a shadow).
+ * `color-mix(in oklch, <colour> N%, transparent)` washes and oklch or oklab
+ * mixes of two opaque colours. Null for a token that is not a colour (a length, a shadow).
  * Throws on a colour written in a form this script does not resolve, so it
  * can never be silently dropped.
  */
@@ -158,12 +158,13 @@ function resolveValue(scope, raw, seen) {
     return { ...colour, alpha: colour.alpha * (Number(mix[2]) / 100) };
   }
 
-  const blend = /^color-mix\(in oklch,\s*(.+?)\s+([\d.]+)%,\s*(.+)\)$/.exec(raw);
+  const blend = /^color-mix\(in (oklch|oklab),\s*(.+?)\s+([\d.]+)%,\s*(.+)\)$/.exec(raw);
   if (blend) {
-    const a = resolveValue(scope, blend[1], seen);
-    const b = resolveValue(scope, blend[3], seen);
+    const a = resolveValue(scope, blend[2], seen);
+    const b = resolveValue(scope, blend[4], seen);
     if (a === null || b === null) throw new Error(`color-mix() of a non-colour: ${raw}`);
-    return mixOklch(a, b, Number(blend[2]) / 100, raw);
+    const p = Number(blend[3]) / 100;
+    return blend[1] === "oklab" ? mixOklab(a, b, p, raw) : mixOklch(a, b, p, raw);
   }
 
   if (raw.startsWith("oklch(")) return parseOklch(raw);
@@ -190,6 +191,20 @@ function mixOklch(a, b, p, raw) {
     H: (((ha + delta * (1 - p)) % 360) + 360) % 360,
     alpha: 1,
   };
+}
+
+/** CSS `color-mix(in oklab, a p, b)` for two opaque colours: a straight
+ *  line through Oklab, so mixing a hue toward a near-grey darkens or lightens
+ *  it without swinging it round the hue wheel the way oklch would. */
+function mixOklab(a, b, p, raw) {
+  if (a.alpha !== 1 || b.alpha !== 1) throw new Error(`color-mix() of a translucent colour: ${raw}`);
+  const lab = ({ L, C, H }) => [L, C * Math.cos((H * Math.PI) / 180), C * Math.sin((H * Math.PI) / 180)];
+  const [La, aa, ba] = lab(a);
+  const [Lb, ab, bb] = lab(b);
+  const L = La * p + Lb * (1 - p);
+  const x = aa * p + ab * (1 - p);
+  const y = ba * p + bb * (1 - p);
+  return { L, C: Math.hypot(x, y), H: (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360, alpha: 1 };
 }
 
 /** camelCase a kebab token name so it reads naturally in TS. */

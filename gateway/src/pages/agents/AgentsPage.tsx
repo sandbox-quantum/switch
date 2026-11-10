@@ -250,7 +250,7 @@ export default function AgentsPage() {
       <Stack
         direction="row"
         spacing={2}
-        sx={{ mb: 2, flexWrap: "wrap", rowGap: 2 }}
+        sx={{ mb: 2, flexWrap: "wrap", rowGap: 2, alignItems: "flex-end" }}
       >
         <TextField
           size="small"

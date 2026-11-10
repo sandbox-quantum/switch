@@ -101,6 +101,10 @@ const ROW_SELECTED = "color-mix(in oklch, var(--hoot-muted) 75%, var(--hoot-card
  *  Ported from the Hoot design system's DataTable. */
 const HOOT_GRID_SX: SxProps<Theme> = {
   border: "1px solid var(--hoot-border)",
+  // The header and footer band: Hoot's cream wash, half as strong in dark
+  // mode, where the full wash lifts the band a step above the table.
+  "--table-band": "var(--hoot-cream)",
+  '[data-mui-color-scheme="dark"] &': { "--table-band": "color-mix(in oklch, var(--hoot-cream) 50%, transparent)" },
   borderRadius: "16px",
   "--DataGrid-rowBorderColor": "var(--hoot-border)",
   // The band is painted on the header row and the cells let it through: the
@@ -109,7 +113,7 @@ const HOOT_GRID_SX: SxProps<Theme> = {
   // while the rows scroll under it, and must hide them.
   "& .MuiDataGrid-columnHeaders": {
     backgroundColor: "var(--hoot-card)",
-    backgroundImage: "linear-gradient(var(--hoot-cream), var(--hoot-cream))",
+    backgroundImage: "linear-gradient(var(--table-band), var(--table-band))",
   },
   "& .MuiDataGrid-columnHeader, & .MuiDataGrid-columnHeaders .MuiDataGrid-filler": {
     backgroundColor: "transparent",
@@ -138,7 +142,7 @@ const HOOT_GRID_SX: SxProps<Theme> = {
     borderTopColor: "var(--hoot-border)",
   },
   "& .MuiDataGrid-footerContainer": {
-    backgroundColor: "var(--hoot-cream)",
+    backgroundColor: "var(--table-band)",
     // The hairline is drawn inside the footer, so it stays the 52px pages
     // count rather than 52px plus a border.
     borderTop: "none",
@@ -166,11 +170,11 @@ const OWN_FILTERING_SX: SxProps<Theme> = {
   [`& .${FILTERABLE}:hover .MuiDataGrid-menuIcon`]: { opacity: 1 },
 };
 
-/** The least a table with no rows to show is given: its header, two rows
- *  for what it says instead, and its footer. Pages size a table to its rows
- *  (`108 + rows * 52`), which leaves no room at all for "No rows" when there
- *  are none. */
-const EMPTY_TABLE_HEIGHT = 56 + 2 * 52 + 52;
+/** The least a table with no rows to show is given: its header and two rows
+ *  for what it says instead. Pages size a table to its rows (`108 + rows *
+ *  52`), which leaves no room at all for "No rows" when there are none. An
+ *  empty table has no footer: there is nothing to page through. */
+const EMPTY_TABLE_HEIGHT = 56 + 2 * 52;
 
 const PINNED = "hoot-pinned-right";
 
@@ -192,7 +196,7 @@ const PINNED_SX: SxProps<Theme> = {
     boxShadow: "inset 1px 0 0 var(--hoot-border)",
   },
   [`& .MuiDataGrid-columnHeader.${PINNED}`]: {
-    background: "linear-gradient(var(--hoot-cream), var(--hoot-cream)), var(--hoot-card)",
+    background: "linear-gradient(var(--table-band), var(--table-band)), var(--hoot-card)",
   },
   [`& .MuiDataGrid-row:hover .${PINNED}`]: { backgroundColor: ROW_HOVER },
   [`& .MuiDataGrid-row.Mui-selected .${PINNED}`]: { backgroundColor: ROW_SELECTED },
@@ -446,6 +450,7 @@ export default function DataTable<T extends { id: string | number }>({
       // renders. A page holds at most 50 rows, so that stays cheap.
       disableVirtualization={pinnedRight.length > 0}
       disableColumnFilter={ownFiltering}
+      hideFooter={shown.length === 0}
       slots={tableOverlay ? { noRowsOverlay: TableOverlay } : undefined}
       slotProps={{
         ...(tableOverlay && { noRowsOverlay: { tableEmpty: empty } }),

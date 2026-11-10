@@ -77,7 +77,19 @@ describe("DataTable toolbar", () => {
     const header = getComputedStyle(container.querySelector(".MuiDataGrid-columnHeaders") as HTMLElement);
 
     expect(header.backgroundColor).toBe("var(--hoot-card)");
-    expect(header.backgroundImage).toContain("var(--hoot-cream)");
+    expect(header.backgroundImage).toContain("var(--table-band)");
+  });
+
+  it("has no footer while it has no rows, since there is nothing to page through", () => {
+    const footer = (props: Partial<Parameters<typeof DataTable<Row>>[0]>) => {
+      const { container, unmount } = render(<DataTable rows={rows} columns={columns} {...props} />);
+      const found = container.querySelector(".MuiDataGrid-footerContainer") !== null;
+      unmount();
+      return found;
+    };
+
+    expect(footer({ rows: [] })).toBe(false);
+    expect(footer({})).toBe(true);
   });
 
   it("gives a table sized to its rows room to say it has none", () => {
@@ -88,7 +100,7 @@ describe("DataTable toolbar", () => {
       return height;
     };
 
-    expect(heightOf({ rows: [], height: 108 })).toBe("212px");
+    expect(heightOf({ rows: [], height: 108 })).toBe("160px");
     expect(heightOf({ rows: rows.slice(0, 1), height: 160 })).toBe("160px");
     expect(heightOf({ rows: [], height: 320 })).toBe("320px");
   });

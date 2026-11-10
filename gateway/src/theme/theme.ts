@@ -39,6 +39,18 @@ const MODAL = "0 0 8px 0 rgb(0 0 0 / 0.12), 0 8px 32px 0 rgb(0 0 0 / 0.12)";
 /** On a near-black page a soft shadow vanishes, so a dark menu's is deeper. */
 const POPOVER_DARK = "0 2px 6px 0 rgb(0 0 0 / 0.4), 0 10px 28px 0 rgb(0 0 0 / 0.6)";
 
+/** A status in the banner treatment: the tone's light wash, a hairline of the
+ *  tone a step darker, and text in its deep shade in light mode and its pale
+ *  one in dark, which MUI's Alert palette keeps well above AA. Chips and
+ *  banners share it, so a status chip reads as a small banner. */
+export type StatusTone = "success" | "warning" | "error" | "info";
+export const statusEdge = (tone: StatusTone) =>
+  `color-mix(in oklch, var(--mui-palette-${tone}-main) 35%, transparent)`;
+export const statusTone = (tone: StatusTone) => ({
+  backgroundColor: `var(--mui-palette-Alert-${tone}StandardBg)`,
+  color: `var(--mui-palette-Alert-${tone}Color)`,
+});
+
 /** Everything that floats over a card: menus, popovers, autocomplete lists
  *  and the grid's own menus and panels. They share the card's fill, so only
  *  a firm edge and a shadow set them apart from what they cover. */
@@ -226,35 +238,37 @@ export const APP_THEME = () =>
             fontSize: "0.875rem",
             fontWeight: 500,
             "& .MuiChip-label": { paddingLeft: 8, paddingRight: 8 },
-            // Status colours are rationed: a filled chip reads as a tinted
-            // wash of its semantic hue, never a saturated block.
+            // A filled chip is a small banner: its tone's wash, a hairline a
+            // step darker (drawn inset, so the chip keeps its height) and text
+            // in the tone's readable shade. Grey for a state with no tone.
             variants: [
               {
                 props: { variant: "filled", color: "default" },
-                style: { backgroundColor: hootVar("muted"), color: hootVar("muted-foreground") },
-              },
-              {
-                props: { variant: "filled", color: "success" },
-                style: { backgroundColor: hootVar("success-muted"), color: hootVar("success") },
-              },
-              // Amber text on its own wash is unreadable (under 2:1), so a
-              // warning chip takes ink on the wash with an amber hairline,
-              // as Hoot's amber badge does.
-              {
-                props: { variant: "filled", color: "warning" },
                 style: {
-                  backgroundColor: hootVar("warning-muted"),
-                  color: hootVar("foreground"),
-                  boxShadow: `inset 0 0 0 1px color-mix(in oklch, ${hootVar("warning")} 40%, transparent)`,
+                  backgroundColor: hootVar("muted"),
+                  color: hootVar("muted-foreground"),
+                  boxShadow: `inset 0 0 0 1px color-mix(in oklch, ${hootVar("foreground")} 14%, transparent)`,
                 },
               },
-              {
-                props: { variant: "filled", color: "error" },
-                style: { backgroundColor: hootVar("destructive-muted"), color: hootVar("destructive-text") },
-              },
+              ...(["success", "warning", "error", "info"] as const).map((tone) => ({
+                props: { variant: "filled" as const, color: tone },
+                style: { ...statusTone(tone), boxShadow: `inset 0 0 0 1px ${statusEdge(tone)}` },
+              })),
             ],
           },
           outlined: { borderColor: hootVar("border"), backgroundColor: "transparent" },
+        },
+      },
+      // A banner's edge is its tone a step darker than its wash, as a status
+      // chip's is.
+      MuiAlert: {
+        styleOverrides: {
+          root: {
+            variants: (["success", "warning", "error", "info"] as const).map((tone) => ({
+              props: { variant: "standard" as const, severity: tone },
+              style: { ...statusTone(tone), border: `1px solid ${statusEdge(tone)}` },
+            })),
+          },
         },
       },
       MuiDivider: { styleOverrides: { root: { borderColor: hootVar("border") } } },
@@ -331,8 +345,42 @@ export const APP_THEME = () =>
       },
       // Hoot's field chrome: a white field on a hairline with one soft shadow,
       // and on focus a full-strength border with a soft ring hugging it.
-      MuiOutlinedInput: {
+      // Hoot's field label sits above the box, 14px and medium, 6px clear of
+      // it, as in DESIGN.md's form fields: never a label floating inside the
+      // box that reads as placeholder text, and so no notch in the border.
+      MuiInputLabel: {
+        defaultProps: { shrink: true },
         styleOverrides: {
+          root: {
+            position: "static",
+            transform: "none",
+            maxWidth: "none",
+            marginBottom: 6,
+            fontSize: "0.875rem",
+            fontWeight: 500,
+            lineHeight: 1.25,
+            color: hootVar("foreground"),
+            "&.Mui-focused": { color: hootVar("foreground") },
+            "&.Mui-error": { color: hootVar("destructive-text") },
+            "&.Mui-disabled": { color: hootVar("field-disabled-foreground") },
+          },
+        },
+      },
+      MuiFormHelperText: {
+        styleOverrides: {
+          root: {
+            margin: "6px 0 0",
+            fontSize: "0.875rem",
+            lineHeight: 1.4,
+            color: hootVar("muted-foreground"),
+            "&.Mui-error": { color: hootVar("destructive-text") },
+          },
+        },
+      },
+      MuiOutlinedInput: {
+        defaultProps: { notched: false },
+        styleOverrides: {
+          notchedOutline: { top: 0, "& legend": { display: "none" } },
           root: {
             borderRadius: RADIUS - 2,
             backgroundColor: hootVar("field"),
@@ -451,6 +499,9 @@ export const APP_THEME = () =>
       },
       MuiPopper: { defaultProps: { popperOptions: POPPER_OPTIONS } },
       MuiTextField: { defaultProps: { size: "small", fullWidth: true, variant: "outlined" } },
+      // With the label above the box, an empty select would show an empty
+      // box; it shows its "" option instead ("All", "None"), where it has one.
+      MuiSelect: { defaultProps: { displayEmpty: true } },
       MuiTooltip: {
         defaultProps: { arrow: true },
         styleOverrides: {
