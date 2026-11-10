@@ -486,6 +486,8 @@ describe('room settings for someone who may only read the room', () => {
       canWrite: false,
       canChangeMembers: false,
       canInviteAgents: true,
+      canAddPeople: false,
+      canRemoveMembers: false,
       canManage: false,
     };
     const el = await renderPanel('side');
