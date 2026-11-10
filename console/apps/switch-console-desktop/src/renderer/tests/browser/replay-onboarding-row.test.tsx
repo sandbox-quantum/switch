@@ -6,7 +6,11 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ devTools: true, navigate: vi.fn() }));
+const state = vi.hoisted(() => ({
+  devTools: true,
+  navigate: vi.fn(),
+  replayAsFreshInstall: vi.fn(),
+}));
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -17,6 +21,10 @@ vi.hoisted(() => {
 });
 
 vi.mock('@renderer/lib/dev-tools', () => ({ showDevTools: () => state.devTools }));
+
+vi.mock('@renderer/lib/ipc', () => ({
+  rpc: { app: { replayAsFreshInstall: state.replayAsFreshInstall } },
+}));
 
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({
   useNavigate: () => ({ navigate: state.navigate }),
@@ -39,8 +47,13 @@ async function render(): Promise<HTMLDivElement> {
 beforeEach(() => {
   state.devTools = true;
   state.navigate.mockReset();
+  state.replayAsFreshInstall.mockReset();
   onboardingStore.reset();
 });
+
+function button(el: HTMLElement, label: string): HTMLButtonElement {
+  return [...el.querySelectorAll('button')].find((b) => b.textContent === label)!;
+}
 
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
@@ -50,7 +63,7 @@ afterEach(async () => {
   onboardingStore.reset();
 });
 
-describe('the replay first-run pages row', () => {
+describe('the replay onboarding row', () => {
   it('is not there on a stable build', async () => {
     state.devTools = false;
     const el = await render();
@@ -60,12 +73,31 @@ describe('the replay first-run pages row', () => {
 
   it('opens the first-run pages from the start and leaves Settings', async () => {
     const el = await render();
-    const replay = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Replay');
-
-    await act(async () => replay!.click());
+    await act(async () => button(el, 'Pages only').click());
 
     expect(onboardingStore.rehearsal).toBe(true);
     expect(onboardingStore.page).toBe('welcome');
     expect(state.navigate).toHaveBeenCalledWith('home');
+  });
+
+  it('restarts as a fresh install', async () => {
+    state.replayAsFreshInstall.mockResolvedValue({ success: true });
+    const el = await render();
+
+    await act(async () => button(el, 'Fresh install').click());
+
+    expect(state.replayAsFreshInstall).toHaveBeenCalled();
+  });
+
+  it('shows why a fresh install could not start', async () => {
+    state.replayAsFreshInstall.mockResolvedValue({
+      success: false,
+      error: 'Only in dev and Canary builds.',
+    });
+    const el = await render();
+
+    await act(async () => button(el, 'Fresh install').click());
+
+    expect(el.textContent).toContain('Only in dev and Canary builds.');
   });
 });

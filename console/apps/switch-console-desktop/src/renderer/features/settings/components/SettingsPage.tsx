@@ -30,7 +30,7 @@ import {
 } from '../settings-tabs';
 import NotificationSettingsCard from './NotificationSettingsCard';
 import { OnboardingChecklistRow } from './OnboardingSettingsRow';
-import { ReplayFreshInstallRow, ReplayOnboardingRow } from './ReplayOnboardingRow';
+import { ReplayOnboardingRow } from './ReplayOnboardingRow';
 import {
   AutoGenerateSessionNamesRow,
   AutoTrustWorktreesRow,
@@ -56,7 +56,6 @@ function PreferencesSettingsPage() {
       <NotificationSettingsCard />
       <OnboardingChecklistRow />
       <ReplayOnboardingRow />
-      <ReplayFreshInstallRow />
       <TelemetrySettingsCard />
     </div>
   );
