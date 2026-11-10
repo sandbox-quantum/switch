@@ -44,6 +44,28 @@ serveralivecountmax 2
       connectTimeout: 17,
       serverAliveInterval: 60,
       serverAliveCountMax: 2,
+      userKnownHostsFile: undefined,
+      globalKnownHostsFile: undefined,
+      strictHostKeyChecking: undefined,
+      hashKnownHosts: false,
+    });
+  });
+
+  it('parses the known-hosts options the host-key check needs', () => {
+    // `none` is a real value for these files, so it is kept rather than folded
+    // away like the other optional strings.
+    const config = parseSshGOutput(`
+userknownhostsfile ~/.ssh/known_hosts ~/.ssh/known_hosts2
+globalknownhostsfile none
+stricthostkeychecking accept-new
+hashknownhosts yes
+`);
+
+    expect(config).toMatchObject({
+      userKnownHostsFile: '~/.ssh/known_hosts ~/.ssh/known_hosts2',
+      globalKnownHostsFile: 'none',
+      strictHostKeyChecking: 'accept-new',
+      hashKnownHosts: true,
     });
   });
 });
