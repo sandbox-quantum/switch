@@ -1126,6 +1126,51 @@ class TestWorkspaceSwitch:
         }
         assert await _connection(session_factory, ada.id) is None
 
+    async def test_a_sign_in_whose_account_cannot_be_read_is_revoked(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[loopback, core]\n    revocation_discovered: true",
+        )
+        world.vendor.fail[world.vendor.identity_url] = (403, {})
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            refused = await console.complete(code)
+        assert refused.status_code == 400
+        unread = "Example would not say whose sign-in this is (HTTP 403)."
+        assert refused.json()["detail"] == unread
+        assert [form["token_type_hint"] for form in world.vendor.revoked] == [
+            "refresh_token"
+        ]
+        assert world.vendor.live_refresh == {}
+        flow = await _flow_row(session_factory, console.state)
+        assert (flow.status, flow.error) == ("failed", unread)
+
+    async def test_an_unread_sign_in_that_cannot_be_revoked_says_what_to_do(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        world.vendor.fail[world.vendor.identity_url] = (403, {})
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            refused = await console.complete(code)
+        assert refused.status_code == 400
+        told = (
+            "Example would not say whose sign-in this is (HTTP 403). Switch has "
+            "stopped using the Example sign-in but cannot revoke it, so it still "
+            "works. Remove Switch under Connected apps in Example."
+        )
+        assert refused.json()["detail"] == told
+        flow = await _flow_row(session_factory, console.state)
+        assert (flow.status, flow.error) == ("failed", told)
+        assert await _connection(session_factory, ada.id) is None
+
 
 SITES = ("example.test", "eu.example.test")
 

@@ -31,12 +31,14 @@ at most 256 per workspace, one per person.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
 from switch_core.connections.adapters import (
+    ConnectionNotRevocable,
     ReauthorizationRequiredError,
     ServiceAdapterError,
 )
@@ -66,6 +68,8 @@ from switch_core.connections.sign_in_flows import (
     vendor_refusal,
 )
 
+logger = logging.getLogger(__name__)
+
 KIND = "service"
 # Some vendors issue codes as signed tokens: Atlassian's run past 2,000
 # characters.
@@ -75,6 +79,30 @@ INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
 
 def client_changed(name: str) -> str:
     return f"Switch's {name} app changed during your sign-in. Start it again."
+
+
+async def _unkept(
+    adapter: OAuthAdapter, flow: ServiceFlow, signed_in: SignIn | None, failure: str
+) -> str:
+    """`failure`, once the sign-in the vendor issued for a flow that failed is
+    revoked, with what the person must do where it could not be."""
+    if signed_in is None:
+        return failure
+    try:
+        await adapter.revoke_connection(signed_in.secret, "oauth")
+    except ConnectionNotRevocable as error:
+        return f"{failure} {error}"
+    except Exception as error:
+        logger.error(
+            "%s unkept sign-in revocation failed: error_type=%s",
+            flow.service,
+            type(error).__name__,
+        )
+        return (
+            f"{failure} Switch could not revoke the sign-in {flow.name} just "
+            f"issued. Remove Switch from your {flow.name} account's connected apps."
+        )
+    return failure
 
 
 class FlowError(Exception):
@@ -421,6 +449,7 @@ class ServiceFlows:
         )
         if checking is None:
             raise refused
+        signed_in: SignIn | None = None
         try:
             recorded = flow.stored.details.get("client_id")
             if recorded is not None and recorded != await adapter.client_id(
@@ -438,15 +467,18 @@ class ServiceFlows:
                 signed_in.secret.access_token or "", flow.choices
             )
         except ReauthorizationRequiredError:
-            await self.failed(
-                checking, f"{flow.name} refused the sign-in. Connect again."
+            failure = await _unkept(
+                adapter,
+                flow,
+                signed_in,
+                f"{flow.name} refused the sign-in. Connect again.",
             )
-            raise FlowError(
-                f"{flow.name} refused the sign-in. Connect again."
-            ) from None
+            await self.failed(checking, failure)
+            raise FlowError(failure) from None
         except ServiceAdapterError as error:
-            await self.failed(checking, str(error))
-            raise FlowError(str(error)) from None
+            failure = await _unkept(adapter, flow, signed_in, str(error))
+            await self.failed(checking, failure)
+            raise FlowError(failure) from None
         except BaseException:
             await self.failed(checking, INTERRUPTED)
             raise
