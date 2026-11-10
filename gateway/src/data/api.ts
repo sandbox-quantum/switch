@@ -2104,6 +2104,10 @@ export async function fetchReferenceRooms(id: string): Promise<ResourceRoom[] | 
   return fetchJson<ResourceRoom[]>(`/references/${id}/rooms`);
 }
 
+export async function loadReferenceRooms(id: string): Promise<ResourceRoom[]> {
+  return jsonRequest<ResourceRoom[]>(`/references/${id}/rooms`, "GET");
+}
+
 export async function fetchRoomReferences(
   roomId: string,
 ): Promise<ReferenceDetail[] | null> {
@@ -2287,6 +2291,10 @@ export async function fetchDocumentRooms(id: string): Promise<ResourceRoom[] | n
   return fetchJson<ResourceRoom[]>(`/documents/${id}/rooms`);
 }
 
+export async function loadDocumentRooms(id: string): Promise<ResourceRoom[]> {
+  return jsonRequest<ResourceRoom[]>(`/documents/${id}/rooms`, "GET");
+}
+
 export async function fetchRoomDocuments(
   roomId: string,
 ): Promise<RoomDocumentSummary[] | null> {
@@ -2415,6 +2423,10 @@ export async function fetchPackageRooms(id: string): Promise<ResourceRoom[] | nu
   return fetchJson<ResourceRoom[]>(`/packages/${id}/rooms`);
 }
 
+export async function loadPackageRooms(id: string): Promise<ResourceRoom[]> {
+  return jsonRequest<ResourceRoom[]>(`/packages/${id}/rooms`, "GET");
+}
+
 export async function fetchPackageReferences(
   id: string,
 ): Promise<ReferenceDetail[] | null> {
@@ -2425,6 +2437,14 @@ export async function fetchPackageDocuments(
   id: string,
 ): Promise<DocumentSummary[] | null> {
   return fetchJson<DocumentSummary[]>(`/packages/${id}/documents`);
+}
+
+export async function loadPackageReferences(id: string): Promise<ReferenceDetail[]> {
+  return jsonRequest<ReferenceDetail[]>(`/packages/${id}/references`, "GET");
+}
+
+export async function loadPackageDocuments(id: string): Promise<DocumentSummary[]> {
+  return jsonRequest<DocumentSummary[]>(`/packages/${id}/documents`, "GET");
 }
 
 export async function addReferenceToPackage(

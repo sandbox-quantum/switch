@@ -170,6 +170,10 @@ export function TransferOwnershipDialog({
         )}
         {members === null && !error ? (
           <CircularProgress size={20} />
+        ) : members !== null && candidates.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            There is no one else in this workspace to give it to.
+          </Typography>
         ) : (
           <Select
             fullWidth

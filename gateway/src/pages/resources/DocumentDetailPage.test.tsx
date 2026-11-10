@@ -31,7 +31,7 @@ const doc: DocumentDetail = {
   can_transfer: false,
 };
 
-type Flags = Pick<DocumentDetail, "can_edit" | "can_manage" | "can_transfer">;
+type Flags = Partial<DocumentDetail>;
 
 /** The page for a document the server describes with `flags`; every other
  * read answers empty, and each write is recorded. */
@@ -126,5 +126,17 @@ describe("DocumentDetailPage", () => {
     expect(screen.getByLabelText("Access").getAttribute("aria-disabled")).toBeNull();
     expect(screen.getByRole("button", { name: "Delete document" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Transfer ownership" })).toBeTruthy();
+  });
+
+  it("will not save it with its content emptied", async () => {
+    showWith({ can_edit: true, can_manage: false, can_transfer: false });
+    fireEvent.change(await screen.findByDisplayValue("Step one"), { target: { value: "" } });
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("offers no attaching for a document that belongs to one room", async () => {
+    showWith({ can_edit: true, can_manage: true, can_transfer: false, scope: "room", room_id: "room1" });
+    await screen.findByDisplayValue("Runbook");
+    expect(screen.queryByRole("button", { name: "Attach to room" })).toBeNull();
   });
 });

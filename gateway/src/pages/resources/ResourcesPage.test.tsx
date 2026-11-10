@@ -3,38 +3,10 @@ import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DocumentSummary, ReferenceDetail, ReferenceTypeDetail, Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import { answerFetch as answer } from "../../test/answerFetch";
 import ResourcesPage from "./ResourcesPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
-
-type Route = [number, unknown];
-
-/** Answers each `METHOD /path` from its queue, the last answer repeating, and
- * records every call. */
-function answer(routes: Record<string, Route | Route[]>) {
-  const calls: { method: string; path: string }[] = [];
-  const queues = new Map(
-    Object.entries(routes).map(([key, value]) => [
-      key,
-      Array.isArray(value[0]) ? [...(value as Route[])] : [value as Route],
-    ]),
-  );
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const method = init?.method ?? "GET";
-      const path = String(input).replace(/^\/gateway/, "").split("?")[0];
-      calls.push({ method, path });
-      const queue = queues.get(`${method} ${path}`);
-      const [status, body] = (queue && (queue.length > 1 ? queue.shift() : queue[0])) ?? [
-        404,
-        { detail: `unmocked ${method} ${path}` },
-      ];
-      return new Response(JSON.stringify(body), { status });
-    }),
-  );
-  return calls;
-}
 
 const gets = (calls: { method: string; path: string }[], path: string) =>
   calls.filter((call) => call.method === "GET" && call.path === path).length;
