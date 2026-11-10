@@ -1464,10 +1464,14 @@ def test_message_permalink_either_rate_limit_signal_is_retried(
 def test_message_permalink_rate_limit_without_retry_after_is_not_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With no header the wait is the 30-second default, too long to wait out."""
+    """With no header the wait is the 30-second default: too long to wait
+    out, and the wait every request is then held back for."""
     adapter, client = _permalink_adapter()
     client.permalink_errors = [FakeResponse({"error": "ratelimited"}, status_code=429)]
     sleeps: list[float] = []
+    monkeypatch.setattr(
+        cooldown_module, "time", SimpleNamespace(monotonic=lambda: 1000.0)
+    )
 
     async def fake_sleep(delay: float) -> None:
         sleeps.append(delay)
@@ -1478,6 +1482,7 @@ def test_message_permalink_rate_limit_without_retry_after_is_not_retried(
         _run(adapter.message_permalink("C1:171.2"))
     assert sleeps == []
     assert len(client.permalink_calls) == 1
+    assert adapter._permalink_cooldown.remaining() == 30
 
 
 def test_message_permalink_long_retry_after_is_not_retried(
