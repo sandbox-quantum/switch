@@ -9,7 +9,6 @@ import { ChosenRoomTile, RoomPickerRow } from '@renderer/lib/components/room-pic
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
-import { useRoomAgentCandidates } from '@renderer/lib/stores/use-room-agent-candidates';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import {
@@ -65,12 +64,9 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
   // omitted them made those rooms unreachable from here entirely.
   // Only rooms the user may bring agents into: a chat they manage, or a room
   // they are in (or administer) whose members are not fixed by its platform.
-  // And none at all for an agent the user may not invite anywhere: one that
-  // doesn't take requests from them, as the server's invite rule says.
-  const { data: invitableIds } = useRoomAgentCandidates(workspaceId, null);
-  const agentInvitable = !invitableIds || invitableIds.includes(switchAgentId);
-  const readableRooms = useReadableRoomsInWorkspace(workspaceId);
-  const candidates: Candidate[] = (agentInvitable ? readableRooms : [])
+  // Whether this agent takes requests from them can depend on the room, so
+  // that is left to the server, which says why when it refuses one.
+  const candidates: Candidate[] = useReadableRoomsInWorkspace(workspaceId)
     .filter((room) => !alreadyIn.has(room.id) && !selected.some((s) => s.id === room.id))
     .filter((room) =>
       mayAddToRoom(
@@ -160,13 +156,7 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
                 workspace is listed. Adding it to one it already belongs to changes nothing.
               </p>
             )}
-            {!agentInvitable && (
-              <p className="mt-1 text-xs text-foreground-muted">
-                {agentName} doesn’t take requests from you, so you can’t bring it into a room. Ask
-                its owner to add it, or to let you address it.
-              </p>
-            )}
-            {nothingToAdd && agentInvitable && !membershipUnknown && (
+            {nothingToAdd && !membershipUnknown && (
               <p className="mt-1 text-xs text-foreground-muted">
                 {agentName} is already in every room you can add it to in this workspace.
               </p>

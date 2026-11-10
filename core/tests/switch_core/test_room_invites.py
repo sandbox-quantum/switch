@@ -26,8 +26,10 @@ from switch_core.room_invites import (
     NOT_IN_ROOM_REFUSAL,
     InviteRefused,
     invitable_agent_ids,
+    require_agent_may_add_to_new_room,
     require_user_may_add_to_new_room,
     require_user_may_invite,
+    with_subagents,
 )
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
     _make_public_room,
@@ -382,3 +384,111 @@ class TestNewRoomAndCandidates:
             assert await ask(outside) == set()
             # A new room: everything she may address.
             assert await ask(None) == {carols_in_room, carols_worker, open_agent}
+
+
+async def _make_subagent(
+    session_factory: async_sessionmaker[AsyncSession], child_id: str, parent_id: str
+) -> None:
+    async with session_factory() as session:
+        child = await session.get(Agent, child_id)
+        assert child is not None
+        child.parent_agent_id = parent_id
+        await session.commit()
+
+
+class TestSubagentsAndAgentCreatedRooms:
+    """Subagents come in with their parent and are judged too; an agent's
+    `create_room` is judged as its owner."""
+
+    async def test_an_open_parent_does_not_carry_in_a_restricted_subagent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc, rooms = _tool_service(session_factory)
+        alice = await _make_user(session_factory, "alice")
+        bob = await _make_user(session_factory, "bob")
+        alice_agent = await _register(svc, "alice-agent", alice)
+        parent = await _register(svc, "bobs-parent", bob)
+        await _set_policy(session_factory, parent, None)
+        child = await _register(svc, "bobs-child", bob)  # owner and owner's agents
+        await _make_subagent(session_factory, child, parent)
+        room_id = await _make_public_room(
+            session_factory, owner_id=alice, member_agent_ids=[alice_agent]
+        )
+
+        with pytest.raises(InviteRefused, match="bobs-child"):
+            await svc.invite_agent_to_room(
+                alice_agent, room_id, "bobs-parent", include_subagents=True
+            )
+        assert rooms.added == []
+        # Without its subagents the open parent goes in.
+        await svc.invite_agent_to_room(alice_agent, room_id, "bobs-parent")
+        assert rooms.added == ["bobs-parent"]
+
+    async def test_the_gateway_rule_checks_subagents_it_would_add(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        alice = await _make_user(session_factory, "alice")
+        bob = await _make_user(session_factory, "bob")
+        alice_agent = await _register(svc, "alice-agent", alice)
+        parent = await _register(svc, "bobs-parent", bob)
+        await _set_policy(session_factory, parent, None)
+        child = await _register(svc, "bobs-child", bob)
+        await _make_subagent(session_factory, child, parent)
+        room_id = await _make_public_room(
+            session_factory, owner_id=alice, member_agent_ids=[alice_agent]
+        )
+
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)
+            opened = await session.get(Agent, parent)
+            assert room is not None and opened is not None
+            targets = await with_subagents(session, AgentStore(), [opened], [parent])
+            assert {t.name for t in targets} == {"bobs-parent", "bobs-child"}
+            with pytest.raises(InviteRefused, match="bobs-child"):
+                await require_user_may_invite(
+                    session,
+                    RoomStore(),
+                    ExternalUserStore(),
+                    room=room,
+                    targets=targets,
+                    user_id=alice,
+                    is_admin=False,
+                )
+
+    async def test_an_agent_may_not_create_a_room_holding_an_agent_its_owner_cannot_address(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc, _rooms = _tool_service(session_factory)
+        alice = await _make_user(session_factory, "alice")
+        ada = await _make_user(session_factory, "ada")
+        alice_agent = await _register(svc, "alice-agent", alice)
+        await _register(svc, "ada-private", ada)
+        await _register(svc, "alice-worker", alice)
+
+        with pytest.raises(InviteRefused, match="ada-private"):
+            await svc.create_moderation_room(
+                agent_id=alice_agent,
+                name="mine",
+                description="",
+                agent_names=["alice-agent", "ada-private"],
+                user_names=None,
+                channel_type=None,
+                bridge_id=None,
+                internal_only=True,
+                include_owner=False,
+            )
+
+        async with session_factory() as session:
+            caller = await session.get(Agent, alice_agent)
+            assert caller is not None
+            # Her own agents are fine, the caller included.
+            await require_agent_may_add_to_new_room(
+                session,
+                ExternalUserStore(),
+                targets=await AgentStore().get_by_names(
+                    session, ["alice-agent", "alice-worker"]
+                ),
+                caller=caller,
+                group_id=None,
+            )

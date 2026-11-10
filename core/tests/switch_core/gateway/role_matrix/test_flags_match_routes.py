@@ -202,6 +202,10 @@ CHECKS: dict[str, Check] = {
                 _get(f"{G}/rooms/{{readable_room}}"),
                 _transfer("room", "{readable_room}"),
             ),
+            # `can_invite_agents` says the caller may bring agents in at all;
+            # each agent's own addressing policy can still refuse one. The
+            # harness agent is open to everyone, so the route answers as the
+            # flag does here. Pair them more tightly only with an open agent.
             Check(
                 "can_invite_agents",
                 _get(f"{G}/rooms/{{readable_room}}"),

@@ -99,6 +99,7 @@ from switch_core.room_invites import (
     invitable_agent_ids,
     require_user_may_add_to_new_room,
     require_user_may_invite,
+    with_subagents,
 )
 from switch_core.room_service import (
     FIXED_MEMBERSHIP,
@@ -525,9 +526,12 @@ async def create_room(
         require_group_filing_or_403(is_admin)
     # The creator owns the new room, so is in it; the invite rule still asks
     # whether they may address each agent they put in (`room_invites`).
-    targets = await agent_store.get_many(session, req.agent_ids or [])
+    named = await agent_store.get_many(session, req.agent_ids or [])
     if req.agent_names:
-        targets += await agent_store.get_by_names(session, req.agent_names)
+        named += await agent_store.get_by_names(session, req.agent_names)
+    targets = await with_subagents(
+        session, agent_store, named, req.include_subagents_for
+    )
     try:
         await require_user_may_add_to_new_room(
             session,
@@ -1010,18 +1014,13 @@ async def room_agent_candidates(
         )
         if room.channel_type in FIXED_MEMBERSHIP:
             return RoomAgentCandidates(agent_ids=[])
-    tenant_id = require_tenant_id()
-    agents = [
-        agent
-        for agent in await agent_store.get_all(session)
-        if agent.tenant_id == tenant_id
-    ]
+    agents = await agent_store.get_in_tenant(session, require_tenant_id())
     return RoomAgentCandidates(
         agent_ids=await invitable_agent_ids(
             session,
             room_store,
             external_user_store,
-            agents=sorted(agents, key=lambda agent: agent.name),
+            agents=agents,
             user_id=user.id,
             is_admin=is_admin,
             room=room,
@@ -1441,7 +1440,12 @@ async def post_room_agents(
             room_store,
             external_user_store,
             room=target_room,
-            targets=await agent_store.get_many(session, req.agent_ids),
+            targets=await with_subagents(
+                session,
+                agent_store,
+                await agent_store.get_many(session, req.agent_ids),
+                req.include_subagents_for,
+            ),
             user_id=user.id,
             is_admin=is_admin,
         )

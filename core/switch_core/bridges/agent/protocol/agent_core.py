@@ -140,7 +140,11 @@ from switch_core.events import (
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
-from switch_core.room_invites import require_agent_may_invite
+from switch_core.room_invites import (
+    require_agent_may_add_to_new_room,
+    require_agent_may_invite,
+    with_subagents,
+)
 from switch_core.room_schedules import (
     TEXT_LIMIT,
     ScheduleError,
@@ -3232,6 +3236,20 @@ class AgentCore:
                 require_group_filing(owner_is_admin)
             group_id = await self._resolve_group_name(session, group_name)
             owner = await session.get(User, agent.owner_id) if agent.owner_id else None
+            # The invite rule, as for any agent put into a room: judged as the
+            # owner, who owns the new room (`room_invites`).
+            await require_agent_may_add_to_new_room(
+                session,
+                self.external_user_store,
+                targets=await with_subagents(
+                    session,
+                    self.agent_store,
+                    await self.agent_store.get_by_names(session, agent_names),
+                    include_subagents_for,
+                ),
+                caller=agent,
+                group_id=group_id,
+            )
         if include_owner:
             if not internal_only or bridge_id is not None:
                 raise ValueError(
@@ -3403,7 +3421,12 @@ class AgentCore:
                 self.room_store,
                 self.external_user_store,
                 room=room,
-                target=target,
+                targets=await with_subagents(
+                    session,
+                    self.agent_store,
+                    [target],
+                    [target.id] if include_subagents else None,
+                ),
                 caller=caller,
                 owner_is_admin=owner_is_admin,
             )

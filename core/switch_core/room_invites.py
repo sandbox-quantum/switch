@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from switch_core.db.models import Agent, Room
+    from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.external_user_store import ExternalUserStore
     from switch_core.db.stores.room_store import RoomStore
 
@@ -130,18 +131,44 @@ async def _user_may_address(
     )
 
 
-def _agent_may_address(target: Agent, *, room: Room, caller: Agent) -> bool:
+def _admits_agent(
+    target: Agent, *, room_id: str, group_id: str | None, caller: Agent
+) -> bool:
     """Whether the policy admits `caller` itself: by name, or through an
     owner's-agents rule when both share an owner."""
     return can_address(
         parse_policy(target.addressing_policy),
-        room_id=room.id,
-        group_id=room.group_id,
+        room_id=room_id,
+        group_id=group_id,
         sender_kind="agent",
         sender_id=caller.id,
         sender_user_ids=[],
         sender_owner_user_id=caller.owner_id,
         owner_user_id=target.owner_id,
+    )
+
+
+async def _agent_or_owner_may_address(
+    session: AsyncSession,
+    external_user_store: ExternalUserStore,
+    target: Agent,
+    *,
+    room_id: str,
+    group_id: str | None,
+    caller: Agent,
+) -> bool:
+    """Whether an agent acting for its owner may address `target`: the owner
+    may, or the target trusts that agent itself."""
+    if parse_policy(target.addressing_policy).is_open():
+        return True
+    if _admits_agent(target, room_id=room_id, group_id=group_id, caller=caller):
+        return True
+    return caller.owner_id is not None and _admits_user(
+        target,
+        room_id=room_id,
+        group_id=group_id,
+        user_id=caller.owner_id,
+        claimed=await _claimed(session, external_user_store, caller.owner_id),
     )
 
 
@@ -172,11 +199,12 @@ async def require_agent_may_invite(
     external_user_store: ExternalUserStore,
     *,
     room: Room,
-    target: Agent,
+    targets: list[Agent],
     caller: Agent,
     owner_is_admin: bool,
 ) -> None:
-    """Raise `InviteRefused` unless `caller` may invite `target` into `room`.
+    """Raise `InviteRefused` unless `caller` may invite every one of
+    `targets` into `room`.
 
     Judged as the caller's owner. An agent already in the room counts as in
     it too: its owner then owns an agent there anyway, and an agent nobody
@@ -189,15 +217,39 @@ async def require_agent_may_invite(
     )
     if not in_room:
         raise InviteRefused(NOT_IN_ROOM_REFUSAL)
-    if parse_policy(target.addressing_policy).is_open():
-        return
-    if _agent_may_address(target, room=room, caller=caller):
-        return
-    if caller.owner_id is not None and await _user_may_address(
-        session, external_user_store, target, room=room, user_id=caller.owner_id
-    ):
-        return
-    raise InviteRefused(not_addressable_refusal(target))
+    for target in targets:
+        if not await _agent_or_owner_may_address(
+            session,
+            external_user_store,
+            target,
+            room_id=room.id,
+            group_id=room.group_id,
+            caller=caller,
+        ):
+            raise InviteRefused(not_addressable_refusal(target))
+
+
+async def require_agent_may_add_to_new_room(
+    session: AsyncSession,
+    external_user_store: ExternalUserStore,
+    *,
+    targets: list[Agent],
+    caller: Agent,
+    group_id: str | None,
+) -> None:
+    """Raise `InviteRefused` unless `caller` may put every one of `targets`
+    into a room it is creating. Its owner owns the new room, so is in it;
+    what is left is the address check, judged as for an invite."""
+    for target in targets:
+        if not await _agent_or_owner_may_address(
+            session,
+            external_user_store,
+            target,
+            room_id="",
+            group_id=group_id,
+            caller=caller,
+        ):
+            raise InviteRefused(not_addressable_refusal(target))
 
 
 async def require_user_may_add_to_new_room(
@@ -260,3 +312,21 @@ async def invitable_agent_ids(
             )
         )
     ]
+
+
+async def with_subagents(
+    session: AsyncSession,
+    agent_store: AgentStore,
+    agents: list[Agent],
+    include_subagents_for: list[str] | None,
+) -> list[Agent]:
+    """`agents` plus the subagents of those named in `include_subagents_for`
+    (ids or names), which come into the room with their parent and so are
+    judged by the same rule: each has its own addressing policy."""
+    if not include_subagents_for:
+        return agents
+    wanted = set(include_subagents_for)
+    parents = [a.id for a in agents if a.id in wanted or a.name in wanted]
+    known = {a.id for a in agents}
+    children = await agent_store.get_children(session, parents)
+    return agents + [child for child in children if child.id not in known]
