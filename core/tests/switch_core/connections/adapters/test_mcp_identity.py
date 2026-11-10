@@ -941,6 +941,82 @@ async def test_mcp_identity_refuses_a_compressed_response(monkeypatch):
     assert time.monotonic() - started < 1
 
 
+async def test_a_second_budget_trip_is_a_no_op():
+    deadline = asyncio.timeout(None)
+    budget = _McpBudget(1, 1, deadline)
+    with pytest.raises(TimeoutError):
+        async with deadline:
+            budget.trip()
+            await asyncio.sleep(1)
+    budget.trip()
+    assert budget.tripped
+
+
+async def test_mcp_identity_over_budget_on_two_streams(monkeypatch):
+    """The listing and the server's event stream both go over the budget."""
+    monkeypatch.setattr(oauth, "MCP_RESPONSE_BYTES", 1024)
+    vendor = _ScriptedMcp()
+    big = "x" * 4096
+    streaming = asyncio.Event()
+
+    async def events() -> AsyncIterator[bytes]:
+        yield b": open\n\n"
+        streaming.set()
+        # A chunk that arrives after the first trip ended the call.
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(1)
+        yield f"data: {big}\n\n".encode()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200, content=events(), headers={"content-type": "text/event-stream"}
+            )
+        if b'"tools/list"' in request.content:
+            await streaming.wait()
+            message = json.loads(request.content)
+            result = {"tools": [], "x": big}
+            return httpx.Response(
+                200, json={"jsonrpc": "2.0", "id": message["id"], "result": result}
+            )
+        response = vendor(request)
+        # The SDK opens the event stream only for a session.
+        response.headers["mcp-session-id"] = "example-session"
+        return response
+
+    trips: list[BaseException | None] = []
+    trip = _McpBudget.trip
+
+    def recorded_trip(self: _McpBudget) -> None:
+        try:
+            trip(self)
+        except BaseException as error:
+            trips.append(error)
+            raise
+        trips.append(None)
+
+    monkeypatch.setattr(_McpBudget, "trip", recorded_trip)
+    _over_mock(monkeypatch, handler)
+    records = _Records()
+    loggers = [logging.getLogger(), logging.getLogger("fastmcp")]
+    for logger in loggers:
+        logger.addHandler(records)
+    try:
+        _assert_reason(await _identify_error(), "bad_result")
+        # The event stream's reader outlives the call.
+        await asyncio.sleep(0.1)
+    finally:
+        for logger in loggers:
+            logger.removeHandler(records)
+    assert len(trips) >= 2
+    assert all(error is None for error in trips)
+    assert not any(
+        "Cannot change state" in record.getMessage()
+        or (record.exc_info and isinstance(record.exc_info[1], RuntimeError))
+        for record in records.records
+    )
+
+
 async def test_mcp_identity_asks_for_identity_encoding(monkeypatch):
     vendor = _ScriptedMcp()
     _over_mock(monkeypatch, vendor)

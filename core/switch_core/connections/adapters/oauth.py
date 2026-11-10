@@ -285,6 +285,9 @@ class _McpBudget:
     tripped: bool = False
 
     def trip(self) -> None:
+        # The first trip ends the call; the deadline cannot move after that.
+        if self.tripped:
+            return
         self.tripped = True
         # The SDK swallows a read error in its task group and waits for an
         # answer that never comes, so the call ends now instead.
