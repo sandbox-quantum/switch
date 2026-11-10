@@ -1323,6 +1323,8 @@ async def post_room_agents(
             agent_ids=req.agent_ids,
             include_subagents_for=req.include_subagents_for,
             join_event_listeners=req.join_event_listeners,
+            inviter_id=user.id,
+            added_by_kind="user",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

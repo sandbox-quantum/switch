@@ -20,8 +20,10 @@ from collections.abc import Awaitable, Callable, Collection
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import can_address, parse_policy
 from switch_core.aliases import validate_alias_format, validate_alias_map
 from switch_core.authz import (
     Principal,
@@ -36,7 +38,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.db.models import Room, RoomGroup, RoomRole
+from switch_core.db.models import Client, ExternalUserClaim, Room, RoomGroup, RoomRole
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -72,6 +74,25 @@ SYSTEM_CLIENT_TYPES = ("observe", "admin")
 # Rooms whose memberships `reconcile_room_clients` reads in one query, kept
 # well under Postgres' limit on bound parameters.
 RECONCILE_BATCH_SIZE = 1000
+
+
+class AddressingRefusalError(ValueError):
+    """Raised when an agent's addressing policy forbids an invitation into a room."""
+
+    def __init__(self, agent_name: str, owner_id: str | None = None) -> None:
+        self.agent_name = agent_name
+        self.owner_id = owner_id
+        if owner_id:
+            msg = (
+                f"Cannot invite '{agent_name}': addressing policy allows "
+                f"only its owner ({owner_id}) to invite it."
+            )
+        else:
+            msg = (
+                f"Cannot invite '{agent_name}': addressing policy does "
+                "not permit this invitation."
+            )
+        super().__init__(msg)
 
 
 class LinkedRoomSpec(BaseModel):
@@ -597,6 +618,21 @@ class RoomService:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
+        if agent_ids and config.created_by_kind != "system":
+            inviter_id = (
+                config.created_by_agent_id
+                if config.created_by_kind == "agent"
+                else (config.acting_user_id or config.created_by or config.owner_id)
+            )
+            async with self._session_factory() as session:
+                await self._check_addressing_policy_for_invite(
+                    session,
+                    "",
+                    config.group_id,
+                    agent_ids,
+                    inviter_kind=config.created_by_kind,
+                    inviter_id=inviter_id,
+                )
         join_event_listeners = await self._resolve_join_event_listeners(config)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
@@ -1048,6 +1084,97 @@ class RoomService:
             raise ValueError(f"Unknown agents: {', '.join(missing)}")
         return [name_to_id[n] for n in unique_names]
 
+    async def _check_addressing_policy_for_invite(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        group_id: str | None,
+        target_agent_ids: list[str],
+        inviter_kind: Literal["user", "agent", "system"] = "user",
+        inviter_id: str | None = None,
+    ) -> None:
+        """Enforce that the inviter is permitted to invite each target agent into the room.
+
+        Follows the agent's addressing policy:
+        - An open policy permits anyone to invite the agent.
+        - An owner-only or scoped policy permits only the owner or explicitly allowed
+          senders (users or agents).
+        - System operations are exempt.
+        - Multi-pod safe: loads all agents in one query via `agent_store.get_many`.
+        """
+        if inviter_kind == "system" or not target_agent_ids:
+            return
+
+        agents = await self._agent_store.get_many(session, target_agent_ids)
+        if not agents:
+            return
+
+        inviter_user_ids: list[str] = []
+        inviter_owner_user_id: str | None = None
+
+        if inviter_kind == "agent":
+            if inviter_id:
+                inviter_agent = await self._agent_store.get(session, inviter_id)
+                if inviter_agent is not None:
+                    inviter_owner_user_id = inviter_agent.owner_id
+        elif inviter_kind == "user":
+            if inviter_id:
+                inviter_user_ids.append(inviter_id)
+                try:
+                    claims = await session.execute(
+                        select(ExternalUserClaim.user_id).where(
+                            ExternalUserClaim.external_user_id == inviter_id
+                        )
+                    )
+                    for uid in claims.scalars().all():
+                        if uid not in inviter_user_ids:
+                            inviter_user_ids.append(uid)
+                except Exception:
+                    pass
+                try:
+                    client = await session.scalar(
+                        select(Client).where(
+                            (Client.id == inviter_id)
+                            | (Client.transport_user_id == inviter_id)
+                        )
+                    )
+                    if (
+                        client is not None
+                        and client.user_id
+                        and client.user_id not in inviter_user_ids
+                    ):
+                        inviter_user_ids.append(client.user_id)
+                except Exception:
+                    pass
+
+        for agent in agents:
+            policy = parse_policy(agent.addressing_policy)
+            if policy.is_open():
+                continue
+
+            if inviter_id is None:
+                raise AddressingRefusalError(agent.name, agent.owner_id)
+
+            if (
+                inviter_kind == "user"
+                and agent.owner_id is not None
+                and agent.owner_id in inviter_user_ids
+            ):
+                continue
+
+            allowed = can_address(
+                policy,
+                room_id=room_id,
+                group_id=group_id,
+                sender_kind=inviter_kind,
+                sender_id=inviter_id,
+                sender_user_ids=inviter_user_ids,
+                sender_owner_user_id=inviter_owner_user_id,
+                owner_user_id=agent.owner_id,
+            )
+            if not allowed:
+                raise AddressingRefusalError(agent.name, agent.owner_id)
+
     async def add_agents_to_room(
         self,
         room_id: str,
@@ -1056,6 +1183,7 @@ class RoomService:
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
         added_by_kind: Literal["user", "agent", "system"] = "user",
+        inviter_id: str | None = None,
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
     ) -> None:
         """`with_agents` runs in the transaction that records the agents, so
@@ -1084,15 +1212,24 @@ class RoomService:
 
             existing = await self._room_store.get_agent_ids(session, room.id)
 
-        new_agent_ids = [aid for aid in agent_ids if aid not in existing]
-        if not new_agent_ids:
-            logger.debug(
-                "All agents are already part of the room, existing %s, new agent ids %s, agent ids %s",
-                existing,
+            new_agent_ids = [aid for aid in agent_ids if aid not in existing]
+            if not new_agent_ids:
+                logger.debug(
+                    "All agents are already part of the room, existing %s, new agent ids %s, agent ids %s",
+                    existing,
+                    new_agent_ids,
+                    agent_ids,
+                )
+                return
+
+            await self._check_addressing_policy_for_invite(
+                session,
+                room.id,
+                room.group_id,
                 new_agent_ids,
-                agent_ids,
+                inviter_kind=added_by_kind,
+                inviter_id=inviter_id,
             )
-            return
 
         agent_clients = self._resolve_agent_clients(new_agent_ids)
 

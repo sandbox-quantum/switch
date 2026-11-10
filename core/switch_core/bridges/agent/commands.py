@@ -64,6 +64,7 @@ from switch_core.decision.room import (
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
 from switch_core.platform_access import administers_on_record
+from switch_core.room_service import AddressingRefusalError
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -1428,9 +1429,28 @@ async def _cmd_invite(
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
     # MCP tool) so the agent is invited to the room AND added to any bridged
     # channel.
-    await cast("CommandConsumer", client)._room_service.add_agents_to_room(
-        meta.room_id, agent_names=[target.name]
-    )
+    inviter_id = getattr(event, "user_id", None)
+    try:
+        await cast("CommandConsumer", client)._room_service.add_agents_to_room(
+            meta.room_id,
+            agent_names=[target.name],
+            inviter_id=inviter_id,
+            added_by_kind="user",
+        )
+    except AddressingRefusalError:
+        label = agent_label_with_identifier(target.display_name, target.name)
+        owner_part = (
+            f"its owner ({target.owner_id})"
+            if getattr(target, "owner_id", None)
+            else "its owner"
+        )
+        await _reply(
+            client,
+            room,
+            event,
+            f"Cannot invite **{label}**: addressing policy allows only {owner_part} to invite it.",
+        )
+        return
     await _reply(
         client,
         room,
