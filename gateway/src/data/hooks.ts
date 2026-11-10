@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   type ConnectorAppScope,
@@ -84,6 +84,11 @@ function useQuery<T>(fetcher: () => Promise<T | null>): UseQueryResult<T> {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const inFlight = useRef<{
+    fetcher: typeof fetcher;
+    tick: number;
+    promise: Promise<T | null>;
+  } | null>(null);
 
   const refetch = useCallback(() => setTick((t) => t + 1), []);
 
@@ -91,16 +96,27 @@ function useQuery<T>(fetcher: () => Promise<T | null>): UseQueryResult<T> {
     let cancelled = false;
     setLoading(true);
 
-    fetcher().then((result) => {
-      if (cancelled) return;
-      if (result === null) {
-        setError("Failed to fetch data");
-      } else {
-        setData(result);
-        setError(null);
-      }
-      setLoading(false);
-    });
+    const current = inFlight.current;
+    const request =
+      current?.fetcher === fetcher && current.tick === tick
+        ? current.promise
+        : fetcher();
+    inFlight.current = { fetcher, tick, promise: request };
+
+    request
+      .then((result) => {
+        if (cancelled) return;
+        if (result === null) {
+          setError("Failed to fetch data");
+        } else {
+          setData(result);
+          setError(null);
+        }
+        setLoading(false);
+      })
+      .finally(() => {
+        if (inFlight.current?.promise === request) inFlight.current = null;
+      });
 
     return () => {
       cancelled = true;
