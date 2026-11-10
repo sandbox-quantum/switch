@@ -7,15 +7,21 @@ import { AccessChip } from "../../components/AccessControls";
 import type { ReferenceDetail } from "../../data/api";
 import { useReferences, useReferenceTypes } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
+import { useRefetchOnRefresh } from "./useRefetchOnRefresh";
 import { formatDate } from "../../theme/hootFormat";
 
-export default function ReferencesTab() {
+interface Props {
+  refreshKey: number;
+}
+
+export default function ReferencesTab({ refreshKey }: Props) {
   const navigate = useNavigate();
-  const { data: refs, loading, error } = useReferences();
+  const { data: refs, loading, error, refetch } = useReferences();
   const { data: types } = useReferenceTypes();
   const [search, setSearch] = useState("");
   const [ownerId, setOwnerId] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<string>("");
+  useRefetchOnRefresh(refreshKey, refetch);
 
   const owners = useMemo(() => {
     const m = new Map<string, string>();

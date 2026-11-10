@@ -23,15 +23,17 @@ export default function TemplatesPage() {
       <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
         <TemplatesTab refreshKey={refreshKey} />
       </Box>
-      <CreateTemplateDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreated={(id) => {
-          setCreateOpen(false);
-          setRefreshKey((k) => k + 1);
-          navigate(`/templates/${id}`);
-        }}
-      />
+      {createOpen && (
+        <CreateTemplateDialog
+          open
+          onClose={() => setCreateOpen(false)}
+          onCreated={(id) => {
+            setCreateOpen(false);
+            setRefreshKey((k) => k + 1);
+            navigate(`/templates/${id}`);
+          }}
+        />
+      )}
     </Box>
   );
 }
