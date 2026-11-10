@@ -102,8 +102,54 @@ version of their own to them without also giving them a release of their own.
   `.env`, so a page can be checked as each role. Switching is an ordinary
   sign-in, so every check is the server's own. A production build leaves the
   switcher out, and `npm run build` now fails if it gets in.
+- **Organization settings › Connectors and apps, in the new dashboard
+  layout** (`gateway_v2`). The organization's Services and Connectors become
+  one page with two tabs. Connectors shows the catalogue, each connector with
+  a switch: on leaves it to each workspace, off turns it off and locks it in
+  every workspace, after asking. A menu beside the switch sets the rest: on or
+  off by default, or on and locked. Each card says how far the setting
+  reaches, including the workspaces that set their own. A connector that
+  can't be used until the organization sets up its app offers "Set up org
+  account" in place of the switch. Apps & accounts lists each vendor app with
+  who set it up and when, and opens its details, checks, secret updates and
+  removal in a side panel.
+- **Each connector has its own page in the new layout**, opened from its
+  card. It shows who you're connected as, Disconnect, Add or Replace keys for
+  a key-based connector, and points to Switch Console for one that signs in at
+  the vendor. When the connector is off in the workspace, the page says who
+  turned it off and who can turn it back on. It lists the connector's
+  publisher, documentation, support and privacy pages, its MCP address, and
+  the agents using it, whose grants you can add, change and remove for your
+  own agents. A workspace admin also sees every agent in the workspace using
+  it, and everyone else connected, with Revoke.
+- **Workspace admins can see who uses a connector, and end someone else's
+  access.** `GET /gateway/service-connections/{service}/workspace` lists
+  everyone connected, with how many of their agents are granted it, and every
+  agent granted it. `DELETE /gateway/service-connections/{service}/people/{user_id}`
+  disconnects someone else, removing the grants on it and revoking what was
+  issued, and is recorded as `service.connection_revoked`. Nobody, admins
+  included, grants on another person's connector.
+- **The connector catalogue says who turned a connector off.**
+  `GET /gateway/service-connections` adds `organization_locked` and
+  `decided_by` (`organization`, `workspace` or `default`), and
+  `GET /gateway/workspace/services` adds `decided_by`. The catalogue also
+  carries each connector's `publisher`, `links` (documentation, support,
+  privacy) and `mcp_urls`, and the agents list for a connector carries each
+  agent's grant and whether it can be granted one.
+- **Connector app usage counts agent grants.** A connector app's entry, its
+  impact and its removal add `agent_grants`, the grants relying on the
+  connections an app change touches, and an app saved in Switch says when it
+  was first set up (`created_at`). The organization's connector list adds
+  each connector's `category` and `description`.
 
 #### Changed
+- **Removing a connector app says what it touches first.** The dialog counts
+  the workspaces, connected accounts and agent grants affected, says whether
+  the organization's workspaces go back to Switch's app, and that nothing is
+  revoked: the accounts and grants are kept and work again once people
+  reconnect. Each app also says when it was set up and who changed it since.
+- **A connector's lock message points at the organization's connector
+  settings**, rather than a section name only the old layout has.
 - **The operator dashboard follows the current design.** A field's label sits
   above it rather than floating inside the box, and the field has a white fill
   and a firm border and ring when focused; switches are pills, and one that is
