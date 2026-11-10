@@ -162,6 +162,18 @@ def _print_plan(plan: PurgePlan) -> None:
         print(f"\nCloud machines to tear down ({len(plan.machines)}):")
         for machine_id in plan.machines:
             print(f"  {machine_id}")
+    if plan.detached_machines:
+        print(
+            "\nCloud machines of kept accounts, taken off the organization's "
+            f"workspaces and left running ({len(plan.detached_machines)}):"
+        )
+        for machine_id in plan.detached_machines:
+            print(f"  {machine_id}")
+    if plan.resuming:
+        print(
+            "\nAn earlier run already deleted the organization; this one "
+            "finishes its accounts."
+        )
     if plan.refusals:
         print("\nThe purge can't go ahead:")
         for refusal in plan.refusals:
@@ -181,6 +193,8 @@ def _print_outcome(plan: PurgePlan, outcome: PurgeOutcome) -> None:
     print(f"Deleted {len(outcome.deleted_accounts)} account(s).")
     for account, error in outcome.failed_accounts:
         print(f"ERROR: account {account.email} ({account.id}) not deleted: {error}")
+    if outcome.failed_accounts:
+        print("Run the same command again to retry them.")
     print("\nStill to do at WorkOS, by whoever owns the environment:")
     if plan.workos_organization_id:
         print(f"  - the organization {plan.workos_organization_id}")

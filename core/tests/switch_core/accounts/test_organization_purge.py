@@ -11,9 +11,11 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts import organization_purge
 from switch_core.accounts.organization_purge import OrganizationPurge, PurgeRefused
 from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
 from switch_core.db.audit import AuditAction, record_audit_event
@@ -21,6 +23,7 @@ from switch_core.db.models import (
     AuditEvent,
     Client,
     CloudMachine,
+    MachineWorkspace,
     Message,
     MessagingInstall,
     OidcIdentity,
@@ -312,6 +315,7 @@ async def test_a_purge_deletes_everything_and_withdraws_it_outside_first(
         (await _server_audit(session_factory)).values(), key=lambda pair: pair[0]
     )
     assert [action for action, _ in actions] == [
+        "organization.purge_started",
         "organization.purged",
         "user.deleted",
         "workspace.deleted",
@@ -320,9 +324,18 @@ async def test_a_purge_deletes_everything_and_withdraws_it_outside_first(
     assert all("TICKET-1" in str(details) for _, details in actions), (
         "every record names the request"
     )
+    (started,) = [details for action, details in actions if action.endswith("started")]
+    assert started["accounts_to_delete"] == [alice]
 
     kinds = [kind for kind, _ in signals.published]
     assert kinds.count("client.changed") == 2
+    # The agent's connections close and its cached keys go in every process.
+    (ended,) = [
+        fields
+        for kind, fields in signals.published
+        if kind == "agent_connections.changed"
+    ]
+    assert ended["tenant_id"] == first and ended["ending"] == "deleted"
 
 
 async def _server_audit(
@@ -351,7 +364,8 @@ async def test_a_cloud_machine_is_torn_down_before_anything_is_deleted(
         )
         await session.commit()
         machine_id = machine.id
-    purge, _, _ = _purge(session_factory)
+    await _fill(session_factory, workspace, alice)
+    purge, installer, _ = _purge(session_factory)
 
     plan = await purge.plan(organization_id)
     assert plan.machines == [machine_id]
@@ -359,6 +373,10 @@ async def test_a_cloud_machine_is_torn_down_before_anything_is_deleted(
 
     assert not first.finished
     assert any(machine_id in waiting for waiting in first.waiting)
+    # The Slack install keeps its token while the purge waits, so its bridge
+    # is never left running on a revoked one.
+    assert installer.revoked == []
+    assert await _server_audit(session_factory) == {}
     async with session_factory() as session:
         machine = await session.get(CloudMachine, machine_id)
         assert machine is not None
@@ -371,6 +389,7 @@ async def test_a_cloud_machine_is_torn_down_before_anything_is_deleted(
     second = await purge.run(await purge.plan(organization_id), "TICKET-2")
 
     assert second.finished
+    assert installer.revoked == [f"xoxb-{workspace}"]
     assert await _count(session_factory, Tenant, Tenant.id == workspace) == 0
     assert (
         await _count(session_factory, CloudMachine, CloudMachine.id == machine_id) == 0
@@ -378,7 +397,7 @@ async def test_a_cloud_machine_is_torn_down_before_anything_is_deleted(
     assert await _count(session_factory, User, User.id == alice) == 0
 
 
-async def test_a_machine_serving_a_workspace_outside_refuses_the_purge(
+async def test_a_kept_accounts_machine_only_loses_the_organizations_workspaces(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, (workspace,) = await _organization(session_factory, 1)
@@ -394,20 +413,100 @@ async def test_a_machine_serving_a_workspace_outside_refuses_the_purge(
             revision=1,
         )
         await session.commit()
+        machine_id = machine.id
     async with tenant_session(session_factory, elsewhere) as session:
-        machine = await session.get(CloudMachine, machine.id)
+        machine = await session.get(CloudMachine, machine_id)
         assert machine is not None
         await add_workspace(session, machine, created_at=machine.created_at)
         await session.commit()
     purge, _, _ = _purge(session_factory)
 
     plan = await purge.plan(organization_id)
+    assert plan.refusals == [] and plan.machines == []
+    assert plan.detached_machines == [machine_id]
+    outcome = await purge.run(plan, "TICKET-3")
 
-    assert len(plan.refusals) == 1 and elsewhere in plan.refusals[0]
-    try:
-        await purge.run(plan, "TICKET-3")
-    except PurgeRefused:
-        pass
-    else:
-        raise AssertionError("a refused plan ran")
-    assert await _count(session_factory, Tenant, Tenant.id == workspace) == 1
+    assert outcome.finished
+    assert await _count(session_factory, Tenant, Tenant.id == workspace) == 0
+    async with session_factory() as session:
+        machine = await session.get(CloudMachine, machine_id)
+        assert machine is not None
+        assert machine.desired_state == "running" and machine.revision == 2
+    assert (
+        await _count(
+            session_factory,
+            MachineWorkspace,
+            MachineWorkspace.machine_id == machine_id,
+        )
+        == 1
+    ), "it still serves the workspace outside the organization"
+
+
+async def test_an_account_found_only_through_a_deleted_workspace_survives_a_failed_run(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Carol was only in the workspace purged first, never in the
+    organization itself: once it is gone, only the run's record finds her."""
+    organization_id, workspaces = await _organization(session_factory, 2)
+    # The purge goes through workspaces in id order.
+    first, second = sorted(workspaces)
+    carol = await _person(session_factory, "carol", [first], None)
+    purge, _, _ = _purge(session_factory)
+    real = organization_purge.purge_workspace
+
+    async def failing_on(session: AsyncSession, tenant_id: str, request: str) -> list:
+        if tenant_id == second:
+            raise RuntimeError("lock timeout")
+        return await real(session, tenant_id, request)
+
+    monkeypatch.setattr(organization_purge, "purge_workspace", failing_on)
+    with pytest.raises(RuntimeError):
+        await purge.run(await purge.plan(organization_id), "TICKET-4")
+    assert await _count(session_factory, Tenant, Tenant.id == first) == 0
+    assert await _count(session_factory, User, User.id == carol) == 1
+
+    monkeypatch.setattr(organization_purge, "purge_workspace", real)
+    plan = await purge.plan(organization_id)
+    assert [account.id for account in plan.deleted_accounts] == [carol]
+    outcome = await purge.run(plan, "TICKET-4")
+
+    assert outcome.finished
+    assert await _count(session_factory, User, User.id == carol) == 0
+
+
+async def test_a_failed_account_is_recorded_and_retried_after_the_organization_went(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    dave = await _person(session_factory, "dave", [workspace], organization_id)
+    purge, _, _ = _purge(session_factory)
+    real = organization_purge.delete_account_rows
+
+    async def failing(*_args: Any) -> None:
+        raise RuntimeError("admin account missing")
+
+    monkeypatch.setattr(organization_purge, "delete_account_rows", failing)
+    outcome = await purge.run(await purge.plan(organization_id), "TICKET-5")
+
+    assert outcome.finished
+    assert [account.id for account, _ in outcome.failed_accounts] == [dave]
+    actions = [action for action, _ in (await _server_audit(session_factory)).values()]
+    assert "user.deletion_failed" in actions and "user.deleted" not in actions
+    assert (
+        await _count(session_factory, Organization, Organization.id == organization_id)
+        == 0
+    )
+
+    monkeypatch.setattr(organization_purge, "delete_account_rows", real)
+    # Found again by its slug and its WorkOS id, from the run's record.
+    assert await purge.find(organization_id) == organization_id
+    assert await purge.find(f"org_{organization_id}") == organization_id
+    plan = await purge.plan(organization_id)
+    assert plan.resuming and plan.workspaces == []
+    retried = await purge.run(plan, "TICKET-5")
+
+    assert retried.finished
+    assert [account.id for account in retried.deleted_accounts] == [dave]
+    assert await _count(session_factory, User, User.id == dave) == 0
