@@ -36,12 +36,19 @@ import { LockedMark, OpensMark } from "../../components/RowAccess";
 
 interface Props {
   roomId: string;
-  // Attaching takes write access to the room; unlinking takes part in it.
-  canWrite: boolean;
+  // Attaching is for anyone in the room; unlinking for its owner or an
+  // admin, or a resource's own owner while they are in the room.
+  canAttach: boolean;
   canUnlink: boolean;
+  inRoom: boolean;
 }
 
-export default function RoomResourcesSection({ roomId, canWrite, canUnlink }: Props) {
+export default function RoomResourcesSection({
+  roomId,
+  canAttach,
+  canUnlink,
+  inRoom,
+}: Props) {
   const { data: roomPackages, refetch: refetchPackages } = useRoomPackages(roomId);
   const attachedPackageIds = useMemo(
     () => new Set((roomPackages ?? []).map((p) => p.id)),
@@ -66,23 +73,25 @@ export default function RoomResourcesSection({ roomId, canWrite, canUnlink }: Pr
       </Typography>
       <RoomReferences
         roomId={roomId}
-        canWrite={canWrite}
+        canAttach={canAttach}
         canUnlink={canUnlink}
+        inRoom={inRoom}
         attachedPackageIds={attachedPackageIds}
         readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomDocuments
         roomId={roomId}
-        canWrite={canWrite}
+        canAttach={canAttach}
         attachedPackageIds={attachedPackageIds}
         readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomPackages
         roomId={roomId}
-        canWrite={canWrite}
+        canAttach={canAttach}
         canUnlink={canUnlink}
+        inRoom={inRoom}
         packages={roomPackages ?? []}
         refetch={refetchPackages}
       />
@@ -128,15 +137,17 @@ function PackageChips({
 
 function RoomReferences({
   roomId,
-  canWrite,
+  canAttach,
   canUnlink,
+  inRoom,
   attachedPackageIds,
   readablePackageIds,
   packageDescriptions,
 }: {
   roomId: string;
-  canWrite: boolean;
+  canAttach: boolean;
   canUnlink: boolean;
+  inRoom: boolean;
   attachedPackageIds: Set<string>;
   readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
@@ -223,7 +234,7 @@ function RoomReferences({
                 readablePackageIds={readablePackageIds}
                 packageDescriptions={packageDescriptions}
               />
-              {canUnlink && (
+              {(canUnlink || (inRoom && ref.can_manage)) && (
                 <Button
                   size="small"
                   onClick={() => handleDetach(ref.id)}
@@ -237,7 +248,7 @@ function RoomReferences({
           ))}
         </Stack>
       )}
-      <AttachControl canWrite={canWrite} label="Attach reference">
+      <AttachControl canAttach={canAttach} label="Attach reference">
         {(close) => (
           <ReferencePicker
             attachedIds={attachedIds}
@@ -252,13 +263,13 @@ function RoomReferences({
 
 function RoomDocuments({
   roomId,
-  canWrite,
+  canAttach,
   attachedPackageIds,
   readablePackageIds,
   packageDescriptions,
 }: {
   roomId: string;
-  canWrite: boolean;
+  canAttach: boolean;
   attachedPackageIds: Set<string>;
   readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
@@ -422,7 +433,7 @@ function RoomDocuments({
           )}
         </Stack>
       )}
-      <AttachControl canWrite={canWrite} label="Attach document">
+      <AttachControl canAttach={canAttach} label="Attach document">
         {(close) => (
           <DocumentPicker
             attachedIds={attachedIds}
@@ -450,15 +461,23 @@ function RoomDocuments({
 
 function RoomPackages({
   roomId,
-  canWrite,
+  canAttach,
   canUnlink,
+  inRoom,
   packages,
   refetch,
 }: {
   roomId: string;
-  canWrite: boolean;
+  canAttach: boolean;
   canUnlink: boolean;
-  packages: Array<{ id: string; name: string; description: string; can_read?: boolean }>;
+  inRoom: boolean;
+  packages: Array<{
+    id: string;
+    name: string;
+    description: string;
+    can_read?: boolean;
+    can_manage?: boolean;
+  }>;
   refetch: () => void;
 }) {
   const navigate = useNavigate();
@@ -533,7 +552,7 @@ function RoomPackages({
               {!p.can_read && <LockedMark />}
               <span style={{ flexGrow: 1 }} />
               {p.can_read && <OpensMark />}
-              {canUnlink && (
+              {(canUnlink || (inRoom && p.can_manage)) && (
                 <Button
                   size="small"
                   onClick={(e) => {
@@ -550,7 +569,7 @@ function RoomPackages({
           ))}
         </Stack>
       )}
-      <AttachControl canWrite={canWrite} label="Attach package">
+      <AttachControl canAttach={canAttach} label="Attach package">
         {(close) => (
           <PackagePicker
             attachedIds={attachedIds}
@@ -567,16 +586,16 @@ function RoomPackages({
 // picker is mounted only while open, so the list it offers loads only when
 // someone attaches.
 function AttachControl({
-  canWrite,
+  canAttach,
   label,
   children,
 }: {
-  canWrite: boolean;
+  canAttach: boolean;
   label: string;
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  if (!canWrite) return null;
+  if (!canAttach) return null;
   return (
     <>
       <Button

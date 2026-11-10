@@ -74,13 +74,13 @@ describe("RoomResourcesSection", () => {
   });
 
   it("offers attaching to writers and unlinking to those taking part", () => {
-    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
+    render(<RoomResourcesSection roomId="r1" canAttach inRoom canUnlink />);
 
     for (const name of [...ATTACH, ...UNLINK, ...REMOVE]) screen.getByRole("button", { name });
   });
 
   it("lets someone taking part unlink without write access, but not attach", () => {
-    render(<RoomResourcesSection roomId="r1" canWrite={false} canUnlink />);
+    render(<RoomResourcesSection roomId="r1" canAttach={false} inRoom canUnlink />);
 
     for (const name of [...UNLINK, ...REMOVE]) screen.getByRole("button", { name });
     for (const name of ATTACH) expect(button(name)).toBeNull();
@@ -88,7 +88,7 @@ describe("RoomResourcesSection", () => {
 
   it("follows the server on which documents the viewer may remove", () => {
     roomDocuments({ canRemove: false });
-    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
+    render(<RoomResourcesSection roomId="r1" canAttach inRoom canUnlink />);
 
     for (const name of REMOVE) expect(button(name)).toBeNull();
     for (const name of UNLINK) screen.getByRole("button", { name });
@@ -96,14 +96,14 @@ describe("RoomResourcesSection", () => {
 
   it("lists what is attached, with nothing to change, to a reader", () => {
     roomDocuments({ canRemove: false });
-    render(<RoomResourcesSection roomId="r1" canWrite={false} canUnlink={false} />);
+    render(<RoomResourcesSection roomId="r1" canAttach={false} inRoom canUnlink={false} />);
 
     for (const item of ["Runbook", "Spec", "Notes", "Starter kit"]) screen.getByText(item);
     for (const name of [...ATTACH, ...UNLINK, ...REMOVE]) expect(button(name)).toBeNull();
   });
 
   it("loads what can be attached only when a picker opens", async () => {
-    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
+    render(<RoomResourcesSection roomId="r1" canAttach inRoom canUnlink />);
 
     expect(hooks.useReferences).not.toHaveBeenCalled();
     expect(hooks.useDocuments).not.toHaveBeenCalled();
@@ -125,7 +125,7 @@ describe("RoomResourcesSection", () => {
         { id: "p2", name: "Secret kit", description: "", can_read: false },
       ]) as never,
     );
-    render(<RoomResourcesSection roomId="r1" canWrite={false} canUnlink={false} />);
+    render(<RoomResourcesSection roomId="r1" canAttach={false} inRoom canUnlink={false} />);
 
     fireEvent.click(screen.getByTestId("room-package-p1"));
     expect(navigate).toHaveBeenLastCalledWith("/resources/packages/p1");
@@ -136,7 +136,7 @@ describe("RoomResourcesSection", () => {
   });
 
   it("asks before deleting a room document, which cannot be undone", async () => {
-    render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
+    render(<RoomResourcesSection roomId="r1" canAttach inRoom canUnlink />);
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Notes" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Notes?" });

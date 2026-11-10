@@ -43,10 +43,10 @@ vi.mock("./RoomLinkedRoomsSection", () => ({
   ),
 }));
 vi.mock("./RoomResourcesSection", () => ({
-  default: ({ canWrite, canUnlink }: { canWrite: boolean; canUnlink: boolean }) => (
+  default: ({ canAttach, canUnlink }: { canAttach: boolean; canUnlink: boolean }) => (
     <div
       data-testid="resources"
-      data-can-write={String(canWrite)}
+      data-can-attach={String(canAttach)}
       data-can-unlink={String(canUnlink)}
     />
   ),
@@ -90,14 +90,16 @@ const room = {
   can_manage: false,
   can_unlink: false,
   can_transfer: false,
-  can_change_members: true,
+  can_attach: true,
   can_invite_agents: true,
+  can_add_people: true,
+  can_remove_members: true,
 } as RoomDetail;
 
 const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSummary;
 
-// Members can be changed by whoever may write to the room, as the server
-// says, unless a test sets otherwise.
+// Adding to the room and taking members out follow `can_write` unless a
+// test sets otherwise; the server decides each of them.
 const refetchRoom = vi.fn();
 
 function viewAs(
@@ -106,8 +108,10 @@ function viewAs(
   vi.mocked(hooks.useRoom).mockReturnValue({
     data: {
       ...room,
-      can_change_members: can.can_write,
+      can_attach: can.can_write,
       can_invite_agents: can.can_write,
+      can_add_people: can.can_write,
+      can_remove_members: can.can_write,
       ...can,
     },
     loading: false,
@@ -171,14 +175,14 @@ describe("RoomDetailPage permissions", () => {
     expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
     const describedBy = accessSelect().getAttribute("aria-describedby");
     expect(document.getElementById(describedBy!)?.textContent).toContain(
-      "Only its owner and admins can change its access.",
+      "Only its owner and admins can change it;",
     );
     expect(screen.queryByRole("button", { name: "Delete room" })).toBeNull();
     screen.getByRole("button", { name: "Add agent" });
     screen.getByRole("button", { name: "Remove planner" });
     screen.getByRole("button", { name: "Add user" });
     expect(joinEventsSwitch().disabled).toBe(false);
-    expect(screen.getByTestId("resources").dataset.canWrite).toBe("true");
+    expect(screen.getByTestId("resources").dataset.canAttach).toBe("true");
     expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("true");
 
     fireEvent.change(nameField(), { target: { value: "retro" } });
@@ -248,8 +252,9 @@ describe("RoomDetailPage permissions", () => {
       can_write: true,
       can_manage: false,
       can_unlink: false,
-      can_change_members: false,
       can_invite_agents: false,
+      can_add_people: false,
+      can_remove_members: false,
       channel_type: "group",
     });
 
@@ -289,7 +294,7 @@ describe("RoomDetailPage permissions", () => {
   it("offers a reader nothing to change", () => {
     viewAs({ can_write: false, can_manage: false, can_unlink: false });
 
-    screen.getByText(/You don't have write access to this room/);
+    screen.getByText(/Only this room's owner and admins can change these settings/);
     expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
     expect(nameField().disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "Delete room" })).toBeNull();
@@ -298,7 +303,7 @@ describe("RoomDetailPage permissions", () => {
     expect(screen.queryByRole("button", { name: "Add user" })).toBeNull();
     // The setting still shows; it just cannot be changed.
     expect(joinEventsSwitch().disabled).toBe(true);
-    expect(screen.getByTestId("resources").dataset.canWrite).toBe("false");
+    expect(screen.getByTestId("resources").dataset.canAttach).toBe("false");
     expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("false");
   });
 
@@ -359,10 +364,41 @@ describe("RoomDetailPage permissions", () => {
     expect(screen.queryByText(/^People \(/)).toBeNull();
   });
 
+  it("lets someone in the room add to it without changing its settings", () => {
+    viewAs({
+      can_write: false,
+      can_manage: false,
+      can_unlink: false,
+      can_attach: true,
+      can_invite_agents: true,
+      can_add_people: true,
+      can_remove_members: false,
+    });
+
+    expect(nameField().disabled).toBe(true);
+    screen.getByRole("button", { name: "Add agent" });
+    screen.getByRole("button", { name: "Add user" });
+    expect(screen.queryByRole("button", { name: "Remove planner" })).toBeNull();
+    expect(screen.getByTestId("resources").dataset.canAttach).toBe("true");
+    expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("false");
+  });
+
+  it("lets someone take out their own agent from a room they don't own", () => {
+    vi.mocked(hooks.useAgents).mockReturnValue({
+      data: [{ ...agent, can_manage: true }],
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    viewAs({ can_write: false, can_manage: false, can_unlink: false });
+
+    screen.getByRole("button", { name: "Remove planner" });
+  });
+
   it("lets someone taking part in a room they cannot edit unlink its resources", () => {
     viewAs({ can_write: false, can_manage: false, can_unlink: true });
 
-    expect(screen.getByTestId("resources").dataset.canWrite).toBe("false");
+    expect(screen.getByTestId("resources").dataset.canAttach).toBe("false");
     expect(screen.getByTestId("resources").dataset.canUnlink).toBe("true");
   });
 });

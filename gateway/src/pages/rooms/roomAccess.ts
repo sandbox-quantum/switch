@@ -9,7 +9,7 @@ export const ROOM_ACCESS_HELPERS: Record<AccessLevel, string> = {
   read_only:
     "Everyone in the workspace can see it. Only its owner and admins can change it.",
   public:
-    "Everyone in the workspace can see and change it. Only its owner and admins can change its access.",
+    "Everyone in the workspace can see it, the same as read only. Only its owner and admins can change it; the people in it can add to it.",
 };
 
 export const ROOM_ACCESS_OPTION_LABELS: Partial<Record<AccessLevel, string>> = {

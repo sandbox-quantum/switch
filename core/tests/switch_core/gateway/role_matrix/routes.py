@@ -531,7 +531,7 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room}}/auto-route",
         owner_or_admins(),
         json={"on": False},
-        why="Write access to the room; this room's write access is private.",
+        why="A room setting: the room's owner and admins (`room_policy`).",
     ),
     "GET /gateway/rooms/{room_id}/schedules": get(
         f"{G}/rooms/{{room}}/schedules", owner_or_admins()

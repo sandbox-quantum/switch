@@ -8,6 +8,7 @@ import pytest
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import AgentStatus
+from switch_core.room_policy import RoomPermissionError
 
 
 class _FakeSession:
@@ -19,6 +20,9 @@ class _FakeSession:
 
     async def commit(self) -> None:
         return None
+
+    async def get(self, model: Any, key: str) -> Any:
+        return None  # The owner's user row: not an admin.
 
 
 def _session_factory() -> _FakeSession:
@@ -41,6 +45,11 @@ class _FakeRoomStore:
 
     async def get(self, session: Any, room_id: str) -> Any:
         return self._rooms.get(room_id)
+
+    async def involved_room_ids(
+        self, session: Any, user_id: str, room_ids: list[str]
+    ) -> set[str]:
+        return set()
 
     async def get_agent_ids(self, session: Any, room_id: str) -> list[str]:
         return list(self._agent_ids)
@@ -374,12 +383,12 @@ class TestGetRoomDetail:
 
 class TestUpdateRoom:
     async def test_only_provided_fields_are_passed_through(self) -> None:
-        room = _room()
+        room = _room(owner_id="u-alice")
         svc = _build_service(
             room=room,
             agent_ids=["agent-1"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id="u-alice")
             },
         )
 
@@ -426,15 +435,34 @@ class TestUpdateRoom:
         assert isinstance(store, _FakeRoomStore)
         assert store.update_calls == []
 
-
-class TestSetRoomArchived:
-    async def test_archive_then_unarchive_reflected_in_detail(self) -> None:
-        room = _room()
+    async def test_refuses_an_agent_whose_owner_does_not_own_the_room(self) -> None:
+        room = _room(owner_id="u-alice")
         svc = _build_service(
             room=room,
             agent_ids=["agent-1"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+                "agent-1": SimpleNamespace(name="claude-code.bob", owner_id="u-bob")
+            },
+        )
+
+        with pytest.raises(
+            RoomPermissionError, match="owner or a workspace admin can change"
+        ):
+            await svc.update_room("agent-1", "room-1", name="Hijacked")
+
+        store = svc.room_store
+        assert isinstance(store, _FakeRoomStore)
+        assert store.update_calls == []
+
+
+class TestSetRoomArchived:
+    async def test_archive_then_unarchive_reflected_in_detail(self) -> None:
+        room = _room(owner_id="u-alice")
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id="u-alice")
             },
         )
 

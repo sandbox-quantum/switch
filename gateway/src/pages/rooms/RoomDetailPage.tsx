@@ -163,8 +163,9 @@ export default function RoomDetailPage() {
         <Divider />
         <RoomResourcesSection
           roomId={room.id}
-          canWrite={canWrite}
+          canAttach={room.can_attach}
           canUnlink={room.can_unlink}
+          inRoom={room.viewer_is_member}
         />
         <Divider />
         <RoomLinkedRoomsSection roomId={room.id} canWrite={canWrite} />
@@ -641,8 +642,7 @@ function EditableFieldsSection({
       </Typography>
       {!canWrite && (
         <Alert severity="info">
-          You don't have write access to this room. Only its owner and admins
-          can change these settings.
+          Only this room's owner and admins can change these settings.
         </Alert>
       )}
       {error && <Alert severity="error">{error}</Alert>}
@@ -720,6 +720,12 @@ function ParticipantsSection({
     for (const a of allAgents ?? []) m.set(a.id, a.name);
     return m;
   }, [allAgents]);
+
+  // You may always take out an agent you manage, whoever owns the room.
+  const managedAgentIds = useMemo(
+    () => new Set((allAgents ?? []).filter((a) => a.can_manage).map((a) => a.id)),
+    [allAgents],
+  );
 
   const addableAgentOptions = useMemo<PickerOption[]>(
     () =>
@@ -816,8 +822,10 @@ function ParticipantsSection({
   // A direct or group chat takes its members from its platform: the server
   // refuses changing them, and the page says where they are changed.
   const platformMembership = room.channel_type === "group" || room.channel_type === "direct";
-  const canChangeMembers = room.can_change_members;
   const canInviteAgents = room.can_invite_agents;
+  const canAddPeople = room.can_add_people;
+  const canRemove = (agentId: string) =>
+    !platformMembership && (room.can_remove_members || managedAgentIds.has(agentId));
 
   return (
     <Stack spacing={3}>
@@ -844,7 +852,7 @@ function ParticipantsSection({
                   : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                !canChangeMembers || working ? undefined : () => handleRemoveAgent(id)
+                !canRemove(id) || working ? undefined : () => handleRemoveAgent(id)
               }
             />
           ))}
@@ -918,7 +926,7 @@ function ParticipantsSection({
               </Typography>
             )}
           </Stack>
-          {canChangeMembers && (
+          {canAddPeople && (
             <>
               <Button
                 size="small"

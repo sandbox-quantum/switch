@@ -30,10 +30,11 @@ import { useArchiveRoomConfirm } from './archive-room-confirm';
 import { roomDetailKey } from './room-participants';
 
 /**
- * The room's read and write access as people read them. Write access is who
- * may change the room in Switch — its settings, who is in it, its resources —
- * not who may post: posting in a bridged room is up to its channel. A room
- * nobody else may read is still readable by whoever takes part in it.
+ * The room's access settings as people read them. Who may see it follows its
+ * read access; changing it in Switch is its owner's and admins', and adding to
+ * it is for whoever takes part, whatever its write access says, so public and
+ * read-only now grant the same. A room nobody else may read is still readable
+ * by whoever takes part in it.
  */
 export const ACCESS_LABELS: Record<RoomAccess, string> = {
   public: 'Public — read & write',
@@ -42,10 +43,10 @@ export const ACCESS_LABELS: Record<RoomAccess, string> = {
 };
 
 /** What each access setting means, in full: shown under the choice and on
- * hover, in the same words as the gateway's room pages. */
+ * hover, in the same words as the gateway's room pages. Public and read only
+ * now grant the same: changing a room is its owner's and admins'. */
 export const ACCESS_HELPERS: Record<RoomAccess, string> = {
-  public:
-    'Everyone in the workspace can see and change it. Only its owner and admins can change its access.',
+  public: 'Everyone in the workspace can see it. Only its owner and admins can change it.',
   read_only: 'Everyone in the workspace can see it. Only its owner and admins can change it.',
   private:
     'Only those taking part in the room, its owner and admins can see it. Only its owner and admins can change it.',

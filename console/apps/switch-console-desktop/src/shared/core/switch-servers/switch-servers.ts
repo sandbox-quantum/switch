@@ -390,6 +390,11 @@ export type RemoteRoomSummary = {
     canChangeMembers: boolean;
     /** Bringing agents in: being in the room, or a workspace admin. */
     canInviteAgents: boolean;
+    /** Adding people and attaching resources: being in the room, or a workspace admin. */
+    canAddPeople: boolean;
+    canAttach: boolean;
+    /** Taking agents out: the room's owner or a workspace admin. */
+    canRemoveMembers: boolean;
     canManage: boolean;
     canUnlink: boolean;
   };

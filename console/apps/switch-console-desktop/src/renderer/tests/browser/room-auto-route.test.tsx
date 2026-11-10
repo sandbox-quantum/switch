@@ -304,7 +304,7 @@ it('lets someone who may write to the room turn it on, but not name the triage a
   expect(disabled(el)).toBe(false);
   expect(pickerHeld(el)).toBe(true);
   expect(el.textContent).toContain('Only the room’s owner or a workspace admin can change this.');
-  expect(el.textContent).not.toContain('needs write access');
+  expect(el.textContent).not.toContain('can turn auto-route on or off');
 
   await act(async () => toggle(el).click());
 
@@ -323,7 +323,9 @@ it('holds the switch and picker for a read-only viewer, with the reason', async 
   expect(checked(el)).toBe(true);
   expect(disabled(el)).toBe(true);
   expect(pickerHeld(el)).toBe(true);
-  expect(el.textContent).toContain('Turning auto-route on or off needs write access to this room.');
+  expect(el.textContent).toContain(
+    "Only the room's owner or a workspace admin can turn auto-route on or off."
+  );
   expect(el.textContent).toContain('Only the room’s owner or a workspace admin can change this.');
 });
 
@@ -338,5 +340,5 @@ it('offers both to the room’s owner or a workspace admin', async () => {
   expect(el.textContent).not.toContain(
     'Only the room’s owner or a workspace admin can change this.'
   );
-  expect(el.textContent).not.toContain('needs write access');
+  expect(el.textContent).not.toContain('can turn auto-route on or off');
 });
