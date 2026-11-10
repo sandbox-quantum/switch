@@ -541,6 +541,8 @@ describe('room creation', () => {
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
+        privateChannels: null,
+        privateChannelNeedsLinkedAccount: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -562,6 +564,8 @@ describe('room creation', () => {
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
+        privateChannels: null,
+        privateChannelNeedsLinkedAccount: false,
         receivesWebhooks: false,
         webhookUrl: null,
       },
@@ -605,6 +609,28 @@ describe('room creation', () => {
 
     const [bridge] = await fetchBridges(SERVER);
     expect(bridge.channelIdsRefused).toBe('Rooms come from connecting a chat.');
+  });
+
+  it('carries whether a connection can make a private channel and whether it needs a linked account', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          bridge_id: 'b1',
+          bridge_type: 'teams',
+          display_name: 'Teams',
+          status: 'active',
+          private_channels_supported: true,
+          private_channel_needs_linked_account: true,
+        },
+        { bridge_id: 'b2', bridge_type: 'teams', display_name: 'Older', status: 'active' },
+      ]) as never
+    );
+
+    const [current, older] = await fetchBridges(SERVER);
+    expect(current.privateChannels).toBe(true);
+    expect(current.privateChannelNeedsLinkedAccount).toBe(true);
+    expect(older.privateChannels).toBeNull();
+    expect(older.privateChannelNeedsLinkedAccount).toBe(false);
   });
 
   it('reads the effective answer as the platform ceiling ANDed with the operator switch', async () => {

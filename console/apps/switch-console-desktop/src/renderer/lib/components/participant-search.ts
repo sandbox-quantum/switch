@@ -1,7 +1,12 @@
-/** Someone who can be put in a new room: an agent, or a person from the workspace. */
+/**
+ * Someone who can be put in a new room: an agent, or a person. A person from
+ * the workspace has their Switch user id as `id`; one from a messaging app has
+ * their username there. `userIds` are the Switch users a person is, so one can
+ * be matched to the same person on another app; empty when nobody knows.
+ */
 export type Participant =
   | { kind: 'agent'; id: string; name: string; iconUrl: string | null; detail: string }
-  | { kind: 'person'; id: string; name: string; detail: string };
+  | { kind: 'person'; id: string; name: string; detail: string; userIds?: string[] };
 
 /** An agent the workspace lists, as a participant; `provider` names what runs it. */
 export function agentParticipant(
@@ -23,7 +28,59 @@ export function personParticipant(person: {
   name: string;
   email: string | null;
 }): Participant {
-  return { kind: 'person', id: person.userId, name: person.name, detail: person.email ?? '' };
+  return {
+    kind: 'person',
+    id: person.userId,
+    name: person.name,
+    detail: person.email ?? '',
+    userIds: [person.userId],
+  };
+}
+
+/**
+ * Someone Switch knows on a messaging app, as a participant: by the name of
+ * the Switch user who linked the account when there is one, and always with
+ * the username the app knows them by, which is what the room is given.
+ */
+export function bridgePersonParticipant(person: {
+  username: string;
+  linkedUserIds: string[];
+  linkedName: string | null;
+}): Participant {
+  return {
+    kind: 'person',
+    id: person.username,
+    name: person.linkedName ?? person.username,
+    detail: `@${person.username}`,
+    userIds: person.linkedUserIds,
+  };
+}
+
+/**
+ * The picks to keep when the room moves to where `candidates` are offered:
+ * every agent offered there, and each person who is the same Switch user as
+ * one offered there, as that one. Anyone else is left out, and returned in
+ * `dropped` so the dialog can say who.
+ */
+export function carryPicks(
+  picked: readonly Participant[],
+  candidates: readonly Participant[]
+): { kept: Participant[]; dropped: Participant[] } {
+  const kept: Participant[] = [];
+  const dropped: Participant[] = [];
+  for (const each of picked) {
+    const match =
+      each.kind === 'agent'
+        ? candidates.find((candidate) => same(candidate, each))
+        : candidates.find(
+            (candidate) =>
+              candidate.kind === 'person' &&
+              (candidate.userIds ?? []).some((id) => (each.userIds ?? []).includes(id))
+          );
+    if (match && !kept.some((other) => same(other, match))) kept.push(match);
+    else if (!match) dropped.push(each);
+  }
+  return { kept, dropped };
 }
 
 const same = (a: Participant, b: Participant) => a.kind === b.kind && a.id === b.id;
