@@ -1561,6 +1561,11 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   // A short finished state before the page moves on, skipped for a deployer
   // who asked the system for less motion.
   const finish = (detail: string, go: () => void) => {
+    // Every run that succeeds ends here, however it ran, so this is where a
+    // stored or official template's run is counted. A pasted document is no
+    // template's, and is not.
+    if (templateId && workspaceId !== null)
+      void rpc.workspaces.recordTemplateRun({ workspaceId, templateId });
     setDoneDetail(detail);
     setPhase('done');
     const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;

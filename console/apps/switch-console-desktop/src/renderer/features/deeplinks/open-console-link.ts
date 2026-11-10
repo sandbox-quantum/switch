@@ -34,7 +34,35 @@ export async function openConsoleLink(raw: string): Promise<void> {
   const serverId = serverFor(link);
   if (serverId === null) return;
   if (switchServersStore.activeServerId !== serverId) await switchServersStore.setActive(serverId);
+  if (link.workspace !== null && !(await scopeToWorkspace(serverId, link.workspace))) return;
   await openOnServer(serverId, link);
+}
+
+/**
+ * Scope the window to the workspace a link names, by its tenant id: a link
+ * from the web dashboard points at something in the workspace the dashboard
+ * was showing, which may not exist in the one on screen. False, having said
+ * why, when the account is in no such workspace on the server.
+ */
+async function scopeToWorkspace(serverId: string, tenantId: string): Promise<boolean> {
+  const workspace = workspacesStore.onServer(serverId).find((w) => w.tenantId === tenantId);
+  if (!workspace) {
+    toast.error('Could not open that link', {
+      description: 'It is for a workspace this Switch Console is not signed in to.',
+    });
+    return false;
+  }
+  if (workspacesStore.activeId !== workspace.id) {
+    try {
+      await workspacesStore.setActive(workspace.id);
+    } catch (cause) {
+      toast.error('Could not open that link', {
+        description: `Could not switch to ${workspace.name}: ${String(cause)}`,
+      });
+      return false;
+    }
+  }
+  return true;
 }
 
 /** The server a link means: the one it names, else the one on screen. */
@@ -109,7 +137,8 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
       });
       return;
     case 'template':
-      navigation.navigate('templateDetail', { serverId, templateId: link.id! });
+      if (link.use) navigation.navigate('templateUse', { serverId, templateId: link.id! });
+      else navigation.navigate('templateDetail', { serverId, templateId: link.id! });
       return;
     case 'messaging-apps/connect':
       // Connecting an app is the workspace admins'; anyone else can only link

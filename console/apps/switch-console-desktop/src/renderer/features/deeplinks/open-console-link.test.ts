@@ -39,8 +39,20 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
 vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
   administersWorkspaceInScope: administers,
 }));
+const workspaces = vi.hoisted(() => ({
+  activeId: 'ws-1' as string | null,
+  idOnServerInScope: () => 'ws-1',
+  onServer: (serverId: string) =>
+    [
+      { id: 'ws-1', serverId: 'srv-1', name: 'Home', tenantId: 't-1' },
+      { id: 'ws-2', serverId: 'srv-1', name: 'Sales', tenantId: 't-2' },
+    ].filter((w) => w.serverId === serverId),
+  setActive: vi.fn(async (id: string) => {
+    workspaces.activeId = id;
+  }),
+}));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { idOnServerInScope: () => 'ws-1' },
+  workspacesStore: workspaces,
 }));
 
 const { openConsoleLink } = await import('./open-console-link');
@@ -48,9 +60,39 @@ const { openConsoleLink } = await import('./open-console-link');
 beforeEach(() => {
   vi.clearAllMocks();
   servers.activeServerId = 'srv-1';
+  workspaces.activeId = 'ws-1';
 });
 
 describe('openConsoleLink', () => {
+  it("opens a template's Use form in the workspace the link names", async () => {
+    await openConsoleLink(
+      'switchdash://open/template/tpl-1?server=http%3A%2F%2Flocalhost%3A8000&workspace=t-2&use=1'
+    );
+    expect(workspaces.setActive).toHaveBeenCalledWith('ws-2');
+    expect(navigate).toHaveBeenCalledWith('templateUse', {
+      serverId: 'srv-1',
+      templateId: 'tpl-1',
+    });
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('opens a template page without switching when the link names the workspace on screen', async () => {
+    await openConsoleLink('switchdash://open/template/official:switch-expert?workspace=t-1');
+    expect(workspaces.setActive).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith('templateDetail', {
+      serverId: 'srv-1',
+      templateId: 'official:switch-expert',
+    });
+  });
+
+  it('says so, and opens nothing, for a workspace the account is not in', async () => {
+    await openConsoleLink('switchdash://open/template/tpl-1?workspace=t-9&use=1');
+    expect(navigate).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith('Could not open that link', {
+      description: 'It is for a workspace this Switch Console is not signed in to.',
+    });
+  });
+
   it('opens a page on the server on screen', async () => {
     await openConsoleLink('switchdash://open/rooms');
     expect(navigate).toHaveBeenCalledWith('serverRooms', { serverId: 'srv-1' });
