@@ -379,6 +379,11 @@ CHECKS: dict[str, Check] = {
                 later=frozenset({409}),  # Still has other members in it.
             ),
             Check(
+                "administers",
+                _get(f"{G}/tenants/current"),
+                _act("PATCH", f"{G}/tenants/{{tenant}}", {"name": "{tag}-renamed"}),
+            ),
+            Check(
                 "can_manage_data_protection",
                 _get(f"{G}/tenants/current"),
                 _act(
