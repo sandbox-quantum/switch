@@ -6,7 +6,8 @@ from datetime import timedelta
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import BridgeMessageMap, Client, CollaborationBridge
+from switch_core.db.models import BridgeMessageMap, Client, CollaborationBridge, Tenant
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from tests.switch_core.statement_counts import StatementCounts
 
@@ -238,6 +239,37 @@ class TestPostsForEvents:
 
             posts = await store.posts_for_events(
                 session, bridge_id=bridge_b, transport_event_ids=["$evt1"]
+            )
+
+        assert posts == {}
+
+    async def test_posts_for_events_omits_another_tenants_row(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The test connection bypasses row-level security, so only the
+        store's own tenant filter keeps tenant B's row out, even when the
+        caller names tenant B's bridge."""
+        store = BridgeMessageMapStore()
+        other_tenant = "posts-for-events-tenant-b"
+        async with session_factory() as session:
+            session.add(Tenant(id=other_tenant, slug=other_tenant, name=other_tenant))
+            await session.commit()
+        async with tenant_session(session_factory, other_tenant) as other_session:
+            bridge_id = await _make_bridge(other_session)
+            await store.create(
+                other_session,
+                BridgeMessageMap(
+                    bridge_id=bridge_id,
+                    external_channel_id="C1",
+                    transport_event_id="$theirs",
+                    external_post_id="C1:1.1",
+                ),
+            )
+            await other_session.commit()
+
+        async with session_factory() as session:
+            posts = await store.posts_for_events(
+                session, bridge_id=bridge_id, transport_event_ids=["$theirs"]
             )
 
         assert posts == {}
