@@ -9,7 +9,10 @@ import pytest
 from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration import cooldown as cooldown_module
-from switch_core.bridges.collaboration.adapter import MessageGoneOnPlatform
+from switch_core.bridges.collaboration.adapter import (
+    MessageGoneOnPlatform,
+    PermalinkHeldBack,
+)
 from switch_core.bridges.collaboration.collaboration_core import _no_agents_notice
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
 from switch_core.bridges.collaboration.slack import adapter as slack_adapter_module
@@ -1565,7 +1568,7 @@ def test_message_permalink_unretried_rate_limit_holds_requests_back(
     asked = len(client.permalink_calls)
 
     now = 1029.9
-    with pytest.raises(RuntimeError, match="rate limiting"):
+    with pytest.raises(PermalinkHeldBack, match="rate limiting"):
         _run(adapter.message_permalink("C1:171.3"))
     assert len(client.permalink_calls) == asked
 

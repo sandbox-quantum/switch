@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentIdentityConflict,
     MessageGoneOnPlatform,
+    PermalinkHeldBack,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -2491,7 +2492,7 @@ class SlackAdapter(PlatformAdapter):
             raise ValueError(f"Not a Slack message ref: {external_post_id!r}")
         waiting = self._permalink_cooldown.remaining()
         if waiting > 0:
-            raise RuntimeError(
+            raise PermalinkHeldBack(
                 f"Slack is rate limiting permalinks; not asking for {waiting:.0f}s."
             )
         for attempt in range(2):

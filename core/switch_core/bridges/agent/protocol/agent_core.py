@@ -82,6 +82,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentIdentityConflict,
     MessageGoneOnPlatform,
+    PermalinkHeldBack,
     agent_identity,
 )
 from switch_core.bridges.resource.service import ResourceService
@@ -2970,9 +2971,15 @@ class AgentCore:
                 unavailable[event_id] = PermalinkUnavailable.DELETED_IN_SLACK
             except NotImplementedError:
                 unavailable[event_id] = PermalinkUnavailable.NOT_SLACK
+            except PermalinkHeldBack:
+                # The bridge's cooldown already said, once, that the platform
+                # is rate limiting; a warning per held-back id would bury it.
+                logger.debug("Permalink for %s held back by a rate limit", event_id)
+                unavailable[event_id] = PermalinkUnavailable.BRIDGE_NOT_RUNNING
             except Exception as exc:
-                # A platform error code says enough, and the error's full text
-                # carries the response. Anything else needs its traceback.
+                # A platform error code says enough. Anything else gets its
+                # traceback: for a Slack error with no code, that holds the
+                # start of the response body (never the token).
                 response: Any = getattr(exc, "response", None)
                 code = response.get("error") if hasattr(response, "get") else None
                 logger.warning(

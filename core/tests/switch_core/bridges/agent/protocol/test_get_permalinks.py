@@ -547,6 +547,41 @@ class TestSlackAnswers:
         assert BOT_TOKEN not in caplog.text
         assert "server responded" not in caplog.text
 
+    async def test_ids_held_back_by_a_rate_limit_log_no_warning_each(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        lifecycle: _Lifecycle,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The cooldown says once that Slack is rate limiting. A warning with
+        a traceback for every id it holds back would bury that line."""
+        bridge_id = await _bridge(session_factory)
+        room_id = await _room(session_factory, bridge_id=bridge_id)
+        ids = []
+        for n in range(3):
+            message = await say(session_factory, room_id)
+            await _posted(
+                session_factory, bridge_id, message.transport_event_id, f"C1:{n}.0"
+            )
+            ids.append(message.transport_event_id)
+        adapter, client = _slack_adapter()
+        adapter._permalink_cooldown.start(30)
+        lifecycle.adapters[bridge_id] = adapter
+
+        with caplog.at_level(logging.DEBUG, logger=agent_core_module.__name__):
+            result = await _service(session_factory, lifecycle).get_permalinks(
+                AGENT, ids
+            )
+
+        assert result == {
+            "permalinks": {},
+            "unavailable": {i: "bridge_not_running" for i in ids},
+        }
+        assert client.permalink_calls == []
+        ours = [r for r in caplog.records if r.name == agent_core_module.__name__]
+        assert [r.levelno for r in ours] == [logging.DEBUG] * 3
+        assert all(r.exc_info is None for r in ours)
+
     async def test_other_failure_is_logged_with_its_traceback(
         self,
         session_factory: async_sessionmaker[AsyncSession],

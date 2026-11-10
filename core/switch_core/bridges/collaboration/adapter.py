@@ -269,6 +269,12 @@ class MessageGoneOnPlatform(Exception):
     someone deleted there."""
 
 
+class PermalinkHeldBack(RuntimeError):
+    """A permalink request the bridge did not send, because the platform is
+    rate limiting that call. The cooldown logs the wait once, so the caller
+    has nothing to add for each request it holds back."""
+
+
 class ChannelNotBindable(ValueError):
     """A room was asked to bind to a channel that is not this bridge's to bind.
 
