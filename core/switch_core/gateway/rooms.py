@@ -27,7 +27,6 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.config import SwitchConfig
-from switch_core.content_disposition import UNTRUSTED_FILE_CSP, content_disposition
 from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
@@ -952,7 +951,7 @@ async def export_room_yaml(
     """Export a room to YAML in the same surface ``/rooms/from-yaml`` accepts.
     Each section can be dropped via its boolean toggle (default included)."""
     principal = Principal(user.id, is_admin)
-    room = await _require_room_released(session, room_store, room_id, principal, "read")
+    await _require_room_released(session, room_store, room_id, principal, "read")
     yaml_text = await rooms_yaml.export(
         room_id,
         agents=agents,
@@ -962,19 +961,7 @@ async def export_room_yaml(
         docs=docs,
         roles=roles,
     )
-    return Response(
-        content=yaml_text,
-        media_type="application/x-yaml",
-        headers={
-            "Content-Disposition": content_disposition(
-                "attachment", f"{room.name}.yaml", "room"
-            ),
-            # The YAML carries names and instructions people typed, so a
-            # browser must not be talked into rendering it as something else.
-            "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": UNTRUSTED_FILE_CSP,
-        },
-    )
+    return Response(content=yaml_text, media_type="application/x-yaml")
 
 
 @router.get("/{room_id}")

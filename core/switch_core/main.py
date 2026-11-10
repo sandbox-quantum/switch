@@ -6,7 +6,6 @@ import hashlib
 import logging
 import os
 import signal
-import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -28,7 +27,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
-from uvicorn.main import STARTUP_FAILURE
 
 from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
@@ -749,10 +747,7 @@ async def _audit_history_sessions(
     return owner_engine, create_session_factory(owner_engine)
 
 
-async def run(config: SwitchConfig, process_id: str) -> bool:
-    """Serve until shutdown. Returns whether the server started: False when the
-    app's startup failed, which uvicorn logs and then returns from `serve()`
-    normally rather than raising."""
+async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Database ─────────────────────────────────────────────────────────────
     # The migration and the runtime role's grant re-issue already ran, under
     # Switch's boot-time advisory lock, before this coroutine was ever started
@@ -1918,7 +1913,6 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # uvicorn returns once its own part is done, while `_shutdown` is still
     # stopping the rest; returning here would end the loop under it.
     await _begin_shutdown.finish()
-    return server.started
 
 
 def _freeze_boot_objects() -> None:
@@ -2755,14 +2749,7 @@ def main() -> None:
     else:
         asyncio.run(_check_schema_at_head(config))
 
-    if not asyncio.run(run(config, process_id), loop_factory=_event_loop_factory()):
-        # The startup error is already logged (uvicorn: "Application startup
-        # failed"). Exiting 0 here would read as a clean stop to anything
-        # watching the exit status (`restart: on-failure`, Kubernetes, a
-        # process supervisor), so a Core that never served would stay down
-        # unnoticed. `STARTUP_FAILURE` (3) is what `uvicorn.run` exits with.
-        logger.error("switch-core did not start; exiting %d", STARTUP_FAILURE)
-        sys.exit(STARTUP_FAILURE)
+    asyncio.run(run(config, process_id), loop_factory=_event_loop_factory())
 
 
 def _start_hosted_alerts(

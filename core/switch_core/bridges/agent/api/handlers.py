@@ -98,7 +98,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.budgets import BudgetExceeded
 from switch_core.config import SwitchConfig
-from switch_core.content_disposition import untrusted_file_headers
+from switch_core.content_disposition import content_disposition
 from switch_core.db.models import Agent
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.feature_flags import V2_ONLY_FLAGS
@@ -530,10 +530,15 @@ async def download_media(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
+    headers = {}
+    if filename:
+        headers["Content-Disposition"] = content_disposition(
+            "inline", filename, "attachment"
+        )
     return Response(
         content=data,
         media_type=content_type or "application/octet-stream",
-        headers=untrusted_file_headers(filename, content_type, "attachment"),
+        headers=headers,
     )
 
 

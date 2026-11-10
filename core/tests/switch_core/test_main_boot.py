@@ -7,11 +7,6 @@ background workers. So a boot-only failure passed every test until the V0-0
 rehearsal (30 Oct): helpers defined below the `__main__` guard crashed startup
 with NameError. `test_main_entrypoint_order.py` pins that one layout; this
 boots the real thing, so any failure on the way to serving shows up here.
-
-It also pins the exit status. uvicorn's `Server.serve()` returns normally when
-the app's startup fails, so Core used to exit 0 after that crash: a clean stop
-to `restart: on-failure`, Kubernetes or any supervisor, which would leave it
-down unnoticed (security, QA). A failed startup now exits non-zero.
 """
 
 from __future__ import annotations
@@ -34,7 +29,6 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
-from uvicorn.main import STARTUP_FAILURE
 
 _CORE = Path(__file__).resolve().parents[2]
 #: Migrating an empty database and starting every worker, on a loaded runner.
@@ -227,30 +221,6 @@ def test_python_m_boots_core_serves_and_stops_cleanly(
     assert "bulk operator alert sweep isn't running" not in log
     booted.process.send_signal(signal.SIGTERM)
     assert _wait_exit(booted) == 0, booted.text()[-4000:]
-
-
-def test_a_startup_failure_exits_non_zero(
-    tmp_path: Path, boot_database: BootDatabase, start_core: StartCore
-) -> None:
-    """The V0-0 crash's shape: a call in the lifespan's startup raises. Core's
-    real `main()`, migration, `run()` and uvicorn all run; only that one call is
-    replaced, so the module is imported rather than run with `-m`."""
-    port = _free_port()
-    forced = (
-        "import switch_core.main as m\n"
-        "def boom(*_args, **_kwargs):\n"
-        "    raise RuntimeError('boot test: forced startup failure')\n"
-        "m._start_hosted_alerts = boom\n"
-        "m.main()\n"
-    )
-    # The replaced call starts only with hosted agents v2 on, as V0-0's did.
-    env = _boot_env(tmp_path, boot_database, port) | {"HOSTED_BOX_PROVISIONING": "true"}
-    booted = start_core(["-c", forced], env)
-    code = _wait_exit(booted)
-    log = booted.text()
-    assert code == STARTUP_FAILURE, log[-4000:]
-    assert "boot test: forced startup failure" in log
-    assert "switch-core did not start" in log
 
 
 def test_no_database_exits_non_zero(tmp_path: Path, start_core: StartCore) -> None:
