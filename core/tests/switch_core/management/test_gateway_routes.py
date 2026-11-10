@@ -822,6 +822,7 @@ class TestManagedAgents:
             )
         assert reported.status_code == 422
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_a_report_naming_another_controllers_agent_sets_no_state_on_it(
         self, harness: Harness, caplog: pytest.LogCaptureFixture
     ) -> None:

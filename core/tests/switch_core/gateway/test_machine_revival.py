@@ -155,6 +155,7 @@ async def test_a_cleaned_up_machine_comes_back_with_its_id_and_nothing_old(
     assert fresh["id"] is None and fresh["enrollment_code"]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_paused_owner_revives_nothing(harness: Harness) -> None:
     factory = harness.session_factory
     owner = await add_member(factory, "ada")

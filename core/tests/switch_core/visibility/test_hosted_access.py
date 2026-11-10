@@ -239,6 +239,7 @@ async def test_the_pause_holds_start_claim_and_retain_all_refuse(
         assert machine.desired_state == "stopped" and machine.stop_reason == "paused"
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_user_with_no_box_is_paused_on_the_user_and_can_claim_nothing(
     rls_harness: RLSHarness,
 ) -> None:
@@ -1093,6 +1094,7 @@ async def test_a_turn_off_on_a_shared_box_with_a_confirmed_revoke_raises_nothing
     assert all(raised is False for _, _, raised in alerts.off)
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_pause_survives_its_box_row_going(rls_harness: RLSHarness) -> None:
     """The mark is on the user: removing the box row (as the disk clean-up
     would) leaves the user paused, and a fresh claim is refused."""
