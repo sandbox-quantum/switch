@@ -127,6 +127,13 @@ export class HostedSession {
   private readonly roomReplies = new Set<string>();
   private historyImported = false;
   private readonly postedTurns = new Set<string>();
+  /** Turns in which the agent did something through a Switch tool other than read. */
+  private readonly actedTurns = new Set<string>();
+  /**
+   * Turns started by a room message nobody tagged, which Switch routed here
+   * or following the conversation brought here.
+   */
+  private readonly unaskedTurns = new Set<string>();
   /** Turns whose posts to the room were refused, with the last refusal. */
   private readonly failedPosts = new Map<string, string>();
   private readonly usage = new Map<string, TokenUsage[]>();
@@ -744,11 +751,27 @@ export class HostedSession {
   }
 
   /**
-   * The agent posted to a room, through one of the Switch tools: the running
-   * turn has answered, so the host has nothing to post for it.
+   * The agent did something through a Switch tool (posted, or acted in some
+   * other way): the running turn has answered, so the host has nothing to
+   * post for it.
    */
+  agentActedInSwitch(): void {
+    if (this.activeTurn) this.actedTurns.add(this.activeTurn);
+  }
+
+  /** The agent's post to a room landed: a refused post earlier in the turn is not reported. */
   agentPostedToRoom(): void {
     if (this.activeTurn) this.postedTurns.add(this.activeTurn);
+  }
+
+  /**
+   * `commandId` carries a room message nobody tagged, which Switch routed to
+   * this agent or following the conversation brought to it: the agent may
+   * rightly stay silent on it, so a turn it finishes without posting tells
+   * the room nothing.
+   */
+  unaskedRoomTurn(commandId: string): void {
+    this.unaskedTurns.add(commandId);
   }
 
   /** A post to the room in the running turn was refused: why, the last one kept. */
@@ -1249,11 +1272,17 @@ export class HostedSession {
   }
 
   /**
-   * Tells the room when a turn a room message started failed without the
-   * agent posting anywhere — a provider that ended on a quota or sign-in
-   * error — since the room would otherwise hear nothing about it. A turn that
-   * simply ended without a post says nothing (`unpostedReply`), and one the
-   * host cut short on purpose (stopping, parking, a reset) is left alone.
+   * Tells the room when a turn a room message started ended without the agent
+   * doing anything in Switch — a provider that failed on a quota or sign-in
+   * error, or an agent that finished with its answer, or a usage-limit
+   * notice, only in its final text — since the room would otherwise hear
+   * nothing about it (`unpostedReply`). A failed turn says so whenever no
+   * post landed. A turn that finished after the agent acted through a Switch
+   * tool says nothing, nor does one someone stopped, nor one that finished on
+   * a message nobody tagged (Switch routed it here, or
+   * following the conversation did), which the agent may rightly leave
+   * alone; one the host cut short on purpose (stopping, parking, a reset) is
+   * left alone too.
    *
    * Decided once per turn and recorded before the post, so a restart never
    * posts it twice. The post runs beside the session; one that fails is
@@ -1265,6 +1294,8 @@ export class HostedSession {
     detail: string | null
   ): Promise<void> {
     const posted = this.postedTurns.delete(turnId);
+    const acted = this.actedTurns.delete(turnId);
+    const unasked = this.unaskedTurns.delete(turnId);
     const failedPost = this.failedPosts.get(turnId) ?? null;
     this.failedPosts.delete(turnId);
     const reply = this.config.replyToRoom;
@@ -1276,7 +1307,11 @@ export class HostedSession {
     // A turn whose every post was refused ended in silence as far as the room
     // could tell: it is told that, once, unless the turn failed and says so already.
     const body =
-      unpostedReply(outcome, detail) ?? (failedPost !== null ? postFailedReply(failedPost) : null);
+      failedPost !== null && outcome !== 'error'
+        ? postFailedReply(failedPost)
+        : (acted || unasked) && outcome === 'completed'
+          ? null
+          : unpostedReply(outcome, detail);
     if (body === null) return;
     await this.inbox.append({ type: 'room-reply', commandId: turnId });
     this.roomReplies.add(turnId);
@@ -1596,13 +1631,15 @@ export function recentTurns(
 }
 
 /**
- * What the host posts for a room turn that ended without the agent posting:
- * only that it failed, and why, so a crash is not silent. A turn that
- * finished, or that someone stopped, posts nothing: the agent chose not to
- * answer, and its final text was never meant for the room.
+ * What the host posts for a room turn that ended without the agent doing
+ * anything in Switch. A failed turn says why, so a crash is not silent. A
+ * finished one says only that: its final text was never screened for the
+ * room, so none of it is posted. A turn someone stopped posts nothing: they
+ * know why it ended.
  */
 export function unpostedReply(outcome: TurnOutcome, detail: string | null): string | null {
-  if (outcome !== 'error') return null;
+  if (outcome === 'interrupted') return null;
+  if (outcome === 'completed') return 'I finished without replying.';
   const hint = REQUEST_TOO_LARGE.test(detail ?? '')
     ? 'Use !reset to start a fresh session, then send your message again. '
     : '';

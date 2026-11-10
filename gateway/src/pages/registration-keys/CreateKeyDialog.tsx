@@ -106,7 +106,7 @@ export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
                     readOnly: true,
                     endAdornment: (
                       <InputAdornment position="end">
-                        <IconButton onClick={handleCopy} size="small">
+                        <IconButton onClick={handleCopy} size="small" aria-label="Copy key">
                           <ContentCopy fontSize="small" />
                         </IconButton>
                       </InputAdornment>

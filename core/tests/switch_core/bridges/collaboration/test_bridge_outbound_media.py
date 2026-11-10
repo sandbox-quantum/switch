@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
+from switch_core.bridges.collaboration.adapter import MessagePartlySent
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.transport import (
     DownloadResult,
@@ -167,6 +168,7 @@ def _fake_bridge(
         CollaborationCore._flush_incomplete_outbound_group.__get__(ns)
     )
     ns._flush_outbound_group = CollaborationCore._flush_outbound_group.__get__(ns)
+    ns._partly_posted = CollaborationCore._partly_posted
 
     async def _download_media(uri: str) -> DownloadResult:
         if isinstance(download, TransportError):
@@ -498,3 +500,38 @@ async def test_a_post_cancelled_by_a_stop_lets_its_claim_go() -> None:
 
     assert posting.cancelled()
     assert released == ["$cut-short"]
+
+
+async def test_an_attachment_sent_only_in_part_keeps_its_claim() -> None:
+    """A caption split over several messages that stops part way leaves its
+    first part in the channel. The claim is settled with it rather than let
+    go, so the next delivery does not post those parts a second time."""
+    bridge = _fake_bridge()
+
+    async def partly(*args: Any, **kwargs: Any) -> str:
+        raise MessagePartlySent(
+            platform="Telegram", first_ref="ext-first", delivered=1, total=2
+        )
+
+    bridge._adapter.send_attachment = partly
+    released: list[str] = []
+    release = bridge._release_outbound
+
+    async def recording_release(transport_event_id: str) -> None:
+        released.append(transport_event_id)
+        await release(transport_event_id)
+
+    bridge._release_outbound = recording_release
+
+    await CollaborationCore.handle_outbound_media(
+        bridge, _room(), _media_event(event_id="$partly"), bridge.client
+    )
+
+    assert released == []
+    assert bridge.recorded == [
+        {
+            "external_channel_id": "chan-1",
+            "transport_event_id": "$partly",
+            "external_post_id": "ext-first",
+        }
+    ]
