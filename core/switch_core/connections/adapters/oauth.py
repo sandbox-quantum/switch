@@ -264,7 +264,7 @@ def _resource_covers(resource: str, url: str) -> bool:
         ]
     except ValueError:
         return False
-    if origins[0] != origins[1] or origins[0][0] != "https":
+    if origins[0] != origins[1]:
         return False
     return f"{server.path.rstrip('/')}/".startswith(f"{advertised.path.rstrip('/')}/")
 
