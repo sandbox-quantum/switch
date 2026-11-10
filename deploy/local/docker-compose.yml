@@ -302,7 +302,28 @@ services:
     profiles: ["decision", "decision-gpu"]
     ports:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:${DECISION_PORT:-8230}:8230"
+    # Docker Desktop and OrbStack define host.docker.internal; Linux Docker
+    # only does when asked. It is how this container reaches a collector on
+    # the host (see OTLP_ENDPOINT below).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
+      # Logging follows switch-core's settings in .env, as switch-decision.
+      # A name with no value is passed only when .env or the shell sets it,
+      # so an unset OTLP_ENDPOINT leaves log shipping off. It ships logs only,
+      # never metrics. In here localhost is this container: for a collector on
+      # the host, OTLP_ENDPOINT has to name host.docker.internal.
+      <<: &decision-logging
+        LOG_FORMAT:
+        LOG_LEVEL:
+        ENVIRONMENT:
+        SERVICE_NAME: switch-decision
+        OTLP_ENDPOINT:
+        DEPLOYMENT_ID:
+        OTLP_LOGS_ENABLED:
+        OTLP_TIMEOUT_SECONDS:
+        OTLP_HEADERS:
+      POD_NAME: decision
       DECISION_BACKEND: llamacpp
       DECISION_MODEL: ${DECISION_MODEL:-qwen3.5-4b-q4_k_m}
       LLAMACPP_URL: http://decision-model:8300
@@ -327,6 +348,8 @@ services:
     <<: *decision
     profiles: ["decision-strands-gpu"]
     environment:
+      <<: *decision-logging
+      POD_NAME: decision-strands
       DECISION_BACKEND: systemone
       DECISION_MODEL: strands-decider-E4B
       SYSTEMONE_URL: http://decision-model-strands:8400/v1/systemone

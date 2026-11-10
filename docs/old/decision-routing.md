@@ -231,9 +231,56 @@ workspace whose backend is slow or failing holds up only its own messages.
 
 ## What is reported
 
-Every decision is logged with its room, candidate count, choice, confidence,
-threshold, latency and backend (`machine` for a model on a machine), never the
-message. Product telemetry, when it
-is on, counts decisions and failures without any room, agent or message
-identifier: `decision_made` and `decision_failed` in
-`docs/old/telemetry-events.md`.
+Auto-route reports through the same channels as the rest of switch-core
+(`docs/old/observability.md`). No channel ever carries the message's text, the
+room's instructions or a key.
+
+**One decision record per message.** However an undecided message ends,
+switch-core writes exactly one log line for it, `Decision routing: …`, at INFO
+(WARNING when it expired). With `LOG_FORMAT=json` its fields are an object
+under `decision`, and over OTLP they are `decision.*` attributes:
+
+| Field | What it says |
+| --- | --- |
+| `decision_id` | This decision attempt; also sent to the backend (below). Empty for a message that expired before anyone was asked. |
+| `message_key` | The message, as the room knows it. |
+| `outcome` | `delivered`, `nobody_chosen`, `nobody_failed`, `triage`, `dropped_not_member`, `dropped_not_allowed`, `expired`, `settled_elsewhere` or `unavailable`. |
+| `choice` | The agent that received it, if any. |
+| `reason` | Why it reached nobody, in words. |
+| `backend`, `candidates` | Which kind of backend was asked (`machine` for a model on a machine), and about how many agents. |
+| `model`, `model_choice`, `confidence`, `threshold` | What the model picked and how sure it was, against the threshold. |
+| `latency_ms`, `model_ms`, `wait_ms` | The whole request as Switch timed it; the model's own time as the backend reported it; and the time from the person's message to this record. |
+| `failure` | Why the backend gave no usable answer, when it did not. |
+
+The room and tenant are log fields on the record (`room_id`, `tenant_id`), as
+is `decision_id` on every line logged while that message was being decided, so
+a search by room finds the record and a search by `decision_id` finds
+everything about one decision.
+
+**Following one decision across the hop.** switch-core sends the decision id
+as `X-Request-Id` to a decision service, which logs it as `request_id` on its
+own line for the decision, with its model and model time; and as the request's
+id to a machine, whose controller logs it as `requestId` on its
+`Decision answered` line. To follow a
+complaint that "my question went to the wrong agent": filter switch-core's logs
+by the room, find the record for the message, then search the decision
+service's logs for its `decision_id`.
+
+**Metrics.** `switch.decision.*` in the metric catalogue: decisions by backend
+and outcome, failures by reason, what the backend said went wrong behind it
+(`backend_errors`, from the service's `error_kind`), latency beside model time,
+confidence, how each message ended and how long it waited, the size and age of
+the waiting queue, the "unavailable" notices posted, and how many machines are
+in each decision-model state. None carries a room, agent, workspace, machine
+or message.
+
+**Health.** With a server default decision service, `/health/ready` reports a
+`decision` check, and `switch.health.check{check:decision}` follows it. It
+never takes switch-core out of service. A workspace's own endpoint is not
+probed; its failures show in `switch.decision.failures{backend:endpoint}`.
+
+**Dashboards and monitors** for all of this are in `deploy/observability/`.
+
+**Product telemetry**, when it is on, counts decisions and failures without
+any room, agent or message identifier: `decision_made` and `decision_failed`
+in `docs/old/telemetry-events.md`.

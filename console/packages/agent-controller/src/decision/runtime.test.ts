@@ -206,6 +206,24 @@ describe('DecisionRuntime', () => {
     expect(logged.join('\n')).not.toContain(SECRET_TEXT);
   });
 
+  it('logs each decision under the request id Switch sent, so it can be found from the decision record', async () => {
+    const runtime = await started();
+    await running(runtime);
+    await runtime.decide(request({ request_id: '4f6c2a9e8b7d4c1fa0e3d2b1c9876543' }));
+    launcher.last!.answer = { status: 500, body: { error: 'refused' }, delayMs: 0 };
+    await runtime.decide(request({ request_id: 'b3a1c0d9e8f74a6b5c4d3e2f1a0b9c8d' }));
+    const answered = logged.filter((line) => line.startsWith('Decision answered '));
+    expect(answered).toHaveLength(2);
+    expect(JSON.parse(answered[0].slice('Decision answered '.length))).toMatchObject({
+      requestId: '4f6c2a9e8b7d4c1fa0e3d2b1c9876543',
+      ok: true,
+    });
+    expect(JSON.parse(answered[1].slice('Decision answered '.length))).toMatchObject({
+      requestId: 'b3a1c0d9e8f74a6b5c4d3e2f1a0b9c8d',
+      ok: false,
+    });
+  });
+
   it(`answers busy beyond ${MAX_IN_FLIGHT} decisions at once`, async () => {
     const runtime = await started();
     await running(runtime);

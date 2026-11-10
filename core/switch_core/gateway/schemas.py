@@ -1146,6 +1146,16 @@ class TenantMembershipResponse(BaseModel):
     organization_id: str | None
 
 
+class WorkspaceCountsResponse(BaseModel):
+    """How many people and agents one workspace the caller may enter has, as
+    its members list and agents list show them. The body of
+    `GET /tenants/counts`, one per workspace."""
+
+    id: str
+    users: int
+    agents: int
+
+
 class OperatorWorkspaceResponse(BaseModel):
     """One workspace on the server, as the platform operator's list shows it."""
 

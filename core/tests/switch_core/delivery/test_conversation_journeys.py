@@ -806,7 +806,7 @@ class TestCommandsWhileTheFlagIsOff:
             )  # type: ignore[arg-type]
 
         assert len(replies) == 3
-        assert all("isn't switched on for this Switch server" in r for r in replies)
+        assert all("isn't switched on" in r for r in replies)
         async with world.session_factory() as session:
             assert await RoomStore().main_agent_id(session, world.room_id) is None
             assert await RoomStore().follow_ups_enabled(session, world.room_id)

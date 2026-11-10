@@ -921,6 +921,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/tenants/counts",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/tenants/current",
       "auth": "session",
       "flags": []

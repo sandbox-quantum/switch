@@ -9,7 +9,19 @@ import anthropic
 import boto3
 import httpx
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import (
+    BotoCoreError,
+    ClientError,
+    ConnectTimeoutError,
+    CredentialRetrievalError,
+    EndpointConnectionError,
+    NoCredentialsError,
+    PartialCredentialsError,
+    ProfileNotFound,
+    ReadTimeoutError,
+    SSOError,
+    TokenRetrievalError,
+)
 
 from switch_decision.config import Settings
 from switch_decision.models import DecideRequest
@@ -25,6 +37,7 @@ from switch_decision.prompt import (
     systemone_request,
 )
 from switch_decision.readers import (
+    ErrorKind,
     ModelAnswer,
     ModelServerError,
     read_bedrock,
@@ -32,6 +45,71 @@ from switch_decision.readers import (
     read_ollama,
     read_systemone,
 )
+
+
+def kind_of_status(status: int) -> ErrorKind:
+    """An HTTP error status from a model server or API, classified."""
+    if status in (401, 403, 429):
+        return "backend_refused"
+    if status in (404, 503, 529):
+        # Ollama answers 404 for a model it has not pulled, llama.cpp 503
+        # while its model is still loading, Anthropic 529 when overloaded.
+        return "model_unavailable"
+    if status == 504:
+        return "model_server_timeout"
+    return "model_server_error"
+
+
+def kind_of_httpx_error(exc: httpx.HTTPError) -> ErrorKind:
+    if isinstance(exc, httpx.ConnectTimeout | httpx.NetworkError):
+        return "model_server_unreachable"
+    if isinstance(exc, httpx.TimeoutException):
+        return "model_server_timeout"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return kind_of_status(exc.response.status_code)
+    return "model_server_error"
+
+
+_AWS_CREDENTIAL_ERRORS = (
+    NoCredentialsError,
+    PartialCredentialsError,
+    CredentialRetrievalError,
+    ProfileNotFound,
+    TokenRetrievalError,
+    SSOError,
+)
+
+_BEDROCK_REFUSED = {
+    "AccessDeniedException",
+    "UnrecognizedClientException",
+    "ExpiredTokenException",
+    "InvalidSignatureException",
+    "ThrottlingException",
+    "ServiceQuotaExceededException",
+}
+_BEDROCK_UNAVAILABLE = {"ResourceNotFoundException", "ModelNotReadyException"}
+
+# What a Converse answer says when a guardrail or content filter stopped it.
+_BEDROCK_REFUSAL_STOPS = {"guardrail_intervened", "content_filtered"}
+
+
+def kind_of_bedrock_error(exc: BotoCoreError | ClientError) -> ErrorKind:
+    if isinstance(exc, ClientError):
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in _BEDROCK_REFUSED:
+            return "backend_refused"
+        if code in _BEDROCK_UNAVAILABLE:
+            return "model_unavailable"
+        if code == "ModelTimeoutException":
+            return "model_server_timeout"
+        return "model_server_error"
+    if isinstance(exc, _AWS_CREDENTIAL_ERRORS):
+        return "credentials_missing"
+    if isinstance(exc, ConnectTimeoutError | EndpointConnectionError):
+        return "model_server_unreachable"
+    if isinstance(exc, ReadTimeoutError):
+        return "model_server_timeout"
+    return "model_server_error"
 
 
 def _is_claude(model_id: str) -> bool:
@@ -98,8 +176,14 @@ async def ask_bedrock(settings: Settings, req: DecideRequest) -> ModelAnswer:
         )
         raise ModelServerError(
             f"{where} failed: {type(exc).__name__}: {exc}",
-            f"{where} failed: {type(exc).__name__} {code}".rstrip(),
+            kind=kind_of_bedrock_error(exc),
+            log_text=f"{where} failed: {type(exc).__name__} {code}".rstrip(),
         ) from exc
+    stop = body.get("stopReason")
+    if stop in _BEDROCK_REFUSAL_STOPS:
+        raise ModelServerError(
+            f"{where} declined to answer (stopReason={stop})", kind="backend_refused"
+        )
     return read_bedrock(body, options)
 
 
@@ -147,7 +231,10 @@ def read_anthropic(message: Any, options: list[str]) -> ModelAnswer:
     )
     if block is None:
         raise ModelServerError(
-            f"Claude did not call the pick tool (stop_reason={message.stop_reason})"
+            f"Claude did not call the pick tool (stop_reason={message.stop_reason})",
+            kind="backend_refused"
+            if message.stop_reason == "refusal"
+            else "model_server_error",
         )
     return read_bedrock(
         {
@@ -190,16 +277,31 @@ async def ask_anthropic(
     settings: Settings, req: DecideRequest, api_key: str | None = None
 ) -> ModelAnswer:
     options = [a.name for a in req.agents] + [NONE]
+    if api_key is None and not os.environ.get("ANTHROPIC_API_KEY"):
+        raise ModelServerError(
+            "ANTHROPIC_API_KEY is not set", kind="credentials_missing"
+        )
     try:
         message = await anthropic_client(settings, api_key).messages.create(
             **anthropic_request(req, settings)
         )
+    except anthropic.CredentialsError as exc:
+        raise ModelServerError(
+            f"Anthropic credentials unavailable: {exc}", kind="credentials_missing"
+        ) from exc
+    except anthropic.APITimeoutError as exc:
+        raise ModelServerError(
+            f"Anthropic API timed out: {exc}", kind="model_server_timeout"
+        ) from exc
     except anthropic.APIConnectionError as exc:
-        raise ModelServerError(f"Anthropic API unreachable: {exc}") from exc
+        raise ModelServerError(
+            f"Anthropic API unreachable: {exc}", kind="model_server_unreachable"
+        ) from exc
     except anthropic.APIStatusError as exc:
         raise ModelServerError(
             f"Anthropic API returned {exc.status_code} for {settings.model}: {exc.message}",
-            f"Anthropic API returned {exc.status_code} for {settings.model}",
+            kind=kind_of_status(exc.status_code),
+            log_text=f"Anthropic API returned {exc.status_code} for {settings.model}",
         ) from exc
     return read_anthropic(message, options)
 
@@ -248,14 +350,22 @@ async def ask(
             )
         except httpx.HTTPError as exc:
             raise ModelServerError(
-                f"model server {url} unreachable: {type(exc).__name__}: {exc}"
+                f"model server {url} unreachable: {type(exc).__name__}: {exc}",
+                kind=kind_of_httpx_error(exc),
             ) from exc
         if r.status_code != 200:
             raise ModelServerError(
                 f"model server {url} returned {r.status_code}: {r.text[:300]}",
-                f"model server {url} returned {r.status_code}",
+                kind=kind_of_status(r.status_code),
+                log_text=f"model server {url} returned {r.status_code}",
             )
-        return read_letter_logprobs(r.json(), letters)
+        try:
+            body = r.json()
+        except ValueError as exc:
+            raise ModelServerError(
+                f"model server {url} returned non-JSON", kind="model_server_error"
+            ) from exc
+        return read_letter_logprobs(body, letters)
     options = [a.name for a in req.agents] + [NONE]
     headers: dict[str, str] = {}
     if settings.backend == "systemone":
@@ -278,17 +388,21 @@ async def ask(
         )
     except httpx.HTTPError as exc:
         raise ModelServerError(
-            f"model server {url} unreachable: {type(exc).__name__}: {exc}"
+            f"model server {url} unreachable: {type(exc).__name__}: {exc}",
+            kind=kind_of_httpx_error(exc),
         ) from exc
     if r.status_code != 200:
         raise ModelServerError(
             f"model server {url} returned {r.status_code}: {r.text[:300]}",
-            f"model server {url} returned {r.status_code}",
+            kind=kind_of_status(r.status_code),
+            log_text=f"model server {url} returned {r.status_code}",
         )
     try:
         body = r.json()
     except ValueError as exc:
-        raise ModelServerError(f"model server {url} returned non-JSON") from exc
+        raise ModelServerError(
+            f"model server {url} returned non-JSON", kind="model_server_error"
+        ) from exc
     return (
         read_systemone(body, options)
         if settings.backend == "systemone"
@@ -300,7 +414,9 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
     """Probe the model server; raise ModelServerError when it is down."""
     if settings.backend == "anthropic":
         if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise ModelServerError("ANTHROPIC_API_KEY is not set")
+            raise ModelServerError(
+                "ANTHROPIC_API_KEY is not set", kind="credentials_missing"
+            )
         return {"status": "api key set"}
     if settings.backend == "bedrock":
         try:
@@ -310,10 +426,13 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
                 ).get_credentials()
             )
         except BotoCoreError as exc:
-            raise ModelServerError(f"AWS credentials unavailable: {exc}") from exc
+            raise ModelServerError(
+                f"AWS credentials unavailable: {exc}", kind="credentials_missing"
+            ) from exc
         if creds is None:
             raise ModelServerError(
-                "AWS credentials unavailable: no profile or environment credentials found"
+                "AWS credentials unavailable: no profile or environment credentials found",
+                kind="credentials_missing",
             )
         return {"status": "credentials found", "region": settings.aws_region}
     if settings.backend == "llamacpp":
@@ -324,7 +443,10 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
             return r.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise ModelServerError(
-                f"model server {url} unavailable: {type(exc).__name__}: {exc}"
+                f"model server {url} unavailable: {type(exc).__name__}: {exc}",
+                kind=kind_of_httpx_error(exc)
+                if isinstance(exc, httpx.HTTPError)
+                else "model_server_error",
             ) from exc
     if settings.backend == "systemone":
         base = settings.systemone_url.rsplit("/v1/", 1)[0]
@@ -337,5 +459,8 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
         return r.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise ModelServerError(
-            f"model server {url} unavailable: {type(exc).__name__}: {exc}"
+            f"model server {url} unavailable: {type(exc).__name__}: {exc}",
+            kind=kind_of_httpx_error(exc)
+            if isinstance(exc, httpx.HTTPError)
+            else "model_server_error",
         ) from exc

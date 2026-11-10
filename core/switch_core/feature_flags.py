@@ -95,6 +95,14 @@ BUDDY_SLACK_HANDOFF = "buddy_slack_handoff"
 # server's apps, as before organizations.
 ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps"
 
+# The dashboard's new layout: Overview, Templates and Connectors on the rail,
+# Workspace and Organization settings as their own areas, and the operator's
+# pages in a Platform area. Today's pages move into it and their old URLs
+# redirect. Core has nothing of its own behind it; the dashboard reads it. It
+# stays off until every page of the new layout is built, and on a server with
+# it off the dashboard is laid out as before.
+GATEWAY_V2 = "gateway_v2"
+
 # Flags that need another flag on: the server refuses a configuration with
 # the key on and any of its values off, and tools that turn flags off one at a
 # time (scripts/e2e_surface.py) turn the dependants off with it.
@@ -131,5 +139,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         GROUP_CHATS,
         BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
+        GATEWAY_V2,
     }
 )

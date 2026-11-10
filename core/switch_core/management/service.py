@@ -70,6 +70,7 @@ from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.template_install_store import TemplateInstallStore
+from switch_core.decision.machine_gauge import MachineDecisionStates
 from switch_core.gateway.cloud_controllers import (
     enroll_revoked_again,
     record_controller_status,
@@ -171,6 +172,13 @@ class ManagementService:
         self.agents = agents
         self.processes = processes
         self.decision_settings = DecisionSettingsStore()
+        # Each connected machine's decision-model state, for the operator's
+        # metrics (`decision/machine_gauge.py`); `main` registers its readings.
+        self.machine_decision_states = MachineDecisionStates(
+            connected_here=lambda controller_id: (
+                presence.live_connection(controller_id) is not None
+            )
+        )
         self._clock = clock
 
     def now(self) -> datetime:
@@ -511,6 +519,13 @@ class ManagementService:
                 principal.controller_id,
             )
         decision = report.decision
+        if stored:
+            if decision is None:
+                self.machine_decision_states.forget(principal.controller_id)
+            else:
+                self.machine_decision_states.report(
+                    principal.controller_id, decision.state, decision.reason
+                )
         # The first report of the chosen model running makes the workspace's
         # auto-route ready to ask it.
         if (
@@ -883,7 +898,7 @@ class ManagementService:
                     409,
                     reason_codes.VALIDATION_ERROR,
                     "This controller already has a different public key. Enroll "
-                    "the machine again to give it a new one.",
+                    "the device again to give it a new one.",
                 )
         if not details:
             leases = await self.leases(session)
@@ -1035,15 +1050,15 @@ class ManagementService:
             raise ManagementError(
                 409,
                 reason_codes.VALIDATION_ERROR,
-                "This machine has no key to seal a login to yet. Update its "
+                "This device has no key to seal a login to yet. Update its "
                 "controller, which registers one when it next runs.",
             )
         if sealed.key_id != key_id(public_key["key"]):
             raise ManagementError(
                 409,
                 reason_codes.VALIDATION_ERROR,
-                "The login was sealed to a key this machine no longer has. Seal "
-                "it again to the key the machine shows now.",
+                "The login was sealed to a key this device no longer has. Seal "
+                "it again to the key the device shows now.",
             )
         row = await self.controllers.put_sealed_login(
             session,
@@ -1150,7 +1165,7 @@ class ManagementService:
             raise ManagementError(
                 404,
                 reason_codes.PROVIDER_LOGIN_MISSING,
-                f"No {provider} login has been given to this machine.",
+                f"No {provider} login has been given to this device.",
             )
         return {
             "provider": row.provider,

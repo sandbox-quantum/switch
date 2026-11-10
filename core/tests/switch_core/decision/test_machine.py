@@ -40,7 +40,11 @@ def _presence() -> ControllerPresence:
 
 
 async def _ask(
-    machines: MachineDecisions, *, timeout: float = 1.0, threshold: float = 0.6
+    machines: MachineDecisions,
+    *,
+    timeout: float = 1.0,
+    threshold: float = 0.6,
+    request_id: str = "decision-1",
 ):
     return await machines.ask(
         controller_id=CONTROLLER,
@@ -48,6 +52,7 @@ async def _ask(
         request=REQUEST,
         threshold=threshold,
         timeout_seconds=timeout,
+        request_id=request_id,
     )
 
 
@@ -61,6 +66,7 @@ async def test_the_request_carries_the_services_own_llamacpp_body() -> None:
     [frame] = machine.requests
     assert frame["event"] == "decision.request"
     data = frame["data"]
+    assert data["request_id"] == "decision-1"
     assert data["kind"] == "llamacpp"
     assert data["model"] == MODEL
     assert data["deadline_ms"] == 2500
@@ -88,8 +94,8 @@ async def test_answers_reach_the_requests_they_name_whatever_their_order() -> No
     presence = _presence()
     conn = hold(presence, CONTROLLER, TENANT)
     machines = MachineDecisions(presence)
-    first = asyncio.create_task(_ask(machines))
-    second = asyncio.create_task(_ask(machines))
+    first = asyncio.create_task(_ask(machines, request_id="first"))
+    second = asyncio.create_task(_ask(machines, request_id="second"))
     while len(conn.urgent) < 2:
         await asyncio.sleep(0)
     frames = conn.take_urgent()
@@ -174,16 +180,16 @@ async def test_a_machine_not_held_here_is_offline_at_once() -> None:
 
 
 @pytest.mark.parametrize(
-    ("code", "reason"),
+    ("code", "reason", "kind"),
     [
-        ("busy", "machine_busy"),
-        ("not_running", "machine_not_ready"),
-        ("model_server_error", "machine_error"),
-        ("deadline", "timeout"),
-        ("something_new", "machine_error"),
+        ("busy", "machine_busy", "backend_refused"),
+        ("not_running", "machine_not_ready", "model_unavailable"),
+        ("model_server_error", "machine_error", "model_server_error"),
+        ("deadline", "timeout", "model_server_timeout"),
+        ("something_new", "machine_error", "unknown"),
     ],
 )
-async def test_the_controllers_errors(code: str, reason: str) -> None:
+async def test_the_controllers_errors(code: str, reason: str, kind: str) -> None:
     presence = _presence()
     machine = FakeMachine(hold(presence, CONTROLLER, TENANT))
     machine.error = code
@@ -192,6 +198,7 @@ async def test_the_controllers_errors(code: str, reason: str) -> None:
             await _ask(MachineDecisions(presence))
 
     assert failed.value.reason == reason
+    assert failed.value.error_kind == kind
 
 
 async def test_an_answer_that_is_not_a_decision_is_a_bad_answer() -> None:

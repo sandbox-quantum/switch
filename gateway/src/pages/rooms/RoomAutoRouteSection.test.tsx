@@ -24,6 +24,10 @@ function agent(id: string, name: string): AgentSummary {
     known_agent_type: "claude-code",
     known_agent_options: null,
     can_manage: false,
+    can_rename: false,
+    can_edit_options: false,
+    can_transfer: false,
+    transfer_blocked_reason: null,
   };
 }
 

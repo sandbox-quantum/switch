@@ -59,7 +59,7 @@ from switch_core.clients.admin_messages import (
     platform_replies_in_channel,
 )
 from switch_core.clients.mentions import (
-    NAME_CHAR as _NAME_CHAR,
+    mention_pattern as _mention_pattern,
 )
 from switch_core.clients.mentions import (
     mention_regex as _mention_regex,
@@ -344,7 +344,7 @@ def _start_from_console_message(
     console = f"opening **{agent_name}** in Switch Console"
     sign_in = (
         "If Switch Console says I'm signed out, sign me in first with "
-        f"`{sign_in_command}` on the machine I run on."
+        f"`{sign_in_command}` on the device I run on."
     )
     if connected_not_live:
         return (
@@ -392,7 +392,7 @@ def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
     """A managed agent whose controller's stream is down: Core restarted, the
     machine lost its network, or it is switched off."""
     return (
-        f"My machine, **{machine}**, is offline or reconnecting to Switch, so "
+        f"My device, **{machine}**, is offline or reconnecting to Switch, so "
         "I can't answer right now. If I haven't answered once it's back, address "
         f"me again. If it stays offline, {_owner_ref(owner_handle)} needs to "
         "check it."
@@ -420,7 +420,7 @@ def _cloud_machine_waking_message(machine: str) -> str:
     """A managed agent whose Switch cloud machine was asleep, and is starting
     for this message: Switch keeps the message until the machine is back."""
     return (
-        f"My machine, **{machine}**, was asleep and is starting now. I'll pick "
+        f"My device, **{machine}**, was asleep and is starting now. I'll pick "
         "this up as soon as it's back, usually within a few minutes."
     )
 
@@ -429,15 +429,15 @@ def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> st
     """A managed agent whose Switch cloud machine its owner stopped: a message
     does not start it again."""
     return (
-        f"My machine, **{machine}**, is stopped, so I can't answer. "
+        f"My device, **{machine}**, is stopped, so I can't answer. "
         f"{_owner_ref(owner_handle).capitalize()} can start it again in Switch Console."
     )
 
 
 def _machine_removed_message(machine: str, owner_handle: str | None) -> str:
     removed = (
-        f"my machine, **{machine}**, has been removed from Switch, so nothing "
-        "runs me. My owner has to move me to another machine to bring me back."
+        f"my device, **{machine}**, has been removed from Switch, so nothing "
+        "runs me. My owner has to move me to another device to bring me back."
     )
     if owner_handle:
         return f"@{owner_handle} — {removed}"
@@ -764,7 +764,8 @@ class AgentRecipient:
         agent = await self._fresh_agent(session)
         gate = await self._gate_addressed(session, agent, event, meta)
         if not gate.addressed:
-            logger.info(
+            # The router's decision record says so (`dropped_not_allowed`).
+            logger.debug(
                 "Decision routing: room=%s message=%s agent=%s routed_reason=%s "
                 "outcome=dropped_not_permitted reason=the sender may not "
                 "instruct this agent, or it is over budget",
@@ -1940,7 +1941,7 @@ class AgentRecipient:
 
     def _strip_mention(self, text: str) -> str:
         pattern = re.compile(
-            re.escape(f"@{self.agent.name}") + rf"(?!{_NAME_CHAR}):?",
+            _mention_pattern(self.agent.name) + ":?",
             re.IGNORECASE,
         )
         return pattern.sub("", text).strip()

@@ -157,6 +157,28 @@ spec:
             - name: AWS_REGION
               value: {{ . | quote }}
             {{- end }}
+            # Logs follow switch-core's settings (switchCore.logging and
+            # switchCore.observability), under their own service name. Logs
+            # only: the service exports no metrics; switch-core measures
+            # decisions.
+            - name: LOG_FORMAT
+              value: {{ .Values.switchCore.logging.format | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.switchCore.logging.rootLevel | quote }}
+            - name: SERVICE_NAME
+              value: "switch-decision"
+            {{- with .Values.switchCore.logging.environment }}
+            - name: ENVIRONMENT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- with include "switch.otlpEnv" (dict "root" $ "metrics" false) }}
+            {{- . | trim | nindent 12 }}
+            {{- end }}
+            # Last, so an entry here replaces any of the above.
             {{- with $d.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

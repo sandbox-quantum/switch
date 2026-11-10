@@ -203,13 +203,12 @@ def _refuse_unoffered(
     server = client.server
     if req.backend == "haiku_anthropic" and not server.haiku_anthropic:
         raise DecisionSettingsRefused(
-            "Haiku runs in the server's decision service, and this server "
-            "has none configured."
+            "Haiku runs in Switch's decision service, and none is set up here."
         )
     if req.backend == "haiku_bedrock" and not server.haiku_bedrock:
         raise DecisionSettingsRefused(
-            "Haiku on Bedrock isn't offered on this server: it needs the "
-            "server's decision service and DECISION_BEDROCK_ENABLED."
+            "Haiku on Bedrock isn't offered here: it needs Switch's "
+            "decision service and DECISION_BEDROCK_ENABLED."
         )
 
 
@@ -222,7 +221,7 @@ async def _refuse_unreachable(endpoint: str, client: DynamicDecisionClient) -> N
     except OutboundURLRefused as refused:
         raise DecisionSettingsRefused(
             f"{refused} A workspace's decision endpoint must be a public "
-            "address, or a private host the server's operator lists in "
+            "address, or a private host whoever runs Switch lists in "
             "OUTBOUND_ALLOWED_PRIVATE_HOSTS."
         ) from refused
 
@@ -528,7 +527,7 @@ async def run_sample(
                     backend=req.backend,
                     error=DecisionTestError(
                         code="not_configured",
-                        message="The stored key can't be decrypted by this server; "
+                        message="The stored key can't be decrypted here; "
                         "enter it again.",
                     ),
                 )

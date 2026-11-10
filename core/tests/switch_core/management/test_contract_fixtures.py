@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -432,6 +433,7 @@ class TestStreamFrames:
                     thread_id=None,
                     surface="slack",
                     requester_name="Ada",
+                    direct=False,
                     target_message_id=None,
                 ),
             )
@@ -451,6 +453,7 @@ class TestStreamFrames:
                     request=_DECISION,
                     threshold=0.6,
                     timeout_seconds=5.0,
+                    request_id=uuid.uuid4().hex,
                 )
             )
             while not conn.urgent:

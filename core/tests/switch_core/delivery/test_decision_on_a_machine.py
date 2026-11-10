@@ -33,8 +33,16 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.decision.client import DynamicDecisionClient
 from switch_core.decision.machine import MachineDecisions
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
+from switch_core.logging_context import STRUCTURED_FIELDS
+from switch_core.observability.catalogue import (
+    DECISION_BACKEND_ERRORS,
+    DECISION_FAILURES,
+    DECISION_MODEL_TIME,
+    DECISION_REQUESTS,
+)
 from switch_core.outbound import OutboundPolicy
 from tests.conftest import TEST_KEYRING
+from tests.metric_readings import Readings, recording_metrics
 from tests.routing import process_on
 from tests.switch_core.decision.machine_helpers import (
     MODEL,
@@ -366,3 +374,59 @@ class TestTheProcessHoldingTheMachine:
         assert await room.reached(told) == set()
         assert room.room_notices == [OFFLINE_NOTICE]
         assert await _pending(world) == []
+
+
+async def test_the_decision_record_and_metrics_name_the_machine_backend(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    controller = await _choose_machine(world, ready=True)
+    presence = _presence()
+    machine = FakeMachine(hold(presence, controller, TENANT_ZERO_ID))
+    machine.pick = "helper"
+    room = await Journey(world, ON, _client(world.session_factory, presence)).start()
+    await room.command("alice", "auto-route", "on", at=0)
+
+    async with machine.running():
+        with caplog.at_level(logging.INFO), recording_metrics() as registry:
+            await room.say("bob", "can someone check why the deploy failed?", at=10)
+            readings = Readings(registry)
+
+    [record] = [
+        getattr(r, STRUCTURED_FIELDS)["decision"]
+        for r in caplog.records
+        if isinstance(getattr(r, STRUCTURED_FIELDS, None), dict)
+    ]
+    [frame] = machine.requests
+    assert record["outcome"] == "delivered"
+    assert record["backend"] == "machine"
+    assert record["decision_id"] == frame["data"]["request_id"]
+    assert record["model_ms"] == 412
+    assert (
+        readings.total(DECISION_REQUESTS.name, backend="machine", outcome="agent") == 1
+    )
+    assert readings.count(DECISION_MODEL_TIME.name, backend="machine") == 1
+
+
+async def test_a_busy_machine_counts_as_a_refused_backend(world: World) -> None:
+    controller = await _choose_machine(world, ready=True)
+    presence = _presence()
+    machine = FakeMachine(hold(presence, controller, TENANT_ZERO_ID))
+    machine.error = "busy"
+    room = await Journey(world, ON, _client(world.session_factory, presence)).start()
+    await room.command("alice", "auto-route", "on", at=0)
+
+    async with machine.running():
+        with recording_metrics() as registry:
+            await room.say("bob", "can someone check the deploy?", at=10)
+            readings = Readings(registry)
+
+    assert (
+        readings.total(
+            DECISION_BACKEND_ERRORS.name, backend="machine", kind="backend_refused"
+        )
+        == 1
+    )
+    assert (
+        readings.total(DECISION_FAILURES.name, backend="machine", reason="machine_busy")
+        == 1
+    )

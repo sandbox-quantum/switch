@@ -183,6 +183,7 @@ from switch_core.db.tenant_lookup import (
     tenants_with_pending_decisions,
 )
 from switch_core.decision.machine import MachineDecisions
+from switch_core.decision.pending_gauge import PendingDecisionGauge
 from switch_core.decision.setup import build_decision_client
 from switch_core.decision.signals import DecisionSignals
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
@@ -208,6 +209,7 @@ from switch_core.observability.bootstrap import (
     RuntimeProbes,
     start_observability,
 )
+from switch_core.observability.metrics import metrics
 from switch_core.observability.pool import (
     WaitTimedQueuePool,
     install_hold_timer,
@@ -369,12 +371,14 @@ async def _decision_sweep_loop(
     session_factory: async_sessionmaker[AsyncSession],
     router: MessageRouter,
     concurrency: int,
+    pending_gauge: PendingDecisionGauge,
 ) -> None:
     """Decide the messages waiting for the decision service: the process that
     wrote one starts at once, and this is what decides one whose process
     stopped first, or that a restart left behind. Every process runs it; each
     message is claimed by one. Only tenants with a message waiting are
-    visited, `concurrency` at a time."""
+    visited, `concurrency` at a time. Each pass first samples the waiting
+    queue for the operator's metrics (`decision/pending_gauge.py`)."""
     with no_tenant():
         while True:
             await asyncio.sleep(DECISION_SWEEP_SECONDS)
@@ -383,6 +387,13 @@ async def _decision_sweep_loop(
             except Exception:
                 logger.exception("Decision sweep failed")
                 continue
+            try:
+                await pending_gauge.sample(session_factory, tenants)
+            except Exception:
+                logger.exception(
+                    "Could not sample the decision queue; its gauges go quiet "
+                    "until a sample succeeds"
+                )
             await sweep_pending_decisions(tenants, router.decide_pending, concurrency)
 
 
@@ -1177,6 +1188,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         external_user_store=external_user_store,
         document_store=document_store,
         reference_store=reference_store,
+        package_store=package_store,
         agent_session_store=agent_session_store,
         room_service=room_service,
         user_store=user_store,
@@ -1512,6 +1524,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         bridges_running=collab_lifecycle.running_count,
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
+        bridges_crashed=collab_lifecycle.crashed,
         consumers_running=client_lifecycle.running_count,
         agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
@@ -1609,6 +1622,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 session_factory=session_factory,
                 probes=probes,
                 process_id=process_id,
+                optional_checks=[
+                    check
+                    for check in (decision_client.health_check(),)
+                    if check is not None
+                ],
                 db_server_engine=lambda: create_unpooled_engine(config),
             )
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
@@ -1618,15 +1636,24 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             attachment_group_task = asyncio.create_task(
                 _attachment_group_sweep_loop(session_factory, router)
             )
-            decision_task = (
-                asyncio.create_task(
+            if management is not None:
+                metrics().register_observer(
+                    management.service.machine_decision_states.readings
+                )
+            decision_task = None
+            if config.decision_routing_enabled:
+                pending_gauge = PendingDecisionGauge(
+                    sweep_seconds=DECISION_SWEEP_SECONDS
+                )
+                metrics().register_observer(pending_gauge.readings)
+                decision_task = asyncio.create_task(
                     _decision_sweep_loop(
-                        session_factory, router, config.decision_sweep_concurrency
+                        session_factory,
+                        router,
+                        config.decision_sweep_concurrency,
+                        pending_gauge,
                     )
                 )
-                if config.decision_routing_enabled
-                else None
-            )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )
@@ -1928,6 +1955,11 @@ async def _seed_admin_user(
     user_store: UserStore,
     config: SwitchConfig,
 ) -> None:
+    if config.gateway_admin_password and not config.gateway_password_login_enabled:
+        logger.warning(
+            "GATEWAY_ADMIN_PASSWORD is set but password login is disabled, so "
+            "it signs nobody in; it can be removed."
+        )
     # Tenant zero by name, not by fallback. The admin `User` row is global
     # (db/models.py) and the lookup below spans every tenant either way, but
     # `UserStore.create` also writes a `tenant_members` row, and which tenant
@@ -1953,22 +1985,34 @@ async def _seed_admin_user(
                 logger.warning(
                     "Admin user %s had no tenant membership and could not have "
                     "signed in; joined it to tenant %s.",
-                    config.gateway_admin_email,
+                    existing.id,
                     TENANT_ZERO_ID,
                 )
             else:
-                logger.info("Admin user already exists: %s", config.gateway_admin_email)
+                logger.info("Admin user already exists: %s", existing.id)
+            if existing.password_hash is None and config.gateway_admin_password:
+                existing.password_hash = hash_password(config.gateway_admin_password)
+                await session.commit()
+                logger.warning(
+                    "Admin user %s was seeded without a password; set it from "
+                    "GATEWAY_ADMIN_PASSWORD.",
+                    existing.id,
+                )
             return
 
         admin = User(
             name="Admin",
             email=config.gateway_admin_email,
             role="admin",
-            password_hash=hash_password(config.gateway_admin_password),
+            password_hash=(
+                hash_password(config.gateway_admin_password)
+                if config.gateway_admin_password
+                else None
+            ),
         )
         await user_store.create(session, admin)
         await session.commit()
-        logger.info("Seeded admin user: %s", config.gateway_admin_email)
+        logger.info("Seeded admin user: %s", admin.id)
 
 
 async def _seed_agent_registration_bootstrap_key(
@@ -2017,8 +2061,8 @@ async def _seed_agent_registration_bootstrap_key(
         admin = await user_store.get_by_email(session, config.gateway_admin_email)
         if admin is None:
             raise RuntimeError(
-                "Cannot seed agent-registration bootstrap key: admin user "
-                f"{config.gateway_admin_email} not found"
+                "Cannot seed agent-registration bootstrap key: no user has "
+                "the GATEWAY_ADMIN_EMAIL address"
             )
         admin_id = admin.id
         bootstrap_owner = await ensure_bootstrap_owner(session, user_store)
@@ -2045,13 +2089,13 @@ async def _seed_agent_registration_bootstrap_key(
             )
     if admin_owned_agents:
         logger.warning(
-            "%d agent(s) are owned by the admin user (%s) and carry "
+            "%d agent(s) are owned by the admin user (id %s) and carry "
             "admin-equivalent authority over every room and resource in "
             "this deployment, not just their own: %s. If any were "
             "registered through AGENT_REGISTRATION_TOKEN, reassign or "
             "re-register them under a non-admin owner.",
             len(admin_owned_agents),
-            config.gateway_admin_email,
+            admin_id,
             ", ".join(admin_owned_agents),
         )
 

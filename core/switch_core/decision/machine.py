@@ -37,7 +37,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -51,6 +50,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerGoneError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import DECISION_REQUEST
+from switch_core.decision.error_kinds import BackendErrorKind
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.controller_presence import (
@@ -94,6 +94,14 @@ _RESULT_ERRORS: dict[str, MachineFailure] = {
     "busy": "machine_busy",
     "model_server_error": "machine_error",
     "deadline": "timeout",
+}
+# The same codes as what went wrong behind the machine, in the terms a
+# decision service's `error_kind` uses (`switch.decision.backend_errors`).
+_RESULT_ERROR_KINDS: dict[str, BackendErrorKind] = {
+    "not_running": "model_unavailable",
+    "busy": "backend_refused",
+    "model_server_error": "model_server_error",
+    "deadline": "model_server_timeout",
 }
 
 # The states the machine's model can be in, as it reports them, and two of
@@ -357,9 +365,17 @@ def choice_refusal(
 class MachineDecisionError(Exception):
     """The machine gave no usable answer; `reason` says which way."""
 
-    def __init__(self, reason: MachineFailure, message: str) -> None:
+    def __init__(
+        self,
+        reason: MachineFailure,
+        message: str,
+        *,
+        error_kind: BackendErrorKind | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason: MachineFailure = reason
+        # Set only when the controller answered with an error code.
+        self.error_kind: BackendErrorKind | None = error_kind
 
 
 class _ResultError(BaseModel):
@@ -417,9 +433,11 @@ class MachineDecisions:
         request: DecideRequest,
         threshold: float,
         timeout_seconds: float,
+        request_id: str,
     ) -> MachineAnswer:
         """Ask the machine about `request` and read its answer, as the
-        decision service reads its own llama.cpp server's. Raises
+        decision service reads its own llama.cpp server's. `request_id` is the
+        router's decision id, which the controller logs. Raises
         `MachineDecisionError` when there is no usable answer. Never logs the
         request or the answer's body: both carry room content."""
         conn = self._presence.live_connection(controller_id)
@@ -429,7 +447,6 @@ class MachineDecisions:
                 f"controller {controller_id}'s socket is not live in this process",
             )
         payload, letters = llamacpp_request(request, DEFAULT_HISTORY_LIMIT)
-        request_id = uuid.uuid4().hex
         waiting = conn.expect_decision(request_id)
         conn.send_urgent(
             {
@@ -472,6 +489,7 @@ class MachineDecisions:
                 _RESULT_ERRORS.get(code, "machine_error"),
                 f"controller {controller_id} answered {code}"
                 + (f": {result.error.message[:200]}" if result.error else ""),
+                error_kind=_RESULT_ERROR_KINDS.get(code, "unknown"),
             )
         if result.body is None:
             raise MachineDecisionError(

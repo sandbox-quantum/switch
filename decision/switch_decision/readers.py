@@ -9,6 +9,7 @@ decision there is made exactly as the service would make it.
 import json
 import math
 from dataclasses import dataclass
+from typing import Literal, get_args
 
 from switch_decision.prompt import NONE, PICK_TOOL, SPEAKER_QUESTION
 
@@ -16,14 +17,29 @@ from switch_decision.prompt import NONE, PICK_TOOL, SPEAKER_QUESTION
 DEFAULT_CONFIDENCE_THRESHOLD = 0.6
 
 
+# Why a model call failed, as the 502 body's `error_kind`. switch-core counts
+# failures by it and reads nothing else from the body, so the set is fixed.
+ErrorKind = Literal[
+    "model_server_unreachable",
+    "model_server_timeout",
+    "model_server_error",
+    "model_unavailable",
+    "credentials_missing",
+    "backend_refused",
+]
+ERROR_KINDS: tuple[str, ...] = get_args(ErrorKind)
+
+
 class ModelServerError(Exception):
     """The model server could not be reached or gave an answer we cannot use.
 
-    `log_text` is what the service logs: the same as the message, minus anything
-    the backend sent back (an error body could echo room content)."""
+    `kind` classifies the failure. `log_text` is what the service logs: the same
+    as the message, minus anything the backend sent back (an error body could
+    echo room content)."""
 
-    def __init__(self, message: str, log_text: str | None = None):
+    def __init__(self, message: str, *, kind: ErrorKind, log_text: str | None = None):
         super().__init__(message)
+        self.kind = kind
         self.log_text = log_text if log_text is not None else message
 
 
@@ -34,7 +50,10 @@ class InvalidChoiceError(ModelServerError):
     its answer just can't be routed."""
 
     def __init__(self, choice: object, confidence: float = 0.0):
-        super().__init__(f"model chose {choice!r}, which is not one of the options")
+        super().__init__(
+            f"model chose {choice!r}, which is not one of the options",
+            kind="model_server_error",
+        )
         self.choice = str(choice)
         self.confidence = confidence
 
@@ -70,7 +89,8 @@ def read_systemone(body: object, options: list[str]) -> ModelAnswer:
         probabilities = answer.get("probabilities") or {}
     except (KeyError, TypeError) as exc:
         raise ModelServerError(
-            f"SystemOne response has no '{SPEAKER_QUESTION}' answer"
+            f"SystemOne response has no '{SPEAKER_QUESTION}' answer",
+            kind="model_server_error",
         ) from exc
     if choice not in options:
         raise InvalidChoiceError(
@@ -78,7 +98,10 @@ def read_systemone(body: object, options: list[str]) -> ModelAnswer:
         )
     confidence = probabilities.get(choice, answer.get("confidence"))
     if not isinstance(confidence, (int, float)):
-        raise ModelServerError(f"SystemOne response has no probability for {choice!r}")
+        raise ModelServerError(
+            f"SystemOne response has no probability for {choice!r}",
+            kind="model_server_error",
+        )
     top = sorted(probabilities.items(), key=lambda kv: kv[1], reverse=True)[:3]
     reason = (
         "probabilities: " + ", ".join(f"{k}={v:.2f}" for k, v in top) if top else ""
@@ -96,7 +119,9 @@ def read_ollama(body: object, options: list[str]) -> ModelAnswer:
             out.get("reason", ""),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise ModelServerError("Ollama output was not the expected JSON") from exc
+        raise ModelServerError(
+            "Ollama output was not the expected JSON", kind="model_server_error"
+        ) from exc
     if choice not in options:
         raise InvalidChoiceError(choice, _confidence_of(confidence))
     return ModelAnswer(choice=choice, confidence=confidence, reason=reason)
@@ -119,12 +144,16 @@ def read_bedrock(body: dict, options: list[str]) -> ModelAnswer:
         )
     except (KeyError, TypeError, ValueError, StopIteration) as exc:
         raise ModelServerError(
-            "Bedrock response did not call the pick tool with a decision"
+            "Bedrock response did not call the pick tool with a decision",
+            kind="model_server_error",
         ) from exc
     if choice not in options:
         raise InvalidChoiceError(choice, _confidence_of(confidence))
     if not 0.0 <= confidence <= 1.0:
-        raise ModelServerError(f"model gave confidence {confidence}, outside 0 to 1")
+        raise ModelServerError(
+            f"model gave confidence {confidence}, outside 0 to 1",
+            kind="model_server_error",
+        )
     return ModelAnswer(choice=choice, confidence=confidence, reason=reason)
 
 
@@ -135,7 +164,8 @@ def read_letter_logprobs(body: dict, options: dict[str, str]) -> ModelAnswer:
         top = body["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ModelServerError(
-            "llama.cpp response has no top logprobs for the first token"
+            "llama.cpp response has no top logprobs for the first token",
+            kind="model_server_error",
         ) from exc
     mass: dict[str, float] = {}
     try:
@@ -145,11 +175,15 @@ def read_letter_logprobs(body: dict, options: dict[str, str]) -> ModelAnswer:
                 mass[letter] = mass.get(letter, 0.0) + math.exp(t["logprob"])
     except (KeyError, TypeError, AttributeError) as exc:
         raise ModelServerError(
-            "llama.cpp response's top logprobs are not tokens with logprobs"
+            "llama.cpp response's top logprobs are not tokens with logprobs",
+            kind="model_server_error",
         ) from exc
     total = sum(mass.values())
     if total <= 0:
-        raise ModelServerError("the model put no probability on any option letter")
+        raise ModelServerError(
+            "the model put no probability on any option letter",
+            kind="model_server_error",
+        )
     probs = {options[k]: v / total for k, v in mass.items()}
     choice = max(probs, key=lambda name: probs[name])
     ranked = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)[:3]

@@ -55,7 +55,6 @@ from switch_core.bridges.agent.protocol.controller_stream import (
     ControllerFrame,
     controller_event_stream,
 )
-from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_INTERVAL_SECONDS
 from switch_core.db.session_scope import tenant_session
 from switch_core.management import reason_codes, socket_calls
 from switch_core.management.auth import ManagementAuthenticator
@@ -88,6 +87,15 @@ PROTOCOL_ACCEPTS_HEADER = "Switch-Controller-Protocol-Accepts"
 SUPPORTED_PROTOCOLS = "2-2"
 _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2"})
 
+# How often the server pings a controller's socket. A controller released
+# before it learnt to wait three of the server's beats (switch#994) calls its
+# socket dead after 10 seconds with nothing on it, pings included, and never
+# changes that. At the heartbeat interval of the agent sockets (10 seconds)
+# such a controller dropped a healthy socket whenever a ping came a moment
+# late, so every few seconds its agents read as connecting. Half of that keeps
+# one late ping from costing the socket. The beat's TTL is unchanged.
+PING_INTERVAL_SECONDS = 5.0
+
 
 class ControllerRoute(ManagementRoute):
     """A management route that also speaks the controller protocol header."""
@@ -104,7 +112,7 @@ class ControllerRoute(ManagementRoute):
                     error_body(
                         reason_codes.PROTOCOL_UNSUPPORTED,
                         f"Controller protocol {requested!r} is not supported; "
-                        f"this server accepts {SUPPORTED_PROTOCOLS}.",
+                        f"Switch accepts {SUPPORTED_PROTOCOLS}.",
                         retryable=False,
                     ),
                     status_code=426,
@@ -401,7 +409,7 @@ async def open_connection(
     return {
         "connection_id": conn.id,
         "generation": conn.generation,
-        "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
+        "heartbeat_interval_s": PING_INTERVAL_SECONDS,
         "agents": sorted(presence.agents_of(principal.controller_id)),
     }
 
@@ -457,7 +465,7 @@ async def attach_stream(
         **state,
         "connection_id": conn.id,
         "generation": conn.generation,
-        "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
+        "heartbeat_interval_s": PING_INTERVAL_SECONDS,
         # The socket takes its agents' operations as calls (`socket_calls`).
         "calls": socket_calls.calls_offered(),
     }
@@ -559,7 +567,7 @@ async def connection_socket(
 
     Attaches to a connection opened with `POST .../connection`. Frames are
     JSON `{"event", "data"}`, the events the stream carries. The server sends
-    `{"event": "ping"}` every heartbeat interval and the controller answers
+    `{"event": "ping"}` every `PING_INTERVAL_SECONDS` and the controller answers
     `{"type": "pong", "cursors": {agent_id: n}}`, which is its beat. A
     `{"type": "call", ...}` runs one of its agents' operations and is answered
     with a `call.result` frame (`socket_calls`). A `decision.request` frame
@@ -601,8 +609,13 @@ async def connection_socket(
             outbox=outbox,
         )
     )
+    # The writer below waits on the outbox, up to the next ping. A controller
+    # that goes, or a refused beat, wakes it at once: until the stream is let
+    # go, its connection reads as held here, and the controller reattaching
+    # through another process in the meantime is refused and opens a new one.
+    receiver.add_done_callback(lambda _: outbox.wake())
     loop = asyncio.get_running_loop()
-    next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
+    next_ping = loop.time() + PING_INTERVAL_SECONDS
     try:
         # One writer: decision requests, call answers, frames and pings all
         # go out from this loop, in that order.
@@ -622,7 +635,7 @@ async def connection_socket(
                 await websocket.send_json(frame)
             if loop.time() >= next_ping:
                 await websocket.send_json({"event": "ping", "data": {}})
-                next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
+                next_ping = loop.time() + PING_INTERVAL_SECONDS
     except WebSocketDisconnect:
         return
     except RuntimeError:
@@ -633,6 +646,10 @@ async def connection_socket(
         receiver.cancel()
         urgent.cancel()
         failure = pump.exception() if pump.done() and not pump.cancelled() else None
+        # Cancelling only asks the pump to stop. Waiting for it means the
+        # stream has detached from the connection, and the ledger has been
+        # told the socket went, before this returns.
+        await asyncio.wait((pump, receiver))
         if failure is not None:
             logger.error(
                 "Controller %s connection %s: delivery failed, closing its socket",
@@ -688,8 +705,13 @@ class _Outbox:
         self._urgent.append(frame)
         self._waiting.set()
 
+    def wake(self) -> None:
+        """End a `get` that is waiting, with nothing to send."""
+        self._waiting.set()
+
     async def get(self, timeout: float) -> ControllerFrame | None:
-        """The next frame to send, or None once `timeout` passes with none."""
+        """The next frame to send, or None once `timeout` passes with none or
+        the writer is woken (`wake`) with none."""
         if self.empty():
             self._waiting.clear()
             try:
@@ -700,6 +722,8 @@ class _Outbox:
             return self._urgent.popleft()
         if self._answers:
             return self._answers.popleft()
+        if not self._frames:
+            return None
         frame = self._frames.popleft()
         self._room.set()
         return frame
@@ -714,7 +738,7 @@ def _socket_principal(websocket: WebSocket, controller_id: str) -> ControllerPri
             426,
             reason_codes.PROTOCOL_UNSUPPORTED,
             f"Controller protocol {requested!r} is not supported; "
-            f"this server accepts {SUPPORTED_PROTOCOLS}.",
+            f"Switch accepts {SUPPORTED_PROTOCOLS}.",
         )
     return require_controller(controller_id, get_controller_principal(websocket))
 
