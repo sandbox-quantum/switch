@@ -1758,6 +1758,26 @@ class CollaborationCore:
             finally:
                 self._pending_message_maps.pop(event_id, None)
 
+    async def _owner_from_platform_account(
+        self, external_user_id: str | None
+    ) -> str | None:
+        """The Switch user who linked the platform account `external_user_id`,
+        to own a room that account brought Switch into. None when the platform
+        did not say who, nobody has linked the account, or more than one
+        person has, since then nobody can tell which of them it was."""
+        if external_user_id is None:
+            return None
+        async with self._session_factory() as session:
+            account = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, external_user_id
+            )
+            if account is None:
+                return None
+            claimants = await self._external_user_store.claimant_ids(
+                session, account.id
+            )
+        return claimants[0] if len(claimants) == 1 else None
+
     async def _handle_agent_joined_channel(self, join: InboundAgentJoin) -> None:
         lock = self._channel_locks.setdefault(join.channel_id, asyncio.Lock())
         async with lock:
@@ -1792,6 +1812,7 @@ class CollaborationCore:
             channel_type=join.channel_type,
             agent_name=join.agent_name,
             channel_name=join.channel_name,
+            added_by_external_user_id=join.added_by_external_user_id,
         )
 
     async def _handle_app_joined_channel(self, join: InboundAppJoin) -> None:
@@ -1809,6 +1830,7 @@ class CollaborationCore:
                 channel_id=join.channel_id,
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
+                added_by_external_user_id=join.added_by_external_user_id,
             )
 
     async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
@@ -1906,6 +1928,7 @@ class CollaborationCore:
         agent_name: str | None = None,
         sender_name: str | None = None,
         channel_name: str | None = None,
+        added_by_external_user_id: str | None = None,
     ) -> tuple[str, str] | None:
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -1926,6 +1949,7 @@ class CollaborationCore:
             return existing
 
         agent_ids = await self._resolve_agents_for_channel(channel_id, channel_type)
+        owner_id = await self._owner_from_platform_account(added_by_external_user_id)
 
         bridge_name = self._bridge_display_name
         if channel_type == "direct":
@@ -1948,6 +1972,10 @@ class CollaborationCore:
             # Adopted from a channel that appeared on the platform, not asked
             # for by anyone in Switch.
             created_by_kind="system",
+            # Whoever added Switch to the channel owns its room, when the
+            # platform says who and they have linked their account; otherwise
+            # nobody does, and only workspace admins change it.
+            owner_id=owner_id,
             named_after_channel=(
                 channel_name if channel_type != "direct" and channel_name else None
             ),

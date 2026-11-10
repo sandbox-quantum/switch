@@ -495,7 +495,9 @@ well still applies. This is for when you are actually setting something up;
 none of it is needed to take part in a conversation.
 
 **Who may change a room.** You act with your owner's rights. The room's owner
-(its creator) and workspace or organization admins change a room: its name,
+(whoever created it in Switch, or whoever added Switch to its channel if they
+have linked their chat account; otherwise it has none) and workspace or
+organization admins change a room: its name,
 description, instructions, roles, links, aliases, archiving, visibility, and
 taking agents or people out. Anyone in the room (your owner takes part when
 an agent of theirs is in it) may add to it: bring in agents and people, attach
