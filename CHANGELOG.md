@@ -104,6 +104,33 @@ version of their own to them without also giving them a release of their own.
   switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
+- **The operator dashboard follows the current design.** A field's label sits
+  above it rather than floating inside the box, and the field has a white fill
+  and a firm border and ring when focused; switches are pills, and one that is
+  off can be seen; errors and delete buttons use a softer red, with red and
+  green text kept readable in both themes; captions, section labels and tooltips
+  are 13px; the backdrop behind a dialog is a warm black, and black in dark
+  mode; menus, popovers and dropdown lists have a firm edge and shadow, so they
+  stand out from the page under them; table headers show the cream band they
+  were always meant to, and an empty table has no footer. A status chip
+  ("Active", "device offline", "Archived") looks like a small banner of its
+  colour, with a slightly darker edge, and a warning chip matches the warning
+  banner. Warnings stay amber, so they remain easy to tell from errors. Google
+  Workspace shows Google's full-colour G, and the Atlassian connector the
+  Atlassian logo rather than Jira's.
+- **Every empty table in the operator dashboard says what is missing.** In
+  place of "No rows", a table with nothing in it says what is missing and what
+  to do about it ("No devices yet. Add one to start running agents on it."),
+  and one narrowed by its page's search or filters says nothing matches them.
+  A table whose rows all fit on one page has no footer and is only as tall as
+  its rows.
+- **Every control in the operator dashboard has a name a screen reader can
+  read**, including the back arrows, copy and delete buttons, the role and
+  period selects, and the messaging app switches.
+- **Disabled controls in the operator dashboard look disabled.** A disabled
+  field, its label, and a disabled checkbox or switch looked almost the same
+  as enabled ones; they are now greyed out, so an action you may not take
+  reads as unavailable.
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.
@@ -2804,7 +2831,7 @@ version of their own to them without also giving them a release of their own.
  (#84).
 
 #### Changed
-- Restyle the Switch Gateway web UI onto the Hoot design system — new light/dark
+- Restyle the Switch Gateway web UI onto a new design system — new light/dark
   theme, icon-rail shell, and consistent formatting conventions; nav
   destinations unchanged (#87).
 
@@ -2945,6 +2972,9 @@ version of their own to them without also giving them a release of their own.
   terminal can't be picked. No earlier prompt is sent again.
 
 #### Changed
+- **Google Workspace shows Google's full-colour G** on the Connections grid,
+  in place of a one-colour blue G that Google's guidelines do not offer, and
+  the Atlassian connection shows the Atlassian logo rather than Jira's.
 - **The Switch skill tells agents what to do when their message was
   redacted.** When a send's result says Switch Trust redacted it, the agent
   reads what the room received and, if that no longer makes sense, says what

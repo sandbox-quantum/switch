@@ -867,7 +867,7 @@ describe('registerKnownAgent', () => {
     // builds for it, so a default here would silently mislabel every
     // non-Claude agent (CHOO-1436).
     const registered = await registerKnownAgent(SERVER, {
-      name: 'codex-hoot',
+      name: 'codex-agent',
       description: 'Codex running in repo',
       agentType: 'codex',
       options: { channels_enabled: true, repo_dir: '/repo' },
@@ -879,7 +879,7 @@ describe('registerKnownAgent', () => {
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
     expect(JSON.parse(init.body)).toEqual({
       agent_type: 'codex',
-      name: 'codex-hoot',
+      name: 'codex-agent',
       description: 'Codex running in repo',
       options: { channels_enabled: true, repo_dir: '/repo' },
       icon_url: null,
