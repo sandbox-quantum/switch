@@ -26,17 +26,19 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_azure_devops_datadog_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "azure-devops",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "azure-devops",
         "datadog",
         "github",
         "google-workspace",
@@ -45,6 +47,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["azure-devops"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -587,6 +590,14 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_loads_a_skill_with_windows_line_endings(catalog_copy):
+    _write_example(catalog_copy)
+    skill = catalog_copy / "example" / "skill" / "SKILL.md"
+    content = skill.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    skill.write_bytes(content)
+    assert "SKILL.md" in load_catalog(catalog_copy)["example"].skill_files
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):

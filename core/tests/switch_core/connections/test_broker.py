@@ -934,6 +934,7 @@ async def _pass_through(
     expires_in: float,
     max_lifetime: int = 3600,
     entry: str = OAUTH_ENTRY,
+    grant_access: str = "write",
 ) -> PassThrough:
     vendor = FakeVendor()
     vendor.pass_through = True
@@ -979,7 +980,7 @@ async def _pass_through(
             agent_id=agent.id,
             owner_id=owner.id,
             service="example",
-            access="write",
+            access=grant_access,
             tool_mode="deny",
             tools=[],
             resources={},
@@ -1008,6 +1009,33 @@ class TestPassThrough:
         ]
         assert grant["cli_tools"] == []
         assert grant["skill"]["name"] == "example"
+
+    @pytest.mark.parametrize(
+        ("access", "read_only"),
+        [("read", True), ("write", False)],
+    )
+    async def test_only_read_grants_get_the_vendor_read_only_header(
+        self, session_factory, tmp_path, access, read_only
+    ) -> None:
+        entry = OAUTH_ENTRY.replace(
+            'url: "https://mcp.example.test/v1/mcp"',
+            'url: "https://mcp.example.test/v1/mcp", read_only_header: X-MCP-Readonly',
+        )
+        pt = await _pass_through(
+            session_factory,
+            tmp_path / access,
+            expires_in=50 * 60,
+            entry=entry,
+            grant_access=access,
+        )
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            [grant] = await pt.broker.grants_for(session, agent, Principal.agent_key())
+        headers = grant["mcp_servers"][0]["headers"]
+        assert ("X-MCP-Readonly" in headers) == read_only
+        if read_only:
+            assert headers["X-MCP-Readonly"] == "true"
 
     async def test_the_grant_names_the_vendors_cli_as_the_catalog_has_it(
         self, session_factory, tmp_path

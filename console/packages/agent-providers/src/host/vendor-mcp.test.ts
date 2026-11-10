@@ -27,11 +27,17 @@ const BEARER = { Authorization: 'Bearer {token}' };
 
 function grant(
   service: string,
-  mcp: { name: string; url: string; headers?: Record<string, string> }[]
+  mcp: {
+    name: string;
+    url: string;
+    read_only_header?: string | null;
+    headers?: Record<string, string>;
+  }[],
+  access: 'read' | 'write' = 'write'
 ): ServiceGrant {
   return {
     service,
-    access: 'write',
+    access,
     tool_mode: 'deny',
     tools: [],
     resources: {},
@@ -109,10 +115,11 @@ async function started(
   return { ...vendors, asked: parent.asked, redactions };
 }
 
-const token = (value: string): ServiceTokenAnswer => ({
+const token = (value: string, access?: 'read' | 'write'): ServiceTokenAnswer => ({
   kind: 'token',
   token: value,
   expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+  ...(access === undefined ? {} : { access }),
 });
 
 describe('a granted vendor’s MCP servers', () => {
@@ -192,6 +199,92 @@ describe('a granted vendor’s MCP servers', () => {
     await expect((await client(vendors.specs.example!)).listTools()).rejects.toThrow(
       'No Example grant.'
     );
+  });
+
+  it('uses the Azure DevOps read-only header and stops after the grant is removed', async () => {
+    const { server, calls } = await vendor();
+    const vendors = await started(
+      [
+        grant(
+          'azure-devops',
+          [
+            {
+              name: 'azure-devops',
+              url: 'https://mcp.dev.azure.com/',
+              read_only_header: 'X-MCP-Readonly',
+              headers: { ...BEARER, 'X-MCP-Readonly': 'true' },
+            },
+          ],
+          'read'
+        ),
+      ],
+      [
+        token(GOOD, 'read'),
+        {
+          kind: 'refused',
+          code: 'grant_missing',
+          message: 'The Azure DevOps grant was removed.',
+          final: true,
+        },
+      ],
+      (url, init) => {
+        expect(String(url)).toBe('https://mcp.dev.azure.com/');
+        expect(new Headers(init?.headers).get('X-MCP-Readonly')).toBe('true');
+        return fetch(server.url, init);
+      }
+    );
+    const tool = await client(vendors.specs['azure-devops']!);
+    expect((await tool.listTools()).tools).toHaveLength(1);
+
+    const result = await tool.callTool({
+      name: 'search_items',
+      arguments: { query: 'bugs' },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain('grant was removed');
+    expect(calls).toEqual([]);
+    expect(vendors.asked).toEqual([
+      { type: 'service-token', service: 'azure-devops', rejected: null },
+      { type: 'service-token', service: 'azure-devops', rejected: null },
+    ]);
+  });
+
+  it('updates the Azure DevOps read-only policy when a grant changes during a session', async () => {
+    const { server } = await vendor();
+    const enforced: boolean[] = [];
+    let access: 'read' | 'write' = 'write';
+    const redactions = new Redactions();
+    const vendors = await startVendorServers({
+      grants: [
+        grant('azure-devops', [
+          {
+            name: 'azure-devops',
+            url: 'https://mcp.dev.azure.com/',
+            read_only_header: 'X-MCP-Readonly',
+          },
+        ]),
+      ],
+      ask: async () => token(GOOD, access),
+      redactions,
+      listTimeoutMs: 5_000,
+      callTimeoutMs: 5_000,
+      fetch: (url, init) => {
+        expect(String(url)).toBe('https://mcp.dev.azure.com/');
+        enforced.push(new Headers(init?.headers).get('X-MCP-Readonly') === 'true');
+        return fetch(server.url, init);
+      },
+    });
+    servers.push(vendors);
+    const tool = await client(vendors.specs['azure-devops']!);
+
+    await tool.listTools();
+    const requestsBeforeGrantChange = enforced.length;
+    access = 'read';
+    await tool.callTool({ name: 'search_items', arguments: { query: 'bugs' } });
+
+    expect(enforced.slice(0, requestsBeforeGrantChange).every((readOnly) => !readOnly)).toBe(true);
+    expect(enforced.slice(requestsBeforeGrantChange).length).toBeGreaterThan(0);
+    expect(enforced.slice(requestsBeforeGrantChange).every(Boolean)).toBe(true);
   });
 
   it('keeps one vendor’s failure to itself, and gives up on one that does not answer', async () => {

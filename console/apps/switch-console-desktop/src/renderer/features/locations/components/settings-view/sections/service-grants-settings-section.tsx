@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   type GitHubGrantChoice,
   connectedGitHub,
@@ -38,8 +38,8 @@ type Access = 'read' | 'write';
  * What the agent may use of its owner's service connections: its grants, who
  * else can reach it and so its grants, and what a GitHub grant does on the
  * machine it runs on. GitHub's grant names repositories, from its picker; a
- * service whose agents use the owner's own token is on or off. Hidden for an
- * agent with no Switch registration.
+ * a pass-through service is on or off unless its vendor enforces a read-only
+ * MCP mode. Hidden for an agent with no Switch registration.
  */
 export function ServiceGrantsSettingsSection({
   locationId,
@@ -148,8 +148,14 @@ export function ServiceGrantsRow({
   const current = grants.data;
 
   const githubGrant = grants.data.grants.find((grant) => grant.service === 'github') ?? null;
-  // Services whose agents use the owner's own token: on or off, nothing to choose.
-  const onOff = (services.data ?? []).filter((service) => service.enabled && service.pass_through);
+  // Keep the vendor-enforced read-only grants out of the on/off list.
+  const levelled = (services.data ?? []).filter(
+    (service) => service.enabled && (service.grant_access_levels?.length ?? 0) > 0
+  );
+  const levelledSlugs = new Set(levelled.map((service) => service.slug));
+  const onOff = (services.data ?? []).filter(
+    (service) => service.enabled && service.pass_through && !levelledSlugs.has(service.slug)
+  );
   const onOffSlugs = new Set(onOff.map((service) => service.slug));
   return (
     <div className="flex flex-col gap-3">
@@ -194,6 +200,7 @@ export function ServiceGrantsRow({
 
       {grants.data.grants
         .filter((grant) => !onOffSlugs.has(grant.service))
+        .filter((grant) => !levelledSlugs.has(grant.service))
         .map((grant) => (
           <GrantCard
             key={grant.service}
@@ -220,6 +227,17 @@ export function ServiceGrantsRow({
           busy={change.isPending}
           onTurnOn={() => set(service.slug, null, {})}
           onTurnOff={() => remove(service.slug)}
+        />
+      ))}
+      {levelled.map((service) => (
+        <AccessLevelGrant
+          key={service.slug}
+          service={service}
+          grant={current.grants.find((grant) => grant.service === service.slug) ?? null}
+          agentName={agentName}
+          busy={change.isPending}
+          onSave={(access) => set(service.slug, access, {})}
+          onRemove={() => remove(service.slug)}
         />
       ))}
 
@@ -278,6 +296,79 @@ export function OnOffGrant({
       {grant && <p className="mt-1 text-sm text-foreground-muted">{grant.summary}</p>}
       {block && <p className="mt-1 text-sm text-foreground-muted">{block.reason}</p>}
       <p className="mt-1 text-xs text-foreground-muted">{onOffGrantNote(agentName, service)}</p>
+    </div>
+  );
+}
+
+export function AccessLevelGrant({
+  service,
+  grant,
+  agentName,
+  busy,
+  onSave,
+  onRemove,
+}: {
+  service: ConnectionCatalogEntry;
+  grant: ServiceGrant | null;
+  agentName: string;
+  busy: boolean;
+  onSave: (access: Access) => void;
+  onRemove: () => void;
+}) {
+  const levels = service.grant_access_levels ?? [];
+  const [access, setAccess] = useState<Access>(grant?.access ?? levels[0] ?? 'read');
+  useEffect(() => {
+    setAccess(grant?.access ?? levels[0] ?? 'read');
+  }, [grant?.access, levels]);
+
+  const block = onOffGrantBlock(service, grant !== null);
+  const canUpdate =
+    service.unavailable_reason === null &&
+    service.workspace_enabled !== false &&
+    service.status === 'connected';
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 text-sm font-medium">{service.name}</span>
+        <Badge variant="outline">
+          {grant ? (grant.access === 'write' ? 'Read and write' : 'Read only') : 'Off'}
+        </Badge>
+      </div>
+      <fieldset className="mt-3 flex flex-col gap-2">
+        <legend className="text-sm font-medium">Access for {agentName}</legend>
+        {levels.map((level) => (
+          <label key={level} className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name={`${service.slug}-access`}
+              value={level}
+              checked={access === level}
+              disabled={busy}
+              onChange={() => setAccess(level)}
+            />
+            {level === 'read' ? 'Read only' : 'Read and write'}
+          </label>
+        ))}
+      </fieldset>
+      <div className="mt-3 flex gap-2">
+        <Button
+          size="sm"
+          disabled={busy || !canUpdate || (!grant && block?.blocksOn === true)}
+          onClick={() => onSave(access)}
+        >
+          {grant ? 'Save access' : 'Grant access'}
+        </Button>
+        {grant && (
+          <Button size="sm" variant="ghost" disabled={busy} onClick={onRemove}>
+            Remove
+          </Button>
+        )}
+      </div>
+      {block && <p className="mt-1 text-sm text-foreground-muted">{block.reason}</p>}
+      <p className="mt-1 text-xs text-foreground-muted">
+        Read-only is enforced by {service.name}; read and write gives the agent what your connection
+        allows. Turning access off stops its sessions within a minute.
+      </p>
     </div>
   );
 }

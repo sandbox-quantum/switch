@@ -374,8 +374,8 @@ class TokenPolicy(BaseModel):
 
 
 class McpServer(BaseModel):
-    """One vendor MCP server. `headers` are an api_key entry's, templates of
-    its fields; an OAuth entry's server takes the token as a bearer."""
+    """One vendor MCP server. `headers` are an api_key entry's templates;
+    `read_only_header` is set to `true` for read-level OAuth grants."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     name: str = Field(pattern=SLUG_PATTERN)
@@ -383,6 +383,7 @@ class McpServer(BaseModel):
     headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] | None = (
         Field(default=None, min_length=1)
     )
+    read_only_header: Annotated[str, Field(pattern=HEADER_NAME_PATTERN)] | None = None
 
 
 class ConnectionMcp(BaseModel):
@@ -675,6 +676,10 @@ class ConnectionDefinition(BaseModel):
             raise ValueError("the api_key adapter connects with a pasted key")
         if self.auth.oauth is not None or self.auth.identity is not None:
             raise ValueError("an api_key entry has no OAuth client or identity")
+        if self.mcp is not None and any(
+            server.read_only_header is not None for server in self.mcp.servers
+        ):
+            raise ValueError("only an OAuth MCP server has read-only access levels")
         if self.auth.refresh not in (None, "none"):
             raise ValueError("a key is not refreshed: refresh is none")
         if self.mcp is not None and self.cli is not None:
@@ -784,6 +789,20 @@ class ConnectionDefinition(BaseModel):
             for level in (self.access.read, self.access.write)
         ):
             raise ValueError("an oauth entry's levels name OAuth scopes")
+        if self.mcp is not None:
+            read_only_headers = [
+                server.read_only_header
+                for server in self.mcp.servers
+                if server.read_only_header is not None
+            ]
+            if read_only_headers and (self.access is None or self.access.write is None):
+                raise ValueError(
+                    "an MCP read-only header needs read and write access levels"
+                )
+            if any(
+                header.casefold() == "authorization" for header in read_only_headers
+            ):
+                raise ValueError("an MCP read-only header cannot replace Authorization")
 
     def level_tools(self, access: AccessLevel) -> list[str]:
         """Every tool a grant at `access` may be given. None are named while

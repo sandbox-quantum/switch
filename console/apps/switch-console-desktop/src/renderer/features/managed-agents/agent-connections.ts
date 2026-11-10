@@ -11,7 +11,7 @@ import type { ServiceGrant, ServiceGrants } from '@shared/core/switch-servers/se
 export type AgentConnectionCard = {
   slug: string;
   name: string;
-  kind: 'github' | 'on-off' | 'other';
+  kind: 'github' | 'levels' | 'on-off' | 'other';
   /** Its catalog entry; null for a grant whose service the catalog no longer lists. */
   service: ConnectionCatalogEntry | null;
   grant: ServiceGrant | null;
@@ -19,12 +19,14 @@ export type AgentConnectionCard = {
 
 const GITHUB = 'github';
 
-/** A service this page can grant: GitHub, or one whose agents use the owner's own token. */
+/** A service this page can grant: GitHub, or one with a pass-through or leveled grant. */
 function grantable(service: ConnectionCatalogEntry): boolean {
   return (
     service.enabled &&
     service.status !== 'coming_soon' &&
-    (service.slug === GITHUB || service.pass_through)
+    (service.slug === GITHUB ||
+      service.pass_through ||
+      (service.grant_access_levels?.length ?? 0) > 0)
   );
 }
 
@@ -52,7 +54,13 @@ export function agentConnectionCards(
     cards.push({
       slug: service.slug,
       name: service.name,
-      kind: !offered ? 'other' : service.slug === GITHUB ? 'github' : 'on-off',
+      kind: !offered
+        ? 'other'
+        : service.slug === GITHUB
+          ? 'github'
+          : (service.grant_access_levels?.length ?? 0) > 0
+            ? 'levels'
+            : 'on-off',
       service,
       grant,
     });
@@ -68,6 +76,7 @@ export function agentConnectionCards(
 export function connectionCardStatus(card: AgentConnectionCard): string {
   if (card.grant === null) return 'Off';
   if (card.kind === 'on-off') return 'On';
+  if (card.kind === 'levels') return card.grant.access === 'write' ? 'Read and write' : 'Read only';
   return card.grant.access === 'write' ? 'Read and push' : 'Read';
 }
 

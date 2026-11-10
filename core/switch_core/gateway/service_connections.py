@@ -133,11 +133,20 @@ async def list_service_connections(
                 "app_source": standing.source,
                 # Whether a workspace admin left it on for this workspace.
                 "workspace_enabled": definition.slug not in switched_off,
-                # A grant hands the agent the owner's own token: it is on or
-                # off, at the connection's level, and lasts the token's life.
+                # Whether the agent receives the owner's token, rather than
+                # a narrower token issued just for that agent.
                 "pass_through": (
                     definition.token is not None
                     and definition.token.kind == "pass_through"
+                ),
+                "grant_access_levels": (
+                    ["read", "write"]
+                    if definition.mcp is not None
+                    and any(
+                        server.read_only_header is not None
+                        for server in definition.mcp.servers
+                    )
+                    else None
                 ),
                 "token_lifetime": (
                     None if definition.token is None else definition.token.max_lifetime
