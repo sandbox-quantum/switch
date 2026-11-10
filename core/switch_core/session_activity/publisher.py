@@ -56,6 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
+    MessagePartlySent,
     PlatformAdapter,
     RemovalFailed,
     RichContentFailed,
@@ -855,16 +856,27 @@ class AgentSessionActivityPublisher:
             )
             state = (row.state, unavailable_reason)
             if self._card_edit_failures.get(post.token) != state:
-                await self._adapter.admin_message(
-                    post.external_channel_id,
-                    f"The card for request {post.handle} above could not be "
-                    "updated, so it may still be offering buttons that no "
-                    "longer work.",
-                    self._adapter.notice_address(
-                        post.external_post_id, post.thread_ref
-                    ),
-                    drawn=error.text,
-                )
+                try:
+                    await self._adapter.admin_message(
+                        post.external_channel_id,
+                        f"The card for request {post.handle} above could not be "
+                        "updated, so it may still be offering buttons that no "
+                        "longer work.",
+                        self._adapter.notice_address(
+                            post.external_post_id, post.thread_ref
+                        ),
+                        drawn=error.text,
+                    )
+                except MessagePartlySent as partial:
+                    # Part of it is in the channel, with a line saying the rest
+                    # is missing; posting it again would repeat that part.
+                    logger.error(
+                        "The notice that the card for request %s could not be "
+                        "updated reached channel %s only in part: %s",
+                        post.request_id,
+                        post.external_channel_id,
+                        partial,
+                    )
                 self._card_edit_failures[post.token] = state
             raise
         self._card_edit_failures.pop(post.token, None)

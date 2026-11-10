@@ -11,6 +11,7 @@ vi.mock('node:child_process', () => ({
 
 const {
   ensureUserBinDirsInPath,
+  ensureWindowsGitBashInPath,
   ensureWindowsNpmGlobalBinInPath,
   ensureWindowsUserBinDirsInPath,
   resolveUserEnv,
@@ -87,6 +88,19 @@ describe('ensureWindowsUserBinDirsInPath', () => {
     const env: NodeJS.ProcessEnv = { Path: 'C:\\Windows\\System32' };
     expect(ensureWindowsUserBinDirsInPath(env)).toEqual([]);
     expect(env.Path).toBe('C:\\Windows\\System32');
+  });
+});
+
+describe('ensureWindowsGitBashInPath', () => {
+  it("adds Git for Windows' bin folder to the PATH Windows gave, whatever its casing", () => {
+    const env: NodeJS.ProcessEnv = {
+      Path: 'C:\\Windows\\System32',
+      programfiles: 'C:\\Program Files',
+    };
+    const exists = (file: string) => file === 'C:\\Program Files\\Git\\bin\\bash.exe';
+    expect(ensureWindowsGitBashInPath(env, exists)).toBe('C:\\Program Files\\Git\\bin');
+    expect(env.Path).toBe('C:\\Windows\\System32;C:\\Program Files\\Git\\bin');
+    expect(ensureWindowsGitBashInPath(env, exists)).toBeNull();
   });
 });
 
