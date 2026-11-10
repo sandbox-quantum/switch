@@ -71,6 +71,7 @@ def _to_detail(
         packages=packages or [],
         created_at=str(ref.created_at),
         type_display_name=type_display_name,
+        can_read=can(reader, "read", ref),
         can_edit=can(reader, "write", ref),
         can_manage=can_manage(reader, ref.owner_id),
     )

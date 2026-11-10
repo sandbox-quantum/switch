@@ -1012,6 +1012,111 @@ def test_translate_inbound_leaves_a_user_group_to_its_own_rule() -> None:
     assert _adapter().translate_inbound("<!subteam^S123|@ops> hi") == "@ops hi"
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "is `if a &lt; b &amp;&amp; b &gt; c` right?",
+            "is `if a < b && b > c` right?",
+        ),
+        ("cat log.txt &gt; out.txt", "cat log.txt > out.txt"),
+        ("List&lt;String&gt; and x -&gt; y", "List<String> and x -> y"),
+        ("R&amp;D and Q&amp;A", "R&D and Q&A"),
+        ("```\nfoo &amp;&amp; bar\n```", "```\nfoo && bar\n```"),
+    ],
+)
+def test_translate_inbound_decodes_slack_entities(raw: str, expected: str) -> None:
+    assert _adapter().translate_inbound(raw) == expected
+
+
+def test_translate_inbound_decodes_once() -> None:
+    # A person who types `&lt;` literally is sent `&amp;lt;`.
+    assert _adapter().translate_inbound("write &amp;lt; for <") == "write &lt; for <"
+
+
+def test_translate_inbound_leaves_other_entities_alone() -> None:
+    # Slack escapes only `&`, `<` and `>`, so anything else is what was typed.
+    assert (
+        _adapter().translate_inbound("&quot;hi&quot; &#39;") == "&quot;hi&quot; &#39;"
+    )
+
+
+def test_translate_inbound_a_typed_angle_bracket_is_not_markup() -> None:
+    adapter = _adapter()
+    adapter._user_cache["U999"] = SlackUser(name="worker", display_name="Worker")
+    assert (
+        adapter.translate_inbound("&lt;@U999&gt; and &lt;https://example.com&gt;")
+        == "<@U999> and <https://example.com>"
+    )
+
+
+def test_translate_inbound_decodes_a_link_url() -> None:
+    assert (
+        _adapter().translate_inbound("<https://example.com/?a=1&amp;b=2|search>")
+        == "[search](https://example.com/?a=1&b=2)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("see <#C0123ABCD|general>", "see #general"),
+        ("see <#C0123ABCD|>", "see #ops-room"),
+        ("see <#C0123ABCD>", "see #ops-room"),
+        ("see <#C9999>", "see #C9999"),
+    ],
+)
+def test_translate_inbound_shows_a_channel_link_as_its_name(
+    raw: str, expected: str
+) -> None:
+    adapter = _adapter()
+    adapter._channel_name_cache["C0123ABCD"] = "ops-room"
+    assert adapter.translate_inbound(raw) == expected
+
+
+def test_typed_command_args_are_decoded_once_end_to_end() -> None:
+    # The adapter hands the core arguments it has not decoded; the core's own
+    # `translate_inbound` then decodes them once.
+    adapter = _adapter()
+    adapter._user_cache["U1"] = SlackUser(name="jane", display_name="Jane")
+    adapter._user_cache["U999"] = SlackUser(name="worker", display_name="Worker")
+    adapter._channel_name_cache["C123"] = "general"
+    commands = _capture_commands(adapter)
+
+    _run(
+        adapter._handle_message_event(
+            {
+                "channel": "C123",
+                "ts": "100.1",
+                "user": "U1",
+                "text": "!assign <@U999> a &lt; b &amp;lt;",
+                "channel_type": "channel",
+            }
+        )
+    )
+
+    assert adapter.translate_inbound(commands[0].args) == "@worker a < b &lt;"
+
+
+def test_slash_command_args_are_decoded_once_end_to_end() -> None:
+    adapter = _adapter()
+    adapter._web_client = _FakeSlashWebClient()  # type: ignore[assignment]
+    commands = _capture_commands(adapter)
+
+    _run(
+        adapter._handle_slash_command(
+            {
+                "command": "/assign",
+                "text": "@worker a &lt; b &amp;lt;",
+                "channel_id": "C123",
+                "user_id": "U123",
+            }
+        )
+    )
+
+    assert adapter.translate_inbound(commands[0].args) == "@worker a < b &lt;"
+
+
 def test_slash_command_without_channel_is_ignored() -> None:
     adapter = _adapter()
     commands = _capture_commands(adapter)

@@ -193,3 +193,46 @@ it('waits for a living supervisor even after the watcher has exited', async () =
     child.kill();
   }
 });
+
+// pid 1 belongs to root, so signalling it as anyone else answers EPERM: a pid
+// a watcher record kept that has since gone to another user's process.
+const foreignPidAvailable = process.platform !== 'win32' && process.getuid?.() !== 0;
+const asWindows = "Object.defineProperty(process, 'platform', { value: 'win32' });";
+
+it.skipIf(!foreignPidAvailable)(
+  'reports a watcher whose pid went to another user as stopped',
+  async () => {
+    const { home, root } = await fixture('agent');
+    await writeFile(join(root, 'shared-owner.lock'), JSON.stringify({ pid: 1 }));
+    await writeFile(join(root, 'supervisor/owner.json'), JSON.stringify({ pid: 1 }));
+    expect(await inspect(home, 'status')).toMatchObject([
+      { running: false, pid: null, supervisorPid: null },
+    ]);
+  }
+);
+
+it.skipIf(!foreignPidAvailable)(
+  'reports a watcher it may not signal on Windows as running',
+  async () => {
+    const { home, root } = await fixture('agent');
+    await writeFile(join(root, 'shared-owner.lock'), JSON.stringify({ pid: 1 }));
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ['-e', asWindows + inspectWatchers, 'agent', 'status'],
+      { env: { ...process.env, HOME: home } }
+    );
+    expect(JSON.parse(stdout)).toMatchObject([{ running: true, pid: 1 }]);
+  }
+);
+
+it.skipIf(!foreignPidAvailable)(
+  'stops waiting for a watcher whose pid went to another user',
+  async () => {
+    const { root } = await fixture('agent');
+    await writeFile(join(root, 'shared-owner.lock'), JSON.stringify({ pid: 1 }));
+    await writeFile(join(root, 'supervisor/owner.json'), JSON.stringify({ pid: 1 }));
+    const started = Date.now();
+    await promisify(execFile)(process.execPath, ['-e', waitForWatcherStop, root]);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  }
+);

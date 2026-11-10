@@ -9,14 +9,14 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import {
   type Invitation,
   fetchCurrentOrganization,
   fetchInvitations,
   revokeInvitation,
 } from "../../data/api";
-import { formatDate, titleCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase } from "../../theme/format";
 import CreateInvitationDialog from "./CreateInvitationDialog";
 import { useLoad } from "./useLoad";
 
@@ -81,7 +81,7 @@ export default function InvitationsSection({
         field: "role",
         headerName: "Role",
         width: 110,
-        valueFormatter: (value) => titleCase(String(value)),
+        valueFormatter: (value) => sentenceCase(String(value)),
       },
       {
         field: "status",
@@ -128,7 +128,7 @@ export default function InvitationsSection({
       </Stack>
       {organization?.members_from_directory && (
         <Alert severity="info">
-          This organization's members come from your organization's account settings, so only
+          This organization's users come from your organization's account settings, so only
           people already in the organization can accept an invitation. Add anyone new there
           first.
         </Alert>
@@ -150,6 +150,11 @@ export default function InvitationsSection({
         <DataTable
           rows={invitations ?? []}
           columns={columns}
+          emptyState={
+            <TableEmptyState title="No invitations">
+              Invite someone to send them a link to this workspace.
+            </TableEmptyState>
+          }
           height={Math.min(520, 108 + Math.max(1, invitations?.length ?? 0) * 52)}
           pageSize={25}
         />

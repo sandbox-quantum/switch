@@ -207,9 +207,7 @@ class TestAutoRouteCommand:
 
         await _run(host, args)
 
-        assert (
-            "Automatic routing isn't switched on for this Switch server" in (posted[-1])
-        )
+        assert "Automatic routing isn't switched on in Switch" in (posted[-1])
         assert not await _on(session_factory, room_id)
 
     async def test_on_without_a_decision_service_says_who_can_fix_it(
