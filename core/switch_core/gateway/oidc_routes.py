@@ -417,6 +417,7 @@ async def oidc_callback(
                 create_allowed=not signup_refused_by_edge(request, config),
             )
         except SignupRefusedError as exc:
+            await session.rollback()
             logger.warning(
                 "OIDC first sign-in refused (sub %s): the request is marked as "
                 "from a country without sign-up",

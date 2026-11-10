@@ -49,12 +49,17 @@ version of their own to them without also giving them a release of their own.
   (chart: `switchCore.signup.refusedHeader`) names a request header that the
   edge in front of Switch, such as a WAF rule matching on the client's
   country, adds to requests from countries where new accounts are not
-  offered. A request carrying it creates no account: a first OIDC sign-in and
-  a password sign-up are refused with 403 and a message saying new accounts
-  are not available in that country, reported as `signup_refused` with reason
-  `country`. Existing accounts sign in as before, wherever they are. Switch
-  only reads the header; where a request comes from is the edge's decision,
-  and a VPN can get around it. Unset, nothing changes.
+  offered. A person cannot create their own account from such a request: a
+  first OIDC sign-in and a password sign-up are refused with 403 and a message
+  saying new accounts are not available in that country, reported as
+  `signup_refused` with reason `country`. Existing accounts sign in as before,
+  wherever they are. Accounts that are not sign-ups are unaffected: those an
+  administrator creates (`POST /users`), the seeded admin, and the account
+  bootstrap-registered agents belong to. Accepting an invitation and the WorkOS
+  directory mirror create no accounts. The header counts as present with any
+  value, so the edge must add it only to requests it refuses. Switch only
+  reads the header; where a request comes from is the edge's decision, and a
+  VPN can get around it. Unset or blank, nothing changes.
 - **A one-screen Datadog board and alerts that say what to do.**
   `deploy/observability/signal-board.json` shows the four golden signals
   (latency, traffic, errors, saturation) plus whether agents are connected and
