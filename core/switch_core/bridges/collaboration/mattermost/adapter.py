@@ -2128,7 +2128,10 @@ class MattermostAdapter(PlatformAdapter):
                 f"Mattermost will not let Switch's account see channel "
                 f"{channel_id}: {error}"
             ) from error
-        except Exception as error:
+        except sync_requests.RequestException as error:
+            # Any other refusal from Mattermost (the driver's errors are
+            # requests' HTTPError) or a failed request: the platform's, not
+            # the caller's. Anything else is a bug and propagates.
             raise BridgeOperationError(
                 f"Mattermost would not describe channel {channel_id}: {error}"
             ) from error
@@ -2147,12 +2150,14 @@ class MattermostAdapter(PlatformAdapter):
                 channel_id,
                 self._admin_user_id,
             )
-        except ResourceNotFound as error:
+        except (ResourceNotFound, NotEnoughPermissions) as error:
+            # Mattermost answers "not a member" with a 404, and may refuse to
+            # say with a 403. Either way the fix is the same: add the account.
             raise ChannelNotUsable(
                 f"Switch's Mattermost account is not in private channel "
                 f"{channel_id}. Add it to the channel, then try again."
             ) from error
-        except Exception as error:
+        except sync_requests.RequestException as error:
             raise BridgeOperationError(
                 f"Mattermost would not say whether Switch's account is in "
                 f"channel {channel_id}: {error}"

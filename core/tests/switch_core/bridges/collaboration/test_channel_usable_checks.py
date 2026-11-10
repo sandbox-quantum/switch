@@ -9,6 +9,7 @@ from typing import Any
 
 import discord
 import pytest
+import requests
 from mattermostdriver.exceptions import NotEnoughPermissions, ResourceNotFound
 from slack_sdk.errors import SlackApiError
 
@@ -72,10 +73,21 @@ def test_slack_a_channel_it_cannot_find_says_so() -> None:
         _run(adapter.check_channel_usable("C1"))
 
 
-def test_slack_a_channel_the_app_is_not_in_says_so() -> None:
-    adapter = _slack(_SlackClient(channel={"is_member": False}))
+@pytest.mark.parametrize("private", [True, False])
+def test_slack_a_channel_the_app_is_not_in_says_so(private: bool) -> None:
+    # Public too: the app cannot join a channel or post in one it is not in,
+    # so binding it would make a room that never works.
+    adapter = _slack(_SlackClient(channel={"is_member": False, "is_private": private}))
     with pytest.raises(ChannelNotUsable, match="not in Slack channel C1"):
         _run(adapter.check_channel_usable("C1"))
+
+
+def test_slack_a_dm_needs_no_membership_check() -> None:
+    _run(
+        _slack(
+            _SlackClient(channel={"is_im": True, "is_member": False})
+        ).check_channel_usable("D1")
+    )
 
 
 @pytest.mark.parametrize("reason", ["missing_scope", "ratelimited"])
@@ -93,7 +105,7 @@ class _MattermostChannels:
     def __init__(
         self,
         channel: dict[str, Any] | Exception,
-        member: bool = True,
+        member: bool | Exception = True,
     ) -> None:
         self._channel = channel
         self._member = member
@@ -104,6 +116,8 @@ class _MattermostChannels:
         return self._channel
 
     def get_channel_member(self, channel_id: str, user_id: str) -> dict[str, Any]:
+        if isinstance(self._member, Exception):
+            raise self._member
         if not self._member:
             raise ResourceNotFound("not a member")
         return {"user_id": user_id}
@@ -151,7 +165,33 @@ def test_mattermost_a_channel_it_may_not_see_says_so() -> None:
 
 def test_mattermost_any_other_failure_is_mattermosts() -> None:
     with pytest.raises(BridgeOperationError, match="would not describe channel ch1"):
-        _mm_check(_MattermostChannels(ConnectionError("connection reset")))
+        _mm_check(_MattermostChannels(requests.ConnectionError("connection reset")))
+
+
+def test_mattermost_a_bug_is_not_dressed_up_as_mattermosts() -> None:
+    # Only the driver's and requests' errors are the platform's; anything
+    # else is ours and must surface as itself.
+    with pytest.raises(KeyError):
+        _mm_check(_MattermostChannels(KeyError("team_id")))
+
+
+def test_mattermost_a_private_channel_it_may_not_inspect_asks_to_add_it() -> None:
+    with pytest.raises(ChannelNotUsable, match="Add it to the channel"):
+        _mm_check(
+            _MattermostChannels(
+                {"team_id": "team-1", "type": "P"},
+                member=NotEnoughPermissions("no permission"),
+            )
+        )
+
+
+def test_mattermost_a_bug_in_the_membership_lookup_propagates() -> None:
+    with pytest.raises(TypeError):
+        _mm_check(
+            _MattermostChannels(
+                {"team_id": "team-1", "type": "P"}, member=TypeError("bad call")
+            )
+        )
 
 
 def test_mattermost_a_channel_in_another_team_is_refused() -> None:
@@ -168,18 +208,28 @@ def test_mattermost_a_private_channel_switch_is_not_in_says_so() -> None:
 
 
 class _Permissions:
-    def __init__(self, *, view: bool, send: bool) -> None:
+    def __init__(self, *, view: bool, send: bool, send_in_threads: bool) -> None:
         self.view_channel = view
         self.send_messages = send
+        self.send_messages_in_threads = send_in_threads
 
 
 class _DiscordChannel:
     def __init__(
-        self, guild: _FakeGuild, *, view: bool = True, send: bool = True
+        self,
+        guild: Any,
+        *,
+        view: bool = True,
+        send: bool = True,
+        send_in_threads: bool = True,
+        parent_id: int | None = None,
     ) -> None:
         self.id = 555
         self.guild = guild
-        self._permissions = _Permissions(view=view, send=send)
+        self.parent_id = parent_id
+        self._permissions = _Permissions(
+            view=view, send=send, send_in_threads=send_in_threads
+        )
 
     def permissions_for(self, member: Any) -> _Permissions:
         return self._permissions
@@ -263,3 +313,31 @@ def test_discord_an_id_that_is_not_a_number_says_so() -> None:
     _wire(adapter, _FakeGuild(), {})
     with pytest.raises(ChannelNotUsable, match="are numbers"):
         _run(adapter.check_channel_usable("general"))
+
+
+def test_discord_a_thread_is_judged_by_posting_in_threads() -> None:
+    # Thread.permissions_for gives the parent's permissions: a bot that may
+    # post in threads but not in the parent can still use the thread.
+    adapter = _discord_adapter()
+    guild = _FakeGuild()
+    thread = _DiscordChannel(guild, send=False, send_in_threads=True, parent_id=1)
+    _wire(adapter, guild, {555: thread})
+    _run(adapter.check_channel_usable("555"))
+
+
+def test_discord_a_thread_the_bot_cannot_post_in_says_so() -> None:
+    adapter = _discord_adapter()
+    guild = _FakeGuild()
+    thread = _DiscordChannel(guild, send=True, send_in_threads=False, parent_id=1)
+    _wire(adapter, guild, {555: thread})
+    with pytest.raises(ChannelNotUsable, match="cannot read and post"):
+        _run(adapter.check_channel_usable("555"))
+
+
+def test_discord_unknown_own_permissions_are_not_taken_as_a_pass() -> None:
+    adapter = _discord_adapter()
+    guild = _FakeGuild()
+    guild.me = None  # type: ignore[attr-defined]
+    _wire(adapter, guild, {555: _DiscordChannel(guild)})
+    with pytest.raises(BridgeOperationError, match="own permissions"):
+        _run(adapter.check_channel_usable("555"))
