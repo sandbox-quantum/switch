@@ -190,9 +190,9 @@ function WorkspaceCrumbs({
         <CreateInvitationDialog
           open={inviteOpen}
           tenantId={tenant.id}
+          workspaceName={tenant.name}
           emailEnabled={session?.invite_email_enabled ?? false}
           onClose={() => setInviteOpen(false)}
-          onCreated={() => {}}
         />
       )}
       <Snackbar

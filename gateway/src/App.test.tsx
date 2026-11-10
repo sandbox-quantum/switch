@@ -774,7 +774,7 @@ describe("the new layout (gateway_v2)", () => {
         renderAt("/rooms");
         const menu = await openSwitcher();
         fireEvent.click(within(menu).getByRole("menuitem", { name: "Invite people to Acme" }));
-        expect(await screen.findByRole("dialog", { name: "Invite to workspace" })).toBeTruthy();
+        expect(await screen.findByRole("dialog", { name: "Invite users to Acme" })).toBeTruthy();
         cleanup();
       }
     });

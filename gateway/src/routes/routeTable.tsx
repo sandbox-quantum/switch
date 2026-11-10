@@ -62,10 +62,8 @@ import RoomsPage from "../pages/rooms/RoomsPage";
 import TemplatesPage from "../pages/templates/TemplatesPage";
 import UsagePage from "../pages/usage/UsagePage";
 import UsersPage from "../pages/users/UsersPage";
-import WorkspacePage, {
-  WorkspaceGeneralPage,
-  WorkspaceUsersPage,
-} from "../pages/workspace/WorkspacePage";
+import WorkspacePage, { WorkspaceGeneralPage } from "../pages/workspace/WorkspacePage";
+import WorkspaceUsersPage from "../pages/workspace/WorkspaceUsersPage";
 import { PlannedPage } from "./StatusPages";
 
 /** Every page the signed-in dashboard has, in one table: its URL, who may
