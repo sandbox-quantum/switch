@@ -64,7 +64,10 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
+    ChannelNotUsable,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -2227,7 +2230,8 @@ class MattermostAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         if not self._admin_driver or not self._main_loop:
             raise RuntimeError("Cannot create channel: Mattermost client not connected")
 
@@ -2276,7 +2280,7 @@ class MattermostAdapter(PlatformAdapter):
             channel_id = channel["id"]
 
         await self._add_default_member(channel_id)
-        return channel_id
+        return CreatedChannel(id=channel_id, name=channel.get("display_name") or name)
 
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         """Archive the channel: Mattermost's channel DELETE archives unless
@@ -2314,6 +2318,62 @@ class MattermostAdapter(PlatformAdapter):
                 member,
                 channel_id,
             )
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists, is in this connection's team, and — when it is
+        private — Switch's account is in it, since that account is the one that
+        adds the agents."""
+        driver = self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            raise RuntimeError("Mattermost client not connected")
+        try:
+            channel = await loop.run_in_executor(
+                None, driver.channels.get_channel, channel_id
+            )
+        except ResourceNotFound as error:
+            raise ChannelNotUsable(
+                f"Mattermost cannot find channel {channel_id}: {error}"
+            ) from error
+        except NotEnoughPermissions as error:
+            raise ChannelNotUsable(
+                f"Mattermost will not let Switch's account see channel "
+                f"{channel_id}: {error}"
+            ) from error
+        except sync_requests.RequestException as error:
+            # Any other refusal from Mattermost (the driver's errors are
+            # requests' HTTPError) or a failed request: the platform's, not
+            # the caller's. Anything else is a bug and propagates.
+            raise BridgeOperationError(
+                f"Mattermost would not describe channel {channel_id}: {error}"
+            ) from error
+        team_id = str(channel.get("team_id") or "")
+        if team_id and self._team_id and team_id != self._team_id:
+            raise ChannelNotUsable(
+                f"Mattermost channel {channel_id} is in another team, not this "
+                f"connection's team ({self._config.team_name})."
+            )
+        if self._to_channel_type(channel.get("type", "")) != "channel_private":
+            return
+        try:
+            await loop.run_in_executor(
+                None,
+                driver.channels.get_channel_member,
+                channel_id,
+                self._admin_user_id,
+            )
+        except (ResourceNotFound, NotEnoughPermissions) as error:
+            # Mattermost answers "not a member" with a 404, and may refuse to
+            # say with a 403. Either way the fix is the same: add the account.
+            raise ChannelNotUsable(
+                f"Switch's Mattermost account is not in private channel "
+                f"{channel_id}. Add it to the channel, then try again."
+            ) from error
+        except sync_requests.RequestException as error:
+            raise BridgeOperationError(
+                f"Mattermost would not say whether Switch's account is in "
+                f"channel {channel_id}: {error}"
+            ) from error
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         if not self._admin_driver or not self._main_loop:
@@ -2993,6 +3053,47 @@ class MattermostAdapter(PlatformAdapter):
 
     # ── WebSocket handling ───────────────────────────────────────────────────
 
+    def _first_sighting(self, post_id: str) -> bool:
+        """Whether this post is new to the bridge. Every agent's bot holds a
+        socket of its own, so a post in a channel several of them are in
+        arrives once per bot."""
+        with self._seen_lock:
+            if post_id in self._seen_post_ids:
+                return False
+            self._seen_post_ids[post_id] = None
+            if len(self._seen_post_ids) > self._seen_post_ids_max:
+                self._seen_post_ids.popitem(last=False)
+            return True
+
+    async def _handle_display_name_change(self, post: dict[str, Any]) -> None:
+        """Mattermost posts a system line into a channel whose display name
+        changed, carrying the old and the new one. The display name is what
+        a room adopted from the channel is named after, so it is what the room
+        follows. Runs on a bot's socket loop, so the bridge is handed the
+        rename on the main loop, as a message is."""
+        if not self._first_sighting(post.get("id", "")):
+            return
+        props = post.get("props") or {}
+        channel_id = str(post.get("channel_id") or "")
+        new_name = str(props.get("new_displayname") or "")
+        if not channel_id or not new_name:
+            logger.warning(
+                "Mattermost display-name change without a channel or a new "
+                "name, skipping post %s",
+                post.get("id"),
+            )
+            return
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError("Cannot handle a channel rename: adapter not started")
+        if self._on_channel_named is not None:
+            self._dispatch(
+                self._on_channel_named(
+                    channel_id, str(props.get("old_displayname") or ""), new_name
+                ),
+                loop,
+            )
+
     async def _ws_handler(self, event_data: str, agent_name: str) -> None:
         try:
             event = json.loads(event_data)
@@ -3020,6 +3121,9 @@ class MattermostAdapter(PlatformAdapter):
 
         user_id = post.get("user_id", "")
         post_type = post.get("type", "")
+        if post_type == "system_displayname_change":
+            await self._handle_display_name_change(post)
+            return
         if post_type:
             return
 
@@ -3027,12 +3131,8 @@ class MattermostAdapter(PlatformAdapter):
             return
 
         post_id = post.get("id", "")
-        with self._seen_lock:
-            if post_id in self._seen_post_ids:
-                return
-            self._seen_post_ids[post_id] = None
-            if len(self._seen_post_ids) > self._seen_post_ids_max:
-                self._seen_post_ids.popitem(last=False)
+        if not self._first_sighting(post_id):
+            return
 
         channel_id = post.get("channel_id", "")
         message = post.get("message", "")

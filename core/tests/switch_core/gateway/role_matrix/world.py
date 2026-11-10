@@ -472,6 +472,62 @@ class World:
             holder="package_id",
         )
 
+    async def packaged_reference(self) -> str:
+        """The private reference, in a package everyone may read."""
+        return await self._held_in(
+            "packaged_reference",
+            self.readable_package,
+            self.reference,
+            package_references,
+            "reference_id",
+            holder="package_id",
+        )
+
+    async def packaged_document(self) -> str:
+        """The private document, in a package everyone may read."""
+        return await self._held_in(
+            "packaged_document",
+            self.readable_package,
+            self.document,
+            package_documents,
+            "document_id",
+            holder="package_id",
+        )
+
+    async def shown_reference(self) -> str:
+        """The private reference, in a room everyone may read."""
+        return await self._held_in(
+            "shown_reference",
+            self.readable_room,
+            self.reference,
+            room_references,
+            "reference_id",
+        )
+
+    async def shown_document(self) -> str:
+        """The private document, in a room everyone may read."""
+        return await self._held_in(
+            "shown_document",
+            self.readable_room,
+            self.document,
+            room_documents,
+            "document_id",
+        )
+
+    async def _held_in(
+        self,
+        kind: str,
+        holder_of: Any,
+        held_of: Any,
+        table: Any,
+        held: str,
+        *,
+        holder: str = "room_id",
+    ) -> str:
+        """As `_linked`, but the held thing's id: what a list names it by."""
+        await self._linked(kind, holder_of, held_of, table, held, holder=holder)
+        return str(await held_of())
+
     async def _linked(
         self,
         kind: str,
@@ -583,6 +639,25 @@ class World:
             return package.id
 
         return str(await self._once("package", make))
+
+    async def readable_package(self) -> str:
+        """A package of the owner's that everyone may read and only its owner
+        and admins may change."""
+
+        async def make(session: AsyncSession) -> str:
+            package = Package(
+                owner_id=self.owner_id,
+                name=self.name("readable-package"),
+                description="",
+                instructions="",
+                read_visibility="public",
+                write_visibility="private",
+            )
+            session.add(package)
+            await session.flush()
+            return package.id
+
+        return str(await self._once("readable_package", make))
 
     async def template(self) -> str:
         async def make(session: AsyncSession) -> str:

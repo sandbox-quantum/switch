@@ -238,6 +238,9 @@ class _Bridges:
     def supports_channel_creation(self, bridge_type: str) -> bool:
         return True
 
+    def supports_private_channels(self, bridge_type: str) -> bool:
+        return True
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
 
