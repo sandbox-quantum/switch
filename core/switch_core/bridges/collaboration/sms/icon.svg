@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SMS">
+  <rect x="8" y="10" width="48" height="38" rx="12" fill="#F22F46"/>
+  <path d="M19 48l-5 8 13-8" fill="#F22F46"/>
+  <circle cx="22" cy="29" r="3" fill="white"/>
+  <circle cx="32" cy="29" r="3" fill="white"/>
+  <circle cx="42" cy="29" r="3" fill="white"/>
+</svg>
