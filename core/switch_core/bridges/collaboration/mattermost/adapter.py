@@ -64,6 +64,8 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
+    ChannelNotUsable,
     ChannelType,
     DirectoryUser,
     FailureReason,
@@ -2227,6 +2229,7 @@ class MattermostAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
     ) -> str:
         if not self._admin_driver or not self._main_loop:
             raise RuntimeError("Cannot create channel: Mattermost client not connected")
@@ -2314,6 +2317,62 @@ class MattermostAdapter(PlatformAdapter):
                 member,
                 channel_id,
             )
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists, is in this connection's team, and — when it is
+        private — Switch's account is in it, since that account is the one that
+        adds the agents."""
+        driver = self._admin_driver
+        loop = self._main_loop
+        if driver is None or loop is None:
+            raise RuntimeError("Mattermost client not connected")
+        try:
+            channel = await loop.run_in_executor(
+                None, driver.channels.get_channel, channel_id
+            )
+        except ResourceNotFound as error:
+            raise ChannelNotUsable(
+                f"Mattermost cannot find channel {channel_id}: {error}"
+            ) from error
+        except NotEnoughPermissions as error:
+            raise ChannelNotUsable(
+                f"Mattermost will not let Switch's account see channel "
+                f"{channel_id}: {error}"
+            ) from error
+        except sync_requests.RequestException as error:
+            # Any other refusal from Mattermost (the driver's errors are
+            # requests' HTTPError) or a failed request: the platform's, not
+            # the caller's. Anything else is a bug and propagates.
+            raise BridgeOperationError(
+                f"Mattermost would not describe channel {channel_id}: {error}"
+            ) from error
+        team_id = str(channel.get("team_id") or "")
+        if team_id and self._team_id and team_id != self._team_id:
+            raise ChannelNotUsable(
+                f"Mattermost channel {channel_id} is in another team, not this "
+                f"connection's team ({self._config.team_name})."
+            )
+        if self._to_channel_type(channel.get("type", "")) != "channel_private":
+            return
+        try:
+            await loop.run_in_executor(
+                None,
+                driver.channels.get_channel_member,
+                channel_id,
+                self._admin_user_id,
+            )
+        except (ResourceNotFound, NotEnoughPermissions) as error:
+            # Mattermost answers "not a member" with a 404, and may refuse to
+            # say with a 403. Either way the fix is the same: add the account.
+            raise ChannelNotUsable(
+                f"Switch's Mattermost account is not in private channel "
+                f"{channel_id}. Add it to the channel, then try again."
+            ) from error
+        except sync_requests.RequestException as error:
+            raise BridgeOperationError(
+                f"Mattermost would not say whether Switch's account is in "
+                f"channel {channel_id}: {error}"
+            ) from error
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         if not self._admin_driver or not self._main_loop:

@@ -54,6 +54,8 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
+    ChannelNotUsable,
     ChannelType,
     DirectoryUser,
     FailureReason,
@@ -2428,6 +2430,7 @@ class DiscordAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
     ) -> str:
         if channel_type in ("group", "direct"):
             raise ValueError(
@@ -2607,7 +2610,7 @@ class DiscordAdapter(PlatformAdapter):
         which shared delivery does not carry, so on the shared connection one
         is not this bridge's either.
         """
-        target = await self._get_channel(int(channel_id))
+        target = await self._channel_to_bind(channel_id)
         if (
             getattr(target, "guild", None) is None
             and self._config.event_delivery == "shared"
@@ -2615,6 +2618,68 @@ class DiscordAdapter(PlatformAdapter):
             raise ChannelNotBindable(
                 f"Discord channel {channel_id} is a direct message, which this "
                 "messaging app does not carry."
+            )
+
+    async def _channel_to_bind(self, channel_id: str) -> Any:
+        """The channel a room was asked to bind to, with Discord's reason when
+        it cannot be read: missing or hidden from the bot is the caller's to
+        fix (`ChannelNotUsable`), any other refusal is Discord's
+        (`BridgeOperationError`)."""
+        try:
+            numeric_id = int(channel_id)
+        except ValueError as error:
+            raise ChannelNotUsable(
+                f"{channel_id!r} is not a Discord channel id: those are numbers."
+            ) from error
+        try:
+            return await self._get_channel(numeric_id)
+        except discord.NotFound as error:
+            raise ChannelNotUsable(
+                f"Discord cannot find channel {channel_id}: {error.text or error}"
+            ) from error
+        except discord.Forbidden as error:
+            raise ChannelNotUsable(
+                f"Discord will not let the Switch bot see channel {channel_id} "
+                f"({error.text or error}). Give it access to the channel, then "
+                "try again."
+            ) from error
+        except discord.HTTPException as error:
+            raise BridgeOperationError(
+                f"Discord would not describe channel {channel_id} "
+                f"({error.status}): {error.text or error}"
+            ) from error
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists and the bot can read and post in it.
+
+        In a thread, posting is `send_messages_in_threads`: discord.py's
+        `Thread.permissions_for` returns the parent's permissions without
+        mapping one onto the other."""
+        channel = await self._channel_to_bind(channel_id)
+        guild = getattr(channel, "guild", None)
+        if guild is None:
+            # A DM or group DM: the bot is in it by definition.
+            return
+        me = getattr(guild, "me", None)
+        if me is None:
+            # The bot's own member is not in the guild cache, so its
+            # permissions cannot be read. Say so rather than pass unchecked.
+            raise BridgeOperationError(
+                f"Discord has not told the Switch bot its own permissions in "
+                f"the server of channel {channel_id}, so it cannot check that "
+                "it may post there. Try again in a moment."
+            )
+        permissions = channel.permissions_for(me)
+        is_thread = getattr(channel, "parent_id", None) is not None
+        may_post = (
+            permissions.send_messages_in_threads
+            if is_thread
+            else permissions.send_messages
+        )
+        if not permissions.view_channel or not may_post:
+            raise ChannelNotUsable(
+                f"The Switch bot cannot read and post in Discord channel "
+                f"{channel_id}. Give it access to the channel, then try again."
             )
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
