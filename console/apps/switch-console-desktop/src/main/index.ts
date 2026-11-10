@@ -1,6 +1,7 @@
 import './app/configure-app-identity';
 // Installs the agent provider catalogue before any module that reads it loads.
 import './core/providers/plugin-registry';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { config as dotenvConfig } from 'dotenv';
@@ -9,6 +10,11 @@ import dockIcon from '@/assets/images/switch-console/icon-dock.png?asset';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
 import { deeplinkFromArgv, flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
+import {
+  dbusSend,
+  linuxPasswordStoreFallback,
+  probeSecretService,
+} from './app/linux-password-store';
 import { setupApplicationMenu } from './app/menu';
 import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
 import { LaunchesWhileQuitting } from './app/relaunch-on-quit';
@@ -77,6 +83,12 @@ const LOCAL_HOST_SHUTDOWN_MS = 5000;
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
+  const passwordStore = linuxPasswordStoreFallback(
+    process.env,
+    app.commandLine.hasSwitch('password-store'),
+    () => probeSecretService(process.env, existsSync, dbusSend)
+  );
+  if (passwordStore) app.commandLine.appendSwitch('password-store', passwordStore);
 }
 
 registerAppScheme();
