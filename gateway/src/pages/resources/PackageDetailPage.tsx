@@ -35,6 +35,7 @@ import {
   DetailLoading,
   InfoLine,
   requiredHelper,
+  useAfterTransfer,
   useResourceDetail,
 } from "./detailParts";
 
@@ -44,6 +45,7 @@ export default function PackageDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: pkg, setData: setPkg, error, loading, reload } = useResourceDetail(id, loadPackage);
+  const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadPackage, setPkg, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (pkg === null && loading) return <DetailLoading />;
@@ -51,18 +53,9 @@ export default function PackageDetailPage() {
     return <DetailLoadFailed what="package" listPath={LIST_PATH} error={error} onRetry={reload} />;
   }
 
-  // After a hand-over the page shows what is left to this viewer; a private
-  // package they no longer own is gone from them, so they go back to the list.
-  const afterTransfer = async () => {
-    try {
-      setPkg(await loadPackage(id));
-    } catch {
-      navigate(LIST_PATH, { replace: true });
-    }
-  };
-
   return (
     <Box>
+      {refreshNotice}
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
         <IconButton
           onClick={() => navigate(LIST_PATH)}

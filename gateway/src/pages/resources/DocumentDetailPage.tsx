@@ -35,6 +35,7 @@ import {
   InPackagesSection,
   InfoLine,
   requiredHelper,
+  useAfterTransfer,
   useResourceDetail,
 } from "./detailParts";
 
@@ -44,6 +45,7 @@ export default function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: doc, setData: setDoc, error, loading, reload } = useResourceDetail(id, loadDocument);
+  const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadDocument, setDoc, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (doc === null && loading) return <DetailLoading />;
@@ -51,18 +53,9 @@ export default function DocumentDetailPage() {
     return <DetailLoadFailed what="document" listPath={LIST_PATH} error={error} onRetry={reload} />;
   }
 
-  // After a hand-over the page shows what is left to this viewer; a private
-  // document they no longer own is gone from them, so they go back to the list.
-  const afterTransfer = async () => {
-    try {
-      setDoc(await loadDocument(id));
-    } catch {
-      navigate(LIST_PATH, { replace: true });
-    }
-  };
-
   return (
     <Box>
+      {refreshNotice}
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
         <IconButton
           onClick={() => navigate(LIST_PATH)}

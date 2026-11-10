@@ -51,10 +51,12 @@ interface Removing {
 
 /** Each item is added on its own, so some may go in while others are
  * refused. Throws the reasons for the refused ones, for the picker to show,
- * after `refetch` has shown the ones that went in. */
-async function addEach(ids: string[], add: (id: string) => Promise<unknown>, refetch: () => unknown) {
+ * once `refetch` has shown the ones that went in. */
+async function addEach(ids: string[], add: (id: string) => Promise<unknown>, refetch: () => Promise<void>) {
   const results = await Promise.allSettled(ids.map(add));
-  void refetch();
+  // Awaited, so the picker no longer offers what went in by the time it
+  // shows the reasons for the rest.
+  await refetch();
   const refused = results.flatMap((result) =>
     result.status === "rejected"
       ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]

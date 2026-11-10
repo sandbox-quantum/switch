@@ -79,7 +79,9 @@ export default function ResourceAttachmentsSection({
   // with the reasons for the rest.
   const handleAttach = async (roomIds: string[]) => {
     const results = await Promise.allSettled(roomIds.map((roomId) => ATTACH[kind](roomId, resourceId)));
-    void refetch();
+    // Awaited, so the picker no longer offers what went in by the time it
+    // shows the reasons for the rest.
+    await refetch();
     const refused = results.flatMap((result) =>
       result.status === "rejected"
         ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]

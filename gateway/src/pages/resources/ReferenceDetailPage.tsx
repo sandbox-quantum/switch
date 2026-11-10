@@ -37,6 +37,7 @@ import {
   InPackagesSection,
   InfoLine,
   requiredHelper,
+  useAfterTransfer,
   useResourceDetail,
 } from "./detailParts";
 import { CategoryChip } from "./resourceList";
@@ -50,6 +51,7 @@ export default function ReferenceDetailPage() {
   const navigate = useNavigate();
   const { data: types } = useReferenceTypes();
   const { data: ref, setData: setRef, error, loading, reload } = useResourceDetail(id, loadReference);
+  const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadReference, setRef, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (ref === null && loading) return <DetailLoading />;
@@ -57,21 +59,12 @@ export default function ReferenceDetailPage() {
     return <DetailLoadFailed what="reference" listPath={LIST_PATH} error={error} onRetry={reload} />;
   }
 
-  // After a hand-over the page shows what is left to this viewer; a private
-  // reference they no longer own is gone from them, so they go back to the list.
-  const afterTransfer = async () => {
-    try {
-      setRef(await loadReference(id));
-    } catch {
-      navigate(LIST_PATH, { replace: true });
-    }
-  };
-
   // Visibility-filtered, so it may miss a type this reference legitimately
   // has. Its only job is the value hint; every label comes from the server.
   const visibleTypeSpec = (types ?? []).find((t) => t.type === ref.type);
   return (
     <Box>
+      {refreshNotice}
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
         <IconButton
           onClick={() => navigate(LIST_PATH)}

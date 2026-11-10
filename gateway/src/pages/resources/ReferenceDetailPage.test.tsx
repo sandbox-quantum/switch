@@ -1,9 +1,9 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReferenceDetail } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import { answerFetch } from "../../test/answerFetch";
+import { type Answer, answerFetch } from "../../test/answerFetch";
 import ReferenceDetailPage from "./ReferenceDetailPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
@@ -28,6 +28,28 @@ const REF: ReferenceDetail = {
   can_edit: true,
   can_manage: true,
 };
+
+function signedInAs({ admin }: { admin: boolean }) {
+  vi.mocked(useAuth).mockReturnValue({
+    session: { tenant: { id: "t1" } },
+    capabilities: { administersWorkspace: admin },
+  } as unknown as ReturnType<typeof useAuth>);
+}
+
+/** The reads a reference's page makes besides the reference itself. */
+const PAGE_READS: Record<string, Answer> = {
+  "GET /references/reference-types": [200, []],
+  "GET /references/r1/rooms": [200, []],
+  "GET /packages": [200, [{ id: "p1", name: "Onboarding", description: "" }]],
+  "GET /tenants/t1/members": [200, [{ user_id: "u1", name: "Ada", email: "ada@example.com", can_receive_transfer: true }, { user_id: "u2", name: "Grace", email: "grace@example.com", can_receive_transfer: true }]],
+};
+
+async function transferToGrace() {
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer ownership" }));
+  fireEvent.mouseDown(await screen.findByRole("combobox", { name: "New owner" }));
+  fireEvent.click(await screen.findByRole("option", { name: /Grace/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Transfer" }));
+}
 
 function Where() {
   const location = useLocation();
@@ -55,9 +77,7 @@ const show = () =>
   );
 
 describe("ReferenceDetailPage", () => {
-  beforeEach(() => {
-    vi.mocked(useAuth).mockReturnValue({ session: null } as unknown as ReturnType<typeof useAuth>);
-  });
+  beforeEach(() => signedInAs({ admin: false }));
 
   afterEach(() => {
     cleanup();
@@ -127,5 +147,42 @@ describe("ReferenceDetailPage", () => {
 
     answerR2(new Response(JSON.stringify({ ...REF, id: "r2", name: "Roadmap" }), { status: 200 }));
     expect(await screen.findByDisplayValue("Roadmap")).toBeTruthy();
+  });
+
+  it("offers a workspace admin each private package it is in as a link, as they can open it", async () => {
+    signedInAs({ admin: true });
+    answerFetch({ "GET /references/r1": [200, REF], ...PAGE_READS });
+    show();
+
+    expect(await screen.findByText("Onboarding")).toBeTruthy();
+    expect(screen.getByText("Someone's private package")).toBeTruthy();
+    expect(screen.queryByText(/you can't open/)).toBeNull();
+  });
+
+  it("goes back to the list when a transfer leaves the reference out of the viewer's sight", async () => {
+    answerFetch({
+      "GET /references/r1": [[200, REF], [403, { detail: "Not authorized to read this resource" }]],
+      "POST /ownership/transfer": [200, { kind: "reference", id: "r1", new_owner_id: "u2" }],
+      ...PAGE_READS,
+    });
+    show();
+
+    await transferToGrace();
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/resources?tab=references"));
+  });
+
+  it("stays, and says so, when a transfer went through but the page could not be refreshed", async () => {
+    answerFetch({
+      "GET /references/r1": [[200, REF], [503, { detail: "The database is unavailable." }]],
+      "POST /ownership/transfer": [200, { kind: "reference", id: "r1", new_owner_id: "u2" }],
+      ...PAGE_READS,
+    });
+    show();
+
+    await transferToGrace();
+    expect(
+      await screen.findByText(/Transferred, but this page couldn't be refreshed: The database is unavailable/),
+    ).toBeTruthy();
+    expect(screen.getByDisplayValue("Monorepo")).toBeTruthy();
   });
 });

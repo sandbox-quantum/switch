@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DocumentSummary, ReferenceDetail, ReferenceTypeDetail, Session } from "../../data/api";
+import type { DocumentSummary, PackageDetail, ReferenceDetail, ReferenceTypeDetail, Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { answerFetch as answer } from "../../test/answerFetch";
 import ResourcesPage from "./ResourcesPage";
@@ -57,6 +57,28 @@ function document(id: string, extra: Partial<DocumentSummary> = {}): DocumentSum
     can_edit: true,
     can_manage: true,
     can_transfer: true,
+    ...extra,
+  };
+}
+
+function pkg(id: string, extra: Partial<PackageDetail> = {}): PackageDetail {
+  return {
+    id,
+    owner_id: "u1",
+    owner_name: "Ada",
+    read_visibility: "public",
+    write_visibility: "private",
+    name: id,
+    description: `${id} described`,
+    instructions: "",
+    references_count: 2,
+    documents_count: 1,
+    attached_rooms_count: 3,
+    hidden_rooms_count: 0,
+    created_at: "2026-11-01T10:00:00+00:00",
+    can_read: true,
+    can_edit: true,
+    can_manage: true,
     ...extra,
   };
 }
@@ -188,6 +210,41 @@ describe("ResourcesPage", () => {
       fireEvent.mouseDown(await screen.findByRole("combobox", { name: "Owner" }));
       fireEvent.click(await screen.findByRole("option", { name: "No owner" }));
       expect(await screen.findByText("1 of 2 documents")).toBeTruthy();
+    });
+  });
+
+  describe("Documents and Packages", () => {
+    it("searches a document's description", async () => {
+      answer({
+        "GET /documents": [200, [document("notes", { description: "Release checklist" }), document("glossary")]],
+      });
+      show("documents");
+
+      fireEvent.change(await screen.findByLabelText("Search documents"), { target: { value: "checklist" } });
+      expect(await screen.findByText("1 of 2 documents")).toBeTruthy();
+    });
+
+    it("lists packages once, with what each holds, and filters them by owner", async () => {
+      const calls = answer({
+        "GET /packages": [200, [pkg("onboarding"), pkg("research", { owner_id: "u2", owner_name: "Grace" })]],
+      });
+      show("packages");
+
+      expect(await screen.findByText("2 packages")).toBeTruthy();
+      expect(gets(calls, "/packages")).toBe(1);
+      expect(screen.getByRole("columnheader", { name: /References/ })).toBeTruthy();
+      expect(screen.getByRole("columnheader", { name: /Documents/ })).toBeTruthy();
+      fireEvent.mouseDown(screen.getByRole("combobox", { name: "Owner" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Grace" }));
+      expect(await screen.findByText("1 of 2 packages")).toBeTruthy();
+    });
+
+    it("says why the packages could not load, rather than show none", async () => {
+      answer({ "GET /packages": [500, { detail: "The database is unavailable." }] });
+      show("packages");
+
+      expect(await screen.findByText(/Couldn't load the packages: The database is unavailable/)).toBeTruthy();
+      expect(screen.queryByText("No packages yet")).toBeNull();
     });
   });
 

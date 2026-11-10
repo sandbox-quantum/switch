@@ -39,6 +39,7 @@ function showWith(flags: Flags) {
   vi.mocked(useAuth).mockReturnValue({
     user: { id: "u1" },
     session: null,
+    capabilities: { administersWorkspace: false },
   } as unknown as ReturnType<typeof useAuth>);
   const writes: { method: string; body: unknown }[] = [];
   vi.stubGlobal(

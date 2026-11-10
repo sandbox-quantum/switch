@@ -181,7 +181,9 @@ export function TransferOwnershipDialog({
             displayEmpty
             value={recipient}
             onChange={(e) => setRecipient(e.target.value)}
-            aria-label="New owner"
+            // The select's name goes on the element that takes focus, where a
+            // screen reader reads it; on the Select itself it names nothing.
+            SelectDisplayProps={{ "aria-label": "New owner" }}
           >
             <MenuItem value="" disabled>
               Choose a user

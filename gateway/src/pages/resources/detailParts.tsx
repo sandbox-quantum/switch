@@ -3,7 +3,8 @@ import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import { Alert, Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { loadPackages } from "../../data/api";
+import { useAuth } from "../../data/AuthContext";
+import { ApiError, loadPackages } from "../../data/api";
 import { EM_DASH, MONO_SX } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 
@@ -43,6 +44,40 @@ export function useResourceDetail<T>(id: string | undefined, load: (id: string) 
   }, [reload]);
 
   return { data, setData, error, loading, reload };
+}
+
+/** What a page does once its resource has been handed to someone else: it
+ * shows the resource as it now stands to this viewer. A private one they
+ * no longer own is gone from them (the server refuses to read it), so they go
+ * back to the list. Any other failure is said on the page, over what was
+ * shown before. */
+export function useAfterTransfer<T>(
+  id: string | undefined,
+  load: (id: string) => Promise<T>,
+  setData: (data: T) => void,
+  listPath: string,
+) {
+  const navigate = useNavigate();
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const afterTransfer = async () => {
+    if (!id) return;
+    setRefreshError(null);
+    try {
+      setData(await load(id));
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+        navigate(listPath, { replace: true });
+        return;
+      }
+      setRefreshError(err instanceof Error ? err.message : "unknown error");
+    }
+  };
+  const refreshNotice = refreshError && (
+    <Alert severity="warning" sx={{ mb: 2 }}>
+      Transferred, but this page couldn't be refreshed: {refreshError}. Reload it to see who owns it now.
+    </Alert>
+  );
+  return { afterTransfer, refreshNotice };
 }
 
 export function DetailLoading() {
@@ -111,18 +146,22 @@ export function InfoLine({
   );
 }
 
-/** The packages a reference or document is in. A package the viewer cannot
- * list (someone's private one) is counted, never named, as private rooms
- * are. */
+/** The packages a reference or document is in. The package list holds the
+ * viewer's own and public ones, admins included, so another person's private
+ * package is not in it: counted, never named, as private rooms are, for
+ * anyone who cannot open it. A workspace admin can, so each is offered to
+ * them as a link instead. */
 export function InPackagesSection({ packageIds }: { packageIds: string[] }) {
   const navigate = useNavigate();
+  const { capabilities } = useAuth();
   const { data: packages, error, loading } = useLoad(loadPackages);
   const nameById = useMemo(
     () => new Map((packages ?? []).map((p) => [p.id, p.name || p.description])),
     [packages],
   );
   const named = packageIds.filter((pid) => nameById.has(pid));
-  const unnamed = packageIds.length - named.length;
+  const unnamed = packageIds.filter((pid) => !nameById.has(pid));
+  const canOpenUnnamed = capabilities.administersWorkspace;
   return (
     <Stack spacing={1}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
@@ -151,13 +190,24 @@ export function InPackagesSection({ packageIds }: { packageIds: string[] }) {
               sx={{ cursor: "pointer" }}
             />
           ))}
-          {unnamed > 0 && (
-            <Chip
-              size="small"
-              variant="outlined"
-              label={`${unnamed} private package${unnamed === 1 ? "" : "s"} you can't open`}
-            />
-          )}
+          {canOpenUnnamed
+            ? unnamed.map((pid) => (
+                <Chip
+                  key={pid}
+                  label="Someone's private package"
+                  size="small"
+                  variant="outlined"
+                  onClick={() => navigate(`/resources/packages/${pid}`)}
+                  sx={{ cursor: "pointer" }}
+                />
+              ))
+            : unnamed.length > 0 && (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`${unnamed.length} private package${unnamed.length === 1 ? "" : "s"} you can't open`}
+                />
+              )}
         </Stack>
       )}
     </Stack>
