@@ -1,0 +1,580 @@
+"""Purging an organization at its owner's request: the operator's side of
+"delete everything you hold about us".
+
+Nothing here waits for the customer. Unlike deleting a workspace from the
+dashboard (`workspace_deletion.py`), which refuses until its owner has
+removed everything by hand, a purge takes the organization whole: every
+workspace with everything in it, the organization's own rows, and every
+account that belongs to nothing else. `switch-purge-organization`
+(`purge_organization.py`) runs it.
+
+Whatever outside Switch those rows drive is withdrawn first, while the rows
+that drive it still exist:
+
+- **Messaging apps.** Each live install is ended as disconnecting it does
+  (`install_service.let_go_at_platform`): its bot token revoked, or the
+  workspace released where the platform holds none.
+- **Service sign-ins.** Every connection is removed and revoked at its
+  vendor, and every token issued on one is revoked, as removing a member
+  does. A token still live afterwards (its vendor failed, say) holds the
+  purge back until it is revoked or expires, as it holds back deleting a
+  workspace.
+- **Cloud machines.** Each machine serving the organization is set to be
+  deleted, and the purge waits until the hosted controller has terminated it:
+  deleting its rows first would leave the instance running with nothing to
+  tear it down. A machine that also serves a workspace outside the
+  organization refuses the purge.
+
+A purge that has to wait says what for and changes nothing else; running it
+again carries on from where things are. Once nothing is left outside Switch,
+each workspace is deleted in its own transaction (`purge_workspace`), the
+processes running its clients, bridges and machines are told, then the
+organization's rows go, then the accounts.
+
+**Accounts.** One is deleted when everything it belonged to was this
+organization: no membership of another workspace or organization, and no
+row left in another workspace from one it was in. Anyone else keeps their
+account and loses only what was here. The server's administrator account is
+always kept.
+
+**What stays.** The workspaces' audit history, for two years
+(`retention/audit_history.py`), and the server's own audit log, which records
+the purge. The organization's audit log goes with it: it has nowhere to
+live without the organization. Nothing at WorkOS is touched: the WorkOS
+environment can be shared with other products, so the purge reports the
+WorkOS organization and users to remove there, for whoever owns it.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, Protocol
+
+from sqlalchemy import delete, distinct, func, select
+
+from switch_core.accounts.deletion import (
+    delete_account_rows,
+    is_server_administrator,
+    workspaces_naming,
+)
+from switch_core.accounts.workspace_deletion import (
+    WORKSPACE_TABLES,
+    live_service_tokens,
+    purge_workspace,
+)
+from switch_core.bridges.collaboration.bridge_signals import BRIDGE_CHANGED_SIGNAL
+from switch_core.bridges.collaboration.install_service import let_go_at_platform
+from switch_core.clients.client_signals import CLIENT_CHANGED_SIGNAL
+from switch_core.db.audit import ServerAuditAction, record_server_audit_event
+from switch_core.db.base import Base
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    AgentController,
+    CloudMachine,
+    CollaborationBridge,
+    MachineWorkspace,
+    MessagingInstall,
+    OidcIdentity,
+    Organization,
+    OrganizationMember,
+    ServiceConnection,
+    Tenant,
+    TenantMember,
+    User,
+)
+from switch_core.db.rls_ddl import organization_scoped_tables
+from switch_core.db.session_scope import organization_session, tenant_session
+from switch_core.db.stores.hosted_machine_store import CloudMachineStore, bump_revision
+from switch_core.db.stores.messaging_install_store import (
+    INSTALL_ACTIVE,
+    INSTALL_DISCONNECTED,
+    MessagingInstallStore,
+)
+from switch_core.db.tenant_lookup import (
+    all_organization_ids,
+    tenants_of_cloud_machine,
+    tenants_of_organization,
+    tenants_of_user,
+)
+from switch_core.management.signals import REVOKED_SIGNAL
+from switch_core.tenant_context import tenant_scope
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
+    from switch_core.connections.broker import SignIn
+    from switch_core.keys import Keyring
+    from switch_core.signals import SignalBus
+
+logger = logging.getLogger(__name__)
+
+
+class PurgeRefused(Exception):
+    """The organization can't be purged as it stands; the message says why,
+    for the operator."""
+
+
+class ServiceRevoker(Protocol):
+    """What the purge needs of the service broker (`connections/broker.py`)."""
+
+    async def remove_connections(
+        self, session: AsyncSession, user_id: str
+    ) -> list[tuple[str, SignIn]]: ...
+
+    async def finish_disconnect(
+        self, session: AsyncSession, user_id: str, removed: list[tuple[str, SignIn]]
+    ) -> str | None: ...
+
+    async def revoke_pending(
+        self, session: AsyncSession, conditions: tuple[Any, ...]
+    ) -> bool: ...
+
+
+@dataclass(frozen=True)
+class WorkspaceContents:
+    id: str
+    slug: str
+    name: str
+    # Rows per table, for the tables that hold any.
+    rows: dict[str, int]
+
+
+@dataclass(frozen=True)
+class Account:
+    id: str
+    email: str
+    # (issuer, subject) of each sign-in identity: at WorkOS, the user id.
+    identities: tuple[tuple[str, str], ...]
+    # Why the account stays, or None when the purge deletes it.
+    kept_because: str | None
+
+
+@dataclass(frozen=True)
+class PurgePlan:
+    organization_id: str
+    slug: str
+    name: str
+    workos_organization_id: str | None
+    customer_id: str | None
+    workspaces: list[WorkspaceContents]
+    accounts: list[Account]
+    # Cloud machines serving the organization, or owned by an account it
+    # deletes, that are not yet deleted.
+    machines: list[str]
+    # Why the purge can't go ahead; empty when it can.
+    refusals: list[str]
+
+    @property
+    def deleted_accounts(self) -> list[Account]:
+        return [account for account in self.accounts if account.kept_because is None]
+
+
+@dataclass
+class PurgeOutcome:
+    # False while the purge waits on something outside Switch; run it again.
+    finished: bool
+    waiting: list[str] = field(default_factory=list)
+    # What was withdrawn only in part, to follow up by hand.
+    warnings: list[str] = field(default_factory=list)
+    deleted_accounts: list[Account] = field(default_factory=list)
+    failed_accounts: list[tuple[Account, str]] = field(default_factory=list)
+
+
+@dataclass
+class OrganizationPurge:
+    session_factory: async_sessionmaker[AsyncSession]
+    broker: ServiceRevoker
+    installers: MessagingInstallerRegistry
+    keyring: Keyring
+    signals: SignalBus
+    admin_email: str
+
+    async def find(self, reference: str) -> str:
+        """The id of the organization `reference` names, by id, slug or
+        WorkOS organization id."""
+        for organization_id in await all_organization_ids(self.session_factory):
+            async with organization_session(
+                self.session_factory, organization_id
+            ) as session:
+                organization = await session.get(Organization, organization_id)
+            if organization is not None and reference in (
+                organization.id,
+                organization.slug,
+                organization.workos_organization_id,
+            ):
+                return organization.id
+        raise PurgeRefused(f"No organization here is {reference!r}.")
+
+    async def plan(self, organization_id: str) -> PurgePlan:
+        """What purging the organization would delete and keep, and why it
+        can't go ahead, if it can't. Changes nothing."""
+        async with organization_session(
+            self.session_factory, organization_id
+        ) as session:
+            organization = await session.get(Organization, organization_id)
+            if organization is None:
+                raise PurgeRefused(f"No organization {organization_id} here.")
+            member_ids = set(
+                await session.scalars(
+                    select(OrganizationMember.user_id).where(
+                        OrganizationMember.organization_id == organization_id
+                    )
+                )
+            )
+        tenant_ids = await tenants_of_organization(
+            self.session_factory, organization_id
+        )
+        refusals = []
+        if TENANT_ZERO_ID in tenant_ids:
+            refusals.append(
+                "The organization holds the server's default workspace, which "
+                "can't be deleted."
+            )
+        workspaces = []
+        machine_ids: set[str] = set()
+        for tenant_id in tenant_ids:
+            async with tenant_session(self.session_factory, tenant_id) as session:
+                workspaces.append(await _contents(session, tenant_id))
+                member_ids.update(
+                    await session.scalars(
+                        select(TenantMember.user_id).where(
+                            TenantMember.tenant_id == tenant_id
+                        )
+                    )
+                )
+                machine_ids.update(
+                    await session.scalars(
+                        select(distinct(MachineWorkspace.machine_id)).where(
+                            MachineWorkspace.tenant_id == tenant_id
+                        )
+                    )
+                )
+        accounts = [
+            await self._account(user_id, organization_id, set(tenant_ids))
+            for user_id in sorted(member_ids)
+        ]
+        deleted = {account.id for account in accounts if account.kept_because is None}
+        machines, machine_refusals = await self._machines(
+            machine_ids, deleted, set(tenant_ids)
+        )
+        return PurgePlan(
+            organization_id=organization.id,
+            slug=organization.slug,
+            name=organization.name,
+            workos_organization_id=organization.workos_organization_id,
+            customer_id=organization.customer_id,
+            workspaces=workspaces,
+            accounts=accounts,
+            machines=machines,
+            refusals=refusals + machine_refusals,
+        )
+
+    async def run(self, plan: PurgePlan, request: str) -> PurgeOutcome:
+        """Purge what `plan` found, as far as it can go now. `request` is
+        the operator's reference to the owner's request (a ticket or
+        similar), recorded in the server's audit log.
+
+        Raises `PurgeRefused` for a plan with refusals, before anything
+        changes. Returns unfinished, having changed nothing in the database
+        beyond what it withdrew, while it waits on something outside Switch."""
+        if plan.refusals:
+            raise PurgeRefused(" ".join(plan.refusals))
+        if not request.strip():
+            raise PurgeRefused("Say which request the purge answers.")
+        outcome = PurgeOutcome(finished=False)
+        for workspace in plan.workspaces:
+            with tenant_scope(workspace.id):
+                await self._end_installs(workspace)
+                await self._revoke_services(workspace, outcome)
+        await self._tear_down_machines(plan.machines, outcome)
+        if outcome.waiting:
+            return outcome
+
+        for workspace in plan.workspaces:
+            await self._purge_workspace(workspace, request)
+        await self._delete_organization(plan, request)
+        for account in plan.deleted_accounts:
+            await self._delete_account(account, plan, request, outcome)
+        outcome.finished = True
+        return outcome
+
+    # ── Planning ─────────────────────────────────────────────────────────────
+
+    async def _account(
+        self, user_id: str, organization_id: str, tenant_ids: set[str]
+    ) -> Account:
+        async with self.session_factory() as session:
+            user = await session.get(User, user_id)
+            assert user is not None, f"member {user_id} has no account"
+            identities = tuple(
+                (identity.iss or "", identity.sub)
+                for identity in await session.scalars(
+                    select(OidcIdentity)
+                    .where(OidcIdentity.user_id == user_id)
+                    .order_by(OidcIdentity.iss, OidcIdentity.sub)
+                )
+            )
+        return Account(
+            id=user.id,
+            email=user.email,
+            identities=identities,
+            kept_because=await self._kept_because(user, organization_id, tenant_ids),
+        )
+
+    async def _kept_because(
+        self, user: User, organization_id: str, tenant_ids: set[str]
+    ) -> str | None:
+        if is_server_administrator(user, self.admin_email):
+            return "the server's administrator account"
+        elsewhere = set(await tenants_of_user(self.session_factory, user.id))
+        if elsewhere - tenant_ids:
+            return "a member of another workspace"
+        for other in await all_organization_ids(self.session_factory):
+            if other == organization_id:
+                continue
+            async with organization_session(self.session_factory, other) as session:
+                if await session.scalar(
+                    select(OrganizationMember.user_id).where(
+                        OrganizationMember.organization_id == other,
+                        OrganizationMember.user_id == user.id,
+                    )
+                ):
+                    return "a member of another organization"
+        if await workspaces_naming(self.session_factory, user.id, tenant_ids):
+            return "still named by records in a workspace they left"
+        return None
+
+    async def _machines(
+        self, serving: set[str], deleted_accounts: set[str], tenant_ids: set[str]
+    ) -> tuple[list[str], list[str]]:
+        """The live machines to tear down, and refusals for any that serve a
+        workspace outside the organization."""
+        async with self.session_factory() as session:
+            live = set(
+                await session.scalars(
+                    select(CloudMachine.id).where(
+                        CloudMachine.state != "deleted",
+                        (CloudMachine.id.in_(serving))
+                        | (CloudMachine.owner_id.in_(deleted_accounts)),
+                    )
+                )
+            )
+        refusals = []
+        for machine_id in sorted(live):
+            outside = (
+                set(await tenants_of_cloud_machine(self.session_factory, machine_id))
+                - tenant_ids
+            )
+            if outside:
+                refusals.append(
+                    f"Cloud machine {machine_id} also serves "
+                    f"{len(outside)} workspace(s) outside the organization "
+                    f"({', '.join(sorted(outside))}). Take it off them first."
+                )
+        return sorted(live), refusals
+
+    # ── Withdrawing what lives outside Switch ────────────────────────────────
+
+    async def _end_installs(self, workspace: WorkspaceContents) -> None:
+        store = MessagingInstallStore()
+        async with tenant_session(self.session_factory, workspace.id) as session:
+            installs = list(
+                await session.scalars(
+                    select(MessagingInstall).where(
+                        MessagingInstall.tenant_id == workspace.id,
+                        MessagingInstall.status == INSTALL_ACTIVE,
+                    )
+                )
+            )
+        for install in installs:
+            token = install.encrypted_bot_token
+            await let_go_at_platform(
+                self.installers.get(install.platform),
+                bot_token=None if token is None else self.keyring.decrypt(token),
+                external_workspace_id=install.external_workspace_id,
+                bridge_connected=False,
+            )
+            async with tenant_session(self.session_factory, workspace.id) as session:
+                await store.end(
+                    session, install_id=install.id, status=INSTALL_DISCONNECTED
+                )
+                await session.commit()
+            logger.info(
+                "Ended the %s install of %s in workspace %s",
+                install.platform,
+                install.external_workspace_id,
+                workspace.id,
+            )
+
+    async def _revoke_services(
+        self, workspace: WorkspaceContents, outcome: PurgeOutcome
+    ) -> None:
+        async with tenant_session(self.session_factory, workspace.id) as session:
+            holders = list(
+                await session.scalars(
+                    select(distinct(ServiceConnection.user_id)).where(
+                        ServiceConnection.tenant_id == workspace.id
+                    )
+                )
+            )
+        for user_id in holders:
+            async with tenant_session(self.session_factory, workspace.id) as session:
+                removed = await self.broker.remove_connections(session, user_id)
+                await session.commit()
+                warning = await self.broker.finish_disconnect(session, user_id, removed)
+            if warning:
+                outcome.warnings.append(f"{workspace.slug}: {warning}")
+        async with tenant_session(self.session_factory, workspace.id) as session:
+            await self.broker.revoke_pending(session, ())
+        async with tenant_session(self.session_factory, workspace.id) as session:
+            live = await live_service_tokens(session, workspace.id)
+        if live:
+            outcome.waiting.append(
+                f"{workspace.slug}: {live} service token(s) not yet revoked at "
+                "their vendor. They are retried, and expire within the hour."
+            )
+
+    async def _tear_down_machines(
+        self, machine_ids: list[str], outcome: PurgeOutcome
+    ) -> None:
+        store = CloudMachineStore()
+        for machine_id in machine_ids:
+            async with self.session_factory() as session:
+                machine = await store.locked(session, machine_id)
+                if machine is None or machine.state == "deleted":
+                    continue
+                if machine.desired_state != "deleted":
+                    machine.desired_state = "deleted"
+                    bump_revision(machine, datetime.now(UTC))
+                    logger.info("Set cloud machine %s to be deleted", machine_id)
+                state = machine.state
+                await session.commit()
+            outcome.waiting.append(
+                f"Cloud machine {machine_id} is being torn down (now {state})."
+            )
+
+    # ── Deleting ─────────────────────────────────────────────────────────────
+
+    async def _purge_workspace(
+        self, workspace: WorkspaceContents, request: str
+    ) -> None:
+        async with tenant_session(self.session_factory, workspace.id) as session:
+            bridge_ids = list(
+                await session.scalars(
+                    select(CollaborationBridge.id).where(
+                        CollaborationBridge.tenant_id == workspace.id
+                    )
+                )
+            )
+            controller_ids = list(
+                await session.scalars(
+                    select(AgentController.id).where(
+                        AgentController.tenant_id == workspace.id,
+                        AgentController.revoked_at.is_(None),
+                    )
+                )
+            )
+            await purge_workspace(session, workspace.id, request)
+            await session.commit()
+        self.signals.publish(CLIENT_CHANGED_SIGNAL, tenant_id=workspace.id)
+        for bridge_id in bridge_ids:
+            self.signals.publish(BRIDGE_CHANGED_SIGNAL, bridge_id=bridge_id)
+        for controller_id in controller_ids:
+            self.signals.publish(REVOKED_SIGNAL, controller_id=controller_id)
+        logger.info("Purged workspace %s (%s)", workspace.id, workspace.slug)
+
+    async def _delete_organization(self, plan: PurgePlan, request: str) -> None:
+        left = await tenants_of_organization(self.session_factory, plan.organization_id)
+        if left:
+            raise PurgeRefused(
+                f"{len(left)} workspace(s) joined the organization during the "
+                "purge. Run it again."
+            )
+        scoped = organization_scoped_tables(Base.metadata)
+        async with organization_session(
+            self.session_factory, plan.organization_id
+        ) as session:
+            # Children first, so no foreign key between two of them holds a
+            # delete back.
+            for table in reversed(Base.metadata.sorted_tables):
+                if table.name in scoped:
+                    await session.execute(
+                        delete(table).where(
+                            table.c[scoped[table.name]] == plan.organization_id
+                        )
+                    )
+            await record_server_audit_event(
+                session,
+                actor_user_id=None,
+                action=ServerAuditAction.ORGANIZATION_PURGED,
+                target_type="organization",
+                target_id=plan.organization_id,
+                details={
+                    "slug": plan.slug,
+                    "workos_organization_id": plan.workos_organization_id,
+                    "customer_id": plan.customer_id,
+                    "workspaces": [workspace.id for workspace in plan.workspaces],
+                    "accounts_deleted": [
+                        account.id for account in plan.deleted_accounts
+                    ],
+                    "request": request,
+                },
+            )
+            await session.commit()
+        logger.info("Purged organization %s (%s)", plan.organization_id, plan.slug)
+
+    async def _delete_account(
+        self, account: Account, plan: PurgePlan, request: str, outcome: PurgeOutcome
+    ) -> None:
+        """Delete one account. A failure is reported and does not stop the
+        others: the organization is already gone."""
+        try:
+            async with self.session_factory() as session:
+                user = await session.get(User, account.id)
+                if user is None:
+                    return
+                await delete_account_rows(
+                    self.session_factory, session, user, self.admin_email
+                )
+                await record_server_audit_event(
+                    session,
+                    actor_user_id=None,
+                    action=ServerAuditAction.USER_DELETED,
+                    target_type="user",
+                    target_id=account.id,
+                    details={
+                        "organization_purged": plan.organization_id,
+                        "request": request,
+                    },
+                )
+                await session.commit()
+        except Exception as error:
+            logger.exception("Could not delete account %s", account.id)
+            outcome.failed_accounts.append(
+                (account, f"{type(error).__name__}: {error}")
+            )
+            return
+        outcome.deleted_accounts.append(account)
+
+
+async def _contents(session: AsyncSession, tenant_id: str) -> WorkspaceContents:
+    tenant = await session.get(Tenant, tenant_id)
+    assert tenant is not None, f"workspace {tenant_id} vanished"
+    rows = {}
+    for name, handling in WORKSPACE_TABLES.items():
+        if handling == "kept" or name == "tenants":
+            continue
+        table = Base.metadata.tables[name]
+        count = await session.scalar(
+            select(func.count())
+            .select_from(table)
+            .where(table.c.tenant_id == tenant_id)
+        )
+        if count:
+            rows[name] = count
+    return WorkspaceContents(
+        id=tenant.id, slug=tenant.slug, name=tenant.name, rows=rows
+    )

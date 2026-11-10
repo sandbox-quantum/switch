@@ -1364,7 +1364,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         public_url=config.gateway_public_url,
         server_name=config.id_server_name,
     )
-    connector_apps = _connector_apps(
+    connector_apps = build_connector_apps(
         config,
         session_factory=session_factory,
         http=service_http,
@@ -1514,7 +1514,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         if config.organization_connector_apps_enabled
         else None
     )
-    service_broker = _service_broker(
+    service_broker = build_service_broker(
         config,
         connector_apps,
         organization_apps,
@@ -2355,7 +2355,7 @@ async def _bootstrap_key_tenant(
     return TENANT_ZERO_ID
 
 
-def _connector_apps(
+def build_connector_apps(
     config: SwitchConfig,
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -2375,7 +2375,7 @@ def _connector_apps(
     )
 
 
-def _service_broker(
+def build_service_broker(
     config: SwitchConfig,
     connector_apps: ConnectorApps,
     organization_apps: OrganizationApps | None,

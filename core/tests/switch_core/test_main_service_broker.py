@@ -19,7 +19,7 @@ from switch_core.connections.registry import ClientRegistration
 from switch_core.db.stores.organization_app_credential_store import (
     OrganizationAppCredentialStore,
 )
-from switch_core.main import _connector_apps, _service_broker
+from switch_core.main import build_connector_apps, build_service_broker
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.adapters.test_github import _config
 
@@ -45,7 +45,7 @@ async def test_every_google_app_offers_the_profile_the_server_chose(
         server_name="switch.local",
     )
     async with httpx.AsyncClient() as http:
-        apps = _connector_apps(
+        apps = build_connector_apps(
             config,
             session_factory=session_factory,
             http=http,
@@ -55,7 +55,7 @@ async def test_every_google_app_offers_the_profile_the_server_chose(
         organization_apps = OrganizationApps(
             apps=apps, store=OrganizationAppCredentialStore(TEST_KEYRING)
         )
-        broker = _service_broker(
+        broker = build_service_broker(
             config,
             apps,
             organization_apps,

@@ -126,6 +126,10 @@ class ServerAuditAction(StrEnum):
     # all devices") or by the operator for them.
     USER_SESSIONS_ENDED = "user.sessions_ended"
     WORKSPACE_DELETED = "workspace.deleted"
+    # The operator purged an organization at its owner's request
+    # (`accounts/organization_purge.py`): its workspaces, its own rows and the
+    # accounts that belonged to nothing else.
+    ORGANIZATION_PURGED = "organization.purged"
     # WorkOS refused where the directory mirror had got to in its events, and
     # the mirror started again from now, with a full check of every linked
     # organization.

@@ -276,6 +276,43 @@ transaction, including its retention policy and erasure requests, and the
 deletion is recorded in the server's audit log. The workspace's own audit
 history stays for two years, then goes (below).
 
+### Purging an organization on request (built)
+
+When a customer asks for everything to be deleted, the operator runs
+`switch-purge-organization ORGANIZATION` where switch-core runs, with its
+configuration (`accounts/organization_purge.py`). Without `--execute` it only
+reports what would go and what stays; with `--execute --request REFERENCE` it
+purges, and the reference to the request goes in the server's audit log.
+Nothing waits for the customer to empty anything first.
+
+1. **Outside Switch first.** Each live messaging install is ended as
+   disconnecting it does (Slack's bot token revoked, a Teams organization
+   withdrawn from, a Telegram chat left), every service sign-in is removed and
+   revoked at its vendor with the tokens issued on it, and each cloud machine
+   serving the organization is set to be deleted. While a machine is still
+   being torn down or a token is still live at its vendor, the purge says so,
+   deletes nothing and exits 3; the same command, run again, carries on.
+2. **Every workspace**, in its own transaction, with everything in it, and the
+   processes running its clients, bridges and machines are told.
+3. **The organization's own rows**, its audit log included: that log has
+   nowhere to live without the organization. The server's audit log records
+   the purge.
+4. **Every account that belonged to nothing else**: no membership of another
+   workspace or organization and no rows left in one. Others keep their
+   account and lose only what was here; the server's administrator account is
+   always kept.
+
+The workspaces' audit history stays for two years, as for any deleted
+workspace. Nothing at WorkOS is changed, because the WorkOS environment may be
+shared with other products: the command prints the WorkOS organization and
+users to remove there, for whoever owns it. Copies on chat platforms stay, as
+always.
+
+A machine that also serves a workspace outside the organization refuses the
+purge, as does the server's default workspace. The command refuses a database
+connection that row-level security does not bind, since the service broker
+finds a workspace's sign-ins through it.
+
 ### The audit log
 
 Audit entries keep the acting account's id, including after the account is
