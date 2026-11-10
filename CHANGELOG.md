@@ -104,6 +104,18 @@ version of their own to them without also giving them a release of their own.
   switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
+- **Member changes that also apply in Switch Trust ask first.** On an
+  organization whose members come from WorkOS and whose changes are sent
+  there, making someone Org Admin, making an Org Admin a Viewer, and removing
+  someone each open a confirmation that says what the change also does in
+  Switch Trust, which reads the same membership: an Org Admin there has
+  billing permissions, a demotion makes the person a Viewer there and drops
+  the role they had, and a removal takes them out of the organization there
+  and revokes their API keys. Cancelling sends nothing. A change made again
+  after the sign-in it waited on is not asked about twice. On such an
+  organization the lower organization role is shown as Viewer, the name
+  Switch Trust uses, and Org admin as Org Admin; the stored role is unchanged.
+  Organizations kept in Switch are unaffected.
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.
