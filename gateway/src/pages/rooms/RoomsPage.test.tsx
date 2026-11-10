@@ -295,6 +295,42 @@ describe("RoomsPage rows and actions", () => {
     );
   });
 
+  it("clears an earlier notice once a later action succeeds", async () => {
+    vi.mocked(api.bulkArchiveRooms).mockResolvedValue({ updated: 1 });
+    vi.mocked(api.archiveRoom).mockResolvedValue({} as never);
+    render(<RoomsPage />);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "select mine" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "select open" }));
+    fireEvent.click(screen.getByRole("button", { name: "Archive (2)" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog", { name: "Archive 2 rooms?" })).getByRole("button", {
+        name: "Archive rooms",
+      }),
+    );
+    await screen.findByText(/Archived 1 of 2/);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    await openMenu("bridged");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    fireEvent.click(
+      within(await screen.findByRole("dialog", { name: "Archive bridged?" })).getByRole("button", {
+        name: "Archive room",
+      }),
+    );
+    await waitFor(() => expect(api.archiveRoom).toHaveBeenCalledWith("bridged"));
+    await waitFor(() => expect(screen.queryByText(/Archived 1 of 2/)).toBeNull());
+  });
+
+  it("reads the rooms again when the viewer's role changes while the page is open", async () => {
+    const { rerender } = render(<RoomsPage />);
+    await screen.findByTestId("row-mine");
+    expect(api.loadRoomsWithArchived).toHaveBeenCalledTimes(1);
+
+    signedInAs("member", "v2");
+    rerender(<RoomsPage />);
+    await waitFor(() => expect(api.loadRoomsWithArchived).toHaveBeenCalledTimes(2));
+  });
+
   it("shows a notice another page left, such as a channel left to clean up", async () => {
     locationState = { notice: "The room was deleted, but its Slack channel could not be archived." };
     render(<RoomsPage />);

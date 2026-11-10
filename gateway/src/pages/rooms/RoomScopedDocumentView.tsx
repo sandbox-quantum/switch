@@ -143,13 +143,13 @@ export default function RoomScopedDocumentView() {
         onConfirm={handleDelete}
         {...(isRoomScoped
           ? {
-              title: `Delete ${doc.name}?`,
+              title: `Delete ${doc.name || doc.description || "this document"}?`,
               description: "It lives only in this room, so deleting it removes it for good. This cannot be undone.",
               confirmLabel: "Delete document",
               tone: "destructive" as const,
             }
           : {
-              title: `Unlink ${doc.name}?`,
+              title: `Unlink ${doc.name || doc.description || "this document"}?`,
               description: "It's taken out of this room; the document itself is kept in the library.",
               confirmLabel: "Unlink",
               tone: "plain" as const,

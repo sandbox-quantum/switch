@@ -16,7 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { GridRowId } from "@mui/x-data-grid";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { AccessChip } from "../../components/AccessControls";
 import ConfirmDialog from "../../components/ConfirmDialog";
@@ -137,6 +137,17 @@ export default function RoomsPage() {
     if (location.state) navigate(location.pathname, { replace: true, state: null });
   }, [location.state, location.pathname, navigate]);
 
+  // What the viewer may do with each room is the server's answer for their
+  // role, so a role that changes while the page is open (the session is read
+  // again when the tab comes back) reads the rooms again.
+  const administers = capabilities.administersWorkspace;
+  const loadedAs = useRef(administers);
+  useEffect(() => {
+    if (loadedAs.current === administers) return;
+    loadedAs.current = administers;
+    void refetchRooms();
+  }, [administers, refetchRooms]);
+
   const { visible, active, archived } = useMemo(() => {
     const all = newestFirst(roomsInScope(rooms.data ?? [], scope));
     return { visible: all, active: all.filter((r) => !r.archived), archived: all.filter((r) => r.archived) };
@@ -182,6 +193,7 @@ export default function RoomsPage() {
 
   const confirm = useCallback(async () => {
     if (!pending) return;
+    setNotice(null);
     if (pending.kind === "delete") {
       await deleteRoom(pending.room.id, false);
     } else if (pending.rooms.length === 1) {

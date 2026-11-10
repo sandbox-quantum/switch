@@ -96,6 +96,8 @@ const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSumma
 
 // Members can be changed by whoever may write to the room, as the server
 // says, unless a test sets otherwise.
+const refetchRoom = vi.fn();
+
 function viewAs(
   can: { can_write: boolean; can_manage: boolean; can_unlink: boolean } & Partial<RoomDetail>,
 ) {
@@ -103,7 +105,7 @@ function viewAs(
     data: { ...room, can_change_members: can.can_write, ...can },
     loading: false,
     error: null,
-    refetch: vi.fn(),
+    refetch: refetchRoom,
   });
   render(<RoomDetailPage />);
 }
@@ -333,6 +335,7 @@ describe("RoomDetailPage archive, delete and roles", () => {
     const dialog = await screen.findByRole("dialog", { name: "Archive planning?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Archive room" }));
     await waitFor(() => expect(api.archiveRoom).toHaveBeenCalledWith("r1"));
+    await waitFor(() => expect(refetchRoom).toHaveBeenCalled());
   });
 
   it("keeps the channel unless asked, and archives it when asked", async () => {
@@ -412,5 +415,6 @@ describe("RoomDetailPage archive, delete and roles", () => {
     const dialog = await screen.findByRole("dialog", { name: "Delete the reviewer role?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete role" }));
     await waitFor(() => expect(api.deleteRoomRole).toHaveBeenCalledWith("r1", "reviewer"));
+    await waitFor(() => expect(refetchRoom).toHaveBeenCalled());
   });
 });

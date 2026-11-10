@@ -192,9 +192,10 @@ version of their own to them without also giving them a release of their own.
   open a new connection, because the pod holding the socket noticed it had
   closed only at its next ping. It now lets the socket go as it closes, and
   the other pod takes the connection up.
-- **The dashboard's Rooms page, rooms graph and Room groups say when they
-  cannot load.** They showed an empty page, or "No groups yet", when the
-  rooms or groups failed to load.
+- **The dashboard's Rooms page and Room groups say when they cannot load.**
+  They showed an empty page, or "No groups yet", when the rooms or groups
+  failed to load. The rooms graph, which said only "Failed to fetch data",
+  now gives the server's reason.
 - **The dashboard's New room says why Create is disabled.** Create stayed
   greyed out with no explanation, most often because a room with no bridge
   needs an agent. It now names what is missing, and Agents is marked required

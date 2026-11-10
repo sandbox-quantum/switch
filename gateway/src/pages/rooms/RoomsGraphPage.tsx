@@ -150,6 +150,11 @@ export default function RoomsGraphPage() {
     return { nodes: nodeList, links: linkList, legend: legendList };
   }, [filteredRooms, graph, groupList, groupIndex]);
 
+  // Kept stable: the graph restarts its layout whenever it is handed a new
+  // object, so a redraw for any other reason (a resize, the session read
+  // again) would shuffle it.
+  const graphData = useMemo(() => ({ nodes, links }), [nodes, links]);
+
   useEffect(() => {
     if (!fgRef.current) return;
     fgRef.current.d3Force("charge")?.strength(-300);
@@ -314,7 +319,7 @@ export default function RoomsGraphPage() {
         )}
         <ForceGraph2D
           ref={fgRef}
-          graphData={{ nodes, links }}
+          graphData={graphData}
           width={dimensions.width}
           height={dimensions.height}
           backgroundColor={canvas.background}
