@@ -6,7 +6,10 @@ the panel reading it land in the same review.
 
 Nothing here contains an account, an API key, a team handle or a URL. The
 monitors carry `@REPLACE-WITH-NOTIFICATION-HANDLE` where a destination belongs;
-`apply.sh` fills it in from `NOTIFY` when importing.
+`apply.sh` fills it in from `NOTIFY` when importing. They also carry
+`REPLACE-WITH-SERVICE` and `REPLACE-WITH-ENV` in their scope (and the env in
+their name), which `apply.sh` fills in from `SERVICE` and `ENV`: every
+monitor watches one deployment only (see "`env`" below).
 
 **Do not skip that.** Datadog does not validate notification handles: a monitor
 carrying the placeholder imports cleanly, shows as healthy in the UI, triggers
@@ -132,20 +135,34 @@ against no series and sits healthy for ever. Check them after enabling
 percentiles, not before.
 
 **`env` is a filter, not a grouping.** The dashboard's `$env` variable defaults
-to `*` and works whether or not anything sets it. The monitors deliberately do
-*not* group by `env`: the tag only exists when `ENVIRONMENT` is configured
-(it becomes OTLP's `deployment.environment`, which Datadog reads as `env`), and
-a monitor grouped by a tag no data carries returns no series and sits silently
-healthy for ever. If several deployments report into one Datadog org, set
-`ENVIRONMENT` on each and add `env:<name>` to the monitor scopes by hand.
+to `*` and works whether or not anything sets it. The monitors are **scoped**
+to one deployment, never grouped by `env`: every query filters on
+`service:REPLACE-WITH-SERVICE,env:REPLACE-WITH-ENV`, which `apply.sh` replaces
+with `SERVICE` and `ENV`, and the name carries the env too, so each
+deployment imports its own copy. Without that, any
+deployment reporting `switch-core` into the same org (a test slot, staging, a
+developer's server) could fire production's alerts: an ordinary restart of a
+test server reads as "switch-core has stopped reporting".
 
-**`service` is the one tag everything depends on.** Every monitor filters on
-`service:switch-core`. If a deployment changes `SERVICE_NAME`, every one of
-them goes silent at once.
+**Monitors imported before this change** are named `[Switch] …` with no
+environment, so the first import with `ENV` creates new ones beside them
+rather than updating them. Delete the old ones by hand after that import, or
+both copies alert.
+
+So **set `ENVIRONMENT` on every deployment that reports metrics**, before
+importing. The tag only exists when it is set (it becomes OTLP's
+`deployment.environment`, which Datadog reads as `env`). A monitor scoped to an
+`env` no data carries sees nothing: the no-data canary fires at once, which
+says so, and every other monitor sits quiet.
+
+**`service` is one of the two tags everything depends on.** Every monitor
+filters on the deployment's `service` (its `SERVICE_NAME`, `switch-core` unless
+set). Import with the `SERVICE` it really sends: a wrong one leaves every
+monitor silent at once, apart from the no-data canary.
 
 ## The odd-looking first monitor
 
-`[Switch] switch-core has stopped reporting` queries event-loop lag with a
+`[Switch <env>] switch-core has stopped reporting` queries event-loop lag with a
 threshold of `< 0`, which no real reading can satisfy. That is deliberate and
 is Datadog's idiom for a no-data monitor: the threshold never fires, and
 `notify_no_data` does the work. Event-loop lag is the metric used because it is
@@ -194,23 +211,58 @@ alerts per pod, since one pod can exhaust its pool while the others idle.
 
 ## Hosted agents
 
-The `switch.hosted.*` metrics are reported only with the `hosted_agents` flag on,
-and come from what hosted boxes already send Core: their status reports and the
-operator's observations. Laptops and SSH hosts are never counted. No metric
-carries an id: every attribute is a word from a fixed set
-(`core/switch_core/observability/hosted.py`).
+The `switch.hosted.*` metrics are reported only with the `hosted_agents` flag
+on, for v1 cloud machines and v2 boxes alike (and with hosted agents v2 off),
+and come from what the machines already send Core: their controllers' status
+reports, the operator's observations, and the hosted controller service's
+calls. Laptops and SSH hosts are never counted. No metric carries an id:
+every attribute is a word from a fixed set
+(`core/switch_core/observability/hosted.py`), and `backend` is the kind of
+machine: `vm` (v1) or `box` (v2).
 
 - The gauges come from one Core process, the one holding the hosted metrics
-  advisory lock, so several processes don't each report every box. A report
-  older than 3 minutes is left out rather than reported as it was.
+  advisory lock, so several processes don't each report every machine. A
+  report older than 3 minutes is left out rather than reported as it was.
+- Agents, stopped agents, sessions, machines expected and reporting, and
+  memory used are reported for both kinds, by `backend`. The rest (restarts,
+  out-of-memory kills, waiting for room, the valve, the gateway, evictions,
+  guard stops and valve parks) are boxes' only.
+- A v1 machine reports no session state, so `switch.hosted.agents` always has
+  `session:none` for it: chart it by `process`.
+- `switch.hosted.box_memory_used` is recorded once per machine report: a
+  machine serving several workspaces sends its memory in each workspace's
+  report, and only the first fresh one, by workspace id, is counted.
 - `switch.hosted.guard_stops` and `switch.hosted.valve_parks` are counts of the
   rise in each box's since-start figures, so a controller restart reads as a
   reset, not a drop.
-- **A silent box** is `switch.hosted.boxes_reporting` below
-  `switch.hosted.boxes_expected`. Boxes stopped, paused or turned off are not
-  expected, so they don't set it off.
-- `switch.controller.credential_refusals` counts refused controller credentials
-  by reason only, never the client's address.
+- **A silent machine** is `switch.hosted.boxes_reporting` below
+  `switch.hosted.boxes_expected`. Machines stopped by their owner or for
+  idleness, and boxes paused or turned off, are not expected, so they don't
+  set it off.
+- `switch.hosted.machine_events` counts cloud machine changes once committed,
+  at the same points as the product telemetry events of the same names, so it
+  counts whether or not product telemetry is on.
+- `switch.hosted.reconciler_silence` is per process, counted from the
+  process's start until it first hears from the hosted controller service, so
+  a reconciler that is down when Core restarts still shows as silent. Read the
+  minimum over pods.
+- `switch.controller.credential_refusals` counts refused controller
+  credentials by reason code and kind of route only, never the client's
+  address or any part of the credential.
+- Credential refusals have two alerts. **The paging one** watches the bearer
+  routes only (`agent`, `controller`, `hosted_controller`) for the reasons that
+  mean a token was guessed (`invalid_credential`, `missing_credential`,
+  `wrong`, `missing`), at more than 50 in 10 minutes. A revoked or expired
+  controller's own token is refused as `controller_revoked` or
+  `token_expired`, so it doesn't count there. **A low-urgency one** watches
+  token exchange and enrolment (`route:management`), at more than 30 in 10
+  minutes. There, a revoked controller's exchange looks the same as a guess,
+  but the standard agent controller stops after one refused exchange and its
+  service isn't restarted for that (exit codes 3 and 6), so each revoked
+  controller adds about one refusal: 30 is well above a normal day, and
+  reached only by a large revoke or by someone trying credentials.
+- Two box alerts, low urgency: 3 or more memory guard stops, and 3 or more
+  evictions, in 30 minutes.
 - `switch.hosted.alerts_open` counts the operator alerts open now, by condition
   only. Which box, machine or service is on the operator's Alerts tab, never
   in Datadog.

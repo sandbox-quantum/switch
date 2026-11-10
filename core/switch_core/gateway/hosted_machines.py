@@ -38,6 +38,7 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
 )
 from switch_core.hosted_v2 import process_hosted_v2
+from switch_core.observability.hosted import record_machine_event
 from switch_core.providers.hosted import (
     NOT_AVAILABLE,
     HostedControllerSettings,
@@ -300,6 +301,7 @@ async def ensure_machine(
         emit_after_commit(
             session, current_telemetry(), "cloud_machine_requested", {"change": change}
         )
+        record_machine_event(session, "requested", change, claimed[0].backend)
     return claimed
 
 
@@ -444,6 +446,7 @@ async def lifecycle(
                 "cloud_machine_stopped",
                 {"reason": "owner"},
             )
+            record_machine_event(session, "stopped", "owner", machine.backend)
         machines.stop(machine, "owner", now)
     elif body.action == "start":
         if machine.desired_state == "stopped":
@@ -453,6 +456,7 @@ async def lifecycle(
                 "cloud_machine_woken",
                 {"trigger": "owner", "stopped_by": machine.stop_reason or "unknown"},
             )
+            record_machine_event(session, "woken", "owner", machine.backend)
         machines.start(machine, now)
     else:
         if machine.state != "error":

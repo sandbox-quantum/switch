@@ -533,3 +533,43 @@ class TestWithHostedAgentsV2Off:
             assert refused.value.status_code == 401
         assert _warnings(caplog) == []
         assert await _hosted(f"Bearer {HOSTED_TOKEN}") == "session"
+
+    async def test_each_refusal_is_still_counted_by_reason_and_route(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Observability step 1: with v2 off, no log line and no lockout, but
+        each refusal is counted, by reason and kind of route only."""
+        from switch_core.observability.metrics import (
+            MetricsRegistry,
+            install,
+            uninstall,
+        )
+
+        registry = MetricsRegistry()
+        install(registry)
+        try:
+            auth = _FakeControllerAuth()
+            mw, _served = _middleware(
+                RefusalGuard(
+                    lockout_after=2, window_s=60, lockout_s=300, clock=_Clock()
+                ),
+                auth,
+            )
+            for _ in range(3):
+                await _dispatch(mw, "/v1/controllers/ctl-1/status", BAD)
+            with pytest.raises(HTTPException):
+                await _hosted("Bearer nope")
+            counted = {
+                (dict(point.attributes)["reason"], dict(point.attributes)["route"]): (
+                    point.value
+                )
+                for payload in registry.collect()
+                if payload.name == "switch.controller.credential_refusals"
+                for point in payload.numbers
+            }
+        finally:
+            uninstall()
+        assert counted == {
+            ("invalid_credential", "controller"): 3.0,
+            ("wrong", "hosted_controller"): 1.0,
+        }

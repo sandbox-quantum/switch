@@ -648,15 +648,22 @@ HEALTH_CHECK = _spec(
 # set mapped in `observability/hosted.py`, never a report's text. The gauges
 # are reported by one process only, the one holding the hosted metrics
 # advisory lock, so several Core processes don't each report every box.
+#
+# `backend` is the kind of cloud machine, from the machine row: `vm` (a v1
+# machine) or `box` (a v2 box). It is on the series v1 machines can fill too;
+# the rest only boxes report. Observability step 1 counts v1 machines as well,
+# with hosted agents v2 off (counts only, and only with OTLP configured).
 HOSTED_AGENTS = _spec(
     "switch.hosted.agents",
     "gauge",
     "{agent}",
     "Agents on hosted boxes, by the process state and session state each box "
     "last reported. Awake is `running` with `active` or `waking`; resting is "
-    "`parked`. Reports older than 3 minutes are left out.",
+    "`parked`. Reports older than 3 minutes are left out. A v1 machine reports "
+    "no session state, so its `session` is always `none`.",
     "process",
     "session",
+    "backend",
 )
 HOSTED_AGENTS_STOPPED = _spec(
     "switch.hosted.agents_stopped",
@@ -667,6 +674,7 @@ HOSTED_AGENTS_STOPPED = _spec(
     "reported as out of memory), `crash_loop` a crash loop, and any other "
     "reason `other`.",
     "reason",
+    "backend",
 )
 HOSTED_AGENT_RESTARTS_10M = _spec(
     "switch.hosted.agent_restarts_10m",
@@ -689,6 +697,7 @@ HOSTED_SESSIONS = _spec(
     "Sessions on hosted boxes: `running` now, and the `max` the boxes allow. "
     "Running over max is how full the boxes are.",
     "kind",
+    "backend",
 )
 HOSTED_WAITING_FOR_ROOM = _spec(
     "switch.hosted.waiting_for_room",
@@ -710,7 +719,9 @@ HOSTED_BOX_MEMORY_USED = _spec(
     "histogram",
     "%",
     "How full a hosted box's memory was, per status report: 100 × (total − "
-    "available) ÷ total. The max and p95 show the fullest boxes.",
+    "available) ÷ total, once per machine report (a machine serving several "
+    "workspaces counts once). The max and p95 show the fullest machines.",
+    "backend",
     bounds=(25.0, 50.0, 60.0, 70.0, 75.0, 80.0, 85.0, 90.0, 92.0, 95.0, 98.0),
 )
 HOSTED_BOX_ANON_MEMORY = _spec(
@@ -756,6 +767,7 @@ HOSTED_BOXES_REPORTING = _spec(
     "{box}",
     "Hosted boxes that should be running and sent a status report in the last "
     "3 minutes. Below switch.hosted.boxes_expected means a box has gone silent.",
+    "backend",
 )
 HOSTED_BOXES_EXPECTED = _spec(
     "switch.hosted.boxes_expected",
@@ -763,6 +775,29 @@ HOSTED_BOXES_EXPECTED = _spec(
     "{box}",
     "Hosted boxes that should be running: ready, and wanted running. A box "
     "stopped, paused or turned off is not expected.",
+    "backend",
+)
+HOSTED_MACHINE_EVENTS = _spec(
+    "switch.hosted.machine_events",
+    "sum",
+    "{event}",
+    "Cloud machine changes, as committed: `requested`, `ready`, `failed`, "
+    "`woken` and `stopped`, at the same points as the product telemetry "
+    "events of those names. `reason` is that event's fixed word (the claim's "
+    "change, the failure, what woke it, why it stopped, or `new` and "
+    "`restart` for ready).",
+    "event",
+    "reason",
+    "backend",
+)
+HOSTED_RECONCILER_SILENCE = _spec(
+    "switch.hosted.reconciler_silence",
+    "gauge",
+    "s",
+    "Seconds since this Core process last heard from the hosted controller "
+    "service (its machine list poll or an observation), counted from the "
+    "process's start until it first hears. Each process reports its own: the "
+    "minimum over pods is how long the reconciler has been silent.",
 )
 HOSTED_ALERTS_OPEN = _spec(
     "switch.hosted.alerts_open",
@@ -780,8 +815,11 @@ CONTROLLER_CREDENTIAL_REFUSALS = _spec(
     "sum",
     "{refusal}",
     "Controller credentials refused, by reason, plus `lockout_started` each "
-    "time an address is locked out for repeated refusals.",
+    "time an address is locked out for repeated refusals. `route` is the "
+    "kind of route (`agent`, `management`, `controller`, `hosted_controller`, "
+    "`hosted_provisioner`, `hosted_operator` or `other`), never the path.",
     "reason",
+    "route",
 )
 
 CATALOGUE: dict[str, MetricSpec] = {
@@ -855,6 +893,8 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_VALVE_PARKS,
         HOSTED_BOXES_REPORTING,
         HOSTED_BOXES_EXPECTED,
+        HOSTED_MACHINE_EVENTS,
+        HOSTED_RECONCILER_SILENCE,
         HOSTED_ALERTS_OPEN,
         CONTROLLER_CREDENTIAL_REFUSALS,
     )

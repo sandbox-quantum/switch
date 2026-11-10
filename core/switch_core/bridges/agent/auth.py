@@ -42,6 +42,7 @@ from switch_core.db.tenant_lookup import (
 from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
+from switch_core.observability.hosted import record_credential_refusal
 from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import tenant_scope
 
@@ -512,10 +513,8 @@ class BearerAuthMiddleware:
         They are never locked out: their secrets are long and random, so a
         lockout would add nothing against guessing, and behind a shared proxy
         it would let one client's bad secret block everyone's enrollment.
-        With hosted agents v2 off, served exactly as before (no WARN)."""
-        if not process_hosted_v2():
-            await self.app(scope, receive, send)
-            return
+        With hosted agents v2 off, served as before (no WARN), but a 401 is
+        still counted (observability step 1)."""
         status: list[int] = []
 
         async def watching_send(message: MutableMapping[str, Any]) -> None:
@@ -536,8 +535,10 @@ class BearerAuthMiddleware:
         """One WARN for a refused controller credential (B91): the reason
         code, the kind of route, the method and the address the server saw.
         Never the token, and never text the client chose. With hosted agents
-        v2 off, nothing, as before."""
+        v2 off, no log line and no lockout, as before, but counted
+        (observability step 1): reason and kind of route only."""
         if not process_hosted_v2():
+            record_credential_refusal(reason, route_kind(path))
             return
         self._refusals.refused(
             client_address(scope),

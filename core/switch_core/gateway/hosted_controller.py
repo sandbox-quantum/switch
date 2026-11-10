@@ -45,7 +45,12 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_machines import MACHINES_DISABLED, controller_settings
 from switch_core.hosted_v2 import process_hosted_v2, require_hosted_v2
-from switch_core.observability.hosted import record_evictions
+from switch_core.observability.hosted import (
+    reconciler_heard,
+    record_credential_refusal,
+    record_evictions,
+    record_machine_event,
+)
 from switch_core.providers.hosted import (
     HostedControllerSettings,
     open_to_all,
@@ -116,7 +121,11 @@ def _refuse(
     the operator and the scaler can share one cluster address with anything
     else."""
     if not process_hosted_v2():
-        # The v1/v2 switch: with v2 off, exactly as before v2 (no lockout).
+        # The v1/v2 switch: with v2 off, as before v2 (no lockout, no log
+        # line), but counted (observability step 1): reason and route only.
+        record_credential_refusal(
+            reason or ("missing" if not supplied else "wrong"), route
+        )
         raise HTTPException(401, "Invalid cloud controller credential.")
     guard = refusal_guard()
     address = client_address(request.scope)
@@ -223,19 +232,19 @@ async def _sweep(
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine was not scheduled within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
-        _report_failure(session, "not_scheduled")
+        _report_failure(session, "not_scheduled", machine.backend)
     elif _connect_timed_out(machine, now):
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine started but did not connect to Switch within 10 minutes. Retry it in Switch Console, or ask your administrator to check the machine's startup logs."
         machine.updated_at = now
-        _report_failure(session, "never_connected")
+        _report_failure(session, "never_connected", machine.backend)
     elif _start_timed_out(machine, now):
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
         machine.error = "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
-        _report_failure(session, "never_started")
+        _report_failure(session, "never_started", machine.backend)
     elif machine.state in {"retained", "error"} and retention_expired(machine, now):
         machine.desired_state = "deleted"
         bump_revision(machine, now)
@@ -263,6 +272,7 @@ async def _sweep(
                 "cloud_machine_stopped",
                 {"reason": "idle"},
             )
+            record_machine_event(session, "stopped", "idle", machine.backend)
 
 
 FailureReason = Literal[
@@ -281,10 +291,11 @@ def _observed_failure(error_code: str | None) -> FailureReason:
     return "needs_attention" if error_code == "machine_needs_attention" else "reported"
 
 
-def _report_failure(session: AsyncSession, reason: FailureReason) -> None:
+def _report_failure(session: AsyncSession, reason: FailureReason, backend: str) -> None:
     emit_after_commit(
         session, current_telemetry(), "cloud_machine_failed", {"reason": reason}
     )
+    record_machine_event(session, "failed", reason, backend)
 
 
 # When this process last cleared spent enrolment codes: the clear reads each
@@ -336,6 +347,7 @@ async def machines(
     config: Annotated[SwitchConfig, Depends(get_config)],
     settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
 ) -> dict:
+    reconciler_heard()
     store = CloudMachineStore()
     now = datetime.now(UTC)
     candidates = list(
@@ -534,7 +546,7 @@ async def prepare(
         )
     if not controllers:
         if machine.state != "error":
-            _report_failure(session, "owner_left")
+            _report_failure(session, "owner_left", machine.backend)
         machine.state = "error"
         machine.error = "The cloud machine's owner is no longer a member of any workspace it serves."
         machine.updated_at = now
@@ -620,6 +632,7 @@ async def observe(
     body: Observation,
     session: Annotated[AsyncSession, Depends(controller_session)],
 ) -> dict:
+    reconciler_heard()
     machine = await _locked_machine(session, machine_id)
     now = datetime.now(UTC)
     if body.evictions:
@@ -655,7 +668,9 @@ async def observe(
             body.state == "error" or body.error is not None
         ) and machine.state not in STALE_ERROR_IGNORED_STATES:
             if machine.state != "error":
-                _report_failure(session, _observed_failure(body.error_code))
+                _report_failure(
+                    session, _observed_failure(body.error_code), machine.backend
+                )
             machine.state = "error"
             machine.error = body.error or OBSERVED_ERROR
             machine.error_code = body.error_code
@@ -684,7 +699,9 @@ async def observe(
             machine.state = "provisioning"
     elif body.state == "error":
         if machine.state != "error":
-            _report_failure(session, _observed_failure(body.error_code))
+            _report_failure(
+                session, _observed_failure(body.error_code), machine.backend
+            )
         machine.state = "error"
         machine.error = body.error or OBSERVED_ERROR
         machine.error_code = body.error_code

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Create or update this directory's monitors and dashboards in Datadog.
 #
-#   DD_API_KEY=... DD_APP_KEY=... NOTIFY=@slack-<workspace>-<channel> ./apply.sh
+#   DD_API_KEY=... DD_APP_KEY=... NOTIFY=@slack-<workspace>-<channel> \
+#     SERVICE=<service> ENV=<env> ./apply.sh
 #
 # Optional: DD_SITE (default datadoghq.com), DRY_RUN=1 to print what would change.
 #
@@ -10,6 +11,12 @@
 # notification placeholder in every monitor; the script refuses to run without
 # it, because a monitor left with the placeholder imports cleanly and notifies
 # nobody.
+#
+# SERVICE and ENV scope every monitor to one deployment: its `service` tag
+# (SERVICE_NAME) and its `env` tag (ENVIRONMENT). ENV also goes in each
+# monitor's name, so several deployments can share one Datadog org without
+# one's restart or test paging another's on-call. The script refuses to run
+# without both.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -17,6 +24,14 @@ cd "$(dirname "$0")"
 : "${DD_APP_KEY:?set DD_APP_KEY}"
 : "${NOTIFY:?set NOTIFY to the notification handle, e.g. @slack-workspace-channel}"
 case "$NOTIFY" in @*) ;; *) echo "NOTIFY must start with @" >&2; exit 1 ;; esac
+: "${SERVICE:?set SERVICE to the service tag of this deployment (its SERVICE_NAME)}"
+: "${ENV:?set ENV to the env tag of this deployment (its ENVIRONMENT), e.g. prod}"
+for value in "$SERVICE" "$ENV"; do
+  [[ "$value" =~ ^[a-z0-9][a-z0-9_.-]{0,63}$ ]] || {
+    echo "SERVICE and ENV must be lower-case letters, digits, '.', '_' or '-'" >&2
+    exit 1
+  }
+done
 API="https://api.${DD_SITE:-datadoghq.com}/api/v1"
 
 dd() {
@@ -31,9 +46,11 @@ dd() {
     -H "Content-Type: application/json" ${body:+--data "$body"}
 }
 
-existing_monitors=$(dd GET "/monitor?monitor_tags=service:switch-core")
+existing_monitors=$(dd GET "/monitor?monitor_tags=service:$SERVICE,env:$ENV")
 jq -c '.[]' monitors.json | while read -r monitor; do
   monitor=${monitor//@REPLACE-WITH-NOTIFICATION-HANDLE/$NOTIFY}
+  monitor=${monitor//REPLACE-WITH-SERVICE/$SERVICE}
+  monitor=${monitor//REPLACE-WITH-ENV/$ENV}
   name=$(jq -r .name <<<"$monitor")
   id=$(jq -r --arg n "$name" '[.[] | select(.name == $n) | .id][0] // empty' <<<"$existing_monitors")
   if [[ -n "$id" ]]; then

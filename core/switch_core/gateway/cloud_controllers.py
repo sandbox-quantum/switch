@@ -39,7 +39,12 @@ from switch_core.db.stores.hosted_machine_store import (
 from switch_core.gateway.dependencies import current_telemetry
 from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.keys import Keyring
-from switch_core.observability.hosted import box_summary, record_box_report
+from switch_core.observability.hosted import (
+    box_summary,
+    record_box_report,
+    record_machine_event,
+    reports_memory,
+)
 from switch_core.telemetry import emit_after_commit
 
 # How recent the machine's last status report must be for its silence to count
@@ -297,12 +302,13 @@ async def record_controller_status(
     reports[workspace.id] = {
         "at": now.isoformat(),
         "sessions_running": sessions if isinstance(sessions, int) else None,
-        # The v1/v2 switch: the metrics summary and the operator's `box` facts
-        # are v2's; with it off, the heartbeat is as before v2.
-        **({"metrics": box_summary(machine_reading, agents or [])} if v2 else {}),
+        # Counts and fixed words for the hosted metrics, for a v1 machine as
+        # well as a v2 box (observability step 1). The operator's `box` facts
+        # stay v2's.
+        "metrics": box_summary(machine_reading, agents or []),
     }
-    if v2:
-        record_box_report(machine_reading)
+    if reports_memory(reports, workspace.id, now):
+        record_box_report(machine_reading, machine.backend)
     machine.heartbeat = {
         # Keys this function doesn't own (the operator's `box` facts) stay.
         **((machine.heartbeat or {}) if v2 else {}),
@@ -342,6 +348,9 @@ async def record_controller_status(
                 ),
             },
         )
+        record_machine_event(
+            session, "ready", "new" if new_machine else "restart", machine.backend
+        )
 
 
 async def wake_controller_machine(
@@ -373,6 +382,7 @@ async def wake_controller_machine(
                 "cloud_machine_woken",
                 {"trigger": trigger, "stopped_by": "idle"},
             )
+            record_machine_event(session, "woken", trigger, machine.backend)
         elif machine.desired_state == "running":
             machine.active_at = now
         return machine
@@ -397,6 +407,7 @@ async def wake_controller_machine(
             "cloud_machine_woken",
             {"trigger": trigger, "stopped_by": "idle"},
         )
+        record_machine_event(session, "woken", trigger, machine.backend)
     elif machine.desired_state == "running":
         machine.active_at = now
     return machine

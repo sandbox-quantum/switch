@@ -18,7 +18,6 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from switch_core.config import SwitchConfig
-from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import LogContextFilter
 from switch_core.observability.catalogue import (
     AGENTS_CONNECTED,
@@ -43,7 +42,7 @@ from switch_core.observability.health import (
     session_activity_listener_check,
     signal_bus_check,
 )
-from switch_core.observability.hosted import HostedSampler
+from switch_core.observability.hosted import HostedSampler, reconciler_watch
 from switch_core.observability.logs import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_QUEUE_CAPACITY,
@@ -282,14 +281,19 @@ def start_observability(
             tasks.append(
                 asyncio.create_task(sampler.run_forever(), name="db-server-sampler")
             )
-        if (
-            db_server_engine is not None
-            and config.hosted_agents_enabled
-            and process_hosted_v2()
-        ):
+        if config.hosted_agents_enabled:
+            # How long since the hosted controller service last called this
+            # process (observability step 1): in memory, nothing started.
+            # Counted from now until it first calls, so a reconciler down at
+            # boot still reads as silent.
+            reconciler_watch().start()
+            registry.register_observer(reconciler_watch().readings)
+        if db_server_engine is not None and config.hosted_agents_enabled:
             # Its own connection too: it holds the lock that makes this the
-            # one process reporting the hosted boxes' gauges. Hosted agents v2
-            # only: with it off, nothing new starts (v1 sweep, item 5).
+            # one process reporting the hosted machines' gauges. For v1
+            # machines as well as v2 boxes, so with hosted agents v2 off too
+            # (observability step 1, a deliberate v1 change: counts only, and
+            # only with OTLP configured).
             hosted = HostedSampler(db_server_engine)
             registry.register_observer(hosted.readings)
             tasks.append(

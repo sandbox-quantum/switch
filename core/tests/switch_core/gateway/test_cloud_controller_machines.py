@@ -55,6 +55,8 @@ from switch_core.gateway.hosted_machines import router as machines_router
 from switch_core.hosted_v2 import _config as hosted_v2_config
 from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.management.placement import placement_refusal
+from switch_core.observability.hosted import reconciler_watch
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.process_lease import ProcessLeases
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
@@ -89,6 +91,25 @@ def _no_enrollment_left_installed() -> Iterator[None]:
 @pytest.fixture
 def harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
     return build_harness(session_factory)
+
+
+@pytest.fixture
+def hosted_metrics() -> Iterator[MetricsRegistry]:
+    """An installed metrics registry, as with OTLP configured."""
+    registry = MetricsRegistry()
+    install(registry)
+    yield registry
+    uninstall()
+
+
+def _metric_points(registry: MetricsRegistry, name: str) -> list[tuple[dict, float]]:
+    found: list[tuple[dict, float]] = []
+    for payload in registry.collect():
+        if payload.name != name:
+            continue
+        found += [(dict(p.attributes), p.value) for p in payload.numbers]
+        found += [(dict(h.attributes), h.total) for h in payload.histograms]
+    return found
 
 
 def _hosted_app(
@@ -386,7 +407,10 @@ class TestControllerMachines:
             ]
 
     async def test_its_status_reports_make_it_ready_and_its_agents_are_the_machines(
-        self, harness: Harness, reported: RecordingSink
+        self,
+        harness: Harness,
+        reported: RecordingSink,
+        hosted_metrics: MetricsRegistry,
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
@@ -430,6 +454,15 @@ class TestControllerMachines:
                 assert became_ready["provisioning_seconds"] >= 0
                 await report_status(client, controller, 3)  # type: ignore[arg-type]
                 assert len(reported.events("cloud_machine_ready")) == 1
+                # Observability step 1: a v1 machine's report keeps its counts
+                # for the hosted metrics, with v2 off too, and is counted by
+                # backend.
+                (report_kept,) = ready.heartbeat["controllers"].values()
+                assert set(report_kept["metrics"]) >= {"agents", "sessions_running"}
+                assert (
+                    {"event": "ready", "reason": "new", "backend": "vm"},
+                    1.0,
+                ) in _metric_points(hosted_metrics, "switch.hosted.machine_events")
 
                 created = await create_managed_agent(
                     client,
@@ -571,7 +604,10 @@ class TestControllerMachines:
             assert after.desired_state == "running"
 
     async def test_an_idle_machine_with_agents_is_put_to_sleep(
-        self, harness: Harness, reported: RecordingSink
+        self,
+        harness: Harness,
+        reported: RecordingSink,
+        hosted_metrics: MetricsRegistry,
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
@@ -604,6 +640,15 @@ class TestControllerMachines:
         after = await _machine(harness.session_factory, machine.id)
         assert (after.desired_state, after.stop_reason) == ("stopped", "idle")
         assert reported.events("cloud_machine_stopped") == [{"reason": "idle"}]
+        assert ({"event": "stopped", "reason": "idle", "backend": "vm"}, 1.0) in (
+            _metric_points(hosted_metrics, "switch.hosted.machine_events")
+        )
+        # The poll is the reconciler calling: this process has heard from it.
+        hosted_metrics.register_observer(reconciler_watch().readings)
+        ((_, silence),) = _metric_points(
+            hosted_metrics, "switch.hosted.reconciler_silence"
+        )
+        assert 0.0 <= silence < 60.0
 
     async def test_a_message_or_a_placement_wakes_a_sleeping_machine(
         self, harness: Harness, reported: RecordingSink

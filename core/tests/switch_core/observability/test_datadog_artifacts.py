@@ -83,6 +83,66 @@ def test_monitors_are_individually_importable() -> None:
         ]
 
 
+def test_every_monitor_watches_one_deployment_only() -> None:
+    """Scoped to one deployment's `service` and `env`, so a test slot or
+    staging reporting into the same Datadog org can never fire another
+    deployment's alerts. `apply.sh` fills both blanks, and refuses to run
+    without them."""
+    for monitor in _load("monitors.json"):  # type: ignore[union-attr]
+        query, name = monitor["query"], monitor["name"]
+        assert "service:switch-core" not in query, name
+        scopes = [
+            scope.split(",")
+            for scope in re.findall(r"\{([^}]*)\}", query)
+            if "service:" in scope
+        ]
+        assert scopes, name
+        for scope in scopes:
+            assert "service:REPLACE-WITH-SERVICE" in scope, (name, scope)
+            assert "env:REPLACE-WITH-ENV" in scope, (name, scope)
+        assert "REPLACE-WITH-ENV" in name, name
+        assert {"service:REPLACE-WITH-SERVICE", "env:REPLACE-WITH-ENV"} <= set(
+            monitor["tags"]
+        ), name
+    script = (_ARTIFACTS / "apply.sh").read_text()
+    assert "${SERVICE:?" in script
+    assert "${ENV:?" in script
+    assert "monitor=${monitor//REPLACE-WITH-SERVICE/$SERVICE}" in script
+    assert "monitor=${monitor//REPLACE-WITH-ENV/$ENV}" in script
+
+
+def test_the_refusals_alerts_split_guessing_from_retries() -> None:
+    """The paging alert watches the bearer routes for guessed tokens only; a
+    revoked controller's exchange, which looks like a guess, goes to a
+    low-urgency alert of its own."""
+    refusal_monitors = {
+        m["name"]: m
+        for m in _load("monitors.json")  # type: ignore[union-attr]
+        if "switch.controller.credential_refusals" in m["query"]
+    }
+    assert len(refusal_monitors) == 2
+    (paging,) = [m for m in refusal_monitors.values() if "route IN" in m["query"]]
+    (routes,) = re.findall(r"route IN \(([^)]*)\)", paging["query"])
+    assert set(routes.split(",")) == {"agent", "controller", "hosted_controller"}
+    (reasons,) = re.findall(r"reason IN \(([^)]*)\)", paging["query"])
+    assert set(reasons.split(",")) == {
+        "invalid_credential",
+        "missing_credential",
+        "wrong",
+        "missing",
+    }
+    (exchange,) = [m for m in refusal_monitors.values() if m is not paging]
+    assert "route:management" in exchange["query"]
+    assert exchange["priority"] > paging["priority"]
+
+
+def test_no_monitor_names_one_deployment() -> None:
+    """Each monitor is copied per deployment, so its text names none."""
+    for monitor in _load("monitors.json"):  # type: ignore[union-attr]
+        for word in ("switch-staging", "/switch/staging", "switch-prod"):
+            assert word not in json.dumps(monitor), (monitor["name"], word)
+
+
 def _charts(widgets: list[dict]) -> list[dict]:
     """Every widget definition on a dashboard, groups opened up."""
     found = []

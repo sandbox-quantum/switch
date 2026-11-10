@@ -1776,7 +1776,7 @@ async def test_v2_off_a_box_is_never_claimed_or_started(controller_app, v2_off):
     assert machine.desired_state == "stopped" and machine.backend == "box"
 
 
-async def test_v2_off_a_status_report_keeps_the_heartbeat_as_before(
+async def test_v2_off_a_status_report_keeps_only_the_counts_summary_beside_it(
     controller_app, v2_off
 ):
     app = controller_app
@@ -1785,8 +1785,26 @@ async def test_v2_off_a_status_report_keeps_the_heartbeat_as_before(
     await report_status(app, controller_id, sessions_running=0)
     machine = await machine_of(app.factory, app.machine_id)
     assert "box" not in (machine.heartbeat or {})
+    # Observability step 1 keeps a counts-only summary for v1 machines too
+    # (a noted v1 change): fixed keys only, never an id or text.
     reports = controller_reports(machine)
-    assert all("metrics" not in report for report in reports.values())
+    assert reports
+    for report in reports.values():
+        assert set(report["metrics"]) == {
+            "agents",
+            "stopped",
+            "restarts_10m",
+            "oom_kills",
+            "waiting_for_room",
+            "sessions_running",
+            "sessions_max",
+            "valve_memory",
+            "gateway_agents",
+            "gateway_refused",
+            "gateway_capped",
+            "guard_stops",
+            "valve_parks",
+        }
 
 
 async def test_v2_off_a_message_never_wakes_a_box(controller_app, v2_off):

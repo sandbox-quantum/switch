@@ -174,6 +174,7 @@ def _row(
     reported: timedelta | None = timedelta(seconds=30),
     summary: dict[str, Any] | None = None,
     at: timedelta | None = timedelta(seconds=30),
+    backend: str = "box",
 ) -> MachineRow:
     controllers = {}
     if at is not None:
@@ -190,6 +191,7 @@ def _row(
         desired_state=desired,
         heartbeat={"disk": None, "memory": None, "controllers": controllers},
         heartbeat_at=None if reported is None else NOW - reported,
+        backend=backend,
     )
 
 
@@ -198,7 +200,7 @@ class TestSnapshot:
         snap, counts = snapshot_of(
             [_row("fresh"), _row("stale", at=timedelta(minutes=4))], NOW
         )
-        assert snap.agents == {("running", "active"): 1}
+        assert snap.agents == {("box", "running", "active"): 1}
         assert list(counts) == ["fresh/w1"]
 
     def test_the_expected_rule_is_one_function(self) -> None:
@@ -213,7 +215,7 @@ class TestSnapshot:
             snap, _ = snapshot_of(rows, NOW)
         finally:
             hosted.expected_to_run = original  # type: ignore[assignment]
-        assert snap.boxes_expected == 1
+        assert snap.boxes_expected == {"vm": 0, "box": 1}
 
     def test_only_boxes_that_should_run_are_expected(self) -> None:
         """Paused, turned off or stopped boxes must not set off the silent-box alert."""
@@ -229,8 +231,8 @@ class TestSnapshot:
             ],
             NOW,
         )
-        assert snap.boxes_expected == 3
-        assert snap.boxes_reporting == 1
+        assert snap.boxes_expected == {"vm": 0, "box": 3}
+        assert snap.boxes_reporting == {"vm": 0, "box": 1}
 
     def test_every_reading_obeys_the_catalogue(self, registry: MetricsRegistry) -> None:
         summary = box_summary(
@@ -245,7 +247,7 @@ class TestSnapshot:
         assert ({"state": "unprotected"}, 1.0) in gauges[
             "switch.hosted.boxes_valve_memory"
         ]
-        assert ({"reason": "out_of_memory"}, 1.0) in gauges[
+        assert ({"reason": "out_of_memory", "backend": "box"}, 1.0) in gauges[
             "switch.hosted.agents_stopped"
         ]
         for points in gauges.values():
@@ -256,7 +258,7 @@ class TestSnapshot:
         snap, _ = snapshot_of([], NOW)
         registry.register_observer(lambda: snapshot_readings(snap))
         gauges = _sums(registry)
-        assert len(gauges["switch.hosted.agents"]) == 7 * 4
+        assert len(gauges["switch.hosted.agents"]) == 2 * 7 * 4
         assert all(value == 0.0 for _a, value in gauges["switch.hosted.agents"])
 
 
@@ -317,7 +319,7 @@ class TestRecordedWhereTheyArrive:
         record_box_report(_machine(mem_total_bytes=0))
         record_box_report(_machine(mem_free_bytes=True))
         sums = _sums(registry)
-        assert sums["switch.hosted.box_memory_used"] == [({}, 75.0)]
+        assert sums["switch.hosted.box_memory_used"] == [({"backend": "box"}, 75.0)]
         assert sums["switch.hosted.box_anon_memory"] == [({}, 2048.0)]
 
     def test_evictions(self, registry: MetricsRegistry) -> None:
@@ -350,7 +352,8 @@ class TestRecordedWhereTheyArrive:
             "missing_credential": 1.0,
         }
         for attributes, _value in points:
-            assert set(attributes) == {"reason"}
+            assert set(attributes) == {"reason", "route"}
+            assert attributes["route"] in {"agent", "controller"}
         assert "203.0.113" not in json.dumps(points)
 
     def test_nothing_is_recorded_without_an_otlp_endpoint(self) -> None:
@@ -423,6 +426,7 @@ async def _seed_box(
                 },
             },
             heartbeat_at=now,
+            backend="box",
         )
         session.add(machine)
         await session.commit()
@@ -439,8 +443,8 @@ class TestOneProcessReports:
         try:
             snap = await first.sample_once()
             assert snap is not None
-            assert snap.agents == {("running", "active"): 1}
-            assert snap.boxes_expected == snap.boxes_reporting == 1
+            assert snap.agents == {("box", "running", "active"): 1}
+            assert snap.boxes_expected == snap.boxes_reporting == {"vm": 0, "box": 1}
             assert await second.sample_once() is None
             assert list(second.readings()) == []
 
@@ -464,5 +468,5 @@ class TestOneProcessReports:
         finally:
             await sampler.aclose()
         assert snap is not None
-        assert snap.boxes_expected == 1
-        assert snap.agents == {("running", "active"): 1}
+        assert snap.boxes_expected == {"vm": 0, "box": 1}
+        assert snap.agents == {("box", "running", "active"): 1}

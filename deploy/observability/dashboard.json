@@ -1204,11 +1204,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Agents on hosted boxes, by process and session state",
+        "title": "Agents on cloud machines and boxes, by process, session state and kind (a v1 machine's session is always none)",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.agents{$env,$service} by {process,session}",
+            "q": "sum:switch.hosted.agents{$env,$service} by {process,session,backend}",
             "display_type": "area"
           }
         ]
@@ -1227,7 +1227,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.agents_stopped{$env,$service} by {reason}",
+            "q": "sum:switch.hosted.agents_stopped{$env,$service} by {reason,backend}",
             "display_type": "line"
           },
           {
@@ -1254,7 +1254,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.sessions{$env,$service} by {kind}",
+            "q": "sum:switch.hosted.sessions{$env,$service} by {kind,backend}",
             "display_type": "line"
           },
           {
@@ -1273,7 +1273,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Hosted box memory used (%), p95 / max. Needs distribution mapping, see README",
+        "title": "Cloud machine and box memory used (%), p95 / max. Needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -1369,15 +1369,15 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Hosted boxes reporting vs expected (silent box = reporting below expected)",
+        "title": "Cloud machines and boxes reporting vs expected, by kind (silent = reporting below expected)",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.hosted.boxes_reporting{$env,$service}",
+            "q": "sum:switch.hosted.boxes_reporting{$env,$service} by {backend}",
             "display_type": "line"
           },
           {
-            "q": "sum:switch.hosted.boxes_expected{$env,$service}",
+            "q": "sum:switch.hosted.boxes_expected{$env,$service} by {backend}",
             "display_type": "line"
           }
         ]
@@ -1392,11 +1392,11 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Controller credentials refused per second, by reason (lockout_started = an address locked out)",
+        "title": "Controller credentials refused per second, by reason and route (lockout_started = an address locked out)",
         "show_legend": true,
         "requests": [
           {
-            "q": "sum:switch.controller.credential_refusals{$env,$service} by {reason}.as_rate()",
+            "q": "sum:switch.controller.credential_refusals{$env,$service} by {reason,route}.as_rate()",
             "display_type": "bars"
           }
         ]
@@ -1424,6 +1424,44 @@
         "x": 0,
         "y": 123,
         "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud machine changes, by event and kind of machine (vm = v1, box = v2)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.machine_events{$env,$service} by {event,backend}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 127,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Seconds since the hosted controller service last called Core (min over pods; rising = reconciler silent)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "min:switch.hosted.reconciler_silence{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 127,
+        "width": 6,
         "height": 4
       }
     }

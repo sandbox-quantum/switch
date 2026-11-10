@@ -173,7 +173,7 @@ class RefusalGuard:
         which case it is counted and reported when the lockout ends."""
         logger_args = (reason, route, method, address)
         # Counted by reason only: never the address, a box id or the token.
-        record_credential_refusal(reason)
+        record_credential_refusal(reason, route)
         key = lockout_key(address)
         if key is None:
             logger.warning(
@@ -195,7 +195,7 @@ class RefusalGuard:
         entry.refusals.append(now)
         if len(entry.refusals) >= self._lockout_after:
             entry.locked_until = now + self._lockout_s
-            record_credential_refusal("lockout_started")
+            record_credential_refusal("lockout_started", route)
             logger.warning(
                 "Controller credential lockout started: client=%s refusals=%d window_s=%d lockout_s=%d",
                 key,

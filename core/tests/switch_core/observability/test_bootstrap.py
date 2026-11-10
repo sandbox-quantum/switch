@@ -367,9 +367,12 @@ async def test_the_database_sampler_starts_with_the_metrics_exporter(monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("on", [False, True])
-async def test_the_hosted_sampler_starts_only_with_v2_on(monkeypatch, on: bool):
-    """V1 sweep, item 5: with hosted agents v2 off, nothing new starts, as
-    upstream, even with hosted agents turned on."""
+async def test_the_hosted_sampler_starts_with_hosted_agents_v2_on_or_off(
+    monkeypatch, on: bool
+):
+    """Observability step 1: the sampler covers v1 machines too, so it starts
+    with hosted agents on and OTLP configured, whether v2 is on or off (a
+    deliberate v1 change, replacing the v1 sweep's item 5 gate)."""
     from switch_core import hosted_v2
 
     monkeypatch.setattr(hosted_v2, "_process_on", on)
@@ -392,7 +395,35 @@ async def test_the_hosted_sampler_starts_only_with_v2_on(monkeypatch, on: bool):
     try:
         names = {task.get_name() for task in observability._tasks}
         assert "db-server-sampler" in names
-        assert ("hosted-sampler" in names) is on
+        assert "hosted-sampler" in names
+        # The reconciler watch counts from boot.
+        from switch_core.observability.hosted import reconciler_watch
+
+        assert list(reconciler_watch().readings())
+    finally:
+        await observability.aclose()
+
+
+@pytest.mark.asyncio
+async def test_without_hosted_agents_no_hosted_sampler_starts(monkeypatch):
+    observability = start_observability(
+        config=_config(
+            monkeypatch,
+            OTLP_ENDPOINT="https://collector.example",
+            DEPLOYMENT_ID=DEPLOYMENT_ID,
+            OTLP_EXPORT_INTERVAL_SECONDS="3600",
+        ),
+        version="1.0.0",
+        session_factory=_session_factory(),
+        process_id="core-0-abcd1234",
+        probes=_probes(),
+        db_server_engine=lambda: create_async_engine(
+            "postgresql+asyncpg://u:p@127.0.0.1:1/x", poolclass=NullPool
+        ),
+    )
+    try:
+        names = {task.get_name() for task in observability._tasks}
+        assert "hosted-sampler" not in names
     finally:
         await observability.aclose()
 

@@ -17,6 +17,13 @@ a session-level advisory lock on a connection of its own, and only the
 process holding it reports. The lock goes with the connection if the process
 dies, and another process's sampler takes it on its next try.
 
+**v1 machines count too** (observability step 1). Their controllers send
+the same status report, so the gauges a v1 machine can fill (agents, stopped
+agents, sessions, machines expected and reporting, memory used) carry a
+`backend` of `vm` or `box`, from the machine row; the rest only boxes report.
+This runs with hosted agents v2 off as well: counts only, and only when OTLP
+is configured.
+
 **The summaries live on the cloud machine row** (`cloud_machines.heartbeat`,
 per workspace, beside the time of the report). That table is global, so the
 sampler reads every box without binding a tenant, and nothing new is stored
@@ -33,8 +40,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import event as sa_event
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
+from sqlalchemy.orm import Session, SessionTransaction
 
 from switch_core.observability.catalogue import (
     CONTROLLER_CREDENTIAL_REFUSALS,
@@ -50,6 +59,8 @@ from switch_core.observability.catalogue import (
     HOSTED_BOXES_VALVE_MEMORY,
     HOSTED_GATEWAY,
     HOSTED_GUARD_STOPS,
+    HOSTED_MACHINE_EVENTS,
+    HOSTED_RECONCILER_SILENCE,
     HOSTED_SESSIONS,
     HOSTED_VALVE_PARKS,
     HOSTED_WAITING_FOR_ROOM,
@@ -74,6 +85,40 @@ STOP_REASONS = ("out_of_memory", "crash_loop", "other")
 VALVE_STATES = ("unprotected", "failing")
 SESSION_KINDS = ("running", "max")
 GATEWAY_KINDS = ("agents", "refused", "capped_boxes")
+# The kinds of cloud machine (`cloud_machines.backend`): a v1 machine and a v2
+# box. Anything else is `other`.
+BACKENDS = ("vm", "box")
+# The routes a controller credential is refused on (`route_kind`, and the
+# cloud controller service's three). Anything else is `other`.
+REFUSAL_ROUTES = frozenset(
+    {
+        "agent",
+        "management",
+        "controller",
+        "hosted_controller",
+        "hosted_provisioner",
+        "hosted_operator",
+    }
+)
+# Cloud machine changes, each with its fixed words: the product telemetry
+# catalogue's values for the event of the same name (`cloud_machine_*`), and
+# `new` or `restart` for ready. Anything else is `other`.
+MACHINE_EVENTS: dict[str, frozenset[str]] = {
+    "requested": frozenset({"new", "joined_workspace", "unretained", "restarted"}),
+    "ready": frozenset({"new", "restart"}),
+    "failed": frozenset(
+        {
+            "not_scheduled",
+            "never_started",
+            "never_connected",
+            "owner_left",
+            "needs_attention",
+            "reported",
+        }
+    ),
+    "woken": frozenset({"message", "agent_placed", "owner"}),
+    "stopped": frozenset({"idle", "owner"}),
+}
 
 # The refusal codes the refusal guard is given (B91), and `lockout_started`.
 # Any other code is counted as `other`.
@@ -138,6 +183,10 @@ def refusal_reason(reason: str) -> str:
     return reason if reason in REFUSAL_REASONS else "other"
 
 
+def backend_of(value: Any) -> str:
+    return _word(value, BACKENDS, "other")
+
+
 def box_summary(machine: Mapping[str, Any], agents: Any) -> dict[str, Any]:
     """A status report reduced to counts and fixed words: what the gauges read.
 
@@ -186,8 +235,10 @@ def box_summary(machine: Mapping[str, Any], agents: Any) -> dict[str, Any]:
     }
 
 
-def record_box_report(machine: Mapping[str, Any]) -> None:
-    """The two per-report histograms, recorded as a hosted box's report arrives."""
+def record_box_report(machine: Mapping[str, Any], backend: str = "box") -> None:
+    """The two per-report histograms, recorded as a cloud machine's report
+    arrives. Memory used is for either kind of machine, by `backend`; the
+    anonymous memory only a box sends."""
     total = machine.get("mem_total_bytes")
     free = machine.get("mem_free_bytes")
     if (
@@ -198,7 +249,11 @@ def record_box_report(machine: Mapping[str, Any]) -> None:
         and total > 0
         and 0 <= free <= total
     ):
-        metrics().observe(HOSTED_BOX_MEMORY_USED, {}, 100.0 * (total - free) / total)
+        metrics().observe(
+            HOSTED_BOX_MEMORY_USED,
+            {"backend": backend_of(backend)},
+            100.0 * (total - free) / total,
+        )
     anon = machine.get("mem_anon_bytes")
     if isinstance(anon, int) and not isinstance(anon, bool) and anon >= 0:
         metrics().observe(HOSTED_BOX_ANON_MEMORY, {}, float(anon))
@@ -210,34 +265,138 @@ def record_evictions(evictions: int | None) -> None:
         metrics().increment(HOSTED_BOX_EVICTIONS, {}, float(_count(evictions)))
 
 
-def record_credential_refusal(reason: str) -> None:
-    """One refused controller credential, by its fixed reason code only."""
+def record_credential_refusal(reason: str, route: str = "other") -> None:
+    """One refused controller credential, by its fixed reason code and kind
+    of route only: never the address, the path or any part of the token."""
     metrics().increment(
-        CONTROLLER_CREDENTIAL_REFUSALS, {"reason": refusal_reason(reason)}
+        CONTROLLER_CREDENTIAL_REFUSALS,
+        {
+            "reason": refusal_reason(reason),
+            "route": route if route in REFUSAL_ROUTES else "other",
+        },
     )
+
+
+def reports_memory(
+    reports: Mapping[str, Any], workspace_id: str, now: datetime
+) -> bool:
+    """Whether this workspace's report is the one that records the machine's
+    memory: the first, by workspace id, of the machine's fresh reports. A
+    machine serving several workspaces sends its memory in each report, and
+    counting it once per machine keeps the p95 fair. If that workspace's
+    controller goes quiet, its report goes stale and the next one takes over."""
+    fresh = [
+        key
+        for key, report in reports.items()
+        if key == workspace_id
+        or (isinstance(report, Mapping) and _fresh(report.get("at"), now))
+    ]
+    return bool(fresh) and min(fresh) == workspace_id
+
+
+def machine_event_reason(event: str, reason: Any) -> str:
+    return reason if reason in MACHINE_EVENTS.get(event, ()) else "other"
+
+
+def record_machine_event(
+    session: AsyncSession, event: str, reason: Any, backend: Any
+) -> None:
+    """Count one cloud machine change once `session` commits, and never if it
+    rolls back, as its product telemetry event is (`emit_after_commit`). It
+    counts whether or not product telemetry is on, and only fixed words."""
+    attributes = {
+        "event": event if event in MACHINE_EVENTS else "other",
+        "reason": machine_event_reason(event, reason),
+        "backend": backend_of(backend),
+    }
+    sync = session.sync_session
+    committed = False
+    decided = False
+
+    def on_commit(_session: Session) -> None:
+        nonlocal committed
+        committed = True
+
+    def on_end(_session: Session, transaction: SessionTransaction) -> None:
+        nonlocal decided
+        # Only the outermost transaction decides; a savepoint ending doesn't.
+        if decided or transaction.parent is not None:
+            return
+        decided = True
+        if committed:
+            metrics().increment(HOSTED_MACHINE_EVENTS, attributes)
+
+    sa_event.listen(sync, "after_commit", on_commit)
+    sa_event.listen(sync, "after_transaction_end", on_end)
+
+
+class ReconcilerWatch:
+    """When this process last heard from the hosted controller service: its
+    machine list poll, or an observation. In memory, per process. With
+    hosted agents on, the process starts the count when it starts
+    (`start`), so the gauge is there from boot; the minimum over pods is how
+    long the reconciler has been silent. It covers the v1 reconciler without
+    changing its process."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._last: float | None = None
+
+    def heard(self) -> None:
+        self._last = self._clock()
+
+    def start(self) -> None:
+        """Count silence from now, if nothing has been heard yet: a process
+        that starts while the reconciler is down reports rising silence
+        rather than nothing, so the alert can fire."""
+        if self._last is None:
+            self._last = self._clock()
+
+    def readings(self) -> Iterator[GaugeReading]:
+        last = self._last
+        if last is None:
+            return
+        yield GaugeReading(
+            HOSTED_RECONCILER_SILENCE, max(0.0, self._clock() - last), {}
+        )
+
+
+_reconciler = ReconcilerWatch()
+
+
+def reconciler_watch() -> ReconcilerWatch:
+    return _reconciler
+
+
+def reconciler_heard() -> None:
+    """The hosted controller service just called: its poll or an observation."""
+    _reconciler.heard()
+
+
+def _per_backend() -> dict[str, int]:
+    return dict.fromkeys(BACKENDS, 0)
 
 
 @dataclass
 class HostedSnapshot:
-    """The gauges' values, as of one sample."""
+    """The gauges' values, as of one sample. The ones v1 machines fill too are
+    kept per `backend`; the rest are boxes' only."""
 
-    agents: dict[tuple[str, str], int] = field(default_factory=dict)
-    stopped: dict[str, int] = field(
-        default_factory=lambda: dict.fromkeys(STOP_REASONS, 0)
-    )
+    agents: dict[tuple[str, str, str], int] = field(default_factory=dict)
+    stopped: dict[tuple[str, str], int] = field(default_factory=dict)
     restarts_10m: int = 0
     oom_kills: int = 0
     waiting_for_room: int = 0
-    sessions_running: int = 0
-    sessions_max: int = 0
+    sessions_running: dict[str, int] = field(default_factory=_per_backend)
+    sessions_max: dict[str, int] = field(default_factory=_per_backend)
     valve_memory: dict[str, int] = field(
         default_factory=lambda: dict.fromkeys(VALVE_STATES, 0)
     )
     gateway_agents: int = 0
     gateway_refused: int = 0
     gateway_capped: int = 0
-    boxes_reporting: int = 0
-    boxes_expected: int = 0
+    boxes_reporting: dict[str, int] = field(default_factory=_per_backend)
+    boxes_expected: dict[str, int] = field(default_factory=_per_backend)
 
 
 @dataclass(frozen=True)
@@ -249,6 +408,9 @@ class MachineRow:
     desired_state: str
     heartbeat: Mapping[str, Any] | None
     heartbeat_at: datetime | None
+    # `vm` or `box`; a row from before the column read as a box, as the
+    # sampler only ever read boxes then.
+    backend: str = "box"
 
 
 def _fresh(at: Any, now: datetime) -> bool:
@@ -288,10 +450,16 @@ def snapshot_of(
     snap = HostedSnapshot()
     counts: dict[str, tuple[int | None, int | None]] = {}
     for row in rows:
+        backend = row.backend if row.backend in BACKENDS else None
+        if backend is None:
+            # Not a kind of machine the gauges know: left out, never `other`
+            # mixed into either kind's counts.
+            continue
+        box = backend == "box"
         if expected_to_run(row):
-            snap.boxes_expected += 1
+            snap.boxes_expected[backend] += 1
             if _fresh(row.heartbeat_at, now):
-                snap.boxes_reporting += 1
+                snap.boxes_reporting[backend] += 1
         reports = (row.heartbeat or {}).get("controllers") or {}
         if not isinstance(reports, Mapping):
             continue
@@ -305,17 +473,23 @@ def snapshot_of(
             for key, number in agents.items() if isinstance(agents, Mapping) else []:
                 process, _, session = str(key).partition(":")
                 if process in PROCESS_STATES and session in SESSION_STATES:
-                    pair = (process, session)
-                    snap.agents[pair] = snap.agents.get(pair, 0) + _count(number)
+                    key3 = (backend, process, session)
+                    snap.agents[key3] = snap.agents.get(key3, 0) + _count(number)
             stopped = summary.get("stopped")
             if isinstance(stopped, Mapping):
                 for reason in STOP_REASONS:
-                    snap.stopped[reason] += _count(stopped.get(reason))
+                    pair = (backend, reason)
+                    snap.stopped[pair] = snap.stopped.get(pair, 0) + _count(
+                        stopped.get(reason)
+                    )
+            snap.sessions_running[backend] += _count(summary.get("sessions_running"))
+            snap.sessions_max[backend] += _count(summary.get("sessions_max"))
+            if not box:
+                # The rest are boxes' only: a v1 machine reports none of them.
+                continue
             snap.restarts_10m += _count(summary.get("restarts_10m"))
             snap.oom_kills += _count(summary.get("oom_kills"))
             snap.waiting_for_room += _count(summary.get("waiting_for_room"))
-            snap.sessions_running += _count(summary.get("sessions_running"))
-            snap.sessions_max += _count(summary.get("sessions_max"))
             valve = summary.get("valve_memory")
             if valve in VALVE_STATES:
                 snap.valve_memory[valve] += 1
@@ -332,25 +506,41 @@ def snapshot_of(
 
 def snapshot_readings(snap: HostedSnapshot) -> Iterator[GaugeReading]:
     """Every gauge, including zeros, so a series that empties reads 0."""
-    for process in PROCESS_STATES:
-        for session in SESSION_STATES:
+    for backend in BACKENDS:
+        for process in PROCESS_STATES:
+            for session in SESSION_STATES:
+                yield GaugeReading(
+                    HOSTED_AGENTS,
+                    float(snap.agents.get((backend, process, session), 0)),
+                    {"process": process, "session": session, "backend": backend},
+                )
+        for reason in STOP_REASONS:
             yield GaugeReading(
-                HOSTED_AGENTS,
-                float(snap.agents.get((process, session), 0)),
-                {"process": process, "session": session},
+                HOSTED_AGENTS_STOPPED,
+                float(snap.stopped.get((backend, reason), 0)),
+                {"reason": reason, "backend": backend},
             )
-    for reason in STOP_REASONS:
+        for kind, values in (
+            ("running", snap.sessions_running),
+            ("max", snap.sessions_max),
+        ):
+            yield GaugeReading(
+                HOSTED_SESSIONS,
+                float(values[backend]),
+                {"kind": kind, "backend": backend},
+            )
         yield GaugeReading(
-            HOSTED_AGENTS_STOPPED,
-            float(snap.stopped.get(reason, 0)),
-            {"reason": reason},
+            HOSTED_BOXES_REPORTING,
+            float(snap.boxes_reporting[backend]),
+            {"backend": backend},
+        )
+        yield GaugeReading(
+            HOSTED_BOXES_EXPECTED,
+            float(snap.boxes_expected[backend]),
+            {"backend": backend},
         )
     yield GaugeReading(HOSTED_AGENT_RESTARTS_10M, float(snap.restarts_10m), {})
     yield GaugeReading(HOSTED_AGENT_OOM_KILLS, float(snap.oom_kills), {})
-    yield GaugeReading(
-        HOSTED_SESSIONS, float(snap.sessions_running), {"kind": "running"}
-    )
-    yield GaugeReading(HOSTED_SESSIONS, float(snap.sessions_max), {"kind": "max"})
     yield GaugeReading(HOSTED_WAITING_FOR_ROOM, float(snap.waiting_for_room), {})
     for state in VALVE_STATES:
         yield GaugeReading(
@@ -363,8 +553,6 @@ def snapshot_readings(snap: HostedSnapshot) -> Iterator[GaugeReading]:
     yield GaugeReading(
         HOSTED_GATEWAY, float(snap.gateway_capped), {"kind": "capped_boxes"}
     )
-    yield GaugeReading(HOSTED_BOXES_REPORTING, float(snap.boxes_reporting), {})
-    yield GaugeReading(HOSTED_BOXES_EXPECTED, float(snap.boxes_expected), {})
 
 
 def _rise(previous: int | None, current: int | None) -> int:
@@ -376,7 +564,7 @@ def _rise(previous: int | None, current: int | None) -> int:
 
 
 _MACHINES = text(
-    "SELECT id, state, desired_state, heartbeat, heartbeat_at "
+    "SELECT id, state, desired_state, heartbeat, heartbeat_at, backend "
     "FROM cloud_machines WHERE state <> 'deleted'"
 )
 _TRY_LOCK = text("SELECT pg_try_advisory_lock(hashtext(:name))")
@@ -492,6 +680,7 @@ class HostedSampler:
                 desired_state=str(row.desired_state),
                 heartbeat=row.heartbeat if isinstance(row.heartbeat, Mapping) else None,
                 heartbeat_at=row.heartbeat_at,
+                backend=str(row.backend),
             )
             for row in result
         ]
