@@ -243,8 +243,8 @@ def _resource_covers(resource: str, url: str) -> bool:
 
     RFC 9728 §3.3 wants an exact match for metadata found through
     WWW-Authenticate, but Airtable advertises its origin for its `/mcp`
-    server. So this takes the MCP Python SDK's rule: same origin, and a path
-    prefix on a segment boundary. A live test on 2026-11-09 showed that
+    server. So this takes the same origin, and the MCP Python SDK's path
+    rule: a prefix on a segment boundary. A live test on 2026-11-09 showed that
     Airtable ignores `resource`, so the origin works for it.
 
     RFC 8707 forbids a fragment, and Core takes no query either.

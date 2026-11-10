@@ -458,18 +458,17 @@ Before Core calls the tool, it checks these things:
 - Exactly one tool on the server has the name.
 - The tool has `readOnlyHint: true`.
 - Its `inputSchema` has `type: object`.
-- The `inputSchema` holds no `$ref`, `$dynamicRef` or `$recursiveRef` at any
-  depth, and its JSON is 64 KiB or less.
-- A JSON Schema validator accepts `{}` against that schema.
+- Its `required` is absent or empty.
 
-A reference can make the validator's work grow exponentially, and that work
-blocks Core's event loop. Without references, the work grows only with the
-size of the schema.
+Core reads nothing else in the schema and runs no JSON Schema validator. On a
+small hostile schema, a validator can spend minutes of CPU time and block
+Core's event loop. A tool that still refuses `{}` fails when Core calls it,
+with `tool_error`.
 
-The validator only shows that `{}` is valid. It does not show that the tool
-only reads. That rests on `readOnlyHint: true` and on the catalog review of
-the tool an entry names. The MCP specification calls tool annotations
-untrusted.
+This check only shows that the schema names no required argument. It does
+not show that the tool only reads. That rests on `readOnlyHint: true` and on
+the catalog review of the tool an entry names. The MCP specification calls
+tool annotations untrusted.
 
 Core calls the tool with `{}`. Core does not check the result against the
 tool's `outputSchema`, because the MCP SDK's check can fetch a remote `$ref`.
@@ -512,6 +511,9 @@ Other failures have no reason code:
 - A Core HTTP client that is not held to the outbound policy. Core then sends
   no request.
 
+Core reports an HTTP error on `tools/call` only when the 15-second limit
+ends.
+
 Every message is fixed text and never holds vendor text.
 
 Core drops the vendor's log notifications. While the call runs, Core replaces
@@ -524,7 +526,7 @@ scheme (https), host and port. A URL without a port has port 443. The value
 must have no query and no fragment. Its path must be the MCP URL's path, or a
 parent path on a segment boundary. So `/v1` covers `/v1/mcp`, but `/mcp` does
 not cover `/mcp2`. Otherwise sign-in fails before Core reads the metadata's
-authorization servers. This is the MCP Python SDK's rule. RFC 9728 §3.3 wants
+authorization servers. The path rule is the MCP Python SDK's. RFC 9728 §3.3 wants
 an exact match, but Airtable advertises its origin for its `/mcp` server. Core
 sends the accepted value in the authorization request, the code exchange and
 every refresh.
