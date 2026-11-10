@@ -4949,8 +4949,12 @@ class AgentCore:
         """
         await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
-            changes_settings = any(
-                value is not None
+            # Changing a room is its owner's or an admin's. The one exception is
+            # a call that changes nothing but aliases, judged alias by alias
+            # below; anything else, including a parameter added later, needs
+            # the owner tier, so a new field fails closed.
+            aliases_only = aliases is not None and all(
+                value is None
                 for value in (
                     name,
                     description,
@@ -4958,9 +4962,11 @@ class AgentCore:
                     admin_mode,
                     join_event_listeners,
                     bridge_id,
+                    channel_type,
+                    external_channel_id,
                 )
             )
-            if changes_settings:
+            if not aliases_only:
                 await self._require_room_action(session, agent_id, room_id, "configure")
             # An alias for an agent of the owner's that takes requests from
             # the caller is the caller's to set, whoever owns the room.

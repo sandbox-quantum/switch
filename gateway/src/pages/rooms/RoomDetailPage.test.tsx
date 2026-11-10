@@ -12,7 +12,7 @@ vi.mock("react-router", () => ({
 }));
 
 vi.mock("../../data/AuthContext", () => ({
-  useAuth: () => ({ canAdminTenant: false }),
+  useAuth: () => ({ canAdminTenant: false, session: { user: { id: "u-me" } } }),
 }));
 
 vi.mock("../../data/hooks", () => ({
@@ -385,7 +385,7 @@ describe("RoomDetailPage permissions", () => {
 
   it("lets someone take out their own agent from a room they don't own", () => {
     vi.mocked(hooks.useAgents).mockReturnValue({
-      data: [{ ...agent, can_manage: true }],
+      data: [{ ...agent, owner_id: "u-me" }],
       loading: false,
       error: null,
       refetch: vi.fn(),

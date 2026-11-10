@@ -78,7 +78,10 @@ import {
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { canAdminTenant } = useAuth();
+  const { canAdminTenant, session } = useAuth();
+  // Who is looking, to offer taking out their own agent and unlinking their
+  // own resources: the server allows those by ownership alone.
+  const viewerId = session?.user.id ?? null;
   const { data: room, loading, error, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -159,13 +162,19 @@ export default function RoomDetailPage() {
           onSaved={refetch}
         />
         <Divider />
-        <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
+        <ParticipantsSection
+          room={room}
+          canWrite={canWrite}
+          viewerId={viewerId}
+          onChanged={refetch}
+        />
         <Divider />
         <RoomResourcesSection
           roomId={room.id}
           canAttach={room.can_attach}
           canUnlink={room.can_unlink}
           inRoom={room.viewer_is_member}
+          viewerId={viewerId}
         />
         <Divider />
         <RoomLinkedRoomsSection roomId={room.id} canWrite={canWrite} />
@@ -701,10 +710,12 @@ function EditableFieldsSection({
 function ParticipantsSection({
   room,
   canWrite,
+  viewerId,
   onChanged,
 }: {
   room: RoomDetail;
   canWrite: boolean;
+  viewerId: string | null;
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading } = useAgents();
@@ -721,10 +732,15 @@ function ParticipantsSection({
     return m;
   }, [allAgents]);
 
-  // You may always take out an agent you manage, whoever owns the room.
-  const managedAgentIds = useMemo(
-    () => new Set((allAgents ?? []).filter((a) => a.can_manage).map((a) => a.id)),
-    [allAgents],
+  // You may always take out an agent you own, whoever owns the room.
+  const ownAgentIds = useMemo(
+    () =>
+      new Set(
+        (allAgents ?? [])
+          .filter((a) => viewerId !== null && a.owner_id === viewerId)
+          .map((a) => a.id),
+      ),
+    [allAgents, viewerId],
   );
 
   const addableAgentOptions = useMemo<PickerOption[]>(
@@ -825,7 +841,7 @@ function ParticipantsSection({
   const canInviteAgents = room.can_invite_agents;
   const canAddPeople = room.can_add_people;
   const canRemove = (agentId: string) =>
-    !platformMembership && (room.can_remove_members || managedAgentIds.has(agentId));
+    !platformMembership && (room.can_remove_members || ownAgentIds.has(agentId));
 
   return (
     <Stack spacing={3}>

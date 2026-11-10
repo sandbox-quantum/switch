@@ -41,6 +41,7 @@ interface Props {
   canAttach: boolean;
   canUnlink: boolean;
   inRoom: boolean;
+  viewerId: string | null;
 }
 
 export default function RoomResourcesSection({
@@ -48,6 +49,7 @@ export default function RoomResourcesSection({
   canAttach,
   canUnlink,
   inRoom,
+  viewerId,
 }: Props) {
   const { data: roomPackages, refetch: refetchPackages } = useRoomPackages(roomId);
   const attachedPackageIds = useMemo(
@@ -76,6 +78,7 @@ export default function RoomResourcesSection({
         canAttach={canAttach}
         canUnlink={canUnlink}
         inRoom={inRoom}
+        viewerId={viewerId}
         attachedPackageIds={attachedPackageIds}
         readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
@@ -92,6 +95,7 @@ export default function RoomResourcesSection({
         canAttach={canAttach}
         canUnlink={canUnlink}
         inRoom={inRoom}
+        viewerId={viewerId}
         packages={roomPackages ?? []}
         refetch={refetchPackages}
       />
@@ -140,6 +144,7 @@ function RoomReferences({
   canAttach,
   canUnlink,
   inRoom,
+  viewerId,
   attachedPackageIds,
   readablePackageIds,
   packageDescriptions,
@@ -148,6 +153,7 @@ function RoomReferences({
   canAttach: boolean;
   canUnlink: boolean;
   inRoom: boolean;
+  viewerId: string | null;
   attachedPackageIds: Set<string>;
   readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
@@ -234,7 +240,7 @@ function RoomReferences({
                 readablePackageIds={readablePackageIds}
                 packageDescriptions={packageDescriptions}
               />
-              {(canUnlink || (inRoom && ref.can_manage)) && (
+              {(canUnlink || (inRoom && viewerId !== null && ref.owner_id === viewerId)) && (
                 <Button
                   size="small"
                   onClick={() => handleDetach(ref.id)}
@@ -464,6 +470,7 @@ function RoomPackages({
   canAttach,
   canUnlink,
   inRoom,
+  viewerId,
   packages,
   refetch,
 }: {
@@ -471,12 +478,13 @@ function RoomPackages({
   canAttach: boolean;
   canUnlink: boolean;
   inRoom: boolean;
+  viewerId: string | null;
   packages: Array<{
     id: string;
     name: string;
     description: string;
     can_read?: boolean;
-    can_manage?: boolean;
+    owner_id?: string;
   }>;
   refetch: () => void;
 }) {
@@ -552,7 +560,7 @@ function RoomPackages({
               {!p.can_read && <LockedMark />}
               <span style={{ flexGrow: 1 }} />
               {p.can_read && <OpensMark />}
-              {(canUnlink || (inRoom && p.can_manage)) && (
+              {(canUnlink || (inRoom && viewerId !== null && p.owner_id === viewerId)) && (
                 <Button
                   size="small"
                   onClick={(e) => {

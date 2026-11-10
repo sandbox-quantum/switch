@@ -454,6 +454,27 @@ class TestUpdateRoom:
         assert isinstance(store, _FakeRoomStore)
         assert store.update_calls == []
 
+    @pytest.mark.parametrize(
+        "change",
+        [{"channel_type": "channel_private"}, {"external_channel_id": "C999"}, {}],
+    )
+    async def test_any_other_change_needs_the_rooms_owner(
+        self, change: dict[str, str]
+    ) -> None:
+        """Only a call that changes nothing but aliases skips the owner check,
+        so a parameter the check doesn't list fails closed."""
+        room = _room(owner_id="u-alice")
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.bob", owner_id="u-bob")
+            },
+        )
+
+        with pytest.raises(RoomPermissionError):
+            await svc.update_room("agent-1", "room-1", **change)  # type: ignore[arg-type]
+
 
 class TestSetRoomArchived:
     async def test_archive_then_unarchive_reflected_in_detail(self) -> None:
