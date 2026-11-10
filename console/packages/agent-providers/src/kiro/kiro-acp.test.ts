@@ -1,0 +1,129 @@
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { checkAcpSignIn } from '../acp/acp-adapter';
+import { writeNodeCli } from '../testing/index';
+import { kiroAcp } from './kiro-acp';
+
+// A stand-in for `kiro-cli acp`: answers `initialize` with Kiro's one auth
+// method either way, refuses everything else with `auth_required` while
+// signed out, and logs every call it is sent.
+const FAKE_KIRO = `
+const { appendFileSync } = require('node:fs');
+let buffer = '';
+process.stdin.on('data', (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf('\\n')) >= 0) {
+    const line = buffer.slice(0, newline);
+    buffer = buffer.slice(newline + 1);
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    appendFileSync(process.env.FAKE_KIRO_LOG, message.method + '\\n');
+    const reply = (body) =>
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: message.id, ...body }) + '\\n');
+    if (message.method === 'initialize')
+      reply({ result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [{ id: 'kiro-login' }] } });
+    else if (process.env.FAKE_KIRO_SIGNED_OUT)
+      reply({ error: { code: -32000, message: 'Authentication required. Not logged in. Set the KIRO_API_KEY environment variable or run kiro-cli login first.' } });
+    else if (message.method === 'session/list') reply({ result: { sessions: [] } });
+    else reply({ error: { code: -32601, message: 'Method not found' } });
+  }
+});
+`;
+
+let root: string;
+let kiro: string;
+let log: string;
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), 'switch-kiro-test-'));
+  kiro = await writeNodeCli(root, 'kiro-cli', FAKE_KIRO);
+  log = join(root, 'calls.log');
+});
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true });
+});
+
+async function check(extra: Record<string, string>) {
+  const result = await checkAcpSignIn(kiroAcp, {
+    binaryPath: kiro,
+    cwd: root,
+    env: { PATH: process.env.PATH ?? '', FAKE_KIRO_LOG: log, ...extra },
+  });
+  const calls = existsSync(log) ? (await readFile(log, 'utf8')).trim().split('\n') : [];
+  return { result, calls };
+}
+
+describe('Kiro CLI ACP hooks', () => {
+  it('runs kiro-cli acp, and never authenticates', async () => {
+    const launch = await kiroAcp.launch({ binaryPath: 'kiro-cli', cwd: '.', env: {} });
+    expect(launch.args).toEqual(['acp']);
+    expect(kiroAcp.loginCommand).toBe('kiro-cli login');
+    expect(kiroAcp.authMethodId).toBeUndefined();
+    expect(kiroAcp.inheritEnv).toEqual(['KIRO_API_KEY', 'XDG_DATA_HOME']);
+  });
+
+  it('sets no session mode, as Kiro modes are agent configurations', () => {
+    expect(kiroAcp.sessionMode).toBeUndefined();
+  });
+
+  it('is signed in when Kiro answers a read-only session/list', async () => {
+    const { result, calls } = await check({});
+    expect(result.status).toBe('authenticated');
+    expect(calls).toEqual(['initialize', 'session/list']);
+  });
+
+  it('is signed out, with the login command, when Kiro refuses it', async () => {
+    const { result, calls } = await check({ FAKE_KIRO_SIGNED_OUT: '1' });
+    expect(result.status).toBe('unauthenticated');
+    expect(result.message).toContain('kiro-cli login');
+    expect(result.message).toContain('KIRO_API_KEY');
+    expect(calls).toEqual(['initialize', 'session/list']);
+  });
+
+  it('reads the MCP server as Kiro names it, on the tool call and on its permission request', () => {
+    // What Kiro 3.1.0 sends for a tool of a registered MCP server named echo.
+    expect(
+      kiroAcp.mcpServerOf!({
+        toolCallId: 'tooluse_1',
+        title: '@echo/switch_echo',
+        kind: 'other',
+        _meta: { kiro: { serverName: 'echo', toolOrigin: 'default' } },
+      })
+    ).toBe('echo');
+    expect(kiroAcp.mcpServerOf!({ toolCallId: 'tooluse_1', title: '@echo/switch_echo' })).toBe(
+      'echo'
+    );
+    expect(
+      kiroAcp.mcpServerOf!({
+        toolCallId: 'tooluse_1',
+        title: 'switch_echo',
+        _meta: { kiro: { mcpTool: { identity: { serverName: 'echo' } } } },
+      })
+    ).toBe('echo');
+    expect(
+      kiroAcp.mcpServerOf!({
+        toolCallId: 'run_command_1',
+        title: 'echo hi > a.txt',
+        kind: 'execute',
+      })
+    ).toBeUndefined();
+  });
+
+  it('shows a sub-agent call as a subagent', () => {
+    // How Kiro 3.1.0 sends its sub-agent tool.
+    expect(
+      kiroAcp.itemType!({
+        toolCallId: 'invoke_subagent_tooluse_1',
+        title: 'Sub-agent: general-task-execution',
+        kind: 'other',
+        _meta: { kiro: { kind: 'agent-subtask', agentSubtaskId: 'a1' } },
+      })
+    ).toBe('subagent');
+    expect(
+      kiroAcp.itemType!({ toolCallId: 'run_command_1', title: 'echo hi', kind: 'execute' })
+    ).toBeUndefined();
+  });
+});
