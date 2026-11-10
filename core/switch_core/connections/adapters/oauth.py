@@ -78,6 +78,7 @@ MCP_RESPONSE_BYTES = 1024 * 1024
 MCP_IDENTITY_BYTES = 4 * 1024 * 1024
 MCP_TOOL_PAGES = 20
 MCP_RESULT_BYTES = 64 * 1024
+MCP_INPUT_SCHEMA_BYTES = 64 * 1024
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
@@ -372,10 +373,34 @@ def _leaves(error: BaseException) -> Iterator[BaseException]:
             pending.append(current.__cause__)
 
 
+_SCHEMA_REFERENCES = frozenset({"$ref", "$dynamicRef", "$recursiveRef"})
+
+
+def _has_reference(schema: dict[str, Any]) -> bool:
+    pending: list[Any] = [schema]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            if not _SCHEMA_REFERENCES.isdisjoint(node):
+                return True
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    return False
+
+
 def _accepts_no_arguments(schema: dict[str, Any]) -> bool:
     """Whether a tool's input schema takes `{}`. This says nothing about
     what the tool does: read-only rests on its annotation and the catalog."""
     if schema.get("type") != "object":
+        return False
+    try:
+        size = len(json.dumps(schema, separators=(",", ":"), sort_keys=True))
+    except (RecursionError, TypeError, ValueError):
+        return False
+    # The validator follows references without memoizing, so a small schema
+    # can take hours on the event loop. Without them its work is linear.
+    if size > MCP_INPUT_SCHEMA_BYTES or _has_reference(schema):
         return False
     try:
         validator = validators.validator_for(schema, default=Draft202012Validator)
