@@ -935,7 +935,7 @@ def workspace_creation_refusal(
         return None
     if new_organization and config.gateway_signup_mode == "invite_only":
         return (
-            "Creating organizations is turned off on this server. Ask a "
+            "Creating organizations is turned off here. Ask a "
             "workspace admin for an invitation."
         )
     limit = config.gateway_max_workspaces_per_user

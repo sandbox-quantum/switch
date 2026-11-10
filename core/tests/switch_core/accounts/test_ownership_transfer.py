@@ -431,7 +431,7 @@ async def test_a_server_connectors_agent_is_refused(
                 session, "agent", agent.id, member, Principal(owner.id, False)
             )
         assert refused.value.status == 409
-        assert "server connector" in str(refused.value)
+        assert "run by Switch itself" in str(refused.value)
 
 
 async def test_an_agents_connection_rows_go_with_its_old_key(
@@ -653,11 +653,11 @@ class TestAgentTransferRefusal:
         ("fact", "value", "says"),
         [
             ("granted_services", ("github",), "service access"),
-            ("managed", True, "managed on its owner's machine"),
+            ("managed", True, "managed on its owner's device"),
             ("may_manage_agents", True, "manage its owner's agents"),
             ("in_family", True, "family of sub-agents"),
             ("has_oauth_client", True, "OAuth client of its own"),
-            ("run_by_server_connector", True, "server connector"),
+            ("run_by_server_connector", True, "run by Switch itself"),
         ],
     )
     def test_each_tie_to_its_owner_refuses_on_its_own(

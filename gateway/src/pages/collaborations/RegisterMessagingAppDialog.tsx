@@ -123,7 +123,7 @@ export default function RegisterMessagingAppDialog({
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Register messaging app</DialogTitle>
+      <DialogTitle>Add messaging app</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
@@ -151,7 +151,7 @@ export default function RegisterMessagingAppDialog({
           {selectedType && (
             <>
               <TextField
-                label="Display Name"
+                label="Display name"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 fullWidth
@@ -171,7 +171,7 @@ export default function RegisterMessagingAppDialog({
                 {!channelCreationSupported && (
                   <Typography variant="caption" color="text.secondary">
                     {humanize(selectedType)} has no way to create channels from
-                    Switch, so this connection can only be used with existing
+                    Switch, so this messaging app can only be used with existing
                     channels.
                   </Typography>
                 )}
@@ -196,7 +196,7 @@ export default function RegisterMessagingAppDialog({
           disabled={!canSubmit || submitting}
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
-          Register
+          Add
         </Button>
       </DialogActions>
     </Dialog>
