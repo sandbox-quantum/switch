@@ -171,6 +171,10 @@ it('reads Codex and OpenCode names for Switch tools as Claude Code ones', () => 
       detail({ type: 'mcp_tool_call', toolName: 'read_context' })
     )
   ).toMatchObject({ kind: 'switch', verb: 'Read the room' });
+  expect(presentTool(item('mcp__switch__get_permalinks'), null)).toMatchObject({
+    kind: 'switch',
+    verb: 'Got Slack links',
+  });
   expect(presentTool(item('switch.list_bridges'), null)).toMatchObject({
     kind: 'switch',
     verb: 'Switch: list bridges',

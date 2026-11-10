@@ -81,6 +81,7 @@ const SWITCH_LABELS: Record<string, string> = {
   send_targeted_message: 'Sent a message in the room',
   send_attachment: 'Sent an attachment',
   download_attachment: 'Downloaded an attachment',
+  get_permalinks: 'Got Slack links',
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
