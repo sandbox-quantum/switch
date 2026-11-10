@@ -12,13 +12,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Room, User, room_agents
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.gateway import rooms as rooms_module
 from switch_core.gateway.schemas import RoomUpdateRequest
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 _ROOM_STORE = RoomStore()
+_NO_DECISIONS = DecisionAvailability(
+    enabled=False,
+    server=ServerDefault(endpoint_url=None, api_key=None, bedrock_enabled=False),
+    store=DecisionSettingsStore(),
+)
 
 
 class _Protocol:
@@ -87,6 +94,7 @@ async def _permissions(
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         _Protocol(),  # type: ignore[arg-type]
+        _NO_DECISIONS,
         user,
         is_admin,
     )
@@ -157,6 +165,7 @@ async def test_a_change_answers_with_what_its_caller_may_do(
             None,  # type: ignore[arg-type]
             None,  # type: ignore[arg-type]
             _Protocol(),  # type: ignore[arg-type]
+            _NO_DECISIONS,
             member,
             False,
         )

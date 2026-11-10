@@ -31,7 +31,7 @@ import { useLoad } from "../workspace/useLoad";
 type MemberRow = OrganizationMember & { id: string };
 
 const ROLE_LABELS: Record<OrganizationRole, string> = {
-  org_admin: "Org Admin",
+  org_admin: "Org admin",
   member: "Member",
 };
 
@@ -252,14 +252,14 @@ export default function OrganizationMembersSection({
 
   return (
     <Stack spacing={1.5}>
-      <Typography variant="h6">Members</Typography>
+      <Typography variant="h6">Users</Typography>
       <Typography variant="body2" sx={{ color: "text.secondary" }}>
         Organization admins administer every workspace in the organization. Someone is removed
         from each workspace before they can be removed from the organization.
       </Typography>
       {asOperator && errorStatus === 403 ? (
         <Alert severity="info">
-          As platform operator you can manage this organization's members only while it has no
+          As platform operator you can manage this organization's users only while it has no
           admin, to make someone one.
         </Alert>
       ) : (
@@ -271,12 +271,12 @@ export default function OrganizationMembersSection({
             ? "This organization has no admin. Its admins come from its account settings, so " +
               "someone has to be made an organization admin there."
             : "This organization has no admin. As platform operator you can make one of its " +
-              "members an admin; the change is recorded in its audit log, marked as yours."}
+              "users an admin; the change is recorded in its audit log, marked as yours."}
         </Alert>
       )}
       {fromDirectory && directoryTakesChanges && !asOperator && (
         <Alert severity="info">
-          This organization's members, and who is its admin, come from your organization's
+          This organization's users, and who is its admin, come from your organization's
           account settings. Changes you make here are made there too; you may be asked to
           confirm your sign-in there first. New people can't be added from here yet: add them
           there.
@@ -284,7 +284,7 @@ export default function OrganizationMembersSection({
       )}
       {fromDirectory && !directoryTakesChanges && !asOperator && (
         <Alert severity="info">
-          This organization's members, and who is its admin, come from your organization's
+          This organization's users, and who is its admin, come from your organization's
           account settings. Add people and make someone an organization admin there; the change
           shows here shortly. Removing someone here, or making an admin a member, takes effect at
           once but lasts only while the account settings agree: they are read again at the

@@ -1,15 +1,20 @@
-import { Box, Stack } from "@mui/material";
-import { Outlet } from "react-router";
+import { Alert, Box, Button, Stack } from "@mui/material";
+import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
+import { type Layout, areaOf } from "../routes/routeTable";
 import NavRail from "./NavRail";
 import OwnerNotices from "./OwnerNotices";
 import TopBar from "./TopBar";
 
 /** Hoot's signature shell: a narrow icon rail and a slim top bar sitting bare on
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
- *  the content is the hero — an "app within a surface", not edge-to-edge chrome. */
-export default function PageShell() {
+ *  the content is the hero — an "app within a surface", not edge-to-edge chrome.
+ *  The new layout's organization settings are a place of their own, outside
+ *  the workspace: no rail there, and the top bar leads back. */
+export default function PageShell({ layout }: { layout: Layout }) {
+  const { pathname } = useLocation();
   const { session } = useAuth();
+  const withRail = areaOf(pathname, layout) !== "organization";
   return (
     <Box
       sx={{
@@ -19,9 +24,18 @@ export default function PageShell() {
         backgroundColor: "var(--hoot-canvas)",
       }}
     >
-      <NavRail />
-      <Stack sx={{ flex: 1, minWidth: 0, overflow: "hidden", pr: "var(--surface-gutter)", pb: "var(--surface-gutter)" }}>
-        <TopBar />
+      {withRail && <NavRail layout={layout} />}
+      <Stack
+        sx={{
+          flex: 1,
+          minWidth: 0,
+          overflow: "hidden",
+          pl: withRail ? 0 : "var(--surface-gutter)",
+          pr: "var(--surface-gutter)",
+          pb: "var(--surface-gutter)",
+        }}
+      >
+        <TopBar layout={layout} />
         <Stack
           component="main"
           sx={{
@@ -35,6 +49,7 @@ export default function PageShell() {
             p: 4,
           }}
         >
+          <StaleSessionBanner />
           {session?.tenant && (
             <OwnerNotices
               key={`${session.user.id}:${session.tenant.id}`}
@@ -46,5 +61,25 @@ export default function PageShell() {
         </Stack>
       </Stack>
     </Box>
+  );
+}
+
+/** Says so when the session could not be read again on coming back to the
+ * tab, rather than carrying on as if what the page shows were current. */
+function StaleSessionBanner() {
+  const { staleError, recheck } = useAuth();
+  if (staleError === null) return null;
+  return (
+    <Alert
+      severity="warning"
+      sx={{ mb: 2 }}
+      action={
+        <Button color="inherit" size="small" onClick={recheck}>
+          Retry
+        </Button>
+      }
+    >
+      Could not check your session with Switch: {staleError}. This page may be out of date.
+    </Alert>
   );
 }

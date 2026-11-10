@@ -1,0 +1,27 @@
+{{- if and .Values.decision.enabled .Values.decision.networkPolicy.enabled }}
+# Only this release's switch-core reaches the decision service, and only on
+# its port: no other pod, and not the model server's port. Egress is left
+# open: the pod downloads its weights and, for Haiku, calls Anthropic or
+# Bedrock.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "switch.decisionHost" . }}
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+    {{- include "switch.decisionSelectorLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "switch.decisionSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.decision.port }}
+{{- end }}

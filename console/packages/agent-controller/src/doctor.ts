@@ -53,7 +53,7 @@ async function serverChecks(inputs: DoctorInputs): Promise<Check[]> {
       {
         name: 'Enrollment',
         status: 'fail',
-        detail: `${inputs.dataDir} is not enrolled. Run: switch-agent-controller enroll --server <url> --code <code>, with a code from the Machines page.`,
+        detail: `${inputs.dataDir} is not enrolled. Run: switch-agent-controller enroll --server <url> --code <code>, with a code from the Devices page.`,
       },
     ];
   const { identity } = inputs;
