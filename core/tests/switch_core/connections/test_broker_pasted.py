@@ -554,7 +554,8 @@ class TestIssue:
 
         assert warning == (
             "Switch has forgotten the pasted Example token but cannot revoke it. "
-            "Revoke it in Example to stop it working."
+            "Revoke it in Example to stop it working. "
+            "Grant Example again to these agents: planner."
         )
         connection = await _connection(session_factory, owner.id)
         assert connection.status == "active"
@@ -562,6 +563,36 @@ class TestIssue:
         # Named by its account now, which the grant was not made for.
         refused = await _refused(p.broker, session_factory, agent.id, service="example")
         assert refused.code == "grant_account_changed"
+
+    async def test_pasting_again_for_the_same_account_keeps_the_grants(
+        self, session_factory, tmp_path
+    ) -> None:
+        p = _pasting(session_factory, tmp_path / "c")
+        p.vendor.pasted_tokens[TOKEN] = True
+        owner, agent = await _connected(session_factory, p, "token", {"pat": TOKEN})
+        renewed = "expat_ab12_SYNTHETICRENEWEDVALUE"
+        p.vendor.pasted_tokens[renewed] = True
+
+        checked = await _check(p, "token", {"pat": renewed})
+        async with session_factory() as session:
+            warning = await p.broker.connect(
+                session,
+                user_id=owner.id,
+                service="example",
+                consent=KEY_CONSENT,
+                granted_scopes=[],
+                account_id=checked.account_id,
+                external_identity=checked.label,
+                secret=checked.secret,
+                oauth_client_id=None,
+                method="token",
+                choices=checked.choices,
+            )
+
+        assert warning is not None
+        assert "Grant Example again" not in warning
+        token = await _issue(p.broker, session_factory, agent.id, service="example")
+        assert json.loads(token.token)["secret"] == {"pat": renewed}
 
 
 class TestDisconnect:

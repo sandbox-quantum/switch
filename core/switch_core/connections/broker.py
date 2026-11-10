@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import exists, select, text
+from sqlalchemy import exists, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 
@@ -2301,6 +2301,27 @@ class ServiceBroker:
         previous = await self._store.get_connection(session, user_id, service)
         replaced = None if previous is None else self._signed_in(previous)
         replaced_account = "" if previous is None else previous.account_id
+        regrant = (
+            []
+            if previous is None or replaced_account == account_id
+            else list(
+                await session.scalars(
+                    select(func.coalesce(Agent.display_name, Agent.name))
+                    .join(
+                        ServiceGrant,
+                        (ServiceGrant.tenant_id == Agent.tenant_id)
+                        & (ServiceGrant.agent_id == Agent.id),
+                    )
+                    .where(
+                        ServiceGrant.tenant_id == require_tenant_id(),
+                        ServiceGrant.owner_id == user_id,
+                        ServiceGrant.service == service,
+                        ServiceGrant.account_id != account_id,
+                    )
+                    .order_by(Agent.name)
+                )
+            )
+        )
         issued_on_it = (
             ServiceTokenIssuance.owner_id == user_id,
             ServiceTokenIssuance.service == service,
@@ -2369,6 +2390,10 @@ class ServiceBroker:
         withdrawn = await self._revoke_withdrawn(session, issued_on_it, ended=ended)
         if withdrawn is not None:
             warnings.append(withdrawn)
+        if regrant:
+            warnings.append(
+                f"Grant {name} again to these agents: {', '.join(regrant)}."
+            )
         return " ".join(warnings) or None
 
     async def _revoke_unkept(
