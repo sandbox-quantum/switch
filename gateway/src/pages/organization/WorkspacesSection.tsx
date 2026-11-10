@@ -20,7 +20,7 @@ import {
   createOrganizationWorkspace,
   fetchOrganizationWorkspaces,
 } from "../../data/api";
-import { titleCase } from "../../theme/hootFormat";
+import { sentenceCase } from "../../theme/hootFormat";
 import { useLoad } from "../workspace/useLoad";
 
 interface Props {
@@ -51,7 +51,7 @@ export default function WorkspacesSection({ currentId, canAdd }: Props) {
         field: "role",
         headerName: "Your role",
         width: 140,
-        valueFormatter: (value) => titleCase(String(value)),
+        valueFormatter: (value) => sentenceCase(String(value)),
       },
       {
         field: "actions",

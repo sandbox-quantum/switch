@@ -2601,7 +2601,7 @@ class DiscordAdapter(PlatformAdapter):
         ):
             raise ChannelNotBindable(
                 f"Discord channel {channel_id} is a direct message, which this "
-                "connection does not carry."
+                "messaging app does not carry."
             )
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
@@ -3697,7 +3697,7 @@ class DiscordAdapter(PlatformAdapter):
         guild = getattr(channel, "guild", None)
         if guild is not None and guild.id != self._guild_id:
             raise ChannelNotBindable(
-                f"Discord channel {channel_id} is not in this connection's server."
+                f"Discord channel {channel_id} is not in this messaging app's server."
             )
         return channel
 

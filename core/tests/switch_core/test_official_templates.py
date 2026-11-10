@@ -27,7 +27,6 @@ _REPO = Path(__file__).resolve().parents[3]
 _PACKAGED = _REPO / "core" / "switch_core" / "official_templates"
 
 
-_KNOWLEDGE = _REPO / "switch-expert" / "knowledge"
 _PLAYBOOK = _PACKAGED / "switch-buddy" / "PLAYBOOK.md"
 
 
@@ -71,21 +70,18 @@ def test_switch_expert_is_served_only_where_switch_buddy_is_not():
         ]
 
 
-def test_the_knowledge_switch_buddy_reads_is_present():
-    """switch-buddy reads switch-expert/knowledge/ from its clone of the
-    repository at runtime; every file it is pointed at must exist."""
-    for name in (
-        "INDEX.md",
-        "CONCEPTS.md",
-        "PATTERNS.md",
-        "RECIPES.md",
-        "CHECKLIST.md",
-        "GOTCHAS.md",
-    ):
-        assert (_KNOWLEDGE / name).is_file(), name
-    assert (_REPO / "switch-expert" / "CORRECTIONS.md").is_file()
+def test_switch_buddy_reads_the_published_docs_not_a_clone():
+    """switch-buddy fetches the published docs rather than cloning the
+    repository: a new user's machine may have no git, and the first reply
+    must not wait on a clone."""
     instructions = (_PACKAGED / "switch-buddy" / "AGENT.md").read_text()
-    assert "switch-expert/knowledge/INDEX.md" in instructions
+    assert "https://docs.switchagents.ai/llms.txt" in instructions
+    assert "https://docs.switchagents.ai/llms-full.txt" in instructions
+    assert "git clone" not in instructions
+    template = yaml.safe_load(
+        (_PACKAGED / "switch-buddy" / "template.yaml").read_text(encoding="utf-8")
+    )
+    assert "repo" not in template["resources"]["buddy"]
 
 
 def test_the_instructions_are_written_in_and_the_documents_are_clean():
@@ -313,11 +309,14 @@ def test_switch_buddy_offers_choices_in_its_question_form():
 
 
 def test_every_playbook_section_switch_buddy_is_pointed_at_exists():
-    """switch-buddy reads the playbook from its clone of the repository when
-    its instructions point at a section, so the path and each section named
-    must exist as written."""
+    """switch-buddy fetches the playbook from the repository's main branch
+    when its instructions point at a section, so the path and each section
+    named must exist as written."""
     text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
-    paths = re.findall(r"`switch/(\S+?PLAYBOOK\.md)`", text)
+    paths = re.findall(
+        r"`https://raw\.githubusercontent\.com/sandbox-quantum/switch/main/(\S+?PLAYBOOK\.md)`",
+        text,
+    )
     assert paths
     for path in paths:
         assert (_REPO / path).resolve() == _PLAYBOOK.resolve(), path
@@ -340,8 +339,8 @@ def test_switch_buddy_checks_the_services_an_agent_needs_before_proposing():
 
 
 def test_switch_buddy_carries_on_without_its_playbook():
-    """A fresh install may have no clone, and an older tag no playbook: that
-    must pause only what needs the detail, never basic onboarding."""
+    """The playbook may be unreachable or lack a section: that must pause only
+    what needs the detail, never basic onboarding."""
     text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
     assert "read it only if you need more" in text
     assert "pause only the action that needs the missing detail" in text

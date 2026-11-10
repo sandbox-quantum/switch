@@ -54,6 +54,7 @@ def message_event(
     sender_owns_agent: bool = False,
     mid_turn_delivery: Literal["steer", "queue"] = "steer",
     switch_notice: str | None = None,
+    routed_reason: Literal["decided", "fallback"] | None = None,
 ) -> AgentEvent:
     """Build the `message` event the agent receives, with any attached files.
 
@@ -91,6 +92,8 @@ def message_event(
             sender_owns_agent=sender_owns_agent,
             mid_turn_delivery=mid_turn_delivery,
             switch_notice=switch_notice,
+            routed=routed_reason is not None,
+            routed_reason=routed_reason,
         ),
     )
 

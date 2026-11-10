@@ -383,7 +383,7 @@ async def oidc_callback(
             status_code=503,
             detail=(
                 "Sign-in is misconfigured: the identity provider's issuer "
-                "does not match this server's configuration"
+                "does not match Switch's configuration"
             ),
         )
     # A first sign-in provisions the account just in time. Where it lands is

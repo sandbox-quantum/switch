@@ -16,7 +16,7 @@ import {
   fetchInvitations,
   revokeInvitation,
 } from "../../data/api";
-import { formatDate, titleCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase } from "../../theme/hootFormat";
 import CreateInvitationDialog from "./CreateInvitationDialog";
 import { useLoad } from "./useLoad";
 
@@ -81,7 +81,7 @@ export default function InvitationsSection({
         field: "role",
         headerName: "Role",
         width: 110,
-        valueFormatter: (value) => titleCase(String(value)),
+        valueFormatter: (value) => sentenceCase(String(value)),
       },
       {
         field: "status",
@@ -128,7 +128,7 @@ export default function InvitationsSection({
       </Stack>
       {organization?.members_from_directory && (
         <Alert severity="info">
-          This organization's members come from your organization's account settings, so only
+          This organization's users come from your organization's account settings, so only
           people already in the organization can accept an invitation. Add anyone new there
           first.
         </Alert>

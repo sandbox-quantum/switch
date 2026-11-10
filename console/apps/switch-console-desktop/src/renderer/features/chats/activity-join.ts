@@ -5,6 +5,7 @@ import {
 } from '@shared/core/chats/activity';
 import { type ChatMessage, isSessionStartingNotice, turnEndNotice } from '@shared/core/chats/chats';
 import { isControlAck } from './stop-rows';
+import { switchTool } from './tool-presentation';
 
 /**
  * Joining an agent's turns, as Switch's activity feed stores them, to the
@@ -251,9 +252,10 @@ export function toolState(item: Pick<ChatActivityItem, 'status'>, turn: TurnStat
 
 /** Tool calls whose only output is the room message the user already sees. */
 export function isHiddenTool(item: Pick<ChatActivityItem, 'title'>): boolean {
+  const tool = switchTool(item.title);
   return (
-    /^mcp__switch__post_message(\s|$)/.test(item.title) ||
-    /^mcp__switch__send_targeted_message(\s|$)/.test(item.title) ||
+    tool === 'post_message' ||
+    tool === 'send_targeted_message' ||
     /^ToolSearch(\s|$)/.test(item.title)
   );
 }
