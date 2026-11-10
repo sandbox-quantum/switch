@@ -57,9 +57,18 @@ async def confirm_with_code(
     user_store: UserStore,
     account: ExternalUser,
     code: str,
-) -> str:
+    only_here: bool,
+) -> str | None:
     """Confirm the link `code` was issued for, from the account that posted
     it, and say what happened.
+
+    `only_here` says the command reached this server alone: a slash command,
+    a button, or a direct conversation with this app. A code typed in a
+    channel can reach the apps of several Switch servers sharing a workspace,
+    and only the one it was issued on should answer: a server with no link
+    waiting for the account says nothing (None) rather than contradicting the
+    one that linked it. A wrong or expired code still gets an answer from the
+    server waiting for one.
 
     Only the Switch user was shown the code, and the platform says which
     account posted it, so a match proves one person holds both. A code posted
@@ -75,7 +84,9 @@ async def confirm_with_code(
             session, account, code, user_store
         )
     except CodeNotAccepted:
-        return CODE_REFUSED
+        if only_here or await external_user_store.has_link_request(session, account):
+            return CODE_REFUSED
+        return None
     return await record_confirmed_link(
         session,
         user_store=user_store,
@@ -140,9 +151,14 @@ async def unlink_account(
     user_store: UserStore,
     account: ExternalUser,
     wanted: str,
-) -> str:
+    only_here: bool,
+) -> str | None:
     """List the Switch users this account is linked to, or remove the one
     `wanted` names, and say what happened.
+
+    Says nothing (None) when the account has no links here and the command
+    may have reached other Switch servers too (`only_here`, as for
+    `confirm_with_code`): one of them may have the link.
 
     The account's own say over its links, for someone who has no Switch login
     to fix one with: a link confirmed by mistake, or one made before links
@@ -174,6 +190,8 @@ async def unlink_account(
         for name, _email, claim in linked
     )
 
+    if not linked and not only_here:
+        return None
     if not wanted:
         if not linked:
             return NOT_LINKED

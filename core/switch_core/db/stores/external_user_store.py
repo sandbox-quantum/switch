@@ -8,6 +8,7 @@ from sqlalchemy import (
     and_,
     case,
     delete,
+    exists,
     func,
     literal,
     or_,
@@ -374,6 +375,20 @@ class ExternalUserStore:
         if request is None:
             raise RuntimeError("A link request was written but could not be read back")
         return request
+
+    async def has_link_request(
+        self, session: AsyncSession, external_user: ExternalUser
+    ) -> bool:
+        """Whether a link is waiting for this account, expired or not."""
+        return bool(
+            await session.scalar(
+                select(
+                    exists().where(
+                        ExternalUserLinkRequest.external_user_id == external_user.id
+                    )
+                )
+            )
+        )
 
     async def get_link_request(
         self, session: AsyncSession, external_user_id: str, switch_user_id: str

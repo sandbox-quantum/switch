@@ -18,6 +18,7 @@ from switch_core.account_links import PROMPT_TOKEN_PREFIX
 from switch_core.bridges.collaboration import collaboration_core
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import (
+    ChannelType,
     DirectMessageUnavailable,
     DirectPrompt,
     InboundCommand,
@@ -139,6 +140,24 @@ def _command(command: str, args: str = "", sender: str = "U-ada") -> InboundComm
     )
 
 
+def _in_channel(
+    command: str,
+    args: str = "",
+    sender: str = "U-ada",
+    channel_type: ChannelType = "channel_public",
+) -> InboundCommand:
+    """A command typed in a conversation, which the apps of other Switch
+    servers in the workspace may see too, unlike a slash command."""
+    return InboundCommand(
+        channel_id="C-shared",
+        channel_type=channel_type,
+        sender_id=sender,
+        sender_name="ada",
+        command=command,
+        args=args,
+    )
+
+
 async def _code(world: _World) -> str:
     async with world.session_factory() as session:
         request = await _STORE.request_link(
@@ -201,6 +220,99 @@ class TestLinkAccount:
         )
 
         assert adapter.answers[0][1] == LINK_USAGE
+
+
+class TestOnlyTheServerWithTheLinkAnswers:
+    """A code typed in a channel reaches every Switch server whose app is
+    there. Only the one it was issued on should answer it."""
+
+    async def test_a_code_typed_where_no_link_waits_here_gets_no_answer(
+        self, world: _World
+    ) -> None:
+        bridge, adapter = _bridge(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _in_channel("link-account", "AAAA-AAAA")
+        )
+
+        assert adapter.answers == []
+
+    async def test_an_account_this_server_has_never_seen_gets_no_answer(
+        self, world: _World
+    ) -> None:
+        bridge, adapter = _bridge(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _in_channel("link-account", "AAAA-AAAA", sender="U-stranger")
+        )
+
+        assert adapter.answers == []
+
+    async def test_a_wrong_code_where_a_link_waits_is_still_refused(
+        self, world: _World
+    ) -> None:
+        await _code(world)
+        bridge, adapter = _bridge(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _in_channel("link-account", "AAAA-AAAA")
+        )
+
+        assert adapter.answers[0][1] == CODE_REFUSED
+
+    async def test_the_server_that_issued_the_code_links_it(
+        self, world: _World
+    ) -> None:
+        code = await _code(world)
+        bridge, adapter = _bridge(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _in_channel("link-account", code)
+        )
+
+        assert await _verified(world)
+        assert "Linked this Acme Slack account (ada)" in adapter.answers[0][1]
+
+    @pytest.mark.parametrize("channel_type", ["direct", "lobby"])
+    async def test_a_direct_conversation_with_this_app_is_always_answered(
+        self, world: _World, channel_type: ChannelType
+    ) -> None:
+        bridge, adapter = _bridge(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _in_channel("link-account", "AAAA-AAAA", channel_type=channel_type)
+        )
+
+        assert adapter.answers[0][1] == CODE_REFUSED
+
+    async def test_unlinking_where_nothing_is_linked_here_gets_no_answer(
+        self, world: _World
+    ) -> None:
+        bridge, adapter = _bridge(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _in_channel("unlink-account")
+        )
+        await CollaborationCore._handle_inbound_command(
+            bridge, _in_channel("unlink-account", sender="U-stranger")
+        )
+
+        assert adapter.answers == []
+
+    async def test_unlinking_where_a_link_is_here_is_answered(
+        self, world: _World
+    ) -> None:
+        code = await _code(world)
+        async with world.session_factory() as session:
+            await _STORE.redeem_link_code(session, world.account, code, UserStore())
+            await session.commit()
+        bridge, adapter = _bridge(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _in_channel("unlink-account")
+        )
+
+        assert "**Ada**" in adapter.answers[0][1]
 
 
 class TestUnlinkAccount:

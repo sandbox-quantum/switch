@@ -509,7 +509,11 @@ version of their own to them without also giving them a release of their own.
   couldn't be posted. On Slack the answer now goes only to the person who ran
   the command, in any conversation, and the slash command no longer posts a
   "Running" message showing the code to the channel. Console's Slack
-  instructions now lead with `/link-account CODE`.
+  instructions now lead with `/link-account CODE`. When the apps of several
+  Switch servers share a channel, only the server the code was issued on
+  answers a code typed there: one with no link waiting for the account, or no
+  link to drop, says nothing instead of contradicting it. A slash command or a
+  direct message to the app is still always answered.
 - **The owner-only refusal speaks to both readers.** Someone whose chat account
   isn't linked, addressing an agent that takes instructions only from its
   owner, is told that the owner can let them in, as well as how to link the

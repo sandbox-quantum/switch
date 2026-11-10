@@ -1527,7 +1527,17 @@ class CollaborationCore:
         None of it is about a room, so no room is made or needed for the
         conversation it was typed in. The account is the one the platform says
         sent the command, and only it is touched.
+
+        A slash command, a button or a direct conversation reaches this server
+        alone. A command typed in a channel may reach the apps of other Switch
+        servers in the same workspace as well, so there only a server with
+        something to say about the account answers.
         """
+        only_here = cmd.reply_ref is not None or cmd.channel_type in (
+            "direct",
+            "lobby",
+        )
+        reply: str | None
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -1542,7 +1552,7 @@ class CollaborationCore:
                     # A link is only ever waiting for an account Switch has a
                     # record of, so a code from one it has none of matches
                     # nothing.
-                    reply = CODE_REFUSED
+                    reply = CODE_REFUSED if only_here else None
                 else:
                     reply = await confirm_with_code(
                         session,
@@ -1550,9 +1560,10 @@ class CollaborationCore:
                         user_store=self._user_store,
                         account=account,
                         code=code,
+                        only_here=only_here,
                     )
             elif account is None:
-                reply = NOT_LINKED
+                reply = NOT_LINKED if only_here else None
             else:
                 reply = await unlink_account(
                     session,
@@ -1560,7 +1571,18 @@ class CollaborationCore:
                     user_store=self._user_store,
                     account=account,
                     wanted=cmd.args,
+                    only_here=only_here,
                 )
+        if reply is None:
+            logger.info(
+                "Left %s from %s in channel %s unanswered: nothing on this server "
+                "is about that account, and another Switch server in the "
+                "workspace may have it",
+                cmd.command,
+                cmd.sender_name,
+                cmd.channel_id,
+            )
+            return
         # After the session has closed: a rejected code may have locked the
         # request it was checked against.
         await self._adapter.answer_command(cmd, reply)

@@ -1644,6 +1644,7 @@ async def _cmd_link_account(
 
     # Replied after the session has closed: a rejected code may have locked
     # the request it was checked against.
+    reply: str | None
     async with host.session_factory() as session:
         account = await _sender_account(host, session, event)
         if account is None:
@@ -1658,8 +1659,10 @@ async def _cmd_link_account(
                 user_store=host._user_store,
                 account=account,
                 code=code,
+                only_here=True,
             )
-    await _reply(host, room, event, reply)
+    if reply is not None:
+        await _reply(host, room, event, reply)
 
 
 async def _cmd_unlink_account(
@@ -1670,6 +1673,7 @@ async def _cmd_unlink_account(
     Answered by the bridge that hears it, like `link-account`; see there.
     """
     host = cast("CommandConsumer", client)
+    reply: str | None
     async with host.session_factory() as session:
         account = await _sender_account(host, session, event)
         if account is None:
@@ -1681,10 +1685,12 @@ async def _cmd_unlink_account(
                 user_store=host._user_store,
                 account=account,
                 wanted=event.args or "",
+                only_here=True,
             )
     # After the session has closed, so no lock is held while the reply is
     # written.
-    await _reply(host, room, event, reply)
+    if reply is not None:
+        await _reply(host, room, event, reply)
 
 
 async def _cmd_rename_agent(
