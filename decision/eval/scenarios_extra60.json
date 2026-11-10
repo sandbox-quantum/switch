@@ -1,0 +1,3092 @@
+{
+ "room": {
+  "name": "sales-ops",
+  "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+ },
+ "agents": [
+  {
+   "name": "crm-bot",
+   "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+   "role": "revops"
+  },
+  {
+   "name": "quote-bot",
+   "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+  },
+  {
+   "name": "contracts-bot",
+   "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+   "role": "legal-ops"
+  },
+  {
+   "name": "research-bot",
+   "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+  },
+  {
+   "name": "calendar-bot",
+   "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+  }
+ ],
+ "scenarios": [
+  {
+   "id": "sales-merge-duplicate-accounts",
+   "expect": [
+    "crm-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "marco",
+     "sender_kind": "person",
+     "text": "morning all",
+     "addressed": []
+    },
+    {
+     "sender": "jess",
+     "sender_kind": "person",
+     "text": "anyone have the latest Q3 board deck? need the logo slide",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "priya",
+    "text": "can someone merge the two Initech accounts? one is 'Initech Inc', the other just 'Initech', and the opps are split across both",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-quote-150-seats",
+   "expect": [
+    "quote-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "need a quote for 150 seats of Pro, annual billing, for Soylent. list price is fine for a first pass",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-msa-indemnity-redline",
+   "expect": [
+    "contracts-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "aisha",
+    "text": "Soylent sent the MSA back with edits to the indemnity section and a 2x liability cap. can someone go through it before I reply?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-call-prep-unknown-account",
+   "expect": [
+    "research-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "jess",
+     "sender_kind": "person",
+     "text": "who's covering the Hooli renewal while Dana is out?",
+     "addressed": []
+    },
+    {
+     "sender": "priya",
+     "sender_kind": "person",
+     "text": "me",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "marco",
+    "text": "jumping on a first call with Wayne Enterprises in an hour and I know basically nothing about them 😅",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-demo-scheduling-indirect",
+   "expect": [
+    "calendar-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "jess",
+    "text": "Massive Dynamic wants a demo with their CTO sometime next week. I'm free Tue and Thu afternoons",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-close-date-slipped",
+   "expect": [
+    "crm-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "priya",
+    "text": "Hooli opp still shows a Sept 30 close date — it slipped to Dec 15, and it should drop from Commit to Best Case",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-celebrate-closed-won",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "priya",
+     "sender_kind": "person",
+     "text": "Globex signed!! 3 years, 400 seats 🎉",
+     "addressed": []
+    },
+    {
+     "sender": "jess",
+     "sender_kind": "person",
+     "text": "LETS GOOO",
+     "addressed": []
+    },
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "🔥🔥",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "marco",
+    "text": "huge, Priya. that one took forever — drinks on me Thursday",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-question-to-dana",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "marco",
+     "sender_kind": "person",
+     "text": "@calendar-bot set up a technical deep dive with Initech this week, 1 hour",
+     "addressed": [
+      "calendar-bot"
+     ]
+    },
+    {
+     "sender": "calendar-bot",
+     "sender_kind": "agent",
+     "text": "Invite sent: Initech technical deep dive, Wed 3:00–4:00pm ET. Attendees: marco + 3 from Initech.",
+     "addressed": [
+      "marco"
+     ]
+    }
+   ],
+   "message": {
+    "sender": "marco",
+    "text": "Dana are you able to join the Initech one at 3 on Wed? want you there for the security questions",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-vent-discount-approvals",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "anyone else's laptop restarting itself for updates mid-call lol",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "jess",
+    "text": "rant: every quarter end the discount approval chain gets slower. finance genuinely needs more people",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-reps-debating-liability-cap",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "marco",
+     "sender_kind": "person",
+     "text": "Umbrella wants uncapped liability for data breaches. thinking we counter with 3x fees",
+     "addressed": []
+    },
+    {
+     "sender": "jess",
+     "sender_kind": "person",
+     "text": "3x is a lot, legal usually stops at 2x",
+     "addressed": []
+    },
+    {
+     "sender": "marco",
+     "sender_kind": "person",
+     "text": "true but they're accepting net 30 and a 3 year term",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "jess",
+    "text": "I'd rather give on the cap than on payment terms tbh",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-thanks-after-quote",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "@quote-bot can you redo the Stark quote with the 15% multi-year discount?",
+     "addressed": [
+      "quote-bot"
+     ]
+    },
+    {
+     "sender": "quote-bot",
+     "sender_kind": "agent",
+     "text": "Updated quote Q-2291 for Stark Industries: 220 seats Pro, 3-year term, 15% discount (within policy, no approval needed). Annual total $277,200. PDF attached.",
+     "addressed": [
+      "tom"
+     ]
+    }
+   ],
+   "message": {
+    "sender": "tom",
+    "text": "perfect, thank you!",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-thread-split-by-segment",
+   "expect": [
+    "crm-bot"
+   ],
+   "thread": [
+    {
+     "sender": "aisha",
+     "sender_kind": "person",
+     "text": "@crm-bot can you pull the Q4 EMEA pipeline by stage?",
+     "addressed": [
+      "crm-bot"
+     ]
+    },
+    {
+     "sender": "crm-bot",
+     "sender_kind": "agent",
+     "text": "Q4 EMEA pipeline: 64 open opps, $8.2M. Discovery $2.1M, Evaluation $3.4M, Proposal $1.9M, Negotiation $0.8M. Report: sfdc.link/r/88412",
+     "addressed": [
+      "aisha"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "aisha",
+    "text": "can you split that by segment too? mid-market vs enterprise",
+    "thread_id": "t-sales-thread-split-by-segment"
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-thread-shift-to-nda",
+   "expect": [
+    "contracts-bot"
+   ],
+   "thread": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "@quote-bot quote for the Acme pilot: 25 seats Pro, 3 months",
+     "addressed": [
+      "quote-bot"
+     ]
+    },
+    {
+     "sender": "quote-bot",
+     "sender_kind": "agent",
+     "text": "Quote Q-2307 for Acme: 25 seats Pro, 3-month pilot, $7,500 total. PDF attached.",
+     "addressed": [
+      "tom"
+     ]
+    },
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "great, sending it over",
+     "addressed": []
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "they also want a mutual NDA signed before the pilot kicks off — can we get one drafted?",
+    "thread_id": "t-sales-thread-shift-to-nda"
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-thread-reply-to-jess",
+   "expect": [
+    null
+   ],
+   "thread": [
+    {
+     "sender": "jess",
+     "sender_kind": "person",
+     "text": "@contracts-bot Northwind sent redlines on the order form, can you review?",
+     "addressed": [
+      "contracts-bot"
+     ]
+    },
+    {
+     "sender": "contracts-bot",
+     "sender_kind": "agent",
+     "text": "Reviewed. Two non-standard changes: payment terms moved to net 75 (standard net 30, max net 45 without CFO sign-off) and auto-renewal removed. Everything else matches the template.",
+     "addressed": [
+      "jess"
+     ]
+    },
+    {
+     "sender": "jess",
+     "sender_kind": "person",
+     "text": "ok, taking the net 75 to legal and the CFO today",
+     "addressed": []
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "marco",
+    "text": "Jess can you loop me in when you hear back? I've got the Northwind exec sponsor call Friday",
+    "thread_id": "t-sales-thread-reply-to-jess"
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-thread-tech-stack-followup",
+   "expect": [
+    "research-bot"
+   ],
+   "thread": [
+    {
+     "sender": "priya",
+     "sender_kind": "person",
+     "text": "@research-bot background on Umbrella Corp before Thursday?",
+     "addressed": [
+      "research-bot"
+     ]
+    },
+    {
+     "sender": "research-bot",
+     "sender_kind": "agent",
+     "text": "Umbrella Corp: ~4,200 employees, HQ in Chicago, Series E ($180M, 2025). New CRO hired in August, expanding into APAC. Recent news: acquired a small analytics startup in September.",
+     "addressed": [
+      "priya"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "priya",
+    "text": "nice. do we know what they use for call recording today?",
+    "thread_id": "t-sales-thread-tech-stack-followup"
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-net60-payment-terms",
+   "expect": [
+    "contracts-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "aisha",
+    "text": "Initech is asking for net 60 payment terms on the order form instead of net 30 — are we allowed to do that?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-closed-lost-competitor-report",
+   "expect": [
+    "crm-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "can I get a list of every opp we lost to Gong this year, with amount and loss reason?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-champion-replaced",
+   "expect": [
+    "research-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "jess",
+    "text": "our champion at Northwind left last month — do we know who replaced her as VP of IT?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-answer-calendar-clarifying",
+   "expect": [
+    "calendar-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "aisha",
+     "sender_kind": "person",
+     "text": "@calendar-bot set up the Stark QBR with their exec team, me and marco",
+     "addressed": [
+      "calendar-bot"
+     ]
+    },
+    {
+     "sender": "calendar-bot",
+     "sender_kind": "agent",
+     "text": "Stark's exec assistant offered two windows: week of Nov 10 or week of Nov 17. Which week works, and mornings or afternoons?",
+     "addressed": [
+      "aisha"
+     ]
+    },
+    {
+     "sender": "jess",
+     "sender_kind": "person",
+     "text": "anyone seen the new comp plan doc?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "aisha",
+    "text": "week of the 17th, afternoons",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "sales-moved-on-to-forecast",
+   "expect": [
+    "crm-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "@quote-bot what's list for the Enterprise add-on?",
+     "addressed": [
+      "quote-bot"
+     ]
+    },
+    {
+     "sender": "quote-bot",
+     "sender_kind": "agent",
+     "text": "Enterprise add-on lists at $18/seat/month, annual only.",
+     "addressed": [
+      "tom"
+     ]
+    },
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "thx",
+     "addressed": []
+    },
+    {
+     "sender": "aisha",
+     "sender_kind": "person",
+     "text": "ok forecast call in 10, everyone update your commits",
+     "addressed": []
+    },
+    {
+     "sender": "marco",
+     "sender_kind": "person",
+     "text": "done, moved Globex to closed won",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "aisha",
+    "text": "what's our Q4 commit now vs last week's number?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "sales-ops",
+    "instructions": "Sales operations room for the AEs and RevOps. CRM data fixes, pipeline and forecast reports go to crm-bot; price quotes and discount approvals go to quote-bot; contract terms, NDAs, order forms and redlines go to contracts-bot; account, prospect and competitor research goes to research-bot; scheduling customer meetings and demos goes to calendar-bot. Reps also chat, celebrate and vent here; agents stay out of conversations between people and only answer when someone actually needs one of them."
+   },
+   "agents": [
+    {
+     "name": "crm-bot",
+     "description": "Salesforce hygiene and reporting: updates opportunity stages, owners, close dates and fields, merges duplicate accounts and contacts, builds pipeline, win/loss and forecast reports.",
+     "role": "revops"
+    },
+    {
+     "name": "quote-bot",
+     "description": "Builds price quotes from the price book, applies discounts within policy, routes discounts above 20% for approval, and answers list-price and SKU questions."
+    },
+    {
+     "name": "contracts-bot",
+     "description": "Contract terms: drafts NDAs and order forms from templates, reviews customer redlines to the MSA, flags non-standard terms such as liability caps, payment terms and auto-renewal.",
+     "role": "legal-ops"
+    },
+    {
+     "name": "research-bot",
+     "description": "Account and competitor research: company background, org charts and key people, funding, tech stack, recent news and competitive battlecards."
+    },
+    {
+     "name": "calendar-bot",
+     "description": "Schedules customer meetings, demos and QBRs across reps' and customers' calendars; finds slots and sends invites."
+    }
+   ]
+  },
+  {
+   "id": "ds-wau-by-country-query",
+   "expect": [
+    "sql-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "ana",
+    "text": "can someone write me a query for weekly active users by country, last 90 days? from analytics.events",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-add-region-filter",
+   "expect": [
+    "dashboards-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lena",
+    "text": "could we get a region filter on the Marketing Funnel dashboard? sales leadership keeps asking for EMEA-only views",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-dbt-test-failure",
+   "expect": [
+    "pipelines-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "morning! coffee machine on 4 is fixed btw",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "kenji",
+    "text": "dbt run failed overnight — not_null_stg_orders_order_id is failing and fct_orders didn't build",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-churn-auc-drop",
+   "expect": [
+    "ml-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "ravi",
+    "text": "churn model's AUC went from 0.81 to 0.74 after Sunday's retrain. would love someone to dig into what changed",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-pii-schema-access",
+   "expect": [
+    "privacy-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "mei",
+    "text": "I need read access to the customers_pii schema for the fraud project, who do I ask?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-slow-join-query",
+   "expect": [
+    "sql-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "this has been running for 25 min, it's just events joined to sessions with a date filter. any way to make it faster?\n```select s.channel, count(*) from events e join sessions s on e.session_id = s.id where to_date(e.ts) >= '2026-10-01' group by 1```",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-question-to-ravi",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "ravi",
+     "sender_kind": "person",
+     "text": "LTV v3 is training now, should have numbers by EOD",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "ana",
+    "text": "Ravi did you end up including the 2024 data in the LTV training set or just 2025?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-vent-pipeline-outages",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "kenji",
+     "sender_kind": "person",
+     "text": "@pipelines-bot orders_hourly is late again",
+     "addressed": [
+      "pipelines-bot"
+     ]
+    },
+    {
+     "sender": "pipelines-bot",
+     "sender_kind": "agent",
+     "text": "orders_hourly recovered after a rerun; upstream API timed out at 08:00. Data is current as of 10:05.",
+     "addressed": [
+      "kenji"
+     ]
+    }
+   ],
+   "message": {
+    "sender": "tom",
+    "text": "third pipeline outage this month 🙃 we really need to invest in data quality next quarter",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-debate-median-mean",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "for the session length metric in the QBR are we using mean or median?",
+     "addressed": []
+    },
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "mean is what we did last time but it's skewed hard",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "yeah the p99 is like 9 hours",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "tom",
+    "text": "median. the tail is mostly bots and forgotten open tabs anyway",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-ack-in-thread",
+   "expect": [
+    null
+   ],
+   "thread": [
+    {
+     "sender": "lena",
+     "sender_kind": "person",
+     "text": "@sql-bot need monthly gross revenue by product line for 2025",
+     "addressed": [
+      "sql-bot"
+     ]
+    },
+    {
+     "sender": "sql-bot",
+     "sender_kind": "agent",
+     "text": "Here's the query against finance.fct_revenue grouped by month and product_line, plus the results (12 rows). Note: refunds are excluded, matching the finance definition.",
+     "addressed": [
+      "lena"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "lena",
+    "text": "ty, ran it and it matches finance's numbers 🙌",
+    "thread_id": "t-ds-ack-in-thread"
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-ooo-announcement",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "kenji",
+    "text": "fyi I'm OOO Friday, Mei is covering the dbt on-call if anything breaks",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-thread-rerun-with-backfill",
+   "expect": [
+    "pipelines-bot"
+   ],
+   "thread": [
+    {
+     "sender": "kenji",
+     "sender_kind": "person",
+     "text": "@pipelines-bot orders_daily DAG failed at the load step",
+     "addressed": [
+      "pipelines-bot"
+     ]
+    },
+    {
+     "sender": "pipelines-bot",
+     "sender_kind": "agent",
+     "text": "Failed on an upstream schema change: discount_code was added to raw.orders. I updated the staging model and reran today's partition — succeeded at 09:42.",
+     "addressed": [
+      "kenji"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "kenji",
+    "text": "nice. can you rerun it with a backfill from Oct 1? the earlier partitions are missing the column too",
+    "thread_id": "t-ds-thread-rerun-with-backfill"
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-thread-shift-to-unmask",
+   "expect": [
+    "privacy-bot"
+   ],
+   "thread": [
+    {
+     "sender": "mei",
+     "sender_kind": "person",
+     "text": "@sql-bot users who churned in Sept with their plan and signup date",
+     "addressed": [
+      "sql-bot"
+     ]
+    },
+    {
+     "sender": "sql-bot",
+     "sender_kind": "agent",
+     "text": "select user_id, email_masked, plan, signup_date from analytics.dim_users where churned_at between '2026-09-01' and '2026-09-30'; (email is masked by policy in this schema) — 3,412 rows.",
+     "addressed": [
+      "mei"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "mei",
+    "text": "actually for the win-back campaign I need the real email column, not the masked one. how do I get that approved?",
+    "thread_id": "t-ds-thread-shift-to-unmask"
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-thread-reply-to-mei",
+   "expect": [
+    null
+   ],
+   "thread": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "@ml-bot eval the new ranking model vs prod on last week's holdout",
+     "addressed": [
+      "ml-bot"
+     ]
+    },
+    {
+     "sender": "ml-bot",
+     "sender_kind": "agent",
+     "text": "New model: NDCG@10 0.412 vs prod 0.389 (+5.9%), CTR proxy +3.1%. Calibration is slightly worse in the top decile. MLflow run 7f3a2c.",
+     "addressed": [
+      "tom"
+     ]
+    },
+    {
+     "sender": "mei",
+     "sender_kind": "person",
+     "text": "nice, I'll present these at Thursday's review",
+     "addressed": []
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "Mei can you include the calibration plot? leadership asked about it last time",
+    "thread_id": "t-ds-thread-reply-to-mei"
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-thread-schedule-delivery",
+   "expect": [
+    "dashboards-bot"
+   ],
+   "thread": [
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "@dashboards-bot add a tile for weekly trial-to-paid conversion on the Growth dashboard",
+     "addressed": [
+      "dashboards-bot"
+     ]
+    },
+    {
+     "sender": "dashboards-bot",
+     "sender_kind": "agent",
+     "text": "Added 'Trial→Paid conversion (weekly)' to Growth, built on the fct_trials explore, last 26 weeks.",
+     "addressed": [
+      "ana"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "ana",
+    "text": "perfect. can you also have the Growth dashboard emailed to the exec list every Monday at 9?",
+    "thread_id": "t-ds-thread-schedule-delivery"
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-blank-tile-dbt-failed",
+   "expect": [
+    "pipelines-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lena",
+    "text": "Exec Overview revenue tile is blank since this morning — the alert says fct_revenue didn't build last night",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-nrr-definition-board-dashboard",
+   "expect": [
+    "dashboards-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "ravi",
+    "text": "how exactly is Net Revenue Retention calculated on the Board Metrics dashboard? finance's number is 2 points lower",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-gdpr-delete-statements",
+   "expect": [
+    "privacy-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "kenji",
+    "text": "got a GDPR erasure request for user 88123 — can someone write the DELETE statements for every table they show up in?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-answer-privacy-clarifying",
+   "expect": [
+    "privacy-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "lena",
+     "sender_kind": "person",
+     "text": "@privacy-bot requesting access to payments_raw",
+     "addressed": [
+      "privacy-bot"
+     ]
+    },
+    {
+     "sender": "privacy-bot",
+     "sender_kind": "agent",
+     "text": "Happy to help. payments_raw is restricted, so for the approval record: which project is this for, and how long do you need access?",
+     "addressed": [
+      "lena"
+     ]
+    },
+    {
+     "sender": "kenji",
+     "sender_kind": "person",
+     "text": "is snowflake slow for anyone else right now?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "lena",
+    "text": "fraud-detection, about 3 months",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "ds-moved-on-hackathon",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "ravi",
+     "sender_kind": "person",
+     "text": "@ml-bot results from the LTV sweep?",
+     "addressed": [
+      "ml-bot"
+     ]
+    },
+    {
+     "sender": "ml-bot",
+     "sender_kind": "agent",
+     "text": "Best run: LightGBM, 600 trees, MAE 41.2 vs 47.9 baseline. Full sweep in MLflow experiment ltv-v3.",
+     "addressed": [
+      "ravi"
+     ]
+    },
+    {
+     "sender": "ravi",
+     "sender_kind": "person",
+     "text": "great thanks",
+     "addressed": []
+    },
+    {
+     "sender": "ana",
+     "sender_kind": "person",
+     "text": "ok who's doing the hackathon next week?",
+     "addressed": []
+    },
+    {
+     "sender": "kenji",
+     "sender_kind": "person",
+     "text": "me + tom, we're building a slack bot for dbt alerts",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "ana",
+    "text": "we need one more person for our team, anyone up for it? it's a demand forecasting thing",
+    "thread_id": null
+   },
+   "room": {
+    "name": "data-science",
+    "instructions": "Data team room for analysts, data scientists and data engineers. Writing, explaining or speeding up warehouse SQL goes to sql-bot; Looker dashboards, tiles and scheduled deliveries go to dashboards-bot; model training, evaluation and experiment tracking go to ml-bot; broken pipelines, dbt runs and Airflow DAG failures go to pipelines-bot; anything touching PII, restricted data access, retention or deletion goes to privacy-bot, even when another bot could technically do the work. People here debate methods among themselves a lot; agents only step in when asked for something."
+   },
+   "agents": [
+    {
+     "name": "sql-bot",
+     "description": "Writes, explains and optimizes SQL against the Snowflake warehouse; answers ad-hoc data questions by querying tables."
+    },
+    {
+     "name": "dashboards-bot",
+     "description": "Builds and fixes Looker dashboards and tiles, explains how a dashboard metric is defined, manages scheduled dashboard deliveries."
+    },
+    {
+     "name": "ml-bot",
+     "description": "Trains, tunes and evaluates ML models; tracks experiments in MLflow; explains model metrics, drift and feature importance."
+    },
+    {
+     "name": "pipelines-bot",
+     "description": "Data pipelines: Airflow DAGs, dbt runs and tests, ingestion jobs; investigates failures and late data, reruns and backfills jobs.",
+     "role": "data-on-call"
+    },
+    {
+     "name": "privacy-bot",
+     "description": "Data privacy and access: grants and reviews access to restricted datasets, PII classification and masking, retention and deletion (GDPR/CCPA) requests.",
+     "role": "governance"
+    }
+   ]
+  },
+  {
+   "id": "people-okta-lockout",
+   "expect": [
+    "it-help-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "carlos",
+    "text": "locked out of Okta after too many MFA attempts, can't get into anything 😩",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-adoption-leave",
+   "expect": [
+    "hr-policy-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "nora",
+    "text": "how many weeks of parental leave do we get for an adoption? same as for birth?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-book-flight-summit",
+   "expect": [
+    "travel-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "lisa",
+     "sender_kind": "person",
+     "text": "reminder: all-hands moved to 11 tomorrow",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "sam",
+    "text": "need a flight SFO → JFK on Nov 12, back the evening of Nov 14, for the customer summit",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-missing-w2",
+   "expect": [
+    "payroll-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "yuki",
+    "text": "can't find my W-2 for last year anywhere and my accountant keeps asking for it",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-new-hire-first-week",
+   "expect": [
+    "onboarding-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "kim",
+    "text": "hiring manager here — Diego starts on Dec 3 and I haven't put together his first week yet. where do I even start?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-figma-view-only",
+   "expect": [
+    "it-help-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "jo",
+    "text": "Figma keeps saying I'm on a view-only seat, I need to edit for the rebrand work",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-private-manager-concern",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "ben",
+    "text": "I need to talk to someone on the People team about a situation with my manager. privately please",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-question-to-hannah",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "hannah",
+     "sender_kind": "person",
+     "text": "open enrollment starts Monday! info session Wed at 2",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "lisa",
+    "text": "Hannah, did the open enrollment brochures get printed yet? want to hand them out at the all-hands",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-vent-expense-tool",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "omar",
+    "text": "the new expense tool is genuinely the worst. 40 minutes to submit ONE receipt",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-colleagues-discuss-train",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "lisa are you flying to the Berlin offsite or taking the train from Amsterdam?",
+     "addressed": []
+    },
+    {
+     "sender": "lisa",
+     "sender_kind": "person",
+     "text": "haven't decided, the flight is 1h but the airport is such a pain",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "omar",
+    "text": "train is nicer honestly, you can work the whole way and it drops you right in the center",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-thanks-after-reset",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "carlos",
+     "sender_kind": "person",
+     "text": "@it-help-bot reset my Google password pls, I'm locked out",
+     "addressed": [
+      "it-help-bot"
+     ]
+    },
+    {
+     "sender": "it-help-bot",
+     "sender_kind": "agent",
+     "text": "Done — a temporary password was sent to your recovery phone. You'll set a new one at sign-in.",
+     "addressed": [
+      "carlos"
+     ]
+    }
+   ],
+   "message": {
+    "sender": "carlos",
+    "text": "back in, thanks!",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-thread-extend-hotel",
+   "expect": [
+    "travel-bot"
+   ],
+   "thread": [
+    {
+     "sender": "sam",
+     "sender_kind": "person",
+     "text": "@travel-bot hotel near the Chicago office Nov 12–14",
+     "addressed": [
+      "travel-bot"
+     ]
+    },
+    {
+     "sender": "travel-bot",
+     "sender_kind": "agent",
+     "text": "Booked: Hilton Chicago Magnificent Mile, Nov 12–14 (2 nights), $239/night, within policy. Confirmation HX88213.",
+     "addressed": [
+      "sam"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "sam",
+    "text": "can you extend it one more night to the 15th? the client meeting got pushed",
+    "thread_id": "t-people-thread-extend-hotel"
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-thread-pto-payout-payslip",
+   "expect": [
+    "payroll-bot"
+   ],
+   "thread": [
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "@hr-policy-bot what happens to unused PTO at year end?",
+     "addressed": [
+      "hr-policy-bot"
+     ]
+    },
+    {
+     "sender": "hr-policy-bot",
+     "sender_kind": "agent",
+     "text": "You can carry over up to 5 days into next year. Anything above 5 days is paid out at your base rate in January.",
+     "addressed": [
+      "nora"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "nora",
+    "text": "got it. when does that payout actually land on my payslip — Jan 15 or Jan 31?",
+    "thread_id": "t-people-thread-pto-payout-payslip"
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-thread-buddy-reply-to-kim",
+   "expect": [
+    null
+   ],
+   "thread": [
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "@onboarding-bot set up Diego's first week, he starts Dec 3",
+     "addressed": [
+      "onboarding-bot"
+     ]
+    },
+    {
+     "sender": "onboarding-bot",
+     "sender_kind": "agent",
+     "text": "Drafted Diego's first week: laptop pickup + IT setup Mon 9am, team intro Mon 11am, product walkthrough Tue, security training Wed. Still needed: a buddy.",
+     "addressed": [
+      "kim"
+     ]
+    },
+    {
+     "sender": "kim",
+     "sender_kind": "person",
+     "text": "Raj, would you be Diego's buddy?",
+     "addressed": [
+      "raj"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "raj",
+    "text": "sure, happy to. Kim want me to set up a team lunch on day 1 too?",
+    "thread_id": "t-people-thread-buddy-reply-to-kim"
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-thread-confluence-access",
+   "expect": [
+    "it-help-bot"
+   ],
+   "thread": [
+    {
+     "sender": "yuki",
+     "sender_kind": "person",
+     "text": "@it-help-bot need Jira access for the payments project",
+     "addressed": [
+      "it-help-bot"
+     ]
+    },
+    {
+     "sender": "it-help-bot",
+     "sender_kind": "agent",
+     "text": "Granted: you're now in the PAY project in Jira with developer permissions.",
+     "addressed": [
+      "yuki"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "yuki",
+    "text": "thanks! need the same for the payments Confluence space too",
+    "thread_id": "t-people-thread-confluence-access"
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-london-per-diem",
+   "expect": [
+    "travel-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "jo",
+    "text": "what's the meal per diem for London? I'm there for a week in November",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-reimbursement-not-paid",
+   "expect": [
+    "payroll-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "omar",
+    "text": "my September expense report was approved weeks ago but the money still hasn't hit my account",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-home-office-monitor-limit",
+   "expect": [
+    "hr-policy-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lisa",
+    "text": "is there a cap on how much I can expense for a home office monitor?",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-answer-travel-clarifying",
+   "expect": [
+    "travel-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "ben",
+     "sender_kind": "person",
+     "text": "@travel-bot flight to Chicago Nov 12 morning, back Nov 14",
+     "addressed": [
+      "travel-bot"
+     ]
+    },
+    {
+     "sender": "travel-bot",
+     "sender_kind": "agent",
+     "text": "Two in-policy options for Nov 12: UA 7:05am arriving 1:10pm, or AA 10:20am arriving 4:25pm. Which do you prefer?",
+     "addressed": [
+      "ben"
+     ]
+    },
+    {
+     "sender": "nora",
+     "sender_kind": "person",
+     "text": "anyone know if the office is open on the 28th?",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "ben",
+    "text": "10:20 works",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  },
+  {
+   "id": "people-moved-on-laptop-replacement",
+   "expect": [
+    "it-help-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "jo",
+     "sender_kind": "person",
+     "text": "@payroll-bot when do Q3 bonuses get paid?",
+     "addressed": [
+      "payroll-bot"
+     ]
+    },
+    {
+     "sender": "payroll-bot",
+     "sender_kind": "agent",
+     "text": "Q3 bonuses are paid with the Nov 30 payroll run.",
+     "addressed": [
+      "jo"
+     ]
+    },
+    {
+     "sender": "jo",
+     "sender_kind": "person",
+     "text": "🙏",
+     "addressed": []
+    },
+    {
+     "sender": "lisa",
+     "sender_kind": "person",
+     "text": "unrelated but my laptop is 4 years old and lasts like 40 minutes unplugged",
+     "addressed": []
+    },
+    {
+     "sender": "omar",
+     "sender_kind": "person",
+     "text": "same, mine's from 2022 too",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "lisa",
+    "text": "how do I request a replacement? the battery is basically dead",
+    "thread_id": null
+   },
+   "room": {
+    "name": "people-ops",
+    "instructions": "Ask-People-Ops room for all employees. HR policies (leave, benefits, expense policy, remote work, code of conduct) go to hr-policy-bot; pay, payslips, tax forms and reimbursement payouts go to payroll-bot; laptops, accounts, passwords and software access go to it-help-bot; new-hire setup and first-week plans go to onboarding-bot; business travel bookings and travel policy go to travel-bot. Sensitive personal matters (concerns about a colleague or manager, harassment, medical details) are handled by a human from the People team, never by a bot. Employees also chat here; agents stay out of conversations between people."
+   },
+   "agents": [
+    {
+     "name": "hr-policy-bot",
+     "description": "Answers questions on company HR policies: PTO and leave, parental leave, benefits enrollment, expense policy and limits, remote work and code of conduct."
+    },
+    {
+     "name": "payroll-bot",
+     "description": "Payroll: payslips, pay dates, tax withholding and tax forms (W-2), bonus payouts, and when approved expense reimbursements get paid."
+    },
+    {
+     "name": "it-help-bot",
+     "description": "IT helpdesk: laptops and hardware, password resets, SSO and MFA issues, software licenses and app access requests.",
+     "role": "helpdesk"
+    },
+    {
+     "name": "onboarding-bot",
+     "description": "New-hire onboarding: first-week schedules, onboarding checklists, buddy assignment and pre-start setup for hiring managers."
+    },
+    {
+     "name": "travel-bot",
+     "description": "Books business flights and hotels, explains travel policy (class of travel, per diems, approvals), and changes existing bookings."
+    }
+   ]
+  }
+ ]
+}

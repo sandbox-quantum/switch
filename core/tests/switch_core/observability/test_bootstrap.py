@@ -76,6 +76,7 @@ def _probes(**overrides) -> RuntimeProbes:
         bridges_running=lambda: 2,
         bridges_running_by_platform=lambda: {"slack": 1, "mattermost": 1},
         bridges_configured=lambda: 2,
+        bridges_crashed=lambda: [],
         consumers_running=lambda: 5,
         agents_connected=lambda: {
             ("websocket", "agent-runtime"): 2,

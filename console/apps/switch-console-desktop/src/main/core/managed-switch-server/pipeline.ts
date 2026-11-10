@@ -1,4 +1,5 @@
 import { passwordLogin } from '@main/core/switch-servers/auth';
+import { updateMyName } from '@main/core/switch-servers/gateway-client';
 import {
   assertManagedServerUrlFree,
   ensureManagedServer,
@@ -35,6 +36,7 @@ import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
 import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
 import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
+import { osUserFullName } from './os-user-name';
 import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
 import { type LocalServerSecrets, withNewerSecrets } from './secret-values';
 import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
@@ -487,6 +489,18 @@ export async function registerManagedServer(
       error: login.error,
     });
   } else {
+    if (login.data.name === 'Admin') {
+      const osUserName = await osUserFullName();
+      if (osUserName) {
+        try {
+          await updateMyName(server, osUserName);
+        } catch (error) {
+          log.warn('managed-switch-server: could not rename default admin user', {
+            error: String(error),
+          });
+        }
+      }
+    }
     // The user never sees a login form for a managed stack, so this is the only
     // sign-in it will ever have — without matching the workspaces here, its
     // placeholder one would stay unmatched until some later launch happened to.
