@@ -9,7 +9,7 @@ import threading
 import uuid
 import weakref
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -35,6 +35,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivitySnapshot,
     AgentIdentity,
     AgentIdentityConflict,
+    MessagePartlySent,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -43,6 +44,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.chunking import split_markdown
 from switch_core.bridges.collaboration.ingress import (
     CallbackEndpoint,
     CallbackRefused,
@@ -61,6 +63,7 @@ from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
+    BridgeCredentialError,
     ChannelType,
     DirectoryUser,
     FailureReason,
@@ -71,6 +74,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -147,8 +151,16 @@ _ATTACHMENTS_PROP = "attachments"
 _RECOVERY_SKEW_MS = 60_000
 
 # Mattermost's own default `MaxPostSize`. Servers can raise it to 16383, and a
-# message cut to fit the default is a message that fits everywhere.
+# message cut to fit the default is a message that fits everywhere. It is also
+# what a message is split at when the server will not say its own limit.
 _MAX_POST = 4000
+
+# Ends an edited post whose text did not fit and whose remainder could not be
+# posted after it.
+_EDIT_CUT_SHORT = (
+    "_(Cut short: the rest of this edit is longer than Mattermost accepts in "
+    "one post and could not be posted after it.)_"
+)
 
 # The values of `TeamSettings.TeammateNameDisplay` under which Mattermost puts
 # a bot's display name in the post header. Under any other value — including
@@ -351,6 +363,11 @@ def _close_loop(loop: asyncio.AbstractEventLoop) -> None:
     asyncio.set_event_loop(None)
 
 
+# The id a webhook's posts are filed under: the integration, never the person
+# who created it, whose user id Mattermost puts on the post. See `_ws_handler`.
+_WEBHOOK_STAND_IN_PREFIX = "webhook:"
+
+
 class MattermostAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Mattermost"
     channel_on_delete = "archived"
@@ -360,6 +377,51 @@ class MattermostAdapter(PlatformAdapter):
     # admin. Mattermost sends every event to every open socket, so a socket
     # in each process would hand each process every post.
     keeps_quiet_unless_listening: ClassVar[bool] = True
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Sign in as the admin user and find the team, as `start` will.
+
+        `url` has been through the outbound policy before this is called, so
+        the credentials are only sent where Switch may connect.
+        """
+        config = MattermostConnectionConfig.model_validate(connection_config)
+        driver = cls(config=config)._create_driver(
+            login_id=config.admin_user, password=config.admin_password
+        )
+        try:
+            await asyncio.to_thread(driver.login)
+        except NoAccessTokenProvided as exc:
+            raise BridgeCredentialError(
+                f"Mattermost refused the sign-in for {config.admin_user}: {exc}. "
+                "Check admin_user and admin_password."
+            ) from exc
+        except sync_requests.RequestException as exc:
+            raise BridgeCredentialError(
+                f"Could not sign in to Mattermost at {config.url} to check the "
+                f"credentials: {exc}"
+            ) from exc
+        try:
+            await asyncio.to_thread(driver.teams.get_team_by_name, config.team_name)
+        except (ResourceNotFound, NotEnoughPermissions) as exc:
+            raise BridgeCredentialError(
+                f"{config.admin_user} signed in, but Mattermost has no team "
+                f"named {config.team_name!r} it can see: {exc}"
+            ) from exc
+        except sync_requests.RequestException as exc:
+            raise BridgeCredentialError(
+                f"Could not look up the Mattermost team {config.team_name!r}: {exc}"
+            ) from exc
+        finally:
+            try:
+                await asyncio.to_thread(driver.logout)
+            except sync_requests.RequestException:
+                logger.warning(
+                    "Could not sign out the Mattermost session opened to check "
+                    "%s's credentials; it lasts until the server expires it",
+                    config.admin_user,
+                    exc_info=True,
+                )
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
@@ -400,6 +462,9 @@ class MattermostAdapter(PlatformAdapter):
     #: carried over: it is the one that reaches the person who can do something.
     notifies_only_by_mention: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "@channel"
+    #: `POST /posts/ephemeral`, made as the admin the bridge connects as: the
+    #: endpoint needs `create_post_ephemeral`, which a system admin holds.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "ephemeral"
 
     #: The status is the turn's one post, not a line beside it, so the clock
     #: advancing is not on its own worth rewriting what a reader is reading.
@@ -524,6 +589,10 @@ class MattermostAdapter(PlatformAdapter):
         self._name_display_setting: str | None = None
         self._name_display_read = False
         self._name_display_warned = False
+
+        # The server's `MaxPostSize`, read the first time a message is long
+        # enough for it to matter. Mattermost refuses a longer post outright.
+        self._max_post_size: int | None = None
 
         # This bridge's place on the shared callback listener, installed by the
         # lifecycle service before start. None when the adapter is running
@@ -882,6 +951,33 @@ class MattermostAdapter(PlatformAdapter):
             return
         await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
 
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """An ephemeral post: shown in the channel, in the message's thread,
+        to the person who posted it and to nobody else, and gone on reload."""
+        loop = self._main_loop
+        driver = self._admin_driver
+        if loop is None or driver is None:
+            raise RuntimeError("Mattermost is not connected")
+        post: dict[str, Any] = {
+            "channel_id": channel_id,
+            "message": self.translate_outbound(content),
+        }
+        if thread_root_id is not None:
+            post["root_id"] = thread_root_id
+        await loop.run_in_executor(
+            None,
+            driver.posts.create_ephemeral_post,
+            {"user_id": user_id, "post": post},
+        )
+
     # ── Messaging ────────────────────────────────────────────────────────────
 
     async def send_message(
@@ -899,7 +995,7 @@ class MattermostAdapter(PlatformAdapter):
             if not self._admin_driver:
                 return None
             bot_driver = self._admin_driver
-        return await self._create_post(bot_driver, channel_id, content, thread_root_id)
+        return await self._create_posts(bot_driver, channel_id, content, thread_root_id)
 
     async def admin_message(
         self,
@@ -936,7 +1032,7 @@ class MattermostAdapter(PlatformAdapter):
             if driver is None:
                 logger.error("No driver to post admin message in DM %s", channel_id)
                 return None
-            return await self._create_post(
+            return await self._create_posts(
                 driver, channel_id, f"_Switch:_ {content}", thread_root_id
             )
 
@@ -952,7 +1048,7 @@ class MattermostAdapter(PlatformAdapter):
             await self._ensure_admin_bot_in_channel(channel_id)
         if driver is None:
             return None
-        return await self._create_post(driver, channel_id, content, thread_root_id)
+        return await self._create_posts(driver, channel_id, content, thread_root_id)
 
     async def send_attachment(
         self,
@@ -1106,6 +1202,111 @@ class MattermostAdapter(PlatformAdapter):
             )
             return None
 
+    async def _create_posts(
+        self,
+        driver: Driver,
+        channel_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> str | None:
+        """Post `content` as however many posts the server's limit needs.
+
+        The parts go out in order, each in `thread_root_id`'s thread when there
+        is one. Returns the FIRST post's id: that is the one the bridge maps
+        the room event to, so a reply threads under the start of what was said
+        rather than its tail. `None` when not even the first part was taken.
+
+        Raises `MessagePartlySent` when a later part is refused, after saying
+        in the channel that the rest is missing.
+        """
+        parts = split_markdown(content, await self._post_limit(content))
+        first_id = await self._create_post(driver, channel_id, parts[0], thread_root_id)
+        if first_id is None:
+            return None
+        await self._post_rest(driver, channel_id, parts, thread_root_id, first_id)
+        return first_id
+
+    async def _post_rest(
+        self,
+        driver: Driver,
+        channel_id: str,
+        parts: list[str],
+        thread_root_id: str | None,
+        first_id: str,
+    ) -> None:
+        """Post every part after the first, which is already `first_id`.
+
+        A refused part ends the run: the channel is told how much of the
+        message it has, and `MessagePartlySent` is raised."""
+        for index, part in enumerate(parts[1:], start=1):
+            if await self._create_post(driver, channel_id, part, thread_root_id):
+                continue
+            logger.error(
+                "Only %d of %d parts of a message reached Mattermost channel %s",
+                index,
+                len(parts),
+                channel_id,
+            )
+            notice = (
+                f"_Only {index} of {len(parts)} parts of this message could be "
+                "delivered; Mattermost rejected the rest._"
+            )
+            if (
+                await self._create_post(driver, channel_id, notice, thread_root_id)
+                is None
+            ):
+                logger.error(
+                    "Could not tell Mattermost channel %s that the message %s is "
+                    "missing its last %d parts; nothing there says it is cut short",
+                    channel_id,
+                    first_id,
+                    len(parts) - index,
+                )
+            raise MessagePartlySent(
+                platform="Mattermost",
+                first_ref=first_id,
+                delivered=index,
+                total=len(parts),
+            )
+
+    async def _post_limit(self, content: str) -> int:
+        """The longest post this server accepts, asked for only when `content`
+        is longer than every server accepts.
+
+        Only an answer is kept. A read that fails splits this message at
+        `_MAX_POST` and is tried again for the next one, so a passing fault
+        does not hold every later message to the smallest limit."""
+        if len(content) <= _MAX_POST:
+            return _MAX_POST
+        if self._max_post_size is None:
+            self._max_post_size = await self._read_max_post_size()
+        return _MAX_POST if self._max_post_size is None else self._max_post_size
+
+    async def _read_max_post_size(self) -> int | None:
+        """`MaxPostSize` from the client config, which any signed-in user can
+        read; `None`, with a warning, when the server does not answer with one."""
+        try:
+            config = await self._mm_api("get", "/config/client?format=old")
+            size = int(config["MaxPostSize"])
+        except Exception as e:
+            logger.warning(
+                "Could not read MaxPostSize from the Mattermost client config "
+                "(%s); splitting this message at %d characters and asking again "
+                "for the next",
+                e,
+                _MAX_POST,
+            )
+            return None
+        if size <= 0:
+            logger.warning(
+                "Mattermost reported a MaxPostSize of %d; splitting this message "
+                "at %d characters and asking again for the next",
+                size,
+                _MAX_POST,
+            )
+            return None
+        return size
+
     async def _create_post(
         self,
         driver: Driver,
@@ -1154,19 +1355,111 @@ class MattermostAdapter(PlatformAdapter):
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None:
+        """Rewrite a post, continuing in its thread when the new text is
+        longer than one post.
+
+        The post keeps the first part, and the rest follows it in its thread
+        (the post's own, when it is a thread's root) from the bot that wrote
+        it, so the edit reads as the post went on. Where that cannot be done,
+        the post is written to as much as fits and says it was cut short.
+        Each call that runs over posts its own follow-ups.
+        """
         if not self._admin_driver or not self._main_loop:
             logger.error("Cannot update message: Mattermost client not connected")
             return
-
         try:
-            await self._main_loop.run_in_executor(
-                None,
-                self._admin_driver.posts.patch_post,
+            await self._update_post(
+                self._admin_driver,
+                self._main_loop,
+                channel_id,
                 message_ref,
-                {"message": new_content},
+                new_content,
             )
         except Exception as e:
             logger.error("Failed to update Mattermost post %s: %s", message_ref, e)
+
+    async def _update_post(
+        self,
+        admin: Driver,
+        loop: asyncio.AbstractEventLoop,
+        channel_id: str,
+        message_ref: str,
+        new_content: str,
+    ) -> None:
+        limit = await self._post_limit(new_content)
+        parts = split_markdown(new_content, limit)
+        if len(parts) == 1:
+            await self._patch_message(admin, loop, message_ref, new_content)
+            return
+
+        try:
+            post = await loop.run_in_executor(None, admin.posts.get_post, message_ref)
+        except Exception as e:
+            logger.error(
+                "Could not read Mattermost post %s to continue its %d-character "
+                "edit in its thread (%s); writing what fits and marking it cut short",
+                message_ref,
+                len(new_content),
+                e,
+            )
+            await self._patch_truncated(admin, loop, message_ref, new_content, limit)
+            return
+        driver = self._author_driver(str(post.get("user_id", "")))
+        if driver is None:
+            logger.error(
+                "Mattermost post %s was not written by a bot this bridge drives, "
+                "so the rest of its %d-character edit cannot follow it as the "
+                "same author; writing what fits and marking it cut short",
+                message_ref,
+                len(new_content),
+            )
+            await self._patch_truncated(admin, loop, message_ref, new_content, limit)
+            return
+
+        await self._patch_message(admin, loop, message_ref, parts[0])
+        thread_root_id = str(post.get("root_id") or "") or message_ref
+        try:
+            await self._post_rest(
+                driver, channel_id, parts, thread_root_id, message_ref
+            )
+        except MessagePartlySent as e:
+            logger.error(
+                "The edit of Mattermost post %s was cut short: %s", message_ref, e
+            )
+
+    def _author_driver(self, user_id: str) -> Driver | None:
+        """The driver that posts as `user_id`, when it is one of this bridge's
+        own identities."""
+        agent_name = self._bot_id_to_username.get(user_id)
+        if agent_name is not None:
+            return self._bot_drivers.get(agent_name)
+        if user_id and user_id == self._admin_bot_id:
+            return self._admin_bot_driver
+        if user_id and user_id == self._admin_user_id:
+            return self._admin_driver
+        return None
+
+    async def _patch_truncated(
+        self,
+        admin: Driver,
+        loop: asyncio.AbstractEventLoop,
+        message_ref: str,
+        content: str,
+        limit: int,
+    ) -> None:
+        """Write as much of `content` as fits, ending in a line that says the
+        rest is missing, for an edit whose remainder has nowhere to go."""
+        marker = f"\n\n{_EDIT_CUT_SHORT}"
+        head = split_markdown(content, limit - len(marker))[0]
+        await self._patch_message(admin, loop, message_ref, head + marker)
+
+    @staticmethod
+    async def _patch_message(
+        admin: Driver, loop: asyncio.AbstractEventLoop, message_ref: str, message: str
+    ) -> None:
+        await loop.run_in_executor(
+            None, admin.posts.patch_post, message_ref, {"message": message}
+        )
 
     # ── SDK session publication ──────────────────────────────────────────────
 
@@ -1702,7 +1995,10 @@ class MattermostAdapter(PlatformAdapter):
         notifies nobody and reads as noise, and the message it decorates is
         worth sending without it.
         """
-        if not external_user_id:
+        if not external_user_id or external_user_id.startswith(
+            _WEBHOOK_STAND_IN_PREFIX
+        ):
+            # A webhook's stand-in is nobody Mattermost can notify.
             return None
         username = await self._username_for(external_user_id)
         return f"@{username}" if username else None
@@ -2750,14 +3046,36 @@ class MattermostAdapter(PlatformAdapter):
             raise RuntimeError("Cannot handle posted event: adapter not started")
 
         ws_loop = asyncio.get_event_loop()
+        user_is_bot = False
         try:
             user = await ws_loop.run_in_executor(
                 None, self._admin_driver.users.get_user, user_id
             )
             username: str = user.get("username", user_id)
+            user_is_bot = bool(user.get("is_bot", False))
         except Exception:
             logger.exception("Failed to resolve Mattermost user %s", user_id)
             username = user_id
+        props = post.get("props") or {}
+        from_webhook = str(props.get("from_webhook", "")).lower() == "true"
+        # An integration rather than a person: an incoming webhook, or a bot
+        # account other than the bridge's own (those never reach here).
+        sender_is_app = (
+            from_webhook
+            or user_is_bot
+            or str(props.get("from_bot", "")).lower() == "true"
+        )
+        if from_webhook:
+            # An incoming webhook's post (or a custom slash command's reply)
+            # carries the user id of whoever set the integration up, though
+            # anyone holding its URL may have sent it. It is the integration
+            # talking, not that person, so it goes under a stand-in of its own
+            # that no link and no owner rule can match (CHOO-3881). One per
+            # person, named after them, since every webhook they set up posts
+            # under their id and the name a post gives itself is the sender's
+            # to choose.
+            user_id = f"{_WEBHOOK_STAND_IN_PREFIX}{user_id}"
+            username = f"{username}'s webhook"
 
         channel_type = self._to_channel_type(mm_channel_type)
         stripped = message.strip()
@@ -2807,6 +3125,7 @@ class MattermostAdapter(PlatformAdapter):
                 channel_name=channel_name,
                 attachments=attachments,
                 attachment_failures=attachment_failures,
+                sender_is_app=sender_is_app,
             )
             coro = self._on_message(inbound)
             self._dispatch(coro, loop)  # type: ignore[arg-type]
@@ -2939,6 +3258,66 @@ class MattermostAdapter(PlatformAdapter):
             )
         )
         self._dispatch(coro, loop)  # type: ignore[arg-type]
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Switch hears Mattermost through its agents' bots, so a channel with no
+        # agent in it is one where nothing reaches Switch, and someone linking
+        # while they set up a server may have no agent anywhere yet.
+        return (
+            f"Post `!link-account {code}` from that account in a Mattermost "
+            "channel that has a Switch agent in it. No agent yet? Add one first, "
+            "then get a new code here."
+        )
+
+    @classmethod
+    def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
+        if external_user_id.startswith(_WEBHOOK_STAND_IN_PREFIX):
+            return (
+                "This stands for a Mattermost webhook, which anyone holding "
+                "its URL can post through."
+            )
+        return None
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        reason = self.unlinkable_account_reason(external_user_id)
+        if reason is not None:
+            return reason
+        driver = self._admin_driver
+        if driver is None:
+            raise RuntimeError(
+                "The Mattermost bridge is not started, so it cannot be asked"
+            )
+        try:
+            user = await asyncio.to_thread(driver.users.get_user, external_user_id)
+        except ResourceNotFound as e:
+            raise LookupError(
+                f"No Mattermost account {external_user_id} exists on this server"
+            ) from e
+        except sync_requests.RequestException as e:
+            raise RuntimeError(
+                f"Could not ask Mattermost about account {external_user_id}: {e}"
+            ) from e
+        if user.get("is_bot"):
+            return "This is a Mattermost bot's account, which whoever runs it posts as."
+        return None
+
+    async def account_id_for_session(self, token: str) -> str:
+        driver = self._create_driver(token=token)
+        try:
+            me = await asyncio.to_thread(driver.login)
+        except NoAccessTokenProvided as e:
+            raise PermissionError("Mattermost did not accept that session token") from e
+        except sync_requests.RequestException as e:
+            raise RuntimeError(
+                f"Could not ask Mattermost whose session token that is: {e}"
+            ) from e
+        user_id = me.get("id") if isinstance(me, dict) else None
+        if not user_id:
+            raise RuntimeError("Mattermost did not say whose session token that is")
+        return str(user_id)
 
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Find team members via Mattermost's own user search.

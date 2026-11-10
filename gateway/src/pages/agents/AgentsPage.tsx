@@ -25,9 +25,8 @@ import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import DataTable from "../../components/DataTable";
 import { type AgentSummary, deleteAgent } from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import { useAgents } from "../../data/hooks";
-import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
+import { EM_DASH, formatDate, sentenceCase } from "../../theme/hootFormat";
 import RegisterAgentDialog from "./RegisterAgentDialog";
 
 // Connector type is a category, not a status. Colour here would compete with
@@ -36,7 +35,6 @@ import RegisterAgentDialog from "./RegisterAgentDialog";
 
 export default function AgentsPage() {
   const navigate = useNavigate();
-  const { user, canAdminTenant: isAdmin } = useAuth();
   const { data: agents, loading, refetch } = useAgents();
   const [deleteTarget, setDeleteTarget] = useState<AgentSummary | null>(null);
   const [deleteNotice, setDeleteNotice] = useState<{
@@ -159,7 +157,7 @@ export default function AgentsPage() {
       { field: "name", headerName: "Name", flex: 1, minWidth: 200 },
       {
         field: "connector_type",
-        headerName: "Agent Type",
+        headerName: "Agent type",
         width: 150,
         renderCell: ({ value }) =>
           value ? (
@@ -172,9 +170,9 @@ export default function AgentsPage() {
       },
       {
         field: "connection_model",
-        headerName: "Connection Type",
+        headerName: "Availability",
         width: 170,
-        valueFormatter: (value) => (value ? titleCase(value as string) : EM_DASH),
+        valueFormatter: (value) => (value ? sentenceCase(value as string) : EM_DASH),
       },
       {
         field: "parent_agent_id",
@@ -206,8 +204,7 @@ export default function AgentsPage() {
         sortable: false,
         filterable: false,
         renderCell: ({ row }) => {
-          const canModify = isAdmin || row.owner_id === user?.id;
-          if (!canModify) return null;
+          if (!row.can_manage) return null;
           return (
             <>
               <IconButton
@@ -224,7 +221,7 @@ export default function AgentsPage() {
         },
       },
     ],
-    [isAdmin, user?.id, parentNameById],
+    [parentNameById],
   );
 
   return (
@@ -236,7 +233,7 @@ export default function AgentsPage() {
           startIcon={<AddCircleOutline />}
           onClick={() => setRegisterOpen(true)}
         >
-          Register Agent
+          Add agent
         </Button>
       </Stack>
 

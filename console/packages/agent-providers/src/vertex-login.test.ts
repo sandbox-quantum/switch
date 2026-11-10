@@ -16,7 +16,7 @@ import {
 const SERVICE_ACCOUNT_KEY = SERVICE_ACCOUNT_KEY_FIXTURE;
 const AUTHORIZED_USER = AUTHORIZED_USER_FIXTURE;
 
-function credential(credentials: unknown, project = 'cg-vertexai', region = 'global'): string {
+function credential(credentials: unknown, project = 'acme-ai', region = 'global'): string {
   return vertexLoginCredential({ project, region, credentials: credentials as GoogleCredentials });
 }
 
@@ -25,7 +25,7 @@ describe('Vertex AI logins', () => {
     for (const credentials of [SERVICE_ACCOUNT_KEY, AUTHORIZED_USER]) {
       expect(parseVertexLogin(credential(credentials))).toEqual({
         v: 1,
-        project: 'cg-vertexai',
+        project: 'acme-ai',
         region: 'global',
         credentials,
       });
@@ -63,21 +63,21 @@ describe('Vertex AI logins', () => {
     for (const project of ['Upper-Case', 'short', '1starts-with-digit', 'ends-with-hyphen-', ''])
       expect(() => credential(SERVICE_ACCOUNT_KEY, project)).toThrow(/project id/);
     for (const region of ['', 'us east', 'US-EAST5', 'us_east5'])
-      expect(() => credential(SERVICE_ACCOUNT_KEY, 'cg-vertexai', region)).toThrow(/region/);
+      expect(() => credential(SERVICE_ACCOUNT_KEY, 'acme-ai', region)).toThrow(/region/);
   });
 
   it('refuses a login that is not one', () => {
     expect(() => parseVertexLogin('{')).toThrow(/not JSON/);
     expect(() =>
       parseVertexLogin(
-        JSON.stringify({ v: 2, project: 'cg-vertexai', region: 'global', credentials: {} })
+        JSON.stringify({ v: 2, project: 'acme-ai', region: 'global', credentials: {} })
       )
     ).toThrow(/invalid v/);
     expect(() =>
       parseVertexLogin(
         JSON.stringify({
           v: 1,
-          project: 'cg-vertexai',
+          project: 'acme-ai',
           region: 'global',
           credentials: AUTHORIZED_USER,
           extra: true,

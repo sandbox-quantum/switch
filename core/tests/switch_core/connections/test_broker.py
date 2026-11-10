@@ -35,6 +35,7 @@ from switch_core.connections.broker import (
     Principal,
     ServiceBroker,
     ServiceError,
+    SignIn,
 )
 from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
 from switch_core.connections.maintenance import maintain_once
@@ -55,6 +56,7 @@ from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
+from tests.switch_core.connections.standing import availability, connectable, standing
 from tests.switch_core.connections.test_loader import (
     CLI_ENTRY,
     OAUTH_ENTRY,
@@ -80,6 +82,7 @@ def broker(
         keyring=TEST_KEYRING,
         catalog=CATALOG,
         adapters={"github": vendor},
+        organization_apps=None,
         disabled={},
         store=STORE,
         token_retention=timedelta(days=30),
@@ -355,7 +358,7 @@ class TestIssue:
         )
         again = await _refused(broker, session_factory, world.agent.id)
         assert again.code == "connector_revoked"
-        assert "Settings, Connections" in again.message
+        assert "Switch Console, under Connectors" in again.message
         assert vendor.refreshes == 1
         assert vendor.issued == []
 
@@ -454,6 +457,7 @@ class TestChecks:
             keyring=TEST_KEYRING,
             catalog=CATALOG,
             adapters={},
+            organization_apps=None,
             disabled={},
             store=STORE,
             token_retention=timedelta(days=30),
@@ -468,8 +472,8 @@ class TestChecks:
             "internal",
             False,
         )
-        assert "not available on this server" in refused.message
-        assert broker.connectable("github") is False
+        assert "not available here" in refused.message
+        assert await connectable(broker, "github") is False
 
     async def test_an_owner_no_longer_in_the_workspace_is_forbidden(
         self, broker, session_factory
@@ -492,7 +496,7 @@ class TestChecks:
             await session.commit()
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code) == (403, "grant_missing")
-        assert "builder" in refused.message and "Connections" in refused.message
+        assert "builder" in refused.message and "the agent's page" in refused.message
 
     async def test_a_grant_made_on_someone_elses_connection_is_forbidden(
         self, broker, session_factory
@@ -744,6 +748,7 @@ class TestConnectOnly:
             keyring=TEST_KEYRING,
             catalog=CATALOG,
             adapters={"github": vendor},
+            organization_apps=None,
             disabled={},
             store=STORE,
             token_retention=timedelta(days=30),
@@ -753,13 +758,13 @@ class TestConnectOnly:
         )
         world = await _world(session_factory, expires_in=60)
 
-        reason = broker.availability("github")
+        reason = await availability(broker, "github")
         assert reason is not None and "not granted to agents" in reason
-        unavailable = broker.unavailable("github")
+        unavailable = (await standing(broker, "github")).unavailable
         assert unavailable is not None and unavailable.code == "not_fully_set_up"
-        assert broker.server_setup_needed("github") is False
-        assert broker.connectable("github") is True
-        assert broker.connectable("asana") is False
+        assert (await standing(broker, "github")).server_setup_needed is False
+        assert await connectable(broker, "github") is True
+        assert await connectable(broker, "asana") is False
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code, refused.retryable) == (
             503,
@@ -821,6 +826,7 @@ def _switched_off(
         keyring=TEST_KEYRING,
         catalog=CATALOG,
         adapters={"github": vendor},
+        organization_apps=None,
         disabled=disabled,
         store=STORE,
         token_retention=timedelta(days=30),
@@ -838,10 +844,10 @@ class TestSwitchedOff:
         broker = _switched_off(session_factory, vendor, {"github": reason})
         world = await _world(session_factory)
 
-        assert broker.availability("github") == reason
-        unavailable = broker.unavailable("github")
+        assert await availability(broker, "github") == reason
+        unavailable = (await standing(broker, "github")).unavailable
         assert unavailable is not None and unavailable.code == "switched_off"
-        assert broker.connectable("github") is False
+        assert await connectable(broker, "github") is False
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code, refused.retryable) == (
             403,
@@ -893,7 +899,7 @@ class TestSwitchedOff:
         self, session_factory, vendor
     ) -> None:
         broker = _switched_off(session_factory, vendor, {"github": ""})
-        assert broker.availability("github") == "Switched off on this server."
+        assert await availability(broker, "github") == "Switched off here."
 
     async def test_a_service_outside_the_catalog_stops_the_server(
         self, session_factory, vendor
@@ -939,6 +945,7 @@ async def _pass_through(
         keyring=TEST_KEYRING,
         catalog=pass_through_catalog(root, max_lifetime=max_lifetime, entry=entry),
         adapters={"example": vendor},
+        organization_apps=None,
         disabled={},
         store=STORE,
         token_retention=timedelta(days=30),
@@ -1331,10 +1338,10 @@ class TestPassThrough:
             warning = await pt.broker.finish_disconnect(
                 session,
                 pt.world.owner.id,
-                [("unset", None)],  # type: ignore[list-item]
+                [("unset", SignIn(ConnectionSecret({}), None))],
             )
         assert warning is not None
-        assert "unset is not set up on this server" in warning
+        assert "unset is not set up here" in warning
         assert "Example access" not in warning
 
 
@@ -1379,6 +1386,7 @@ async def _gated(
         keyring=TEST_KEYRING,
         catalog=pass_through_catalog(root),
         adapters={"github": github, "example": example},
+        organization_apps=None,
         disabled=disabled or {},
         store=STORE,
         token_retention=timedelta(days=30),
@@ -1734,7 +1742,7 @@ class TestReplacedClient:
         refused = await _refused(broker, session_factory, world.agent.id)
 
         assert refused.code == CONNECTOR_REVOKED
-        assert "an app this server no longer uses" in refused.message
+        assert "an app Switch no longer uses" in refused.message
         assert vendor.refreshes == 0 and vendor.issued == []
         connection = await _connection(session_factory, world.owner.id)
         assert connection is not None
@@ -1761,7 +1769,7 @@ class TestReplacedClient:
         async with session_factory() as session:
             warning = await broker.disconnect(session, world.owner.id, "github")
         assert warning == (
-            "GitHub is not set up on this server, so Switch could not revoke "
+            "GitHub is not set up here, so Switch could not revoke "
             "the sign-in. Revoke it at GitHub."
         )
         assert vendor.connections_revoked == []
@@ -1793,4 +1801,6 @@ class TestReplacedClient:
         assert token.resources == RESOURCES
         connection = await _connection(session_factory, world.owner.id)
         assert connection is not None
-        assert broker.client_replaced(connection) is False
+        assert (await standing(broker, connection.service)).client_replaced(
+            connection
+        ) is False

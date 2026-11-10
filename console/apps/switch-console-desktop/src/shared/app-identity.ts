@@ -40,7 +40,10 @@ export const APP_ID = isCanary ? 'com.switchdash.canary' : 'com.switchdash.stabl
 export const PRODUCT_NAME = isCanary ? 'Switch Console Canary' : 'Switch Console';
 export const OS_APP_NAME = 'Switchdash';
 export const APP_NAME_LOWER = isCanary ? 'switch-console-canary' : 'switch-console';
-export const USER_DATA_DIR_NAME = isDev ? 'switchdash-dev' : 'switchdash';
+// Named on its own for code outside the Vite build (drizzle-kit), where isDev is
+// always false and USER_DATA_DIR_NAME is `switchdash`, the installed app's.
+export const DEV_USER_DATA_DIR_NAME = 'switchdash-dev';
+export const USER_DATA_DIR_NAME = isDev ? DEV_USER_DATA_DIR_NAME : 'switchdash';
 export const UPDATE_CHANNEL = isCanary ? 'v1-canary' : 'v1-stable';
 export const ARTIFACT_PREFIX = isCanary ? 'switch-console-canary' : 'switch-console';
 export const IS_CANARY = isCanary;
@@ -79,7 +82,7 @@ export const RELEASE_REPO_NAME = 'switch';
 // run among them, which starts the server with feature flags a stable release
 // may not know yet), so it needs the server canary runs.
 export const STABLE_SWITCH_VERSION = '0.31.0';
-export const CANARY_SWITCH_VERSION = '0.31.0';
+export const CANARY_SWITCH_VERSION = '0.32.0-rc.2';
 export const COMPATIBLE_SWITCH_VERSION =
   isCanary || isDev ? CANARY_SWITCH_VERSION : STABLE_SWITCH_VERSION;
 

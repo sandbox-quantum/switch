@@ -199,7 +199,7 @@ class TestUnavailableReplyRouting:
             "claude-code": "claude auth login",
             "codex": "codex login",
             "opencode": "opencode auth login",
-            "antigravity": "antigravity-acp --login",
+            "antigravity": "agy acp --login",
             "cursor": "agent login",
             "qwen": "qwen",
         }
@@ -302,7 +302,7 @@ class TestStartFromConsoleMessage:
             "I don't have a session connected to this room. "
             "@cmcd can start one connected to **Payments** by opening "
             "**worker.test** in Switch Console. If Switch Console says I'm "
-            "signed out, sign me in first with `agent login` on the machine I "
+            "signed out, sign me in first with `agent login` on the device I "
             "run on."
         )
 

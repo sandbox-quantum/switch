@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { commandSchema } from '@switch-console/shared/session-v1';
+import { commandSchema, hasOwnActivity } from '@switch-console/shared/session-v1';
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
@@ -13,6 +13,7 @@ import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
 import {
   followupCommandId,
+  retryRefusal,
   roomControlFollowup,
   roomControlRefusal,
 } from './room-control-followup';
@@ -67,6 +68,9 @@ import {
   type VendorServers,
 } from './vendor-mcp';
 
+/** How long a faulted host waits for its last reports to reach Switch before it stops. */
+const FINAL_REPORT_MS = 5_000;
+
 /**
  * A session run on behalf of its agent.
  *
@@ -94,6 +98,8 @@ export type SharedHostOptions = {
   input: ProviderSessionStartInput;
   roomConnection?: z.infer<typeof roomConnectionSchema>;
   grant?: { roomId: string; messageId: string };
+  /** The session continues a native conversation started outside Switch. */
+  importHistory: boolean;
   /** The IPC channel to the process that started this host, or null if none did. */
   parent: ParentChannel | null;
   /** How long the host waits with nothing to do before parking; null never parks. */
@@ -165,10 +171,9 @@ export function sessionBusy(
 }
 
 /**
- * The Switch tools that put something the agent wrote in front of a room: a
- * turn that called one of them has answered. Each posts to the room the
- * session is connected to (only `send_attachment` can name another), so a
- * call counts whichever room it reached.
+ * The Switch tools that put something the agent wrote in front of a room.
+ * Each posts to the room the session is connected to (only `send_attachment`
+ * can name another), so a refusal counts whichever room it was for.
  */
 export const ROOM_POSTING_TOOLS = new Set([
   'post_message',
@@ -176,9 +181,75 @@ export const ROOM_POSTING_TOOLS = new Set([
   'send_attachment',
 ]);
 
+/** Why a post to the room was refused, when the result is one; null for anything else. */
+export function postFailure(name: string, result: unknown): string | null {
+  if (!ROOM_POSTING_TOOLS.has(name)) return null;
+  if (typeof result !== 'object' || result === null) return null;
+  const { isError, content } = result as { isError?: unknown; content?: unknown };
+  if (isError !== true) return null;
+  const text = Array.isArray(content)
+    ? content
+        .map((part) => (part as { text?: unknown }).text)
+        .filter((part): part is string => typeof part === 'string')
+        .join(' ')
+        .trim()
+    : '';
+  return text || 'Switch refused the post.';
+}
+
 /** Whether a Switch tool result is a post that landed. */
 export function postedToRoom(name: string, result: unknown): boolean {
   if (!ROOM_POSTING_TOOLS.has(name)) return false;
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as { isError?: unknown }).isError !== true
+  );
+}
+
+/**
+ * The Switch tools that only read: what Switch holds (rooms, context, roles,
+ * agents, templates) or a file copied to this machine. Calling them changes
+ * nothing anyone else can see, so a turn that called only these did nothing
+ * in Switch. Any other Switch tool acts, including one added after this list.
+ */
+export const READ_ONLY_SWITCH_TOOLS = new Set([
+  'connect_to_room',
+  'download_attachment',
+  'get_advanced_config',
+  'get_agent_detail',
+  'get_my_context',
+  'get_role_detail',
+  'get_room_detail',
+  'get_room_group_detail',
+  'get_template',
+  'get_template_guide',
+  'get_template_status',
+  'list_agents',
+  'list_all_references',
+  'list_all_rooms',
+  'list_bridges',
+  'list_linked_rooms',
+  'list_machines',
+  'list_managed_agents',
+  'list_participants',
+  'list_reference_types',
+  'list_references',
+  'list_roles',
+  'list_room_groups',
+  'list_rooms',
+  'list_templates',
+  'load_internal_documents',
+  'read_context',
+]);
+
+/**
+ * Whether a Switch tool call did something in Switch: it succeeded, and the
+ * tool is not one that only reads. Every call through this session's Switch
+ * MCP server is a Switch tool, whatever it is called.
+ */
+export function actedInSwitch(name: string, result: unknown): boolean {
+  if (READ_ONLY_SWITCH_TOOLS.has(name)) return false;
   return (
     typeof result === 'object' &&
     result !== null &&
@@ -389,6 +460,7 @@ export async function runSharedHost(
           : {}),
         session: options.session,
         input: options.input,
+        importHistory: options.importHistory,
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
         redactions: options.redactions,
@@ -418,6 +490,9 @@ export async function runSharedHost(
     stopHearingTools =
       parentChannel?.onToolAnswered((name, result) => {
         if (postedToRoom(name, result)) hosted.agentPostedToRoom();
+        if (actedInSwitch(name, result)) hosted.agentActedInSwitch();
+        const failure = postFailure(name, result);
+        if (failure !== null) hosted.agentPostFailed(failure);
       }) ?? null;
 
     options.serviceNotices.attach((message) => host!.serviceFallback(message));
@@ -460,6 +535,9 @@ export async function runSharedHost(
       await send({ kind: 'activity', row });
       return true;
     };
+    // One report at a time: the loop below and the last one before a fault share the cursor.
+    let reportChain: Promise<void> = Promise.resolve();
+    const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
     const report = async () => {
       if (reportingUnsupported) return;
       const { events } = host!.replay(reporter.cursor);
@@ -554,7 +632,13 @@ export async function runSharedHost(
     type Followup = Extract<(typeof state.journal.records)[number], { type: 'followup' }>;
     const followups = (): Followup[] =>
       state.journal.records.filter((record): record is Followup => record.type === 'followup');
-    const followupFor = (command: Command, requesterName: string | null): Followup | null => {
+    const followupFor = (
+      command: Command,
+      requesterName: string | null,
+      direct: boolean
+    ): Followup | null => {
+      // A direct chat's reset is meant to forget the conversation; its placement survives, so nothing is owed.
+      if (direct && command.body.type === 'session.reset') return null;
       const action =
         command.body.type === 'session.reset'
           ? 'reset'
@@ -598,7 +682,8 @@ export async function runSharedHost(
             delivery: 'queue',
           },
         },
-        null
+        null,
+        false
       );
     };
     /** Tells the parent whenever the session's busy state changes. */
@@ -634,12 +719,14 @@ export async function runSharedHost(
     // A conversation that has not started yet is given the current ones as it
     // starts. One that has, and was told others, gets a note with the next
     // room message: its provider would otherwise keep the old ones.
+    // Turns copied in from a conversation started outside Switch are not this
+    // conversation having started here: it resumes under Switch's context.
+    const startedHere = () => hasOwnActivity(host!.snapshot());
     const instructions = options.instructions;
     let instructionsNote: string | null = null;
     if (instructions !== null) {
       const told = await readToldInstructions(options.root);
-      if (host.snapshot().turns.length === 0)
-        await recordToldInstructions(options.root, instructions);
+      if (!startedHere()) await recordToldInstructions(options.root, instructions);
       else if (told !== instructions) instructionsNote = instructionsChangedNote(instructions);
     }
     const instructionsTold = async (): Promise<void> => {
@@ -674,7 +761,7 @@ export async function runSharedHost(
       roomId: string
     ): Promise<{ note: string | null; instructions: string | null }> => {
       if (!parentChannel || !options.roomConnection) return { note: null, instructions: null };
-      if (host!.snapshot().turns.length === 0) toldRooms = {};
+      if (!startedHere()) toldRooms = {};
       try {
         const { instructions } = roomInstructionsAnswerSchema.parse(
           await parentChannel.ask({ type: 'room-instructions', roomId })
@@ -695,7 +782,8 @@ export async function runSharedHost(
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
-      requesterName: string | null
+      requesterName: string | null,
+      direct: boolean
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -714,7 +802,7 @@ export async function runSharedHost(
       // about a conversation a reset or a restart has since replaced.
       if (command.epoch !== host!.snapshot().session.epoch)
         return 'STALE_EPOCH: the session has been reset or restarted since this command was made.';
-      const owed = followupFor(command, requesterName);
+      const owed = followupFor(command, requesterName, direct);
       if (owed && !followups().some((record) => record.commandId === command.commandId))
         await state.journal.append(owed);
       const repeated = host!
@@ -747,6 +835,27 @@ export async function runSharedHost(
           .catch((error: unknown) =>
             console.warn(
               `Could not tell room ${owed.roomId} that its ${owed.action} was refused: ${String(error)}`
+            )
+          );
+      // A retry asked for from a room that cannot run is answered there, where it was asked.
+      if (
+        command.body.type === 'message.retry' &&
+        status?.status === 'rejected' &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection &&
+        command.origin.roomId
+      )
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: command.origin.roomId,
+            threadId: command.origin.threadId,
+            body: retryRefusal(status.message),
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `Could not tell room ${command.origin.roomId} that its retry was refused: ${String(error)}`
             )
           );
       // A fresh conversation starts with the instructions this host was given,
@@ -796,12 +905,14 @@ export async function runSharedHost(
           surface: 'switch-web',
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
-          firstOfConversation: host!.snapshot().turns.length === 0,
+          firstOfConversation: !startedHere(),
         });
+        if (message.data.payload.routed || message.data.payload.follow_up)
+          host!.unaskedRoomTurn(command.commandId);
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
-        const outcome = await run(command, null);
+        const outcome = await run(command, null, false);
         if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
           if (instructionsNote !== null) await instructionsTold();
           if (room.instructions !== null)
@@ -835,7 +946,8 @@ export async function runSharedHost(
           },
           body: { type: 'session.reset' },
         },
-        null
+        null,
+        false
       );
       if (typeof outcome === 'string')
         throw new Error(`Could not start a fresh conversation for a room message: ${outcome}`);
@@ -852,8 +964,8 @@ export async function runSharedHost(
     parent?.serve({
       // Busy is announced before the reply, so a parent that has the reply has
       // already heard any change the command made.
-      command: async ({ command, requesterName }) => {
-        const outcome = await run(command, requesterName);
+      command: async ({ command, requesterName, direct }) => {
+        const outcome = await run(command, requesterName, direct === true);
         announceBusy();
         if (typeof outcome === 'string') throw new Error(outcome);
         return outcome;
@@ -957,7 +1069,7 @@ export async function runSharedHost(
       await reportStart();
       let force = true;
       while (!executionSignal.aborted) {
-        await report();
+        await reportInTurn();
         await applyOutcomes(force);
         force = false;
         await waker.idleReporting(250, executionSignal);
@@ -970,10 +1082,19 @@ export async function runSharedHost(
       if (reportingFailure) throw reportingFailure;
       const status = host.snapshot().session.status;
       if (status === 'stopped') break;
-      if (status === 'error' && !host.resetDecisionPending)
+      if (status === 'error' && !host.resetDecisionPending) {
+        // What faulted it, and the turn that ended with it, are what Switch most
+        // needs to show; stopping would drop them unreported, the turn left running.
+        await Promise.race([
+          reportInTurn().catch((error: unknown) =>
+            console.warn(`Could not report this session's last events: ${String(error)}`)
+          ),
+          delay(FINAL_REPORT_MS, undefined, { signal: executionSignal }).catch(() => {}),
+        ]);
         throw new Error(
           'HOST_FAULTED: Provider execution failed. Inspect the transcript before recovery.'
         );
+      }
       if (host.resetDecisionPending) {
         heldForDecision = true;
         const first = rooms?.pending()[0];
@@ -1133,6 +1254,7 @@ export async function hostSessionProcess(input: {
         input: prepared.input,
         roomConnection: config.roomConnection,
         grant: config.grant,
+        importHistory: config.importHistory ?? false,
         parent,
         parkAfterMs: parkAfterMs(),
         instructions: config.execution?.instructions ?? null,

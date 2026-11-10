@@ -138,27 +138,6 @@ class ConnectionPlacementsRequest(BaseModel):
     generation: int | None = None
 
 
-class ConnectionBeatRequest(BaseModel):
-    """The heartbeat of a connection held over the event stream (CHOO-1857).
-
-    Kept for clients built before the WebSocket, whose socket carries the
-    heartbeat itself, for a compatibility window. Proves the client is alive.
-    Clients also send how far they have read (`cursor`, `position`); the
-    server does not read it, because a client resumes from the position it
-    sends when it reopens.
-    """
-
-    connection_id: str
-    #: The incarnation of the connection this client is attached to, as the
-    #: server told it on `connection_state`. Fences the tick: a client that has
-    #: been displaced still holds the id and the token, and is otherwise
-    #: indistinguishable from the one that replaced it. Null is accepted only
-    #: while the connection's holder is a client built before the fence existed
-    #: (unknown, not current); from a holder that declares the revision which
-    #: carries it, a tick without one is refused.
-    generation: int | None = None
-
-
 class StatusRequest(BaseModel):
     room_id: str
     presence: Literal["online", "offline"] | None = None
@@ -319,96 +298,6 @@ class PostLlmResponseResponse(BaseModel):
 class ReportEventsRequest(BaseModel):
     room_id: str
     events: list[ToolCallReport | LlmCallReport]
-
-
-# ── Agents ───────────────────────────────────────────────────────────────────
-
-
-class AgentInfo(BaseModel):
-    id: str
-    name: str
-    description: str
-    display_name: str | None
-
-
-# ── Moderation ───────────────────────────────────────────────────────────────
-
-
-class LinkedRoomCreateSpec(BaseModel):
-    target_room_id: str
-    label: str
-
-
-class CreateModerationRoomRequest(BaseModel):
-    name: str
-    description: str
-    agent_names: list[str]
-    # Per-agent opt-in: names (subset of agent_names) whose subagents to also add.
-    include_subagents_for: list[str] | None = None
-    user_names: list[str] | None = None
-    channel_type: Literal["channel_public", "channel_private"] | None = None
-    # Bridge is optional — omit to use the instance's default bridge.
-    bridge_id: str | None = None
-    # Opt out of the instance default bridge: create a room with no external
-    # channel. Ignored when bridge_id is set.
-    internal_only: bool = False
-    admin_mode: bool = False
-    security_config: dict[str, Any] | None = None
-    instructions: str | None = None
-    reference_ids: list[str] | None = None
-    package_ids: list[str] | None = None
-    linked_rooms: list[LinkedRoomCreateSpec] | None = None
-
-
-class CreateModerationRoomResponse(BaseModel):
-    id: str
-    name: str
-    transport_room_id: str
-    # Deprecated alias of `transport_room_id`, sent for the compatibility
-    # window. Connectors are installed copies and only update when someone
-    # clicks Update, so both names are carried until the shipped ones have
-    # moved. Same value in both; nothing dereferences either.
-    matrix_room_id: str
-    # Attachments that failed at attach-time (after the room was created).
-    # Empty on full success.
-    failed_attachments: list[dict[str, Any]] = []
-
-
-class ListBridgesResponse(BaseModel):
-    bridges: list[dict[str, Any]]
-
-
-class InviteAgentRequest(BaseModel):
-    agent_name: str
-    # When true, also add the invited agent's subagents (child agents).
-    include_subagents: bool = False
-
-
-class UpdateSecurityRequest(BaseModel):
-    checks: list[dict[str, Any]]
-
-
-class RoomInfo(BaseModel):
-    id: str
-    name: str
-    description: str
-
-
-class RoomDetailResponse(BaseModel):
-    id: str
-    name: str
-    description: str
-    channel_type: str | None
-    admin_mode: bool
-    agent_names: list[str]
-
-
-class RoomListResponse(BaseModel):
-    rooms: list[RoomInfo]
-
-
-class AgentListResponse(BaseModel):
-    agents: list[AgentInfo]
 
 
 class FeatureFlagInfo(BaseModel):

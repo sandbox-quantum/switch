@@ -25,18 +25,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.api.handlers import (
-    connection_beat,
     connection_placements,
     connection_subscribe,
 )
 from switch_core.bridges.agent.api.operations import resolve_caller
 from switch_core.bridges.agent.api.schemas import (
-    ConnectionBeatRequest,
     ConnectionPlacementsRequest,
     ConnectionSubscribeRequest,
 )
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
+    KEY_REISSUED,
     PROTOCOL_VERSION,
     AgentConnection,
     AgentConnectionRegistry,
@@ -580,28 +579,6 @@ class TestServedAnywhere:
             )
         assert claimant == "conn-2"
 
-    async def test_an_old_clients_beat_on_the_other_process_reaches_the_holder(
-        self, processes: tuple[Process, Process]
-    ) -> None:
-        a, b = processes
-        conn = await _open(a)
-        conn.last_beat = time.monotonic() - 4
-        stale = conn.last_beat
-
-        with tenant_scope(TENANT_ZERO_ID):
-            answer = await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(
-                    connection_id=CONN, generation=conn.stream_generation
-                ),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=b.protocol,
-            )
-
-        assert answer["ok"] is True
-        await _eventually(lambda: conn.last_beat > stale)
-        assert conn.beats == 1
-
     async def test_a_session_command_relayed_on_the_other_process_reaches_the_watcher(
         self, processes: tuple[Process, Process]
     ) -> None:
@@ -629,17 +606,6 @@ class TestTakeover:
         await _eventually(lambda: loser.closure is not None)
         assert loser.closure is not None
         assert loser.closure.code == "taken_over"
-        # The loser's late beat on the process it was on is refused as taken
-        # over, on the recorded row rather than on that process's memory.
-        with tenant_scope(TENANT_ZERO_ID), pytest.raises(HTTPException) as refused:
-            await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(connection_id=CONN, generation=held),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=a.protocol,
-            )
-        assert refused.value.status_code == 409
-        assert refused.value.detail["code"] == "taken_over"
         # And its reattach naming what it held is refused without moving
         # anything, wherever it lands.
         with pytest.raises(SupersededReattachError):
@@ -708,18 +674,8 @@ class TestTakeover:
             agent=_Agent(),  # type: ignore[arg-type]
             protocol=a.protocol,
         )
-        with tenant_scope(TENANT_ZERO_ID):
-            beat = await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(
-                    connection_id=CONN, generation=second.stream_generation
-                ),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=a.protocol,
-            )
 
         assert answer["placements"] == {"session-1": ROOM}
-        assert beat["ok"] is True
         assert first.closure is not None
         assert first.closure.code == "taken_over"
         assert second.closure is None
@@ -1100,6 +1056,74 @@ async def _delete_agent_row(session_factory: SessionFactory) -> None:
         await session.commit()
 
 
+async def _end_agent_rows(session_factory: SessionFactory) -> None:
+    """Delete the agent's connection rows and keep the agent, as handing it to
+    a new owner does when it re-issues the agent's key."""
+    async with session_factory() as session:
+        await AgentConnectionStore().delete_agent(
+            session, tenant_id=TENANT_ZERO_ID, agent_id=AGENT
+        )
+        await session.commit()
+
+
+class TestAnAgentWhoseKeyWasReissued:
+    """The agent stays, but its connections authenticated with the old key
+    when they opened. They end wherever their sockets are held."""
+
+    async def test_reissued_through_the_other_process_its_connection_closes(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, b = processes
+        told: list[str] = []
+        a.registry.set_ended_elsewhere_listener(told.append)
+        conn = await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+
+        await _end_agent_rows(session_factory)
+        with tenant_scope(TENANT_ZERO_ID):
+            await b.registry.agent_key_reissued(AGENT)
+
+        await _eventually(lambda: conn.closure is not None)
+        assert conn.closure == KEY_REISSUED
+        assert told == [AGENT]
+        assert not a.registry.is_live(AGENT)
+        assert not b.registry.is_live(AGENT)
+        async with session_factory() as session:
+            assert await session.get(Agent, AGENT) is not None
+
+    async def test_a_holder_never_told_closes_it_on_its_next_pass(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, _ = processes
+        conn = await _open(a)
+
+        await _end_agent_rows(session_factory)
+        await a.shared.reload_all()
+
+        assert conn.closure is not None
+        assert conn.closure.code == "closed"
+        assert not a.registry.is_live(AGENT)
+
+    async def test_the_agent_reconnects_afterwards(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, b = processes
+        await _open(a)
+        await _end_agent_rows(session_factory)
+        with tenant_scope(TENANT_ZERO_ID):
+            await a.registry.agent_key_reissued(AGENT)
+        assert not a.registry.is_live(AGENT)
+
+        await _open(b)
+        await _eventually(lambda: a.registry.is_live(AGENT))
+
+
 class TestADeletedAgent:
     """Deleting an agent deletes its connections' rows. Its connections end
     wherever their sockets are held, not only in the process deleting it."""
@@ -1172,3 +1196,55 @@ class TestADeletedAgent:
         (conn,) = opened
         assert conn.closure is None
         assert a.registry.get(CONN) is conn
+
+
+class TestIncarnationsDrawnAtOnce:
+    async def test_two_agents_opening_while_a_batch_is_drawn_both_get_one(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two agents connecting at once on a fresh process: the second
+        reaches the draw while the first's batch is still being fetched. Both
+        open, each on a number of its own."""
+        a, _ = processes
+        await seed_agent(session_factory, "agent-2")
+        draw = AgentConnectionStore.incarnations
+        read_agent = AgentConnectionStore.read_agent
+        drawing = asyncio.Event()
+        release = asyncio.Event()
+        second_read = asyncio.Event()
+
+        async def held_draw(
+            store: AgentConnectionStore, session: AsyncSession, count: int
+        ) -> list[int]:
+            drawing.set()
+            await release.wait()
+            return await draw(store, session, count)
+
+        async def noting_read(
+            store: AgentConnectionStore,
+            session: AsyncSession,
+            agent_id: str,
+            **kwargs: Any,
+        ) -> Any:
+            rows = await read_agent(store, session, agent_id, **kwargs)
+            if agent_id == "agent-2":
+                second_read.set()
+            return rows
+
+        monkeypatch.setattr(AgentConnectionStore, "incarnations", held_draw)
+        monkeypatch.setattr(AgentConnectionStore, "read_agent", noting_read)
+
+        first = asyncio.create_task(_open(a))
+        await asyncio.wait_for(drawing.wait(), WAIT_SECONDS)
+        second = asyncio.create_task(
+            _open(a, agent_id="agent-2", connection_id="conn-2")
+        )
+        await asyncio.wait_for(second_read.wait(), WAIT_SECONDS)
+        release.set()
+        opened = await asyncio.wait_for(asyncio.gather(first, second), WAIT_SECONDS)
+
+        generations = [conn.stream_generation for conn in opened]
+        assert len(set(generations)) == 2

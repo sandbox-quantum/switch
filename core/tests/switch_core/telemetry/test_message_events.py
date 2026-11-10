@@ -9,9 +9,11 @@ there would be a wrong chart with no error anywhere.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 import uuid
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -30,6 +32,8 @@ from switch_core.telemetry.messages import MessageTelemetry, _RoomFacts, _TtlCac
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 from switch_core.transport.observer import ParticipantMessage
+from tests.session_counting import CountingSessionFactory
+from tests.telemetry_records import declared
 
 TENANT_ZERO = "00000000-0000-0000-0000-000000000000"
 
@@ -53,6 +57,7 @@ def _service(sink: _RecordingSink, *, enabled: bool = True) -> TelemetryService:
         version="1.0.0",
         telemetry_environment="prod",
         telemetry_internal=False,
+        deployment_kind="self_hosted",
     )
 
 
@@ -161,6 +166,7 @@ def _said(world: _World, sender_client_id: str, role: str) -> ParticipantMessage
         room_id=world.room.id,
         sender_client_id=sender_client_id,
         sender_role=role,
+        sender_is_app=False,
         has_attachment=False,
         in_thread=False,
     )
@@ -174,6 +180,7 @@ def _said_in(
         room_id=room_id,
         sender_client_id=sender_client_id,
         sender_role=sender_role,
+        sender_is_app=False,
         has_attachment=False,
         in_thread=False,
     )
@@ -199,6 +206,17 @@ class _Unreachable:
         raise ConnectionError("database unreachable")
 
 
+def _one_at_a_time(messages: MessageTelemetry) -> None:
+    """Leave out the read of the whole workspace (`MessageTelemetry._read_tenant`),
+    so each room, sender and agent is looked up on its own, as these tests
+    count."""
+
+    async def _not_read(tenant_id: str) -> None:
+        return None
+
+    messages._read_tenant = _not_read  # type: ignore[method-assign]
+
+
 async def _reported(
     messages: MessageTelemetry, service: TelemetryService, sink: _RecordingSink
 ) -> list[tuple[str, dict[str, object]]]:
@@ -209,7 +227,7 @@ async def _reported(
         await messages._queue.join()
     await messages.aclose()
     await service.aclose()
-    return [(record.name, record.properties) for record in sink.sent]
+    return [(record.name, declared(record)) for record in sink.sent]
 
 
 class TestRoomMessageSent:
@@ -238,6 +256,25 @@ class TestRoomMessageSent:
             )
         ]
 
+    async def test_an_integration_posting_is_a_bot_not_a_user(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The bridge writes an app's post through a human actor like anyone
+        else's; its mark is what keeps it out of the people count."""
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        messages.observe(
+            dataclasses.replace(
+                _said(world, world.humans[0].id, "human"), sender_is_app=True
+            )
+        )
+
+        reported = await _reported(messages, service, sink)
+        assert [p["sender_kind"] for _, p in reported] == ["bot"]
+
     async def test_an_internal_room_has_no_platform(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -256,6 +293,7 @@ class TestRoomMessageSent:
                 room_id=room.id,
                 sender_client_id=human.id,
                 sender_role="human",
+                sender_is_app=False,
                 has_attachment=True,
                 in_thread=True,
             )
@@ -282,6 +320,7 @@ class TestRoomMessageSent:
                 room_id=str(uuid.uuid4()),
                 sender_client_id="whoever",
                 sender_role="human",
+                sender_is_app=False,
                 has_attachment=False,
                 in_thread=False,
             )
@@ -353,6 +392,7 @@ class TestAgentMessageReceived:
             room_id=world.room.id,
             sender_transport_user_id=world.humans[0].transport_user_id,
             from_platform=False,
+            from_app=False,
             agent_metadata={"known_agent_type": "claude-code"},
             agent_live=True,
             has_attachment=False,
@@ -393,6 +433,7 @@ class TestAgentMessageReceived:
                 room_id=world.room.id,
                 sender_transport_user_id=sender,
                 from_platform=from_platform,
+                from_app=False,
                 agent_metadata=None,
                 agent_live=False,
                 has_attachment=False,
@@ -405,6 +446,28 @@ class TestAgentMessageReceived:
             "unknown",
         ]
         assert {p["known_agent_type"] for _, p in reported} == {"none"}
+
+    async def test_an_integration_asking_an_agent_is_a_bot(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        messages.agent_addressed(
+            tenant_id=TENANT_ZERO,
+            room_id=world.room.id,
+            sender_transport_user_id=world.humans[0].transport_user_id,
+            from_platform=False,
+            from_app=True,
+            agent_metadata=None,
+            agent_live=True,
+            has_attachment=False,
+        )
+
+        reported = await _reported(messages, service, sink)
+        assert [p["sender_kind"] for _, p in reported] == ["bot"]
 
 
 class TestFailingLookups:
@@ -427,6 +490,8 @@ class TestFailingLookups:
             raise ConnectionError("database unreachable")
 
         messages._load_room_facts = _broken  # type: ignore[method-assign]
+
+        _one_at_a_time(messages)
 
         with caplog.at_level("WARNING"):
             for _ in range(3):
@@ -458,6 +523,8 @@ class TestFailingLookups:
             return await _a_slack_room(tenant_id, room_id)
 
         messages._load_room_facts = _bad_room_fails  # type: ignore[method-assign]
+
+        _one_at_a_time(messages)
         other_tenant = str(uuid.uuid4())
 
         messages.observe(_said_in("bad"))
@@ -468,6 +535,7 @@ class TestFailingLookups:
                 room_id="elsewhere",
                 sender_client_id="someone",
                 sender_role="human",
+                sender_is_app=False,
                 has_attachment=False,
                 in_thread=False,
             )
@@ -506,6 +574,8 @@ class TestFailingLookups:
 
         messages._load_room_facts = _broken  # type: ignore[method-assign]
 
+        _one_at_a_time(messages)
+
         with caplog.at_level("WARNING"):
             for room in ("a", "b", "c", "d", "e"):
                 messages.observe(_said_in(room))
@@ -532,6 +602,8 @@ class TestFailingLookups:
 
         messages._load_room_facts = _only_good_answers  # type: ignore[method-assign]
 
+        _one_at_a_time(messages)
+
         for room in ("a", "b", "good", "c", "d"):
             messages.observe(_said_in(room))
         await _reported(messages, service, sink)
@@ -554,6 +626,7 @@ class TestCaching:
                 room_id=world.room.id,
                 sender_transport_user_id=world.humans[0].transport_user_id,
                 from_platform=False,
+                from_app=False,
                 agent_metadata=None,
                 agent_live=True,
                 has_attachment=False,
@@ -613,6 +686,8 @@ class TestCaching:
 
         messages._load_room_facts = _gone  # type: ignore[method-assign]
 
+        _one_at_a_time(messages)
+
         for _ in range(3):
             messages.observe(_said_in("deleted-room"))
         reported = await _reported(messages, service, sink)
@@ -640,6 +715,7 @@ class TestCaching:
                 room_id=world.room.id,
                 sender_transport_user_id=late_sender,
                 from_platform=False,
+                from_app=False,
                 agent_metadata=None,
                 agent_live=True,
                 has_attachment=False,
@@ -668,6 +744,127 @@ class TestCaching:
             for name, p in reported
             if name == "switch_core.agent_message_sent"
         ] == ["unknown", "unknown"]
+
+
+class TestTheWholeWorkspace:
+    """The first lookup that misses reads every open room, client and agent
+    of the workspace at once (`MessageTelemetry._read_tenant`): in a workspace
+    of thousands, a process reports on most of them before it reports a second
+    message about any, so one lookup each missed for most messages."""
+
+    async def test_other_rooms_senders_and_agents_cost_no_read(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world = await _world(session_factory)
+        async with session_factory() as session:
+            other = await _room(session, bridge_platform=None, channel_type="direct")
+            await _join(session, world.humans[1].id, other)
+            await session.commit()
+        counting = CountingSessionFactory(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=counting)  # type: ignore[arg-type]
+
+        messages.observe(_said(world, world.agent.client_id, "agent"))
+        await messages._queue.join()
+        assert counting.opened == 1
+        messages.observe(_said_in(other.id, sender_client_id=world.humans[1].id))
+        messages.agent_addressed(
+            tenant_id=TENANT_ZERO,
+            room_id=other.id,
+            sender_transport_user_id=world.humans[1].transport_user_id,
+            from_platform=False,
+            from_app=False,
+            agent_metadata=None,
+            agent_live=True,
+            has_attachment=False,
+        )
+        reported = await _reported(messages, service, sink)
+
+        assert counting.opened == 1
+        facts = {
+            (name, p.get("bridge_platform"), p.get("room_user_count"))
+            for name, p in reported
+        }
+        assert ("switch_core.room_message_sent", "slack", 2) in facts
+        assert ("switch_core.room_message_sent", "none", 1) in facts
+        assert [
+            p["known_agent_type"]
+            for name, p in reported
+            if name == "switch_core.agent_message_sent"
+        ] == ["codex"]
+        assert [
+            p["sender_kind"]
+            for name, p in reported
+            if name == "switch_core.agent_message_received"
+        ] == ["user"]
+
+    async def test_a_room_made_after_the_read_is_looked_up_on_its_own(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        world = await _world(session_factory)
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+        messages.observe(_said(world, world.humans[0].id, "human"))
+        await messages._queue.join()
+        async with session_factory() as session:
+            later = await _room(session, bridge_platform=None, channel_type="direct")
+            await _join(session, world.humans[0].id, later)
+            await session.commit()
+
+        messages.observe(_said_in(later.id, sender_client_id=world.humans[0].id))
+        reported = await _reported(messages, service, sink)
+
+        assert [p["room_user_count"] for _, p in reported] == [2, 1]
+
+    async def test_a_read_that_fails_is_the_lookups_failure(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Counted once, not followed by the lookup it was for, and not tried
+        again while a failed lookup would not be."""
+        database = _Unreachable()
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(
+            telemetry=service,
+            session_factory=database,  # type: ignore[arg-type]
+        )
+
+        for _ in range(2):
+            messages.observe(_said_in("room"))
+        with caplog.at_level("WARNING"):
+            reported = await _reported(messages, service, sink)
+
+        assert [p["bridge_platform"] for _, p in reported] == ["unknown", "unknown"]
+        assert database.attempts == 1
+
+
+class TestHowLongLookupsAreKept:
+    def test_a_room_for_a_quarter_hour_and_who_someone_is_for_an_hour(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = SimpleNamespace(now=100.0)
+        monkeypatch.setattr(
+            messages_module, "time", SimpleNamespace(monotonic=lambda: clock.now)
+        )
+        telemetry = MessageTelemetry(telemetry=MagicMock(), session_factory=MagicMock())
+        room = _RoomFacts(
+            bridge_platform="slack", channel_type="channel", user_count=2, agent_count=1
+        )
+        telemetry._rooms.put(("t", "room"), room)
+        telemetry._sender_kinds.put(("t", "@alice:test"), "user")
+        telemetry._agent_runtimes.put(("t", "client"), "claude_code")
+
+        clock.now += 14 * 60
+        assert telemetry._rooms.get(("t", "room")) == room
+        clock.now += 2 * 60
+        assert telemetry._rooms.get(("t", "room")) is None
+        assert telemetry._sender_kinds.get(("t", "@alice:test")) == "user"
+        assert telemetry._agent_runtimes.get(("t", "client")) == "claude_code"
+        clock.now += 45 * 60
+        assert telemetry._sender_kinds.get(("t", "@alice:test")) is None
+        assert telemetry._agent_runtimes.get(("t", "client")) is None
 
 
 class TestTtlCache:
@@ -712,6 +909,7 @@ class TestBackpressure:
             session_factory=None,  # type: ignore[arg-type]
         )
         messages._load_room_facts = _a_slack_room  # type: ignore[method-assign]
+        _one_at_a_time(messages)
 
         with caplog.at_level("WARNING"):
             for _ in range(4):
@@ -741,6 +939,7 @@ class TestFailingSenderAndRuntimeLookups:
             session_factory=database,  # type: ignore[arg-type]
         )
         messages._load_room_facts = _a_slack_room  # type: ignore[method-assign]
+        _one_at_a_time(messages)
 
         for sender in ("@alice:test", "@alice:test"):
             messages.agent_addressed(
@@ -748,6 +947,7 @@ class TestFailingSenderAndRuntimeLookups:
                 room_id="room",
                 sender_transport_user_id=sender,
                 from_platform=False,
+                from_app=False,
                 agent_metadata=None,
                 agent_live=True,
                 has_attachment=False,
@@ -770,6 +970,7 @@ class TestFailingSenderAndRuntimeLookups:
             session_factory=database,  # type: ignore[arg-type]
         )
         messages._load_room_facts = _a_slack_room  # type: ignore[method-assign]
+        _one_at_a_time(messages)
 
         for _ in range(2):
             messages.observe(
@@ -805,6 +1006,8 @@ class TestFailingSenderAndRuntimeLookups:
 
         messages._load_room_facts = _broken  # type: ignore[method-assign]
 
+        _one_at_a_time(messages)
+
         with caplog.at_level("WARNING"):
             for _ in range(3):
                 messages.observe(_said_in("room"))
@@ -830,6 +1033,8 @@ class TestFailingSenderAndRuntimeLookups:
             return None
 
         messages._load_room_facts = _gone  # type: ignore[method-assign]
+
+        _one_at_a_time(messages)
 
         with caplog.at_level("WARNING"):
             messages.observe(_said_in("room-a"))
@@ -891,6 +1096,7 @@ class TestFailingReports:
                 room_id=world.room.id,
                 sender_transport_user_id="@nobody-we-know:test",
                 from_platform=False,
+                from_app=False,
                 agent_metadata=None,
                 agent_live=True,
                 has_attachment=False,
@@ -921,6 +1127,7 @@ class TestShutdown:
                         room_id="room",
                         sender_client_id="someone",
                         sender_role="human",
+                        sender_is_app=False,
                         has_attachment=False,
                         in_thread=False,
                     )
@@ -952,6 +1159,7 @@ class TestShutdown:
             session_factory=None,  # type: ignore[arg-type]
         )
         messages._load_room_facts = _slow_room  # type: ignore[method-assign]
+        _one_at_a_time(messages)
         messages.observe(_said_in("room"))
         with caplog.at_level("WARNING"):
             closing = asyncio.create_task(messages.aclose())
@@ -992,12 +1200,15 @@ class TestShutdown:
                 raise
 
         messages._load_room_facts = _slow_to_cancel  # type: ignore[method-assign]
+
+        _one_at_a_time(messages)
         messages.observe(
             ParticipantMessage(
                 tenant_id=TENANT_ZERO,
                 room_id="room",
                 sender_client_id="someone",
                 sender_role="human",
+                sender_is_app=False,
                 has_attachment=False,
                 in_thread=False,
             )
@@ -1044,6 +1255,7 @@ class TestOff:
             room_id=world.room.id,
             sender_transport_user_id=world.humans[0].transport_user_id,
             from_platform=False,
+            from_app=False,
             agent_metadata=None,
             agent_live=False,
             has_attachment=False,

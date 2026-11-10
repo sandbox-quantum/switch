@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import select
@@ -38,10 +38,7 @@ from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, room_source
 from switch_core.bridges.agent.protocol.stream import (
     KEEPALIVE,
     Frame,
-    encode_sse,
-    encode_ws,
     event_frames,
-    sse_stream,
 )
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
@@ -61,6 +58,7 @@ from tests.db_buffer import (
     seed_member,
     sender_of,
 )
+from tests.session_counting import CountingSessionFactory
 
 AGENT = "agent-1"
 ROOM_A = "room-a"
@@ -1598,43 +1596,28 @@ async def test_each_delivered_event_counts_as_an_agent_bridge_event_out(
         uninstall()
 
 
-class TestBothTransportsEncodeTheSameFrames:
-    """The socket and the event stream an old client still reads carry the
-    same frames from the same loop; only the encoding differs."""
+async def test_a_pass_reads_in_one_session(
+    session_factory: async_sessionmaker[AsyncSession], room_bells: MessageListener
+) -> None:
+    """The reads of a pass that delivers (the agent's rooms, its head, its own
+    events, what was dropped after its position, its rooms' conversation and
+    the unread counts) cost one pool checkout and one transaction, not one of
+    each per read. A contract like those in `test_pool_checkouts.py`: every
+    message wakes a pass in each stream it is for."""
+    counting = CountingSessionFactory(session_factory)
+    buffer = db_buffer_on(cast(Any, counting), rooms=room_bells)
+    registry = AgentConnectionRegistry()
+    conn = _open(registry, scope="all", delivery_filter="all")
+    stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
+    await _addressed(session_factory, buffer, "first")
+    opening = await _take(stream, 2)
+    assert [name for name, _ in opening] == ["connection_state", "message"]
 
-    def test_an_event_carries_its_sequence_as_the_sse_id(self) -> None:
-        frame = Frame("message", {"payload": {"body": "hi"}}, seq=7)
+    await _addressed(session_factory, buffer, "second")
+    counting.opened = 0
+    ((name, data),) = await _take(stream, 1)
+    await stream.aclose()
 
-        assert encode_sse(frame) == (
-            b'id: 7\nevent: message\ndata: {"payload":{"body":"hi"}}\n\n'
-        )
-        assert encode_ws(frame) == {
-            "event": "message",
-            "data": {"payload": {"body": "hi"}},
-            "id": 7,
-        }
-
-    def test_a_frame_without_a_sequence_has_no_id(self) -> None:
-        assert encode_sse(Frame("gap", {"reason": "x"})) == (
-            b'event: gap\ndata: {"reason":"x"}\n\n'
-        )
-
-    def test_the_keepalive_is_a_comment_on_the_event_stream(self) -> None:
-        assert encode_sse(KEEPALIVE) == b": keepalive\n\n"
-
-    async def test_closing_the_event_stream_detaches_its_connection(
-        self, db_buffer: EventBuffer
-    ) -> None:
-        registry = AgentConnectionRegistry()
-        buffer = db_buffer
-        conn = _open(registry)
-
-        body = sse_stream(
-            event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
-        )
-        first = await anext(body)
-        await body.aclose()
-
-        assert first.startswith(b"event: connection_state\n")
-        assert not conn.stream_attached
-        assert registry.get(conn.id) is conn
+    assert name == "message"
+    assert data["payload"]["body"] == "second"
+    assert counting.opened == 1

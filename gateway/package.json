@@ -2,9 +2,12 @@
   "name": "switch-gateway",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^22.12.0 || ^24.0.0 || >=26.0.0"
+  },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/check-no-dev-tools.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "gen:tokens": "node scripts/gen-hoot-tokens.mjs"
@@ -32,6 +35,6 @@
     "jsdom": "^29.1.1",
     "typescript": "~5.8.0",
     "vite": "^6.3.0",
-    "vitest": "^3.2.7"
+    "vitest": "^5.0.5"
   }
 }

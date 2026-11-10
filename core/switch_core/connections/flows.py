@@ -61,7 +61,7 @@ INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
 
 
 def client_changed(name: str) -> str:
-    return f"This server's {name} app changed during your sign-in. Start it again."
+    return f"Switch's {name} app changed during your sign-in. Start it again."
 
 
 class FlowError(Exception):
@@ -85,6 +85,10 @@ class ServiceFlow:
     @property
     def service(self) -> str:
         return self.stored.service
+
+    @property
+    def tenant_id(self) -> str:
+        return self.stored.tenant_id
 
     @property
     def name(self) -> str:
@@ -160,8 +164,8 @@ class ServiceFlows:
         mode = self.mode(definition)
         if mode is None:
             raise FlowError(
-                f"{definition.name} can return a sign-in only to this server, "
-                "which has no public address (GATEWAY_PUBLIC_URL)."
+                f"{definition.name} can return a sign-in only to Switch's public "
+                "address, and none is set (GATEWAY_PUBLIC_URL)."
             )
         assert definition.auth.oauth is not None
         ports = definition.auth.oauth.loopback_ports
@@ -195,6 +199,7 @@ class ServiceFlows:
                 owner_label=owner_label,
                 details={
                     "name": definition.name,
+                    "unscoped": access.unscoped,
                     "consent": consent,
                     "scopes": list(level.scopes),
                     "read_scopes": list(access.read.scopes),
@@ -348,6 +353,8 @@ class ServiceFlows:
         """What the person consented to, as the vendor granted it."""
         granted = set(exchange.signed_in.granted_scopes)
         details = exchange.flow.details
+        if details.get("unscoped"):
+            return "write"
         write_scopes = set(details["write_scopes"])
         if write_scopes and write_scopes <= granted:
             return "write"
@@ -366,6 +373,13 @@ class ServiceFlows:
             expect=("checking",),
             to="connected",
             changes={"account_label": exchange.account.label, "warning": warning},
+        )
+
+    async def refused(self, flow: ServiceFlow, error: str) -> None:
+        """The browser could not be sent to the vendor: the flow ends with
+        why, for Console to show, rather than waiting until it expires."""
+        await self._flows.advance(
+            flow.stored, expect=("pending",), to="failed", changes={"error": error}
         )
 
     async def failed(self, flow: StoredFlow, error: str) -> None:

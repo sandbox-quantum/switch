@@ -44,7 +44,7 @@ has its own `console/CLAUDE.md` (→ `AGENTS.md`); read that before working in t
 
 ```bash
 # Dependencies
-uv sync                          # install/update Python dependencies
+uv sync --project core           # install/update Python dependencies
 
 # Local dev infrastructure (Docker Compose)
 just init-env                    # first-time setup — generate .env with random secrets
@@ -189,6 +189,10 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   `AIRTABLE_CLIENT_CONFIG_PATH`, and switching it off
 - `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own
   OIDC browser sign-in (variables, redirect URI, WorkOS Connect setup)
+- `docs/old/workos-directory.md` — keeping organizations in WorkOS
+  (`ORGANIZATION_DIRECTORY=workos`): what it needs, linking organizations and
+  existing accounts with `switch-link-workos`, what a sign-in and the mirror
+  bring in or take away, and what is not done yet
 - `docs/old/google-workspace-setup.md` — offering Google Workspace on a
   self-hosted server: registering the Google app (Internal or External), its
   redirect URI, saving it under Connectors or in
@@ -217,6 +221,10 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
 - `docs/old/key-rotation.md` — the server's keys (`SECRET_KEYS`): what each
   derived key protects, moving a deployment off `JWT_SECRET_KEY`, and the
   rotation runbook
+- `docs/design/data-retention.md` — what Switch deletes: the per-workspace
+  message-retention window, the orphaned-file sweep, the leftover records
+  pruned after a grace period, how erasing a person works, and a GDPR design
+  note for what is not built (export, audit-log horizon)
 - `docs/old/rds-migration.md` — moving a deployment's Postgres to RDS: the
   proposal and the cutover runbook
 

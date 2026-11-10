@@ -6,6 +6,8 @@
 **/node_modules
 # Rebuilt inside the image; a local build is only context to upload.
 gateway/dist
+# The dev role switcher's local logins (`just seed-dev-roles`).
+gateway/.dev-role-accounts.json
 internal/deploy/terraform/.terraform
 deploy/remote/helm/switch/charts
 .claude

@@ -35,7 +35,14 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: workspaces,
 }));
 vi.mock('./switch-servers-store', () => ({ switchServersStore: serversStore }));
-vi.mock('./local-server-store', () => ({ localServerStore: { isRunning: true } }));
+const localServer = vi.hoisted(() => ({
+  isRunning: true,
+  withoutPages: new Set<string>(),
+  lacksAdminPages(server: { id: string }) {
+    return this.withoutPages.has(server.id);
+  },
+}));
+vi.mock('./local-server-store', () => ({ localServerStore: localServer }));
 vi.mock('./remote-server-store', () => ({ remoteServerStore: { isRunning: () => true } }));
 
 const { SwitchRoomsStore } = await import('./switch-rooms-store');
@@ -51,6 +58,8 @@ function room(id: string, ownerId: string | null, overrides: Partial<RemoteRoomS
     bridgeType: null,
     externalChannelUrl: null,
     ownerId,
+    viewerIsMember: false,
+    isConsoleChat: false,
     archived: false,
     createdAt: '2026-01-01T00:00:00Z',
     ...overrides,
@@ -109,6 +118,76 @@ describe('listed rooms', () => {
     await store.loadRoomNames();
 
     expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual(['mine']);
+  });
+
+  it('also lists the rooms the signed-in user is a member of, not every room', async () => {
+    listRooms.mockImplementation(async (workspaceId: string) =>
+      workspaceId === 'ws-a'
+        ? [
+            room('mine', 'user-of-srv-a'),
+            room('invited', 'user-of-someone-else', { viewerIsMember: true }),
+            room('someone-elses', 'user-of-someone-else'),
+          ]
+        : []
+    );
+
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+
+    expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual([
+      'invited',
+      'mine',
+    ]);
+  });
+
+  it('lists the rooms the user’s agents are in, and drops one when that membership ends', async () => {
+    listRooms.mockImplementation(async (workspaceId: string) =>
+      workspaceId === 'ws-a'
+        ? [room('agents-room', 'user-of-someone-else'), room('unrelated', 'user-of-someone-else')]
+        : []
+    );
+    const membership = {
+      roomId: 'agents-room',
+      roomName: 'agents-room',
+      archived: false,
+      status: 'active',
+      roomRole: null,
+    };
+    listAgentRooms.mockResolvedValueOnce([membership]);
+
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+    await store.ensureMembershipsFor([{ workspaceId: 'ws-a', switchAgentId: 'buddy' }]);
+    expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual([
+      'agents-room',
+    ]);
+
+    listAgentRooms.mockResolvedValueOnce([]);
+    await store.refreshRoomState();
+    expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual([]);
+  });
+
+  it('drops an agent’s rooms once it is no longer tracked, as after a delete or account switch', async () => {
+    listRooms.mockImplementation(async (workspaceId: string) =>
+      workspaceId === 'ws-a' ? [room('agents-room', 'user-of-someone-else')] : []
+    );
+    listAgentRooms.mockResolvedValue([
+      {
+        roomId: 'agents-room',
+        roomName: 'agents-room',
+        archived: false,
+        status: 'active',
+        roomRole: null,
+      },
+    ]);
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+    await store.ensureMembershipsFor([{ workspaceId: 'ws-a', switchAgentId: 'gone' }]);
+    expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual([
+      'agents-room',
+    ]);
+    await store.ensureMembershipsFor([]);
+    expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual([]);
   });
 
   it('shows only the active workspace’s rooms, not every connected one’s', async () => {
@@ -214,6 +293,26 @@ describe('listed rooms', () => {
     await store.loadRoomNames();
 
     expect(store.workspacesNotSignedIn.map((w) => w.name)).toEqual(['Beta']);
+    expect(store.workspacesThatFailedToLoad).toEqual([]);
+    serversStore.isConnected = () => true;
+  });
+
+  it('asks for a sign-in, not a retry, once a session the server ended reads as signed out', async () => {
+    // A password change elsewhere revokes the session: the next room load is
+    // refused, then the server's status is re-checked and reads signed out.
+    // "Rooms may be out of date" with a Retry would be the wrong thing to say.
+    workspaces.activeId = 'ws-a';
+    listRooms.mockImplementation(async () => {
+      throw new Error('Switch session expired — please sign in again.');
+    });
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+    expect(store.workspacesThatFailedToLoad.map((w) => w.name)).toEqual(['Alpha']);
+
+    serversStore.isConnected = (serverId: string) => serverId !== 'srv-a';
+    await store.loadRoomNames();
+
+    expect(store.workspacesNotSignedIn.map((w) => w.name)).toEqual(['Alpha']);
     expect(store.workspacesThatFailedToLoad).toEqual([]);
     serversStore.isConnected = () => true;
   });
@@ -624,5 +723,19 @@ describe('dashboard links', () => {
       'https://beta-gateway.example.com/agents/agent-1'
     );
     expect(store.gatewayAgentUrl('srv-unknown', 'agent-1')).toBeNull();
+  });
+
+  it('has no links into a server that serves no admin pages', async () => {
+    localServer.withoutPages.add('srv-a');
+    try {
+      const store = new SwitchRoomsStore();
+      await store.loadRoomNames();
+
+      expect(store.gatewayRoomUrl('room-a')).toBeNull();
+      expect(store.gatewayAgentUrl('srv-a', 'agent-1')).toBeNull();
+      expect(store.gatewayRoomUrl('room-b')).toBe('https://beta-gateway.example.com/rooms/room-b');
+    } finally {
+      localServer.withoutPages.clear();
+    }
   });
 });

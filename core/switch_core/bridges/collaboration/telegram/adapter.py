@@ -6,7 +6,7 @@ import logging
 import re
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, ClassVar, Literal, NamedTuple
@@ -14,6 +14,7 @@ from typing import Any, ClassVar, Literal, NamedTuple
 from pydantic import ConfigDict, model_validator
 from pydantic.json_schema import SkipJsonSchema
 from telegram import (
+    Bot,
     ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -43,7 +44,9 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     AgentIdentity,
     ChannelNotBindable,
+    MessagePartlySent,
     PlatformAdapter,
+    PrivateNoticeRefused,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -56,6 +59,7 @@ from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
+    BridgeCredentialError,
     BridgeInstallLink,
     ChannelCreationUnsupported,
     ChannelType,
@@ -67,6 +71,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -89,6 +94,7 @@ from switch_core.bridges.collaboration.telegram.app_client import (
     TelegramAppClient,
     bot_id_of,
     bot_resource,
+    initialize_bot,
 )
 from switch_core.bridges.collaboration.telegram.chunking import (
     MAX_MESSAGE,
@@ -486,6 +492,16 @@ class TelegramConnectionConfig(BridgeConnectionConfig):
         return self
 
 
+# Accounts Telegram posts as on behalf of someone it does not name, so many
+# people share each one. Linking one to a Switch user would recognise every
+# anonymous admin, or every channel, as that user (CHOO-3881).
+_STAND_IN_ACCOUNTS: dict[str, str] = {
+    "1087968824": "This is Telegram's stand-in for anonymous group admins, which any of them posts as.",
+    "136817688": "This is Telegram's stand-in for posts made as a channel.",
+    "777000": "This is Telegram's own service account.",
+}
+
+
 class TelegramAdapter(PlatformAdapter):
     """Telegram collaboration bridge adapter.
 
@@ -515,12 +531,38 @@ class TelegramAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Telegram"
     # The Bot API has no call to delete or archive a chat.
     channel_on_delete = "left"
+    #: A bot cannot show a group message to one member alone, so a notice
+    #: about one goes to them in their private chat with the bot.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "direct_message"
     docs_slug: ClassVar[str | None] = "telegram"
     # A quiet self-registered bridge does not poll: Telegram hands each update
     # to a single getUpdates caller, so a poller in every process would split
     # a chat's messages between them. A bridge on the shared app bot polls
     # nowhere; its updates reach any process as webhooks.
     keeps_quiet_unless_listening: ClassVar[bool] = True
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Ask Telegram who the bot token belongs to (`getMe`).
+
+        A bridge on the shared app bot holds no token of its own; the
+        deployment's is checked when the app starts.
+        """
+        config = TelegramConnectionConfig.model_validate(connection_config)
+        if config.event_delivery == "shared":
+            return
+        assert config.bot_token is not None  # guaranteed by the validator
+        bot = Bot(config.bot_token)
+        try:
+            await initialize_bot(bot.initialize())
+        except InvalidToken as exc:
+            raise BridgeCredentialError(str(exc)) from exc
+        except TelegramError as exc:
+            raise BridgeCredentialError(
+                f"Could not check the bot token with Telegram: {exc}. Try again."
+            ) from exc
+        finally:
+            await bot.shutdown()
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
@@ -676,12 +718,20 @@ class TelegramAdapter(PlatformAdapter):
             return
 
         assert self._config.bot_token is not None  # guaranteed by the validator
-        app = ApplicationBuilder().token(self._config.bot_token).build()
+        app = (
+            ApplicationBuilder()
+            .token(self._config.bot_token)
+            .connect_timeout(30.0)
+            .read_timeout(30.0)
+            .get_updates_connect_timeout(30.0)
+            .get_updates_read_timeout(30.0)
+            .build()
+        )
         app.add_handler(TypeHandler(Update, self._make_on_update()))
         self._app = app
         self._bot = app.bot
 
-        await app.initialize()
+        await initialize_bot(app.initialize())
         me = await app.bot.get_me()
         self._bot_user_id = me.id
         if me.username and me.username != self._bot_username:
@@ -1295,6 +1345,18 @@ class TelegramAdapter(PlatformAdapter):
             "menu offers it (`/invite-agent` works too)"
         )
 
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Commands reach the bot even in a group where it is not an admin,
+        # which is where plain messages do not.
+        return f"Send `/link_account {code}` from that account in a group the Switch bot is in."
+
+    @classmethod
+    def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
+        return _STAND_IN_ACCOUNTS.get(external_user_id)
+
     async def admin_message(
         self,
         channel_id: str,
@@ -1317,6 +1379,34 @@ class TelegramAdapter(PlatformAdapter):
             self._admin_body(self.translate_outbound(content), drawn),
             thread_root_id,
         )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """A message in the person's private chat with the bot, naming the
+        group the message was posted in, split over several if it is past
+        Telegram's length cap. Telegram lets a bot write to someone only after
+        they have started a chat with it, and most members of a group never
+        have, so its refusal is raised as `PrivateNoticeRefused`."""
+        where = f" in {html.escape(channel_name)}" if channel_name else ""
+        bot = self._require_bot()
+        body = f"About your message{where}:\n{self.translate_outbound(content)}"
+        try:
+            for chunk in chunk_message(body):
+                await bot.send_message(
+                    chat_id=int(user_id),
+                    text=chunk,
+                    parse_mode=ParseMode.HTML,
+                    link_preview_options=_NO_PREVIEW,
+                )
+        except Forbidden as refused:
+            raise PrivateNoticeRefused(str(refused)) from refused
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
@@ -3502,7 +3592,17 @@ class TelegramAdapter(PlatformAdapter):
         Returns the caption to attach and the ref of any message posted first."""
         if len(caption) <= _MAX_CAPTION_CHARS:
             return caption, None
-        ref = await self._send_text(channel_id, caption, thread_root_id)
+        try:
+            ref = await self._send_text(channel_id, caption, thread_root_id)
+        except MessagePartlySent as partial:
+            # The chat already says the caption is cut short; the file still
+            # goes out after what of it arrived.
+            logger.error(
+                "The caption for a file in Telegram chat %s was cut short: %s",
+                channel_id,
+                partial,
+            )
+            return "", partial.first_ref
         return "", ref
 
     async def _send_text(
@@ -3511,7 +3611,9 @@ class TelegramAdapter(PlatformAdapter):
         """Post one body, split across messages if Telegram's cap demands it.
 
         Returns the ref of the first message so an edit or delete targets the
-        head of the run."""
+        head of the run, or `None` when not even that was taken. A later
+        message refused ends the run with a notice saying the rest is missing,
+        and `MessagePartlySent`."""
         bot = self._require_bot()
         anchor = await self._anchor_kwargs(channel_id, thread_root_id)
         # In a forum the anchor is what keeps the run together: a chunk without
@@ -3525,14 +3627,38 @@ class TelegramAdapter(PlatformAdapter):
         # a forum is also mandatory, so a target deleted mid-run fails the rest
         # of the send instead of scattering it into General.
         every_chunk = bool(anchor) and await self._is_forum(channel_id)
-        first_ref: str | None = None
-        for index, chunk in enumerate(chunk_message(body)):
-            kwargs = anchor if every_chunk or index == 0 else {}
-            sent = await self._send_chunk(bot, channel_id, chunk, kwargs)
-            if sent is None:
-                return first_ref
-            if first_ref is None:
-                first_ref = sent
+        chunks = chunk_message(body)
+        first_ref = await self._send_chunk(bot, channel_id, chunks[0], anchor)
+        if first_ref is None:
+            return None
+        rest = anchor if every_chunk else {}
+        for index, chunk in enumerate(chunks[1:], start=1):
+            if await self._send_chunk(bot, channel_id, chunk, rest) is not None:
+                continue
+            logger.error(
+                "Only %d of %d parts of a message reached Telegram chat %s",
+                index,
+                len(chunks),
+                channel_id,
+            )
+            notice = (
+                f"⚠️ Only {index} of {len(chunks)} parts of this message could "
+                "be delivered — Telegram rejected the rest."
+            )
+            if await self._send_chunk(bot, channel_id, notice, rest) is None:
+                logger.error(
+                    "Could not tell Telegram chat %s that the message %s is "
+                    "missing its last %d parts; nothing there says it is cut short",
+                    channel_id,
+                    first_ref,
+                    len(chunks) - index,
+                )
+            raise MessagePartlySent(
+                platform="Telegram",
+                first_ref=first_ref,
+                delivered=index,
+                total=len(chunks),
+            )
         return first_ref
 
     async def _send_chunk(

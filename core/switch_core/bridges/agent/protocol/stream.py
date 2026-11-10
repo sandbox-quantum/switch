@@ -2,9 +2,8 @@
 
 Turns a connection plus the event buffer into a sequence of frames: catch-up
 from the client's cursor, then live delivery as events are appended. The client
-never asks again; it opens once and reads. `api/handlers.py` sends them over
-the WebSocket, or, for a client built before it, as a Server-Sent Events
-stream: both encode the same frames from the same loop, so they cannot drift.
+never asks again; it opens once and reads. The WebSocket in
+`api/handlers.py` sends them.
 
 Every event says where it sits, so a client that reconnects can say how far it
 got and resume exactly where it stopped. A client on agent-protocol revision 9
@@ -22,10 +21,9 @@ events must never see a stream that looks complete.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -81,9 +79,7 @@ class Frame:
 
 
 # Not a message: the loop's signal that it waited a keepalive interval with
-# nothing to send. The WebSocket has its own ping and drops it; the event
-# stream writes a comment, which only stops proxies dropping an idle
-# connection. Liveness comes from the client's beat, never from this.
+# nothing to send. The WebSocket has its own ping and drops it.
 KEEPALIVE = Frame("keepalive", {})
 
 
@@ -98,35 +94,6 @@ def encode_ws(frame: Frame) -> dict[str, Any]:
     if frame.seq is not None:
         message["id"] = frame.seq
     return message
-
-
-def encode_sse(frame: Frame) -> bytes:
-    """A frame as a Server-Sent Event. `id` is the event's sequence number,
-    which a reconnecting client sends back as `Last-Event-ID`."""
-    if frame is KEEPALIVE:
-        return b": keepalive\n\n"
-    lines = []
-    if frame.seq is not None:
-        lines.append(f"id: {frame.seq}")
-    lines.append(f"event: {frame.event}")
-    lines.append(f"data: {json.dumps(frame.data, separators=(',', ':'))}")
-    return ("\n".join(lines) + "\n\n").encode()
-
-
-async def sse_stream(frames: AsyncGenerator[Frame]) -> AsyncIterator[bytes]:
-    """The connection's frames as a `text/event-stream` body.
-
-    Kept for clients built before the WebSocket (agent-protocol revision 7 and
-    older), for a compatibility window: it goes once
-    `switch.agents.connected{transport:sse}` stays at zero.
-    """
-    try:
-        async for frame in frames:
-            yield encode_sse(frame)
-    finally:
-        # Closed here, so the stream detaches from its connection when the
-        # client goes rather than when the generator is garbage collected.
-        await frames.aclose()
 
 
 def _connection_state(conn: AgentConnection) -> dict[str, Any]:
@@ -348,24 +315,62 @@ async def _event_stream(
                 await buffer.ensure_counting(tenant, agent_id, conn.id, room_id)
                 counted.add(room_id)
 
-            conversation_rooms: set[str] = set()
-            if conn.reads_conversation:
-                conversation_rooms = await _place_in_conversation(
-                    conn, registry, buffer, tenant
-                )
-            # Before the read, so a row written while it runs wakes the wait
-            # below rather than being left for the keepalive.
-            rooms.watch(conversation_rooms)
-
+            # The reads of a pass share one session, so they cost one pool
+            # checkout and one transaction rather than one of each per read
+            # (`EventBuffer.one_session`). Nothing is yielded inside it: a gap
+            # goes out after the block has given its connection back.
             try:
-                pending, looked = await buffer.read(
-                    tenant,
-                    agent_id,
-                    conn.position,
-                    conversation_rooms=conversation_rooms,
-                    notifiable_only=not conn.reads_conversation,
-                    limit=CATCH_UP_BATCH,
-                )
+                async with buffer.one_session(tenant):
+                    conversation_rooms: set[str] = set()
+                    if conn.reads_conversation:
+                        conversation_rooms = await _place_in_conversation(
+                            conn, registry, buffer, tenant
+                        )
+                    # Before the read, so a row written while it runs wakes the
+                    # wait below rather than being left for the keepalive.
+                    rooms.watch(conversation_rooms)
+
+                    pending, looked = await buffer.read(
+                        tenant,
+                        agent_id,
+                        conn.position,
+                        conversation_rooms=conversation_rooms,
+                        notifiable_only=not conn.reads_conversation,
+                        limit=CATCH_UP_BATCH,
+                    )
+
+                    # Room coverage is evaluated per event rather than up
+                    # front: a sibling claiming a room must take effect
+                    # immediately, without tearing the stream down. An event
+                    # for a room this connection does not cover is not sent,
+                    # but the position still moves past it, in order: only once
+                    # every event before it has gone out, so the position never
+                    # says the client was sent an event that is still to come.
+                    # `covered` is the plan when the batch is read, which the
+                    # tickets are minted for: room messages are in it because
+                    # `_conversation_rooms` only returned rooms this connection
+                    # covers. Each event is checked again just before it is
+                    # sent, because the loop suspends at every yield and a
+                    # sibling can claim the room while it does. The check reads
+                    # the registry in memory, so it costs no query.
+                    covered = [
+                        item.source != OWN_EVENTS or registry.covers(conn, item.room_id)
+                        for item in pending
+                    ]
+                    tickets = await _tickets_for(conn, buffer, tenant, pending, covered)
+                    # The unread counts sent with the events below, counted for
+                    # the whole batch at once, so that catching up on a few
+                    # hundred events costs a few statements per room rather
+                    # than several per event.
+                    missed = await buffer.unread_batch(
+                        tenant,
+                        agent_id,
+                        [
+                            (item.room_id, item.room_seq)
+                            for item, send in zip(pending, covered, strict=True)
+                            if send and item.notifiable
+                        ],
+                    )
             except CursorExpiredError as exc:
                 conn.position[OWN_EVENTS] = exc.resume_after
                 yield _frame(
@@ -382,36 +387,6 @@ async def _event_stream(
                 )
                 continue
 
-            # Room coverage is evaluated per event rather than up front: a
-            # sibling claiming a room must take effect immediately, without
-            # tearing the stream down. An event for a room this connection does
-            # not cover is not sent, but the position still moves past it, in
-            # order: only once every event before it has gone out, so the
-            # position never says the client was sent an event that is still
-            # to come. `covered` is the plan when the batch is read, which the
-            # tickets are minted for: room messages are in it because
-            # `_conversation_rooms` only returned rooms this connection covers.
-            # Each event is checked again just before it is sent, because the
-            # loop suspends at every yield and a sibling can claim the room
-            # while it does. The check reads the registry in memory, so it
-            # costs no query.
-            covered = [
-                item.source != OWN_EVENTS or registry.covers(conn, item.room_id)
-                for item in pending
-            ]
-            tickets = await _tickets_for(conn, buffer, tenant, pending, covered)
-            # The unread counts sent with the events below, counted for the
-            # whole batch at once, so that catching up on a few hundred events
-            # costs a few statements per room rather than several per event.
-            missed = await buffer.unread_batch(
-                tenant,
-                agent_id,
-                [
-                    (item.room_id, item.room_seq)
-                    for item, send in zip(pending, covered, strict=True)
-                    if send and item.notifiable
-                ],
-            )
             delivered = False
             index = -1
             for item, send in zip(pending, covered, strict=True):

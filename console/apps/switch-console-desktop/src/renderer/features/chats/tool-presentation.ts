@@ -62,8 +62,17 @@ const WEB = new Set(['WebSearch', 'WebFetch', 'websearch', 'webfetch', 'web_sear
 const AGENT = new Set(['Task', 'Agent', 'task']);
 const TODO = new Set(['TodoWrite', 'TodoRead', 'todowrite', 'todoread']);
 
-/** Tool names the Switch MCP server's tools carry, as Claude Code reports them. */
-export const SWITCH_TOOL_PREFIX = 'mcp__switch__';
+/**
+ * A Switch tool's name as each provider titles it: Claude Code
+ * `mcp__switch__post_message`, Codex `switch.post_message`, OpenCode
+ * `switch_post_message`.
+ */
+const SWITCH_TOOL = /^(?:mcp__switch__|switch[._])(\w+)(?:\s|$)/;
+
+/** The Switch tool a name or title calls (`post_message`), or null when it is not one. */
+export function switchTool(name: string): string | null {
+  return SWITCH_TOOL.exec(name)?.[1] ?? null;
+}
 
 const SWITCH_LABELS: Record<string, string> = {
   connect_to_room: 'Connected to the room',
@@ -87,7 +96,6 @@ function field(input: Record<string, unknown>, ...keys: string[]): string | null
 }
 
 function kindOf(name: string, type: string | null): ToolKind {
-  if (name.startsWith(SWITCH_TOOL_PREFIX)) return 'switch';
   if (SHELL.has(name) || type === 'command_execution') return 'shell';
   if (READ.has(name)) return 'read';
   if (EDIT.has(name) || type === 'file_change') return 'edit';
@@ -222,7 +230,8 @@ export function presentTool(item: ToolItem, detail: ToolDetail | null): ToolPres
   const running = item.status === 'in-progress';
   const titled = fromTitle(item.title);
   const name = detail?.toolName ?? titled.name;
-  const kind = kindOf(name, detail?.type ?? null);
+  const tool = switchTool(name) ?? switchTool(item.title);
+  const kind = tool ? 'switch' : kindOf(name, detail?.type ?? null);
   const input = isRecord(detail?.input) ? detail.input : {};
   const output = nonEmpty(detail?.output) ?? nonEmpty(item.text);
   const truncated = detail?.truncated ?? false;
@@ -311,12 +320,11 @@ export function presentTool(item: ToolItem, detail: ToolDetail | null): ToolPres
     case 'mcp':
     case 'other': {
       const mcp = mcpParts(name);
-      const label =
-        kind === 'switch'
-          ? (SWITCH_LABELS[mcp?.tool ?? ''] ?? `Switch: ${humanize(mcp?.tool ?? name)}`)
-          : mcp
-            ? `${humanize(mcp.server)}: ${humanize(mcp.tool)}`
-            : item.title || name;
+      const label = tool
+        ? (SWITCH_LABELS[tool] ?? `Switch: ${humanize(tool)}`)
+        : mcp
+          ? `${humanize(mcp.server)}: ${humanize(mcp.tool)}`
+          : item.title || name;
       const shown = pretty(detail?.input);
       return {
         ...base,
@@ -333,36 +341,4 @@ export function presentTool(item: ToolItem, detail: ToolDetail | null): ToolPres
 export function shortPath(path: string): string {
   const parts = path.split('/').filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join('/')}` : path;
-}
-
-const COUNTED: Record<Exclude<ToolKind, 'switch'>, (count: number) => string> = {
-  shell: (n) => `Ran ${n} ${n === 1 ? 'command' : 'commands'}`,
-  read: (n) => `Read ${n} ${n === 1 ? 'file' : 'files'}`,
-  edit: (n) => `Edited ${n} ${n === 1 ? 'file' : 'files'}`,
-  search: (n) => `Searched ${n} ${n === 1 ? 'time' : 'times'}`,
-  web: (n) => `Searched the web ${n} ${n === 1 ? 'time' : 'times'}`,
-  agent: (n) => `Ran ${n} ${n === 1 ? 'agent' : 'agents'}`,
-  todo: (n) => `Updated the to-do list${n === 1 ? '' : ` ${n} times`}`,
-  mcp: (n) => `Called ${n} ${n === 1 ? 'tool' : 'tools'}`,
-  other: (n) => `Used ${n} ${n === 1 ? 'tool' : 'tools'}`,
-};
-
-/**
- * One line for a run of tool calls, by kind in the order each first appears:
- * "Ran 2 commands, read 3 files and edited 1 file". The kind is the icon's
- * when every call shares it, and null when they are mixed.
- */
-export function summarizeTools(kinds: ToolKind[]): { label: string; kind: ToolKind | null } {
-  const counts = new Map<Exclude<ToolKind, 'switch'>, number>();
-  for (const kind of kinds) {
-    const counted = kind === 'switch' ? 'other' : kind;
-    counts.set(counted, (counts.get(counted) ?? 0) + 1);
-  }
-  const parts = [...counts].map(([kind, count], index) => {
-    const text = COUNTED[kind](count);
-    return index === 0 ? text : text.charAt(0).toLowerCase() + text.slice(1);
-  });
-  const label =
-    parts.length < 2 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
-  return { label, kind: counts.size === 1 ? kinds[0]! : null };
 }

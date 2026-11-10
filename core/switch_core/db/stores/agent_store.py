@@ -31,6 +31,15 @@ class AgentStore:
     async def get(self, session: AsyncSession, agent_id: str) -> Agent | None:
         return await session.get(Agent, agent_id)
 
+    async def get_many(
+        self, session: AsyncSession, agent_ids: Collection[str]
+    ) -> list[Agent]:
+        """`get` for many agents in one query; an id with no agent is left out."""
+        if not agent_ids:
+            return []
+        result = await session.execute(select(Agent).where(Agent.id.in_(agent_ids)))
+        return list(result.scalars().all())
+
     async def get_by_name(self, session: AsyncSession, name: str) -> Agent | None:
         """Resolve an agent by name within the bound tenant.
 
@@ -109,6 +118,17 @@ class AgentStore:
     async def get_all(self, session: AsyncSession) -> list[Agent]:
         result = await session.execute(select(Agent))
         return list(result.scalars().all())
+
+    async def count(self, session: AsyncSession) -> int:
+        """How many agents the bound tenant has, children included, as
+        `get_all` lists them."""
+        return (
+            await session.scalar(
+                select(func.count())
+                .select_from(Agent)
+                .where(Agent.tenant_id == require_tenant_id())
+            )
+        ) or 0
 
     async def get_by_owner(self, session: AsyncSession, owner_id: str) -> list[Agent]:
         """Every agent `owner_id` owns in the bound tenant.

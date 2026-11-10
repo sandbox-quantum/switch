@@ -324,6 +324,8 @@ class CollaborationBridgeLifecycleService:
         # Read off the row at start, so reporting never depends on what the
         # CollaborationCore exposes.
         self._bridge_facts: dict[str, tuple[str, object]] = {}
+        # Each started bridge's display name, so an alert can say which one died.
+        self._bridge_names: dict[str, str] = {}
         # Bridges the deployment's setup step registered rather than a person,
         # read off the row at start like `_bridge_facts`. Onboarding telemetry
         # leaves these out: a bundled connector coming up is a deployment
@@ -470,6 +472,16 @@ class CollaborationBridgeLifecycleService:
         """
         return bridge_id in self._connected
 
+    async def forget_human(
+        self, bridge_id: str, external_user_id: str, transport_user_id: str
+    ) -> None:
+        """Tell a running bridge that one of its people was erased. A bridge
+        that is not running has nothing in memory, and loads from the database
+        when it starts."""
+        bridge = self._bridges.get(bridge_id)
+        if bridge is not None:
+            await bridge.forget_human(external_user_id, transport_user_id)
+
     def get_adapter(self, bridge_id: str) -> PlatformAdapter | None:
         """The live adapter for a running bridge, or None if it isn't running.
 
@@ -564,7 +576,7 @@ class CollaborationBridgeLifecycleService:
         if adapter is None or not self.is_connected(bridge_id):
             if self.editable_config_keys(bridge_type, current) is not None:
                 raise BridgeNotRunning(
-                    "The connection is not running, so Switch cannot check this "
+                    "The messaging app is not running, so Switch cannot check this "
                     "change with the platform; try again in a moment."
                 )
             return
@@ -627,6 +639,18 @@ class CollaborationBridgeLifecycleService:
             return True
         return adapter_cls.supports_directory_search
 
+    def link_code_instructions(
+        self, bridge_type: str, connection_config: Mapping[str, object], code: str
+    ) -> str:
+        """How to post a link code on this platform. See
+        `PlatformAdapter.link_code_instructions`."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            raise ValueError(
+                f"No adapter is registered for bridge type {bridge_type!r}"
+            )
+        return adapter_cls.link_code_instructions(code, connection_config)
+
     def renders_custom_url_schemes(self, bridge_type: str) -> bool:
         """Whether this platform makes a `switchdash://` link clickable.
 
@@ -676,13 +700,19 @@ class CollaborationBridgeLifecycleService:
         An edit can change what registration checked — which workspace the
         bridge claims, or the credentials proving it — so it is checked the
         same way before it is stored: valid for the type, no claim another
-        bridge holds, and credentials the platform accepts. Raises
-        `ValidationError`, `BridgeClaimConflict` or `BridgeCredentialError`.
+        bridge holds, a URL Switch may reach, and credentials the platform
+        accepts. The URL is checked first because checking the credentials
+        sends them to it. Raises `ValidationError`, `BridgeClaimConflict`,
+        `BridgeStartRefused` or `BridgeCredentialError`.
         """
         self.validate_connection_config(bridge_type, connection_config)
         await self.reject_claim_conflict(
             bridge_type, connection_config, exclude_bridge_id=bridge_id
         )
+        try:
+            await self.check_outbound_urls(bridge_type, connection_config)
+        except OutboundURLRefused as exc:
+            raise BridgeStartRefused(f"Bridge {bridge_id}: {exc}") from exc
         adapter_cls = self._adapter_registry.get(bridge_type)
         if adapter_cls is not None:
             await adapter_cls.verify_credentials(connection_config)
@@ -928,7 +958,7 @@ class CollaborationBridgeLifecycleService:
         if channel_creation_enabled and not adapter_cls.supports_channel_creation:
             raise ValueError(
                 f"{bridge_type} cannot create channels from Switch, so this "
-                "connection cannot be allowed to. Create the chat on the "
+                "messaging app cannot be allowed to. Create the chat on the "
                 "platform and add the bot to it; Switch adopts it as a room."
             )
 
@@ -1252,6 +1282,7 @@ class CollaborationBridgeLifecycleService:
             # Stashed rather than passed: `_run_bridge`'s signature is what
             # the tenant-binding tests patch.
             self._bridge_facts[bridge_id] = (bridge.type, bridge.created_at)
+            self._bridge_names[bridge_id] = bridge.display_name
             if bridge.preconfigured:
                 self._preconfigured.add(bridge_id)
             else:
@@ -1884,12 +1915,15 @@ class CollaborationBridgeLifecycleService:
                     exc_info=True,
                 )
 
-    def agents_changed(self, tenant_id: str) -> None:
-        """Agents were registered or deleted in `tenant_id`, maybe by another
-        process: every bridge of the tenant running here provisions their
-        platform identities again."""
+    def agents_changed(
+        self, tenant_id: str, client_ids: frozenset[str] | None = None
+    ) -> None:
+        """Agents were registered, renamed or deleted in `tenant_id`, maybe by
+        another process: every bridge of the tenant running here provisions
+        the platform identities of the agents of `client_ids` again, or of
+        every agent when None."""
         for bridge in self.bridges_for_tenant(tenant_id):
-            bridge.agents_changed()
+            bridge.agents_changed(client_ids)
 
     async def remove(self, bridge_id: str) -> None:
         """Disconnect a messaging app and take its identities with it.
@@ -2066,6 +2100,27 @@ class CollaborationBridgeLifecycleService:
             alive = bridge_id in self._bridges and task is not None and not task.done()
             counts[name] = counts.get(name, 0) + (1 if alive else 0)
         return counts
+
+    def crashed(self) -> list[tuple[str, str]]:
+        """(platform, display name) of each started bridge whose task has died.
+
+        `running_by_platform` says how many are down on a platform; this says
+        which, so the alert can name the bridge instead of sending someone to
+        the logs.
+        """
+        down = []
+        for bridge_id in sorted(self._started):
+            task = self._tasks.get(bridge_id)
+            if bridge_id in self._bridges and task is not None and not task.done():
+                continue
+            platform, _ = self._bridge_facts.get(bridge_id, ("none", None))
+            down.append(
+                (
+                    normalise_platform(platform),
+                    self._bridge_names.get(bridge_id, bridge_id),
+                )
+            )
+        return down
 
     def bridges_for_tenant(self, tenant_id: str) -> list[CollaborationCore]:
         """Running bridges belonging to `tenant_id`, and none other.

@@ -6,14 +6,24 @@ import { resetChatStream } from '@main/core/chats/chat-streams';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { featureFlagsService } from '@main/core/feature-flags/feature-flags';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
-import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
+import type {
+  TelemetryAuthMethod,
+  TelemetryServerAddFailure,
+  TelemetrySignInFailure,
+} from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import {
   withReachableServerWorkspaceSession,
+  withReachableWorkspaceSession,
   withServerWorkspaceSession,
+  withWorkspaceSession,
+  workspaceServer,
 } from '@main/core/workspaces/workspace-session';
-import { listWorkspacesForServer } from '@main/core/workspaces/workspaces-store';
+import {
+  listWorkspacesForServer,
+  requireWorkspaceForServer,
+} from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type {
   SaveConnectorAppInput,
@@ -27,18 +37,28 @@ import {
 import {
   normaliseServerUrl,
   type AddServerParams,
+  type ApiKeyLifetime,
   type BundledChatSignIn,
+  type ClearDecisionSettingsResult,
   type ClearTrustSettingsResult,
+  type CreatedRegistrationKey,
+  type FetchDecisionSettingsResult,
   type FetchTrustSettingsResult,
   type PasswordLoginParams,
   type RenameServerParams,
   type ServerConnectionStatus,
   type SignupParams,
   type SignupResult,
+  type SwitchApiKey,
   type SwitchAuthConfig,
   type SwitchServer,
+  type SwitchUser,
   type UpdateServerParams,
   type UpdateServerResult,
+  type TestDecisionSettingsParams,
+  type TestDecisionSettingsResult,
+  type UpdateDecisionSettingsParams,
+  type UpdateDecisionSettingsResult,
   type UpdateTrustSettingsParams,
   type UpdateTrustSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
@@ -55,6 +75,12 @@ import {
 } from './auth';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import {
+  clearDecisionSettingsOnServer,
+  fetchDecisionSettingsFromServer,
+  testDecisionSettingsOnServer,
+  updateDecisionSettingsOnServer,
+} from './decision-settings';
+import {
   getConnectionCatalog,
   getGitHubConnection,
   fetchAgentIconChoices,
@@ -68,10 +94,16 @@ import {
   acceptInvitation,
   acceptPendingInvitation,
   joinWorkspaceByDomain,
-  createTenant,
+  createOrganization,
+  createOrganizationWorkspace,
   fetchAuthConfig,
-  fetchCanCreateWorkspace,
+  changeMyPassword,
+  createRegistrationKey,
+  deleteApiKey,
   deleteMyAccount,
+  fetchMyApiKeys,
+  revealApiKey,
+  updateMyName,
   fetchMe,
   fetchJoinableWorkspaces,
   fetchPendingInvitations,
@@ -83,6 +115,8 @@ import {
   importConnectorApp,
   removeConnectorApp,
   saveConnectorApp,
+  fetchWorkspaceCreation,
+  type WorkspaceCreation,
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import {
@@ -92,9 +126,14 @@ import {
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
-import { assertServerAddress, assertServesDashboard } from './server-address';
+import {
+  assertServerAddress,
+  assertServesDashboard,
+  NotTheServerAddressError,
+} from './server-address';
 import {
   addServer,
+  DuplicateServerUrlError,
   deleteSessionCookie,
   findServerByUrl,
   findServerByWebAddress,
@@ -162,28 +201,38 @@ async function adoptWorkspaces(server: SwitchServer): Promise<void> {
 }
 
 /**
+ * The local row for a membership a server has just given the account, by
+ * creating a workspace or adding it to one; `recorded` names which, for the
+ * error raised when no row turns up.
+ *
+ * Reconciled rather than inserted here: which local row a membership belongs
+ * to is decided in one place.
+ */
+async function recordMembership(
+  server: SwitchServer,
+  tenant: RemoteTenant,
+  recorded: string
+): Promise<Workspace> {
+  await reconcileServerWorkspaces(server.id);
+  const workspaces = await listWorkspacesForServer(server.id);
+  const found = workspaces.find((workspace) => workspace.tenantId === tenant.id);
+  if (!found) throw new Error(`${server.name} ${recorded}, but this install did not record it.`);
+  return found;
+}
+
+async function recordCreated(server: SwitchServer, tenant: RemoteTenant): Promise<Workspace> {
+  return recordMembership(server, tenant, `created the workspace ${tenant.name}`);
+}
+
+async function recordJoined(server: SwitchServer, tenant: RemoteTenant): Promise<Workspace> {
+  return recordMembership(server, tenant, `added you to ${tenant.name}`);
+}
+
+/**
  * Reported by reason rather than by outcome: the two are the same fact, and a
  * sign-in that never left this machine — the server's host is down — has a
  * reason of its own but no result to read one from.
  */
-/**
- * The local row for a workspace a server has just added the account to.
- *
- * Reconciled rather than inserted here, the same as `createWorkspace`: which
- * local row a membership belongs to is decided in one place.
- */
-async function recordJoined(server: SwitchServer, tenant: RemoteTenant): Promise<Workspace> {
-  await reconcileServerWorkspaces(server.id);
-  const workspaces = await listWorkspacesForServer(server.id);
-  const joined = workspaces.find((workspace) => workspace.tenantId === tenant.id);
-  if (!joined) {
-    throw new Error(
-      `${server.name} added you to ${tenant.name}, but this install did not record it.`
-    );
-  }
-  return joined;
-}
-
 function reportSignIn(
   method: TelemetryAuthMethod,
   server: SwitchServer,
@@ -195,6 +244,13 @@ function reportSignIn(
     outcome: failureReason === 'none' ? 'success' : 'failure',
     failure_reason: failureReason,
   });
+}
+
+/** Why registering an address failed, as a reportable code. */
+function serverAddFailureOf(error: unknown): TelemetryServerAddFailure {
+  if (error instanceof DuplicateServerUrlError) return 'already_added';
+  if (error instanceof NotTheServerAddressError) return 'not_the_server_address';
+  return 'error';
 }
 
 /**
@@ -212,10 +268,14 @@ async function registerSwitchCloud({ url }: SwitchCloudEndpoint): Promise<Switch
   try {
     server = await addServer({ name: SWITCH_CLOUD_NAME, url });
   } catch (error) {
-    trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
+    trackEvent('server_added', {
+      server_kind: 'cloud',
+      outcome: 'failure',
+      failure_reason: serverAddFailureOf(error),
+    });
     throw error;
   }
-  trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
+  trackEvent('server_added', { server_kind: 'cloud', outcome: 'success', failure_reason: 'none' });
   return server;
 }
 
@@ -237,9 +297,20 @@ export const switchServersController = createRPCController({
     withReachableServerWorkspaceSession(params.serverId, (server) =>
       fetchAgentIconChoices(server, params.name, params.page)
     ),
-  /** Whether the signed-in account may create a workspace on the server. */
-  canCreateWorkspace: (serverId: string) =>
-    withServerWorkspaceSession(serverId, (server) => fetchCanCreateWorkspace(server)),
+  /**
+   * What the signed-in account may create on the server, answered for the
+   * workspace a call about the server is scoped to, which is named alongside:
+   * adding a workspace is a question about that workspace's organization.
+   */
+  workspaceCreation: async (
+    serverId: string
+  ): Promise<WorkspaceCreation & { workspaceId: string }> => {
+    const workspace = await requireWorkspaceForServer(serverId);
+    const answer = await withWorkspaceSession(workspace.id, (server) =>
+      fetchWorkspaceCreation(server)
+    );
+    return { ...answer, workspaceId: workspace.id };
+  },
   /** Whether this server allows a third-party avatar URL (DiceBear, ui-avatars.com)
    * to be generated or sent anywhere. */
   avatarSettings: (serverId: string) =>
@@ -276,10 +347,18 @@ export const switchServersController = createRPCController({
       await assertServerAddress(params.url);
       server = await addServer(params);
     } catch (error) {
-      trackEvent('server_added', { server_kind: 'external', outcome: 'failure' });
+      trackEvent('server_added', {
+        server_kind: 'external',
+        outcome: 'failure',
+        failure_reason: serverAddFailureOf(error),
+      });
       throw error;
     }
-    trackEvent('server_added', { server_kind: 'external', outcome: 'success' });
+    trackEvent('server_added', {
+      server_kind: 'external',
+      outcome: 'success',
+      failure_reason: 'none',
+    });
     return server;
   },
 
@@ -410,7 +489,9 @@ export const switchServersController = createRPCController({
   },
 
   /**
-   * Create a workspace on a server, owned by the signed-in user.
+   * Create an organization on a server, with a first workspace of the same
+   * name, owned by the signed-in user, and return that workspace. A server
+   * from before organizations creates the workspace alone.
    *
    * Addressed by server rather than by workspace — the exception the split
    * allows itself, because the thing being created is the workspace: there is
@@ -428,17 +509,22 @@ export const switchServersController = createRPCController({
    */
   createWorkspace: async (params: { serverId: string; name: string }): Promise<Workspace> => {
     const server = await requireReachableServer(params.serverId);
-    const tenant = await createTenant(server, params.name);
-    await reconcileServerWorkspaces(params.serverId);
+    return recordCreated(server, await createOrganization(server, params.name));
+  },
 
-    const workspaces = await listWorkspacesForServer(params.serverId);
-    const created = workspaces.find((workspace) => workspace.tenantId === tenant.id);
-    if (!created) {
-      throw new Error(
-        `${server.name} created the workspace ${tenant.name}, but this install did not record it.`
-      );
-    }
-    return created;
+  /**
+   * Add a workspace to the organization `workspaceId` belongs to, owned by the
+   * signed-in user, and return it. The gateway reads the organization from the
+   * workspace the session selects, so the call is scoped to that one.
+   */
+  addOrganizationWorkspace: async (params: {
+    workspaceId: string;
+    name: string;
+  }): Promise<Workspace> => {
+    const tenant = await withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createOrganizationWorkspace(server, params.name)
+    );
+    return recordCreated(await workspaceServer(params.workspaceId), tenant);
   },
 
   /**
@@ -503,6 +589,36 @@ export const switchServersController = createRPCController({
 
   clearTrustSettings: async (serverId: string): Promise<ClearTrustSettingsResult> =>
     clearTrustSettingsOnServer(await requireReachableServer(serverId)),
+
+  /**
+   * A workspace's decision routing settings, its admins only. Scoped to the
+   * workspace named, not the server: each workspace chooses its own decision
+   * backend, so the call runs with that workspace's tenant selected.
+   */
+  getDecisionSettings: (workspaceId: string): Promise<FetchDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, fetchDecisionSettingsFromServer),
+
+  updateDecisionSettings: ({
+    workspaceId,
+    ...input
+  }: UpdateDecisionSettingsParams): Promise<UpdateDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      updateDecisionSettingsOnServer(server, input)
+    ),
+
+  /** Return the workspace to the server's default decision backend. */
+  clearDecisionSettings: (workspaceId: string): Promise<ClearDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, clearDecisionSettingsOnServer),
+
+  /** Run one sample decision against the unsaved values, or the server
+   * default, nothing stored. */
+  testDecisionSettings: ({
+    workspaceId,
+    ...input
+  }: TestDecisionSettingsParams): Promise<TestDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      testDecisionSettingsOnServer(server, input)
+    ),
 
   /**
    * The apps connectors sign in through, for the server's operator: not
@@ -608,6 +724,50 @@ export const switchServersController = createRPCController({
     const server = await getServer(serverId).catch(() => null);
     await forgetSession(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
+  },
+
+  /** Change the signed-in person's display name, answering with the updated user. The caller re-reads the signed-in status (`refreshStatus`) so the new name shows everywhere. */
+  updateMyName: async (params: { serverId: string; name: string }): Promise<SwitchUser> => {
+    const server = await requireReachableServer(params.serverId);
+    return updateMyName(server, params.name);
+  },
+
+  /** Change the signed-in person's password. Refusals carry the server's reason. */
+  changeMyPassword: async (params: {
+    serverId: string;
+    currentPassword: string;
+    newPassword: string;
+  }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    await changeMyPassword(server, params.currentPassword, params.newPassword);
+  },
+
+  /** The signed-in person's own API keys. */
+  listMyApiKeys: async (serverId: string): Promise<SwitchApiKey[]> => {
+    const server = await requireReachableServer(serverId);
+    return fetchMyApiKeys(server);
+  },
+
+  /** Make a registration key; the answer is the only time its value is shown. */
+  createRegistrationKey: async (params: {
+    serverId: string;
+    label: string;
+    lifetime: ApiKeyLifetime;
+  }): Promise<CreatedRegistrationKey> => {
+    const server = await requireReachableServer(params.serverId);
+    return createRegistrationKey(server, params.label, params.lifetime);
+  },
+
+  /** One of the signed-in person's keys in full, for copying. */
+  revealApiKey: async (params: { serverId: string; keyId: string }): Promise<string> => {
+    const server = await requireReachableServer(params.serverId);
+    return revealApiKey(server, params.keyId);
+  },
+
+  /** Delete one of the signed-in person's keys. */
+  deleteApiKey: async (params: { serverId: string; keyId: string }): Promise<void> => {
+    const server = await requireReachableServer(params.serverId);
+    await deleteApiKey(server, params.keyId);
   },
 
   /** Delete the signed-in account on the server, then forget its session here. */

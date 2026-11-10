@@ -62,9 +62,13 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # Locks the caller's `users` row, which has no tenant, while it creates a
     # workspace that has none yet either.
     ("POST", "/tenants"),
+    ("POST", "/organizations"),
     # Deletes the caller's `users` row and sign-in identities, which belong to
     # no workspace; each workspace is left in a `tenant_session` of its own.
     ("DELETE", "/auth/me"),
+    # "Sign out of all devices" moves the caller's `users` row on, which has no
+    # tenant, and must work for a caller with no workspace selected.
+    ("POST", "/auth/sessions/revoke"),
 }
 
 # Every route that does not resolve a tenant, for any reason. `get_current_user`
@@ -97,6 +101,9 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("POST", "/auth/login"),
     ("POST", "/auth/signup"),
     ("POST", "/auth/logout"),
+    # Signing out of all devices acts on the account, not a workspace, and a
+    # caller with several and none selected must be able to reach it.
+    ("POST", "/auth/sessions/revoke"),
     # Deleting your account acts on every workspace you are in, each in a
     # `tenant_session` of its own (`accounts/deletion.py`).
     ("DELETE", "/auth/me"),
@@ -112,6 +119,14 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/tenants"),
     ("POST", "/tenants"),
     ("POST", "/tenants/{tenant_id}/switch"),
+    # What the workspace switcher shows beside each of those workspaces. It
+    # opens a `tenant_session` per tenant `tenants_bindable_by` names, and
+    # around the operator's claim only once `may_bind_tenant` admits it — see
+    # `workspace_counts`.
+    ("GET", "/tenants/counts"),
+    # The same for organizations: list the caller's, make one.
+    ("GET", "/organizations"),
+    ("POST", "/organizations"),
     # Accepting an invitation binds the tenant the *token* names, which is
     # neither the one on the caller's session nor one they belong to yet. It
     # opens its own `tenant_session` around that id — see `accept_invitation`.
@@ -134,6 +149,10 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # Feature flags belong to the deployment and come from its config, so
     # there is no workspace to scope them to and no session is opened.
     ("GET", "/feature-flags"),
+    # The platform operator's list of every workspace, to enter one from.
+    # It opens a `tenant_session` per tenant `all_tenant_ids` names, and
+    # answers 403 to anyone but the operator — see `list_every_workspace`.
+    ("GET", "/operator/workspaces"),
 }
 
 

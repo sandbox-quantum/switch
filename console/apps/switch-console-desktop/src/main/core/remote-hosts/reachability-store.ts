@@ -1,6 +1,14 @@
-import { eq } from 'drizzle-orm';
+import { eq, isNotNull } from 'drizzle-orm';
 import { db } from '@main/db/client';
-import { remoteHostReachability, type RemoteHostReachabilityRow } from '@main/db/schema';
+import {
+  agents,
+  locations,
+  remoteHostReachability,
+  type RemoteHostReachabilityRow,
+  remoteHosts,
+  remoteHostSetupPlans,
+  switchServers,
+} from '@main/db/schema';
 import {
   type HostReachability,
   type HostReachabilityStatus,
@@ -65,6 +73,26 @@ export async function savePersistedReachability(record: PersistedHostReachabilit
 
 export async function deletePersistedReachability(sshHost: string): Promise<void> {
   await db.delete(remoteHostReachability).where(eq(remoteHostReachability.sshHost, sshHost));
+}
+
+/**
+ * SSH hosts something still needs reached: onboarded, mid-setup, running a
+ * managed server, or holding a location with at least one agent.
+ */
+export async function listSshHostsInUse(): Promise<Set<string>> {
+  const rows = await Promise.all([
+    db.select({ sshHost: remoteHosts.sshHost }).from(remoteHosts),
+    db.select({ sshHost: remoteHostSetupPlans.sshHost }).from(remoteHostSetupPlans),
+    db
+      .select({ sshHost: switchServers.sshHost })
+      .from(switchServers)
+      .where(isNotNull(switchServers.sshHost)),
+    db
+      .selectDistinct({ sshHost: locations.sshHost })
+      .from(locations)
+      .innerJoin(agents, eq(agents.locationId, locations.id)),
+  ]);
+  return new Set(rows.flat().flatMap((row) => (row.sshHost ? [row.sshHost] : [])));
 }
 
 /** A persisted record widened back to the full live shape (no probe scheduled yet). */

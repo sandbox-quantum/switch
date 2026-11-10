@@ -22,6 +22,7 @@ from switch_core.db.stores.hosted_machine_store import (
     workspace_on,
 )
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway import auth_routes, hosted_machines
 from switch_core.gateway.auth import decode_jwt, get_current_user, verify_password
 from switch_core.gateway.auth_routes import MACHINE_OWNER_STOPPED, _prewarm
 from switch_core.gateway.auth_routes import router as auth_router
@@ -36,6 +37,7 @@ from switch_core.gateway.hosted_machines import MACHINES_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
 from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
+from tests.telemetry_records import recording_telemetry
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
 
@@ -56,6 +58,7 @@ async def signup_app(session_factory):
         gateway_signup_open=True,
         gateway_signup_mode="default_tenant",
         gateway_signup_max_per_hour=20,
+        gateway_signup_refused_header=None,
         gateway_password_login_enabled=True,
         gateway_oidc_enabled=False,
         gateway_oidc_provider_label=None,
@@ -496,7 +499,7 @@ async def test_signup_is_refused_once_the_hourly_cap_is_reached(signup_app, capl
     response = await _signup(app, email="third@example.com")
     assert response.status_code == 429, response.text
     assert response.json()["detail"] == (
-        "Too many sign-ups on this server in the last hour. Try again later."
+        "Too many sign-ups in the last hour. Try again later."
     )
     assert 1 <= int(response.headers["Retry-After"]) <= 3600
     assert "2 users created in the last hour (cap 2)" in caplog.text
@@ -530,3 +533,131 @@ async def test_concurrent_signups_cannot_overrun_the_cap(signup_app):
     )
     assert sorted(r.status_code for r in responses) == [201, 429]
     assert await _user_count(app) == 1
+
+
+@pytest.fixture
+def reported(monkeypatch):
+    """What sign-up and the cloud machine routes report."""
+    service, sink = recording_telemetry()
+    monkeypatch.setattr(auth_routes, "current_telemetry", lambda: service)
+    monkeypatch.setattr(hosted_machines, "current_telemetry", lambda: service)
+    return sink
+
+
+async def test_a_sign_up_reports_the_account_and_the_new_machine(signup_app, reported):
+    assert (await _signup(signup_app)).status_code == 201
+
+    assert reported.events("account_created") == [{"method": "signup"}]
+    assert reported.events("cloud_machine_requested") == [{"change": "new"}]
+
+
+async def test_a_claim_that_changes_nothing_is_not_reported(signup_app, reported):
+    await _signup(signup_app)
+    assert (await _ensure(signup_app, "new.person@example.com")).status_code == 200
+
+    assert reported.events("cloud_machine_requested") == [{"change": "new"}]
+
+
+async def test_a_claim_that_starts_a_sleeping_machine_says_so(signup_app, reported):
+    app = signup_app
+    await _signup(app)
+    (machine,) = await _machines(app)
+    with tenant_scope(TENANT_ZERO_ID):
+        async with app.factory() as session:
+            row = await session.get(CloudMachine, machine.id)
+            assert row is not None
+            row.desired_state = "stopped"
+            row.stop_reason = "idle"
+            await session.commit()
+
+    assert (await _ensure(app, "new.person@example.com")).status_code == 200
+
+    assert reported.events("cloud_machine_requested") == [
+        {"change": "new"},
+        {"change": "restarted"},
+    ]
+
+
+async def test_refused_sign_ups_say_why(signup_app, reported):
+    app = signup_app
+    assert (await _signup(app)).status_code == 201
+    assert (await _signup(app)).status_code == 409
+    app.config.gateway_signup_open = False
+    assert (await _signup(app, email="later@example.com")).status_code == 403
+
+    assert reported.events("signup_refused") == [
+        {"reason": "email_taken"},
+        {"reason": "disabled"},
+    ]
+    assert reported.events("account_created") == [{"method": "signup"}]
+
+
+async def test_a_sign_up_over_the_hourly_cap_is_reported_as_rate_limited(
+    signup_app, reported
+):
+    signup_app.config.gateway_signup_max_per_hour = 1
+    assert (await _signup(signup_app, email="first@example.com")).status_code == 201
+    assert (await _signup(signup_app, email="second@example.com")).status_code == 429
+
+    assert reported.events("signup_refused") == [{"reason": "rate_limited"}]
+
+
+REFUSED_HEADER = "x-amzn-waf-signup-refused"
+
+
+async def test_a_sign_up_the_edge_marks_as_refused_creates_no_account(
+    signup_app, reported
+):
+    app = signup_app
+    app.config.gateway_signup_refused_header = REFUSED_HEADER
+    refused = await app.client.post(
+        "/auth/signup",
+        json={"email": "far.away@example.com", "password": PASSWORD},
+        headers={REFUSED_HEADER: "country"},
+    )
+    assert refused.status_code == 403
+    assert refused.json()["detail"] == (
+        "New Switch accounts are not available in your country."
+    )
+    async with app.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(User)) == 0
+    assert reported.events("signup_refused") == [{"reason": "country"}]
+
+    assert (await _signup(app, email="nearby@example.com")).status_code == 201
+
+
+async def test_the_refused_header_is_ignored_while_no_header_is_configured(
+    signup_app,
+):
+    response = await signup_app.client.post(
+        "/auth/signup",
+        json={"email": "far.away@example.com", "password": PASSWORD},
+        headers={REFUSED_HEADER: "country"},
+    )
+    assert response.status_code == 201
+
+
+async def test_the_owner_stopping_and_starting_their_machine_is_reported(
+    signup_app, reported
+):
+    app = signup_app
+    await _signup(app)
+    app.identity["user"] = await _user(app, "new.person@example.com")
+    (machine,) = await _machines(app)
+
+    with tenant_scope(TENANT_ZERO_ID):
+        stopped = await app.client.post(
+            f"/hosted-machines/{machine.id}/lifecycle",
+            json={"action": "stop", "revision": machine.revision},
+        )
+        assert stopped.status_code == 200, stopped.text
+        started = await app.client.post(
+            f"/hosted-machines/{machine.id}/lifecycle",
+            json={"action": "start", "revision": stopped.json()["machine"]["revision"]},
+        )
+        assert started.status_code == 200, started.text
+
+    assert reported.events("cloud_machine_stopped") == [{"reason": "owner"}]
+    assert reported.events("cloud_machine_woken") == [
+        {"trigger": "owner", "stopped_by": "owner"}
+    ]

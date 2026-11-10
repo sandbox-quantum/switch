@@ -203,6 +203,14 @@ anything is created (leave a new agent on the default, owner-agents, or give
 it anyone_in its room; owner shuts you out). Asking again for a room with the same kickoff you already used
 further up the same path pauses the run until your owner lets it continue.
 
+## Revisions and updates
+
+A template's revision is its own edit count, not the language version.
+Running a saved or official template by id records which agents that run
+created; an agent created from an official template is brought up to each new
+revision of it when the server starts, except for what someone changed and its
+permissions. get_template_status tells an agent how it differs from its own.
+
 ## Example
 
 version: 2

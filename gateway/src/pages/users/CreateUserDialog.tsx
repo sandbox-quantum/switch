@@ -57,7 +57,7 @@ export default function CreateUserDialog({ open, onClose, onCreated }: Props) {
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Add User</DialogTitle>
+      <DialogTitle>Add user</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
@@ -88,7 +88,7 @@ export default function CreateUserDialog({ open, onClose, onCreated }: Props) {
             onChange={(e) => setRole(e.target.value as UserRole)}
           >
             <MenuItem value="user">User</MenuItem>
-            <MenuItem value="admin">Admin</MenuItem>
+            <MenuItem value="admin">Platform operator</MenuItem>
           </TextField>
         </Stack>
       </DialogContent>

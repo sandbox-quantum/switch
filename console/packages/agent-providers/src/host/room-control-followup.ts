@@ -13,13 +13,14 @@ export function roomControlFollowup(input: {
 }): string {
   const done = input.action === 'reset' ? 'has been reset' : 'has been compacted';
   const thread = input.threadId ? ` in thread ${JSON.stringify(input.threadId)}` : '';
+  const mention = input.requesterName
+    ? ` (mention ${JSON.stringify(input.requesterName)} only if list_participants lists them)`
+    : '';
   return [
     `The requested ${input.action} completed successfully.`,
     `Connect to Switch room ${JSON.stringify(input.roomId)} (reuse its connection if already connected) and read_context before responding.`,
-    `If you held a role in that room before the ${input.action}, re-assume it and follow its instructions; if it is unavailable, report that clearly instead of claiming it was restored.`,
-    input.requesterName
-      ? `Then send a short targeted message to ${JSON.stringify(input.requesterName)}${thread} saying your session ${done} and whether you are ready to continue.`
-      : `Then send a short message in the room${thread} saying your session ${done} and whether you are ready to continue.`,
+    `If you held a role in that room before the ${input.action}, re-assume it and follow its instructions; if it is unavailable, report that clearly instead of claiming it was restored. If you held no role, say nothing about roles.`,
+    `Then post_message a short note in the room${thread}${mention} saying your session ${done} and whether you are ready to continue. Do not use send_targeted_message for it.`,
   ].join(' ');
 }
 
@@ -33,4 +34,13 @@ export function roomControlRefusal(action: 'reset' | 'compact', reason: string |
   if (reason?.includes('SESSION_BUSY'))
     return `I can't ${action} my session while I'm working on a turn. Ask again once I've finished, or stop the turn first.`;
   return `I couldn't ${action} my session: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
+}
+
+/** What the room is told when the session could not run a message's turn again. */
+export function retryRefusal(reason: string | null): string {
+  if (reason?.includes('SESSION_BUSY'))
+    return "I can only try again once that turn has ended without an answer, and it hasn't.";
+  if (reason?.includes('NOT_FOUND'))
+    return "I couldn't try that again: my current session never worked on that message.";
+  return `I couldn't try that again: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
 }

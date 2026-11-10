@@ -124,7 +124,7 @@ def _controller_name(value: str) -> str:
     """A machine's name, trimmed, and refused when nothing is left."""
     trimmed = value.strip()
     if not trimmed:
-        raise ValueError("a machine's name must not be blank")
+        raise ValueError("a device's name must not be blank")
     return trimmed
 
 
@@ -364,7 +364,7 @@ class _ControllerDetailsChange(BaseModel):
     @classmethod
     def _name_is_not_blank(cls, value: str | None) -> str | None:
         if value is None:
-            raise ValueError("a machine's name cannot be cleared")
+            raise ValueError("a device's name cannot be cleared")
         return _controller_name(value)
 
     @field_validator("description")
@@ -647,7 +647,11 @@ def managed_agent_view(
     agent: Agent,
     controller: AgentController | None,
     controller_state: str | None,
+    template: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    """`template` is the template that created the agent, as its install
+    records it ({id, key, revision}), or None for one no template run the
+    server vouches for created."""
     return {
         "agent_id": agent.id,
         "name": agent.name,
@@ -662,6 +666,7 @@ def managed_agent_view(
         "revision": row.revision,
         "definition": stored_definition(row.definition),
         "status": agent_status_from(controller, agent.id),
+        "template": template,
         "created_at": wire_time(row.created_at),
         "updated_at": wire_time(row.updated_at),
     }

@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
+import { reportedHeadline } from '@renderer/lib/components/reported-provider';
 import type { MachineProvider } from '@shared/core/managed-agents/managed-agents';
-import {
-  installedHere,
-  installSourcesDiffer,
-  reportedHeadline,
-  reportedProvider,
-} from './this-computer-status';
+import { installedHere, installSourcesDiffer, reportedProvider } from './this-computer-status';
 
 function reported(patch: Partial<MachineProvider>): MachineProvider {
-  return { provider: 'claude', ready: false, problem: null, detail: null, ...patch };
+  return {
+    provider: 'claude',
+    ready: false,
+    problem: null,
+    detail: null,
+    loginHelps: true,
+    ...patch,
+  };
 }
 
 describe('Settings → Agent providers on this computer', () => {

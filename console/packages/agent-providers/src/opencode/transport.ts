@@ -154,16 +154,14 @@ export function createHttpTransport(options: HttpTransportOptions): OpencodeTran
           return data.all
             .filter((provider) => data.connected.includes(provider.id))
             .flatMap((provider) =>
-              Object.values(provider.models).map(
-                (model): ModelChoice => ({
-                  id: `${provider.id}/${model.id}`,
-                  label: `${provider.name}: ${model.name}`,
-                  imageInput: model.capabilities.input.image,
-                  options: Object.keys(model.variants ?? {}).length
-                    ? { variant: Object.keys(model.variants!) }
-                    : {},
-                })
-              )
+              Object.values(provider.models).map((model): ModelChoice => ({
+                id: `${provider.id}/${model.id}`,
+                label: `${provider.name}: ${model.name}`,
+                imageInput: model.capabilities.input.image,
+                options: Object.keys(model.variants ?? {}).length
+                  ? { variant: Object.keys(model.variants!) }
+                  : {},
+              }))
             );
         },
         async prompt(promptInput) {

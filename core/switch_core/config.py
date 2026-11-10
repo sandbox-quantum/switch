@@ -17,13 +17,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
+    BUDDY_SLACK_HANDOFF,
+    DECISION_ROUTING,
     FOLLOW_THE_CONVERSATION,
+    GROUP_CHATS,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
+    ORGANIZATION_CONNECTOR_APPS,
     SERVICE_CONNECTIONS,
+    SWITCH_CLOUD,
 )
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy
+
+DeploymentKind = Literal["switch_cloud", "managed_by_console", "self_hosted"]
 
 # A Postgres time value: a bare count of milliseconds, or a count with a unit.
 _PG_INTERVAL_RE = re.compile(r"^\d+\s*(us|ms|s|min|h|d)?$")
@@ -239,9 +246,44 @@ class SwitchConfig(BaseSettings):
     # counts as a follow-up to it.
     follow_the_conversation_window_seconds: int = Field(default=300, ge=1, le=3600)
 
-    # Gateway admin seed
+    # Decision routing (feature flag `decision_routing`): the decision service
+    # Switch asks who should answer a message no rule delivered to anyone
+    # (`POST {DECISION_ENDPOINT_URL}`). These are the server default, used by
+    # every workspace that has not chosen a backend of its own in Switch
+    # Console (`decision_settings`); with no endpoint and no choice, auto-route
+    # is unavailable in that workspace and no message is sent anywhere. The
+    # key, when set, is sent as a bearer token. The timeout applies to every
+    # workspace's backend.
+    decision_endpoint_url: str | None = None
+    decision_api_key: str | None = None
+    decision_timeout_seconds: float = 5.0
+    # Whether a workspace may choose Haiku on Amazon Bedrock, which runs in the
+    # server's decision service on the server's own AWS credentials.
+    decision_bedrock_enabled: bool = False
+    # A message still waiting for a decision after this long (a restart, a
+    # long outage) is dropped and logged rather than answered late.
+    decision_pending_max_age_seconds: int = Field(default=120, ge=1, le=3600)
+    # How many tenants' waiting decisions each process's sweep settles at
+    # once, so one tenant with a slow backend does not hold up the others.
+    decision_sweep_concurrency: int = Field(default=4, ge=1, le=64)
+
+    @field_validator(
+        "decision_endpoint_url",
+        "decision_api_key",
+        "gateway_signup_refused_header",
+        mode="before",
+    )
+    @classmethod
+    def _blank_setting_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    # Gateway admin seed. The password is the seeded admin's password-login
+    # credential, so it is required only while password login is on; without
+    # it the admin is seeded with no password and signs in through OIDC.
     gateway_admin_email: str
-    gateway_admin_password: str
+    gateway_admin_password: str | None = None
 
     # OIDC (optional — enables OAuth token validation on the MCP server).
     # The audience is required with the issuer: without it, a token the same
@@ -309,6 +351,19 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # The name of a request header that a trusted edge in front of the server
+    # (prod's WAF) adds to requests from countries where new accounts are not
+    # offered. A request carrying it, with any value (empty included), may not
+    # create an account: neither a first OIDC sign-in nor a password sign-up,
+    # the two ways a person creates their own. The edge must therefore add it
+    # only to requests it refuses, never set it to a "no" value for the rest.
+    # Existing accounts sign in as before, and accounts that are not sign-ups
+    # (`POST /users`, the seeded admin, the bootstrap owner) are unaffected.
+    # Trusting the header's presence is safe, since a client that sends it
+    # only refuses itself; its absence proves nothing, because the edge
+    # decides where a request comes from and this server never checks. Unset
+    # or blank turns the check off.
+    gateway_signup_refused_header: str | None = None
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
     # Cloud machines run the agent controller, so above 0 this needs the
@@ -334,6 +389,12 @@ class SwitchConfig(BaseSettings):
     # reason, and cannot be connected, granted or issued; disconnecting still
     # works. Unknown slugs stop the server.
     disabled_services: dict[str, str] = Field(default_factory=dict)
+    # Catalog services that reach what one of their entry's access profiles
+    # does on this server, in place of the entry's own levels, as JSON:
+    # {"<slug>": "<profile>"}. For a vendor that reviews an app before it may
+    # ask for some scopes, e.g. {"google-workspace": "drive-file"}. Unknown
+    # services or profiles stop the server.
+    service_access_profiles: dict[str, str] = Field(default_factory=dict)
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -365,8 +426,8 @@ class SwitchConfig(BaseSettings):
         "default_tenant"
     )
 
-    # How many workspaces one person may own here. 0 turns `POST /tenants` into
-    # a 403 outright, so this single value is both the cap and the gate.
+    # How many workspaces one person may create here. 0 turns creating one
+    # into a 403 outright, so this single value is both the cap and the gate.
     #
     # It exists because workspace creation is an amplification vector rather
     # than just a row: `all_tenant_ids()` drives a fan-out per tenant at boot
@@ -374,13 +435,34 @@ class SwitchConfig(BaseSettings):
     # rooms. Unbounded self-service creation therefore buys steady-state work
     # in the deployment, not storage.
     #
-    # Counts `owner` memberships only, so being invited into someone else's
-    # workspace never spends an allowance the invitee cannot get back. Deployment
+    # Counts workspaces created (`users.workspaces_created`), so being invited
+    # into someone else's workspace never spends an allowance the invitee
+    # cannot get back. Deployment
     # operators (`users.role == "admin"`) are exempt, on the same grounds as
     # every other operator bypass in `authz.py`: this bounds self-service, and
     # an operator provisioning workspaces for other people is not that.
     # docs/old/multi-tenancy-phase2-tenants.md, §5.
     gateway_max_workspaces_per_user: int = 3
+
+    # Who keeps the record of organizations and their members
+    # (`organization_directory.py`). "local": this server, in its own tables.
+    # "workos": the WorkOS environment behind the gateway's OIDC sign-in, read
+    # with `WORKOS_API_KEY`; organization membership comes from there, and
+    # workspaces and their roles stay here.
+    organization_directory: Literal["local", "workos"] = "local"
+    workos_api_key: str | None = None
+    workos_api_url: str = "https://api.workos.com"
+    # Changes made from Switch to a linked organization's members, sent to
+    # the service every product in the WorkOS environment changes them
+    # through (`members_service.py`), with the admin's own WorkOS access
+    # token. All three or none; unset, Switch takes nothing to WorkOS,
+    # refuses what grants, and what it takes away lasts only until WorkOS is
+    # read again. `WORKOS_CLIENT_ID` is the AuthKit application Switch signs
+    # admins in to for that token, and `WORKOS_REDIRECT_URL` its callback
+    # (`.../gateway/auth/workos/callback`), registered on that application.
+    members_service_url: str | None = None
+    workos_client_id: str | None = None
+    workos_redirect_url: str | None = None
 
     # Outbound mail for invitations addressed to an e-mail. Setting the host
     # turns it on; any SMTP relay works. Unset, an addressed invitation is
@@ -396,7 +478,7 @@ class SwitchConfig(BaseSettings):
     gateway_smtp_password: str | None = None
     gateway_smtp_from: str | None = None
     # How many e-mailed invitations one workspace may send in 24 hours. With
-    # sign-up open anyone can own a workspace, so without this the server is
+    # sign-up open anyone can create a workspace, so without this the server is
     # a relay for mail to arbitrary addresses. Operators are not limited.
     gateway_invite_emails_per_day: int = 50
 
@@ -734,10 +816,33 @@ class SwitchConfig(BaseSettings):
     db_pool_size: int = 30
     db_max_overflow: int = 10
     db_pool_recycle: int = 1800
-    db_pool_pre_ping: bool = True
+    # Off by default. On, every checkout first pings its connection, and
+    # SQLAlchemy's asyncpg ping is a BEGIN, an empty statement and a ROLLBACK:
+    # three round trips and a transaction before any work, which under agent
+    # load was over a third of all the transactions core ran. What it catches
+    # is a connection that died while it sat in the pool, as every pooled
+    # connection does when the database restarts or fails over. A restart
+    # closes the socket, which asyncpg notices, and the engine's checkout check
+    # already replaces a closed connection without a round trip
+    # (`test_pool_pre_ping.py`); a query running when the database went fails
+    # with the ping or without it. How soon a connection left
+    # open by a failover is known to be dead is up to `db_tcp_keepalive_*` and
+    # `db_tcp_user_timeout` below, with the ping or without it.
+    db_pool_pre_ping: bool = False
     # SQLAlchemy's default is 30s, long enough that pool starvation surfaces as
     # unexplained latency rather than an error. Fail fast and loudly instead.
     db_pool_timeout: float = 5.0
+    # How many agent and controller connections this process opens at once
+    # (`open_gate.py`). Opening one takes dozens of transactions from the same
+    # pool the process's requests and its lease renewal use, and when a pod
+    # goes away every agent it held opens on the pods left within seconds.
+    # Past this many, an open waits briefly for a slot and is then told when to
+    # come back, in the order it arrived, at the pace opens are taking here,
+    # instead of queueing on the pool. 8 is what the pod-kill tests ran with:
+    # with 300 agents on two pods and 30 + 10 pools, no pool timeouts and no
+    # agent lost, against 161 pool timeouts and 56 agents lost without the
+    # gate (dev-abel, 28 Oct 2026). 0 turns it off.
+    agent_open_limit: int = Field(default=8, ge=0)
 
     # Resolving a bearer token to its agent is the highest-frequency query in
     # the system — it runs before every authenticated request, and a fleet of
@@ -751,6 +856,9 @@ class SwitchConfig(BaseSettings):
     # management on, the same TTL and bound apply to the separate cache of a
     # controller access token's reads (its controller row, and the agent row
     # it acts as), which a revocation or binding change also drops at once.
+    # That cache keeps an entry past the TTL while the signal connection it
+    # was read under still listens, since every change to those rows is then
+    # signalled to every process; 0 disables it too.
     agent_auth_cache_ttl_seconds: float = 5.0
     # How long a row in `agent_events` (one of an agent's own events) is kept
     # before the retention loop deletes it. An agent that reconnects within
@@ -760,6 +868,15 @@ class SwitchConfig(BaseSettings):
     # Bound on the memo. One entry per distinct live token; the oldest is
     # evicted past this, so a flood of tokens cannot grow the process.
     agent_auth_cache_max_entries: int = 4096
+    # Bound on the agent rows the controller-token cache keeps, the oldest
+    # evicted past it. Every process sees requests for every controller's
+    # agents, so it needs room for all the agents controllers run.
+    controller_auth_cache_max_agents: int = Field(default=20_000, ge=1)
+    # Bound on what each process keeps of the checks a post makes first (an
+    # agent's membership of a room, and that no budget covers it), the oldest
+    # evicted past it. Kept as the controller-token cache keeps its rows, for
+    # `AGENT_AUTH_CACHE_TTL_SECONDS` or while the signal connection listens.
+    room_access_cache_max_entries: int = Field(default=20_000, ge=1)
 
     # AGENT_MANAGEMENT_ENABLED, replaced by the `agent_management` feature flag.
     # Read only to refuse a deployment that still turns it on, which would
@@ -1236,6 +1353,42 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_decision_routing(self) -> "SwitchConfig":
+        if self.decision_endpoint_url is not None and urlsplit(
+            self.decision_endpoint_url
+        ).scheme not in ("http", "https"):
+            raise ValueError(
+                "DECISION_ENDPOINT_URL must be an http or https URL, got "
+                f"{self.decision_endpoint_url!r}."
+            )
+        if self.decision_timeout_seconds <= 0:
+            raise ValueError(
+                "DECISION_TIMEOUT_SECONDS must be positive, got "
+                f"{self.decision_timeout_seconds!r}."
+            )
+        if (
+            self.feature_flags[DECISION_ROUTING]
+            and not self.feature_flags[FOLLOW_THE_CONVERSATION]
+        ):
+            raise ValueError(
+                f"The {DECISION_ROUTING!r} feature flag needs "
+                f"{FOLLOW_THE_CONVERSATION!r} in FEATURE_FLAGS_ENABLED as well: "
+                "it asks about the messages the follow-the-conversation rules "
+                "leave with nobody."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_gateway_admin_password(self) -> "SwitchConfig":
+        if self.gateway_password_login_enabled and not self.gateway_admin_password:
+            raise ValueError(
+                "GATEWAY_ADMIN_PASSWORD is required while password login is "
+                "enabled. Set it, or set GATEWAY_PASSWORD_LOGIN_ENABLED=false "
+                "to seed the admin without a password and sign in through OIDC."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_oauth_audience(self) -> "SwitchConfig":
         if self.oauth_issuer_url and not self.oauth_audience:
             raise ValueError(
@@ -1277,6 +1430,16 @@ class SwitchConfig(BaseSettings):
         return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
 
     @property
+    def deployment_kind(self) -> DeploymentKind:
+        """Who runs this server: Switch Cloud (its feature flag), Switch Console
+        for the person using it (`managed_by_console`), or anyone else."""
+        if self.feature_flags[SWITCH_CLOUD]:
+            return "switch_cloud"
+        if self.managed_by_console:
+            return "managed_by_console"
+        return "self_hosted"
+
+    @property
     def agent_management_enabled(self) -> bool:
         return self.feature_flags[AGENT_MANAGEMENT]
 
@@ -1289,12 +1452,28 @@ class SwitchConfig(BaseSettings):
         return self.feature_flags[SERVICE_CONNECTIONS]
 
     @property
+    def organization_connector_apps_enabled(self) -> bool:
+        return self.feature_flags[ORGANIZATION_CONNECTOR_APPS]
+
+    @property
     def follow_the_conversation_enabled(self) -> bool:
         return self.feature_flags[FOLLOW_THE_CONVERSATION]
 
     @property
+    def decision_routing_enabled(self) -> bool:
+        return self.feature_flags[DECISION_ROUTING]
+
+    @property
     def agent_chats_enabled(self) -> bool:
         return self.feature_flags[AGENT_CHATS]
+
+    @property
+    def group_chats_enabled(self) -> bool:
+        return self.feature_flags[GROUP_CHATS]
+
+    @property
+    def buddy_slack_handoff_enabled(self) -> bool:
+        return self.feature_flags[BUDDY_SLACK_HANDOFF]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":
@@ -1361,6 +1540,20 @@ class SwitchConfig(BaseSettings):
                 raise ValueError(
                     f"DISABLED_SERVICES' reason for {slug} must be one line of at "
                     "most 300 characters."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_service_access_profiles(self) -> "SwitchConfig":
+        for slug, profile in self.service_access_profiles.items():
+            if not _SERVICE_SLUG_RE.fullmatch(slug):
+                raise ValueError(
+                    f"SERVICE_ACCESS_PROFILES names an invalid service: {slug!r}"
+                )
+            if not _SERVICE_SLUG_RE.fullmatch(profile):
+                raise ValueError(
+                    f"SERVICE_ACCESS_PROFILES names an invalid profile for {slug}: "
+                    f"{profile!r}"
                 )
         return self
 
@@ -1439,6 +1632,47 @@ class SwitchConfig(BaseSettings):
                     "register an http redirect or event URL, so an http origin "
                     f"cannot work, got {self.messaging_public_url!r}."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_organization_directory(self) -> "SwitchConfig":
+        if self.organization_directory != "workos":
+            if self.members_service_url:
+                raise ValueError(
+                    "MEMBERS_SERVICE_URL is for ORGANIZATION_DIRECTORY=workos: "
+                    "under the local directory there is nobody to send changes to."
+                )
+            return self
+        if not self.workos_api_key:
+            raise ValueError(
+                "ORGANIZATION_DIRECTORY=workos needs WORKOS_API_KEY, to read "
+                "who belongs to which organization."
+            )
+        if not self.gateway_oidc_issuer_url:
+            raise ValueError(
+                "ORGANIZATION_DIRECTORY=workos needs the gateway's OIDC sign-in "
+                "(GATEWAY_OIDC_*) set up against the same WorkOS environment: "
+                "the sign-in is what names the person there."
+            )
+        if self.gateway_signup_mode != "invite_only":
+            raise ValueError(
+                "ORGANIZATION_DIRECTORY=workos needs GATEWAY_SIGNUP_MODE=invite_only: "
+                "until organizations can be created in WorkOS from Switch, a "
+                "customer's organization is linked by an operator "
+                "(switch-link-workos), not created by whoever signs up."
+            )
+        changes = (
+            self.members_service_url,
+            self.workos_client_id,
+            self.workos_redirect_url,
+        )
+        if 0 < sum(1 for value in changes if value) < len(changes):
+            raise ValueError(
+                "MEMBERS_SERVICE_URL, WORKOS_CLIENT_ID and WORKOS_REDIRECT_URL "
+                "are set together: changes to a linked organization's members "
+                "go to the members service with a token from that AuthKit "
+                "application."
+            )
         return self
 
     @model_validator(mode="after")

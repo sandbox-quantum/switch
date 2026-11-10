@@ -53,7 +53,12 @@ async def test_rejected_blocks_publish_one_threaded_recoverable_text_card(
 
     assert (
         await adapter.post_blocks(
-            "channel-demo", "worker", TEXT, BLOCKS, "channel-demo:1.0"
+            "channel-demo",
+            "worker",
+            TEXT,
+            BLOCKS,
+            "channel-demo:1.0",
+            reply_broadcast=False,
         )
         == "channel-demo:2.0"
     )
@@ -103,7 +108,10 @@ async def test_definitive_nonformat_post_refusal_does_not_retry_as_text(adapter,
     client = adapter._web_client
     client.chat_postMessage.side_effect = refusal(code)
     assert (
-        await adapter.post_blocks("channel-demo", "worker", TEXT, BLOCKS, "1.0") is None
+        await adapter.post_blocks(
+            "channel-demo", "worker", TEXT, BLOCKS, "1.0", reply_broadcast=False
+        )
+        is None
     )
     client.chat_postMessage.assert_called_once()
 
@@ -116,7 +124,9 @@ async def test_uncertain_post_is_not_repeated_as_text(adapter, error):
     client = adapter._web_client
     client.chat_postMessage.side_effect = error
     with pytest.raises(type(error)):
-        await adapter.post_blocks("channel-demo", "worker", TEXT, BLOCKS, "1.0")
+        await adapter.post_blocks(
+            "channel-demo", "worker", TEXT, BLOCKS, "1.0", reply_broadcast=False
+        )
     client.chat_postMessage.assert_called_once()
 
 

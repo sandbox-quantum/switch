@@ -14,6 +14,7 @@ import {
   moveChecklist,
   peopleIn,
   primaryAction,
+  notSetUpSentence,
   removeWarning,
   secretSummary,
   sentBackTo,
@@ -55,7 +56,7 @@ describe("card state", () => {
     expect(["ready", "not_set_up", "configured", "attention"].map((s) => stateLabel(s as never))).toEqual([
       "Ready",
       "Not set up",
-      "Set on the server",
+      "Set in configuration",
       "Needs attention",
     ]);
   });
@@ -348,7 +349,7 @@ describe("Airtable, and an app that sends people back to Switch Console", () => 
   it("names Airtable's Helm value when moving off configuration", () => {
     const steps = moveChecklist(app({ ...AIRTABLE, source: "configuration" }));
     expect(steps[1]!.text).toBe(
-      "Remove AIRTABLE_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.airtableClientSecret.",
+      "Remove AIRTABLE_CLIENT_CONFIG_PATH from Switch's configuration. For Helm, that is switchCore.airtableClientSecret.",
     );
   });
 
@@ -364,9 +365,31 @@ describe("moving off configuration", () => {
     const before = moveChecklist(CONFIGURED);
     expect(before.map((item) => item.done)).toEqual([false, false, false]);
     expect(before[1]!.text).toBe(
-      "Remove GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.googleWorkspaceClientSecret.",
+      "Remove GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH from Switch's configuration. For Helm, that is switchCore.googleWorkspaceClientSecret.",
     );
     const after = moveChecklist(app({ source: "configuration", saved_ignored: true }));
     expect(after.map((item) => item.done)).toEqual([true, false, false]);
+  });
+});
+
+describe("an organization's apps", () => {
+  const none = { source: "none" as const, client_id: null, saved_client_id: null };
+
+  it("says whether its workspaces fall back to the server's app", () => {
+    expect(notSetUpSentence(app({ ...none, server_app: true }))).toBe(
+      "Your workspaces use Switch's Google client. Add your organization's own to use that instead.",
+    );
+    expect(notSetUpSentence(app({ ...none, server_app: false }))).toBe(
+      "People in your organization can't connect Google Workspace until you add your organization's Google client.",
+    );
+  });
+
+  it("warns that removing one sends its workspaces back to the server's", () => {
+    expect(removeWarning(app({ server_app: true, connected_members: 1 }))).toBe(
+      "Your workspaces go back to Switch's Google Workspace app. The 1 person connected now must reconnect.",
+    );
+    expect(removeWarning(app({ server_app: false, connected_members: 0 }))).toBe(
+      "Nobody will be able to connect Google Workspace.",
+    );
   });
 });

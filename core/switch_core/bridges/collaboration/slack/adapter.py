@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import re
+import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Sequence
@@ -31,7 +32,9 @@ from switch_core.bridges.collaboration.adapter import (
     RequestCard,
     RichContent,
     RichContentFailed,
+    RichContentFailedAfterPost,
     RichContentThrottled,
+    RichContentThrottledAfterPost,
     RichContentWedged,
     TurnActivity,
 )
@@ -51,6 +54,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
@@ -92,6 +96,13 @@ _SLACK_MASS_MENTION = re.compile(
 _SLACK_MASS_MENTION_WORD = re.compile(
     r"<!(channel|here|everyone|group)(?:\|[^>]*)?>", re.IGNORECASE
 )
+
+# A channel link, `<#C123|general>`. The label may be empty (`<#C123|>`).
+_SLACK_CHANNEL_LINK = re.compile(r"<#([A-Z0-9]+)(?:\|([^>]*))?>")
+
+# The only three characters Slack escapes in the text it delivers.
+_SLACK_ENTITY = re.compile(r"&(amp|lt|gt);")
+_SLACK_ENTITY_CHARS = {"amp": "&", "lt": "<", "gt": ">"}
 
 # Stamped on the description of every user group we mint for an agent, so a
 # reload can tell ours apart from the workspace's own groups.
@@ -316,6 +327,11 @@ _SLACK_FILE_DOMAINS = ("slack.com", "slack-gov.com")
 
 _MAX_OPEN_STREAMS = 100
 
+# Slack's own cap on a stream: it closes ten minutes after `chat.startStream`,
+# however recently it was appended to, and marks the steps still running as
+# failed.
+_STREAM_LIFETIME_SECONDS = 600.0
+
 # Far above the open-stream bound on purpose. An entry here is what stops a
 # message nothing can change from being asked about again, so evicting one
 # resumes that asking for as long as the process lives. Only turns still being
@@ -364,6 +380,16 @@ _STREAMING_CONFLICT = "streaming_state_conflict"
 _STRANDED_BLOCKS: dict[str, dict[str, Any]] = {slot: {} for slot in STREAM_SLOTS}
 
 
+class _StreamClosed(RichContentFailed):
+    """An append refused because Slack has stopped taking appends for good.
+
+    Its own type so that `update_rich` can draw the turn as an ordinary edit
+    in the same call, rather than leaving the message as Slack left it until
+    the turn next changes. To every other caller it is the `RichContentFailed`
+    it inherits from.
+    """
+
+
 class _StreamNotClosed(RichContentFailed):
     """A turn drawn to the end on a stream Slack would not then stop.
 
@@ -388,11 +414,14 @@ class _ActivityStream:
     cards that has not changed costs an append and risks nothing useful.
 
     `blocks` is the last thing written to each section, by `block_id`, so a
-    redraw sends only what moved.
+    redraw sends only what moved. `opened_at` is when this process opened it,
+    on the monotonic clock; None for one taken back after a restart, whose
+    opening this process never saw.
     """
 
     channel_id: str
     ts: str
+    opened_at: float | None
     blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -441,6 +470,12 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     return "platform_error"
 
 
+# The ids Slack gives an app's bot, under which an app's posts with no user are
+# bridged. A person's id starts with U or W, but so does a bot user's.
+_SLACK_BOT_ID = re.compile(r"^B[A-Z0-9]+$")
+_SLACK_BOT_ACCOUNT = "This is a Slack app's or bot's account, which isn't one person's."
+
+
 class SlackAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Slack"
     # Slack apps cannot delete a channel outside Enterprise Grid's admin API.
@@ -459,6 +494,8 @@ class SlackAdapter(PlatformAdapter):
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "<!channel>"
+    #: `chat.postEphemeral`: in the channel, to one member alone.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "ephemeral"
     #: Cheap on a stream in a way it never was on an edit. An append is rate
     #: limited at 100+/min and redraws nothing, so the clock ticks in the one
     #: message without disturbing what is open in front of a reader.
@@ -756,6 +793,8 @@ class SlackAdapter(PlatformAdapter):
         text: str,
         blocks: list[dict[str, Any]],
         thread_root_id: str | None,
+        *,
+        reply_broadcast: bool,
     ) -> str | None:
         """Post a Block Kit message, for what plain text cannot carry.
 
@@ -785,6 +824,8 @@ class SlackAdapter(PlatformAdapter):
             unfurl_media=False,
             **_publication_metadata(blocks),
         )
+        if reply_broadcast and thread_ts:
+            arguments["reply_broadcast"] = True
         try:
             try:
                 result = await self._web_client.chat_postMessage(**arguments)
@@ -962,7 +1003,15 @@ class SlackAdapter(PlatformAdapter):
                 return ref
         message = self._render_rich(content)
         ref = await self.post_blocks(
-            channel_id, agent_name, message.text, message.blocks, thread_root_id
+            channel_id,
+            agent_name,
+            message.text,
+            message.blocks,
+            thread_root_id,
+            # A question threaded under a channel-root message would otherwise
+            # be seen only by whoever opens the thread: show it in the channel
+            # too. Same message, so its buttons and later edits still work.
+            reply_broadcast=isinstance(content, RequestCard) and content.asked_at_root,
         )
         if ref is None:
             raise RichContentFailed(
@@ -995,8 +1044,16 @@ class SlackAdapter(PlatformAdapter):
             )
         stream = self._streams.get(message_ref)
         if stream is not None and isinstance(content, TurnActivity):
-            await self._extend_stream(stream, message_ref, content)
-            return
+            try:
+                await self._extend_stream(stream, message_ref, content)
+            except _StreamClosed:
+                # Slack closes every stream ten minutes after it opens, however
+                # recently it was appended to, and marks the steps still
+                # running as failed. Edited now, those read right again
+                # straight away rather than at the turn's next change.
+                pass
+            else:
+                return
         if message_ref in self._unredrawable:
             if not self._unredrawable[message_ref]:
                 self._unredrawable[message_ref] = True
@@ -1081,7 +1138,10 @@ class SlackAdapter(PlatformAdapter):
                 f"Cannot recover an activity stream: invalid message ref {message_ref}."
             )
         stream = _ActivityStream(
-            channel_id=channel_id, ts=ts, blocks=dict(_STRANDED_BLOCKS)
+            channel_id=channel_id,
+            ts=ts,
+            opened_at=None,
+            blocks=dict(_STRANDED_BLOCKS),
         )
         self._register_stream(message_ref, stream)
         try:
@@ -1256,6 +1316,18 @@ class SlackAdapter(PlatformAdapter):
             return 30.0
         return max(1.0, delay) if math.isfinite(delay) else 30.0
 
+    def rich_updates_held_for(self) -> float:
+        return self._rich_update_cooldown.remaining()
+
+    def activity_closes_in(self, message_ref: str) -> float | None:
+        """Only a stream closes on its own; an ordinary post never does."""
+        stream = self._streams.get(message_ref)
+        if stream is None or stream.opened_at is None:
+            return None
+        return max(
+            0.0, _STREAM_LIFETIME_SECONDS - (time.monotonic() - stream.opened_at)
+        )
+
     def _streamable(self, content: RichContent, thread_root_id: str | None) -> bool:
         """Whether this is a turn's activity, in a thread a stream can open in.
 
@@ -1392,9 +1464,22 @@ class SlackAdapter(PlatformAdapter):
             )
             return None
         ref = f"{channel_id}:{ts}"
-        stream = _ActivityStream(channel_id=channel_id, ts=str(ts))
+        stream = _ActivityStream(
+            channel_id=channel_id, ts=str(ts), opened_at=time.monotonic()
+        )
         self._register_stream(ref, stream)
-        await self._extend_stream(stream, ref, content)
+        # The message exists now. Reported as not posted, the turn would be
+        # posted again on the retry, leaving this one empty above it.
+        try:
+            await self._extend_stream(stream, ref, content)
+        except RichContentThrottled as throttled:
+            raise RichContentThrottledAfterPost(
+                ref=ref, retry_after=throttled.retry_after, text=throttled.text
+            ) from throttled
+        except RichContentFailed as failed:
+            raise RichContentFailedAfterPost(
+                str(failed), ref=ref, text=failed.text
+            ) from failed
         return ref
 
     def _register_stream(self, message_ref: str, stream: _ActivityStream) -> None:
@@ -1575,20 +1660,21 @@ class SlackAdapter(PlatformAdapter):
     ) -> NoReturn:
         """Turn a refused append into the failure the caller already handles.
 
-        A stream that has been stopped, or that this app no longer owns, is
-        gone rather than temporarily unwell: forget it so the publication is
-        redrawn as an ordinary post rather than appended to forever.
+        A stream that has been stopped, timed out, or that this app no longer
+        owns, is gone rather than temporarily unwell: forget it so the
+        publication is redrawn as an ordinary post rather than appended to
+        forever.
         """
         code = error.response.get("error")
         if code in _STREAM_CLOSED_ERRORS:
             self._streams.pop(message_ref, None)
             logger.warning(
                 "The activity stream %s is no longer accepting appends (%s); "
-                "later updates will be drawn as an ordinary message.",
+                "the turn is drawn as an ordinary message from here.",
                 message_ref,
                 code,
             )
-            raise RichContentFailed(
+            raise _StreamClosed(
                 f"Slack closed the activity stream {message_ref}: {code}", text=text
             ) from error
         throttled = self._throttled(error, text)
@@ -1748,6 +1834,26 @@ class SlackAdapter(PlatformAdapter):
                 text,
             )
 
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """An ephemeral message: shown in the channel, in the message's
+        thread, to the person who posted it and to nobody else."""
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        await self._web_client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text=self.translate_outbound(content),
+            thread_ts=self._thread_ts_of(thread_root_id),
+        )
+
     def adapt_icon_url(self, icon_url: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
         # white. Adjusting here rather than at each call site keeps every place
@@ -1758,6 +1864,39 @@ class SlackAdapter(PlatformAdapter):
         # Slack passes a slash command's whole tail through as free text, so the
         # invocation reads exactly like the `!` form.
         return "`/invite-agent @agent-name` — the Slack slash command"
+
+    @classmethod
+    def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
+        # An app's or a bot's posts are bridged under its `bot_id` (`B…`), and
+        # whoever can post through the app (a webhook, a workflow) posts as it.
+        if external_user_id == "USLACKBOT" or _SLACK_BOT_ID.match(external_user_id):
+            return _SLACK_BOT_ACCOUNT
+        return None
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        # An app posting with its bot token is bridged under its bot user's
+        # `U…` id, which looks like a person's; only Slack can say otherwise.
+        reason = self.unlinkable_account_reason(external_user_id)
+        if reason is not None:
+            return reason
+        if self._web_client is None:
+            raise RuntimeError("The Slack bridge is not started, so it cannot be asked")
+        try:
+            result = await self._web_client.users_info(user=external_user_id)
+        except SlackApiError as e:
+            if e.response.get("error") == "user_not_found":
+                raise LookupError(
+                    f"No Slack account {external_user_id} exists on this workspace"
+                ) from e
+            raise RuntimeError(
+                f"Could not ask Slack about account {external_user_id}: {e}"
+            ) from e
+        except (aiohttp.ClientError, TimeoutError) as e:
+            raise RuntimeError(
+                f"Could not reach Slack to ask about account {external_user_id}: {e}"
+            ) from e
+        user = result["user"]
+        return _SLACK_BOT_ACCOUNT if user.get("is_bot") else None
 
     async def admin_message(
         self,
@@ -1791,7 +1930,7 @@ class SlackAdapter(PlatformAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=self._admin_body(content, drawn),
+                text=self._admin_body(self.translate_outbound(content), drawn),
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,
@@ -2287,8 +2426,8 @@ class SlackAdapter(PlatformAdapter):
         if not self._web_client:
             raise RuntimeError("Slack client not connected")
 
-        raw_name = f"dm-{user_name}-{agent_name}"
-        channel_name = re.sub(r"[^a-z0-9_-]", "-", raw_name.lower()).strip("-")[:80]
+        raw_name = f"{agent_name}-{user_name}"
+        channel_name = re.sub(r"[^a-z0-9_-]+", "-", raw_name.lower()).strip("-")[:80]
         try:
             result = await self._web_client.conversations_create(
                 name=channel_name, is_private=True
@@ -3089,11 +3228,51 @@ class SlackAdapter(PlatformAdapter):
         return escape_mrkdwn(super().escape_label_for_body(label))
 
     def translate_inbound(self, raw_message: str) -> str:
+        return self._unescape_entities(self._translate_markup(raw_message))
+
+    def _translate_markup(self, raw_message: str) -> str:
+        """Rewrite Slack's `<…>` sequences, leaving its entity escaping alone.
+
+        Running this twice changes nothing, which is why a command's arguments
+        get only this from the adapter: `CollaborationCore` runs every
+        command's arguments through `translate_inbound` again, and the entities
+        must be decoded exactly once, or a person's literal `&amp;lt;` would
+        reach the agent as `<`.
+        """
         return self._translate_links_to_markdown(
-            self._translate_mass_mentions_to_markdown(
-                self._translate_mentions_to_markdown(raw_message)
+            self._translate_channel_links(
+                self._translate_mass_mentions_to_markdown(
+                    self._translate_mentions_to_markdown(raw_message)
+                )
             )
         )
+
+    @staticmethod
+    def _unescape_entities(message: str) -> str:
+        """Decode `&amp;`, `&lt;` and `&gt;` back to what the person typed.
+
+        Must run after every `<…>` sequence is translated: until then a `<`
+        can only be Slack's own markup, because Slack escapes the ones people
+        type. Decoding is one pass, so `&amp;lt;` becomes the `&lt;` that was
+        typed rather than `<`.
+        """
+        return _SLACK_ENTITY.sub(
+            lambda match: _SLACK_ENTITY_CHARS[match.group(1)], message
+        )
+
+    def _translate_channel_links(self, message: str) -> str:
+        """Show a channel link `<#C123|general>` as `#general`.
+
+        A link without a label falls back to the channel's cached name, and to
+        its id when the name is not known yet.
+        """
+
+        def _replace(match: re.Match[str]) -> str:
+            channel_id = match.group(1)
+            name = match.group(2) or self._channel_name_cache.get(channel_id)
+            return f"#{name or channel_id}"
+
+        return _SLACK_CHANNEL_LINK.sub(_replace, message)
 
     @staticmethod
     def _translate_mass_mentions_to_markdown(message: str) -> str:
@@ -3458,7 +3637,7 @@ class SlackAdapter(PlatformAdapter):
         if stripped.startswith("!") and self._on_command:
             parts = stripped.split(None, 1)
             command = parts[0].lstrip("!")
-            args = self.translate_inbound(parts[1].strip()) if len(parts) > 1 else ""
+            args = self._translate_markup(parts[1].strip()) if len(parts) > 1 else ""
             await self._on_command(
                 InboundCommand(
                     channel_id=channel_id,
@@ -3525,7 +3704,7 @@ class SlackAdapter(PlatformAdapter):
         # Slack encodes @mentions in command arguments as `<@U…>`; normalise
         # them to `@name` so the command dispatcher's first `@` token resolves
         # to the target agent or role.
-        args = self.translate_inbound(text)
+        args = self._translate_markup(text)
 
         try:
             channel_type = await self.get_channel_type(channel_id)
