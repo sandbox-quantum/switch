@@ -66,16 +66,17 @@ up there: a request failing with an unhandled error (`Exception in ASGI
 application`), a pod losing the lease on its agents' connections, two bridges
 connected to the same workspace, a bridge failing to post for 10 minutes (more
 than 10 `Could not publish` lines, so one message retrying briefly stays
-quiet), and a burst of more than 50 errors in 15 minutes. That last limit sits
-above the bursts the Slack identity errors make when a bridge starts (up to 54
-in 15 minutes in the first week of November, against 7 without them); lower it
-to about 25 once those are logged as warnings. Log alerts filter on
+quiet), and a burst of more than 25 errors in 15 minutes. Before this change the
+worst 15 minutes of the first week of November held 54 errors, almost all the
+Slack identity error now logged as a warning; without it the worst was 7. Log alerts filter on
 `service:switch-core env:pilot`, for the reason the board's log panels do.
 
-"Agent controllers keep reconnecting" watches `switch.controllers.reconnects`
-for the reconnect storm seen on pilot in November (around 650 controller
-connections opened every 10 minutes): more than 300 in 10 minutes fires. A
-rollout reconnects every controller once, which stays below that.
+"Agent controllers keep reconnecting" watches `switch.controllers.connections`
+with `event:opened`, for the reconnect storm seen on pilot in November (about
+7,500 controller connections opened every six hours, so around 625 every 30
+minutes): more than 450 in 30 minutes fires. A rollout reconnects each
+controller once or twice, which stays below that. `event:taken_over` on the
+same metric is the churn's signature; the signal board shows every event.
 
 Priority follows what a user loses: P1 when Switch is down or messages are
 lost, P2 when some people or one platform are affected, P3 when it is slow but
