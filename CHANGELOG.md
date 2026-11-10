@@ -94,6 +94,19 @@ version of their own to them without also giving them a release of their own.
   answers for every workspace the caller may enter, counting people as the
   workspace's members list shows them: its members, and its organization's
   admins who are not one. The dashboard's new workspace switcher reads it.
+- **Link your chat accounts from the dashboard.** With `gateway_v2` on,
+  Workspace settings › Messaging apps lists, for everyone, their own accounts
+  in each of the workspace's messaging apps: linked, linked before links had to
+  be confirmed, or waiting for a code. Each can be unlinked, confirmed or
+  cancelled there. Link account finds you in the app's directory and then
+  shows the one-time code to post from that account, the same confirmation
+  Switch Console runs. Whoever administers the workspace also gets the apps
+  table, with search, Type and Status filters, and each app's actions in its
+  row menu, now including Open in the app, Copy webhook address and Require
+  confirmation for older links. A member no longer sees the workspace's app
+  settings there, only their own accounts, and the chats of an app that joins
+  one chat at a time where they can add one. `GET /gateway/auth/me/identities`
+  now says when each link started counting (`linked_at`).
 - **A dev-only role switcher for the dashboard.** `just seed-dev-roles`
   creates local test accounts for an org admin, a workspace admin and a
   member, plus a second workspace only the org admin can open, and
@@ -159,6 +172,10 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **Messaging apps says when a change is refused or the list fails to load.**
+  Turning agent greetings or channel creation on or off said nothing when
+  Switch refused it, and a list that failed to load showed "No messaging apps
+  yet". Both now show what happened.
 - **Renaming a channel on a messaging app renames its room.** Slack,
   Mattermost, Microsoft Teams and Telegram now pass a channel's new name to
   Switch, as Discord already did, using what each platform already sends, so
