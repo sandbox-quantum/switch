@@ -508,6 +508,24 @@ class MessageStore:
         )
         return list(result.scalars().all())
 
+    async def rooms_of_events(
+        self, session: AsyncSession, transport_event_ids: Collection[str]
+    ) -> dict[str, str]:
+        """Event id -> room id, for the bound tenant's messages among the ids.
+
+        Filters on the tenant itself: a connection that bypasses row-level
+        security must not resolve another tenant's message.
+        """
+        if not transport_event_ids:
+            return {}
+        result = await session.execute(
+            select(Message.transport_event_id, Message.room_id).where(
+                Message.tenant_id == require_tenant_id(),
+                Message.transport_event_id.in_(list(transport_event_ids)),
+            )
+        )
+        return {event_id: room_id for event_id, room_id in result.all()}
+
     async def attachments_for(
         self, session: AsyncSession, message_ids: Collection[str]
     ) -> dict[str, list[MessageAttachment]]:

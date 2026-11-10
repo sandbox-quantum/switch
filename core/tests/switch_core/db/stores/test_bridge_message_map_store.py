@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import BridgeMessageMap, Client, CollaborationBridge
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
+from tests.switch_core.statement_counts import StatementCounts
 
 
 async def _make_bridge(session: AsyncSession) -> str:
@@ -167,3 +168,105 @@ class TestBridgeMessageMapStore:
         async with session_factory() as session:
             posted = await store.get_by_external_post_id(session, bridge_id, "post1")
         assert posted is not None and posted.external_channel_id == "chan-2"
+
+
+class TestPostsForEvents:
+    async def test_posts_for_events_returns_posted_rows(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = BridgeMessageMapStore()
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            for event_id, post_id in (("$evt1", "C1:1.1"), ("$evt2", "C1:2.2")):
+                await store.create(
+                    session,
+                    BridgeMessageMap(
+                        bridge_id=bridge_id,
+                        external_channel_id="C1",
+                        transport_event_id=event_id,
+                        external_post_id=post_id,
+                    ),
+                )
+            await session.commit()
+
+            posts = await store.posts_for_events(
+                session,
+                bridge_id=bridge_id,
+                transport_event_ids=["$evt1", "$evt2", "$nope"],
+            )
+
+        assert posts == {"$evt1": "C1:1.1", "$evt2": "C1:2.2"}
+
+    async def test_posts_for_events_skips_unposted_claims(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = BridgeMessageMapStore()
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            assert await store.claim(
+                session,
+                bridge_id=bridge_id,
+                external_channel_id="C1",
+                transport_event_id="$claimed",
+                unposted_after=timedelta(seconds=10),
+            )
+            await session.commit()
+
+            posts = await store.posts_for_events(
+                session, bridge_id=bridge_id, transport_event_ids=["$claimed"]
+            )
+
+        assert posts == {}
+
+    async def test_posts_for_events_ignores_other_bridges_rows(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = BridgeMessageMapStore()
+        async with session_factory() as session:
+            bridge_a = await _make_bridge(session)
+            bridge_b = await _make_bridge(session)
+            await store.create(
+                session,
+                BridgeMessageMap(
+                    bridge_id=bridge_a,
+                    external_channel_id="C1",
+                    transport_event_id="$evt1",
+                    external_post_id="C1:1.1",
+                ),
+            )
+            await session.commit()
+
+            posts = await store.posts_for_events(
+                session, bridge_id=bridge_b, transport_event_ids=["$evt1"]
+            )
+
+        assert posts == {}
+
+    async def test_posts_for_events_is_one_query(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+    ) -> None:
+        store = BridgeMessageMapStore()
+        event_ids = [f"$evt{n}" for n in range(10)]
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            for n, event_id in enumerate(event_ids):
+                await store.create(
+                    session,
+                    BridgeMessageMap(
+                        bridge_id=bridge_id,
+                        external_channel_id="C1",
+                        transport_event_id=event_id,
+                        external_post_id=f"C1:{n}.0",
+                    ),
+                )
+            await session.commit()
+
+            with statement_counts.scope("posts_for_events") as scope:
+                posts = await store.posts_for_events(
+                    session, bridge_id=bridge_id, transport_event_ids=event_ids
+                )
+
+        assert len(posts) == 10
+        assert len([s for s in scope.statements if "bridge_message_map" in s]) == 1

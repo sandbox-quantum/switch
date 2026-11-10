@@ -16,7 +16,8 @@ from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, Message, MessageAttachment, Room
+from switch_core.db.models import Client, Message, MessageAttachment, Room, Tenant
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.message_store import MessageStore
 
 
@@ -530,6 +531,54 @@ class TestConversationHistory:
 
         assert [r.transport_event_id for r in thread] == ["$r1", "$root"]
         assert [r.transport_event_id for r in channel] == ["$root"]
+
+
+class TestRoomsOfEvents:
+    async def test_rooms_of_events_maps_each_known_id_to_its_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = MessageStore()
+        async with session_factory() as session:
+            alpha = await _make_room(session, "alpha")
+            beta = await _make_room(session, "beta")
+            await store.create(session, _message(alpha.id, "$a"), [])
+            await store.create(session, _message(beta.id, "$b"), [])
+            await session.commit()
+
+            rooms = await store.rooms_of_events(session, ["$a", "$b"])
+
+        assert rooms == {"$a": alpha.id, "$b": beta.id}
+
+    async def test_rooms_of_events_omits_unknown_ids(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = MessageStore()
+        async with session_factory() as session:
+            room = await _make_room(session, "alpha")
+            await store.create(session, _message(room.id, "$a"), [])
+            await session.commit()
+
+            rooms = await store.rooms_of_events(session, ["$a", "$nope", ""])
+
+        assert rooms == {"$a": room.id}
+
+    async def test_rooms_of_events_omits_another_tenants_message(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The test connection bypasses row-level security, so only the
+        store's own tenant filter keeps tenant B's message out."""
+        store = MessageStore()
+        other_tenant = "rooms-of-events-tenant-b"
+        async with session_factory() as session:
+            session.add(Tenant(id=other_tenant, slug=other_tenant, name=other_tenant))
+            await session.commit()
+        async with tenant_session(session_factory, other_tenant) as other_session:
+            room = await _make_room(other_session, "other")
+            await store.create(other_session, _message(room.id, "$theirs"), [])
+            await other_session.commit()
+
+        async with session_factory() as session:
+            assert await store.rooms_of_events(session, ["$theirs"]) == {}
 
 
 class TestForeignKeyBehaviour:

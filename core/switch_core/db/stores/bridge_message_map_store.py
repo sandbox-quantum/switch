@@ -1,10 +1,11 @@
+from collections.abc import Collection
 from datetime import timedelta
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import BridgeMessageMap
+from switch_core.db.models import BridgeMessageMap, require_tenant_id
 
 
 class BridgeMessageMapStore:
@@ -95,6 +96,30 @@ class BridgeMessageMapStore:
             )
         )
         return result.scalar_one_or_none()
+
+    async def posts_for_events(
+        self,
+        session: AsyncSession,
+        *,
+        bridge_id: str,
+        transport_event_ids: Collection[str],
+    ) -> dict[str, str]:
+        """Event id -> external post id, for this bridge's rows that were
+        posted. A claim with no post yet is left out."""
+        if not transport_event_ids:
+            return {}
+        result = await session.execute(
+            select(
+                BridgeMessageMap.transport_event_id,
+                BridgeMessageMap.external_post_id,
+            ).where(
+                BridgeMessageMap.tenant_id == require_tenant_id(),
+                BridgeMessageMap.bridge_id == bridge_id,
+                BridgeMessageMap.transport_event_id.in_(list(transport_event_ids)),
+                BridgeMessageMap.external_post_id.is_not(None),
+            )
+        )
+        return {event_id: post_id for event_id, post_id in result.all()}
 
     async def get_by_external_post_id(
         self, session: AsyncSession, bridge_id: str, external_post_id: str
