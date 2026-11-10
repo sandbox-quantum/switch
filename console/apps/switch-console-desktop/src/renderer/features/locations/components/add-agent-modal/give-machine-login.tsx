@@ -40,6 +40,8 @@ export function loginKindsFor(provider: AgentProviderId): { value: LoginKind; la
         { value: 'api-key', label: 'API key' },
         { value: 'this-computer', label: "This computer's sign-in" },
       ];
+    case 'mistral-vibe':
+      return [];
     case 'cursor':
       return [{ value: 'api-key', label: 'API key' }];
     default:

@@ -154,6 +154,11 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="mistral-vibe",
+        label="Mistral Vibe",
+        sign_in_command="vibe-acp --setup",
+    ),
 )
 
 

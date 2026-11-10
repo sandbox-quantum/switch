@@ -226,6 +226,7 @@ it('offers allow-for-session, maps it to the agent option, and answers decline w
     });
   ask(60, [
     { optionId: 'once', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'allow_always_permanent', name: 'Always allow', kind: 'allow_always' },
     { optionId: 'always', name: 'Allow for this session', kind: 'allow_always' },
   ]);
   await flush();
@@ -403,3 +404,50 @@ it.each([
     expect(server.received.some((m) => m.id === 80 && m.result)).toBe(false);
   }
 );
+
+it.each([undefined, false])('uses an HTTP fallback only when omitted (%s)', async (http) => {
+  agent.capabilities = { mcpCapabilities: { http } };
+  const launch = start(
+    { ...dummy, mcpCapabilities: { http: true } },
+    {
+      mcpServers: { switch: { transport: 'http', url: 'http://localhost/mcp' } },
+    }
+  );
+  if (http === false) await expect(launch).rejects.toThrow('does not declare MCP over HTTP');
+  else {
+    const { adapter } = await launch;
+    await adapter.stopAll();
+  }
+});
+
+it('uses an announced tool when its permission request carries only an id', async () => {
+  const { adapter, server, events } = await start();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'run' });
+  server.send({
+    method: 'session/update',
+    params: {
+      sessionId: 'native',
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'shell',
+        kind: 'execute',
+        title: 'Run shell',
+      },
+    },
+  });
+  server.send({
+    id: 91,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'shell' },
+      options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }],
+    },
+  });
+  await flush();
+  expect(events.find((event) => event.type === 'request.opened')).toMatchObject({
+    requestType: 'command_execution_approval',
+    title: 'Run shell',
+  });
+  await adapter.stopAll();
+});

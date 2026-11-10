@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `mistral-vibe` | `vibe-acp`, ACP over stdio | Read-only auth status, native permission modes, ACP model selection and session/load. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -127,3 +128,29 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+
+## Mistral Vibe integration (not yet verified against a live CLI)
+
+Targets Vibe 3.1.0. Install `uv`, then `uv tool install --python 3.12 mistral-vibe`.
+Run `vibe-acp --setup` on the execution machine; Console does not transfer its login.
+Readiness uses `_auth/status`, not file existence or `authenticate`. On Linux use
+`MISTRAL_API_KEY` or the `.env` in `VIBE_HOME` (default `~/.vibe`); sessions cannot
+reach a desktop-only keyring. Status confirms configuration, not API quota or a successful model call.
+
+Permission modes must be advertised: approval-required selects `ask`, edit acceptance
+selects `accept-edits`, Auto selects `smart-approve`, and full access selects
+`auto-approve`. Missing modes fail startup. In particular, `smart-approve` is gated in
+Vibe 3.1.0; disable Switch Auto when it is unavailable. There is no silent fallback.
+
+MCP names are matched to registered server keys after Vibe normalization. If registered
+names collide, calls remain unattributed and require approval outside full access.
+The HTTP capability fallback covers 3.1.0's missing advertisement; explicit false is honored.
+Permanent permission grants are not offered. Session model changes use ACP's model
+config option; Vibe also persists `active_model` in its own configuration.
+
+Run the existing conformance harness through `src/mistral-vibe/mistral-vibe.integration.test.ts`.
+Set `SWITCH_VIBE_MODEL` to an available **non-default** alias to exercise actual selection;
+confirm the model in Vibe's session/config as well as the reply. The question scenario is
+skipped because 3.1.0 requires elicitation, which this provider does not advertise.
+No live conformance result, screenshot or video has been produced for this contribution.

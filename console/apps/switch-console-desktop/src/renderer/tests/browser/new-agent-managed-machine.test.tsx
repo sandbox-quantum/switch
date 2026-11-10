@@ -430,6 +430,34 @@ describe('the providers a server machine offers', () => {
     });
   });
 
+  it('offers no transferred login for Mistral Vibe', async () => {
+    giveMachineLogin.mockClear();
+    const el = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={{
+          ...BOX,
+          acceptsLogins: true,
+          providers: [
+            {
+              provider: 'mistral-vibe',
+              ready: false,
+              problem: 'not logged in',
+              detail: 'Sign in with vibe-acp --setup',
+              loginHelps: true,
+            },
+          ],
+        }}
+        value={null}
+        onChange={vi.fn()}
+        defaultAgent="mistral-vibe"
+      />
+    );
+    expect(el.textContent).toContain('Mistral Vibe');
+    expect(el.textContent).not.toMatch(/Give build-box a login/);
+    expect(giveMachineLogin).not.toHaveBeenCalled();
+  });
+
   it('offers no login to a machine that cannot take one', async () => {
     const el = await render(
       <MachineProviderPicker
