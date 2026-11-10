@@ -773,7 +773,6 @@ async def test_mcp_identity_refuses_a_duplicate_tool_name(monkeypatch):
         (429, ServiceUnavailableError),
         (500, ServiceUnavailableError),
         (503, ServiceUnavailableError),
-        (403, McpIdentityError),
     ],
 )
 async def test_mcp_identity_maps_http_status(monkeypatch, status, expected):
@@ -782,8 +781,16 @@ async def test_mcp_identity_maps_http_status(monkeypatch, status, expected):
     assert type(error) is expected
     if expected is ServiceUnavailableError:
         assert f"HTTP {status}" in str(error)
-    if expected is McpIdentityError:
-        _assert_reason(error, "protocol_error")
+
+
+@pytest.mark.parametrize("status", [400, 403, 404, 405, 410, 422])
+async def test_mcp_identity_reports_a_refusal_with_its_status(monkeypatch, status):
+    _over_mock(monkeypatch, _ScriptedMcp(status=status))
+    started = time.monotonic()
+    error = await _identify_error()
+    assert type(error) is ServiceAdapterError
+    assert str(error) == f"Example would not say whose sign-in this is (HTTP {status})."
+    assert time.monotonic() - started < 1
 
 
 async def test_mcp_identity_transport_error_is_unavailable(monkeypatch):

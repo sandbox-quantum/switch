@@ -310,6 +310,11 @@ class _BudgetTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         response = await self._inner.handle_async_request(request)
+        if request.method == "POST" and response.status_code == 404:
+            # The SDK reads a 404 as an ended session and drops the status,
+            # so it is raised here the way the SDK raises any other 4xx.
+            await response.aclose()
+            raise httpx.HTTPStatusError("Not Found", request=request, response=response)
         # Compressed bytes do not bound the decoded size.
         if response.headers.get("content-encoding", "identity").lower() != "identity":
             await response.aclose()
@@ -948,6 +953,12 @@ class OAuthAdapter:
                         f"{self._name} is unavailable (HTTP {status}). "
                         "Please try again."
                     )
+                if 400 <= status < 500:
+                    return ServiceAdapterError(
+                        f"{self._name} would not say whose sign-in this is "
+                        f"(HTTP {status})."
+                    )
+                # A redirect, which Core does not follow, is not an MCP answer.
                 return McpIdentityError(self._name, "protocol_error")
         if budget.deadline.expired() or any(
             isinstance(
