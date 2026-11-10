@@ -1,7 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
+import { toast } from 'sonner';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
-import { useConfirmFreshInstall } from '@renderer/features/settings/components/ReplayOnboardingRow';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
@@ -16,6 +16,7 @@ import { Input } from '@renderer/lib/ui/input';
 import { Label } from '@renderer/lib/ui/label';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
+import { isSwitchCloudServer } from './switch-cloud-store';
 import { switchServersStore } from './switch-servers-store';
 
 type Args = { serverId: string; serverName: string; email: string; mode: 'delete' | 'reset' };
@@ -26,7 +27,8 @@ type Args = { serverId: string; serverName: string; email: string; mode: 'delete
  * and the server's own reason when it refuses. Once it is gone, "Start over"
  * opens the first-run pages, for whoever wants to come back as someone new.
  * `reset` is the dev-only variant that wipes a test account and everything it
- * owns on a server that allows it, then offers to replay Console as fresh.
+ * owns on a server that allows it, then opens that server's sign-in page in the
+ * first-run flow, where a new account starts.
  */
 export const DeleteAccountModal = observer(function DeleteAccountModal({
   serverId,
@@ -40,7 +42,6 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleted, setDeleted] = useState(false);
-  const confirmFreshInstall = useConfirmFreshInstall();
   const matches = typed.trim().toLowerCase() === email.toLowerCase();
 
   const confirm = async () => {
@@ -48,8 +49,14 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
     setDeleting(true);
     setError(null);
     try {
-      if (reset) await switchServersStore.resetTestAccount(serverId, typed.trim());
-      else await switchServersStore.deleteAccount(serverId, typed.trim());
+      if (reset) {
+        await switchServersStore.resetTestAccount(serverId, typed.trim());
+        startOnboardingOn(serverId);
+        onClose();
+        toast.success('Test account reset');
+        return;
+      }
+      await switchServersStore.deleteAccount(serverId, typed.trim());
       setDeleted(true);
     } catch (cause) {
       // The server's refusal is already a sentence saying what to do first.
@@ -62,26 +69,6 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
       setDeleting(false);
     }
   };
-
-  if (deleted && reset)
-    return (
-      <>
-        <DialogHeader>
-          <DialogTitle>The test account is reset</DialogTitle>
-        </DialogHeader>
-        <DialogContentArea className="gap-4 pt-0">
-          <p className="text-sm text-foreground-muted">
-            {email} and everything it owned on {serverName} is gone.
-          </p>
-        </DialogContentArea>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
-          <Button onClick={confirmFreshInstall}>Replay as a fresh install</Button>
-        </DialogFooter>
-      </>
-    );
 
   if (deleted)
     return (
@@ -185,3 +172,14 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
     </>
   );
 });
+
+/**
+ * Put the window on the first-run sign-in page for a server whose account was
+ * just wiped: the server stays added and signed out, so a new account starts there.
+ */
+function startOnboardingOn(serverId: string): void {
+  const server = switchServersStore.serverById(serverId);
+  if (server === null) throw new Error('The reset server is no longer in the server list.');
+  onboardingStore.connected(server, isSwitchCloudServer(server) ? 'cloud' : 'external', false);
+  appState.navigation.navigate('home');
+}
