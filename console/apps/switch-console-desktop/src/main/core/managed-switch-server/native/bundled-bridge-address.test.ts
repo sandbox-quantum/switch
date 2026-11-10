@@ -31,6 +31,8 @@ function bridge(overrides: Partial<RemoteBridge>): RemoteBridge {
     teamPlacementSupported: false,
     channelIdsRefused: null,
     receivesWebhooks: false,
+    privateChannels: null,
+    privateChannelNeedsLinkedAccount: false,
     webhookUrl: null,
     ...overrides,
   };

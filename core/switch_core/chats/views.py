@@ -22,7 +22,6 @@ from switch_core.db.models import (
     AgentDefinition,
     ChatRead,
     Client,
-    ClientRoom,
     CollaborationBridge,
     Message,
     Room,
@@ -30,6 +29,7 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.addressing import (
     MENTIONS_KEY,
     addressable_text,
@@ -43,6 +43,7 @@ SHOWN_EVENT_TYPES = (MESSAGE_EVENT_TYPE, COMMAND_EVENT_TYPE)
 PREVIEW_CHARS = 140
 
 _MESSAGE_STORE = MessageStore()
+_ROOM_STORE = RoomStore()
 
 _PROVIDER_OF_KNOWN_AGENT_TYPE = {
     "claude-code": "claude",
@@ -229,14 +230,7 @@ async def chat_summaries(
         if bridge_ids
         else {}
     )
-    members: dict[str, list[str]] = {}
-    for room_id, user_id in await session.execute(
-        select(ClientRoom.room_id, Client.user_id)
-        .join(Client, Client.id == ClientRoom.client_id)
-        .where(ClientRoom.room_id.in_(room_ids), Client.type == MEMBER_CLIENT_TYPE)
-    ):
-        if user_id is not None:
-            members.setdefault(room_id, []).append(user_id)
+    members = await _ROOM_STORE.member_users_by_room(session, room_ids)
     viewer_client = (
         select(Client.id)
         .where(Client.user_id == viewer_id, Client.type == MEMBER_CLIENT_TYPE)
@@ -294,7 +288,7 @@ async def chat_summaries(
             channel_name = (
                 room.name[len(prefix) :] if room.name.startswith(prefix) else room.name
             )
-        member_user_ids = sorted(members.get(room.id, []))
+        member_user_ids = sorted(user_id for user_id, _ in members.get(room.id, []))
         last = last_messages.get(room.id)
         summaries.append(
             ChatSummary(

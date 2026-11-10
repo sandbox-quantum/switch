@@ -25,7 +25,7 @@ import {
   pluralize,
   platformLabel,
   sentenceCase,
-} from "../../theme/hootFormat";
+} from "../../theme/format";
 import discordIcon from "../../assets/bridges/discord.svg";
 import slackIcon from "../../assets/bridges/slack.svg";
 import telegramIcon from "../../assets/bridges/telegram.svg";

@@ -26,6 +26,7 @@ import type {
   ChatUploadInput,
   WorkspaceMember,
 } from '@shared/core/chats/chats';
+import type { RoomAccess } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type ActivityDeps, resolveChatActivity } from './activity';
 import {
@@ -172,6 +173,11 @@ export const chatsController = createRPCController({
     bridgeId?: string | null;
     kind?: 'group';
     resumeOnly?: boolean;
+    /** The room's own settings, as the New room dialog offers them. */
+    description?: string;
+    instructions?: string;
+    groupId?: string | null;
+    access?: RoomAccess | null;
   }): Promise<ChatSummary> => {
     const chat = await onServer(params.serverId, (server) => createChat(server, params));
     const agentIds = params.agentIds ?? [];
@@ -204,8 +210,15 @@ export const chatsController = createRPCController({
   workspaceMembers: (params: { serverId: string; tenantId: string }): Promise<WorkspaceMember[]> =>
     onServer(params.serverId, (server) => listWorkspaceMembers(server, params.tenantId)),
   /** The agents the viewer may add to a new chat (`roomId` null) or to that chat. */
-  agentCandidates: (params: { serverId: string; roomId: string | null }): Promise<string[]> =>
-    onServer(params.serverId, (server) => listAgentCandidates(server, params.roomId)),
+  agentCandidates: (params: {
+    serverId: string;
+    roomId: string | null;
+    /** For a new chat, the group it will be filed in. */
+    groupId?: string | null;
+  }): Promise<string[]> =>
+    onServer(params.serverId, (server) =>
+      listAgentCandidates(server, params.roomId, params.groupId ?? null)
+    ),
   markRead: (params: { serverId: string; roomId: string; seq: number }): Promise<void> =>
     onServer(params.serverId, (server) => markChatRead(server, params.roomId, params.seq)),
   messages: (params: {

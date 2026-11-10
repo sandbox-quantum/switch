@@ -13,7 +13,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import {
   type OrganizationMember,
@@ -25,7 +25,7 @@ import {
   signInAfterAccessEnded,
   updateOrganizationRole,
 } from "../../data/api";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 
 type MemberRow = OrganizationMember & { id: string };
@@ -185,7 +185,8 @@ export default function OrganizationMembersSection({
               onChange={(e) =>
                 act({ userId: row.user_id, role: e.target.value as OrganizationRole })
               }
-              aria-label={`Organization role for ${row.email}`}
+              // The name goes on the input: on the Select it labels nothing.
+              inputProps={{ "aria-label": `Organization role for ${row.email}` }}
               sx={{ fontSize: "0.875rem" }}
             >
               {(Object.keys(ROLE_LABELS) as OrganizationRole[]).map((role) => (
@@ -324,6 +325,7 @@ export default function OrganizationMembersSection({
         <DataTable
           rows={(members ?? []).map((m) => ({ ...m, id: m.user_id }))}
           columns={shown}
+          emptyState={<TableEmptyState title="No users in this organization yet" />}
           height={Math.min(520, 108 + (members?.length ?? 0) * 52)}
           pageSize={25}
         />
