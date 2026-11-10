@@ -30,9 +30,12 @@ KEYS = {"api_key": "SYNTHETIC-API-KEY", "application_key": "SYNTHETIC-APP-KEY"}
 
 
 class Vendor:
-    def __init__(self, mcp_status: int, identity_status: int) -> None:
+    def __init__(
+        self, mcp_status: int, identity_status: int, identity_padding: int = 0
+    ) -> None:
         self.mcp_status = mcp_status
         self.identity_status = identity_status
+        self.identity_padding = identity_padding
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -42,7 +45,10 @@ class Vendor:
         if request.url.host == f"api.{SITE}":
             return httpx.Response(
                 self.identity_status,
-                json={"account": {"id": "acct-eu", "email": "ada@eu.example.test"}},
+                json={
+                    "account": {"id": "acct-eu", "email": "ada@eu.example.test"},
+                    "included": "x" * self.identity_padding,
+                },
             )
         return httpx.Response(404)
 
@@ -77,6 +83,28 @@ async def test_the_check_is_an_initialize_at_the_sites_server_with_the_headers()
         assert request.headers["x-example-site"] == SITE
     assert (me.method, str(me.url)) == ("GET", f"https://api.{SITE}/me")
     assert (identity.account_id, identity.label) == ("acct-eu", "ada@eu.example.test")
+
+
+async def test_an_identity_answer_larger_than_metadata_is_read() -> None:
+    """Datadog's account answer carries the user's roles and permissions and
+    is far larger than a metadata or token answer."""
+    adapter = _adapter(Vendor(200, 200, identity_padding=200 * 1024))
+    keys = adapter.paste_method("keys")
+
+    pasted = await adapter.identify_pasted(keys, KEYS, {"site": SITE})
+    signed_in = await adapter.identify("SYNTHETIC-ACCESS-TOKEN", {"site": SITE})
+
+    assert pasted.account_id == signed_in.account_id == "acct-eu"
+
+
+async def test_an_identity_answer_over_a_mebibyte_is_refused() -> None:
+    adapter = _adapter(Vendor(200, 200, identity_padding=1024 * 1024))
+    keys = adapter.paste_method("keys")
+
+    with pytest.raises(ServiceAdapterError, match="account is too large"):
+        await adapter.identify_pasted(keys, KEYS, {"site": SITE})
+    with pytest.raises(ServiceAdapterError, match="account is too large"):
+        await adapter.identify("SYNTHETIC-ACCESS-TOKEN", {"site": SITE})
 
 
 @pytest.mark.parametrize(

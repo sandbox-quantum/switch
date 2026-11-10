@@ -146,6 +146,12 @@ class TestDiscovery:
         assert (endpoints.token, endpoints.resource) == (f"{ISSUER}/token", None)
         assert vendor.paths == []
 
+    async def test_refuses_metadata_over_64_kib(self, vendor) -> None:
+        vendor.metadata["padding"] = "x" * (64 * 1024)
+        adapter, _ = _adapter(vendor)
+        with pytest.raises(ServiceAdapterError, match="too large"):
+            await adapter.endpoints({})
+
     async def test_refuses_a_server_without_pkce(self, vendor) -> None:
         vendor.metadata["code_challenge_methods_supported"] = ["plain"]
         adapter, _ = _adapter(vendor)

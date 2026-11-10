@@ -67,6 +67,9 @@ from switch_core.connections.loader import (
 )
 
 MAX_METADATA_BYTES = 64 * 1024
+# An identity answer can carry the account's roles and permissions (Datadog's
+# current_user does), so it may be far larger than metadata or a token answer.
+MAX_IDENTITY_BYTES = 1024 * 1024
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
@@ -254,8 +257,8 @@ class OAuthAdapter:
             )
         return response
 
-    def _json(self, response: httpx.Response, what: str) -> dict[str, Any]:
-        if len(response.content) > MAX_METADATA_BYTES:
+    def _json(self, response: httpx.Response, what: str, limit: int) -> dict[str, Any]:
+        if len(response.content) > limit:
             raise ServiceAdapterError(f"{self._name}'s {what} is too large.")
         try:
             body = response.json()
@@ -273,7 +276,7 @@ class OAuthAdapter:
                 )
             )
             if response.status_code == 200:
-                return self._json(response, what)
+                return self._json(response, what, MAX_METADATA_BYTES)
             if response.status_code not in (404, 405):
                 raise ServiceAdapterError(
                     f"{self._name}'s {what} could not be read "
@@ -469,7 +472,10 @@ class OAuthAdapter:
             )
         )
         if response.status_code == 200:
-            return TokenAnswer(self._json(response, "token response"), client.client_id)
+            return TokenAnswer(
+                self._json(response, "token response", MAX_METADATA_BYTES),
+                client.client_id,
+            )
         try:
             error = response.json().get("error")
         except (ValueError, AttributeError):
@@ -604,7 +610,7 @@ class OAuthAdapter:
 
     def _identity_from(self, response: httpx.Response) -> Identity:
         """The account the identity call's answer names."""
-        body = self._json(response, "account")
+        body = self._json(response, "account", MAX_IDENTITY_BYTES)
         account_id = _path_value(body, self._identity.account_id)
         label = _path_value(body, self._identity.label)
         if type(account_id) is int:
