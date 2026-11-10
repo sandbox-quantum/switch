@@ -3,7 +3,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { cn } from '@renderer/utils/utils';
-import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import {
+  canAttemptMachineProvider,
+  type OwnedMachine,
+} from '@shared/core/managed-agents/managed-agents';
 import {
   agentProviders,
   type AgentProviderId,
@@ -28,7 +31,7 @@ export function machineProviderOptions(
 
 /**
  * The agent provider for a managed agent, from what its machine reports to the
- * server: only the providers installed and logged in there can be picked.
+ * server: an installed provider with unknown sign-in can also be tried explicitly.
  */
 export function MachineProviderPicker({
   serverId,
@@ -54,6 +57,9 @@ export function MachineProviderPicker({
     ? options.filter((option) => !option.ready && option.problem !== 'not installed')
     : [];
   const [giving, setGiving] = useState<AgentProviderId | null>(null);
+  const selectedReport = machine.providers.find((entry) => entry.provider === value);
+  const canAttempt = (providerId: AgentProviderId) =>
+    canAttemptMachineProvider(machine.providers.find((entry) => entry.provider === providerId));
 
   useEffect(() => {
     if (value) return;
@@ -70,7 +76,9 @@ export function MachineProviderPicker({
           <span>
             {machine.providers.length === 0
               ? `${machine.name} has not reported its providers yet.`
-              : `No provider is installed and logged in on ${machine.name}.`}
+              : options.some((option) => canAttempt(option.id))
+                ? `No provider is confirmed signed in on ${machine.name}. You can still select an installed provider whose sign-in could not be checked.`
+                : `No provider is installed and logged in on ${machine.name}.`}
           </span>
         </div>
       )}
@@ -79,7 +87,7 @@ export function MachineProviderPicker({
           <button
             key={option.id}
             type="button"
-            disabled={!option.ready}
+            disabled={!canAttempt(option.id)}
             aria-pressed={value === option.id}
             title={option.problem ? `${option.name}: ${option.problem}` : undefined}
             onClick={() => onChange(option.id)}
@@ -88,7 +96,8 @@ export function MachineProviderPicker({
               value === option.id
                 ? 'border-foreground bg-[var(--sel-soft)]'
                 : 'border-border hover:bg-[var(--sel-soft)]',
-              !option.ready && 'cursor-not-allowed opacity-50 bg-background-1 hover:bg-transparent'
+              !canAttempt(option.id) &&
+                'cursor-not-allowed opacity-50 bg-background-1 hover:bg-transparent'
             )}
           >
             <AgentIcon id={option.id} size={22} />
@@ -99,6 +108,12 @@ export function MachineProviderPicker({
           </button>
         ))}
       </div>
+      {selectedReport && !selectedReport.ready && canAttemptMachineProvider(selectedReport) && (
+        <p className="text-xs text-foreground-muted" role="status">
+          Sign-in could not be verified.{' '}
+          {selectedReport.detail ?? 'The agent may fail to start until you sign in.'}
+        </p>
+      )}
       <p className="text-xs text-foreground-muted">
         As {machine.name} last reported to the server.
       </p>

@@ -224,7 +224,7 @@ beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 | `SWITCH_E2E_MANIFEST` | provider lane | File the setup records its agent and room in, so a second process can reuse them. See "Seeding first". |
 | `SWITCH_E2E_REPLY_TIMEOUT_MS` | provider lane | How long a scenario waits for the agent (default 5 min). |
 | `SWITCH_E2E_SESSION_TIMEOUT_MS` | provider lane | How long setup waits for a live session (default 2 min). |
-| `SWITCH_E2E_AGENT_TYPE` | provider lane | `opencode` (default), `claude-code`, `codex`, `antigravity` or `cursor` — which provider's runtime is under test. |
+| `SWITCH_E2E_AGENT_TYPE` | provider lane | `opencode` (default), `claude-code`, `codex`, `antigravity`, `cursor` or `deepseek-harness` — which provider's runtime is under test. |
 | `SWITCH_E2E_QUESTION_MODE` | provider lane | `numbered` (default) or `prose`; see the `question` row below. |
 | `SWITCH_E2E_CONTROLLER_ID` | provider lane | An agent controller to run the agent on. `just e2e-provider` sets it. Unset, a Switch Console session is expected instead. |
 | `SWITCH_E2E_PROVIDER_ENV_FILE` | `just e2e-provider`, `just e2e-agentic` | A file of provider keys, handed to the controller as `--env-file`, and to the agentic lane's driver and judge. Leave it unset to use the CLI's own sign-in. |

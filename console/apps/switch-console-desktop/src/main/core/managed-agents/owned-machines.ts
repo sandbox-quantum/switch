@@ -31,6 +31,7 @@ export function machineProvider(report: ControllerProviderReport): MachineProvid
   return {
     provider: report.provider,
     ready: problem === null,
+    ...(report.installed && report.auth === 'unknown' ? { canAttempt: true } : {}),
     problem,
     detail: problem === null ? null : report.problem,
     loginHelps: report.loginHelps,

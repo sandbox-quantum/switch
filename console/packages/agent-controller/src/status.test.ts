@@ -10,6 +10,7 @@ import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
+import { PROVIDERS } from './providers';
 import { type AgentObservation, emptyObservation } from './runtime';
 import {
   type AgentAssignment,
@@ -312,19 +313,19 @@ describe('ProviderStatuses', () => {
     });
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(PROVIDERS.length - 1);
+    expect(changes).toBe(PROVIDERS.length);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
+    expect(runtime.probes).toBe(PROVIDERS.length - 1);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(8);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(2 * (PROVIDERS.length - 1));
+    expect(changes).toBe(PROVIDERS.length);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(6);
+    expect(changes).toBe(PROVIDERS.length + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -429,7 +430,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(3);
+    expect(runtime.probes).toBe(PROVIDERS.length - 2);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 
@@ -508,6 +509,21 @@ describe('ProviderStatuses with logins given to the machine', () => {
     expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'local' });
     expect(await statuses.givenLogin('claude')).toBeNull();
     expect(runtime.loginProbes).toEqual([]);
+  });
+
+  it('preserves the DeepSeek setup hint when no sealed login was given', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = {
+      status: 'unknown',
+      message: 'Configure and select an OpenRouter model.',
+      models: [],
+    };
+    const statuses = build(runtime);
+    expect(await statuses.check('deepseek-harness')).toMatchObject({
+      auth: 'unknown',
+      auth_problem: 'Configure and select an OpenRouter model.',
+    });
+    expect(await statuses.givenLogin('deepseek-harness')).toBeNull();
   });
 
   it('uses a given login once the provider signs in with it', async () => {
