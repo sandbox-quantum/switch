@@ -1,11 +1,13 @@
 import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import EditOutlined from "@mui/icons-material/EditOutlined";
+import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import SwapHoriz from "@mui/icons-material/SwapHoriz";
 import {
   Alert,
   Box,
   Button,
+  Card,
   Chip,
   CircularProgress,
   Link,
@@ -56,6 +58,15 @@ const STATUS_OPTIONS: FilterOption[] = (["online", "offline", "not_tracked"] as 
 
 /** Kept stable: a fresh array each render would rebuild the grid's columns. */
 const PINNED = ["actions"];
+
+/** The table's header and footer, and a row, in pixels; a page of rows. */
+const TABLE_CHROME = 108;
+const ROW = 52;
+const PAGE_SIZE = 25;
+
+/** A category, not a status: the muted fill, so it doesn't compete with the
+ *  status column for colour. */
+const NEUTRAL_CHIP_SX = { backgroundColor: "var(--sw-muted)", color: "var(--sw-foreground)" };
 
 interface Notice {
   severity: "success" | "warning" | "error";
@@ -211,8 +222,9 @@ function AgentList({
       {
         field: "connection_model",
         headerName: "Availability",
-        width: 165,
-        valueFormatter: (value) => (value ? sentenceCase(value as string) : EM_DASH),
+        width: 180,
+        renderCell: ({ value }) =>
+          value ? <Chip label={sentenceCase(value as string)} size="small" sx={NEUTRAL_CHIP_SX} /> : EM_DASH,
       },
       {
         field: "status",
@@ -233,7 +245,7 @@ function AgentList({
         field: "description",
         headerName: "Description",
         flex: 2,
-        minWidth: 140,
+        minWidth: 125,
         sortable: false,
         renderCell: ({ value }) => (
           <Box
@@ -329,17 +341,22 @@ function AgentList({
   // Two different nothings: the workspace has no agents at all, or it has
   // some and none are this member's.
   const workspaceEmpty = all.length === 0;
-  const emptyState = (
-    <Stack spacing={2} sx={{ alignItems: "center" }}>
-      <TableEmptyState
-        title={workspaceEmpty ? `No agents in ${workspace} yet` : `You don't own any agents in ${workspace}`}
-      >
-        {workspaceEmpty
-          ? "Add an agent to let it join rooms and work alongside the people in this workspace."
-          : "Add an agent of your own, or ask a workspace admin to transfer one to you."}
-      </TableEmptyState>
-      {addButton}
-    </Stack>
+  // With nothing to list there is nothing to filter, so the card stands in
+  // for the filters and the table, as the design has it.
+  const emptyCard = (
+    <Card variant="outlined" sx={{ borderRadius: "16px" }}>
+      <Stack spacing={2} sx={{ alignItems: "center", px: 3, py: 8 }}>
+        <SmartToyOutlined aria-hidden sx={{ color: "text.secondary" }} />
+        <TableEmptyState
+          title={workspaceEmpty ? `No agents in ${workspace} yet` : `You don't own any agents in ${workspace}`}
+        >
+          {workspaceEmpty
+            ? "Add an agent to let it join rooms and work alongside the people in this workspace."
+            : "Add an agent of your own, or ask a workspace admin to transfer one to you."}
+        </TableEmptyState>
+        {addButton}
+      </Stack>
+    </Card>
   );
 
   const deletingChildren = deleting ? all.filter((agent) => agent.parent_agent_id === deleting.id).length : 0;
@@ -360,18 +377,22 @@ function AgentList({
         Couldn't load the agents: {error}
       </Alert>
     );
+  } else if (rows.length === 0) {
+    body = emptyCard;
   } else {
     body = (
       <DataTable
         rows={rows}
         columns={columns}
-        fillHeight
+        // Sized to a page of rows, as the design's table is: the page
+        // scrolls, not the table, and a short list ends at its last row.
+        height={TABLE_CHROME + ROW * Math.min(rows.length, PAGE_SIZE)}
+        pageSize={PAGE_SIZE}
         noun={{ one: "agent", other: "agents" }}
         search={search}
         selectFilters={selectFilters}
         initialSort={{ field: "created_at", sort: "desc" }}
         pinnedRight={PINNED}
-        emptyState={emptyState}
         onRowClick={(params) => navigate(`/agents/${params.id}`)}
         sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
       />

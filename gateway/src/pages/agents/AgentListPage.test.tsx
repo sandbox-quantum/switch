@@ -134,6 +134,9 @@ describe("AgentListPage", () => {
 
     expect(await screen.findByText("No agents in Acme yet")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Add agent" })).toHaveLength(2);
+    // Nothing to filter or search: the card stands in for the table.
+    expect(screen.queryByRole("combobox", { name: "Type" })).toBeNull();
+    expect(screen.queryByLabelText("Search agents")).toBeNull();
   });
 
   it("tells a member who owns none of the workspace's agents that they own none", async () => {
