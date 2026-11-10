@@ -154,6 +154,18 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="deepseek-harness",
+        label="DeepSeek Harness",
+        connector_type="DeepSeek Harness CLI",
+        sign_in_command="dsh auth login",
+        tools=(
+            ToolSpec(name="shell", description="Executes shell commands"),
+            ToolSpec(name="read_file", description="Reads file contents"),
+            ToolSpec(name="write_file", description="Writes files"),
+            ToolSpec(name="edit", description="Edits existing files"),
+        ),
+    ),
 )
 
 
