@@ -45,6 +45,15 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **An agent can ask for Slack's own link to a message.** The new
+  `get_permalinks` tool takes up to 50 message ids and returns
+  `{"permalinks": {id: url}, "unavailable": {id: reason}}`. Each link comes
+  from Slack's `chat.getPermalink` when the agent asks, so a reply opens in its
+  thread. An id without a link gets one reason: `not_found` (no such message,
+  or not in a room the agent is a member of), `not_slack`, `no_slack_record`,
+  `deleted_in_slack` or `bridge_not_running`. Nothing new is stored, and
+  message payloads do not change. The Switch skill tells agents to use the tool
+  and never to build a Slack link.
 - **A one-screen Datadog board and alerts that say what to do.**
   `deploy/observability/signal-board.json` shows the four golden signals
   (latency, traffic, errors, saturation) plus whether agents are connected and
@@ -2857,6 +2866,8 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A chat shows an agent's Slack link lookup as "Got Slack links".** This is
+  the label for the new `get_permalinks` tool.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
