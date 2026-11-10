@@ -44,6 +44,8 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from tests.db_buffer import say, seed_agent, seed_room
 from tests.switch_core.bridges.collaboration.slack_fakes import FakeWebClient
+from tests.switch_core.pool_checkouts import PoolCheckouts
+from tests.switch_core.statement_counts import StatementCounts
 
 AGENT = "agent-permalinks"
 TENANT_B = "permalinks-tenant-b"
@@ -635,3 +637,36 @@ class TestShape:
 
         assert list(result["permalinks"]) == [message.transport_event_id]
         assert adapter.open_sessions_seen == [0]
+
+    async def test_db_reads_are_one_connection_and_a_fixed_statement_count(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        lifecycle: _Lifecycle,
+        pool_checkouts: PoolCheckouts,
+        statement_counts: StatementCounts,
+    ) -> None:
+        """With a cold membership cache: the tenant binding, the messages'
+        rooms, the membership, the bridge and the posts, whatever the number
+        of ids."""
+        bridge_id = await _bridge(session_factory)
+        room_id = await _room(session_factory, bridge_id=bridge_id)
+        event_ids: list[str] = []
+        for n in range(3):
+            message = await say(session_factory, room_id, f"m{n}")
+            await _posted(
+                session_factory, bridge_id, message.transport_event_id, f"C1:{n}.0"
+            )
+            event_ids.append(message.transport_event_id)
+        lifecycle.adapters[bridge_id] = _CountingAdapter()  # type: ignore[assignment]
+
+        with (
+            pool_checkouts.scope("get_permalinks") as checkouts,
+            statement_counts.scope("get_permalinks") as statements,
+        ):
+            result = await _service(session_factory, lifecycle).get_permalinks(
+                AGENT, event_ids
+            )
+
+        assert len(result["permalinks"]) == 3
+        assert checkouts.taken == 1
+        assert statements.count == 5, statements.statements
