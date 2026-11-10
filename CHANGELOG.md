@@ -111,6 +111,14 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A messaging app bridge that cannot start stops being retried at every
+  hand-over, and a retired one stops reading as crashed.** A bridge refused
+  before it runs (its host no longer resolves, say) is logged once as an error
+  with the reason and is not tried again in that process until it is edited
+  or restarted; before, every switch-core process tried it again at each
+  hand-over and logged a stack trace. A bridge whose task died and whose row
+  was then removed or deactivated no longer keeps the bridges health check
+  red until the pods restart.
 - **Managed agents no longer flip to "Connecting" every few seconds.** A
   controller from a released Switch Console calls its socket dead after 10
   seconds without a frame, and since the server pings every 10 seconds it

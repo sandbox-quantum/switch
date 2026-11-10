@@ -109,3 +109,40 @@ async def test_a_bridge_that_failed_to_start_is_tried_again_only_once_edited(
         assert attempts == [bridge_id, bridge_id]
     finally:
         await service.stop_all()
+
+
+async def test_a_crashed_bridge_is_forgotten_once_its_row_is_no_longer_active(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A bridge whose task died is out of the running set but still expected,
+    so it reads as crashed. Once its row is retired it has to stop reading so,
+    even in a process that no longer wants it, or the bridges check stays red
+    until the process restarts."""
+    bridge_id = await _bridge(session_factory)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+
+    async def crash(started_id: str, *_: object) -> None:
+        # What `_run_bridge`'s handler does with a bridge that raised.
+        service._bridges.pop(started_id, None)
+
+    service._run_bridge = crash  # type: ignore[method-assign]
+    try:
+        await service.start(bridge_id)
+        await asyncio.sleep(0)
+        assert [name for _, name in service.crashed()] == ["MM"]
+        assert not service._owned.wants(bridge_id)
+
+        async with session_factory() as session:
+            await session.execute(
+                update(CollaborationBridge)
+                .where(CollaborationBridge.id == bridge_id)
+                .values(status="inactive")
+            )
+            await session.commit()
+        await service.reconcile_all()
+
+        assert service.crashed() == []
+        assert service.expected_count() == 0
+    finally:
+        await service.stop_all()

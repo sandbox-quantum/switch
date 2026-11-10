@@ -110,6 +110,45 @@ BRIDGE_CONNECTIONS = "bridge"
 _LEARNED_CONFIG_KEYS = frozenset({"service_url", "channel_teams"})
 
 
+def _log_refusal(bridge_id: str, exc: BridgeStartRefused, *, holder: bool) -> None:
+    """Say why a bridge was refused, at the level it deserves.
+
+    An error once, from the process that holds the bridge, when it is first
+    refused from a version of its row; a quiet copy elsewhere refused for the
+    same reason says so as a warning; and a start skipped because it was
+    refused before (`_RefusedBefore`) only at debug, so a bridge that cannot
+    start is one line per holder rather than a stack trace per hand-over.
+    """
+    if isinstance(exc, _RefusedBefore):
+        logger.debug("Collaboration bridge %s not started: %s", bridge_id, exc)
+    elif holder:
+        logger.error(
+            "Collaboration bridge %s cannot start: %s. It is not tried again "
+            "here until it is edited or restarted.",
+            bridge_id,
+            exc,
+        )
+    else:
+        logger.warning(
+            "Collaboration bridge %s cannot start here: %s. The process "
+            "holding it reports the failure.",
+            bridge_id,
+            exc,
+        )
+
+
+class _RefusedBefore(BridgeStartRefused):
+    """A start not attempted, because a guard refused this bridge here before
+    from the same version of its row.
+
+    A refusal (a host that no longer resolves, a workspace that is not the
+    tenant's) does not fix itself, and nothing changed since: trying again at
+    every hand-over only logged the same failure, with a stack trace, from
+    every process, for as long as the row stayed. Edited or restarted, the
+    bridge is tried again.
+    """
+
+
 def _started_from(bridge: CollaborationBridge) -> str:
     """What a running bridge was built from, as one value: an edit made by
     another process changes it, and a re-check that finds it changed restarts
@@ -288,6 +327,10 @@ class CollaborationBridgeLifecycleService:
         # Why the last take-over of each bridge failed to start it, for
         # `register` to raise: the ownership logs the failure and goes on.
         self._failed_take_overs: dict[str, Exception] = {}
+        # The version of its row (`_started_from`) each bridge a start guard
+        # refused here was read from: not tried again here until it changes,
+        # or the bridge is restarted (`_RefusedBefore`).
+        self._refused_rows: dict[str, str] = {}
         self._external_user_store = external_user_store
         self._bridge_message_map_store = bridge_message_map_store
         self._room_store = room_store
@@ -764,6 +807,8 @@ class CollaborationBridgeLifecycleService:
                 continue
             try:
                 await self.start(bridge_id)
+            except BridgeStartRefused as exc:
+                _log_refusal(bridge_id, exc, holder=False)
             except Exception:
                 logger.exception("Failed to start bridge %s", bridge_id)
 
@@ -1128,8 +1173,14 @@ class CollaborationBridgeLifecycleService:
             # Recorded before anything can fail: a re-check started from the
             # same row does not try again what failed here, as one process
             # tried a failing bridge once until it was edited or restarted.
-            self._started_rows[bridge_id] = _started_from(bridge)
+            started_from = _started_from(bridge)
+            self._started_rows[bridge_id] = started_from
             platform = normalise_platform(bridge.type)
+            if self._refused_rows.get(bridge_id) == started_from:
+                raise _RefusedBefore(
+                    f"Bridge {bridge_id} was refused here before and has not "
+                    "changed since; edit or restart it to try again"
+                )
 
             adapter_cls = self._adapter_registry.get(bridge.type)
             config_cls = self._config_registry.get(bridge.type)
@@ -1311,6 +1362,14 @@ class CollaborationBridgeLifecycleService:
         except Exception as exc:
             self._workspace_consumers.pop(bridge_id, None)
             self._workspace_cursors.pop(bridge_id, None)
+            if isinstance(exc, _RefusedBefore):
+                # Not an attempt: reported, and counted, when it was refused.
+                self._connect_started.pop(bridge_id, None)
+                raise
+            if isinstance(exc, BridgeStartRefused):
+                refused_from = self._started_rows.get(bridge_id)
+                if refused_from is not None:
+                    self._refused_rows[bridge_id] = refused_from
             if not active:
                 # Reported by the process that holds the bridge, once.
                 self._connect_started.pop(bridge_id, None)
@@ -1695,6 +1754,8 @@ class CollaborationBridgeLifecycleService:
 
         An adapter is built from the config it was given at start, so an edit
         is inert until the bridge is rebuilt."""
+        # Asked for explicitly, so a bridge refused before is tried again.
+        self._refused_rows.pop(bridge_id, None)
         await self.stop(bridge_id, reason="restart")
         await self.start(bridge_id)
         logger.info("Restarted collaboration bridge %s", bridge_id)
@@ -1726,6 +1787,12 @@ class CollaborationBridgeLifecycleService:
         self._failed_take_overs.pop(bridge_id, None)
         try:
             await self.start(bridge_id)
+        except BridgeStartRefused as exc:
+            # Said here, once and without a stack trace, rather than raised
+            # for the ownership to log as an exception at every hand-over:
+            # the reason is the whole story. The hold is kept either way.
+            self._failed_take_overs[bridge_id] = exc
+            _log_refusal(bridge_id, exc, holder=True)
         except Exception as exc:
             self._failed_take_overs[bridge_id] = exc
             raise
@@ -1752,6 +1819,8 @@ class CollaborationBridgeLifecycleService:
                         await self._start_locked(bridge_id)
             except asyncio.CancelledError:
                 raise
+            except BridgeStartRefused as exc:
+                _log_refusal(bridge_id, exc, holder=False)
             except Exception:
                 logger.exception(
                     "Collaboration bridge %s could not start quietly here after "
@@ -1828,7 +1897,13 @@ class CollaborationBridgeLifecycleService:
                     for bridge in await self._bridge_store.get_active(session)
                     if bridge.tenant_id == tenant_id
                 )
-        bridge_ids = set(rows) | set(self._bridges) | self._owned.wanted()
+        # `_started` too: a bridge that crashed is out of `_bridges` but still
+        # counted as expected (`crashed`, `running_count`), so once its row is
+        # gone or inactive it has to be found here to be forgotten, or it reads
+        # as crashed until the process restarts.
+        bridge_ids = (
+            set(rows) | set(self._bridges) | self._owned.wanted() | self._started
+        )
         for bridge_id in sorted(bridge_ids):
             try:
                 await self._reconcile_row(bridge_id, rows.get(bridge_id))
@@ -1856,7 +1931,12 @@ class CollaborationBridgeLifecycleService:
         if self._owned.stopping:
             return
         if bridge is None or bridge.status != "active":
-            if self._owned.wants(bridge_id) or bridge_id in self._bridges:
+            self._refused_rows.pop(bridge_id, None)
+            if (
+                self._owned.wants(bridge_id)
+                or bridge_id in self._bridges
+                or bridge_id in self._started
+            ):
                 logger.info(
                     "Collaboration bridge %s was removed elsewhere; stopping it",
                     bridge_id,
@@ -2028,6 +2108,7 @@ class CollaborationBridgeLifecycleService:
         self._connect_failures.pop(bridge_id, None)
         self._connect_started.pop(bridge_id, None)
         self._failed_take_overs.pop(bridge_id, None)
+        self._refused_rows.pop(bridge_id, None)
         lock = self._bridge_locks.get(bridge_id)
         if lock is not None and not lock.locked():
             del self._bridge_locks[bridge_id]

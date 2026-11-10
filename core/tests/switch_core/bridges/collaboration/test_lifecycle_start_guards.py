@@ -9,14 +9,18 @@ starting listeners.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Mapping
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration import lifecycle_service as lifecycle_module
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.models import BridgeStartRefused
+from switch_core.db.models import CollaborationBridge
 
 from .test_lifecycle_tenant_binding import (
     _make_bridge,
@@ -133,3 +137,74 @@ async def test_is_connected_is_false_until_the_bridge_finishes_starting(
 
     assert service.is_connected(bridge_id) is True
     await service.stop_all()
+
+
+async def test_a_refused_take_over_is_said_once_and_not_tried_again_until_changed(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A bridge a guard refuses (a host that no longer resolves, say) does not
+    fix itself. Taken over again from the same row, it is not tried, and only
+    the first refusal is logged as an error, with no stack trace; a restart or
+    an edit tries it again."""
+    _, bridge_id = await _bridge(session_factory)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+    asked: list[str] = []
+
+    async def refuse(**kwargs: object) -> None:
+        asked.append(str(kwargs["bridge_id"]))
+        raise BridgeStartRefused("switch-mattermost does not resolve")
+
+    service.add_bridge_start_guard(refuse)
+    fence = object()
+
+    with caplog.at_level(logging.DEBUG, logger=lifecycle_module.__name__):
+        await service._take_over(bridge_id, fence)  # type: ignore[arg-type]
+        await service._take_over(bridge_id, fence)  # type: ignore[arg-type]
+
+    assert asked == [bridge_id]
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "does not resolve" in errors[0].getMessage()
+    assert errors[0].exc_info is None
+    # `register` still learns why its bridge could not start.
+    assert isinstance(service._failed_take_overs[bridge_id], BridgeStartRefused)
+
+    with pytest.raises(BridgeStartRefused):
+        await service.restart(bridge_id)
+    assert asked == [bridge_id, bridge_id]
+
+    async with session_factory() as session:
+        await session.execute(
+            update(CollaborationBridge)
+            .where(CollaborationBridge.id == bridge_id)
+            .values(display_name="renamed")
+        )
+        await session.commit()
+    await service._take_over(bridge_id, fence)  # type: ignore[arg-type]
+    assert asked == [bridge_id, bridge_id, bridge_id]
+
+
+async def test_a_quiet_copy_refused_after_a_hand_over_is_a_warning_not_a_trace(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _, bridge_id = await _bridge(session_factory)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+
+    async def refuse(**_: object) -> None:
+        raise BridgeStartRefused("switch-mattermost does not resolve")
+
+    service.add_bridge_start_guard(refuse)
+    service._owned.want(bridge_id)
+
+    with caplog.at_level(logging.DEBUG, logger=lifecycle_module.__name__):
+        service._start_quietly(bridge_id)
+        await asyncio.gather(*service._quiet_starts.values())
+
+    refusals = [r for r in caplog.records if "cannot start here" in r.getMessage()]
+    assert [r.levelno for r in refusals] == [logging.WARNING]
+    assert refusals[0].exc_info is None
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
