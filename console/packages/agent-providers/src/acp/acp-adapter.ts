@@ -182,10 +182,15 @@ export class AcpAdapter implements ProviderAdapter {
         prefix.legacyMessage
       );
     const binaryPath = this.options.binaryPath ?? hooks.defaultBinary;
+    const autoApprovedMcpNames = Object.keys(input.mcpServers).filter(
+      (name) => !input.connectorMcpServers.includes(name)
+    );
     const launch = await hooks.launch({
       binaryPath,
       cwd,
       env: input.env,
+      autoApprovedMcpNames,
+      mcpServers: input.mcpServers,
     });
     const client = new StdioJsonRpcClient({
       ...launch,
@@ -209,9 +214,7 @@ export class AcpAdapter implements ProviderAdapter {
       context: input.systemContext ?? '',
       runtimeMode: input.runtimeMode,
       mcpNames: new Set(Object.keys(input.mcpServers)),
-      autoApprovedMcpNames: new Set(
-        Object.keys(input.mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
-      ),
+      autoApprovedMcpNames: new Set(autoApprovedMcpNames),
       toolServers: new Map(),
       prompt: {},
       configOptions: [],

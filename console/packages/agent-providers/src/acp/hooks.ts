@@ -1,4 +1,4 @@
-import type { ProviderCapabilities, RuntimeMode } from '../adapter';
+import type { McpServerSpec, ProviderCapabilities, RuntimeMode } from '../adapter';
 import type {
   ApprovalDecision,
   ItemType,
@@ -34,6 +34,10 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /** Session-owned MCP servers whose tools require no approval. Absent during sign-in checks. */
+  autoApprovedMcpNames?: readonly string[];
+  /** The session's MCP transports, absent during sign-in checks. */
+  mcpServers?: Readonly<Record<string, McpServerSpec>>;
 }
 
 /**

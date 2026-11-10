@@ -84,6 +84,25 @@ it('runs a provider from nothing but its launch hook, with no sign-in or mode ca
   expect(server.received.map((m) => m.method)).toEqual(['initialize', 'session/new']);
 });
 
+it('passes only session-owned MCP names to the launch hook', async () => {
+  agent.capabilities = { mcpCapabilities: { http: true } };
+  const launch = vi.fn(dummy.launch);
+  const { adapter } = await start(
+    { ...dummy, launch },
+    {
+      mcpServers: {
+        switch: { transport: 'http', url: 'http://127.0.0.1:8000/mcp' },
+        connector: { transport: 'http', url: 'http://127.0.0.1:8001/mcp' },
+      },
+      connectorMcpServers: ['connector'],
+    }
+  );
+  expect(launch).toHaveBeenCalledWith(
+    expect.objectContaining({ autoApprovedMcpNames: ['switch'] })
+  );
+  await adapter.stopAll();
+});
+
 it('resumes with session/load when the agent advertises it, and session/resume otherwise', async () => {
   agent.capabilities = { loadSession: true, sessionCapabilities: { resume: {} } };
   const loaded = await start(dummy, { resume: { nativeSessionId: 'saved' } });
