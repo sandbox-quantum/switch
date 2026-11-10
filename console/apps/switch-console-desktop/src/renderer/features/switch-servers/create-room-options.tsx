@@ -119,13 +119,15 @@ function ExistingChannelId({
  * What a room can be made with that is easy to change afterwards, in its
  * Configuration tab: its group and who may see and change it. Shut until
  * opened, its row saying what each is set to so the defaults are never a
- * surprise — no group, open to the workspace.
+ * surprise — no group, and open to the workspace for a room on a messaging
+ * app or private to those taking part for a Switch Console chat.
  */
 export function CreateRoomOptions({
   workspaceId,
   value,
   onChange,
   administersWorkspace,
+  bridged,
 }: {
   workspaceId: string | null;
   value: RoomCreateOptions;
@@ -136,6 +138,11 @@ export function CreateRoomOptions({
    * else the room is made with none and the group is not offered.
    */
   administersWorkspace: boolean;
+  /**
+   * Whether the room is on a messaging app. A Switch Console chat is made
+   * private unless asked otherwise, and has no channel for access to differ from.
+   */
+  bridged: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const groups = useQuery({
@@ -151,7 +158,7 @@ export function CreateRoomOptions({
       ? null
       : ((groups.data ?? []).find((group) => group.id === value.groupId)?.name ??
         (groups.isError ? 'unknown (the groups could not be read)' : 'loading…'));
-  const access = value.access ?? 'public';
+  const access = value.access ?? (bridged ? 'public' : 'private');
 
   return (
     <div className="flex flex-col gap-4">
@@ -214,9 +221,9 @@ export function CreateRoomOptions({
               </SelectContent>
             </Select>
             <span className="text-xs text-foreground-muted">
-              Who can see the room in Switch and change its settings, members and resources. It does
-              not decide who can read or post in the channel. Both can be changed later in the
-              room’s Configuration.
+              {bridged
+                ? 'Who can see the room in Switch and change its settings, members and resources. It does not decide who can read or post in the channel. Both can be changed later in the room’s Configuration.'
+                : 'Who can see the room in Switch and change its settings, members and resources. It can be changed later in the room’s Configuration.'}
             </span>
           </Field>
         </>

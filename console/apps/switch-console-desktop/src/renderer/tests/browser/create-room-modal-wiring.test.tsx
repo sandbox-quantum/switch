@@ -2,7 +2,8 @@
  * The New room dialog end to end, short of the server: what it sends for a
  * room on a messaging app, that an existing channel needs an id of its app's
  * shape before Create, that switching app starts the channel choice again,
- * and that a Switch Console room is made as a chat, without the options.
+ * and that a Switch Console room is made as a chat, with the room's own
+ * settings but no channel.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -234,6 +235,33 @@ describe('New room dialog', () => {
     expect(rpcMock.workspaces.createRoom).not.toHaveBeenCalled();
     expect(rpcMock.chats.create).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'design-review', kind: 'group' })
+    );
+    expect(rpcMock.chats.create.mock.calls[0][0]).not.toHaveProperty('channel');
+  });
+
+  it('makes a Switch Console chat with its description and instructions', async () => {
+    const host = await render();
+    await typeInto(host.querySelector<HTMLInputElement>('#new-room-name')!, 'design-review');
+    await typeInto(host.querySelector<HTMLInputElement>('#new-room-description')!, ' Reviews ');
+    const instructions = host.querySelector<HTMLTextAreaElement>('#new-room-instructions')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(
+        instructions,
+        'Be brief.'
+      );
+      instructions.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(host.textContent).toContain('More options');
+
+    await act(async () => createButton(host).click());
+    expect(rpcMock.chats.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'design-review',
+        description: 'Reviews',
+        instructions: 'Be brief.',
+        groupId: null,
+        access: null,
+      })
     );
   });
 });

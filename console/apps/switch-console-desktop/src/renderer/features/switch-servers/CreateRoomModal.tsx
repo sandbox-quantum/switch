@@ -64,7 +64,9 @@ type Props = BaseModalProps<{ roomId: string }> & CreateRoomModalArgs;
 /**
  * A new room: its name, then who is in it — agents and people found in one
  * field — and, when the server has a messaging app that can make channels,
- * where it lives. Switch Console is the default and needs no app.
+ * where it lives. Switch Console is the default and needs no app. Either way
+ * it can be made with its description, instructions, group and access; only
+ * a room on a messaging app has a channel to choose.
  */
 export const CreateRoomModal = observer(function CreateRoomModal({
   serverId: overrideServerId,
@@ -109,9 +111,14 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     queryFn: () => rpc.chats.workspaceMembers({ serverId, tenantId: tenantId as string }),
     enabled: tenantId !== null,
   });
+  // Only an admin files a room in a group; for anyone else it is made with none.
+  const administers = workspaceId !== null && administersWorkspaceById(workspaceId);
+  // A group's rules can admit an agent there and nowhere else, so the agents
+  // offered follow the group chosen.
+  const candidateGroupId = administers ? options.groupId : null;
   const allowedQuery = useQuery({
-    queryKey: ['chat-agent-candidates', serverId, workspaceId, null],
-    queryFn: () => rpc.chats.agentCandidates({ serverId, roomId: null }),
+    queryKey: ['chat-agent-candidates', serverId, workspaceId, null, candidateGroupId],
+    queryFn: () => rpc.chats.agentCandidates({ serverId, roomId: null, groupId: candidateGroupId }),
     enabled: serverId !== '',
   });
   const managedQuery = useManagedAgents(serverId || null);
@@ -181,8 +188,6 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   };
   // A choice the chosen app does not offer (a private channel on Teams, say)
   // falls back to a new public channel rather than being sent and refused.
-  const administers = workspaceId !== null && administersWorkspaceById(workspaceId);
-  // Only an admin files a room in a group; for anyone else it is made with none.
   const bridgeOptions = optionsForBridge(options, selectedBridge);
   const roomOptions = administers ? bridgeOptions : { ...bridgeOptions, groupId: null };
   const agentIds = shownPicked.filter((each) => each.kind === 'agent').map((each) => each.id);
@@ -228,7 +233,13 @@ export const CreateRoomModal = observer(function CreateRoomModal({
         instructions,
         agentIds,
         memberUserIds,
-        requestId: requestIds.for({ bridgeId, name, agentIds, memberUserIds }),
+        requestId: requestIds.for({
+          bridgeId,
+          name,
+          agentIds,
+          memberUserIds,
+          settings: [description.trim(), instructions.trim(), roomOptions],
+        }),
         options: roomOptions,
       });
       if (request.kind === 'chat') {
@@ -356,8 +367,8 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             />
           )}
 
-          {/* A bridged room's own settings; a Switch Console room has none to start with. */}
-          {selectedBridge && (
+          {/* The room's own settings, wherever it lives. */}
+          {!nowhere && (
             <>
               <Field>
                 <FieldLabel htmlFor="new-room-description">Description (optional)</FieldLabel>
@@ -384,6 +395,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
               <CreateRoomOptions
                 workspaceId={workspaceId}
                 administersWorkspace={administers}
+                bridged={selectedBridge !== null}
                 value={roomOptions}
                 onChange={(next) => {
                   setOptions(next);
