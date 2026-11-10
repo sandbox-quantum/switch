@@ -549,6 +549,8 @@ class TestAdvertisedResource:
             "https://mcp.example.test/v1",
             "https://mcp.example.test",
             "https://MCP.EXAMPLE.TEST/v1",
+            "https://mcp.example.test:443/v1/mcp",
+            "https://mcp.example.test:443",
         ],
     )
     async def test_accepts_a_resource_that_covers_the_server(
@@ -562,6 +564,11 @@ class TestAdvertisedResource:
         [
             "https://api.other.example/v1/mcp",
             "https://mcp.example.test:8443/v1/mcp",
+            "https://mcp.example.test:0/v1/mcp",
+            "https://mcp.example.test:99999/v1/mcp",
+            f"{MCP_URL}?tenant=1",
+            f"{MCP_URL}?",
+            f"{MCP_URL}#part",
             f"{MCP_URL}2",
             "https://mcp.example.test/v1/mc",
             f"{MCP_URL}/tools",

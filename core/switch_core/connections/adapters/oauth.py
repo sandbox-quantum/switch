@@ -246,13 +246,25 @@ def _resource_covers(resource: str, url: str) -> bool:
     server. So this takes the MCP Python SDK's rule: same origin, and a path
     prefix on a segment boundary. A live test on 2026-11-09 showed that
     Airtable ignores `resource`, so the origin works for it.
+
+    RFC 8707 forbids a fragment, and Core takes no query either.
     """
+    if "?" in resource or "#" in resource:
+        return False
     advertised = urlsplit(resource)
     server = urlsplit(url)
-    if (advertised.scheme.lower(), advertised.netloc.lower()) != (
-        server.scheme.lower(),
-        server.netloc.lower(),
-    ):
+    try:
+        origins = [
+            (
+                parts.scheme.lower(),
+                parts.hostname,
+                443 if parts.port is None else parts.port,
+            )
+            for parts in (advertised, server)
+        ]
+    except ValueError:
+        return False
+    if origins[0] != origins[1] or origins[0][0] != "https":
         return False
     return f"{server.path.rstrip('/')}/".startswith(f"{advertised.path.rstrip('/')}/")
 
