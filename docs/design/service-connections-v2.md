@@ -453,20 +453,27 @@ Then:
 entry names this tool or a `url` for an authenticated JSON GET, never both.
 Entries without `mcp_tool` keep their REST identity.
 
-Before Core calls the tool, it checks four things:
+Before Core calls the tool, it checks these things:
 
 - Exactly one tool on the server has the name.
 - The tool has `readOnlyHint: true`.
 - Its `inputSchema` has `type: object`.
-- A JSON Schema validator accepts `{}` against that schema. The validator has
-  an empty registry, so Core never fetches a remote `$ref`.
+- The `inputSchema` holds no `$ref`, `$dynamicRef` or `$recursiveRef` at any
+  depth, and its JSON is 64 KiB or less.
+- A JSON Schema validator accepts `{}` against that schema.
+
+A reference can make the validator's work grow exponentially, and that work
+blocks Core's event loop. Without references, the work grows only with the
+size of the schema.
 
 The validator only shows that `{}` is valid. It does not show that the tool
 only reads. That rests on `readOnlyHint: true` and on the catalog review of
 the tool an entry names. The MCP specification calls tool annotations
 untrusted.
 
-Core calls the tool with `{}`. The result must be one JSON object, from
+Core calls the tool with `{}`. Core does not check the result against the
+tool's `outputSchema`, because the MCP SDK's check can fetch a remote `$ref`.
+Core's own checks apply instead. The result must be one JSON object, from
 `structuredContent` or from one text block. Each `account_id` path must give
 one non-empty string or integer. Missing ids, arrays and results with several
 accounts fail sign-in. Core never picks the first account.
@@ -485,24 +492,42 @@ The identity call has these limits:
 - 64 KiB for the tool's result.
 - No redirects, and no compressed responses.
 
-A failure names one reason code: `tool_not_found`, `not_read_only`,
-`needs_arguments`, `tool_error`, `bad_result` or `protocol_error`. A response
-over a limit gives `bad_result`. The message is fixed text and never holds
-vendor text. If the MCP server answers 401, the person must reconnect. After
-a timeout, a 429, a 5xx or a network error, the person can try again.
+The identity call reaches only the addresses that Core's outbound policy
+allows. So a self-hosted MCP server on a private address must be listed in
+`OUTBOUND_ALLOWED_PRIVATE_HOSTS`.
+
+A failure of the tool checks or of the result names one reason code:
+`tool_not_found`, `not_read_only`, `needs_arguments`, `tool_error`,
+`bad_result` or `protocol_error`. A response over a limit gives `bad_result`.
+An answer that is not valid MCP, or a redirect, gives `protocol_error`.
+
+Other failures have no reason code:
+
+- A 401 from the MCP server. The person must reconnect.
+- A timeout, a 429, a 5xx, a network error or a host that does not resolve.
+  The person can try again.
+- Any other 4xx. The message gives the status, for example "would not say
+  whose sign-in this is (HTTP 403)".
+- An MCP server address that the outbound policy refuses.
+- A Core HTTP client that is not held to the outbound policy. Core then sends
+  no request.
+
+Every message is fixed text and never holds vendor text.
 
 Core drops the vendor's log notifications. While the call runs, Core replaces
 each log record from the MCP SDK with a fixed line.
 
 For a server whose OAuth endpoints Core discovers, Core reads `resource` from
 the protected-resource metadata. If the metadata names none, Core uses the
-configured MCP URL. Core accepts the value only on the MCP URL's scheme, host
-and port. Its path must be the MCP URL's path, or a parent path on a segment
-boundary. So `/v1` covers `/v1/mcp`, but `/mcp` does not cover `/mcp2`.
-Otherwise sign-in fails before Core reads the metadata's authorization
-servers. This is the MCP Python SDK's rule. RFC 9728 §3.3 wants an exact
-match, but Airtable advertises its origin for its `/mcp` server. Core sends the accepted
-value in the authorization request, the code exchange and every refresh.
+configured MCP URL. Core accepts the value only if it has the MCP URL's
+scheme (https), host and port. A URL without a port has port 443. The value
+must have no query and no fragment. Its path must be the MCP URL's path, or a
+parent path on a segment boundary. So `/v1` covers `/v1/mcp`, but `/mcp` does
+not cover `/mcp2`. Otherwise sign-in fails before Core reads the metadata's
+authorization servers. This is the MCP Python SDK's rule. RFC 9728 §3.3 wants
+an exact match, but Airtable advertises its origin for its `/mcp` server. Core
+sends the accepted value in the authorization request, the code exchange and
+every refresh.
 
 `access.unscoped: true` is only for vendors that advertise and document no
 OAuth scopes. The catalog entry must cite that evidence in a YAML comment.
