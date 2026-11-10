@@ -830,7 +830,7 @@ class CollaborationCore:
             # A refusal that needs a person (a handle taken in the workspace)
             # comes back on every bridge start: a warning the first time this
             # process sees it, debug after that.
-            seen = (self._bridge_type, name, str(exc))
+            seen = (self._bridge_id, name, str(exc))
             first = seen not in _IDENTITY_FAILURES_SEEN
             if first:
                 any_new = True

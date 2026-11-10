@@ -427,7 +427,7 @@
     "name": "[Switch] switch-core is logging a burst of errors",
     "type": "log alert",
     "query": "logs(\"service:switch-core env:pilot status:error\").index(\"*\").rollup(\"count\").last(\"15m\") > 25",
-    "message": "{{#is_alert}}switch-core logged more than 50 errors in 15 minutes, far above its usual handful. Something that is not covered by the other alerts is failing.\n\n**Check:** the pattern list on the signal board's \"Digging into error logs\" section shows which message it is.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list, section \"Digging into error logs\".{{/is_alert}}{{#is_recovery}}Recovered: switch-core is logging a burst of errors.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "message": "{{#is_alert}}switch-core logged more than 25 errors in 15 minutes, far above its usual handful. Something that is not covered by the other alerts is failing.\n\n**Check:** the pattern list on the signal board's \"Digging into error logs\" section shows which message it is.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list, section \"Digging into error logs\".{{/is_alert}}{{#is_recovery}}Recovered: switch-core is logging a burst of errors.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
       "team:switch",
@@ -463,7 +463,7 @@
       "require_full_window": false,
       "include_tags": true,
       "thresholds": {
-        "critical": 300
+        "critical": 450
       }
     },
     "priority": 3

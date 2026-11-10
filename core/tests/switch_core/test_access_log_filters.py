@@ -57,6 +57,8 @@ def test_successful_routine_polls_are_dropped(method: str, target: str, status: 
         ("GET", f"/v1/management/controllers/{CONTROLLER}/assignment", 401),
         ("GET", "/health/ready", 503),
         ("GET", "/gateway/management/agents", 403),
+        ("GET", "/agents/a1/events?timeout=30", 500),
+        ("GET", "/gateway/rooms/r1/room-history?limit=50", 502),
         # Anything not on the list, successful or not.
         ("POST", f"/v1/controllers/{CONTROLLER}/connection", 201),
         ("GET", "/gateway/rooms", 200),

@@ -61,3 +61,17 @@ def test_opened_adopted_and_taken_over_are_counted(registry):
         (("event", "taken_over"), ("reason", "none")): 1,
         (("event", "adopted"), ("reason", "none")): 1,
     }
+
+
+def test_a_connection_replaced_in_this_process_counts_as_taken_over(registry):
+    presence = AgentConnectionRegistry().controllers
+    first = presence.open(
+        controller_id=CONTROLLER, tenant_id=TENANT_ZERO_ID, resume_cursors={}
+    )
+    presence.attach_stream(first)
+    presence.open(controller_id=CONTROLLER, tenant_id=TENANT_ZERO_ID, resume_cursors={})
+
+    assert _counts(registry) == {
+        (("event", "opened"), ("reason", "none")): 2,
+        (("event", "taken_over"), ("reason", "none")): 1,
+    }

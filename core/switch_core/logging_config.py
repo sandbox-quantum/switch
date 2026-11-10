@@ -176,14 +176,14 @@ class RoutineAccessFilter(logging.Filter):
         _client, _method, target, _version, status = record.args
         if not isinstance(target, str):
             return True
-        if any(marker in target for marker in _QUIET_ALWAYS):
-            return False
         try:
             code = int(status)
         except (TypeError, ValueError):
             return True
         if not (200 <= code < 300 or code == 304):
             return True
+        if any(marker in target for marker in _QUIET_ALWAYS):
+            return False
         path = target.partition("?")[0]
         return not any(pattern.match(path) for pattern in _ROUTINE_POLLS)
 

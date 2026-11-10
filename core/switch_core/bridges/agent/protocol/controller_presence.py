@@ -563,7 +563,6 @@ class ControllerPresence:
         previous = self._connections.pop(controller_id, None)
         if previous is not None:
             self._take_over(previous)
-            _count_connection("taken_over")
             logger.debug(
                 "[CONTROLLER] controller=%s connection=%s taken over through "
                 "another process",
@@ -572,6 +571,7 @@ class ControllerPresence:
             )
 
     def _take_over(self, previous: ControllerConnection) -> None:
+        _count_connection("taken_over")
         previous.closure = TAKEN_OVER
         self._record_disconnected(previous, TAKEN_OVER.code)
         previous.stream_attached = False
