@@ -2486,7 +2486,13 @@ class SlackAdapter(PlatformAdapter):
                 result = await self._web_client.chat_getPermalink(
                     channel=channel, message_ts=ts
                 )
-                permalink: str = result["permalink"]
+                permalink = result.get("permalink")
+                if not isinstance(permalink, str) or not permalink.startswith(
+                    "https://"
+                ):
+                    raise ValueError(
+                        f"Slack gave no https permalink for {external_post_id!r}"
+                    )
                 return permalink
             except SlackApiError as e:
                 error = e.response.get("error")

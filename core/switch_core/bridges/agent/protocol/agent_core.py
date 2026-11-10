@@ -2971,8 +2971,8 @@ class AgentCore:
             except NotImplementedError:
                 unavailable[event_id] = PermalinkUnavailable.NOT_SLACK
             except Exception as exc:
-                # The platform's error code only: its full text can carry the
-                # response, and none of it is for the agent.
+                # A platform error code says enough, and the error's full text
+                # carries the response. Anything else needs its traceback.
                 response: Any = getattr(exc, "response", None)
                 code = response.get("error") if hasattr(response, "get") else None
                 logger.warning(
@@ -2980,6 +2980,7 @@ class AgentCore:
                     event_id,
                     bridge_id,
                     code or type(exc).__name__,
+                    exc_info=not code,
                 )
                 unavailable[event_id] = PermalinkUnavailable.BRIDGE_NOT_RUNNING
 

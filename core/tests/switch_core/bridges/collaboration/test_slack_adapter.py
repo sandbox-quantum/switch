@@ -1463,6 +1463,22 @@ def test_message_permalink_second_rate_limit_is_raised(
     assert len(client.permalink_calls) == 2
 
 
+@pytest.mark.parametrize(
+    "permalink",
+    ["http://example.slack.com/archives/C1/p1712", "javascript:alert(1)", None, 42],
+)
+def test_message_permalink_that_is_not_https_raises(permalink: object) -> None:
+    adapter, client = _permalink_adapter()
+
+    async def get_permalink(*, channel: str, message_ts: str) -> FakeResponse:
+        return FakeResponse({"ok": True, "permalink": permalink})
+
+    client.chat_getPermalink = get_permalink  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="https"):
+        _run(adapter.message_permalink("C1:171.2"))
+
+
 def test_message_permalink_without_client_raises() -> None:
     adapter = _adapter()
 

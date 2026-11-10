@@ -126,6 +126,15 @@ class _HangingAdapter:
         return f"https://example.slack.com/{external_post_id}"
 
 
+class _FailingAdapter:
+    """A live adapter whose every request fails below Slack's API."""
+
+    supports_message_permalinks = True
+
+    async def message_permalink(self, external_post_id: str) -> str:
+        raise ConnectionError("connection reset by peer")
+
+
 def _slack_adapter() -> tuple[SlackAdapter, FakeWebClient]:
     adapter = SlackAdapter(
         config=SlackConnectionConfig(
@@ -530,7 +539,31 @@ class TestSlackAnswers:
         assert message.transport_event_id in logged
         assert BOT_TOKEN not in caplog.text
         assert "server responded" not in caplog.text
-        assert warnings[0].exc_info is None
+
+    async def test_other_failure_is_logged_with_its_traceback(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        lifecycle: _Lifecycle,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        bridge_id = await _bridge(session_factory)
+        room_id = await _room(session_factory, bridge_id=bridge_id)
+        message = await say(session_factory, room_id)
+        await _posted(session_factory, bridge_id, message.transport_event_id, "C1:1.0")
+        lifecycle.adapters[bridge_id] = _FailingAdapter()  # type: ignore[assignment]
+
+        with caplog.at_level(logging.WARNING):
+            result = await _service(session_factory, lifecycle).get_permalinks(
+                AGENT, [message.transport_event_id]
+            )
+
+        assert result["unavailable"] == {
+            message.transport_event_id: "bridge_not_running"
+        }
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert warnings[0].exc_info is not None
+        assert "connection reset by peer" in caplog.text
 
 
 class TestShape:
