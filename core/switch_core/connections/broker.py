@@ -87,7 +87,10 @@ from switch_core.db.stores.service_connection_store import (
     ServiceConnectionBusy,
     ServiceConnectionStore,
 )
-from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
+from switch_core.db.stores.workspace_service_store import (
+    ServiceSwitch,
+    WorkspaceServiceStore,
+)
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import SERVICE_TOKEN_REQUESTS
 from switch_core.observability.metrics import metrics
@@ -178,8 +181,8 @@ def organization_locked(name: str, enabled: bool) -> str:
     locked it on or off. What agents and the dashboard both say."""
     return (
         f"Your organization has {name} locked {'on' if enabled else 'off'} for its "
-        "workspaces. An organization admin can change it under Organization, "
-        "Services."
+        "workspaces. An organization admin can change it in your organization's "
+        "connector settings."
     )
 
 
@@ -594,6 +597,17 @@ class ServiceBroker:
         if not self._workspace_gate:
             return set()
         return await self._workspace_services.disabled_services(
+            session, self._catalog, organizations=self._organization_settings
+        )
+
+    async def workspace_switches(
+        self, session: AsyncSession
+    ) -> dict[str, ServiceSwitch] | None:
+        """Every service's switch in this workspace, and whose say it is;
+        None with the gate off, where every service counts as on."""
+        if not self._workspace_gate:
+            return None
+        return await self._workspace_services.switches(
             session, self._catalog, organizations=self._organization_settings
         )
 
@@ -2083,6 +2097,29 @@ class ServiceBroker:
         service allows it. Returns a warning naming whatever could not be
         revoked.
         """
+        return await self._end_connection(
+            session, user_id, service, actor_id=user_id, revoked_by_admin=False
+        )
+
+    async def revoke_connection(
+        self, session: AsyncSession, actor_id: str, user_id: str, service: str
+    ) -> str | None:
+        """A workspace admin ends `user_id`'s connection, as its owner's
+        disconnect does: its grants go, and what was issued is revoked. The
+        caller has checked that `actor_id` administers the workspace."""
+        return await self._end_connection(
+            session, user_id, service, actor_id=actor_id, revoked_by_admin=True
+        )
+
+    async def _end_connection(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        service: str,
+        *,
+        actor_id: str,
+        revoked_by_admin: bool,
+    ) -> str | None:
         name = self._entry(service).definition.name
         removed = await self._remove_connection(session, user_id, service)
         if removed is None:
@@ -2095,8 +2132,10 @@ class ServiceBroker:
         await record_audit_event(
             session,
             tenant_id=require_tenant_id(),
-            actor_user_id=user_id,
-            action=AuditAction.SERVICE_DISCONNECTED,
+            actor_user_id=actor_id,
+            action=AuditAction.SERVICE_CONNECTION_REVOKED
+            if revoked_by_admin
+            else AuditAction.SERVICE_DISCONNECTED,
             target_type="user",
             target_id=user_id,
             details={"service": service},

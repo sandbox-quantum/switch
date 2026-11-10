@@ -251,6 +251,7 @@ class TestResults:
             "name": "Datadog",
             "enabled": on_by_default,
             "organization_locked": False,
+            "decided_by": "default",
             "updated_by_name": None,
             "workspace_set": False,
             "updated_at": None,

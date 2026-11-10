@@ -277,6 +277,13 @@
       ]
     },
     {
+      "route": "DELETE /gateway/service-connections/{service}/people/{user_id}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
       "route": "DELETE /gateway/templates/{template_id}",
       "auth": "session",
       "flags": []
@@ -888,6 +895,13 @@
     },
     {
       "route": "GET /gateway/service-connections/{service}/flows/{flow_id}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/service-connections/{service}/workspace",
       "auth": "session",
       "flags": [
         "service_connections"

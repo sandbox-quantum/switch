@@ -27,7 +27,7 @@ from typing import Annotated, Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.app_checks import (
@@ -52,6 +52,7 @@ from switch_core.db.models import (
     OrganizationAppCredential,
     ServiceAppCredential,
     ServiceConnection,
+    ServiceGrant,
     ServiceOAuthClient,
     Tenant,
     User,
@@ -92,31 +93,71 @@ class SaveApp(BaseModel):
 
 
 @dataclass(frozen=True)
+class Connected:
+    """One connection to a service: its workspace and status, the client it
+    was made through (None for one recorded before clients were), and how
+    many of its owner's agents are granted it."""
+
+    tenant_id: str
+    status: str
+    client_id: str | None
+    grants: int
+
+
+@dataclass(frozen=True)
+class Reach:
+    """Live connections a change touches: the people they belong to, one
+    connection each, the workspaces those are in, and the agents' grants
+    that rely on them."""
+
+    people: int
+    workspaces: int
+    agent_grants: int
+
+    @classmethod
+    def of(cls, connections: list[Connected]) -> Reach:
+        return cls(
+            people=len(connections),
+            workspaces=len({connection.tenant_id for connection in connections}),
+            agent_grants=sum(connection.grants for connection in connections),
+        )
+
+    def body(self) -> dict[str, int]:
+        return {
+            "connected_members": self.people,
+            "workspaces": self.workspaces,
+            "agent_grants": self.agent_grants,
+        }
+
+
+@dataclass(frozen=True)
 class Usage:
     """The connections a service has across every workspace."""
 
-    # (tenant, status, recorded client) for each connection.
-    rows: list[tuple[str, str, str | None]]
+    rows: list[Connected]
 
-    def through(self, client_id: str | None) -> tuple[int, int]:
-        """People and workspaces whose live connection goes through
-        `client_id`; one recorded before clients were is taken to."""
-        affected = [
-            tenant
-            for tenant, status, recorded in self.rows
-            if status == "active" and (recorded is None or recorded == client_id)
-        ]
-        return len(affected), len(set(affected))
+    def through(self, client_id: str | None) -> Reach:
+        """Live connections that go through `client_id`; one recorded before
+        clients were is taken to."""
+        return Reach.of(
+            [
+                row
+                for row in self.rows
+                if row.status == "active"
+                and (row.client_id is None or row.client_id == client_id)
+            ]
+        )
 
-    def not_through(self, proposed: str, current: str | None) -> tuple[int, int]:
-        """People and workspaces who must reconnect if `proposed` replaces
-        `current`."""
-        affected = [
-            tenant
-            for tenant, status, recorded in self.rows
-            if status == "active" and (recorded or current) != proposed
-        ]
-        return len(affected), len(set(affected))
+    def not_through(self, proposed: str, current: str | None) -> Reach:
+        """Live connections whose people must reconnect if `proposed`
+        replaces `current`."""
+        return Reach.of(
+            [
+                row
+                for row in self.rows
+                if row.status == "active" and (row.client_id or current) != proposed
+            ]
+        )
 
     def stale(self, current: str | None) -> int:
         """Connections made through an app this server no longer uses."""
@@ -124,8 +165,8 @@ class Usage:
             return 0
         return sum(
             1
-            for _, _, recorded in self.rows
-            if recorded is not None and recorded != current
+            for row in self.rows
+            if row.client_id is not None and row.client_id != current
         )
 
 
@@ -133,7 +174,7 @@ class Usage:
 class Usages:
     """Every service's connections across some workspaces."""
 
-    rows: dict[str, list[tuple[str, str, str | None]]]
+    rows: dict[str, list[Connected]]
 
     def of(self, service: str) -> Usage:
         return Usage(self.rows.get(service, []))
@@ -149,7 +190,7 @@ async def usages_in(
     time, each bound before it is touched. With `leave_out_organization_apps`,
     a workspace's connections to a service its organization saved its own app
     for are left out: they never went through the server's."""
-    rows: dict[str, list[tuple[str, str, str | None]]] = {}
+    rows: dict[str, list[Connected]] = {}
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             own: set[str] = set()
@@ -170,11 +211,28 @@ async def usages_in(
                     ServiceConnection.service,
                     ServiceConnection.status,
                     ServiceConnection.oauth_client_id,
-                ).where(ServiceConnection.tenant_id == tenant_id)
+                    func.count(ServiceGrant.id),
+                )
+                .outerjoin(
+                    ServiceGrant,
+                    and_(
+                        ServiceGrant.tenant_id == ServiceConnection.tenant_id,
+                        ServiceGrant.owner_id == ServiceConnection.user_id,
+                        ServiceGrant.service == ServiceConnection.service,
+                    ),
+                )
+                .where(ServiceConnection.tenant_id == tenant_id)
+                .group_by(
+                    ServiceConnection.tenant_id,
+                    ServiceConnection.user_id,
+                    ServiceConnection.service,
+                )
             )
-            for service, status, client in result:
+            for service, status, client, grants in result:
                 if service not in own:
-                    rows.setdefault(service, []).append((tenant_id, status, client))
+                    rows.setdefault(service, []).append(
+                        Connected(tenant_id, status, client, grants)
+                    )
     return Usages(rows)
 
 
@@ -297,6 +355,7 @@ class SavedApp:
 
     client_id: str
     settings: dict[str, Any]
+    created_at: datetime
     updated_at: datetime
     updated_by_name: str | None
 
@@ -311,6 +370,7 @@ async def saved_app(
     return SavedApp(
         client_id=row.client_id,
         settings=dict(row.settings),
+        created_at=row.created_at,
         updated_at=row.updated_at,
         updated_by_name=None if author is None else author.name,
     )
@@ -335,7 +395,7 @@ def entry_body(
     """One service's app as a connector-apps page shows it, the server's or
     an organization's: one shape, read by one set of cards. `current` is the
     client in use, if any; `shown` the values whose secrets are described."""
-    people, workspaces = usage.through(current) if current is not None else (0, 0)
+    reach = usage.through(current) if current is not None else Reach(0, 0, 0)
     settings = (
         shown.settings
         if shown is not None
@@ -373,10 +433,10 @@ def entry_body(
             if spec.kind == "github_app" and slug
             else None
         ),
+        "created_at": None if saved is None else saved.created_at.isoformat(),
         "updated_by_name": None if saved is None else saved.updated_by_name,
         "updated_at": None if saved is None else saved.updated_at.isoformat(),
-        "connected_members": people,
-        "workspaces": workspaces,
+        **reach.body(),
         "stale_connections": usage.stale(current),
     }
 
@@ -847,10 +907,9 @@ async def connector_app_impact(
     app_spec(apps, service)
     values = apps.effective(service).values
     usage = (await _usages(session_factory, organization_apps)).of(service)
-    people, workspaces = usage.not_through(
+    return usage.not_through(
         client_id, None if values is None else values.client_id
-    )
-    return {"connected_members": people, "workspaces": workspaces}
+    ).body()
 
 
 @router.delete("/{service}")
@@ -883,9 +942,9 @@ async def remove_connector_app(
     await apps.apply(service, broker=broker, state=request.app.state)
     apps.announce(service)
     logger.warning("The operator removed %s's app: user=%s", spec.name, admin.id)
-    people, workspaces = (
+    return (
         (await _usages(session_factory, organization_apps))
         .of(service)
         .through(removed.client_id)
+        .body()
     )
-    return {"connected_members": people, "workspaces": workspaces}

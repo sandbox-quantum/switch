@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Literal
 
 from sqlalchemy import Text, and_, column, delete, func, literal, select, values
 from sqlalchemy.dialects.postgresql import insert
@@ -29,14 +30,20 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 
+# Whose say a service's switch in a workspace comes from: its organization's
+# setting (locked, or unlocked where the workspace set none), the workspace
+# admin's own, or the workspace's default.
+DecidedBy = Literal["organization", "workspace", "default"]
+
 
 @dataclass(frozen=True)
 class ServiceSwitch:
-    """Whether a service is on in the workspace, and whether its organization
-    locked it so, out of the workspace admin's reach."""
+    """Whether a service is on in the workspace, whether its organization
+    locked it so, out of the workspace admin's reach, and whose say it is."""
 
     enabled: bool
     locked: bool
+    decided_by: DecidedBy
 
 
 @dataclass(frozen=True)
@@ -53,12 +60,16 @@ def resolve(
     """The first of: the organization's setting, if locked; the workspace's
     own; the organization's, unlocked; the workspace's default."""
     if organization is not None and organization.locked:
-        return ServiceSwitch(organization.enabled, locked=True)
+        return ServiceSwitch(
+            organization.enabled, locked=True, decided_by="organization"
+        )
     if own is not None:
-        return ServiceSwitch(own, locked=False)
+        return ServiceSwitch(own, locked=False, decided_by="workspace")
     if organization is not None:
-        return ServiceSwitch(organization.enabled, locked=False)
-    return ServiceSwitch(default, locked=False)
+        return ServiceSwitch(
+            organization.enabled, locked=False, decided_by="organization"
+        )
+    return ServiceSwitch(default, locked=False, decided_by="default")
 
 
 @dataclass(frozen=True)

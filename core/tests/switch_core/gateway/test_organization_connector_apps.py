@@ -343,7 +343,11 @@ class TestRemoving:
             after = await _google(client, cookies)
         assert during["app_source"] == "organization"
         assert removed.status_code == 200, removed.text
-        assert removed.json() == {"connected_members": 0, "workspaces": 0}
+        assert removed.json() == {
+            "connected_members": 0,
+            "workspaces": 0,
+            "agent_grants": 0,
+        }
         assert again.status_code == 404
         assert after["app_source"] == "server"
         assert after["configured"] is True
@@ -411,7 +415,11 @@ class TestTheServersAppAlongside:
         [server] = [a for a in servers.json()["apps"] if a["slug"] == GOOGLE]
         assert server["stale_connections"] == 0
         assert (server["connected_members"], server["workspaces"]) == (1, 1)
-        assert impact.json() == {"connected_members": 1, "workspaces": 1}
+        assert impact.json() == {
+            "connected_members": 1,
+            "workspaces": 1,
+            "agent_grants": 0,
+        }
         [own] = [a for a in organizations.json()["apps"] if a["slug"] == GOOGLE]
         assert (own["connected_members"], own["workspaces"]) == (1, 1)
 

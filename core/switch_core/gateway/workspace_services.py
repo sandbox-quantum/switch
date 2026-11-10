@@ -106,6 +106,10 @@ async def list_workspace_services(
                 # Locked by the workspace's organization: the admin's switch
                 # does nothing until an organization admin unlocks it.
                 "organization_locked": switches[definition.slug].locked,
+                # Whose say `enabled` is: the organization's (locked, or its
+                # unlocked setting where the workspace set none), the
+                # workspace's own, or the workspace's default.
+                "decided_by": switches[definition.slug].decided_by,
                 "updated_by_name": (
                     None
                     if setting is None or setting.updated_by is None

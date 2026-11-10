@@ -389,8 +389,7 @@ async def organization_connector_app_impact(
         current = None if server is None else server.client_id
     await session.commit()
     usage = (await _usages(session_factory, user, organization_id)).of(service)
-    people, workspaces = usage.not_through(client_id, current)
-    return {"connected_members": people, "workspaces": workspaces}
+    return usage.not_through(client_id, current).body()
 
 
 @router.delete("/{service}")
@@ -432,9 +431,9 @@ async def remove_organization_connector_app(
         organization_id,
         user.id,
     )
-    people, workspaces = (
+    return (
         (await _usages(session_factory, user, organization_id))
         .of(service)
         .through(removed.client_id)
+        .body()
     )
-    return {"connected_members": people, "workspaces": workspaces}

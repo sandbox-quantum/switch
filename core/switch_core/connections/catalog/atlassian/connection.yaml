@@ -3,6 +3,11 @@ name: Atlassian
 category: Project management
 description: Read and update Jira issues and Confluence pages, as you.
 enabled: true
+publisher: Atlassian
+links:
+  documentation: https://support.atlassian.com/atlassian-ai-gateway/docs/get-started-with-the-atlassian-remote-mcp-server/
+  support: https://support.atlassian.com
+  privacy: https://www.atlassian.com/legal/privacy-policy
 adapter: oauth
 auth:
   type: oauth
