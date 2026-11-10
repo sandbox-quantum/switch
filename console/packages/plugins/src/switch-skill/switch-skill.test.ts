@@ -38,7 +38,7 @@ describe('switch skill', () => {
 
   it('says who may turn auto-route on or off, and who may name the triage agent', () => {
     const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
-    expect(text).toContain('Anyone who can post in the room may turn it on or off');
+    expect(text).toContain("The room's owner or a workspace admin may turn it on or off");
     expect(text).toContain(
       "The room's owner or a workspace admin can name a triage agent for those messages"
     );
