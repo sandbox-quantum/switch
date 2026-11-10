@@ -82,6 +82,34 @@ async def _takes_part(
     return bool(await room_store.involved_room_ids(session, user_id, [room_id]))
 
 
+async def _claimed(
+    session: AsyncSession, external_user_store: ExternalUserStore, user_id: str
+) -> list[str]:
+    """The platform accounts a Switch user has claimed."""
+    return [ext.id for ext in await external_user_store.get_by_user(session, user_id)]
+
+
+def _admits_user(
+    target: Agent,
+    *,
+    room_id: str,
+    group_id: str | None,
+    user_id: str,
+    claimed: list[str],
+) -> bool:
+    """Whether the target's policy admits a Switch user speaking themselves,
+    any platform account they claimed included. `room_id` is "" for a room not
+    made yet, where a rule naming particular rooms admits nobody."""
+    return allows_on_behalf_of(
+        parse_policy(target.addressing_policy),
+        room_id=room_id,
+        group_id=group_id,
+        user_id=user_id,
+        external_user_ids=claimed,
+        owner_user_id=target.owner_id,
+    )
+
+
 async def _user_may_address(
     session: AsyncSession,
     external_user_store: ExternalUserStore,
@@ -90,20 +118,15 @@ async def _user_may_address(
     room: Room,
     user_id: str,
 ) -> bool:
-    """Whether a Switch user may address `target` in `room` themselves: the
-    policy as it reads for that person, any platform account they claimed
-    included."""
-    policy = parse_policy(target.addressing_policy)
-    if policy.is_open():
+    """Whether a Switch user may address `target` in `room` themselves."""
+    if parse_policy(target.addressing_policy).is_open():
         return True
-    claimed = await external_user_store.get_by_user(session, user_id)
-    return allows_on_behalf_of(
-        policy,
+    return _admits_user(
+        target,
         room_id=room.id,
         group_id=room.group_id,
         user_id=user_id,
-        external_user_ids=[ext.id for ext in claimed],
-        owner_user_id=target.owner_id,
+        claimed=await _claimed(session, external_user_store, user_id),
     )
 
 
@@ -175,3 +198,65 @@ async def require_agent_may_invite(
     ):
         return
     raise InviteRefused(not_addressable_refusal(target))
+
+
+async def require_user_may_add_to_new_room(
+    session: AsyncSession,
+    external_user_store: ExternalUserStore,
+    *,
+    targets: list[Agent],
+    user_id: str,
+    group_id: str | None,
+) -> None:
+    """Raise `InviteRefused` unless the Switch user may put every one of
+    `targets` into a room they are creating. The creator owns the room, so
+    is in it; what is left is whether they may address each agent."""
+    claimed: list[str] | None = None
+    for target in targets:
+        if parse_policy(target.addressing_policy).is_open():
+            continue
+        if claimed is None:
+            claimed = await _claimed(session, external_user_store, user_id)
+        if not _admits_user(
+            target, room_id="", group_id=group_id, user_id=user_id, claimed=claimed
+        ):
+            raise InviteRefused(not_addressable_refusal(target))
+
+
+async def invitable_agent_ids(
+    session: AsyncSession,
+    room_store: RoomStore,
+    external_user_store: ExternalUserStore,
+    *,
+    agents: list[Agent],
+    user_id: str,
+    is_admin: bool,
+    room: Room | None,
+) -> list[str]:
+    """Of `agents`, the ids the Switch user may invite: into `room`, less the
+    agents already in it, or into a new room when `room` is None. Nothing at
+    all when they are not in `room`. What a picker should offer, so it never
+    lists an agent the invite would refuse."""
+    present: set[str] = set()
+    if room is not None:
+        if not is_admin and not await _takes_part(
+            session, room_store, room.id, user_id
+        ):
+            return []
+        present = set(await room_store.get_agent_ids(session, room.id))
+    claimed = await _claimed(session, external_user_store, user_id)
+    return [
+        agent.id
+        for agent in agents
+        if agent.id not in present
+        and (
+            parse_policy(agent.addressing_policy).is_open()
+            or _admits_user(
+                agent,
+                room_id=room.id if room is not None else "",
+                group_id=room.group_id if room is not None else None,
+                user_id=user_id,
+                claimed=claimed,
+            )
+        )
+    ]

@@ -19,11 +19,14 @@ from switch_core.addressing import (
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import Agent, Room
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_invites import (
     NOT_IN_ROOM_REFUSAL,
     InviteRefused,
+    invitable_agent_ids,
+    require_user_may_add_to_new_room,
     require_user_may_invite,
 )
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
@@ -290,3 +293,92 @@ def test_plain_refusal_shows_no_markdown() -> None:
     )
     assert "`bobs-agent`" in not_addressable_refusal(agent, markdown=True)
     assert "@" not in NOT_IN_ROOM_REFUSAL
+
+
+class TestNewRoomAndCandidates:
+    """Creating a room with agents, and the list a picker offers."""
+
+    async def test_creator_may_not_put_in_an_agent_they_cannot_address(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        bob = await _make_user(session_factory, "bob")
+        carol = await _make_user(session_factory, "carol")
+        carols_private = await _register(svc, "carols-private", carol)
+        open_agent = await _register(svc, "open-agent", carol)
+        await _set_policy(session_factory, open_agent, None)
+
+        async with session_factory() as session:
+            private = await session.get(Agent, carols_private)
+            opened = await session.get(Agent, open_agent)
+            assert private is not None and opened is not None
+            with pytest.raises(InviteRefused, match="carols-private"):
+                await require_user_may_add_to_new_room(
+                    session,
+                    ExternalUserStore(),
+                    targets=[opened, private],
+                    user_id=bob,
+                    group_id=None,
+                )
+            await require_user_may_add_to_new_room(
+                session,
+                ExternalUserStore(),
+                targets=[opened, private],
+                user_id=carol,
+                group_id=None,
+            )
+
+    async def test_candidates_are_the_agents_the_invite_would_allow(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        bob = await _make_user(session_factory, "bob")
+        carol = await _make_user(session_factory, "carol")
+        carols_in_room = await _register(svc, "carol-in-room", carol)
+        carols_worker = await _register(svc, "carol-worker", carol)
+        bobs_private = await _register(svc, "bobs-private", bob)
+        open_agent = await _register(svc, "open-agent", bob)
+        await _set_policy(session_factory, open_agent, None)
+        room_id = await _make_public_room(
+            session_factory, owner_id=bob, member_agent_ids=[carols_in_room]
+        )
+        async with session_factory() as session:
+            # A second room: the shared helper names every room alike.
+            first = await session.get(Room, room_id)
+            assert first is not None
+            first.transport_room_id = "!first:test"
+            await session.commit()
+        outside_id = await _make_public_room(
+            session_factory, owner_id=bob, member_agent_ids=[]
+        )
+
+        async with session_factory() as session:
+            agents = list(
+                await AgentStore().get_many(
+                    session, [carols_in_room, carols_worker, bobs_private, open_agent]
+                )
+            )
+            room = await session.get(Room, room_id)
+            outside = await session.get(Room, outside_id)
+            assert room is not None and outside is not None
+
+            async def ask(target: Room | None) -> set[str]:
+                return set(
+                    await invitable_agent_ids(
+                        session,
+                        RoomStore(),
+                        ExternalUserStore(),
+                        agents=agents,
+                        user_id=carol,
+                        is_admin=False,
+                        room=target,
+                    )
+                )
+
+            # In the room: her own other agent and the open one; not Bob's
+            # private one, nor her agent that is already there.
+            assert await ask(room) == {carols_worker, open_agent}
+            # Not in the room: nothing.
+            assert await ask(outside) == set()
+            # A new room: everything she may address.
+            assert await ask(None) == {carols_in_room, carols_worker, open_agent}

@@ -94,7 +94,12 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
-from switch_core.room_invites import InviteRefused, require_user_may_invite
+from switch_core.room_invites import (
+    InviteRefused,
+    invitable_agent_ids,
+    require_user_may_add_to_new_room,
+    require_user_may_invite,
+)
 from switch_core.room_service import (
     FIXED_MEMBERSHIP,
     MembershipFixed,
@@ -509,6 +514,7 @@ async def create_room(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
@@ -517,6 +523,22 @@ async def create_room(
     _validate_create(req)
     if req.group_id is not None:
         require_group_filing_or_403(is_admin)
+    # The creator owns the new room, so is in it; the invite rule still asks
+    # whether they may address each agent they put in (`room_invites`).
+    targets = await agent_store.get_many(session, req.agent_ids or [])
+    if req.agent_names:
+        targets += await agent_store.get_by_names(session, req.agent_names)
+    try:
+        await require_user_may_add_to_new_room(
+            session,
+            external_user_store,
+            targets=targets,
+            user_id=user.id,
+            group_id=req.group_id,
+        )
+    except InviteRefused as refused:
+        raise HTTPException(status_code=403, detail=str(refused)) from refused
+    await session.commit()
     config = RoomCreateConfig(
         name=req.name,
         description=req.description,
@@ -960,6 +982,51 @@ async def _run_as_person(
         ],
         "room": None if room is None else room.model_dump(),
     }
+
+
+class RoomAgentCandidates(BaseModel):
+    agent_ids: list[str]
+
+
+@router.get("/agent-candidates")
+async def room_agent_candidates(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    room_id: str | None = None,
+) -> RoomAgentCandidates:
+    """The agents the caller may bring in: into `room_id`, less those already
+    in it, or into a new room when it is absent. The invite rule decides
+    (`room_invites`), so a picker built from this never offers an agent the
+    invite would refuse. A room the caller cannot see is 404; one they are not
+    in, or a direct or group conversation, offers none."""
+    room = None
+    if room_id is not None:
+        room = await authorize_room(
+            session, room_store, room_id, Principal(user.id, is_admin), "read"
+        )
+        if room.channel_type in FIXED_MEMBERSHIP:
+            return RoomAgentCandidates(agent_ids=[])
+    tenant_id = require_tenant_id()
+    agents = [
+        agent
+        for agent in await agent_store.get_all(session)
+        if agent.tenant_id == tenant_id
+    ]
+    return RoomAgentCandidates(
+        agent_ids=await invitable_agent_ids(
+            session,
+            room_store,
+            external_user_store,
+            agents=sorted(agents, key=lambda agent: agent.name),
+            user_id=user.id,
+            is_admin=is_admin,
+            room=room,
+        )
+    )
 
 
 @router.get("/template-schema")
