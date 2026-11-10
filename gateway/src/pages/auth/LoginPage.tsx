@@ -2,21 +2,53 @@ import {
   Alert,
   Box,
   Button,
-  Card,
   CircularProgress,
   Divider,
   Stack,
   TextField,
-  Typography,
 } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
 import {
   type AuthConfig,
+  type OidcLoginOption,
   fetchAuthConfig,
   oidcLoginUrl,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { readPendingInvite } from "../../data/sessionState";
+import AuthLayout from "./AuthLayout";
+
+type ConfigState =
+  | { status: "loading" }
+  | { status: "loaded"; config: AuthConfig }
+  | { status: "failed"; message: string };
+
+/** The identity provider's buttons: one per configured login option, each
+ * going straight to that way of signing in, or a single one that leaves the
+ * choice to the provider. */
+function ssoButtons(config: AuthConfig): { key: string; label: string; provider: string | null }[] {
+  const providerLabel = config.oidc_provider_label ?? "SSO";
+  if (config.oidc_login_options.length === 0) {
+    return [{ key: "oidc", label: `Continue with ${providerLabel}`, provider: null }];
+  }
+  return config.oidc_login_options.map((option: OidcLoginOption) => ({
+    key: option.id,
+    label: `Continue with ${option.label}`,
+    provider: option.id,
+  }));
+}
+
+function subtitleFor(config: AuthConfig | null): string {
+  if (readPendingInvite()) return "You've been invited to a workspace. Sign in to accept.";
+  if (config?.oidc_enabled && config.signup_mode === "open") {
+    const via =
+      config.oidc_login_options.length === 0
+        ? ` with ${config.oidc_provider_label ?? "SSO"}`
+        : "";
+    return `New to Switch? Sign in${via} to create a workspace or join one.`;
+  }
+  return "Manage your agents, rooms and resources.";
+}
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -24,10 +56,26 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
+  const [configState, setConfigState] = useState<ConfigState>({ status: "loading" });
 
   useEffect(() => {
-    fetchAuthConfig().then(setAuthConfig);
+    let cancelled = false;
+    fetchAuthConfig().then(
+      (config) => {
+        if (!cancelled) setConfigState({ status: "loaded", config });
+      },
+      (err: unknown) => {
+        if (!cancelled) {
+          setConfigState({
+            status: "failed",
+            message: err instanceof Error ? err.message : "Could not load the ways to sign in",
+          });
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleSubmit = useCallback(
@@ -46,45 +94,38 @@ export default function LoginPage() {
     [email, password, login],
   );
 
-  // Default to showing the password form if the config call hasn't resolved
-  // (or failed) so password login always remains reachable.
-  const passwordLoginEnabled = authConfig?.password_login_enabled ?? true;
-  const oidcEnabled = authConfig?.oidc_enabled ?? false;
-  const providerLabel = authConfig?.oidc_provider_label ?? "SSO";
-  const subtitle = readPendingInvite()
-    ? "Sign in to accept your invitation."
-    : oidcEnabled && authConfig?.signup_mode === "open"
-      ? `Sign in with ${providerLabel} to create a workspace or join one.`
-      : "Sign in to manage your agents, rooms and resources.";
+  const config = configState.status === "loaded" ? configState.config : null;
+  // Without the configuration the password form is offered, so password
+  // sign-in stays reachable, and the warning above it says why.
+  const passwordLoginEnabled = config?.password_login_enabled ?? true;
+  const sso = config?.oidc_enabled ? ssoButtons(config) : [];
 
   return (
-    <Box
-      sx={{
-        display: "flex",
-        height: "100vh",
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: "var(--hoot-canvas)",
-      }}
-    >
-      <Card
-        component="form"
-        onSubmit={handleSubmit}
-        sx={{ width: 380, p: 4, boxShadow: "var(--hoot-shadow-surface)" }}
-      >
-        <Typography variant="h6" sx={{ mb: 0.5 }}>
-          Switch Gateway
-        </Typography>
-        <Typography variant="body2" sx={{ mb: 3, color: "text.secondary" }}>
-          {subtitle}
-        </Typography>
+    <AuthLayout title="Sign in to Switch" subtitle={subtitleFor(config)} footer={null}>
+      {configState.status === "loading" ? (
+        <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
+          <CircularProgress size={24} aria-label="Loading the ways to sign in" />
+        </Box>
+      ) : (
         <Stack spacing={2}>
+          {configState.status === "failed" && (
+            <Alert severity="warning">
+              Could not load the ways to sign in, so only email and password are offered:{" "}
+              {configState.message}
+            </Alert>
+          )}
           {error && <Alert severity="error">{error}</Alert>}
+          {!passwordLoginEnabled && sso.length === 0 && (
+            <Alert severity="error">
+              No way to sign in is turned on here. Ask whoever runs Switch for you to set one up.
+            </Alert>
+          )}
           {passwordLoginEnabled && (
-            <>
+            <Stack component="form" onSubmit={handleSubmit} spacing={2}>
               <TextField
                 label="Email"
                 type="email"
+                autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -92,6 +133,7 @@ export default function LoginPage() {
               <TextField
                 label="Password"
                 type="password"
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -101,28 +143,29 @@ export default function LoginPage() {
                 variant="contained"
                 fullWidth
                 disabled={submitting}
-                startIcon={
-                  submitting ? <CircularProgress size={16} /> : undefined
-                }
+                startIcon={submitting ? <CircularProgress size={16} /> : undefined}
               >
                 Sign in
               </Button>
-            </>
+            </Stack>
           )}
-          {passwordLoginEnabled && oidcEnabled && <Divider>or</Divider>}
-          {oidcEnabled && (
+          {passwordLoginEnabled && sso.length > 0 && (
+            <Divider sx={{ typography: "caption", color: "text.secondary" }}>or</Divider>
+          )}
+          {sso.map((button) => (
             <Button
+              key={button.key}
               variant="outlined"
               fullWidth
               onClick={() => {
-                window.location.href = oidcLoginUrl();
+                window.location.href = oidcLoginUrl(button.provider);
               }}
             >
-              {`Log in with ${providerLabel}`}
+              {button.label}
             </Button>
-          )}
+          ))}
         </Stack>
-      </Card>
-    </Box>
+      )}
+    </AuthLayout>
   );
 }

@@ -8,10 +8,23 @@ import {
   fetchSession,
   fetchTeamPlacements,
   fetchTeamsAppPackage,
+  oidcLoginUrl,
   removeBridgeFromTeam,
   setDefaultTeamsTeam,
   signOutEverywhere,
 } from "./api";
+
+describe("oidcLoginUrl", () => {
+  it("leaves the choice to the provider without a login option", () => {
+    expect(oidcLoginUrl(null)).toBe("/gateway/auth/oidc/login");
+  });
+
+  it("names the login option a button stands for", () => {
+    expect(oidcLoginUrl("google workspace")).toBe(
+      "/gateway/auth/oidc/login?provider=google%20workspace",
+    );
+  });
+});
 
 describe("errorText", () => {
   it("returns a string detail as is", () => {

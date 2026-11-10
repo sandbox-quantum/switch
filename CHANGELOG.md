@@ -86,6 +86,19 @@ version of their own to them without also giving them a release of their own.
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.
+- **The dashboard's sign-in and first screens share one look.** Signing in,
+  accepting an invitation, choosing a workspace, creating an organization, and
+  the screens shown while the session loads or when it cannot be read now sit
+  on one card with the Switch mark. The flows themselves are unchanged.
+- **One sign-in button for each configured way of signing in.** Where
+  `GATEWAY_OIDC_LOGIN_OPTIONS` lists several (Google and Microsoft, say), the
+  dashboard's sign-in page now offers a button for each, going straight to that
+  provider, as Switch Console already does. Without any, it keeps the single
+  button. When the page cannot read how sign-in is set up, it says so above
+  the password form instead of quietly offering only that.
+- **The workspace picker lists workspaces by organization.** Someone in
+  workspaces of more than one organization sees them under each organization's
+  name, in the same order as the top bar's workspace switcher.
 - **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
   `GATEWAY_PASSWORD_LOGIN_ENABLED=false` the admin account is seeded without a
   password, and the first OIDC sign-in with `GATEWAY_ADMIN_EMAIL` links to it.
