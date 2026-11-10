@@ -15,6 +15,7 @@ import {
   createRoomRole,
   deleteRoomRole,
   fetchArchivedRooms,
+  fetchBridgePeople,
   fetchBridgeUserNames,
   setRoomAgentJoinEvents,
   setRoomArchived,
@@ -180,6 +181,7 @@ import type {
   BridgeDirectorySearchResult,
   CancelLinkRequestResult,
   ChatClaim,
+  BridgePerson,
   ClaimIdentityParams,
   ConnectedChat,
   ClaimIdentityResult,
@@ -813,6 +815,7 @@ export const workspacesController = createRPCController({
           instructions: params.instructions,
           bridgeId: params.bridgeId,
           agentIds: params.agentIds,
+          userNames: params.userNames,
           channel: params.channel,
           groupId: params.groupId,
           access: params.access,
@@ -1284,6 +1287,12 @@ export const workspacesController = createRPCController({
   }): Promise<void> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       removeLinkedRoom(server, params.roomId, params.targetRoomId)
+    ),
+
+  /** The people Switch knows on one bridge, with who linked each, for the New room dialog. */
+  listBridgePeople: (params: { workspaceId: string; bridgeId: string }): Promise<BridgePerson[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchBridgePeople(server, params.bridgeId)
     ),
 
   /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
