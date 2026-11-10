@@ -39,6 +39,7 @@ const MARK_COLOR: Record<string, string> = {
   datadog: 'text-[#632CA6] emdark:text-foreground',
   'new-relic': 'text-foreground emdark:text-[#1CE783]',
   airtable: 'text-foreground emdark:text-[#18BFFF]',
+  cloudflare: 'text-[#F38020]',
 };
 
 export function hasConnectionIcon(slug: string): boolean {

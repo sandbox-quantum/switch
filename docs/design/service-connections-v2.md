@@ -414,6 +414,25 @@ may not read the current user. A Datadog administrator turns MCP access on for
 the organization (Organization Settings, Preferences), and the application key
 needs `mcp_read`, and `mcp_write` for changes.
 
+### Cloudflare
+
+Cloudflare's MCP server at `https://mcp.cloudflare.com/mcp` covers the whole
+API in code mode: four tools (`search` over the OpenAPI spec, `execute` against
+it, `docs` and `whoami`) rather than one tool per endpoint, so the entry uses it
+and not Cloudflare's product-specific servers. It takes a Cloudflare API token
+as `Authorization: Bearer <token>`, the same header the REST API takes. The
+server also signs in with OAuth and registers clients dynamically, but the
+tokens it issues are good only at its `/mcp` endpoint, where the account behind
+them is a `whoami` tool call rather than a GET, so the entry asks for a token
+and checks it against the REST API's `/client/v4/user`. That call answers only
+for a token a person owns: an account-owned token has no user and is refused at
+connect, so every connection acts as one person. Cloudflare enforces the
+token's permissions, so a token made from the read-all template keeps the
+connection read-only; the server also needs User Details and Account Settings
+read to serve a call, and refuses tokens limited by client IP address. Tokens
+do not expire unless their owner set an end date. Moving to the OAuth sign-in
+once the server can be asked who a token belongs to is a follow-up.
+
 ## Adding a connector
 
 A connector is a catalog entry and a skill, with no code, when the vendor fits

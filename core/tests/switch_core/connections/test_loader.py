@@ -26,17 +26,19 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_only_the_finished_entries():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "github",
         "google-workspace",
@@ -46,6 +48,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["cloudflare"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1036,6 +1039,29 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     assert definition.token is not None
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_cloudflare_entry_sends_one_bearer_token_everywhere():
+    definition = CATALOG["cloudflare"].definition
+    assert (definition.adapter, definition.auth.refresh) == ("api_key", "none")
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [("api_token", True)]
+    assert sign_in.choice_names() == set()
+    # /user answers only for a token a person owns, never an account-owned one.
+    identity = sign_in.identity
+    assert (identity.method, identity.url) == (
+        "GET",
+        "https://api.cloudflare.com/client/v4/user",
+    )
+    assert identity.headers == {"Authorization": "Bearer {api_token}"}
+    assert (identity.account_id, identity.label) == ("result.id", "result.email")
+    assert definition.mcp is not None
+    # The one code-mode server for the whole API, not the per-product ones.
+    [server] = definition.mcp.servers
+    assert (server.name, server.url) == ("cloudflare", "https://mcp.cloudflare.com/mcp")
+    assert server.headers == {"Authorization": "Bearer {api_token}"}
+    assert definition.token is not None and definition.token.max_lifetime == 3600
 
 
 def test_loads_an_api_key_entry(catalog_copy):

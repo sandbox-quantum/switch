@@ -20,7 +20,7 @@ from switch_core.connections.adapters.api_key import (
     key_token,
     render,
 )
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import CATALOG, ConnectionDefinition
 
 ENTRY = {
     "slug": "example",
@@ -137,3 +137,34 @@ async def test_a_key_is_never_issued_to_an_agent() -> None:
             AccessToken(key, datetime.now(UTC) + timedelta(hours=1)),
             IssueRequest(service="example", access="write", reach={}, resources={}),
         )
+
+
+async def test_cloudflare_asks_the_user_endpoint_whose_token_it_is() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "result": {"id": "synthetic-user-id", "email": "ops@example.test"},
+            },
+        )
+
+    adapter = ApiKeyAdapter(
+        CATALOG["cloudflare"].definition,
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    identity = await adapter.identify({"api_token": "SYNTHETIC-TOKEN"})
+
+    assert (identity.account_id, identity.label) == (
+        "synthetic-user-id",
+        "ops@example.test",
+    )
+    [request] = seen
+    assert (request.method, str(request.url)) == (
+        "GET",
+        "https://api.cloudflare.com/client/v4/user",
+    )
+    assert request.headers["Authorization"] == "Bearer SYNTHETIC-TOKEN"
