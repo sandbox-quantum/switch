@@ -72,6 +72,7 @@ from switch_core.accounts.workspace_deletion import (
     live_service_tokens,
     purge_workspace,
 )
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.protocol.connection_rows import (
     CHANGED_SIGNAL as AGENT_CONNECTIONS_CHANGED_SIGNAL,
 )
@@ -339,6 +340,9 @@ class OrganizationPurge:
             raise PurgeRefused(" ".join(plan.refusals))
         if not request.strip():
             raise PurgeRefused("Say which request the purge answers.")
+        members = {account.id for account in plan.accounts}
+        for workspace in plan.workspaces:
+            await self._check_newcomers(workspace, members)
         outcome = PurgeOutcome(finished=False)
         for workspace in plan.workspaces:
             with tenant_scope(workspace.id):
@@ -348,8 +352,8 @@ class OrganizationPurge:
             return outcome
 
         await self._record_start(plan, request)
-        members = {account.id for account in plan.accounts}
         for workspace in plan.workspaces:
+            await self._check_newcomers(workspace, members)
             with tenant_scope(workspace.id):
                 await self._end_installs(workspace)
             await self._purge_workspace(workspace, members, request)
@@ -362,16 +366,20 @@ class OrganizationPurge:
         return outcome
 
     async def purge_workspaces(
-        self, tenant_ids: list[str], member_id: str, request: str
+        self, members: dict[str, set[str]], request: str
     ) -> PurgeOutcome:
         """Purge these workspaces alone, as `run` purges each of an
-        organization's, leaving the organization and every account. Returns
-        unfinished, having deleted nothing, while it waits. Raises
-        `PurgeRefused` for a workspace anyone but `member_id` is in."""
+        organization's, leaving the organization and every account.
+        `members` maps each workspace to the accounts allowed to use it,
+        directly or as an organization admin. Returns unfinished, having
+        deleted nothing, while it waits. Raises `PurgeRefused`, before
+        touching the workspace, when anyone else can use it."""
         workspaces = []
-        for tenant_id in tenant_ids:
+        for tenant_id in members:
             async with tenant_session(self.session_factory, tenant_id) as session:
                 workspaces.append(await _contents(session, tenant_id))
+        for workspace in workspaces:
+            await self._check_newcomers(workspace, members[workspace.id])
         outcome = PurgeOutcome(finished=False)
         for workspace in workspaces:
             with tenant_scope(workspace.id):
@@ -379,9 +387,10 @@ class OrganizationPurge:
         if outcome.waiting:
             return outcome
         for workspace in workspaces:
+            await self._check_newcomers(workspace, members[workspace.id])
             with tenant_scope(workspace.id):
                 await self._end_installs(workspace)
-            await self._purge_workspace(workspace, {member_id}, request)
+            await self._purge_workspace(workspace, members[workspace.id], request)
         outcome.finished = True
         return outcome
 
@@ -623,23 +632,8 @@ class OrganizationPurge:
     async def _purge_workspace(
         self, workspace: WorkspaceContents, members: set[str], request: str
     ) -> None:
-        """Refuses, deleting nothing, when anyone outside `members` is in
-        the workspace: the row lock holds off anyone joining until it commits."""
         async with tenant_session(self.session_factory, workspace.id) as session:
-            await session.execute(
-                select(Tenant.id).where(Tenant.id == workspace.id).with_for_update()
-            )
-            joined = set(
-                await session.scalars(
-                    select(TenantMember.user_id).where(
-                        TenantMember.tenant_id == workspace.id
-                    )
-                )
-            )
-            if joined - members:
-                raise PurgeRefused(
-                    f"Someone joined {workspace.name} during the purge. Run it again."
-                )
+            await _refuse_newcomers(session, workspace, members)
             agent_ids = list(
                 await session.scalars(
                     select(Agent.id).where(Agent.tenant_id == workspace.id)
@@ -679,6 +673,14 @@ class OrganizationPurge:
         for controller_id in controller_ids:
             self.controller_removed(controller_id)
         logger.info("Purged workspace %s (%s)", workspace.id, workspace.slug)
+
+    async def _check_newcomers(
+        self, workspace: WorkspaceContents, members: set[str]
+    ) -> None:
+        """`_refuse_newcomers` in a transaction of its own, so no lock is
+        held across what follows outside Switch."""
+        async with tenant_session(self.session_factory, workspace.id) as session:
+            await _refuse_newcomers(session, workspace, members)
 
     async def _detach_machines(self, machine_ids: list[str]) -> None:
         """A kept account's machine has lost the organization's workspaces
@@ -793,6 +795,43 @@ class OrganizationPurge:
                 await session.commit()
             return
         outcome.deleted_accounts.append(account)
+
+
+async def _refuse_newcomers(
+    session: AsyncSession, workspace: WorkspaceContents, members: set[str]
+) -> None:
+    """Refuse when anyone outside `members` can use the workspace: a member
+    of it, or an admin of its organization. The locks hold off anyone
+    joining or being made an organization admin until `session` ends."""
+    tenant = await session.scalar(
+        select(Tenant).where(Tenant.id == workspace.id).with_for_update()
+    )
+    assert tenant is not None and tenant.organization_id is not None
+    await session.execute(
+        select(Organization.id)
+        .where(Organization.id == tenant.organization_id)
+        .with_for_update()
+    )
+    # Every row, so a member's promotion to admin waits too.
+    organization_members = await session.execute(
+        select(OrganizationMember.user_id, OrganizationMember.role)
+        .where(OrganizationMember.organization_id == tenant.organization_id)
+        .with_for_update(read=True)
+    )
+    admins = {
+        user_id
+        for user_id, role in organization_members
+        if role == ORGANIZATION_ADMIN_ROLE
+    }
+    users = admins | set(
+        await session.scalars(
+            select(TenantMember.user_id).where(TenantMember.tenant_id == workspace.id)
+        )
+    )
+    if users - members:
+        raise PurgeRefused(
+            f"Someone joined {workspace.name} during the purge. Run it again."
+        )
 
 
 async def _contents(session: AsyncSession, tenant_id: str) -> WorkspaceContents:

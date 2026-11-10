@@ -34,6 +34,7 @@ from switch_core.accounts.organization_purge import (
     PurgePlan,
     PurgeRefused,
 )
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     MessagingInstall,
@@ -77,7 +78,8 @@ class AccountReset:
             by_organization.setdefault(organization_id, [])
 
         plans: list[PurgePlan] = []
-        alone: list[Workspace] = []
+        # Each workspace to purge alone, with who may use it as things stand.
+        alone: dict[str, set[str]] = {}
         for organization_id, own in by_organization.items():
             plan = await self._sole_plan(user, organization_id)
             if plan is not None:
@@ -98,9 +100,17 @@ class AccountReset:
                             TenantMember.user_id != user.id,
                         )
                     ):
-                        alone.append(workspace)
+                        alone[workspace.id] = {user.id} | set(
+                            await scoped.scalars(
+                                select(OrganizationMember.user_id).where(
+                                    OrganizationMember.organization_id
+                                    == organization_id,
+                                    OrganizationMember.role == ORGANIZATION_ADMIN_ROLE,
+                                )
+                            )
+                        )
 
-        purged = {w.id for w in alone} | {w.id for p in plans for w in p.workspaces}
+        purged = set(alone) | {w.id for p in plans for w in p.workspaces}
         remaining = [w for w in workspaces if w.id not in purged]
         deleted_by_purge = any(
             account.id == user.id and account.kept_because is None
@@ -132,9 +142,7 @@ class AccountReset:
             _finished(outcome, user.id)
         if alone:
             try:
-                outcome = await self.purge.purge_workspaces(
-                    [w.id for w in alone], user.id, request
-                )
+                outcome = await self.purge.purge_workspaces(alone, request)
             except PurgeRefused as refused:
                 raise AccountDeletionRefused(str(refused)) from None
             _finished(outcome, user.id)

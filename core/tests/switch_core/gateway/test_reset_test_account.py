@@ -429,14 +429,36 @@ def _join_before_purging(
     app: FastAPI,
     session_factory: async_sessionmaker[AsyncSession],
     tenant_id: str,
+    organization_id: str,
+    joiner: str,
 ) -> None:
-    """Have someone join `tenant_id` and add a room to it after the reset
-    has checked who is in it, just before its rows go."""
+    """Have someone join `tenant_id`, as a member or as an organization
+    admin with no membership there, and add a room to it, after the reset
+    has checked who is in it and before anything outside Switch is touched."""
     purge = app.state.organization_purge
-    original = purge._end_installs
+    original = purge._revoke_services
 
-    async def joining(workspace):
-        await _other_user(session_factory, tenant_id, "member")
+    async def joining(workspace, outcome):
+        monkeypatch.setattr(purge, "_revoke_services", original)
+        if joiner == "member":
+            await _other_user(session_factory, tenant_id, "member")
+        else:
+            async with session_factory() as session:
+                admin = User(
+                    name="admin",
+                    email=f"admin-{uuid.uuid4().hex[:6]}@example.test",
+                    role="user",
+                )
+                session.add(admin)
+                await session.flush()
+                session.add(
+                    OrganizationMember(
+                        organization_id=organization_id,
+                        user_id=admin.id,
+                        role="org_admin",
+                    )
+                )
+                await session.commit()
         async with tenant_session(session_factory, tenant_id) as session:
             session.add(
                 Room(
@@ -447,21 +469,37 @@ def _join_before_purging(
                 )
             )
             await session.commit()
-        await original(workspace)
+        await original(workspace, outcome)
 
-    monkeypatch.setattr(purge, "_end_installs", joining)
+    monkeypatch.setattr(purge, "_revoke_services", joining)
 
 
+@pytest.mark.parametrize("joiner", ["member", "org_admin"])
 @pytest.mark.parametrize("shared", [True, False])
 async def test_a_member_who_joins_during_the_reset_keeps_the_workspace(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
     shared: bool,
+    joiner: str,
 ) -> None:
     setup = _shared_organization if shared else _solo_workspace
     user_id, email, mine, organization_id = await setup(session_factory)
-    app, _, _ = _app(session_factory, enabled=True)
-    _join_before_purging(monkeypatch, app, session_factory, mine)
+    async with tenant_session(session_factory, mine) as session:
+        session.add(
+            MessagingInstall(
+                tenant_id=mine,
+                platform="slack",
+                external_workspace_id=f"T-{mine}",
+                scopes="chat:write",
+                status="active",
+                installed_by_user_id=user_id,
+            )
+        )
+        await session.commit()
+    app, installer, _ = _app(session_factory, enabled=True)
+    _join_before_purging(
+        monkeypatch, app, session_factory, mine, organization_id, joiner
+    )
 
     async with _client(app, user_id, email, mine) as client:
         response = await client.post(
@@ -470,12 +508,14 @@ async def test_a_member_who_joins_during_the_reset_keeps_the_workspace(
 
     assert response.status_code == 409, response.text
     assert "joined" in response.json()["detail"]
+    assert installer.released == []
     async with session_factory() as session:
         assert await session.get(User, user_id) is not None
         assert await session.get(Tenant, mine) is not None
         assert await session.get(Organization, organization_id) is not None
     async with tenant_session(session_factory, mine) as session:
         assert await session.scalar(select(Room.id)) is not None
+        assert await session.scalar(select(MessagingInstall.status)) == "active"
 
 
 async def test_a_retry_after_the_workspaces_went_still_purges_the_organization(
