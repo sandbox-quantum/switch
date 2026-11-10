@@ -648,6 +648,13 @@ class SlackAdapter(PlatformAdapter):
             "workspace",
             "Every card the bridge draws is frozen until then.",
         )
+        # Agents ask for links again when they get none, which keeps the limit open.
+        self._permalink_cooldown = Cooldown(
+            "Slack",
+            "permalinks",
+            "workspace",
+            "Agents get no Slack links until then.",
+        )
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -2475,12 +2482,18 @@ class SlackAdapter(PlatformAdapter):
     async def message_permalink(self, external_post_id: str) -> str:
         """Slack's own link to a `channel:ts` post, from `chat.getPermalink`.
         Slack gives a reply its thread form itself. A rate limit is waited
-        out once when Slack asks for a short wait, and raised otherwise."""
+        out once when Slack asks for a short wait. Otherwise it is raised, and
+        every request raises at once until the wait Slack asked for is over."""
         if not self._web_client:
             raise RuntimeError("Slack client not connected")
         channel, ts = self._parse_message_ref(external_post_id)
         if not channel or not ts:
             raise ValueError(f"Not a Slack message ref: {external_post_id!r}")
+        waiting = self._permalink_cooldown.remaining()
+        if waiting > 0:
+            raise RuntimeError(
+                f"Slack is rate limiting permalinks; not asking for {waiting:.0f}s."
+            )
         for attempt in range(2):
             try:
                 result = await self._web_client.chat_getPermalink(
@@ -2502,10 +2515,11 @@ class SlackAdapter(PlatformAdapter):
                     error == "ratelimited"
                     or getattr(e.response, "status_code", None) == 429
                 )
-                if not rate_limited or attempt == 1:
+                if not rate_limited:
                     raise
                 delay = _retry_after_seconds(e)
-                if delay > _PERMALINK_RETRY_MAX_SECONDS:
+                if attempt == 1 or delay > _PERMALINK_RETRY_MAX_SECONDS:
+                    self._permalink_cooldown.start(delay)
                     raise
                 await asyncio.sleep(delay)
         raise RuntimeError("Unreachable: exhausted retries for a permalink")

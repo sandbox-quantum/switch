@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import re
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from slack_sdk.errors import SlackApiError
 
+from switch_core.bridges.collaboration import cooldown as cooldown_module
 from switch_core.bridges.collaboration.adapter import MessageGoneOnPlatform
 from switch_core.bridges.collaboration.collaboration_core import _no_agents_notice
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
@@ -1494,6 +1496,41 @@ def test_message_permalink_long_retry_after_is_not_retried(
         _run(adapter.message_permalink("C1:171.2"))
     assert sleeps == []
     assert len(client.permalink_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "refusals",
+    [[_rate_limited("30")], [_rate_limited("1"), _rate_limited("30")]],
+    ids=["long-retry-after", "second-rate-limit"],
+)
+def test_message_permalink_unretried_rate_limit_holds_requests_back(
+    monkeypatch: pytest.MonkeyPatch, refusals: list[FakeResponse]
+) -> None:
+    """Slack meters the method for the whole workspace, so asking again
+    during the wait only keeps the limit open for every agent."""
+    adapter, client = _permalink_adapter()
+    now = 1000.0
+    monkeypatch.setattr(cooldown_module, "time", SimpleNamespace(monotonic=lambda: now))
+
+    async def fake_sleep(delay: float) -> None:
+        pass
+
+    monkeypatch.setattr(slack_adapter_module.asyncio, "sleep", fake_sleep)
+    client.permalink_errors = list(refusals)
+
+    with pytest.raises(SlackApiError):
+        _run(adapter.message_permalink("C1:171.2"))
+    asked = len(client.permalink_calls)
+
+    now = 1029.9
+    with pytest.raises(RuntimeError, match="rate limiting"):
+        _run(adapter.message_permalink("C1:171.3"))
+    assert len(client.permalink_calls) == asked
+
+    now = 1030.1
+    link = _run(adapter.message_permalink("C1:171.3"))
+    assert link.startswith("https://")
+    assert client.permalink_calls[-1] == ("C1", "171.3")
 
 
 def test_message_permalink_second_rate_limit_is_raised(
