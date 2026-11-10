@@ -576,6 +576,13 @@ export type RemoteBridge = {
   /** The bridge used when a room is created without naming one. */
   isDefault: boolean;
   /**
+   * Whether the deployment registered this bridge itself rather than a person
+   * connecting it — on a local server, what marks its bundled Mattermost. Null
+   * on a server predating the field, where nothing says either way; read it
+   * through `bundledMattermostBridge`, not directly.
+   */
+  preconfigured: boolean | null;
+  /**
    * Link that opens this bridge's workspace in its messaging app, from the
    * gateway's live adapter. Null when the bridge is not running, the platform
    * offers no such link, or the server predates the field — so treat its
