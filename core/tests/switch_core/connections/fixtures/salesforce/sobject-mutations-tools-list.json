@@ -1,0 +1,253 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "createSobjectRecord",
+        "title": "Create Record",
+        "description": "Creates a new record.\nCall `describe_sobject` first to understand required fields and valid values\u2014the operation fails if required fields are missing or values violate validation rules.\nRequires: object API name (e.g., \"Account\", \"Contact\", \"Custom_Object__c\") and field-value pairs.\nReturns the new record's ID on success.\nAll operations respect the user's permissions and field-level security; attempts to set fields the user cannot edit are rejected.\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sobject-name": {
+              "type": "string",
+              "description": "Path parameter: sobject-name"
+            },
+            "body": {
+              "type": "object",
+              "description": "Request body data"
+            }
+          },
+          "required": [
+            "sobject-name",
+            "body"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true
+        }
+      },
+      {
+        "name": "find",
+        "title": "Search Across Objects (SOSL)",
+        "description": "Executes a text search across multiple objects simultaneously.\nUse this instead of `soql_query` when: (1) searching for a term that could exist in multiple object types, (2) you don't know which object contains the data, or (3) you need relevance-ranked text matching.\nReturns a maximum of 2,000 records total\u2014if you need more results, use SOQL instead.\nUse search groups to narrow scope: `IN ALL FIELDS` (default), `IN NAME FIELDS`, `IN EMAIL FIELDS`, or `IN PHONE FIELDS`. Example: `FIND {Acme} IN NAME FIELDS RETURNING Account(Id, Name), Contact(Id, Name, Email), Opportunity(Id, Name)`\n\n**When to use SOSL vs SOQL**: Use SOSL for \"find me anything matching X\" scenarios. It cannot traverse relationships or sort results by field values\u2014if you need related records after finding matches, follow up with a SOQL query using the returned IDs. Limited to 20 SOSL queries per transaction (vs. 100 for SOQL).\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "q": {
+              "type": "string",
+              "description": "The SOSL query string.\n\n**Examples:**\n- FIND {\"Joe Smith\"}\n- FIND {415901} IN Phone FIELDS RETURNING Contact(Id, Phone, FirstName, LastName), Lead(Id, Phone, FirstName, LastName)\n- FIND {\"Acme*\"} IN Name FIELDS RETURNING Account(Id, Name), Opportunity(Id, Name)\n- FIND {\"*\"} IN ALL FIELDS RETURNING Account(Id, Name)\n"
+            }
+          },
+          "required": [
+            "q"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      },
+      {
+        "name": "getObjectSchema",
+        "title": "Get Object Schema (Enhanced)",
+        "description": "Returns Salesforce schema information optimized for LLM consumption.\nCall with NO PARAMETERS first to get an index of all queryable objects\u2014this helps you understand what data exists (80-90% smaller than raw describe).\nThen call with a specific OBJECT_NAME to get field-level details when you need to construct queries or understand a specific object's structure.\nIncludes admin-authored guidance about data quality and business definitions (e.g., \"use Calculated_ACV__c instead of Amount for accurate forecasting)\";\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "objects": {
+              "type": "string",
+              "description": "Comma-separated object API names (e.g., \"Account,Opportunity\"). If omitted, returns an index of all objects."
+            }
+          },
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      },
+      {
+        "name": "getRelatedRecords",
+        "title": "Get Related Records",
+        "description": "Retrieves child records related to a parent record by traversing relationships.\nUse this instead of a separate SOQL query when you already have a record ID and need its related records (e.g., get all Contacts for an Account, or all Opportunity Line Items for an Opportunity).\nSupports multi-level traversal (Account \u2192 Contacts \u2192 Cases).\nMore efficient than multiple queries when navigating object relationships.\nRequires: parent object name, parent record ID, and relationship name (e.g., \"Contacts\", \"Opportunities\").\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sobject-name": {
+              "type": "string",
+              "description": "Path parameter: sobject-name"
+            },
+            "id": {
+              "type": "string",
+              "description": "Path parameter: id"
+            },
+            "relationship-path": {
+              "type": "string",
+              "description": "Relationship path (supports multiple levels, e.g., 'Account/Owner'). See: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/dome_relationship_traversal.htm\n"
+            }
+          },
+          "required": [
+            "sobject-name",
+            "id",
+            "relationship-path"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      },
+      {
+        "name": "getUserInfo",
+        "title": "Get Current User Info",
+        "description": "Returns current user's identity, role, and preferences.\nCall this when you need to personalize responses, understand the user's team context, or apply their preferred defaults for currency, date ranges, or report formatting.\nReturns: User ID, name, role, profile, manager, local time, timezone, and user-specific preferences configured by admins (e.g., \"When showing pipeline, always break out by AE\").\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      },
+      {
+        "name": "listRecentSobjectRecords",
+        "title": "Get Recently Viewed Records",
+        "description": "Returns records of a specific type that the user recently viewed or modified.\nUse this as a starting point when the user refers to \"my accounts,\" \"recent cases,\" or \"that opportunity I was looking at\" without providing specific record IDs or names.\nReturns up to 2,000 records ordered by last viewed date.\nRequires the object API name (e.g., \"Account\", \"Case\", \"Opportunity\").\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sobject-name": {
+              "type": "string",
+              "description": "Path parameter: sobject-name"
+            }
+          },
+          "required": [
+            "sobject-name"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      },
+      {
+        "name": "soqlQuery",
+        "title": "Query Records (SOQL)",
+        "description": "Executes a SOQL query to retrieve Salesforce records.\nUse this when you know which object and fields you need\u2014it's the primary way to read data.\nSOQL syntax: `SELECT fields FROM Object WHERE conditions ORDER BY field LIMIT n`.\nSupports relationship queries to traverse lookups (e.g., `Contact.Account.Name`) and subqueries for child records (e.g., `(SELECT Id FROM Contacts)`).\nAlways include a WHERE clause to filter results and a LIMIT clause to control result size.\nFor large objects, filter on indexed fields (Id, Name, foreign keys, External IDs) to avoid timeout errors.\nMaximum 50,000 total records per transaction across all queries. Example: `SELECT Id, Name, Industry FROM Account WHERE Industry = 'Technology' LIMIT 100`\n\n**When to use SOQL vs SOSL**: Use SOQL when you know which object contains your data and need precise filtering, sorting, aggregation, or relationship traversal. SOQL supports complex WHERE clauses, JOINs via relationships, GROUP BY, and ORDER BY.\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "q": {
+              "type": "string",
+              "description": "Query parameter: q"
+            }
+          },
+          "required": [
+            "q"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      },
+      {
+        "name": "updateRelatedRecord",
+        "title": "Update Related Record",
+        "description": "Updates a parent record by navigating from a child record through a relationship.\nUse this when you have the child record context but need to modify a parent record (e.g., update an Account's name when you know the Contact ID and Account's position in the relationship).\nRequires: child object name, child record ID, relationship path, and field-value pairs to update.\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sobject-name": {
+              "type": "string",
+              "description": "Path parameter: sobject-name"
+            },
+            "id": {
+              "type": "string",
+              "description": "Path parameter: id"
+            },
+            "relationship-path": {
+              "type": "string",
+              "description": "Path parameter: relationship-path"
+            },
+            "body": {
+              "type": "object",
+              "description": "Request body data"
+            }
+          },
+          "required": [
+            "sobject-name",
+            "id",
+            "relationship-path",
+            "body"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      },
+      {
+        "name": "updateSobjectRecord",
+        "title": "Update Record",
+        "description": "Updates an existing record by ID.\nOnly include fields you want to change\u2014omitted fields keep their current values.\nCall `describe_sobject` to verify field names and valid picklist values if unsure.\nRequires: object API name, record ID, and field-value pairs to update.\nFails if: record doesn't exist, user lacks edit permission, or field validations fail.\nFor updating records found via relationship traversal, consider `update_related_record` instead.\n",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sobject-name": {
+              "type": "string",
+              "description": "Path parameter: sobject-name"
+            },
+            "id": {
+              "type": "string",
+              "description": "Path parameter: id"
+            },
+            "body": {
+              "type": "object",
+              "description": "Request body data"
+            }
+          },
+          "required": [
+            "sobject-name",
+            "id",
+            "body"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      }
+    ]
+  }
+}

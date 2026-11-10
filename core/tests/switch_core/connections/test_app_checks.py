@@ -102,6 +102,40 @@ def _github(app: tuple[int, object], exchange: object) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handle))
 
 
+class TestSalesforceClient:
+    SALESFORCE = CATALOG["salesforce"].definition
+
+    @pytest.mark.parametrize(
+        ("status", "error", "ok", "says"),
+        [
+            (400, "unsupported_token_type", True, "accepts this client ID and secret"),
+            (401, "invalid_client", False, "doesn't recognise"),
+            (400, "unknown_error", False, "unknown_error"),
+        ],
+    )
+    async def test_asks_at_introspection(
+        self, status: int, error: str, ok: bool, says: str
+    ) -> None:
+        asked: list[httpx.Request] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            asked.append(request)
+            return httpx.Response(status, json={"error": error})
+
+        result = await check_oauth_client(
+            httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+            self.SALESFORCE,
+            _google(),
+            REDIRECT,
+        )
+        [check] = result.checks
+        assert (check.ok, says in check.message) == (ok, True)
+        assert [str(request.url) for request in asked] == [
+            "https://login.salesforce.com/services/oauth2/introspect"
+        ]
+        assert b"grant_type" not in asked[0].content
+
+
 class TestGitHubApp:
     KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     APP = (200, {"slug": "example-app", "client_id": "example-client-id"})

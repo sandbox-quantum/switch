@@ -433,7 +433,23 @@ class OAuthAdapter:
         scope = body.get("scope")
         if isinstance(scope, str):
             values["scope"] = scope
+        if self._oauth.revocation_domain is not None:
+            values["instance_url"] = self._instance_origin(
+                body.get("instance_url", previous.get("instance_url"))
+            )
         return values
+
+    def _instance_origin(self, url: object) -> str:
+        """The customer's own origin, held to the catalog's domain: Switch sends
+        the refresh token there, so a token response cannot name just any host."""
+        domain = self._oauth.revocation_domain
+        assert domain is not None
+        host = urlsplit(_https(url, "instance URL")).hostname or ""
+        if not re.fullmatch(rf"[a-z0-9-]+(\.[a-z0-9-]+)*\.{re.escape(domain)}", host):
+            raise ServiceAdapterError(
+                f"{self._name} named an instance outside {domain}."
+            )
+        return f"https://{host}"
 
     # ── Signing in ───────────────────────────────────────────────────────────
 
@@ -571,6 +587,9 @@ class OAuthAdapter:
             raise ServiceAdapterError(
                 f"{self._name} gives Switch no way to revoke a sign-in."
             )
+        if self._oauth.revocation_domain is not None:
+            origin = self._instance_origin(secret.values.get("instance_url"))
+            url = origin + urlsplit(url).path
         refresh_token = secret.values.get("refresh_token")
         token, hint = (
             (refresh_token, "refresh_token")

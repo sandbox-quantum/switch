@@ -1,7 +1,71 @@
 slug: salesforce
 name: Salesforce
 category: CRM
-description: Read and update Salesforce records.
-enabled: false
+description: Read, create and update Salesforce records, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # A new External Client App rotates its refresh token on every refresh, and
+  # the setting cannot be turned off there. A refresh that returns no new token
+  # would leave the one in hand.
+  refresh: rotating
+  oauth:
+    # Salesforce has no dynamic registration for its hosted MCP servers, and
+    # refuses Connected Apps: each server's operator creates an External Client
+    # App and saves it under Connectors, or names it in
+    # SALESFORCE_CLIENT_CONFIG_PATH. An admin also activates SObject Mutations
+    # in the org. Salesforce's setup for MCP clients has the
+    # app issue JWT-based access tokens for named users; Switch also has it
+    # require its secret, since Core keeps that on the server.
+    registration: static
+    client_settings: SALESFORCE
+    # Back to Core's own callback, as Google's: nothing listens on people's
+    # computers, and the one URL is all the app registers.
+    redirect: [core]
+    # Named rather than discovered: these are the endpoints Salesforce
+    # documents for MCP clients, and an org that blocks login.salesforce.com
+    # cannot use them.
+    authorization_url: https://login.salesforce.com/services/oauth2/authorize
+    token_url: https://login.salesforce.com/services/oauth2/token
+    # login.salesforce.com answers a revoke with a redirect and leaves the sign-in
+    # alive: only the org's own host, the token response's instance_url, revokes.
+    revocation_url: https://login.salesforce.com/services/oauth2/revoke
+    revocation_domain: salesforce.com
+    # Saving a client asks here. The token endpoint answers unknown_error to a
+    # made-up code whatever the secret, and only this tells a wrong secret.
+    introspection_url: https://login.salesforce.com/services/oauth2/introspect
+    unchecked: >-
+      Switch can't check the callback URL, the JWT-based access tokens setting,
+      Require Secret for Web Server Flow, the 30-minute token timeout, or that
+      SObject Mutations is active. Connect once and use a Salesforce tool from a session to
+      confirm.
+  identity:
+    # Answers the JWT issued for the MCP server, given openid beyond the two
+    # scopes Salesforce documents for MCP clients. Recorded in
+    # tests/switch_core/connections/fixtures/salesforce/userinfo.json.
+    url: https://login.salesforce.com/services/oauth2/userinfo
+    account_id: user_id
+    label: email
+# A named user's JWT-based token lives for the org's session timeout, two hours
+# in a new org, unless the External Client App sets its own under OAuth
+# Policies, from 1 minute to 12 hours. The setup asks for 30 minutes, so a
+# token handed to an agent outlives its grant by no more than that. A longer
+# one is refused rather than handed out.
+token: { kind: pass_through, max_lifetime: 1800 }
+mcp:
+  servers:
+    - { name: salesforce, url: "https://api.salesforce.com/platform/mcp/v1/platform/sobject-mutations" }
+access:
+  # mcp_api reaches every tool of every server the org activated, so no scope
+  # makes a sign-in read-only, and the entry offers the write level alone.
+  # SObject Mutations queries, creates and updates records, and cannot delete
+  # one; SObject Deletes and SObject All are never connected. What it reaches
+  # is still limited by the person's own object permissions, field-level
+  # security and sharing rules.
+  write:
+    scopes:
+      - mcp_api
+      - refresh_token
+      - openid
+tools: { mode: pass_through }

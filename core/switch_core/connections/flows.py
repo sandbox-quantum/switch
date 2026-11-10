@@ -181,7 +181,9 @@ class ServiceFlows:
         # service has it. The grant is then on or off.
         consent: AccessLevel = "write" if access.write is not None else "read"
         level = access.write or access.read
-        assert level.scopes is not None and access.read.scopes is not None
+        assert level is not None and level.scopes is not None
+        read_scopes = [] if access.read is None else access.read.scopes
+        assert read_scopes is not None
         try:
             stored = await self._flows.start(
                 kind=KIND,
@@ -201,7 +203,7 @@ class ServiceFlows:
                     "name": definition.name,
                     "consent": consent,
                     "scopes": list(level.scopes),
-                    "read_scopes": list(access.read.scopes),
+                    "read_scopes": list(read_scopes),
                     "write_scopes": list(level.scopes) if consent == "write" else [],
                 },
                 completion_secret=completion_secret,
@@ -355,11 +357,13 @@ class ServiceFlows:
         write_scopes = set(details["write_scopes"])
         if write_scopes and write_scopes <= granted:
             return "write"
-        if set(details["read_scopes"]) <= granted:
+        read_scopes = set(details["read_scopes"])
+        if read_scopes and read_scopes <= granted:
             return "read"
         raise FlowError(
-            f"{details['name']} granted less than Switch needs to read. Connect "
-            "again and allow what it asks for."
+            f"{details['name']} granted less than Switch needs to "
+            f"{'read' if read_scopes else 'write'}. Connect again and allow what "
+            "it asks for."
         )
 
     async def connected(self, exchange: Exchange, warning: str | None) -> None:

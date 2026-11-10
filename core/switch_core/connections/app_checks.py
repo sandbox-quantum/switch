@@ -16,7 +16,11 @@ request it must refuse, and reads which refusal it chose.
   redirect URI is not registered. What the vendor does not show this way
   (Google and Airtable compare the redirect URI only with a real code, and
   Airtable says nothing of whether the integration is published) is the
-  entry's `unchecked`, said with the result.
+  entry's `unchecked`, said with the result. An entry naming an
+  `introspection_url` is asked there instead, about a made-up token, for a
+  vendor whose token endpoint gives every made-up code one answer: Salesforce
+  says `unsupported_token_type` to a right client id and secret, and
+  `invalid_client` to anything else.
 
 What a check cannot prove (an App's permissions, a Google app's user type,
 which APIs are switched on) is left to the vendor's own pages.
@@ -227,27 +231,34 @@ async def check_oauth_client(
         ).endpoints()
     except ServiceAdapterError as refused:
         raise VendorUnreachableError(str(refused)) from None
+    oauth = definition.auth.oauth
+    assert oauth is not None
     identifying, headers = client_fields(endpoints, client)
+    if oauth.introspection_url is None:
+        url = endpoints.token
+        accepted = "invalid_grant"
+        probe = {
+            "grant_type": "authorization_code",
+            "code": PLACEHOLDER_CODE,
+            "code_verifier": PLACEHOLDER_VERIFIER,
+            "redirect_uri": redirect_uri,
+        }
+    else:
+        url = oauth.introspection_url
+        accepted = "unsupported_token_type"
+        probe = {"token": PLACEHOLDER_CODE, "token_type_hint": "access_token"}
     response = await _send(
         http,
         name,
         http.build_request(
             "POST",
-            endpoints.token,
-            data={
-                "grant_type": "authorization_code",
-                "code": PLACEHOLDER_CODE,
-                "code_verifier": PLACEHOLDER_VERIFIER,
-                "redirect_uri": redirect_uri,
-                **identifying,
-            },
+            url,
+            data={**probe, **identifying},
             headers={"Accept": "application/json", **headers},
         ),
     )
     error = _body(response).get("error")
-    if error == "invalid_grant":
-        oauth = definition.auth.oauth
-        assert oauth is not None
+    if error == accepted:
         return CheckResult(
             [
                 Check(

@@ -330,6 +330,7 @@ class FakeOAuthServer:
     def __init__(self, *, rotating: bool = True, lifetime: int = 3600) -> None:
         self.rotating = rotating
         self.lifetime = lifetime
+        self.instance_url: str | None = None
         self.resource_metadata_path = "/.well-known/oauth-protected-resource/v1/mcp"
         self.advertise = True
         # Some vendors issue long codes: Atlassian's run past 2,000 characters.
@@ -402,13 +403,16 @@ class FakeOAuthServer:
         refresh = f"vendor_refresh_{secrets.token_hex(8)}"
         self.live_access[access] = scopes
         self.live_refresh[refresh] = scopes
-        return {
+        answer = {
             "access_token": access,
             "token_type": "Bearer",
             "expires_in": self.lifetime,
             "refresh_token": refresh,
             "scope": " ".join(scopes),
         }
+        if self.instance_url is None:
+            return answer
+        return {**answer, "instance_url": self.instance_url}
 
     # ── HTTP ─────────────────────────────────────────────────────────────────
 
@@ -436,7 +440,12 @@ class FakeOAuthServer:
             return self._token(request)
         if where == f"{ISSUER}/register" and request.method == "POST":
             return self._register(request)
-        if where == f"{ISSUER}/revoke" and request.method == "POST":
+        if self.instance_url is not None and where == f"{ISSUER}/revoke":
+            return httpx.Response(302, headers={"location": self.instance_url})
+        if (
+            where in (f"{ISSUER}/revoke", f"{self.instance_url}/revoke")
+            and request.method == "POST"
+        ):
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)

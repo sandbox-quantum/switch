@@ -393,3 +393,30 @@ describe("an organization's apps", () => {
     );
   });
 });
+
+describe("Salesforce", () => {
+  const SALESFORCE = app({
+    ...AIRTABLE,
+    slug: "salesforce",
+    name: "Salesforce",
+    configuration_variables: ["SALESFORCE_CLIENT_CONFIG_PATH"],
+    scopes: ["mcp_api", "refresh_token", "openid"],
+  });
+
+  it("activates the one server, and names the settings no check can see", () => {
+    const steps = setupInstructions(SALESFORCE, "internal", null);
+    const texts = steps.map((step) => step.text);
+    expect(texts[0]).toMatch(/activate SObject Mutations\. Leave SObject Deletes and SObject All off/);
+    expect(texts.join(" ")).toContain("JSON Web Token (JWT)-based access tokens for named users");
+    expect(steps.filter((step) => step.copy.length > 0)).toHaveLength(1);
+    expect(steps.find((step) => step.items.length > 0)?.items).toEqual(["mcp_api", "refresh_token", "openid"]);
+    expect(confirmBeforeCheck(SALESFORCE)?.label).toBe(
+      "I've activated SObject Mutations, turned on JWT-based access tokens and Require Secret, and set the 30-minute token timeout."
+    );
+  });
+
+  it("names its Helm value when moving off configuration", () => {
+    const [, remove] = moveChecklist({ ...SALESFORCE, source: "configuration" });
+    expect(remove!.text).toContain("switchCore.salesforceClientSecret");
+  });
+});
