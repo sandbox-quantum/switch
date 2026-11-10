@@ -34,7 +34,6 @@ import httpx
 from fastmcp import Client
 from fastmcp.client.logging import LogMessage
 from fastmcp.client.transports import StreamableHttpTransport
-from jsonschema import Draft202012Validator, validators
 from mcp.shared.exceptions import McpError
 from mcp.types import (
     CONNECTION_CLOSED,
@@ -45,7 +44,6 @@ from mcp.types import (
     TextContent,
     Tool,
 )
-from referencing import Registry
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -78,7 +76,6 @@ MCP_RESPONSE_BYTES = 1024 * 1024
 MCP_IDENTITY_BYTES = 4 * 1024 * 1024
 MCP_TOOL_PAGES = 20
 MCP_RESULT_BYTES = 64 * 1024
-MCP_INPUT_SCHEMA_BYTES = 64 * 1024
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
@@ -396,45 +393,44 @@ def _leaves(error: BaseException) -> Iterator[BaseException]:
             pending.append(current.__cause__)
 
 
-_SCHEMA_REFERENCES = frozenset({"$ref", "$dynamicRef", "$recursiveRef"})
+_NO_ARGUMENT_KEYS = frozenset(
+    {
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "minProperties",
+        "maxProperties",
+        "title",
+        "description",
+        "$schema",
+        "$comment",
+        "default",
+        "examples",
+        "deprecated",
+    }
+)
 
 
-def _has_reference(schema: dict[str, Any]) -> bool:
-    pending: list[Any] = [schema]
-    while pending:
-        node = pending.pop()
-        if isinstance(node, dict):
-            if not _SCHEMA_REFERENCES.isdisjoint(node):
-                return True
-            pending.extend(node.values())
-        elif isinstance(node, list):
-            pending.extend(node)
-    return False
-
-
-def _accepts_no_arguments(schema: dict[str, Any]) -> bool:
+def _accepts_no_arguments(schema: object) -> bool:
     """Whether a tool's input schema takes `{}`. This says nothing about
-    what the tool does: read-only rests on its annotation and the catalog."""
-    if schema.get("type") != "object":
+    what the tool does: read-only rests on its annotation and the catalog.
+
+    Only top-level keywords that cannot refuse `{}` are allowed, and nothing
+    nested is read. On a small hostile schema, a JSON Schema validator can
+    spend minutes of CPU time on the event loop."""
+    if not isinstance(schema, dict) or schema.get("type") != "object":
         return False
-    try:
-        size = len(json.dumps(schema, separators=(",", ":"), sort_keys=True))
-    except (RecursionError, TypeError, ValueError):
+    if not _NO_ARGUMENT_KEYS.issuperset(schema):
         return False
-    # The validator follows references without memoizing, so a small schema
-    # can take hours on the event loop. Without them its work is linear.
-    if size > MCP_INPUT_SCHEMA_BYTES or _has_reference(schema):
-        return False
-    try:
-        validator = validators.validator_for(schema, default=Draft202012Validator)
-        validator.check_schema(schema)
-        # An empty registry, so a remote $ref is never fetched.
-        validator(schema, registry=Registry()).validate({})
-    except Exception:
-        # An invalid schema, a refusal of {}, an unresolvable $ref, or any
-        # other failure on a vendor's schema: Core does not call the tool.
-        return False
-    return True
+    min_properties = schema.get("minProperties", 0)
+    return (
+        schema.get("required", []) == []
+        and type(min_properties) is int
+        and min_properties == 0
+        and isinstance(schema.get("properties", {}), dict)
+        and isinstance(schema.get("additionalProperties", True), bool | dict)
+    )
 
 
 def _identity_body(result: CallToolResult) -> dict[str, Any] | None:

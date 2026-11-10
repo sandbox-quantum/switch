@@ -422,102 +422,72 @@ EVIL_PATTERN = {"type": "string", "pattern": "^(a+)+$"}
 
 
 @pytest.mark.parametrize(
-    "schema, accepted",
+    "schema",
     [
-        ({"type": "object"}, True),
-        ({"type": "object", "properties": {"a": {"type": "string"}}}, True),
-        ({"type": "object", "additionalProperties": False}, True),
-        ({"type": "object", "dependentRequired": {"a": ["b"]}}, True),
-        ({"type": "object", "anyOf": [{}, {"required": ["a"]}]}, True),
-        ({"type": "object", "x-vendor": 1}, True),
-        (
-            {"$schema": "http://json-schema.org/draft-07/schema#", "type": "object"},
-            True,
-        ),
-        ({"type": "object", "properties": {"a": EVIL_PATTERN}}, True),
-        ({"type": "object", "required": ["a"]}, False),
-        ({"type": "object", "minProperties": 1}, False),
-        ({"type": "object", "not": {"maxProperties": 0}}, False),
-        ({"type": "object", "if": {}, "then": {"required": ["a"]}}, False),
-        (
-            {"type": "object", "anyOf": [{"required": ["a"]}, {"required": ["b"]}]},
-            False,
-        ),
-        (
-            {
-                "type": "object",
-                "$ref": "#/$defs/x",
-                "$defs": {"x": {"required": ["a"]}},
-            },
-            False,
-        ),
-        ({"type": "object", "$ref": "https://schemas.example.test/s.json"}, False),
-        ({}, False),
-        ({"type": "array"}, False),
-        ({"type": ["object"]}, False),
-        ({"type": "object", "minProperties": "one"}, False),
+        {"type": "object"},
+        {"type": "object", "properties": {"a": {"type": "string"}}},
+        {"type": "object", "properties": {"a": {"$ref": "#"}}},
+        {"type": "object", "properties": {"a": EVIL_PATTERN}},
+        {"type": "object", "properties": {}, "required": []},
+        {"type": "object", "additionalProperties": False},
+        {"type": "object", "additionalProperties": {"type": "string"}},
+        {"type": "object", "minProperties": 0, "maxProperties": 3},
+        {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "$comment": "c",
+            "type": "object",
+            "title": "t",
+            "description": "d",
+            "default": {},
+            "examples": [{}],
+            "deprecated": False,
+        },
     ],
 )
-def test_accepts_no_arguments(schema, accepted):
-    started = time.monotonic()
-    assert oauth._accepts_no_arguments(schema) is accepted
-    assert time.monotonic() - started < 1
+def test_accepts_no_arguments_takes_a_safe_shape(schema):
+    assert oauth._accepts_no_arguments(schema) is True
 
 
-def _doubling_chain(levels: int) -> dict[str, Any]:
-    """Each definition refers twice to the next, so a validator that follows
-    references does twice the work at each level."""
-    defs: dict[str, Any] = {
-        f"d{i}": {"allOf": [{"$ref": f"#/$defs/d{i + 1}"}] * 2} for i in range(levels)
-    }
-    defs[f"d{levels}"] = {}
-    return {"type": "object", "$ref": "#/$defs/d0", "$defs": defs}
-
-
-def _nested(depth: int) -> dict[str, Any]:
+def _unevaluated_chain(levels: int, keyword: str) -> dict[str, Any]:
     schema: dict[str, Any] = {}
-    for _ in range(depth):
-        schema = {"type": "object", "properties": {"a": schema}}
+    for _ in range(levels):
+        schema = {"type": "object", keyword: [schema], "unevaluatedProperties": False}
     return schema
 
 
 @pytest.mark.parametrize(
     "schema",
     [
-        _doubling_chain(30),
-        {"type": "object", "$ref": "#/$defs/x", "$defs": {"x": {"type": "object"}}},
-        {
-            "type": "object",
-            "properties": {"a": {"items": {"properties": {"b": {"$ref": "#"}}}}},
-        },
-        {"type": "object", "definitions": {"x": {"$ref": "#/definitions/x"}}},
-        {"type": "object", "properties": {"a": {"$dynamicRef": "#node"}}},
-        {"type": "object", "properties": {"a": {"$recursiveRef": "#"}}},
-        {"type": "object", "description": "x" * oauth.MCP_INPUT_SCHEMA_BYTES},
-        _nested(5000),
+        ["type", "object"],
+        {},
+        {"type": "array"},
+        {"type": ["object"]},
+        {"type": "object", "required": ["a"]},
+        {"type": "object", "required": "a"},
+        {"type": "object", "minProperties": 1},
+        {"type": "object", "minProperties": True},
+        {"type": "object", "minProperties": "one"},
+        {"type": "object", "properties": ["a"]},
+        {"type": "object", "additionalProperties": "no"},
+        {"type": "object", "not": {"maxProperties": 0}},
+        {"type": "object", "if": {}, "then": {"required": ["a"]}},
+        {"type": "object", "anyOf": [{}, {"required": ["a"]}]},
+        {"type": "object", "dependentRequired": {"a": ["b"]}},
+        {"type": "object", "patternProperties": {"^a$": {}}},
+        {"type": "object", "x-vendor": 1},
+        {"type": "object", "$ref": "https://schemas.example.test/s.json"},
+        {"type": "object", "$defs": {"x": {}}},
+        _unevaluated_chain(16, "allOf"),
+        _unevaluated_chain(16, "anyOf"),
+        _unevaluated_chain(16, "oneOf"),
+        {"type": "object", "allOf": [{}] * 21000},
     ],
-    ids=[
-        "doubling-chain",
-        "local-ref",
-        "nested-ref",
-        "definitions-ref",
-        "dynamic-ref",
-        "recursive-ref",
-        "oversized",
-        "deeply-nested",
-    ],
+    ids=lambda schema: str(schema)[:40],
 )
-def test_accepts_no_arguments_refuses_unbounded_schemas(schema):
+def test_accepts_no_arguments_refuses_other_shapes(schema):
     started = time.monotonic()
     assert oauth._accepts_no_arguments(schema) is False
     assert time.monotonic() - started < 1
-
-
-def test_accepts_no_arguments_takes_a_schema_at_the_size_limit():
-    schema: dict[str, Any] = {"type": "object", "description": ""}
-    size = len(json.dumps(schema, separators=(",", ":"), sort_keys=True))
-    schema["description"] = "x" * (oauth.MCP_INPUT_SCHEMA_BYTES - size)
-    assert oauth._accepts_no_arguments(schema) is True
 
 
 async def test_mcp_identity_refuses_a_schema_that_rejects_empty_arguments(
@@ -530,8 +500,8 @@ async def test_mcp_identity_refuses_a_schema_that_rejects_empty_arguments(
     assert vendor.calls == []
 
 
-async def test_mcp_identity_refuses_a_doubling_reference_chain_quickly(monkeypatch):
-    tool = {**GET_USER, "inputSchema": _doubling_chain(30)}
+async def test_mcp_identity_refuses_an_unevaluated_chain_quickly(monkeypatch):
+    tool = {**GET_USER, "inputSchema": _unevaluated_chain(16, "allOf")}
     vendor = _ScriptedMcp({None: ([tool], None)})
     _over_mock(monkeypatch, vendor)
     started = time.monotonic()
