@@ -29,6 +29,7 @@ import {
 import {
   JsonRpcError,
   noopLogger,
+  RequestTooLargeError,
   StdioJsonRpcClient,
   type ProviderLogger,
 } from '../transport/stdio-json-rpc';
@@ -191,6 +192,7 @@ export class AcpAdapter implements ProviderAdapter {
       ...launch,
       cwd,
       logger: this.logger,
+      maxRequestBytes: hooks.maxRequestBytes,
       onExit: (reason) => this.exited(input.sessionId, reason),
     });
     const state: State = {
@@ -234,7 +236,10 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client, hooks);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      const serverSpecs =
+        hooks.prepareMcpServers?.(input.mcpServers, input.env, this.options.mcpBridge) ??
+        input.mcpServers;
+      requireHttpMcp(hooks.label, serverSpecs, agent.mcpCapabilities?.http);
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -255,7 +260,7 @@ export class AcpAdapter implements ProviderAdapter {
         }))
       )
         await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = acpMcpServers(serverSpecs, input.env);
       let method = 'session/new';
       if (input.resume) {
         method = agent.loadSession
@@ -361,6 +366,7 @@ export class AcpAdapter implements ProviderAdapter {
 
   private async run(state: State, input: ProviderSendTurnInput): Promise<string> {
     if (input.model) await this.setModel(state.id, input.model);
+    const initialContext = state.context;
     const prompt: Array<Record<string, unknown>> = [
       { type: 'text', text: state.context ? `${state.context}\n\n${input.text}` : input.text },
     ];
@@ -394,12 +400,17 @@ export class AcpAdapter implements ProviderAdapter {
         });
       }
     }
-    return (
-      await state.client.request<{ stopReason: string }>('session/prompt', {
-        sessionId: state.nativeId,
-        prompt,
-      })
-    ).stopReason;
+    try {
+      return (
+        await state.client.request<{ stopReason: string }>('session/prompt', {
+          sessionId: state.nativeId,
+          prompt,
+        })
+      ).stopReason;
+    } catch (error) {
+      if (error instanceof RequestTooLargeError) state.context = initialContext;
+      throw error;
+    }
   }
 
   async interruptTurn(id: string): Promise<void> {

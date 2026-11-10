@@ -162,6 +162,21 @@ it('sends attachments as the agent advertises it can take them, else as resource
   });
 });
 
+it('retains initial context when an oversized prompt is rejected before sending', async () => {
+  const { adapter, server } = await start(
+    { ...dummy, maxRequestBytes: 512 },
+    { systemContext: 'important context' }
+  );
+  await adapter.sendTurn({ sessionId: 's', turnId: 'too-large', text: 'x'.repeat(600) });
+  await flush();
+  expect(server.received.some((message) => message.method === 'session/prompt')).toBe(false);
+  await adapter.sendTurn({ sessionId: 's', turnId: 'retry', text: 'hello' });
+  const prompt = (await server.waitFor('session/prompt')).params?.prompt as Array<
+    Record<string, unknown>
+  >;
+  expect(prompt[0]).toEqual({ type: 'text', text: 'important context\n\nhello' });
+});
+
 it('embeds file contents when the agent takes embedded context', async () => {
   agent.capabilities = { promptCapabilities: { embeddedContext: true } };
   const { adapter, server } = await start();

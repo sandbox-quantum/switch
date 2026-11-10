@@ -71,6 +71,7 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "opencode": ("opencode", "OpenCode CLI"),
         "antigravity": ("antigravity", "Antigravity CLI"),
         "cursor": ("cursor", "Cursor CLI"),
+        "openhands": ("openhands", "OpenHands CLI"),
     }
 
 
@@ -85,6 +86,7 @@ _CONSOLE_SIGN_IN = {
     "opencode": ("opencode/sign-in.ts", r"OPENCODE_LOGIN = '([^']+)'"),
     "antigravity": ("antigravity/runtime.ts", r"AGY_LOGIN = '([^']+)'"),
     "cursor": ("cursor/cursor-adapter.ts", r"CURSOR_LOGIN = '([^']+)'"),
+    "openhands": ("openhands/openhands-adapter.ts", r"loginCommand: '([^']+)'"),
 }
 
 
@@ -99,11 +101,16 @@ def test_each_sign_in_command_is_the_one_switch_console_runs() -> None:
         assert provider.sign_in_command == found.group(1), provider.id
 
 
+def test_openhands_sign_in_hint_starts_agent_setup() -> None:
+    # Cloud-only `openhands login` does not configure the agent that ACP loads.
+    assert agent_provider("openhands").sign_in_command == "openhands"
+
+
 def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
     with pytest.raises(UnknownProvider) as raised:
         agent_provider("gemini")
     assert str(raised.value) == (
-        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor"
+        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, openhands"
     )
 
 

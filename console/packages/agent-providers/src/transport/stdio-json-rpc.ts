@@ -25,6 +25,8 @@ export interface StdioJsonRpcClientOptions {
   /** Called once when the process goes away, whether or not it was asked to. */
   onExit: (reason: string) => void;
   rejectOutputLine?: (line: string) => string | undefined;
+  /** Provider-specific maximum request-line size; omitted means no extra limit. */
+  maxRequestBytes?: number;
 }
 
 export class JsonRpcError extends Error {
@@ -37,6 +39,9 @@ export class JsonRpcError extends Error {
     this.name = 'JsonRpcError';
   }
 }
+
+/** The request was rejected locally before any bytes were sent to the provider. */
+export class RequestTooLargeError extends Error {}
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -70,6 +75,7 @@ export class StdioJsonRpcClient {
   private readonly serverRequestHandlers = new Map<string, ServerRequestHandler>();
   private readonly logger: ProviderLogger;
   private readonly onExit: (reason: string) => void;
+  private readonly maxRequestBytes: number | undefined;
   private stderrTail = '';
   private nextId = 0;
   private exited = false;
@@ -78,6 +84,7 @@ export class StdioJsonRpcClient {
   constructor(options: StdioJsonRpcClientOptions) {
     this.logger = options.logger;
     this.onExit = options.onExit;
+    this.maxRequestBytes = options.maxRequestBytes;
     this.child = spawnProvider(options.command, options.args, {
       cwd: options.cwd,
       env: options.env,
@@ -152,6 +159,19 @@ export class StdioJsonRpcClient {
       return Promise.reject(new Error(`provider process is gone; cannot call ${method}`));
     }
     const id = ++this.nextId;
+    const message = { jsonrpc: '2.0', id, method, params };
+    if (this.maxRequestBytes !== undefined) {
+      try {
+        if (Buffer.byteLength(JSON.stringify(message), 'utf8') > this.maxRequestBytes)
+          return Promise.reject(
+            new RequestTooLargeError(
+              `Provider request ${method} exceeds the input limit and was not sent.`
+            )
+          );
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
     return new Promise<T>((resolve, reject) => {
       const timeoutMs = method === 'session/prompt' ? 12 * 60 * 60 * 1000 : 60000;
       const timer = setTimeout(() => {
@@ -170,7 +190,7 @@ export class StdioJsonRpcClient {
         timer,
       });
       try {
-        this.write({ jsonrpc: '2.0', id, method, params });
+        this.write(message);
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
