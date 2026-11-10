@@ -63,6 +63,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelCreationUnsupported,
     ChannelType,
+    CreatedChannel,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -582,6 +583,7 @@ class TelegramAdapter(PlatformAdapter):
 
     supports_channel_creation: ClassVar[bool] = False
     supports_directory_search: ClassVar[bool] = False
+    supports_private_channels: ClassVar[bool] = False
     renders_custom_url_schemes: ClassVar[bool] = False
 
     draws_session_activity: ClassVar[bool] = True
@@ -640,6 +642,9 @@ class TelegramAdapter(PlatformAdapter):
         # (agent identities) can run. Set by BridgeCore.
         self._on_attached: Callable[[], None] | None = None
         self._seen_ids: OrderedDict[tuple[str, int], None] = OrderedDict()
+        # chat id -> the title its updates last carried. Telegram reports a
+        # retitle only as a service message, so a change is noticed by comparing.
+        self._chat_titles: dict[str, str] = {}
         self._seen_ids_max = 1000
         # Telegram user id ↔ username caches, for rendering outbound mentions of
         # people who address by numeric id rather than handle.
@@ -2217,7 +2222,8 @@ class TelegramAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         raise ChannelCreationUnsupported(
             "Telegram bots cannot create chats — the Bot API has no such call. "
             f"Create the group for '{name}' in a Telegram client and add "
@@ -2710,6 +2716,23 @@ class TelegramAdapter(PlatformAdapter):
         # refers to exists.
         await self.announce_visibility(channel_id)
 
+    async def _notice_title(
+        self, chat_id: str, channel_type: ChannelType, title: str | None
+    ) -> None:
+        """Hand the bridge a group's title when it is new to this process or
+        has changed. Every update carries the chat's current title, so a
+        retitle — its own service message included — is noticed at the next
+        update, even one made while Switch was not running. The first sighting
+        gives no old title: the bridge compares with the one it recorded."""
+        if channel_type == "direct" or not title:
+            return
+        previous = self._chat_titles.get(chat_id)
+        if previous == title:
+            return
+        self._chat_titles[chat_id] = title
+        if self._on_channel_named is not None:
+            await self._on_channel_named(chat_id, previous or "", title)
+
     async def _handle_message(self, message: Any) -> None:
         chat = message.chat
         chat_id = str(chat.id)
@@ -2728,6 +2751,8 @@ class TelegramAdapter(PlatformAdapter):
         self._seen_ids[key] = None
         if len(self._seen_ids) > self._seen_ids_max:
             self._seen_ids.popitem(last=False)
+
+        await self._notice_title(chat_id, channel_type, channel_name)
 
         new_members = getattr(message, "new_chat_members", None) or []
         if new_members:

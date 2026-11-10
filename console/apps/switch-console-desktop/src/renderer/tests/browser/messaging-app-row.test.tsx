@@ -81,6 +81,8 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
+    privateChannels: null,
+    privateChannelNeedsLinkedAccount: false,
     receivesWebhooks: false,
     webhookUrl: null,
     ...patch,
