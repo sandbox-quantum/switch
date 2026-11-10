@@ -121,9 +121,13 @@ class _HangingAdapter:
 
     def __init__(self, answers: set[str]) -> None:
         self._answers = answers
+        # Set once a request is waiting on the platform, so a test can act
+        # inside the platform phase rather than after a guessed delay.
+        self.asked = asyncio.Event()
 
     async def message_permalink(self, external_post_id: str) -> str:
         if external_post_id not in self._answers:
+            self.asked.set()
             await asyncio.Event().wait()
         return f"https://example.slack.com/{external_post_id}"
 
@@ -497,14 +501,15 @@ class TestSlackAnswers:
         room_id = await _room(session_factory, bridge_id=bridge_id)
         message = await say(session_factory, room_id)
         await _posted(session_factory, bridge_id, message.transport_event_id, "C1:1.0")
-        lifecycle.adapters[bridge_id] = _HangingAdapter(set())  # type: ignore[assignment]
+        adapter = _HangingAdapter(set())
+        lifecycle.adapters[bridge_id] = adapter  # type: ignore[assignment]
 
         call = asyncio.ensure_future(
             _service(session_factory, lifecycle).get_permalinks(
                 AGENT, [message.transport_event_id]
             )
         )
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(adapter.asked.wait(), timeout=5)
         call.cancel()
 
         with pytest.raises(asyncio.CancelledError):
