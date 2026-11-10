@@ -154,6 +154,20 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="grok",
+        label="Grok Build",
+        sign_in_command="grok login",
+        connector_type="Grok Build CLI",
+        tools=(
+            ToolSpec(name="Bash", description="Executes shell commands"),
+            ToolSpec(name="Edit", description="Edits existing files"),
+            ToolSpec(name="Write", description="Writes new files"),
+            ToolSpec(name="Read", description="Reads file contents"),
+            ToolSpec(name="Grep", description="Searches file contents"),
+            ToolSpec(name="Glob", description="Finds files by pattern"),
+        ),
+    ),
 )
 
 
