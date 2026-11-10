@@ -30,18 +30,27 @@ def test_the_served_provider_list() -> None:
         ("opencode", "OpenCode"),
         ("antigravity", "Antigravity"),
         ("cursor", "Cursor CLI"),
+        ("deepseek-harness", "DeepSeek Harness"),
     ]
     by_id = {provider["id"]: provider for provider in providers}
     served = advanced_config_schema()["providers"]
     for provider_id, provider in by_id.items():
         assert provider["advanced_fields"] == served[provider_id]["fields"]
     assert by_id["cursor"]["advanced_fields"] == []
+    assert by_id["deepseek-harness"]["advanced_fields"] == []
 
 
 def test_the_served_schema() -> None:
     providers = advanced_config_schema()["providers"]
 
-    assert set(providers) == {"claude", "codex", "opencode", "cursor", "antigravity"}
+    assert set(providers) == {
+        "claude",
+        "codex",
+        "opencode",
+        "cursor",
+        "antigravity",
+        "deepseek-harness",
+    }
     assert [field["key"] for field in providers["claude"]["fields"]] == [
         "tools",
         "disallowedTools",
@@ -63,6 +72,7 @@ def test_the_served_schema() -> None:
     ]
     assert providers["cursor"] == {"fields": []}
     assert providers["antigravity"] == {"fields": []}
+    assert providers["deepseek-harness"] == {"fields": []}
     claude = {field["key"]: field for field in providers["claude"]["fields"]}
     assert claude["isolation"] == {
         "key": "isolation",
@@ -124,6 +134,7 @@ def test_the_served_schema() -> None:
             },
         ),
         ("cursor", {}),
+        ("deepseek-harness", {}),
     ],
 )
 def test_valid_settings_pass(provider: str, config: dict[str, Any]) -> None:
@@ -135,6 +146,7 @@ def test_valid_settings_pass(provider: str, config: dict[str, Any]) -> None:
     [
         ("claude", {"verbosity": "low"}, "claude has no setting 'verbosity'"),
         ("cursor", {"effort": "high"}, "it has no advanced configuration"),
+        ("deepseek-harness", {"effort": "high"}, "it has no advanced configuration"),
         ("claude", {"effort": "huge"}, "claude setting 'effort' must be one of"),
         ("claude", {"effort": ""}, "leave the field out to leave it unset"),
         ("claude", {"effort": None}, "leave the field out to leave it unset"),

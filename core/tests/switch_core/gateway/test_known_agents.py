@@ -22,6 +22,7 @@ CODEX = known_agents()["codex"]
 OPENCODE = known_agents()["opencode"]
 ANTIGRAVITY = known_agents()["antigravity"]
 CURSOR = known_agents()["cursor"]
+DEEPSEEK_HARNESS = known_agents()["deepseek-harness"]
 
 
 def _agent(metadata: dict | None) -> SimpleNamespace:
@@ -287,6 +288,22 @@ class TestCursorKnownAgent:
             assert profile.pre_invocation_mediation == []
 
 
+class TestDeepseekHarnessKnownAgent:
+    def test_registry_and_profile(self) -> None:
+        assert isinstance(DEEPSEEK_HARNESS, GenericKnownAgent)
+        for auto_session, expected in [
+            (False, "session_addressable"),
+            (True, "auto_session"),
+        ]:
+            profile = DEEPSEEK_HARNESS.build_profile(
+                GenericAgentOptions(auto_session=auto_session)
+            )
+            assert profile.connection_model == expected
+            assert profile.message_exchange
+            assert profile.command_capabilities.interrupt == "session_dependent"
+            assert profile.pre_invocation_mediation == []
+
+
 class TestBlankOptionsAreNormalised:
     @pytest.mark.parametrize(
         ("options_cls", "field"),
@@ -370,6 +387,12 @@ _SESSION_DEPENDENT = CommandCapabilities(
             "cursor",
             "Cursor CLI",
             ["shell", "read_file", "write", "str_replace", "grep", "glob"],
+            [],
+        ),
+        (
+            "deepseek-harness",
+            "DeepSeek Harness CLI",
+            ["shell", "read_file", "write_file", "edit"],
             [],
         ),
     ],
