@@ -120,7 +120,7 @@ class TestAgentPermissions:
 
             async def manageable(user: User, admin: bool) -> dict[str, bool]:
                 summaries = await list_agents(
-                    session, AgentStore(), UserStore(), user, admin
+                    session, AgentStore(), UserStore(), _detail_protocol(), user, admin
                 )
                 return {s.name: s.can_manage for s in summaries}
 
@@ -181,7 +181,7 @@ class TestAgentPermissions:
             self._deleted_meanwhile(monkeypatch, gone.id)
 
             summaries = await list_agents(
-                session, AgentStore(), UserStore(), owner, False
+                session, AgentStore(), UserStore(), _detail_protocol(), owner, False
             )
 
             assert [s.name for s in summaries] == ["stays"]
@@ -256,7 +256,7 @@ class TestAgentPermissions:
             await session.flush()
 
             summaries = await list_agents(
-                session, AgentStore(), UserStore(), owner, False
+                session, AgentStore(), UserStore(), _detail_protocol(), owner, False
             )
 
             assert {s.name: (s.can_manage, s.can_rename) for s in summaries} == {
@@ -283,7 +283,7 @@ class TestAgentPermissions:
 
             async def editable(user: User, admin: bool) -> dict[str, bool]:
                 summaries = await list_agents(
-                    session, AgentStore(), UserStore(), user, admin
+                    session, AgentStore(), UserStore(), _detail_protocol(), user, admin
                 )
                 return {s.name: s.can_edit_options for s in summaries}
 
@@ -308,7 +308,7 @@ class TestAgentPermissions:
 
             async def transfer(user: User) -> dict[str, tuple[bool, str | None]]:
                 summaries = await list_agents(
-                    session, AgentStore(), UserStore(), user, False
+                    session, AgentStore(), UserStore(), _detail_protocol(), user, False
                 )
                 return {
                     s.name: (s.can_transfer, s.transfer_blocked_reason)
@@ -336,7 +336,12 @@ class TestAgentPermissions:
 
             async def reason(user: User, is_admin: bool) -> str:
                 [summary] = await list_agents(
-                    session, AgentStore(), UserStore(), user, is_admin
+                    session,
+                    AgentStore(),
+                    UserStore(),
+                    _detail_protocol(),
+                    user,
+                    is_admin,
                 )
                 assert summary.can_transfer is False
                 return summary.transfer_blocked_reason or ""

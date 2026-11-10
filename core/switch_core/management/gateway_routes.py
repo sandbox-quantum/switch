@@ -3,7 +3,9 @@
 Cookie-authenticated through `get_current_user`, which binds the caller's
 tenant; every route then acts only on the caller's own controllers and
 agents. Someone else's is answered exactly like one that does not exist, so
-nothing about another person's machines is disclosed.
+these routes disclose nothing about another person's machines. The agent list
+(`gateway/agents.py`) names the device each agent is placed on to its owner
+and to workspace admins, who see every device in their workspace.
 
 Failures use the same error envelope as the controller routes.
 """

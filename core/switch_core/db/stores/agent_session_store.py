@@ -1,7 +1,7 @@
 from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, literal_column, select, update
+from sqlalchemy import func, literal_column, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -237,6 +237,31 @@ class AgentSessionStore:
             .where(room_pred)
             .where(AgentSession.lifecycle == "heartbeat")
             .where(AgentSession.last_seen_at > cutoff)
+        )
+        return set(result.scalars().all())
+
+    async def agent_ids_live_anywhere(
+        self, session: AsyncSession, agent_ids: Collection[str]
+    ) -> set[str]:
+        """The subset of `agent_ids` with a fresh heartbeat in any slot: the
+        room-agnostic row under `ALWAYS_ON_TTL`, or a room-scoped row under
+        `SESSION_TTL`, as `get_live_agent_ids` reads each, in one query."""
+        if not agent_ids:
+            return set()
+        now = datetime.now(UTC)
+        result = await session.execute(
+            select(AgentSession.agent_id)
+            .distinct()
+            .where(AgentSession.agent_id.in_(agent_ids))
+            .where(AgentSession.lifecycle == "heartbeat")
+            .where(
+                or_(
+                    AgentSession.room_id.is_(None)
+                    & (AgentSession.last_seen_at > now - self.ALWAYS_ON_TTL),
+                    AgentSession.room_id.is_not(None)
+                    & (AgentSession.last_seen_at > now - self.SESSION_TTL),
+                )
+            )
         )
         return set(result.scalars().all())
 

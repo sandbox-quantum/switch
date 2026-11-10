@@ -435,6 +435,32 @@ class GatewayAgentSummary(AgentSummary, AgentCapabilities):
     pass
 
 
+class AgentDevice(BaseModel):
+    """The device a managed agent is placed on."""
+
+    id: str
+    name: str
+    # Removed from Switch. The agent stays placed on it, and runs nowhere,
+    # until its owner moves it.
+    removed: bool
+
+
+class GatewayAgentListEntry(GatewayAgentSummary):
+    """A row of the Gateway's agent list: the summary and what the caller may
+    do, with where the agent stands now. Only the list carries these: they are
+    read for every agent at once, and nothing else that returns an agent shows
+    them."""
+
+    # `online` while it holds a live connection or session, or its device
+    # runs it; `offline` otherwise; `not_tracked` for an agent that only
+    # polls, which holds nothing Switch can see between polls.
+    status: Literal["online", "offline", "not_tracked"]
+    # Named to the device's owner and to workspace admins, who see every
+    # device in the workspace. Null for an agent placed on no device, and for
+    # anyone else.
+    device: AgentDevice | None
+
+
 class GatewayAgentDetail(AgentDetail, AgentCapabilities):
     # Its owner only, not an admin: turning on that it may manage its
     # owner's agents.
