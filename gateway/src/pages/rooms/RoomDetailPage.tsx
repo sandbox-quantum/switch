@@ -1157,8 +1157,7 @@ function DangerSection({
     setDeleting(true);
     setError(null);
     try {
-      const ok = await deleteRoom(room.id);
-      if (!ok) throw new Error("Delete returned false");
+      await deleteRoom(room.id, false);
       onDeleted();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");

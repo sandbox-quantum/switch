@@ -105,19 +105,21 @@ export default function RoomsPage() {
     // Active view → archive the selection; Archived view → unarchive it.
     const action = viewingArchived ? "unarchive" : "archive";
     const done = viewingArchived ? "Unarchived" : "Archived";
-    const result = await bulkArchiveRooms(ids, !viewingArchived);
-    // The server skips, without failing, any room the user can't change or
-    // that is gone, and says how many it did change.
-    if (result === null) {
+    try {
+      const result = await bulkArchiveRooms(ids, !viewingArchived);
+      // The server skips, without failing, any room the user can't change or
+      // that is gone, and says how many it did change.
+      if (result.updated < ids.length) {
+        const skipped = ids.length - result.updated;
+        setNotice({
+          severity: "warning",
+          text: `${done} ${result.updated} of ${ids.length}; ${skipped} you can't change or no longer exist.`,
+        });
+      }
+    } catch (err) {
       setNotice({
         severity: "error",
-        text: `Couldn't ${action} the selected rooms.`,
-      });
-    } else if (result.updated < ids.length) {
-      const skipped = ids.length - result.updated;
-      setNotice({
-        severity: "warning",
-        text: `${done} ${result.updated} of ${ids.length}; ${skipped} you can't change or no longer exist.`,
+        text: `Couldn't ${action} the selected rooms: ${err instanceof Error ? err.message : "unknown error"}`,
       });
     }
     setSelected([]);

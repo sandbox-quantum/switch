@@ -66,6 +66,7 @@ const room = {
   created_at: "2026-10-01T00:00:00Z",
   archived: false,
   viewer_is_member: false,
+  channel_on_delete: null,
   transport_room_id: "!r1:example.test",
   matrix_room_id: "!r1:example.test",
   external_channel_id: null,

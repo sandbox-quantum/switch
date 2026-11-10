@@ -137,14 +137,14 @@ describe("RoomsPage archive", () => {
   });
 
   it("says when a bulk archive failed", async () => {
-    vi.mocked(api.bulkArchiveRooms).mockResolvedValue(null);
+    vi.mocked(api.bulkArchiveRooms).mockRejectedValue(new Error("Server unavailable"));
     render(<RoomsPage />);
     fireEvent.click(screen.getByRole("checkbox", { name: "select mine" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Archive (1)" }));
 
     expect((await screen.findByRole("alert")).textContent).toContain(
-      "Couldn't archive the selected rooms.",
+      "Couldn't archive the selected rooms: Server unavailable",
     );
   });
 
