@@ -116,6 +116,39 @@ class TestV1MachinesCount:
         assert snap.valve_memory["failing"] == 1
         assert list(counts) == ["v2/w1"]
 
+    @pytest.mark.parametrize("backend", ["vm", "box"])
+    def test_a_woken_machine_is_not_expected_until_it_reports(
+        self, backend: str
+    ) -> None:
+        """Waking a ready machine makes it prove itself again (`provisioning`),
+        and it turns ready only when a status report arrives, in the same call
+        that sets `heartbeat_at`. So a booting machine never counts as
+        expected but silent."""
+        from switch_core.db.models import CloudMachine
+        from switch_core.db.stores.hosted_machine_store import CloudMachineStore
+
+        machine = CloudMachine(
+            id="m1",
+            owner_id="u1",
+            state="ready",
+            desired_state="stopped",
+            stop_reason="idle",
+            revision=3,
+            backend=backend,
+        )
+        CloudMachineStore().start(machine, NOW)
+        row = MachineRow(
+            id="m1",
+            state=machine.state,
+            desired_state=machine.desired_state,
+            heartbeat=None,
+            heartbeat_at=NOW - timedelta(hours=1),
+            backend=backend,
+        )
+        snap, _ = snapshot_of([row], NOW)
+        assert (machine.state, machine.desired_state) == ("provisioning", "running")
+        assert snap.boxes_expected == {"vm": 0, "box": 0}
+
     def test_a_machine_of_an_unknown_kind_is_left_out(self) -> None:
         machine, agents = _v1_report()
         snap, _ = snapshot_of([_row("x", CANARY, box_summary(machine, agents))], NOW)

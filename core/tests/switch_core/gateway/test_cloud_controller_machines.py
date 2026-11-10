@@ -698,6 +698,89 @@ class TestControllerMachines:
             {"trigger": "message", "stopped_by": "idle"}
         ]
 
+    async def test_a_woken_machine_counts_as_expected_only_once_it_reports(
+        self, harness: Harness
+    ) -> None:
+        """Observability: through the real wake and status paths, a woken
+        machine reads expected 0 while it is `provisioning`, and expected 1
+        with reporting 1 once its first status report makes it ready. So a
+        booting machine never counts as expected but silent."""
+        from switch_core.observability.hosted import MachineRow, snapshot_of
+
+        def gauges(row: CloudMachine) -> tuple[dict[str, int], dict[str, int]]:
+            snap, _ = snapshot_of(
+                [
+                    MachineRow(
+                        id=row.id,
+                        state=row.state,
+                        desired_state=row.desired_state,
+                        heartbeat=row.heartbeat,
+                        heartbeat_at=row.heartbeat_at,
+                        backend=row.backend,
+                    )
+                ],
+                datetime.now(UTC),
+            )
+            return snap.boxes_expected, snap.boxes_reporting
+
+        owner = await add_member(harness.session_factory, "ada")
+        machine = await _claim(harness.session_factory, owner)
+        async with _hosted_app(harness.session_factory, owner) as hosted:
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
+            async with harness.client() as client:
+                enrolled = await _enroll(client, code)
+                token = await client.post(
+                    f"/v1/management/controllers/{enrolled['controller_id']}/token",
+                    json={"credential": enrolled["credential"]},
+                )
+                assert token.status_code == 200, token.text
+                controller = SimpleNamespace(
+                    controller_id=enrolled["controller_id"],
+                    credential=enrolled["credential"],
+                    access_token=token.json()["access_token"],
+                    owner=owner,
+                    harness=harness,
+                    headers=bearer(token.json()["access_token"]),
+                )
+                # Asleep for idleness, its last report long gone.
+                await _update(
+                    harness.session_factory,
+                    machine.id,
+                    state="ready",
+                    desired_state="stopped",
+                    stop_reason="idle",
+                    heartbeat_at=datetime.now(UTC) - timedelta(hours=2),
+                )
+                async with harness.session_factory() as session:
+                    woken = await wake_controller_machine(
+                        session, enrolled["controller_id"], datetime.now(UTC), "message"
+                    )
+                    await session.commit()
+                assert woken is not None
+                booting = await _machine(harness.session_factory, machine.id)
+                assert (booting.state, booting.desired_state) == (
+                    "provisioning",
+                    "running",
+                )
+                kind = booting.backend
+                assert gauges(booting) == ({"vm": 0, "box": 0}, {"vm": 0, "box": 0})
+
+                # The reconciler sees it running at the new revision, then its
+                # controller's first report makes it ready.
+                await _update(
+                    harness.session_factory,
+                    machine.id,
+                    running_observed_at=datetime.now(UTC),
+                )
+                await report_status(client, controller, 1)  # type: ignore[arg-type]
+                ready = await _machine(harness.session_factory, machine.id)
+                assert ready.state == "ready"
+                expected, reporting = gauges(ready)
+                assert expected[kind] == 1
+                assert reporting[kind] == 1
+
     async def test_placing_an_agent_on_a_sleeping_machine_wakes_it(
         self, harness: Harness, reported: RecordingSink
     ) -> None:

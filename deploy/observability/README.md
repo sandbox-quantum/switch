@@ -246,6 +246,12 @@ machine: `vm` (v1) or `box` (v2).
   process's start until it first hears from the hosted controller service, so
   a reconciler that is down when Core restarts still shows as silent. Read the
   minimum over pods.
+  **On a server with hosted agents v2 on**, the box workers (the scaler and
+  the drain worker) poll the same machine list, so the gauge shows the
+  hosted controller service as a whole, not the v1 machines' reconciler
+  alone: it stays low while the box workers run, even if the v1 reconciler
+  has stopped. On a v1-only server it watches the v1 reconciler alone. A
+  narrower signal for the v1 reconciler comes with the v2 launch.
 - `switch.controller.credential_refusals` counts refused controller
   credentials by reason code and kind of route only, never the client's
   address or any part of the credential.
