@@ -211,6 +211,34 @@ describe("WorkspaceConnectorsPage", () => {
     await waitFor(() => expect(mutations).toEqual([{ method: "DELETE", path: "/workspace/services/datadog", body: undefined }]));
   });
 
+  it("lets an admin who set their own go back to the workspace's default where the organization has none", async () => {
+    asAdmin([{ ...GITHUB, enabled: true, decided_by: "workspace", workspace_set: true }]);
+    serve();
+    renderPage();
+    await loaded();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use this workspace's default for GitHub: off" }));
+
+    await waitFor(() =>
+      expect(mutations).toEqual([{ method: "DELETE", path: "/workspace/services/github", body: undefined }]),
+    );
+  });
+
+  it("offers no way back to a default to a member, or for a connector already on one", async () => {
+    asMember([{ ...GITHUB, enabled: true, decided_by: "workspace", organization_default: false }]);
+    serve();
+    renderPage();
+    await loaded();
+    expect(screen.queryByRole("button", { name: /^Use / })).toBeNull();
+
+    cleanup();
+    asAdmin([{ ...GITHUB, decided_by: "organization_default", organization_default: false }, DATADOG]);
+    serve();
+    renderPage();
+    await loaded();
+    expect(screen.queryByRole("button", { name: /^Use / })).toBeNull();
+  });
+
   it("asks before going back to a default that turns it off for people using it", async () => {
     asAdmin([
       {

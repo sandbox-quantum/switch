@@ -344,8 +344,8 @@ version of their own to them without also giving them a release of their own.
   no switch for anyone), the organization's default, the workspace's own
   choice, or the workspace's default. Workspace and organization admins
   switch what is not locked, and a workspace that set its own can go back to
-  the organization's default; turning off a connector people or agents use
-  asks first. Members see the same page read-only. Each card says whether it
+  the default, the organization's where it set one; turning off a connector
+  people or agents use asks first. Members see the same page read-only. Each card says whether it
   signs in through the organization's app or Switch's, or what stops anyone
   using it. The workspace's connector list (`GET /workspace/services`) is now
   readable by every member, with the counts of who a switch reaches left to

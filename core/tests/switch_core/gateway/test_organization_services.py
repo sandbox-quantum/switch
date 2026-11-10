@@ -27,6 +27,7 @@ from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.db.audit import OrganizationAuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    Organization,
     OrganizationAuditEvent,
     OrganizationMember,
     Tenant,
@@ -561,6 +562,20 @@ class TestWhatThePagesSay:
 class TestTheWorkspacesList:
     """What the workspace's own list says of its organization's say: which
     setting decides each service, who made it, and what may change here."""
+
+    async def test_names_the_organization(
+        self, harness: Harness, session_factory
+    ) -> None:
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        async with session_factory() as session:
+            name = await session.scalar(
+                select(Organization.name).where(Organization.id == TENANT_ZERO_ID)
+            )
+        assert name is not None
+        listed = await _call(harness, workspace_admin, "GET", WORKSPACE)
+        assert listed.json()["organization_name"] == name
 
     async def test_an_unlocked_default_is_named_and_credited_to_the_organization(
         self, harness: Harness, session_factory

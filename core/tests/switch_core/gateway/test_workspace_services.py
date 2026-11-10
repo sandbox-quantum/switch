@@ -21,10 +21,8 @@ from switch_core.db.audit import AuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     AuditEvent,
-    Organization,
     ServiceGrant,
     ServiceTokenIssuance,
-    Tenant,
     TenantMember,
     User,
 )
@@ -356,17 +354,14 @@ class TestResults:
         assert (github["connected_members"], github["granted_agents"]) == (None, None)
         assert github["decided_by"] == "workspace_default"
 
-    async def test_names_the_workspaces_organization(self, harness: Harness) -> None:
+    async def test_names_no_organization_where_it_has_no_say(
+        self, harness: Harness
+    ) -> None:
+        """This harness runs without `organization_connector_apps`, so the
+        workspace's organization never decides a connector here."""
         admin = await _person(harness.session_factory, "admin", member_role="admin")
-        async with harness.session_factory() as session:
-            organization = await session.scalar(
-                select(Organization.name)
-                .join(Tenant, Tenant.organization_id == Organization.id)
-                .where(Tenant.id == TENANT_ZERO_ID)
-            )
-        assert organization is not None
         listed = await _get(harness, admin)
-        assert listed.json()["organization_name"] == organization
+        assert listed.json()["organization_name"] is None
 
 
 class TestSwitchingOff:

@@ -79,6 +79,14 @@ function offConfirmation(service: WorkspaceService, enabled: boolean, workspace:
   };
 }
 
+/** Where dropping the workspace's own setting leaves a connector: its
+ * organization's unlocked default where it has one, else the workspace's. */
+function defaultOf(service: WorkspaceService, data: WorkspaceServices): { enabled: boolean; whose: string } {
+  if (service.organization_default !== null)
+    return { enabled: service.organization_default, whose: `${data.organization_name ?? "your organization"}'s` };
+  return { enabled: data.on_by_default, whose: "this workspace's" };
+}
+
 interface Change {
   service: WorkspaceService;
   /** Whether it is on once the change is made. */
@@ -186,8 +194,7 @@ export default function WorkspaceConnectorsPage() {
                 renderCard={(service) => {
                   const offEverywhere = service.unavailable_code === "switched_off";
                   const lockedOff = service.decided_by === "organization_locked" && !service.enabled;
-                  const organizationDefault =
-                    service.can_change && service.decided_by === "workspace" ? service.organization_default : null;
+                  const fallback = service.can_change && service.decided_by === "workspace" ? defaultOf(service, data) : null;
                   return (
                     <ConnectorCard
                       connector={service}
@@ -211,19 +218,22 @@ export default function WorkspaceConnectorsPage() {
                               }
                             />
                           </Stack>
-                          {organizationDefault !== null && (
-                            <Tooltip title={`Use ${organization}'s default: ${organizationDefault ? "on" : "off"}`}>
-                              <Button
-                                size="small"
-                                variant="text"
-                                disabled={pending !== null}
-                                onClick={() => goBackToDefault(service, organizationDefault)}
-                                aria-label={`Use ${organization}'s default for ${service.name}: ${
-                                  organizationDefault ? "on" : "off"
-                                }`}
-                              >
-                                Use default
-                              </Button>
+                          {fallback && (
+                            <Tooltip title={`Use ${fallback.whose} default: ${fallback.enabled ? "on" : "off"}`}>
+                              {/* A disabled button fires no events, so the tooltip listens on this. */}
+                              <span>
+                                <Button
+                                  size="small"
+                                  variant="text"
+                                  disabled={pending !== null}
+                                  onClick={() => goBackToDefault(service, fallback.enabled)}
+                                  aria-label={`Use ${fallback.whose} default for ${service.name}: ${
+                                    fallback.enabled ? "on" : "off"
+                                  }`}
+                                >
+                                  Use default
+                                </Button>
+                              </span>
                             </Tooltip>
                           )}
                         </Stack>

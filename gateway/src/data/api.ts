@@ -2876,6 +2876,7 @@ export interface WorkspaceServices {
   can_change: boolean;
   /** Whether a service nobody has set is on here. */
   on_by_default: boolean;
+  /** The workspace's organization, where it has a say in connectors; null where it has none. */
   organization_name: string | null;
   services: WorkspaceService[];
 }

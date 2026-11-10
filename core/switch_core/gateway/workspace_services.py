@@ -122,8 +122,15 @@ async def list_workspace_services(
         user.id: user.name
         for user in await session.scalars(select(User).where(User.id.in_(authors)))
     }
-    connected = await _counts(session, ServiceConnection.user_id, ServiceConnection)
-    granted = await _counts(session, ServiceGrant.agent_id, ServiceGrant)
+    # Who a switch reaches is an admin's to weigh, and nobody else's to see.
+    connected = (
+        await _counts(session, ServiceConnection.user_id, ServiceConnection)
+        if is_admin
+        else {}
+    )
+    granted = (
+        await _counts(session, ServiceGrant.agent_id, ServiceGrant) if is_admin else {}
+    )
     services = []
     for entry in CATALOG.values():
         definition = entry.definition
@@ -189,7 +196,11 @@ async def list_workspace_services(
     return {
         "can_change": is_admin,
         "on_by_default": await STORE.on_by_default(session),
-        "organization_name": await _organization_name(session),
+        # Named only where the organization has a say, so nothing reads as
+        # if it could set a connector when it can't.
+        "organization_name": (
+            await _organization_name(session) if organizations else None
+        ),
         "services": services,
     }
 

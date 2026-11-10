@@ -45,14 +45,16 @@ function namedAgents(names: string[]): string {
 /**
  * What an admin is asked before switching a service off for the workspace, or
  * null when nobody is connected and no agent uses it: switching it off then
- * changes nothing anyone has, and is done without asking.
+ * changes nothing anyone has, and is done without asking. Null too when the
+ * server doesn't say who it reaches, as it says only to an admin: the switch
+ * is then refused, so there is nothing to weigh.
  */
 export function switchOffConfirmation(
   service: Pick<WorkspaceService, 'name' | 'connected_members' | 'granted_agents'>
 ): { title: string; description: string } | null {
   const members = service.connected_members;
   const agents = service.granted_agents;
-  if (members === 0 && agents === 0) return null;
+  if (members === null || agents === null || (members === 0 && agents === 0)) return null;
   const connected = `${members} ${members === 1 ? 'member is' : 'members are'} connected`;
   const using = `${agents} ${agents === 1 ? 'agent uses' : 'agents use'} it`;
   return {
