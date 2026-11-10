@@ -20,6 +20,8 @@ from collections.abc import Awaitable, Callable, Collection
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import validate_alias_format, validate_alias_map
@@ -31,12 +33,20 @@ from switch_core.authz import (
 )
 from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
+    ChannelInUse,
     ChannelType,
+    PrivateChannelOwnerMissing,
     RetireOutcome,
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.db.models import Room, RoomGroup, RoomRole
+from switch_core.db.models import (
+    ExternalUser,
+    ExternalUserClaim,
+    Room,
+    RoomGroup,
+    RoomRole,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -516,6 +526,143 @@ class RoomService:
             "allow channel creation for this messaging app."
         )
 
+    async def _require_channel_unused(
+        self,
+        bridge_id: str,
+        external_channel_id: str,
+        *,
+        except_room_id: str | None = None,
+    ) -> None:
+        """Refuse a channel another room already uses, before anything is made.
+
+        The unique index on (bridge, channel) is the guarantee; this is what
+        lets the common case say so plainly instead of failing on the insert.
+        """
+        async with self._session_factory() as session:
+            existing = await self._room_store.get_by_external_channel(
+                session, bridge_id, external_channel_id
+            )
+        if existing is not None and existing.id != except_room_id:
+            raise ChannelInUse(external_channel_id)
+
+    async def _check_existing_channel(
+        self,
+        collaboration_core: CollaborationCore,
+        bridge_id: str,
+        external_channel_id: str,
+        *,
+        except_room_id: str | None = None,
+    ) -> None:
+        """Everything asked of a channel named by id before a room is bound to
+        it: it is this bridge's to bind, no other room uses it, and the
+        platform says it exists and the Switch app is in it.
+
+        Whose it is comes first. On a connection shared between organisations
+        another organisation's channel id is not this bridge's, and asking
+        whether a room uses it before refusing would tell the caller that one
+        does.
+        """
+        adapter = collaboration_core.adapter
+        await adapter.require_bindable_channel(external_channel_id)
+        await self._require_channel_unused(
+            bridge_id, external_channel_id, except_room_id=except_room_id
+        )
+        await adapter.check_channel_usable(external_channel_id)
+
+    async def _private_channel_owner(
+        self,
+        collaboration_core: CollaborationCore,
+        bridge_id: str,
+        channel_type: ChannelType,
+        owner_user_id: str | None,
+    ) -> str | None:
+        """The platform account to name as a new private channel's owner, on a
+        platform that needs one (Teams); None where none is needed.
+
+        The person the room is for — its owner, which for a room an agent makes
+        is the agent's owner — through an account they linked on this bridge
+        and confirmed from it. Confirmed only: making someone a channel's owner
+        is more than recognising them, so an unconfirmed claim is not enough.
+        Refused before the platform is asked when there is no such account.
+        """
+        adapter = collaboration_core.adapter
+        if channel_type != "channel_private" or not adapter.private_channel_needs_owner:
+            return None
+        platform = adapter.platform_name
+        candidates: list[str] = []
+        if owner_user_id is not None:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    select(ExternalUser.external_user_id)
+                    .join(
+                        ExternalUserClaim,
+                        ExternalUserClaim.external_user_id == ExternalUser.id,
+                    )
+                    .where(
+                        ExternalUser.bridge_id == bridge_id,
+                        ExternalUserClaim.user_id == owner_user_id,
+                        ExternalUserClaim.verified_at.is_not(None),
+                    )
+                    .order_by(ExternalUserClaim.verified_at.desc())
+                )
+                candidates = [str(row) for row in result.scalars()]
+        for external_user_id in candidates:
+            if adapter.can_own_channel(external_user_id):
+                return external_user_id
+        if candidates:
+            raise PrivateChannelOwnerMissing(
+                f"A private {platform} channel needs an owner, and the {platform} "
+                f"account linked to you cannot be made one: {platform} accepts "
+                "only an account in your organisation's directory. Link your "
+                "work account instead, or choose a public channel."
+            )
+        raise PrivateChannelOwnerMissing(
+            f"A private {platform} channel needs an owner, and you have no "
+            f"{platform} account linked to Switch. Link your {platform} account "
+            "first in Switch Console, or choose a public channel."
+        )
+
+    async def _create_channel(
+        self,
+        collaboration_core: CollaborationCore,
+        bridge_id: str,
+        name: str,
+        topic: str,
+        channel_type: ChannelType,
+        *,
+        owner_user_id: str | None,
+    ) -> str:
+        """Make a new channel for a room, naming its owner where the platform
+        needs one for a private channel."""
+        owner_external_id = await self._private_channel_owner(
+            collaboration_core, bridge_id, channel_type, owner_user_id
+        )
+        if owner_external_id is None:
+            return await collaboration_core.adapter.create_channel(
+                name, topic, channel_type=channel_type
+            )
+        return await collaboration_core.adapter.create_channel(
+            name,
+            topic,
+            channel_type=channel_type,
+            owner_external_id=owner_external_id,
+        )
+
+    @staticmethod
+    def _channel_in_use(
+        error: IntegrityError, external_channel_id: str | None
+    ) -> Exception:
+        """What to raise for a write of a room's channel binding the database
+        refused: `ChannelInUse` when it was the one-room-per-channel index —
+        another room took the channel between the check and the write — and the
+        error itself otherwise."""
+        if (
+            external_channel_id is not None
+            and "uq_rooms_bridge_external_channel" in str(error.orig)
+        ):
+            return ChannelInUse(external_channel_id)
+        return error
+
     @staticmethod
     async def _add_users_to_channel(
         collaboration_core: CollaborationCore,
@@ -609,14 +756,17 @@ class RoomService:
                 raise ValueError(f"Bridge not running: {bridge_id}")
 
         # A channel the platform delivered to this bridge is its own by
-        # construction; one named by the caller has to be shown to be.
+        # construction; one named by the caller has to be shown to be, and to
+        # be free and usable — asked even when the caller also gave its type.
         if (
             collaboration_core
             and external_channel_id is not None
             and config.created_by_kind != "system"
         ):
-            await collaboration_core.adapter.require_bindable_channel(
-                external_channel_id
+            await self._check_existing_channel(
+                collaboration_core,
+                bridge_id,  # type: ignore[arg-type]
+                external_channel_id,
             )
 
         if (
@@ -671,10 +821,13 @@ class RoomService:
                     )
                 )
             else:
-                external_channel_id = await collaboration_core.adapter.create_channel(
+                external_channel_id = await self._create_channel(
+                    collaboration_core,
+                    bridge_id,  # type: ignore[arg-type]
                     config.name,
                     config.description,
-                    channel_type=channel_type,
+                    channel_type,
+                    owner_user_id=config.owner_id,
                 )
 
         # Guard the channel from the moment it exists until the room↔channel
@@ -739,7 +892,10 @@ class RoomService:
             )
 
             async with self._session_factory() as session:
-                await self._room_store.create(session, room)
+                try:
+                    await self._room_store.create(session, room)
+                except IntegrityError as error:
+                    raise self._channel_in_use(error, external_channel_id) from error
                 if config.group_id is not None:
                     await self._room_store.set_group(
                         session,
@@ -765,7 +921,10 @@ class RoomService:
                     )
                 if config.aliases:
                     await self._seed_aliases(session, room.id, agent_ids, config)
-                await session.commit()
+                try:
+                    await session.commit()
+                except IntegrityError as error:
+                    raise self._channel_in_use(error, external_channel_id) from error
 
             if collaboration_core and external_channel_id:
                 collaboration_core.add_room_mapping(
@@ -1449,19 +1608,34 @@ class RoomService:
 
         if external_channel_id is None and collaboration_core is not None:
             await self._require_channel_creation(bridge_id)
-            external_channel_id = await collaboration_core.adapter.create_channel(
-                room.name, room.description
+            external_channel_id = await self._create_channel(
+                collaboration_core,
+                bridge_id,
+                room.name,
+                room.description,
+                channel_type,
+                owner_user_id=room.owner_id,
+            )
+        elif external_channel_id is not None and collaboration_core is not None:
+            await self._check_existing_channel(
+                collaboration_core,
+                bridge_id,
+                external_channel_id,
+                except_room_id=room_id,
             )
 
         async with tenant_session(self._session_factory, room.tenant_id) as session:
-            await self._room_store.update_bridge(
-                session,
-                room_id,
-                bridge_id=bridge_id,
-                channel_type=channel_type,
-                external_channel_id=external_channel_id,
-            )
-            await session.commit()
+            try:
+                await self._room_store.update_bridge(
+                    session,
+                    room_id,
+                    bridge_id=bridge_id,
+                    channel_type=channel_type,
+                    external_channel_id=external_channel_id,
+                )
+                await session.commit()
+            except IntegrityError as error:
+                raise self._channel_in_use(error, external_channel_id) from error
 
         if collaboration_core and external_channel_id:
             collaboration_core.add_room_mapping(
@@ -1585,13 +1759,18 @@ class RoomService:
 
         if external_channel_id is None:
             await self._require_channel_creation(bridge_id)
-            external_channel_id = await new_bridge.adapter.create_channel(
+            external_channel_id = await self._create_channel(
+                new_bridge,
+                bridge_id,
                 room.name,
                 room.description,
-                channel_type=resolved_channel_type,
+                resolved_channel_type,
+                owner_user_id=room.owner_id,
             )
         else:
-            await new_bridge.adapter.require_bindable_channel(external_channel_id)
+            await self._check_existing_channel(
+                new_bridge, bridge_id, external_channel_id, except_room_id=room_id
+            )
 
         # One binding for everything from here on: the bridge-column update,
         # and the invite/kick below, both write rows scoped to this room's
@@ -1602,14 +1781,21 @@ class RoomService:
             new_bridge.begin_provisioning(external_channel_id)
             try:
                 async with self._session_factory() as session:
-                    await self._room_store.update_bridge(
-                        session,
-                        room_id,
-                        bridge_id=bridge_id,
-                        channel_type=resolved_channel_type,
-                        external_channel_id=external_channel_id,
-                    )
-                    await session.commit()
+                    # The commit too: the store writes at once today, but a
+                    # race lost at commit is the same conflict.
+                    try:
+                        await self._room_store.update_bridge(
+                            session,
+                            room_id,
+                            bridge_id=bridge_id,
+                            channel_type=resolved_channel_type,
+                            external_channel_id=external_channel_id,
+                        )
+                        await session.commit()
+                    except IntegrityError as error:
+                        raise self._channel_in_use(
+                            error, external_channel_id
+                        ) from error
 
                 new_bridge.add_room_mapping(
                     room_id, transport_room_id, external_channel_id, room.tenant_id

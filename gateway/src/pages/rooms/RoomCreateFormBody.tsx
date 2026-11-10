@@ -85,6 +85,11 @@ export default function RoomCreateFormBody() {
   // and says how its rooms come about instead.
   const existingChannelRefusal = selectedBridge?.channel_ids_refused ?? null;
   const noChannelSource = channelCreationBlocked && existingChannelRefusal !== null;
+  const privateChannelsSupported = selectedBridge?.private_channels_supported ?? true;
+  const privateChannelNeedsLinkedAccount =
+    selectedBridge?.private_channel_needs_linked_account ?? false;
+  // A private choice the chosen connection cannot make is sent as public.
+  const effectiveChannelType = privateChannelsSupported ? newChannelType : "channel_public";
 
   const channelCreationBlockedReason = useMemo(() => {
     if (!selectedBridge || !channelCreationBlocked) return null;
@@ -162,7 +167,7 @@ export default function RoomCreateFormBody() {
         if (channelSource === "existing") {
           extId = externalChannelId.trim();
         } else {
-          channelType = newChannelType;
+          channelType = effectiveChannelType;
         }
       } else {
         channelType = "channel_public";
@@ -212,7 +217,7 @@ export default function RoomCreateFormBody() {
     hasBridge,
     channelSource,
     externalChannelId,
-    newChannelType,
+    effectiveChannelType,
     agentIds,
     includeSubagentsFor,
     joinEventListeners,
@@ -411,14 +416,21 @@ export default function RoomCreateFormBody() {
             <TextField
               select
               label="Channel type"
-              value={newChannelType}
+              value={effectiveChannelType}
               onChange={(e) =>
                 setNewChannelType(e.target.value as "channel_public" | "channel_private")
               }
               fullWidth
+              helperText={
+                effectiveChannelType === "channel_private" && privateChannelNeedsLinkedAccount
+                  ? `You become the channel's owner through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
+                  : undefined
+              }
             >
               <MenuItem value="channel_public">Public channel</MenuItem>
-              <MenuItem value="channel_private">Private channel</MenuItem>
+              <MenuItem value="channel_private" disabled={!privateChannelsSupported}>
+                Private channel
+              </MenuItem>
             </TextField>
           )}
         </>

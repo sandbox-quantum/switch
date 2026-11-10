@@ -33,12 +33,16 @@ export function RoomChannelField({
   bridge,
   value,
   onChange,
+  linkedHere = null,
 }: {
   bridge: RemoteBridge;
   value: RoomCreateOptions;
   onChange: (next: RoomCreateOptions) => void;
+  /** Whether the signed-in person has a confirmed account linked on `bridge`;
+   * null while unknown. */
+  linkedHere?: boolean | null;
 }) {
-  const cards = channelChoiceCards(bridge);
+  const cards = channelChoiceCards(bridge, linkedHere);
   const choice = channelChoiceOf(value);
   return (
     <Field>
@@ -64,7 +68,7 @@ export function RoomChannelField({
               })
             }
             className={cn(
-              'space-y-0.5 rounded-md border p-2.5 text-left',
+              'flex flex-col justify-start gap-0.5 rounded-md border p-2.5 text-left',
               choice === card.value
                 ? 'border-primary bg-background-tertiary-2'
                 : 'border-border hover:bg-background-tertiary-2'

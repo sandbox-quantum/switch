@@ -5,9 +5,14 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from switch_core.bridges.collaboration.adapter import ChannelNotBindable
-from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
+from switch_core.bridges.collaboration.models import (
+    ChannelCreationUnsupported,
+    ChannelInUse,
+    ChannelNotUsable,
+)
 from switch_core.room_service import RoomService
 
 
@@ -33,9 +38,19 @@ class _FakeRoomStore:
         self._room = room
         self._agent_ids = agent_ids
         self.update_bridge_calls: list[dict[str, Any]] = []
+        # Channel id → the id of the room already bound to it.
+        self.bound: dict[str, str] = {}
+        # Raised by `update_bridge`, standing in for the database refusing it.
+        self.update_bridge_error: Exception | None = None
 
     async def get(self, session: Any, room_id: str) -> Any:
         return self._room
+
+    async def get_by_external_channel(
+        self, session: Any, bridge_id: str, external_channel_id: str
+    ) -> Any:
+        room_id = self.bound.get(external_channel_id)
+        return None if room_id is None else SimpleNamespace(id=room_id)
 
     async def get_agent_ids(self, session: Any, room_id: str) -> list[str]:
         return list(self._agent_ids)
@@ -49,6 +64,8 @@ class _FakeRoomStore:
         channel_type: str,
         external_channel_id: str | None,
     ) -> None:
+        if self.update_bridge_error is not None:
+            raise self.update_bridge_error
         self.update_bridge_calls.append(
             {
                 "room_id": room_id,
@@ -68,20 +85,43 @@ class _FakeAgentStore:
 
 
 class _FakeAdapter:
+    platform_name = "Fakechat"
+    private_channel_needs_owner = False
+
     def __init__(self, events: list[Any], new_channel_id: str) -> None:
         self._events = events
         self._new_channel_id = new_channel_id
         self.not_bindable: set[str] = set()
+        self.not_usable: dict[str, str] = {}
+        self.owners_refused: set[str] = set()
 
     async def require_bindable_channel(self, channel_id: str) -> None:
         self._events.append(("require_bindable", channel_id))
         if channel_id in self.not_bindable:
             raise ChannelNotBindable(f"{channel_id} is not this bridge's")
 
+    async def check_channel_usable(self, channel_id: str) -> None:
+        self._events.append(("check_usable", channel_id))
+        if channel_id in self.not_usable:
+            raise ChannelNotUsable(self.not_usable[channel_id])
+
+    def can_own_channel(self, external_user_id: str) -> bool:
+        return external_user_id not in self.owners_refused
+
     async def create_channel(
-        self, name: str, topic: str, *, channel_type: str = "channel_public"
+        self,
+        name: str,
+        topic: str,
+        *,
+        channel_type: str = "channel_public",
+        owner_external_id: str | None = None,
     ) -> str:
-        self._events.append(("create_channel", name, topic, channel_type))
+        if owner_external_id is None:
+            self._events.append(("create_channel", name, topic, channel_type))
+        else:
+            self._events.append(
+                ("create_channel", name, topic, channel_type, owner_external_id)
+            )
         return self._new_channel_id
 
     async def add_agents_to_channel(
@@ -200,6 +240,7 @@ class TestChangeBridge:
     async def test_full_move_provisions_repopulates_and_detaches(self) -> None:
         events: list[Any] = []
         room = SimpleNamespace(
+            owner_id=None,
             id="room-1",
             tenant_id="room-tenant",
             name="Work",
@@ -264,6 +305,7 @@ class TestChangeBridge:
     async def test_keeps_existing_privacy_when_channel_type_omitted(self) -> None:
         events: list[Any] = []
         room = SimpleNamespace(
+            owner_id=None,
             id="room-1",
             tenant_id="room-tenant",
             name="Secret",
@@ -295,6 +337,7 @@ class TestChangeBridge:
     async def test_first_time_bridge_skips_teardown(self) -> None:
         events: list[Any] = []
         room = SimpleNamespace(
+            owner_id=None,
             id="room-1",
             tenant_id="room-tenant",
             name="Internal",
@@ -326,6 +369,7 @@ class TestChangeBridge:
     async def test_reuses_existing_channel_when_id_provided(self) -> None:
         events: list[Any] = []
         room = SimpleNamespace(
+            owner_id=None,
             id="room-1",
             tenant_id="room-tenant",
             name="Work",
@@ -373,6 +417,7 @@ class TestChangeBridge:
         organisations' channels, so it is asked first and nothing moves."""
         events: list[Any] = []
         room = SimpleNamespace(
+            owner_id=None,
             id="room-1",
             tenant_id="room-tenant",
             name="Work",
@@ -407,12 +452,153 @@ class TestChangeBridge:
         assert events == [("require_bindable", "chan-elsewhere")]
         assert room_store.update_bridge_calls == []
 
+    @staticmethod
+    def _moving(events: list[Any]) -> tuple[RoomService, _FakeRoomStore, Any]:
+        room = SimpleNamespace(
+            owner_id=None,
+            id="room-1",
+            tenant_id="room-tenant",
+            name="Work",
+            description="A room",
+            transport_room_id="!mx:switch.local",
+            bridge_id="bridge-old",
+            channel_type="channel_public",
+            external_channel_id="chan-old",
+        )
+        new_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-new:switch.local"
+        )
+        old_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-old:switch.local"
+        )
+        svc, room_store = _build_service(
+            room=room,
+            agent_ids=["a1"],
+            agent_names={"a1": "agent.one"},
+            bridges={"bridge-new": new_bridge, "bridge-old": old_bridge},
+            events=events,
+        )
+        return svc, room_store, new_bridge
+
+    async def test_a_channel_another_room_uses_is_a_conflict(self) -> None:
+        events: list[Any] = []
+        svc, room_store, _ = self._moving(events)
+        room_store.bound["chan-taken"] = "room-2"
+
+        with pytest.raises(ChannelInUse, match="already used by a room"):
+            await svc.change_bridge(
+                "room-1", bridge_id="bridge-new", external_channel_id="chan-taken"
+            )
+
+        # Asked whose it is first; the platform is not asked about it.
+        assert events == [("require_bindable", "chan-taken")]
+        assert room_store.update_bridge_calls == []
+
+    async def test_another_bridges_channel_is_refused_before_saying_it_is_used(
+        self,
+    ) -> None:
+        """On a connection shared between organisations, "already used by a
+        room" would tell the caller that another organisation's channel is
+        bound. Whose it is is asked first."""
+        events: list[Any] = []
+        svc, room_store, new_bridge = self._moving(events)
+        new_bridge.adapter.not_bindable.add("chan-theirs")
+        room_store.bound["chan-theirs"] = "their-room"
+
+        with pytest.raises(ChannelNotBindable):
+            await svc.change_bridge(
+                "room-1", bridge_id="bridge-new", external_channel_id="chan-theirs"
+            )
+
+    async def test_a_channel_this_room_already_uses_is_not_a_conflict(self) -> None:
+        events: list[Any] = []
+        svc, room_store, _ = self._moving(events)
+        room_store.bound["chan-mine"] = "room-1"
+
+        await svc.change_bridge(
+            "room-1", bridge_id="bridge-new", external_channel_id="chan-mine"
+        )
+
+        assert room_store.update_bridge_calls[0]["external_channel_id"] == "chan-mine"
+
+    async def test_the_platforms_reason_is_given_for_a_channel_it_cannot_use(
+        self,
+    ) -> None:
+        events: list[Any] = []
+        svc, room_store, new_bridge = self._moving(events)
+        new_bridge.adapter.not_usable["chan-gone"] = "Discord cannot find it."
+
+        with pytest.raises(ChannelNotUsable, match="Discord cannot find it"):
+            await svc.change_bridge(
+                "room-1", bridge_id="bridge-new", external_channel_id="chan-gone"
+            )
+
+        assert events == [
+            ("require_bindable", "chan-gone"),
+            ("check_usable", "chan-gone"),
+        ]
+        assert room_store.update_bridge_calls == []
+
+    async def test_losing_a_race_for_the_channel_is_a_conflict(self) -> None:
+        events: list[Any] = []
+        svc, room_store, _ = self._moving(events)
+        room_store.update_bridge_error = IntegrityError(
+            "UPDATE rooms",
+            {},
+            Exception(
+                "duplicate key value violates unique constraint "
+                '"uq_rooms_bridge_external_channel"'
+            ),
+        )
+
+        with pytest.raises(ChannelInUse):
+            await svc.change_bridge(
+                "room-1", bridge_id="bridge-new", external_channel_id="chan-raced"
+            )
+
+    async def test_another_database_refusal_is_not_called_a_conflict(self) -> None:
+        events: list[Any] = []
+        svc, room_store, _ = self._moving(events)
+        room_store.update_bridge_error = IntegrityError(
+            "UPDATE rooms", {}, Exception("violates foreign key constraint")
+        )
+
+        with pytest.raises(IntegrityError):
+            await svc.change_bridge(
+                "room-1", bridge_id="bridge-new", external_channel_id="chan-x"
+            )
+
+    async def test_a_new_private_channel_is_made_with_the_owner_it_needs(
+        self,
+    ) -> None:
+        events: list[Any] = []
+        svc, _, new_bridge = self._moving(events)
+        new_bridge.adapter.private_channel_needs_owner = True
+
+        async def owner(*_: Any) -> str:
+            return "owner-account"
+
+        svc._private_channel_owner = owner  # type: ignore[method-assign]
+
+        await svc.change_bridge(
+            "room-1", bridge_id="bridge-new", channel_type="channel_private"
+        )
+
+        assert (
+            "create_channel",
+            "Work",
+            "A room",
+            "channel_private",
+            "owner-account",
+        ) in (events)
+
     async def test_capture_is_established_for_a_freshly_created_channel(self) -> None:
         # Idempotent by design: the adapter skips a channel it is already
         # subscribed to, so asking again after provisioning costs nothing and
         # removes the need for either path to know what the other did.
         events: list[Any] = []
         room = SimpleNamespace(
+            owner_id=None,
             id="room-1",
             tenant_id="room-tenant",
             name="Work",
@@ -440,6 +626,7 @@ class TestChangeBridge:
     async def test_raises_when_target_bridge_not_running(self) -> None:
         events: list[Any] = []
         room = SimpleNamespace(
+            owner_id=None,
             id="room-1",
             tenant_id="room-tenant",
             name="Work",
@@ -463,6 +650,7 @@ class TestChangeBridge:
     async def test_raises_when_already_on_target_bridge(self) -> None:
         events: list[Any] = []
         room = SimpleNamespace(
+            owner_id=None,
             id="room-1",
             tenant_id="room-tenant",
             name="Work",
@@ -491,6 +679,7 @@ class TestChangeBridge:
         # before the old binding is touched, so a refused move changes nothing.
         events: list[Any] = []
         room = SimpleNamespace(
+            owner_id=None,
             id="room-1",
             tenant_id="room-tenant",
             name="Work",

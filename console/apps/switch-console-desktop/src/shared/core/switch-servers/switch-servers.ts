@@ -638,6 +638,18 @@ export type RemoteBridge = {
    * Null on a server predating the field.
    */
   channelIdsRefused: string | null;
+  /**
+   * Whether a new room here can have a private channel, as the server says.
+   * Null on a server predating the field, where Console falls back to what
+   * such servers could do: a private channel on every platform but Teams.
+   */
+  privateChannels: boolean | null;
+  /**
+   * Whether a private channel here needs the person asking to have linked
+   * their account on the platform, which the server names as its owner
+   * (Teams). False on a server predating the field.
+   */
+  privateChannelNeedsLinkedAccount: boolean;
   /** Whether this connection receives its platform's events on an address of
    * its own, which the operator has to give the platform. */
   receivesWebhooks: boolean;

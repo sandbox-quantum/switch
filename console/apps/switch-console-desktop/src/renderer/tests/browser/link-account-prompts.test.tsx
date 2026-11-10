@@ -59,6 +59,8 @@ function bridge(id: string, type: string, patch: Partial<RemoteBridge> = {}): Re
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
+    privateChannels: null,
+    privateChannelNeedsLinkedAccount: false,
     receivesWebhooks: false,
     webhookUrl: null,
     ...patch,

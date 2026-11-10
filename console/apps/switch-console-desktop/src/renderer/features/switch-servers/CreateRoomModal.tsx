@@ -49,6 +49,7 @@ import {
 } from './room-create-request';
 import { RoomNameInput } from './room-name-input';
 import { switchServersStore } from './switch-servers-store';
+import { useMyIdentities } from './use-my-identities';
 import { administersWorkspaceById } from './workspace-admin';
 
 type CreateRoomModalArgs = {
@@ -82,6 +83,9 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
   const workspaceId = workspacesStore.idOnServerInScope(serverId || null);
   const workspace = workspacesStore.workspaces.find((each) => each.id === workspaceId) ?? null;
+  // Whether the private channel note applies: a platform that needs the
+  // person as the channel's owner takes only a confirmed linked account.
+  const { identities } = useMyIdentities(workspaceId);
   const server = switchServersStore.servers.find((s) => s.id === serverId) ?? null;
   const myUserId = switchServersStore.statusFor(serverId)?.user?.id ?? null;
 
@@ -186,7 +190,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     if (dropsStartingAgent(startChip, next)) setStartDropped(true);
     setPicked(next);
   };
-  // A choice the chosen app does not offer (a private channel on Teams, say)
+  // A choice the chosen app does not offer (a private channel on Telegram, say)
   // falls back to a new public channel rather than being sent and refused.
   const bridgeOptions = optionsForBridge(options, selectedBridge);
   const roomOptions = administers ? bridgeOptions : { ...bridgeOptions, groupId: null };
@@ -359,6 +363,11 @@ export const CreateRoomModal = observer(function CreateRoomModal({
           {selectedBridge && (
             <RoomChannelField
               bridge={selectedBridge}
+              linkedHere={
+                identities === null
+                  ? null
+                  : identities.some((each) => each.bridgeId === selectedBridge.id && each.verified)
+              }
               value={roomOptions}
               onChange={(next) => {
                 setOptions(next);
