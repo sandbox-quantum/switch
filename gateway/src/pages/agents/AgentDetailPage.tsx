@@ -1,4 +1,5 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import PageBanner from "../../components/PageBanner";
 import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import EditOutlined from "@mui/icons-material/EditOutlined";
 import {
@@ -113,7 +114,7 @@ export default function AgentDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/agents")} size="small" aria-label="Back">
+        <IconButton onClick={() => navigate("/agents")} size="small" aria-label="Back to agents">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5">{agent.name}</Typography>
@@ -138,6 +139,14 @@ export default function AgentDetailPage() {
           />
         )}
       </Stack>
+
+      {!canManage && (
+        <Box sx={{ mb: 2 }}>
+          <PageBanner tone="neutral">
+            You can see this agent, but only its owner and this workspace's admins can change it.
+          </PageBanner>
+        </Box>
+      )}
 
       {renameNotice && (
         <Alert
