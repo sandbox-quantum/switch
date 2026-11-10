@@ -99,7 +99,7 @@ export default function TemplateDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate(LIST_URL)} size="small">
+        <IconButton onClick={() => navigate(LIST_URL)} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>

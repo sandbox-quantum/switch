@@ -99,7 +99,7 @@ export default function RoomDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
@@ -501,6 +501,7 @@ function RoleRow({
               size="small"
               disabled={busy}
               onClick={() => run(() => deleteRoomRole(roomId, role.name))}
+              aria-label={`Delete role ${role.name}`}
             >
               <DeleteOutline fontSize="small" />
             </IconButton>

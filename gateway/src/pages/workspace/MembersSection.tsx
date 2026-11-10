@@ -95,7 +95,8 @@ export default function MembersSection({ tenantId, selfId }: Props) {
                   updateMemberRole(tenantId, row.user_id, e.target.value as TenantRole),
                 )
               }
-              aria-label={`Role for ${row.email}`}
+              // The name goes on the input: on the Select it labels nothing.
+              inputProps={{ "aria-label": `Role for ${row.email}` }}
               sx={{ fontSize: "0.875rem" }}
             >
               {roles.map((role) => (

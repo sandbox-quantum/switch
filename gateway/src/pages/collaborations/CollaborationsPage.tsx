@@ -161,6 +161,7 @@ export default function CollaborationsPage() {
             size="small"
             checked={row.agent_greetings_enabled}
             disabled={!row.can_manage || savingId === row.bridge_id}
+            slotProps={{ input: { "aria-label": `Agent greetings for ${row.display_name}` } }}
             onChange={(e) =>
               handleToggleGreetings(row.bridge_id, e.target.checked)
             }
@@ -177,6 +178,7 @@ export default function CollaborationsPage() {
             <Switch
               size="small"
               checked={row.channel_creation_supported && row.channel_creation_enabled}
+              slotProps={{ input: { "aria-label": `Channel creation for ${row.display_name}` } }}
               disabled={
                 !row.can_manage || savingId === row.bridge_id || !row.channel_creation_supported
               }

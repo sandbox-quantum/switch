@@ -209,6 +209,7 @@ export default function AgentsPage() {
             <>
               <IconButton
                 size="small"
+                aria-label={`Delete ${row.name}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   setDeleteTarget(row);

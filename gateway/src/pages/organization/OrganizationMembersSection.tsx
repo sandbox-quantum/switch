@@ -185,7 +185,8 @@ export default function OrganizationMembersSection({
               onChange={(e) =>
                 act({ userId: row.user_id, role: e.target.value as OrganizationRole })
               }
-              aria-label={`Organization role for ${row.email}`}
+              // The name goes on the input: on the Select it labels nothing.
+              inputProps={{ "aria-label": `Organization role for ${row.email}` }}
               sx={{ fontSize: "0.875rem" }}
             >
               {(Object.keys(ROLE_LABELS) as OrganizationRole[]).map((role) => (

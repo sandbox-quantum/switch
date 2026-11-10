@@ -295,7 +295,8 @@ export default function RoomCreateFormBody() {
             sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.5 }}
           >
             <Stack spacing={1}>
-              <Stack direction="row" spacing={1} alignItems="center">
+              {/* On the field's box, not its label above it. */}
+              <Stack direction="row" spacing={1} alignItems="flex-end">
                 <TextField
                   label="Name"
                   size="small"
@@ -314,8 +315,14 @@ export default function RoomCreateFormBody() {
                     />
                   }
                   label="Exclusive"
+                  sx={{ height: 36 }}
                 />
-                <IconButton size="small" onClick={() => removeRole(idx)}>
+                <IconButton
+                  size="small"
+                  onClick={() => removeRole(idx)}
+                  aria-label={`Remove role ${role.name || idx + 1}`}
+                  sx={{ height: 36 }}
+                >
                   <DeleteOutline fontSize="small" />
                 </IconButton>
               </Stack>

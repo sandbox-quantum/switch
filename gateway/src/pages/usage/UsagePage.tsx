@@ -309,6 +309,7 @@ function UsageSection({ tenantId }: { tenantId: string }) {
           size="small"
           value={windowHours}
           onChange={(e) => setWindowHours(Number(e.target.value))}
+          slotProps={{ htmlInput: { "aria-label": "Period" } }}
           sx={{ width: 200 }}
         >
           {WINDOWS.map((w) => (
