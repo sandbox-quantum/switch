@@ -704,8 +704,9 @@ needs configuring on the server. To roll back, add `atlassian` to
 
 ## Datadog
 
-Built from Datadog's public MCP and OAuth metadata at each of its sites; not
-yet signed in to live:
+Built from Datadog's public MCP and OAuth metadata at each of its sites, and
+tested live at US1: the sign-in with Full and Limited access, a pasted token,
+and pasted keys, each with an agent reading monitors through Switch:
 
 - Each site is a Datadog of its own: its own accounts, MCP server and
   authorization server. The person picks theirs before signing in, from the
