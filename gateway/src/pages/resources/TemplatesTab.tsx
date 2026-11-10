@@ -7,6 +7,7 @@ import DataTable from "../../components/DataTable";
 import type { TemplateSummary } from "../../data/api";
 import { useTemplates } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
+import { useRefetchOnRefresh } from "./useRefetchOnRefresh";
 import { formatBytes } from "./templateFormat";
 import { formatDate } from "../../theme/hootFormat";
 
@@ -37,11 +38,10 @@ export default function TemplatesTab({ refreshKey }: Props) {
     refetch,
   } = useTemplates({ q: searchSent, kind, owner_id: ownerId });
 
-  useEffect(() => {
+  useRefetchOnRefresh(refreshKey, () => {
     refetch();
     refetchCatalogue();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
+  });
 
   const owners = useMemo(() => {
     const m = new Map<string, string>();

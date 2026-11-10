@@ -1,12 +1,13 @@
 import { Alert, Box, CircularProgress } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import DataTable from "../../components/DataTable";
 import { AccessChip } from "../../components/AccessControls";
 import type { PackageDetail } from "../../data/api";
 import { usePackages } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
+import { useRefetchOnRefresh } from "./useRefetchOnRefresh";
 import { formatDate } from "../../theme/hootFormat";
 
 interface Props {
@@ -19,10 +20,7 @@ export default function PackagesTab({ refreshKey }: Props) {
   const [search, setSearch] = useState("");
   const [ownerId, setOwnerId] = useState<string>("");
 
-  useEffect(() => {
-    refetch();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
+  useRefetchOnRefresh(refreshKey, refetch);
 
   const owners = useMemo(() => {
     const m = new Map<string, string>();

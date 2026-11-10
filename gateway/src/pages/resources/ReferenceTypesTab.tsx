@@ -17,7 +17,7 @@ import {
   TextField,
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
@@ -35,6 +35,7 @@ import {
 } from "../../data/visibility";
 import { INSTRUCTIONS_DISCLOSURE } from "./CreateReferenceTypeDialog";
 import { formatDate } from "../../theme/hootFormat";
+import { useRefetchOnRefresh } from "./useRefetchOnRefresh";
 
 interface Props {
   refreshKey: number;
@@ -72,16 +73,11 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
   const [deleting, setDeleting] = useState<ReferenceTypeDetail | null>(null);
   const [transferring, setTransferring] = useState<ReferenceTypeDetail | null>(null);
 
-  useEffect(() => {
-    refetchVisible();
-    refetchOwned();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
-
   const refreshBoth = () => {
     refetchVisible();
     refetchOwned();
   };
+  useRefetchOnRefresh(refreshKey, refreshBoth);
 
   const rows = useMemo<TypeRow[]>(() => {
     const builtins: TypeRow[] = (visible ?? [])

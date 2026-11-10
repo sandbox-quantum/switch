@@ -87,6 +87,9 @@ export default function ResourcesPage({ withTemplates }: { withTemplates: boolea
     );
   }
 
+  // A create dialog is mounted only while it is open, so a closed one fetches
+  // nothing (the reference dialog lists the reference types) and each opening
+  // starts from an empty form.
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
@@ -118,37 +121,37 @@ export default function ResourcesPage({ withTemplates }: { withTemplates: boolea
         {tab === "templates" && <TemplatesTab refreshKey={refreshKey} />}
       </Box>
 
-      {tab === "references" && (
+      {tab === "references" && createOpen && (
         <CreateReferenceDialog
-          open={createOpen}
+          open
           onClose={() => setCreateOpen(false)}
           onCreated={handleReferenceCreated}
         />
       )}
-      {tab === "types" && (
+      {tab === "types" && createOpen && (
         <CreateReferenceTypeDialog
-          open={createOpen}
+          open
           onClose={() => setCreateOpen(false)}
           onCreated={handleReferenceTypeCreated}
         />
       )}
-      {tab === "documents" && (
+      {tab === "documents" && createOpen && (
         <CreateDocumentDialog
-          open={createOpen}
+          open
           onClose={() => setCreateOpen(false)}
           onCreated={handleDocumentCreated}
         />
       )}
-      {tab === "packages" && (
+      {tab === "packages" && createOpen && (
         <CreatePackageDialog
-          open={createOpen}
+          open
           onClose={() => setCreateOpen(false)}
           onCreated={handlePackageCreated}
         />
       )}
-      {tab === "templates" && (
+      {tab === "templates" && createOpen && (
         <CreateTemplateDialog
-          open={createOpen}
+          open
           onClose={() => setCreateOpen(false)}
           onCreated={handleTemplateCreated}
         />
