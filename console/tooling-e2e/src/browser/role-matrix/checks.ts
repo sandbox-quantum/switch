@@ -22,7 +22,7 @@ import type { PageObjects } from './world.ts';
 const CONNECTOR = 'github';
 
 /** The object an `:id` parameter names, by what the path starts with. */
-const ID_BY_PREFIX: readonly [string, keyof PageObjects][] = [
+const ID_BY_PREFIX: readonly [string, Exclude<keyof PageObjects, 'names'>][] = [
   ['/resources/references/', 'referenceId'],
   ['/resources/documents/', 'documentId'],
   ['/resources/packages/', 'packageId'],
@@ -115,6 +115,23 @@ export async function openAndCompare(
   return `${url}: wanted ${expected.path}${query} (${expected.state}), got ${at.pathname}${at.search} (${state})`;
 }
 
+/**
+ * A page about one object, opened as itself, shows that object: its name is
+ * on the page. The status checks alone would pass a page that loaded someone
+ * else's thing, or nothing at all, without a word.
+ */
+async function missingObject(
+  ui: GatewayUi,
+  url: string,
+  objects: PageObjects
+): Promise<string | null> {
+  const id = url.split('/').at(-1);
+  const name = id === undefined ? undefined : objects.names[id];
+  if (name === undefined) return null;
+  const shown = await ui.page.getByText(name, { exact: true }).first().isVisible();
+  return shown ? null : `${url}: the page does not show ${name}`;
+}
+
 /** Every page and settings area of the layout, opened by URL. */
 export async function checkPages(
   ui: GatewayUi,
@@ -125,12 +142,14 @@ export async function checkPages(
   const paths = [...AREAS[ui.layout], ...PAGES[ui.layout]].map((row) => row.path);
   const wrong: string[] = [];
   for (const path of paths) {
-    const problem = await openAndCompare(
-      ui,
-      fill(path, objects),
-      filled(landingOf(ui.layout, persona, path), objects)
-    );
+    const url = fill(path, objects);
+    const expected = filled(landingOf(ui.layout, persona, path), objects);
+    const problem = await openAndCompare(ui, url, expected);
     if (problem !== null) wrong.push(problem);
+    else if (expected.state === 'page') {
+      const missing = await missingObject(ui, url, objects);
+      if (missing !== null) wrong.push(missing);
+    }
   }
   log(`opened ${paths.length} pages and settings areas`);
   return wrong;

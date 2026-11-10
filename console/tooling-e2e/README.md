@@ -176,7 +176,7 @@ saved under `screenshots/` in the output directory.
 | `gateway-room-from-list` | A room made over the API is listed, and its page opens from the list. |
 | `gateway-create-room` | The new-room form makes a room with an agent and no bridge, and opens it; the server has it as asked. |
 | `gateway-sign-out` | Signing out returns to the login form, and the app stays there. |
-| `role-matrix-org-admin`, `role-matrix-workspace-admin`, `role-matrix-member`, `role-matrix-operator` | A real account in the role signs in and is shown what the role matrix says: the rail, each settings menu, every page and settings area opened by URL (the page, its "isn't built yet" slot, or the no-access page), and every redirect followed to where it lands. Pages that open one thing get one the account owns. |
+| `role-matrix-org-admin`, `role-matrix-workspace-admin`, `role-matrix-member`, `role-matrix-operator` | A real account in the role signs in and is shown what the role matrix says: the rail, each settings menu, every page and settings area opened by URL (the page, its "isn't built yet" slot, or the no-access page), and every redirect followed to where it lands. Pages that open one thing get one the account owns, and must show its name. |
 | `role-matrix-two-workspaces` | An admin of one workspace and a member of another in the same organization switches between them with the app's switcher, and each shows the view of the role held there. |
 | `role-matrix-two-organizations` | An organization admin who is a member in another organization: the switcher groups their workspaces by organization, the organization's reach makes them an admin of a workspace they are no member of, and the other organization's workspace shows them a member's view. |
 

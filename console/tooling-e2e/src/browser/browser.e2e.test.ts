@@ -104,14 +104,22 @@ describe('browser lane', () => {
           failure = error;
         }
         problems = [...ui.recorded()];
-        if ((failure !== null || problems.length > 0) && env.outputDir !== null) {
-          const dir = path.join(env.outputDir, 'screenshots');
-          mkdirSync(dir, { recursive: true });
-          const file = path.join(dir, `${scenario.header.id}.png`);
-          await ui.screenshot(file);
-          log(`screenshot of the last page: ${file}`);
+        // A page or browser that crashed must not keep teardown from running:
+        // it puts back the operator's choice of workspace, which every later
+        // scenario signs in with, as well as removing what this one made.
+        try {
+          if ((failure !== null || problems.length > 0) && env.outputDir !== null) {
+            const dir = path.join(env.outputDir, 'screenshots');
+            mkdirSync(dir, { recursive: true });
+            const file = path.join(dir, `${scenario.header.id}.png`);
+            await ui.screenshot(file);
+            log(`screenshot of the last page: ${file}`);
+          }
+          await browserContext.close();
+        } catch (error) {
+          if (failure === null) failure = error;
+          else log(`closing the browser failed too: ${String(error)}`);
         }
-        await browserContext.close();
         leftovers = await fixtures.teardown();
       } finally {
         observer.stop();

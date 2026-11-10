@@ -156,15 +156,17 @@ export class RoleWorld {
     });
     this.fixtures.defer(`room ${room.name} (${room.id})`, () => client.deleteRoom(room.id));
 
+    const referenceName = this.names.name(`${tag}-ref`);
     const reference = await client.createReference({
-      name: this.names.name(`${tag}-ref`),
+      name: referenceName,
       description,
       url: 'https://github.com/example/e2e',
     });
     this.fixtures.defer(`reference ${reference.id}`, () => client.deleteReference(reference.id));
 
+    const documentName = this.names.name(`${tag}-doc`);
     const document = await client.createDocument({
-      name: this.names.name(`${tag}-doc`),
+      name: documentName,
       description,
       content: 'A document for the role matrix to open.',
     });
@@ -193,11 +195,19 @@ export class RoleWorld {
       documentId: document.id,
       packageId: pkg.id,
       templateId: template.id,
+      names: {
+        [room.id]: room.name,
+        [agent.id]: agent.name,
+        [reference.id]: referenceName,
+        [document.id]: documentName,
+        [pkg.id]: pkg.name,
+        [template.id]: templateName,
+      },
     };
   }
 }
 
-/** The ids a page's path parameters are filled from. */
+/** The ids a page's path parameters are filled from, and each one's name. */
 export interface PageObjects {
   roomId: string;
   agentId: string;
@@ -205,6 +215,8 @@ export interface PageObjects {
   documentId: string;
   packageId: string;
   templateId: string;
+  /** Each object's name, by its id. */
+  names: Readonly<Record<string, string>>;
 }
 
 /** The name each persona's own objects are tagged with. */

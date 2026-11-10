@@ -286,7 +286,7 @@ status=0
   # Screenshots of failed pages, and agentic transcripts and verdicts.
   export SWITCH_E2E_OUTPUT_DIR="$OUT"
   # The follow-up window the server was started with, for the scenario that waits it out.
-  [ "$NEEDS_CONTROLLER" = 0 ] && export SWITCH_E2E_FOLLOW_WINDOW_SECONDS="$FOLLOW_WINDOW_SECONDS"
+  [ "$NEEDS_CONTROLLER" = 0 ] && [ "$LANE" != browser ] && export SWITCH_E2E_FOLLOW_WINDOW_SECONDS="$FOLLOW_WINDOW_SECONDS"
   SWITCH_E2E_LANE="$LANE" \
   SWITCH_E2E_ENVIRONMENT=ephemeral \
   SWITCH_E2E_STRICT=1 \
