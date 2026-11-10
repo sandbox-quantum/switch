@@ -117,6 +117,25 @@ describe("CreateInvitationDialog", () => {
     expect(heard).toHaveBeenCalledTimes(1);
   });
 
+  it("can't be closed while the link is being made, since it is shown only once", async () => {
+    let answer: (response: Response) => void = () => {};
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => (answer = resolve))));
+    const onClose = vi.fn();
+    render(
+      <CreateInvitationDialog open tenantId="t1" workspaceName="Acme" emailEnabled={false} onClose={onClose} />,
+    );
+    pick("Role", "Member");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create link" }));
+
+    const cancel = screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+    expect(cancel.disabled).toBe(true);
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    answer(new Response(JSON.stringify({ ...created, email: null, email_delivery: "not_requested" }), { status: 201 }));
+    expect(await screen.findByDisplayValue(/\/invite#token=tok123$/)).toBeTruthy();
+  });
+
   it("shows the server's refusal, such as the daily e-mail limit", async () => {
     vi.stubGlobal(
       "fetch",

@@ -309,6 +309,8 @@ describe("UsersTable", () => {
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("Leave Acme?")).toBeTruthy();
     expect(await within(dialog).findByText(/You lose access to Acme at once/)).toBeTruthy();
+    // Even though you are a member: you can't take over what you yourself own.
+    expect(within(dialog).getByText(/pass to another admin of the workspace/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Leave workspace" }));
 
     await waitFor(() => expect(onLeft).toHaveBeenCalled());

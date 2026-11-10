@@ -108,7 +108,9 @@ export default function CreateInvitationDialog({
   const valid = role !== "" && usesValid;
 
   return (
-    <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
+    // Held open while the link is being made: closed then, the link would be
+    // created with nowhere to show it, and it is shown only once.
+    <Dialog open={open} onClose={submitting ? undefined : handleClose} maxWidth="sm" fullWidth>
       <DialogTitle>Invite users to {workspaceName}</DialogTitle>
       <DialogContent>
         {link !== null && notice !== null ? (
@@ -209,7 +211,9 @@ export default function CreateInvitationDialog({
           </Button>
         ) : (
           <>
-            <Button onClick={handleClose}>Cancel</Button>
+            <Button onClick={handleClose} disabled={submitting}>
+              Cancel
+            </Button>
             <Button
               onClick={handleSubmit}
               variant="contained"
