@@ -34,8 +34,6 @@ import type { AgentRow, ControllerStore } from './store';
 export const PROVIDER_TTL_MS = 10 * 60 * 1000;
 // A first run may unpack the CLI's own runtime (OpenCode's Bun) before printing.
 const VERSION_TIMEOUT_MS = 30_000;
-// Keep repeated direct requests from starving the provider status refresh.
-const MAX_FOREGROUND_PROBES = 4;
 const DETAIL_LIMIT = 1000;
 /** A launch this recent with nothing alive yet is still starting, not crashed. */
 export const LAUNCH_GRACE_MS = 15_000;
@@ -259,11 +257,6 @@ type ProviderEntry = {
 export class ProviderStatuses {
   private readonly entries = new Map<Provider, ProviderEntry>();
   private refreshing: Promise<void> | null = null;
-  // Version and sign-in probes can each start a large CLI. Keep them from
-  // running together, including on-demand checks while a refresh is in flight.
-  private probeActive = false;
-  private foregroundProbes = 0;
-  private readonly probeWaiters: { background: boolean; ready: () => void }[] = [];
   private givenDisabled = false;
   private checks = 0;
 
@@ -331,34 +324,19 @@ export class ProviderStatuses {
    * with a test prompt; without it, only when it was not already known to work.
    */
   async check(provider: Provider, options: { verify?: boolean } = {}): Promise<ProviderStatus> {
-    return this.checkProvider(provider, options, false);
-  }
-
-  private async checkProvider(
-    provider: Provider,
-    options: { verify?: boolean },
-    background: boolean
-  ): Promise<ProviderStatus> {
     const sequence = ++this.checks;
-    const located = await this.withProbeLock(() => this.deps.locator.locate(provider), background);
-    let readiness = located
-      ? await this.withProbeLock(() => this.probe(provider, located.path, null), background)
-      : null;
+    const at = this.deps.now();
+    const checkedAt = new Date(at).toISOString();
+    const located = await this.deps.locator.locate(provider);
+    let readiness = located ? await this.probe(provider, located.path, null) : null;
     const knownToWork = this.entries.get(provider)?.status;
     if (
       located &&
       readiness?.status === 'authenticated' &&
       (options.verify || !(knownToWork?.auth === 'ok' && knownToWork.auth_source === 'local'))
     )
-      readiness =
-        (await this.withProbeLock(() => this.tryLogin(provider, located.path), background)) ??
-        readiness;
-    let status = providerStatusFrom(
-      provider,
-      located,
-      readiness,
-      new Date(this.deps.now()).toISOString()
-    );
+      readiness = (await this.tryLogin(provider, located.path)) ?? readiness;
+    let status = providerStatusFrom(provider, located, readiness, checkedAt);
     let login: GivenLogin | null = null;
     let problem: ProviderEntry['problem'] = null;
     if (
@@ -369,10 +347,7 @@ export class ProviderStatuses {
     ) {
       const given = await this.fetchGiven(provider);
       if (given && 'login' in given) {
-        const signedIn = await this.withProbeLock(
-          () => this.probe(provider, located.path, given.login),
-          background
-        );
+        const signedIn = await this.probe(provider, located.path, given.login);
         if (signedIn?.status === 'authenticated') {
           login = given.login;
           // What the machine's own check said is not about the login agents use now.
@@ -417,9 +392,6 @@ export class ProviderStatuses {
     if (status.auth_problem === undefined) delete status.auth_problem;
     // Said of the machine's own login, which a given login now stands in for.
     if (status.auth_source === 'sealed') delete status.login_helps;
-    // A queued or network-bound check may take time; its TTL starts when it finishes.
-    const at = this.deps.now();
-    status.checked_at = new Date(at).toISOString();
     const previous = this.entries.get(provider);
     // A check that started before the one already recorded knows less.
     if (previous && previous.sequence > sequence) return previous.status;
@@ -514,62 +486,23 @@ export class ProviderStatuses {
     }
   }
 
-  /** Run one CLI probe at a time, letting direct requests pass background work. */
-  private async withProbeLock<T>(run: () => Promise<T>, background = false): Promise<T> {
-    if (this.probeActive) {
-      await new Promise<void>((ready) => {
-        const waiter = { background, ready };
-        const firstBackground = this.probeWaiters.findIndex((entry) => entry.background);
-        if (!background && firstBackground !== -1)
-          this.probeWaiters.splice(firstBackground, 0, waiter);
-        else this.probeWaiters.push(waiter);
-      });
-    } else {
-      this.probeActive = true;
-      this.foregroundProbes = background ? 0 : 1;
-    }
-    try {
-      return await run();
-    } finally {
-      const backgroundIndex = this.probeWaiters.findIndex((entry) => entry.background);
-      const index =
-        this.foregroundProbes >= MAX_FOREGROUND_PROBES && backgroundIndex !== -1
-          ? backgroundIndex
-          : 0;
-      const [next] = this.probeWaiters.splice(index, 1);
-      if (next) {
-        this.foregroundProbes = next.background ? 0 : this.foregroundProbes + 1;
-        next.ready();
-      } else {
-        this.probeActive = false;
-        this.foregroundProbes = 0;
-      }
-    }
-  }
-
-  /** Schedule all checks without letting a slow network fetch hold the others. */
-  private async checkProviders(
-    providers: readonly Provider[],
-    options: { verify?: boolean } = {}
-  ): Promise<void> {
-    await Promise.all(providers.map((provider) => this.checkProvider(provider, options, true)));
-  }
-
-  /** Checks every provider now, whatever its last check. */
+  /** Checks every provider now, whatever its last check, all at once. */
   async checkAll(options: { verify?: boolean } = {}): Promise<void> {
-    await this.checkProviders(PROVIDERS, options);
+    await Promise.all(PROVIDERS.map((provider) => this.check(provider, options)));
   }
 
-  /** Checks every provider whose last check is older than the TTL. */
+  /** Checks every provider whose last check is older than the TTL, all at once. */
   async refreshStale(): Promise<void> {
-    this.refreshing ??= this.checkProviders(
+    this.refreshing ??= Promise.all(
       PROVIDERS.filter((provider) => {
         const entry = this.entries.get(provider);
         return !entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS;
-      })
-    ).finally(() => {
-      this.refreshing = null;
-    });
+      }).map((provider) => this.check(provider))
+    )
+      .then(() => {})
+      .finally(() => {
+        this.refreshing = null;
+      });
     return this.refreshing;
   }
 
@@ -585,14 +518,8 @@ export class ProviderStatuses {
   async binaryPath(provider: Provider): Promise<string | null> {
     const entry = this.entries.get(provider);
     if (entry && this.deps.now() - entry.at < PROVIDER_TTL_MS && entry.path) return entry.path;
-    return this.withProbeLock(async () => {
-      // Another check may have refreshed the entry while this lookup waited.
-      const current = this.entries.get(provider);
-      if (current && this.deps.now() - current.at < PROVIDER_TTL_MS && current.path)
-        return current.path;
-      const located = await this.deps.locator.locate(provider);
-      return located?.path ?? null;
-    });
+    const located = await this.deps.locator.locate(provider);
+    return located?.path ?? null;
   }
 }
 

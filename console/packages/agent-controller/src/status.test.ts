@@ -15,7 +15,6 @@ import {
   type AgentAssignment,
   type ProviderStatus,
   type SealedLoginResponse,
-  PROVIDERS,
   statusReportSchema,
 } from './schemas';
 import { SealedLogins } from './sealed-logins';
@@ -296,299 +295,6 @@ describe('providerStatusFrom', () => {
 });
 
 describe('ProviderStatuses', () => {
-  it('serializes background, explicit, and binary-path probes without blocking on the whole refresh', async () => {
-    const located: string[] = [];
-    let startFirst!: () => void;
-    let finishFirst!: () => void;
-    const started = new Promise<void>((resolve) => {
-      startFirst = resolve;
-    });
-    const finish = new Promise<void>((resolve) => {
-      finishFirst = resolve;
-    });
-    const locator = {
-      async locate(provider: (typeof PROVIDERS)[number]) {
-        located.push(provider);
-        if (provider === PROVIDERS[0]) {
-          startFirst();
-          await finish;
-        }
-        return { path: `/bin/${provider}`, version: '1.0.0', versionProblem: null };
-      },
-    };
-    const runtime = {
-      async probe(): Promise<ProviderReadiness> {
-        return { status: 'authenticated', message: 'Signed in.', models: [] };
-      },
-    };
-    const statuses = new ProviderStatuses({
-      locator,
-      runtime,
-      sealed: null,
-      probeCwd: '/tmp',
-      now: () => NOW,
-      log: silentLogger,
-      onChange: () => {},
-    });
-    const refresh = statuses.refreshStale();
-    await started;
-    const explicit = statuses.check(PROVIDERS[1]);
-    const binaryPath = statuses.binaryPath(PROVIDERS[2]);
-    await Promise.resolve();
-    expect(located).toEqual([PROVIDERS[0]]);
-    finishFirst();
-    await Promise.all([refresh, explicit, binaryPath]);
-    expect(located.slice(0, 3)).toEqual([PROVIDERS[0], PROVIDERS[1], PROVIDERS[2]]);
-    expect(await binaryPath).toBe(`/bin/${PROVIDERS[2]}`);
-    expect(statuses.snapshot()).toHaveLength(PROVIDERS.length);
-  });
-
-  it('lets a waiting background probe run after four direct probes', async () => {
-    const located: string[] = [];
-    let startFirst!: () => void;
-    let finishFirst!: () => void;
-    const started = new Promise<void>((resolve) => {
-      startFirst = resolve;
-    });
-    const finish = new Promise<void>((resolve) => {
-      finishFirst = resolve;
-    });
-    const locator = {
-      async locate(provider: (typeof PROVIDERS)[number]) {
-        located.push(provider);
-        if (located.length === 1) {
-          startFirst();
-          await finish;
-        }
-        return { path: `/bin/${provider}`, version: '1.0.0', versionProblem: null };
-      },
-    };
-    const statuses = new ProviderStatuses({
-      locator,
-      runtime: new FakeRuntime(),
-      sealed: null,
-      probeCwd: '/tmp',
-      now: () => NOW,
-      log: silentLogger,
-      onChange: () => {},
-    });
-    const refresh = statuses.refreshStale();
-    await started;
-    const direct = Array.from({ length: 8 }, () => statuses.binaryPath(PROVIDERS[0]));
-    finishFirst();
-    await Promise.all([refresh, ...direct]);
-    expect(located.slice(0, 6)).toEqual([
-      PROVIDERS[0],
-      PROVIDERS[0],
-      PROVIDERS[0],
-      PROVIDERS[0],
-      PROVIDERS[0],
-      PROVIDERS[1],
-    ]);
-  });
-
-  it('does not block an on-demand lookup while a sealed-login fetch is pending', async () => {
-    let clock = NOW;
-    let startFetch!: () => void;
-    let finishFetch!: () => void;
-    const started = new Promise<void>((resolve) => {
-      startFetch = resolve;
-    });
-    const finish = new Promise<void>((resolve) => {
-      finishFetch = resolve;
-    });
-    const runtime = new FakeRuntime();
-    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
-    const statuses = new ProviderStatuses({
-      locator: new FakeLocator(),
-      runtime,
-      sealed: new SealedLogins({
-        client: {
-          sealedLogin: async () => {
-            startFetch();
-            await finish;
-            return null;
-          },
-        },
-        keys: generateSealingKeyPair(),
-        controllerId: 'controller-1',
-      }),
-      probeCwd: '/tmp',
-      now: () => clock,
-      log: silentLogger,
-      onChange: () => {},
-    });
-    const checking = statuses.check(PROVIDERS[0]);
-    await started;
-    const lookup = statuses.binaryPath(PROVIDERS[1]);
-    try {
-      const result = await Promise.race([
-        lookup,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000)),
-      ]);
-      expect(result).toBe(`/usr/bin/${PROVIDERS[1]}`);
-    } finally {
-      clock += PROVIDER_TTL_MS + 1;
-      finishFetch();
-    }
-    const status = await checking;
-    expect(status.checked_at).toBe(new Date(clock).toISOString());
-    expect(await statuses.givenLogin(PROVIDERS[0])).toBeNull();
-  });
-
-  it('reports other providers while one background credential fetch is stalled', async () => {
-    let startFetch!: () => void;
-    let finishFetch!: () => void;
-    let reportLater!: () => void;
-    const started = new Promise<void>((resolve) => {
-      startFetch = resolve;
-    });
-    const finish = new Promise<void>((resolve) => {
-      finishFetch = resolve;
-    });
-    const laterReported = new Promise<string>((resolve) => {
-      reportLater = () => resolve('reported');
-    });
-    const runtime = {
-      async probe(provider: (typeof PROVIDERS)[number]): Promise<ProviderReadiness> {
-        return {
-          status: provider === PROVIDERS[0] ? 'unauthenticated' : 'authenticated',
-          message: '',
-          models: [],
-        };
-      },
-    };
-    const statuses = new ProviderStatuses({
-      locator: new FakeLocator(),
-      runtime,
-      sealed: new SealedLogins({
-        client: {
-          sealedLogin: async () => {
-            startFetch();
-            await finish;
-            return null;
-          },
-        },
-        keys: generateSealingKeyPair(),
-        controllerId: 'controller-1',
-      }),
-      probeCwd: '/tmp',
-      now: () => NOW,
-      log: silentLogger,
-      onChange: () => {
-        if (statuses.snapshot().some((status) => status.provider === PROVIDERS[1])) reportLater();
-      },
-    });
-    const refresh = statuses.refreshStale();
-    await started;
-    try {
-      expect(
-        await Promise.race([
-          laterReported,
-          new Promise<string>((resolve) => setTimeout(() => resolve('timed out'), 1000)),
-        ])
-      ).toBe('reported');
-    } finally {
-      finishFetch();
-    }
-    await refresh;
-    expect(statuses.snapshot()).toHaveLength(PROVIDERS.length);
-  });
-
-  it('reports a failed refresh even while another provider credential fetch is stalled', async () => {
-    let startFetch!: () => void;
-    let finishFetch!: () => void;
-    const started = new Promise<void>((resolve) => {
-      startFetch = resolve;
-    });
-    const finish = new Promise<void>((resolve) => {
-      finishFetch = resolve;
-    });
-    const locator = {
-      async locate(provider: (typeof PROVIDERS)[number]) {
-        if (provider === PROVIDERS[0]) throw new Error('probe failed');
-        return { path: `/bin/${provider}`, version: '1.0.0', versionProblem: null };
-      },
-    };
-    const runtime = {
-      async probe(provider: (typeof PROVIDERS)[number]): Promise<ProviderReadiness> {
-        return {
-          status: provider === PROVIDERS[1] ? 'unauthenticated' : 'authenticated',
-          message: '',
-          models: [],
-        };
-      },
-    };
-    const statuses = new ProviderStatuses({
-      locator,
-      runtime,
-      sealed: new SealedLogins({
-        client: {
-          sealedLogin: async () => {
-            startFetch();
-            await finish;
-            return null;
-          },
-        },
-        keys: generateSealingKeyPair(),
-        controllerId: 'controller-1',
-      }),
-      probeCwd: '/tmp',
-      now: () => NOW,
-      log: silentLogger,
-      onChange: () => {},
-    });
-    const result = statuses.refreshStale().then(
-      () => 'unexpected success',
-      (error: Error) => error.message
-    );
-    await started;
-    try {
-      expect(
-        await Promise.race([
-          result,
-          new Promise<string>((resolve) => setTimeout(() => resolve('timed out'), 1000)),
-        ])
-      ).toBe('probe failed');
-    } finally {
-      finishFetch();
-    }
-  });
-
-  it('releases the probe slot after an error and checks the remaining providers', async () => {
-    const located: string[] = [];
-    let fail = true;
-    const locator = {
-      async locate(provider: (typeof PROVIDERS)[number]) {
-        located.push(provider);
-        if (provider === PROVIDERS[0] && fail) {
-          fail = false;
-          throw new Error('probe failed');
-        }
-        return null;
-      },
-    };
-    let allOthersReported!: () => void;
-    const remaining = new Promise<void>((resolve) => {
-      allOthersReported = resolve;
-    });
-    const statuses = new ProviderStatuses({
-      locator,
-      runtime: new FakeRuntime(),
-      sealed: null,
-      probeCwd: '/tmp',
-      now: () => NOW,
-      log: silentLogger,
-      onChange: () => {
-        if (statuses.snapshot().length === PROVIDERS.length - 1) allOthersReported();
-      },
-    });
-    await expect(statuses.refreshStale()).rejects.toThrow('probe failed');
-    await remaining;
-    expect(located).toEqual([...PROVIDERS]);
-    expect((await statuses.check(PROVIDERS[0])).installed).toBe(false);
-  });
-
   it('checks each provider at most once per TTL, and reports changes', async () => {
     let clock = NOW;
     let changes = 0;
@@ -606,19 +312,19 @@ describe('ProviderStatuses', () => {
     });
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(PROVIDERS.length - 1);
-    expect(changes).toBe(PROVIDERS.length);
+    expect(runtime.probes).toBe(4);
+    expect(changes).toBe(5);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(PROVIDERS.length - 1);
+    expect(runtime.probes).toBe(4);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe((PROVIDERS.length - 1) * 2);
-    expect(changes).toBe(PROVIDERS.length);
+    expect(runtime.probes).toBe(8);
+    expect(changes).toBe(5);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(PROVIDERS.length + 1);
+    expect(changes).toBe(6);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -723,7 +429,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(PROVIDERS.length - 2);
+    expect(runtime.probes).toBe(3);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 
