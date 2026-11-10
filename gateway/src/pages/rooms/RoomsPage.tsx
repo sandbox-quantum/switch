@@ -214,9 +214,15 @@ export default function RoomsPage() {
         valueGetter: (_value, row) => roomGroupLabel(row, byId),
         renderCell: ({ row }) =>
           row.group_id ? (
-            <Stack direction="row" alignItems="center" spacing={1}>
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0, height: "100%" }}>
               <ColorDot color={effectiveColor(row.group_id, byId)} />
-              <span>{roomGroupLabel(row, byId)}</span>
+              <Box
+                component="span"
+                title={roomGroupLabel(row, byId)}
+                sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {roomGroupLabel(row, byId)}
+              </Box>
             </Stack>
           ) : (
             <Missing />
@@ -255,12 +261,16 @@ export default function RoomsPage() {
         renderCell: ({ value }) =>
           value ? <Chip label={channelTypeLabel(value as string)} size="small" /> : <Missing />,
       },
-      { field: "agent_count", headerName: "Agents", width: 84, type: "number" },
+      // Counts sit under their headers, left-aligned like every other column,
+      // so the Users column's filter button reads as its own.
+      { field: "agent_count", headerName: "Agents", width: 84, type: "number", align: "left", headerAlign: "left" },
       {
         field: "connected_user_count",
         headerName: "Users",
         width: 96,
         type: "number",
+        align: "left",
+        headerAlign: "left",
         // Filtered by who is connected, not by how many.
         filter: { value: (row) => row.connected_user_names, options: connectedUserOptions(viewRooms) },
       },
@@ -282,6 +292,9 @@ export default function RoomsPage() {
         headerName: "",
         width: 64,
         sortable: false,
+        // A header menu's button is wider than the room this column leaves
+        // it, and would push the table past its edge.
+        disableColumnMenu: true,
         renderCell: ({ row, tabIndex }) => {
           // Archiving takes write access to the room, deleting it managing it.
           const actions: RowAction[] = [];
