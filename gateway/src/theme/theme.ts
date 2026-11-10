@@ -49,6 +49,11 @@ export const statusEdge = (tone: StatusTone) =>
 export const statusTone = (tone: StatusTone) => ({
   backgroundColor: `var(--mui-palette-Alert-${tone}StandardBg)`,
   color: `var(--mui-palette-Alert-${tone}Color)`,
+  // MUI darkens a dark-mode wash below the card, which reads as a hole; a
+  // light tint of the tone over the card reads as the light-mode one does.
+  '[data-mui-color-scheme="dark"] &': {
+    backgroundColor: `color-mix(in oklch, var(--mui-palette-${tone}-main) 12%, transparent)`,
+  },
 });
 
 /** Everything that floats over a card: menus, popovers, autocomplete lists
@@ -238,6 +243,8 @@ export const APP_THEME = () =>
             fontSize: "0.875rem",
             fontWeight: 500,
             "& .MuiChip-label": { paddingLeft: 8, paddingRight: 8 },
+            // A chip's icon is its label's colour, not MUI's grey.
+            "& .MuiChip-icon": { color: "inherit", fontSize: 16, marginLeft: 6, marginRight: -2 },
             // A filled chip is a small banner: its tone's wash, a hairline a
             // step darker (drawn inset, so the chip keeps its height) and text
             // in the tone's readable shade. Grey for a state with no tone.
@@ -264,6 +271,8 @@ export const APP_THEME = () =>
       MuiAlert: {
         styleOverrides: {
           root: {
+            // One radius for every banner, the page banner's.
+            borderRadius: 6,
             variants: (["success", "warning", "error", "info"] as const).map((tone) => ({
               props: { variant: "standard" as const, severity: tone },
               style: { ...statusTone(tone), border: `1px solid ${statusEdge(tone)}` },
@@ -338,6 +347,12 @@ export const APP_THEME = () =>
           paper: ({ theme }) => floating(theme),
           // A chip on a field shares its fill in dark mode, so it keeps an edge.
           tag: { border: `1px solid ${hootVar("border")}` },
+          // 36px like every other field: the list's own input padding plus
+          // this makes the 20px of text the same 8px from the edge.
+          inputRoot: {
+            "&.MuiInputBase-sizeSmall": { paddingTop: 5.5, paddingBottom: 5.5, paddingLeft: 8 },
+          },
+          popupIndicator: { color: hootVar("muted-foreground") },
         },
       },
       MuiDataGrid: {
@@ -361,7 +376,9 @@ export const APP_THEME = () =>
             lineHeight: 1.25,
             color: hootVar("foreground"),
             "&.Mui-focused": { color: hootVar("foreground") },
-            "&.Mui-error": { color: hootVar("destructive-text") },
+            // The box and the message below it carry the error; the label
+            // stays in ink, as Hoot's does.
+            "&.Mui-error": { color: hootVar("foreground") },
             "&.Mui-disabled": { color: hootVar("field-disabled-foreground") },
           },
         },
@@ -426,7 +443,22 @@ export const APP_THEME = () =>
               WebkitTextFillColor: hootVar("muted-foreground"),
             },
           },
-          input: { fontSize: "0.875rem" },
+          // Hoot's field is 36px tall whatever it holds: 20px of text with 8px
+          // above and below, and 12px in from its edge.
+          input: {
+            fontSize: "0.875rem",
+            lineHeight: "20px",
+            height: 20,
+            padding: "8px 12px",
+            // Placeholder text in the muted ink: MUI's 42% black is 2.7:1.
+            "&::placeholder": { color: hootVar("muted-foreground"), opacity: 1 },
+          },
+          multiline: { padding: "8px 12px" },
+          inputMultiline: { padding: 0, height: "auto" },
+          adornedStart: { paddingLeft: 12 },
+          adornedEnd: { paddingRight: 12 },
+          inputAdornedStart: { paddingLeft: 0 },
+          inputAdornedEnd: { paddingRight: 0 },
         },
       },
       MuiSvgIcon: { defaultProps: { fontSize: "inherit" } },
@@ -481,6 +513,8 @@ export const APP_THEME = () =>
       // the switch out of line and left the label touching it.
       MuiFormControlLabel: {
         styleOverrides: {
+          // Hoot labels a checkbox or switch the way it labels a field.
+          label: { fontSize: "0.875rem", fontWeight: 500 },
           // Weak selectors (`:where`), so a Stack's spacing between the label
           // and what comes before it still applies.
           root: {
@@ -513,7 +547,10 @@ export const APP_THEME = () =>
       MuiTextField: { defaultProps: { size: "small", fullWidth: true, variant: "outlined" } },
       // With the label above the box, an empty select would show an empty
       // box; it shows its "" option instead ("All", "None"), where it has one.
-      MuiSelect: { defaultProps: { displayEmpty: true } },
+      MuiSelect: {
+        defaultProps: { displayEmpty: true },
+        styleOverrides: { icon: { color: hootVar("muted-foreground") } },
+      },
       MuiTooltip: {
         defaultProps: { arrow: true },
         styleOverrides: {

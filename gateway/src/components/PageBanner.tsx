@@ -41,7 +41,9 @@ export default function PageBanner({
   /** A control at the banner's end, such as the link to where it is fixed. */
   action?: ReactNode;
 }) {
-  const { severity, icon, iconColor, borderColor, backgroundColor, color } = TONES[tone];
+  // The rest is the banner's surface: its fill, edge and ink, and in a tone
+  // its dark-mode wash.
+  const { severity, icon, iconColor, ...surface } = TONES[tone];
   return (
     <Alert
       severity={severity}
@@ -52,9 +54,7 @@ export default function PageBanner({
       sx={{
         alignItems: "center",
         borderRadius: "6px",
-        borderColor,
-        backgroundColor,
-        color,
+        ...surface,
         fontSize: "0.875rem",
         fontWeight: 600,
         "& .MuiAlert-icon": { color: iconColor, py: 0 },

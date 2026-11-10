@@ -1,3 +1,4 @@
+import CloseOutlined from "@mui/icons-material/CloseOutlined";
 import FilterListOutlined from "@mui/icons-material/FilterListOutlined";
 import SearchOutlined from "@mui/icons-material/SearchOutlined";
 import {
@@ -18,6 +19,7 @@ import {
   Chip,
   FormControlLabel,
   InputAdornment,
+  Link,
   ListItemIcon,
   ListItemText,
   MenuItem,
@@ -170,11 +172,14 @@ const OWN_FILTERING_SX: SxProps<Theme> = {
   [`& .${FILTERABLE}:hover .MuiDataGrid-menuIcon`]: { opacity: 1 },
 };
 
+const HEADER_HEIGHT = 56;
+const ROW_HEIGHT = 52;
+
 /** The least a table with no rows to show is given: its header and two rows
  *  for what it says instead. Pages size a table to its rows (`108 + rows *
  *  52`), which leaves no room at all for "No rows" when there are none. An
  *  empty table has no footer: there is nothing to page through. */
-const EMPTY_TABLE_HEIGHT = 56 + 2 * 52;
+const EMPTY_TABLE_HEIGHT = HEADER_HEIGHT + 2 * ROW_HEIGHT;
 
 const PINNED = "hoot-pinned-right";
 
@@ -397,15 +402,34 @@ export default function DataTable<T extends { id: string | number }>({
     const picked = selection[column.field] ?? [];
     if (picked.length === 0) return [];
     const labels = new Map(filterOptions(column, rows).map((option) => [option.value, option.label]));
-    return picked.map((value) => (
-      <Chip
-        key={`${column.field}:${value}`}
-        variant="outlined"
-        label={`${column.headerName ?? column.field}: ${labels.get(value) ?? value}`}
-        onDelete={() => setSelection((current) => toggleValue(current, column.field, value))}
-      />
-    ));
+    const header = column.headerName ?? column.field;
+    return picked.map((value) => {
+      const label = labels.get(value) ?? value;
+      const remove = () => setSelection((current) => toggleValue(current, column.field, value));
+      // The whole chip is the button that removes it, so Enter and Space work
+      // as well as Backspace, and it is named for what pressing it does.
+      return (
+        <Chip
+          key={`${column.field}:${value}`}
+          aria-label={`Remove ${header}: ${label} filter`}
+          label={
+            <>
+              {header}: <Box component="strong">{label}</Box>
+            </>
+          }
+          onClick={remove}
+          onDelete={remove}
+          deleteIcon={<CloseOutlined aria-hidden />}
+          sx={FILTER_CHIP_SX}
+        />
+      );
+    });
   });
+
+  // Everything on one page: no footer, since there is nothing to page
+  // through, and no taller than its rows, so a short or narrowed table
+  // leaves no blank card under it.
+  const fitsOnePage = shown.length <= pageSize;
 
   // Tables that leave filtering to the grid keep its own overlays.
   const tableOverlay = emptyState !== undefined || (ownFiltering && rows.length > 0);
@@ -440,7 +464,7 @@ export default function DataTable<T extends { id: string | number }>({
       initialState={{
         pagination: { paginationModel: { pageSize } },
       }}
-      pageSizeOptions={[10, 25, 50]}
+      pageSizeOptions={[...new Set([pageSize, 25, 50, 100])].sort((a, b) => a - b)}
       pagination
       checkboxSelection={checkboxSelection}
       isRowSelectable={
@@ -458,7 +482,7 @@ export default function DataTable<T extends { id: string | number }>({
       // renders. A page holds at most 50 rows, so that stays cheap.
       disableVirtualization={pinnedRight.length > 0}
       disableColumnFilter={ownFiltering}
-      hideFooter={shown.length === 0}
+      hideFooter={fitsOnePage}
       slots={tableOverlay ? { noRowsOverlay: TableOverlay } : undefined}
       slotProps={{
         ...(tableOverlay && { noRowsOverlay: { tableEmpty: empty } }),
@@ -480,7 +504,12 @@ export default function DataTable<T extends { id: string | number }>({
               // footer, as pages size a table to its rows. The border goes
               // outside it, or each such table would be 2px short and scroll.
               boxSizing: "content-box",
-              height: shown.length === 0 ? Math.max(height, EMPTY_TABLE_HEIGHT) : height,
+              height:
+                shown.length === 0
+                  ? Math.max(height, EMPTY_TABLE_HEIGHT)
+                  : fitsOnePage
+                    ? Math.min(height, HEADER_HEIGHT + ROW_HEIGHT * shown.length)
+                    : height,
             },
         ...extraSx,
       ]}
@@ -542,9 +571,14 @@ export default function DataTable<T extends { id: string | number }>({
         {chips.length > 0 && (
           <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 1.5 }}>
             {chips}
-            <Button size="small" onClick={() => setSelection({})}>
+            <Link
+              component="button"
+              underline="always"
+              onClick={() => setSelection({})}
+              sx={{ fontSize: "0.875rem", color: "var(--hoot-muted-foreground)" }}
+            >
               Clear filters
-            </Button>
+            </Link>
           </Stack>
         )}
         {fillHeight ? <Box sx={{ flex: 1, minHeight: 0 }}>{table}</Box> : table}
@@ -593,6 +627,21 @@ export default function DataTable<T extends { id: string | number }>({
     </TableFilterContext.Provider>
   );
 }
+
+/** A picked filter, as Hoot's filter chip: the column in the label's weight,
+ *  the value bold, on the muted fill with a small cross. */
+const FILTER_CHIP_SX: SxProps<Theme> = {
+  height: 34,
+  borderRadius: "12px",
+  backgroundColor: "var(--hoot-muted)",
+  color: "var(--hoot-foreground)",
+  fontSize: "0.875rem",
+  fontWeight: 500,
+  "& .MuiChip-label": { pl: 1.5, pr: 1 },
+  "& strong": { fontWeight: 700 },
+  "& .MuiChip-deleteIcon": { fontSize: 16, color: "var(--hoot-muted-foreground)", mr: 1, ml: -0.5 },
+  "&:hover, &:focus-visible": { backgroundColor: "var(--hoot-accent)" },
+};
 
 /** Quick filters share a text field's 36px height and hairline so the toolbar
  *  reads as one strip; pressed is a quiet wash, not a status colour. */

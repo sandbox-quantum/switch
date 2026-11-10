@@ -18,6 +18,19 @@ const dialog = (props: Partial<Parameters<typeof ConfirmDialog>[0]>) => (
 describe("ConfirmDialog", () => {
   afterEach(() => cleanup());
 
+  it("is named by its title, described by its description, and closes from its own button", () => {
+    const onClose = vi.fn();
+    render(dialog({ onClose }));
+    const box = screen.getByRole("dialog", { name: "Remove Dana?" });
+
+    expect(box.getAttribute("aria-describedby")).toBeTruthy();
+    expect(document.getElementById(box.getAttribute("aria-describedby")!)?.textContent).toBe(
+      "Dana loses access to this workspace.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it("closes once the action succeeds", async () => {
     const onClose = vi.fn();
     const onConfirm = vi.fn(async () => {});

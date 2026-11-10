@@ -16,11 +16,33 @@ export default function InfoTip({ children, label = "More information" }: { chil
       describeChild
       enterTouchDelay={0}
       leaveTouchDelay={4000}
-      slotProps={{ tooltip: { sx: { maxWidth: 288, textAlign: "left" } } }}
+      // Hoot's info tip opens above the mark, 6px off it and with no arrow,
+      // and flips below only when there is no room.
+      placement="top"
+      arrow={false}
+      slotProps={{
+        popper: { modifiers: [{ name: "offset", options: { offset: [0, 6] } }] },
+        tooltip: {
+          sx: {
+            maxWidth: 288,
+            textAlign: "left",
+            fontWeight: 400,
+            lineHeight: "16px",
+            boxShadow: "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
+            ".MuiTooltip-popper[data-popper-placement] &": { m: 0 },
+          },
+        },
+      }}
     >
       <IconButton
         aria-label={label}
-        sx={{ color: "text.secondary", p: 0.25, "&:hover": { color: "text.primary", backgroundColor: "transparent" } }}
+        sx={{
+          width: 16,
+          height: 16,
+          p: 0,
+          color: "text.secondary",
+          "&:hover": { color: "text.primary", backgroundColor: "transparent" },
+        }}
       >
         <HelpOutlineOutlined sx={{ fontSize: 16 }} />
       </IconButton>

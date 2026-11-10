@@ -60,8 +60,9 @@ export default function RowActionsMenu({
           event.stopPropagation();
           setAnchor(event.currentTarget);
         }}
+        sx={{ width: 28, height: 28, color: "var(--hoot-foreground)" }}
       >
-        <MoreHorizOutlined fontSize="small" />
+        <MoreHorizOutlined sx={{ fontSize: 16 }} />
       </IconButton>
       <Menu
         open={anchor !== null}
@@ -74,8 +75,8 @@ export default function RowActionsMenu({
         // MUI's arrow-key navigation skips aria-disabled items unless told
         // otherwise, which would make a disabled action's reason unreachable.
         slotProps={{
-          list: { "aria-labelledby": triggerId, disabledItemsFocusable: true },
           paper: { sx: { width: 280 } },
+          list: { "aria-labelledby": triggerId, disabledItemsFocusable: true, sx: { p: 0.5 } },
         }}
       >
         {actions.map((action) => {
@@ -83,7 +84,7 @@ export default function RowActionsMenu({
           const tone = disabled
             ? "var(--hoot-field-disabled-foreground)"
             : action.destructive
-              ? "var(--hoot-destructive)"
+              ? "var(--hoot-destructive-text)"
               : undefined;
           return (
             <MenuItem
@@ -97,16 +98,27 @@ export default function RowActionsMenu({
               sx={{
                 alignItems: "flex-start",
                 whiteSpace: "normal",
+                minHeight: 36,
+                px: 1.5,
+                py: 1,
                 color: tone,
+                // A destructive action hovers in its own red wash.
+                ...(action.destructive &&
+                  !disabled && { "&:hover, &.Mui-focusVisible": { backgroundColor: "var(--hoot-destructive-muted)" } }),
                 ...(disabled && { cursor: "default", "&:hover": { backgroundColor: "transparent" } }),
               }}
             >
-              {action.icon && <ListItemIcon sx={{ color: "inherit", mt: "2px" }}>{action.icon}</ListItemIcon>}
+              {action.icon && (
+                <ListItemIcon sx={{ color: "inherit", minWidth: 24, mt: "2px", "& svg": { fontSize: 16 } }}>
+                  {action.icon}
+                </ListItemIcon>
+              )}
               <ListItemText
                 primary={action.label}
                 secondary={action.disabledReason}
+                sx={{ my: 0 }}
                 slotProps={{
-                  primary: { variant: "body2", fontWeight: 500 },
+                  primary: { variant: "body2" },
                   secondary: { variant: "caption", color: "text.secondary", display: "block", sx: { mt: 0.25 } },
                 }}
               />

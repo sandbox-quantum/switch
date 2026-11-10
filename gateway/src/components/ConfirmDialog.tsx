@@ -1,3 +1,4 @@
+import CloseOutlined from "@mui/icons-material/CloseOutlined";
 import {
   Alert,
   Button,
@@ -6,8 +7,9 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
+  IconButton,
 } from "@mui/material";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -34,6 +36,8 @@ export default function ConfirmDialog({
   onConfirm,
   onClose,
 }: ConfirmDialogProps) {
+  const descriptionId = useId();
+  const closeRef = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,12 +61,34 @@ export default function ConfirmDialog({
       onClose={busy ? undefined : onClose}
       maxWidth="xs"
       fullWidth
-      slotProps={{ transition: { onExited: () => setError(null) } }}
+      aria-describedby={description ? descriptionId : undefined}
+      slotProps={{
+        transition: { onEntering: () => closeRef.current?.focus(), onExited: () => setError(null) },
+        paper: { sx: { borderRadius: "16px" } },
+      }}
     >
-      <DialogTitle>{title}</DialogTitle>
+      {/* Hoot's modal: a 17px title, the description 4px under it, a close
+          button that takes focus first (the safe control, in a dialog whose
+          main action may delete something), and a hairline over the buttons. */}
+      <DialogTitle sx={{ fontSize: "1.0625rem", fontWeight: 600, pt: 3, pr: 8, pb: description || error ? 0.5 : 3 }}>
+        {title}
+      </DialogTitle>
+      <IconButton
+        ref={closeRef}
+        aria-label="Close"
+        onClick={onClose}
+        disabled={busy}
+        sx={{ position: "absolute", top: 16, right: 16, width: 36, height: 36 }}
+      >
+        <CloseOutlined sx={{ fontSize: 18 }} />
+      </IconButton>
       {(description || error) && (
-        <DialogContent>
-          {description && <DialogContentText component="div">{description}</DialogContentText>}
+        <DialogContent sx={{ pb: 3 }}>
+          {description && (
+            <DialogContentText id={descriptionId} component="div" sx={{ fontSize: "0.875rem", lineHeight: "20px" }}>
+              {description}
+            </DialogContentText>
+          )}
           {error && (
             <Alert severity="error" sx={{ mt: description ? 2 : 0, overflowWrap: "anywhere" }}>
               {error}
@@ -70,7 +96,7 @@ export default function ConfirmDialog({
           )}
         </DialogContent>
       )}
-      <DialogActions sx={{ px: 3, pb: 2 }}>
+      <DialogActions sx={{ px: 3, py: 2, borderTop: "1px solid var(--hoot-border)" }}>
         <Button variant="outlined" onClick={onClose} disabled={busy}>
           Cancel
         </Button>
@@ -83,8 +109,8 @@ export default function ConfirmDialog({
           // confirm would read as refused while the action is still running.
           sx={{
             "&.MuiButton-loading": {
-              backgroundColor: tone === "destructive" ? "error.main" : "primary.main",
-              color: tone === "destructive" ? "error.contrastText" : "primary.contrastText",
+              backgroundColor: tone === "destructive" ? "var(--hoot-destructive)" : "primary.main",
+              color: tone === "destructive" ? "var(--hoot-destructive-foreground)" : "primary.contrastText",
               opacity: 0.85,
             },
           }}

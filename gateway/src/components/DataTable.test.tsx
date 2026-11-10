@@ -48,10 +48,20 @@ describe("DataTable toolbar", () => {
 
     expect(quick.getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("2 of 3 agents")).toBeTruthy();
-    expect(screen.getByText("Status: Active")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove Status: Active filter" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
     expect(quick.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByText("3 agents")).toBeTruthy();
+  });
+
+  it("removes a picked filter from its chip with Enter, as a button", () => {
+    render(table());
+    fireEvent.click(screen.getByRole("button", { name: "Active" }));
+    const chip = screen.getByRole("button", { name: "Remove Status: Active filter" });
+    fireEvent.click(chip);
+
+    expect(screen.queryByRole("button", { name: "Remove Status: Active filter" })).toBeNull();
     expect(screen.getByText("3 agents")).toBeTruthy();
   });
 
@@ -62,7 +72,7 @@ describe("DataTable toolbar", () => {
   });
 
   it("keeps a fixed-height table out of a flex column, where the grid would ignore its height", () => {
-    const { container } = render(table({ height: 320 }));
+    const { container } = render(table({ height: 320, pageSize: 2 }));
     const grid = container.querySelector(".MuiDataGrid-root") as HTMLElement;
 
     expect(getComputedStyle(grid).height).toBe("320px");
@@ -80,7 +90,19 @@ describe("DataTable toolbar", () => {
     expect(header.backgroundImage).toContain("var(--table-band)");
   });
 
-  it("has no footer while it has no rows, since there is nothing to page through", () => {
+  it("is no taller than its rows while they fit on one page", () => {
+    const heightOf = (props: Partial<Parameters<typeof DataTable<Row>>[0]>) => {
+      const { container, unmount } = render(<DataTable rows={rows} columns={columns} {...props} />);
+      const height = getComputedStyle(container.querySelector(".MuiDataGrid-root") as HTMLElement).height;
+      unmount();
+      return height;
+    };
+
+    expect(heightOf({ height: 600 })).toBe(`${56 + 3 * 52}px`);
+    expect(heightOf({ height: 600, pageSize: 2 })).toBe("600px");
+  });
+
+  it("has no footer while its rows fit on one page, since there is nothing to page through", () => {
     const footer = (props: Partial<Parameters<typeof DataTable<Row>>[0]>) => {
       const { container, unmount } = render(<DataTable rows={rows} columns={columns} {...props} />);
       const found = container.querySelector(".MuiDataGrid-footerContainer") !== null;
@@ -89,7 +111,8 @@ describe("DataTable toolbar", () => {
     };
 
     expect(footer({ rows: [] })).toBe(false);
-    expect(footer({})).toBe(true);
+    expect(footer({})).toBe(false);
+    expect(footer({ pageSize: 2 })).toBe(true);
   });
 
   it("gives a table sized to its rows room to say it has none", () => {
@@ -101,7 +124,6 @@ describe("DataTable toolbar", () => {
     };
 
     expect(heightOf({ rows: [], height: 108 })).toBe("160px");
-    expect(heightOf({ rows: rows.slice(0, 1), height: 160 })).toBe("160px");
     expect(heightOf({ rows: [], height: 320 })).toBe("320px");
   });
 
@@ -113,7 +135,8 @@ describe("DataTable toolbar", () => {
     fireEvent.click(within(picker).getByRole("checkbox", { name: "Idle" }));
 
     expect(screen.getByText("1 of 3 agents")).toBeTruthy();
-    expect(screen.getByText("Status: Idle")).toBeTruthy();
+    // The open picker hides the page behind it from the accessibility tree.
+    expect(screen.getByRole("button", { name: "Remove Status: Idle filter", hidden: true })).toBeTruthy();
   });
 
   it("goes back to the first page when the rows are narrowed", async () => {
