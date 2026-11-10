@@ -6,6 +6,7 @@ import {
   GRANT_CHECK_MS,
   REFRESH_BEFORE_MS,
   REJECTION_WINDOW_MS,
+  VERIFIED_GRANT_LEASE_MS,
 } from './service-tokens';
 
 const HOUR = 60 * 60_000;
@@ -27,6 +28,7 @@ function grant(service: string, revision: number): ServiceGrant {
 
 function tokens(outcomes: (IssuedServiceToken | ServiceRefusal | Error)[]) {
   let now = 1_000_000;
+  let monotonic = now;
   const issue = vi.fn(async () => {
     const next = outcomes.shift();
     if (!next) throw new Error('no outcome left');
@@ -41,6 +43,7 @@ function tokens(outcomes: (IssuedServiceToken | ServiceRefusal | Error)[]) {
     endpoint: ENDPOINT,
     redactions,
     now: () => now,
+    monotonicNow: () => monotonic,
     issue,
     readGrants,
   });
@@ -52,6 +55,10 @@ function tokens(outcomes: (IssuedServiceToken | ServiceRefusal | Error)[]) {
     at: () => now,
     advance: (ms: number) => {
       now += ms;
+      monotonic += ms;
+    },
+    advanceWall: (ms: number) => {
+      now += ms;
     },
   };
 }
@@ -59,6 +66,173 @@ function tokens(outcomes: (IssuedServiceToken | ServiceRefusal | Error)[]) {
 afterEach(() => vi.restoreAllMocks());
 
 describe('AgentServiceTokens', () => {
+  describe('verified vendor MCP leases', () => {
+    const issued = (t: ReturnType<typeof tokens>, revision: number | null = 1) => ({
+      token: 'synthetic-verified',
+      expiresAt: t.at() + HOUR,
+      useUntil: t.at() + HOUR,
+      grantRevision: revision,
+    });
+
+    it('refuses after the lease when Core is unreachable, even when the token remains usable', async () => {
+      const t = tokens([]);
+      t.issue.mockResolvedValueOnce(issued(t)).mockRejectedValue(new Error('offline'));
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({ kind: 'token' });
+      t.advance(VERIFIED_GRANT_LEASE_MS - 1);
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({ kind: 'token' });
+      t.advance(1);
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({
+        kind: 'refused',
+        code: 'unreachable',
+      });
+    });
+
+    it('expires its lease after system sleep even when monotonic time paused', async () => {
+      const t = tokens([]);
+      t.issue.mockResolvedValueOnce(issued(t)).mockRejectedValue(new Error('offline'));
+      await t.service.answerVerified('notion', null);
+      t.advanceWall(VERIFIED_GRANT_LEASE_MS);
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({
+        kind: 'refused',
+        code: 'unreachable',
+      });
+    });
+
+    it('refuses a cached lease if wall time moves before its grant check during sleep', async () => {
+      const t = tokens([]);
+      t.issue.mockResolvedValueOnce(issued(t)).mockRejectedValue(new Error('offline'));
+      await t.service.answerVerified('notion', null);
+      t.advanceWall(-1000);
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({
+        kind: 'refused',
+        code: 'unreachable',
+      });
+    });
+
+    it.each(['unreachable', 'grant_missing'])(
+      'does not revive an expired lease after a clock rollback and %s',
+      async (failure) => {
+        const t = tokens([]);
+        t.issue.mockResolvedValueOnce(issued(t));
+        if (failure === 'unreachable') t.issue.mockRejectedValue(new Error('offline'));
+        else
+          t.issue.mockResolvedValue({
+            code: 'grant_missing',
+            message: 'No grant.',
+            retryable: false,
+          });
+        await t.service.answerVerified('notion', null);
+        t.advanceWall(VERIFIED_GRANT_LEASE_MS);
+        expect(await t.service.answerVerified('notion', null)).toMatchObject({
+          kind: 'refused',
+          code: failure,
+        });
+        t.advanceWall(-VERIFIED_GRANT_LEASE_MS);
+        expect(await t.service.answerVerified('notion', null)).toMatchObject({
+          kind: 'refused',
+          code: failure,
+        });
+      }
+    );
+
+    it('cannot detect sleep when wall time is set back inside the original lease interval', async () => {
+      const t = tokens([]);
+      t.issue.mockResolvedValueOnce(issued(t));
+      await t.service.answerVerified('notion', null);
+      // The machine sleeps, monotonic time pauses, and wall time is moved back
+      // to its pre-sleep value. Both clock readings are indistinguishable from
+      // the instant just after the grant check.
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({ kind: 'token' });
+      expect(t.issue).toHaveBeenCalledTimes(1);
+    });
+
+    it('revalidates by issuing even when the server names no revision', async () => {
+      const t = tokens([]);
+      t.issue
+        .mockResolvedValueOnce(issued(t, null))
+        .mockResolvedValueOnce({ code: 'grant_missing', message: 'No grant.', retryable: false });
+      await t.service.answerVerified('notion', null);
+      t.advance(VERIFIED_GRANT_LEASE_MS);
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({
+        kind: 'refused',
+        code: 'grant_missing',
+        final: true,
+      });
+      expect(t.issue).toHaveBeenCalledTimes(2);
+    });
+
+    it('reissues even when a replaced grant might reuse the same revision', async () => {
+      const t = tokens([]);
+      t.issue
+        .mockResolvedValueOnce(issued(t, 1))
+        .mockResolvedValueOnce({ ...issued(t, 1), token: 'synthetic-regranted' });
+      await t.service.answerVerified('notion', null);
+      t.advance(VERIFIED_GRANT_LEASE_MS);
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({
+        kind: 'token',
+        token: 'synthetic-regranted',
+      });
+      expect(t.issue).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not restore a token rejected while its issuance is pending', async () => {
+      const t = tokens([]);
+      t.issue.mockResolvedValueOnce(issued(t));
+      await t.service.answerVerified('notion', null);
+      let release!: (value: IssuedServiceToken) => void;
+      t.issue.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+      t.advance(VERIFIED_GRANT_LEASE_MS);
+      const checking = t.service.answerVerified('notion', null);
+      const rejected = t.service.answerVerified('notion', 'synthetic-verified');
+      release(issued(t));
+      expect(await checking).toMatchObject({ kind: 'refused', code: 'token_rejected' });
+      expect(await rejected).toMatchObject({ kind: 'refused', code: 'token_rejected' });
+    });
+
+    it('does not fall back to the other token cache when renewal fails', async () => {
+      const t = tokens([]);
+      t.issue
+        .mockResolvedValueOnce(issued(t))
+        .mockResolvedValueOnce(issued(t))
+        .mockRejectedValue(new Error('offline'));
+      await t.service.answer('notion', null);
+      await t.service.answerVerified('notion', null);
+      t.advance(VERIFIED_GRANT_LEASE_MS);
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({
+        kind: 'refused',
+        code: 'unreachable',
+      });
+    });
+
+    it('shares one concurrent check and refuses a result that arrived after its deadline', async () => {
+      const t = tokens([]);
+      let release!: (value: IssuedServiceToken) => void;
+      t.issue.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+      const requests = [
+        t.service.answerVerified('notion', null),
+        t.service.answerVerified('notion', null),
+      ];
+      expect(t.issue).toHaveBeenCalledTimes(1);
+      t.advance(VERIFIED_GRANT_LEASE_MS);
+      release(issued(t));
+      expect(await Promise.all(requests)).toEqual([
+        expect.objectContaining({ kind: 'refused', code: 'grant_check_expired' }),
+        expect.objectContaining({ kind: 'refused', code: 'grant_check_expired' }),
+      ]);
+    });
+
+    it('limits a lease to the token use deadline', async () => {
+      const t = tokens([]);
+      t.issue
+        .mockResolvedValueOnce({ ...issued(t), useUntil: t.at() + 1000 })
+        .mockRejectedValue(new Error('offline'));
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({
+        validUntilMonotonicMs: t.at() + 1000,
+      });
+      t.advance(1000);
+      expect(await t.service.answerVerified('notion', null)).toMatchObject({ kind: 'refused' });
+    });
+  });
   it('hands out one token until five minutes before it expires, then asks again', async () => {
     const t = tokens([]);
     const first = {

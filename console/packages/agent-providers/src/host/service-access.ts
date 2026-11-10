@@ -192,7 +192,14 @@ export function endsServiceUse(code: string): boolean {
 
 /** What a session host is answered when it asks for a service token. */
 export const serviceTokenAnswerSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('token'), token: z.string().min(1), expiresAt: z.string() }),
+  z.object({
+    kind: z.literal('token'),
+    token: z.string().min(1),
+    expiresAt: z.string(),
+    validUntilMonotonicMs: z.number().finite().optional(),
+    validUntilWallMs: z.number().finite().optional(),
+    validAfterWallMs: z.number().finite().optional(),
+  }),
   z.object({
     kind: z.literal('refused'),
     code: z.string(),
@@ -202,6 +209,11 @@ export const serviceTokenAnswerSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 export type ServiceTokenAnswer = z.infer<typeof serviceTokenAnswerSchema>;
+
+/** The same machine's monotonic clock, shared by the watcher and session processes. */
+export function monotonicMillis(): number {
+  return Number(process.hrtime.bigint() / 1_000_000n);
+}
 
 /**
  * A token as this machine holds it, both times on this machine's clock:

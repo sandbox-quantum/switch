@@ -4,7 +4,12 @@ import { type HttpMcpServer, serveMcpOverHttp } from '@sandboxaq/switch-agent-ru
 import { afterEach, describe, expect, it } from 'vitest';
 import type { HttpMcpServerSpec } from '../adapter';
 import { Redactions } from './redaction';
-import { type ServiceGrant, serviceGrantSchema, type ServiceTokenAnswer } from './service-access';
+import {
+  monotonicMillis,
+  type ServiceGrant,
+  serviceGrantSchema,
+  type ServiceTokenAnswer,
+} from './service-access';
 import type { HostAsk } from './session-channel';
 import { startVendorServers, textResult, type VendorServers } from './vendor-mcp';
 
@@ -113,9 +118,122 @@ const token = (value: string): ServiceTokenAnswer => ({
   kind: 'token',
   token: value,
   expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+  validUntilMonotonicMs: monotonicMillis() + 30_000,
+  validUntilWallMs: Date.now() + 30_000,
+  validAfterWallMs: Date.now() - 1_000,
 });
 
 describe('a granted vendor’s MCP servers', () => {
+  it('uses the verified ask for Notion while permitting a current lease', async () => {
+    const { server, calls } = await vendor();
+    const vendors = await started(
+      [grant('notion', [{ name: 'notion', url: VENDOR_URL }])],
+      [token(GOOD)],
+      routedTo(server.url, [])
+    );
+    const result = await (
+      await client(vendors.specs.notion!)
+    ).callTool({ name: 'search_items', arguments: { query: 'synthetic' } });
+    expect(result.isError).not.toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(vendors.asked).toEqual([
+      { type: 'service-token-verified', service: 'notion', rejected: null },
+    ]);
+  });
+
+  it('stops before a later vendor request when the lease expires during its handshake', async () => {
+    const { server } = await vendor();
+    let now = 1_000;
+    let requests = 0;
+    const vendors = await startVendorServers({
+      grants: [grant('notion', [{ name: 'notion', url: VENDOR_URL }])],
+      ask: async () => ({
+        ...token(GOOD),
+        validUntilMonotonicMs: 2_000,
+        validUntilWallMs: 2_000,
+        validAfterWallMs: 0,
+      }),
+      redactions: new Redactions(),
+      listTimeoutMs: 5_000,
+      callTimeoutMs: 5_000,
+      monotonicNow: () => now,
+      wallNow: () => now,
+      fetch: async (_url, init) => {
+        requests++;
+        const response = await fetch(server.url, init);
+        now = 2_000;
+        return response;
+      },
+    });
+    servers.push(vendors);
+    await expect((await client(vendors.specs.notion!)).listTools()).rejects.toThrow();
+    expect(requests).toBe(1);
+  });
+
+  it('aborts a vendor fetch still waiting when the grant lease expires', async () => {
+    let aborted = false;
+    let fetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    const expiry = new AbortController();
+    let timeoutMs = 0;
+    const vendors = await startVendorServers({
+      grants: [grant('notion', [{ name: 'notion', url: VENDOR_URL }])],
+      ask: async () => ({
+        ...token(GOOD),
+        validUntilMonotonicMs: 2_000,
+        validUntilWallMs: 2_000,
+        validAfterWallMs: 0,
+      }),
+      redactions: new Redactions(),
+      listTimeoutMs: 2_000,
+      callTimeoutMs: 2_000,
+      monotonicNow: () => 1_000,
+      wallNow: () => 1_000,
+      leaseTimeout: (ms) => {
+        timeoutMs = ms;
+        return expiry.signal;
+      },
+      fetch: async (_url, init) =>
+        new Promise((_resolve, reject) => {
+          const fail = () => {
+            aborted = true;
+            reject(new Error('aborted'));
+          };
+          if (init?.signal?.aborted) fail();
+          else init?.signal?.addEventListener('abort', fail, { once: true });
+          fetchStarted();
+        }),
+    });
+    servers.push(vendors);
+    const result = (await client(vendors.specs.notion!)).listTools();
+    await started;
+    expect(timeoutMs).toBe(1_000);
+    expiry.abort();
+    await expect(result).rejects.toThrow();
+    expect(aborted).toBe(true);
+  });
+  it('refuses an old or expired verification answer before contacting the vendor', async () => {
+    const { server } = await vendor();
+    for (const answer of [
+      {
+        kind: 'token' as const,
+        token: GOOD,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+      { ...token(GOOD), validUntilMonotonicMs: monotonicMillis() - 1 },
+    ]) {
+      const seen: string[] = [];
+      const vendors = await started(
+        [grant('notion', [{ name: 'example', url: VENDOR_URL }])],
+        [answer],
+        routedTo(server.url, seen)
+      );
+      await expect((await client(vendors.specs.example!)).listTools()).rejects.toThrow();
+      expect(seen).toEqual([]);
+    }
+  });
   it('lists and calls the vendor’s tools with a token asked for on each call', async () => {
     const { server, calls } = await vendor();
     const seen: string[] = [];

@@ -1,6 +1,7 @@
 import type { Redactions } from './redaction';
 import {
   endsServiceUse,
+  monotonicMillis,
   type IssuedServiceToken,
   type issueServiceToken,
   type readServiceGrants,
@@ -18,6 +19,9 @@ export const REJECTION_WINDOW_MS = 60_000;
 const STILL_USABLE_MS = 60_000;
 /** A cached token's grant is read again at most this often, when the token is asked for. */
 export const GRANT_CHECK_MS = 30_000;
+
+/** Maximum time a vendor MCP operation may start after Core begins a grant check. */
+export const VERIFIED_GRANT_LEASE_MS = 30_000;
 
 /**
  * The service tokens of one agent's sessions on this machine: one per
@@ -44,16 +48,143 @@ export class AgentServiceTokens {
   private readonly replacedAt = new Map<string, number>();
   private readonly checkedAt = new Map<string, number>();
   private checking: Promise<Map<string, number | undefined>> | null = null;
+  private readonly verified = new Map<
+    string,
+    {
+      token: IssuedServiceToken;
+      deadline: number;
+      wallDeadline: number;
+      wallStarted: number;
+      invalid?: boolean;
+    }
+  >();
+  private readonly verifying = new Map<string, Promise<ServiceTokenAnswer>>();
+  private readonly verifiedReplacedAt = new Map<string, number>();
+  private readonly verifiedGeneration = new Map<string, number>();
 
   constructor(
     private readonly deps: {
       endpoint: ServiceEndpoint;
       redactions: Redactions;
       now: () => number;
+      monotonicNow?: () => number;
       issue: typeof issueServiceToken;
       readGrants: typeof readServiceGrants;
     }
   ) {}
+
+  /** A verified MCP request gets no token without a recent successful Core issuance. */
+  async answerVerified(service: string, rejected: string | null): Promise<ServiceTokenAnswer> {
+    const clock = this.deps.monotonicNow ?? monotonicMillis;
+    const cached = this.verified.get(service);
+    if (rejected !== null && cached?.token.token === rejected) {
+      const replaced = this.verifiedReplacedAt.get(service);
+      this.verified.delete(service);
+      this.verifiedGeneration.set(service, (this.verifiedGeneration.get(service) ?? 0) + 1);
+      if (replaced !== undefined && clock() - replaced < REJECTION_WINDOW_MS)
+        return {
+          kind: 'refused',
+          code: 'token_rejected',
+          message: `${service} refused the replacement token. Try again later.`,
+          final: false,
+        };
+      this.verifiedReplacedAt.set(service, clock());
+    }
+    const usable = this.verified.get(service);
+    if (
+      usable &&
+      !usable.invalid &&
+      clock() < usable.deadline &&
+      this.deps.now() < usable.wallDeadline &&
+      this.deps.now() >= usable.wallStarted
+    )
+      return {
+        ...tokenAnswer(usable.token),
+        validUntilMonotonicMs: usable.deadline,
+        validUntilWallMs: usable.wallDeadline,
+        validAfterWallMs: usable.wallStarted,
+      };
+    // Once a deadline or backwards-clock check has failed, a later clock
+    // change must never revive the old grant lease.
+    if (usable) usable.invalid = true;
+
+    let pending = this.verifying.get(service);
+    if (!pending) {
+      const started = clock();
+      const wallStarted = this.deps.now();
+      const generation = this.verifiedGeneration.get(service) ?? 0;
+      pending = (async (): Promise<ServiceTokenAnswer> => {
+        let outcome: IssuedServiceToken | ServiceRefusal;
+        try {
+          // Reissue even with a revision: a removed and re-created grant can
+          // have the same revision as its predecessor. Core checks its current
+          // grant under the connection lock before recording the issuance.
+          outcome = await this.deps.issue(this.deps.endpoint, service);
+        } catch {
+          return {
+            kind: 'refused',
+            code: 'unreachable',
+            message: `Switch could not verify this agent's ${service} grant.`,
+            final: false,
+          };
+        }
+        if (!('token' in outcome))
+          return {
+            kind: 'refused',
+            code: outcome.code,
+            message: outcome.message,
+            final: endsServiceUse(outcome.code),
+          };
+        redactServiceToken(this.deps.redactions, outcome.token);
+        if ((this.verifiedGeneration.get(service) ?? 0) !== generation)
+          return {
+            kind: 'refused',
+            code: 'token_rejected',
+            message: `${service}'s token was rejected during grant validation.`,
+            final: false,
+          };
+        const deadline = Math.min(
+          started + VERIFIED_GRANT_LEASE_MS,
+          clock() + Math.max(0, outcome.useUntil - this.deps.now())
+        );
+        const wallDeadline = Math.min(wallStarted + VERIFIED_GRANT_LEASE_MS, outcome.useUntil);
+        if (clock() >= deadline || this.deps.now() >= wallDeadline || this.deps.now() < wallStarted)
+          return {
+            kind: 'refused',
+            code: 'grant_check_expired',
+            message: `Switch's ${service} grant check expired before it finished.`,
+            final: false,
+          };
+        this.verified.set(service, { token: outcome, deadline, wallDeadline, wallStarted });
+        return {
+          ...tokenAnswer(outcome),
+          validUntilMonotonicMs: deadline,
+          validUntilWallMs: wallDeadline,
+          validAfterWallMs: wallStarted,
+        };
+      })().finally(() => this.verifying.delete(service));
+      this.verifying.set(service, pending);
+    }
+    const result = await pending;
+    if (
+      result.kind === 'token' &&
+      (this.verified.get(service)?.invalid === true ||
+        this.verified.get(service)?.token.token !== result.token ||
+        result.validUntilMonotonicMs === undefined ||
+        clock() >= result.validUntilMonotonicMs ||
+        result.validUntilWallMs === undefined ||
+        this.deps.now() >= result.validUntilWallMs ||
+        result.validAfterWallMs === undefined ||
+        this.deps.now() < result.validAfterWallMs)
+    )
+      return {
+        kind: 'refused',
+        code: 'grant_check_expired',
+        message: `Switch's ${service} grant check expired before it could be used.`,
+        final: false,
+      };
+    return result;
+  }
 
   async answer(service: string, rejected: string | null): Promise<ServiceTokenAnswer> {
     const now = this.deps.now();
@@ -156,6 +287,6 @@ export class AgentServiceTokens {
   }
 }
 
-function tokenAnswer(token: IssuedServiceToken): ServiceTokenAnswer {
+function tokenAnswer(token: IssuedServiceToken): Extract<ServiceTokenAnswer, { kind: 'token' }> {
   return { kind: 'token', token: token.token, expiresAt: new Date(token.expiresAt).toISOString() };
 }

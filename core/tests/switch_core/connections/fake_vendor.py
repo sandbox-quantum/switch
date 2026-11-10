@@ -368,6 +368,13 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        # What token introspection (RFC 7662) says of a live token, where the
+        # metadata advertises it.
+        self.introspected: dict[str, Any] = {
+            "workspace_id": "ws-1",
+            "user_id": "user-1",
+        }
+        self.introspections: list[dict[str, str]] = []
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -441,6 +448,8 @@ class FakeOAuthServer:
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
+        if where == f"{ISSUER}/introspect" and request.method == "POST":
+            return self._introspect(request)
         if where == IDENTITY_URL and request.method == "GET":
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
@@ -448,6 +457,15 @@ class FakeOAuthServer:
         if where == MCP_URL:
             return self._mcp(request)
         return _json(404, {"error": "not_found"})
+
+    def _introspect(self, request: httpx.Request) -> httpx.Response:
+        form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+        self.introspections.append(form)
+        if not self._client_ok(request, form):
+            return _json(401, {"error": "invalid_client"})
+        if form.get("token") not in self.live_access:
+            return _json(200, {"active": False})
+        return _json(200, {"active": True, **self.introspected})
 
     def _bearer(self, request: httpx.Request) -> list[str] | None:
         header = request.headers.get("authorization", "")

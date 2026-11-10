@@ -46,6 +46,8 @@ auth:
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
+    # or, for a token no account API takes (Notion): introspection: true in
+    # place of url, and account_id as a list of paths (below)
 token: { kind: pass_through, max_lifetime: 28800 }
 mcp:
   servers:
@@ -64,6 +66,18 @@ endpoints are discovered from the first MCP server: the metadata its 401 names
 (RFC 9728), else the well-known addresses, then the authorization server's
 metadata (RFC 8414), which must offer PKCE with S256. A dynamically registered
 client always discovers. Placeholder entries keep their short form.
+
+An `oauth` entry whose token reaches no account API reads the account by RFC
+7662 token introspection instead (`identity.introspection: true`, no `url`):
+a POST of the live token to the `introspection_endpoint` the authorization
+server advertises, authenticated as the client is at the token endpoint. Only
+an answer with `active: true` names an account, so the vendor checks the token
+itself; the identity is never taken from a token response, which nothing
+checks later. A server that advertises no introspection endpoint fails the
+sign-in, and only a discovering entry may use it. `account_id` may be a list
+of two or three paths, all required, joined percent-encoded with `:` (a
+workspace and the user in it), so the same person in two workspaces is two
+connections. GET identities are unchanged.
 
 The adapter is named for how it signs in, `oauth`, not for how its tools are
 reached. Its entry delivers its tools one of two ways, never both: the vendor's
@@ -602,6 +616,27 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `enabled: false`, or remove its client (under Connectors, or by unsetting
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
+
+## Notion
+
+Notion's hosted MCP server (`https://mcp.notion.com/mcp`) signs in only with
+OAuth, and its authorization server metadata (read November 2026) offers
+dynamic registration (`/register`), PKCE with S256 only, refresh, revocation
+at its token endpoint and introspection (`/introspect`). Core registers its
+own client and sign-ins return to Switch Console's loopback listener.
+
+- An MCP token works only with Notion MCP: Notion's guide says not to send it
+  to `GET /v1/users/me`, and it offers no UserInfo endpoint, so the account
+  is read by introspection: `[workspace_id, user_id]`, labelled with the
+  workspace's id, since the answer names neither by name.
+- Notion has one content scope, `default`, and its consent screen picks a
+  workspace, not pages: there is no read-only sign-in, so both levels ask for
+  `default` and every connection is granted the write level. The enterprise
+  identity provider's `ema_issuer:manage` is never asked for.
+- Access tokens last about eight hours (documented; reported measured at
+  28,800 s); refresh tokens rotate, and replaying a retired one revokes the
+  whole connection, so refreshes are serialized as for any rotating vendor.
+  Refresh tokens end 180 days after the first sign-in or after 30 idle days.
 
 ## Not yet
 

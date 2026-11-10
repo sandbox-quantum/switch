@@ -1,12 +1,28 @@
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
 import {
   grantedSkills,
   issueServiceToken,
+  monotonicMillis,
   NO_GRANTS_ROUTE_MS,
   readServiceGrants,
   type ServiceGrant,
   skillContext,
 } from './service-access';
+
+it('uses a monotonic clock comparable with a separate session process', () => {
+  const before = monotonicMillis();
+  const child = Number(
+    execFileSync(
+      process.execPath,
+      ['-e', 'process.stdout.write(String(Number(process.hrtime.bigint() / 1000000n)))'],
+      { encoding: 'utf8' }
+    )
+  );
+  const after = monotonicMillis();
+  expect(child).toBeGreaterThanOrEqual(before);
+  expect(child).toBeLessThanOrEqual(after);
+});
 
 describe("a token's expiry", () => {
   const issue = (dateHeader: string | null) => {

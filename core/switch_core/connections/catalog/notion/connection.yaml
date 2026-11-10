@@ -1,7 +1,65 @@
 slug: notion
 name: Notion
 category: Knowledge base
-description: Read and write Notion pages and databases.
-enabled: false
+description: Search, read and update Notion pages and databases, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Documented: every refresh hands out a new refresh token and retires the
+  # one sent; replaying an old one revokes the whole connection. Refresh
+  # tokens end 180 days after the first sign-in, or after 30 days unused, so
+  # people reconnect from time to time.
+  refresh: rotating
+  oauth:
+    # Notion offers no client to configure: Core registers one itself.
+    # Measured: the authorization server metadata advertises
+    # registration_endpoint https://mcp.notion.com/register, PKCE S256 only,
+    # and token_endpoint_auth_methods including none.
+    registration: dynamic
+    # Sign-ins come back to Switch Console, so a server without a public
+    # address can connect Notion too, on a port registered with the client.
+    # Not measured here whether Notion matches the port exactly, so the ports
+    # are fixed, as Atlassian's are.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Measured: the metadata advertises revocation_endpoint
+    # https://mcp.notion.com/token (RFC 7009 at the token endpoint).
+    revocation_discovered: true
+  identity:
+    # A Notion MCP token works only with Notion MCP: Notion's guide says not
+    # to send it to the REST API's GET /v1/users/me, and there is no
+    # UserInfo endpoint for it. So the account is read by RFC 7662
+    # introspection at the introspection_endpoint the metadata advertises
+    # (measured: https://mcp.notion.com/introspect), authenticated as at the
+    # token endpoint, and only from an answer with active: true. Never from
+    # the token response, which nothing checks against the token later.
+    introspection: true
+    # Documented: an active access token's answer carries user_id and, when
+    # Notion has it, workspace_id. The same person in two workspaces is two
+    # connections, and either id missing fails the sign-in.
+    account_id: [workspace_id, user_id]
+    # The answer names neither the person nor the workspace, so the
+    # connection is labelled with the workspace's id.
+    label: workspace_id
+# Documented: Notion's MCP access tokens currently last about eight hours
+# (contributors on #819 report 28,800 s measured); Notion offers no way to ask
+# for a shorter one, so an agent's copy may outlive its grant by up to that
+# long. Agents still ask again hourly, and Core uses each answer's expires_in.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: notion, url: "https://mcp.notion.com/mcp" }
+access:
+  # Measured: Notion advertises two scopes, default and ema_issuer:manage.
+  # default reaches every tool, and the consent screen picks a workspace, not
+  # pages or scopes: a connection reaches what the person can reach there, at
+  # their own permissions. Notion has no read-only scope, so no read-only
+  # sign-in is offered: both levels ask for default, and every connection is
+  # granted the write level. Not asked for: ema_issuer:manage, which is for
+  # an enterprise identity provider managing Notion MCP, not for content.
+  read:
+    scopes: [default]
+  write:
+    scopes: [default]
+tools: { mode: pass_through }

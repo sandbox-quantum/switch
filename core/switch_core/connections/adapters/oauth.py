@@ -70,6 +70,8 @@ class AuthorizationEndpoints:
     # where the catalog names the endpoints.
     resource: str | None
     client_authentication: ClientAuthentication
+    # Where a token is introspected (RFC 7662), as the metadata advertises it.
+    introspection: str | None = None
 
 
 def client_fields(
@@ -303,6 +305,7 @@ class OAuthAdapter:
             )
         registration = metadata.get("registration_endpoint")
         revocation = metadata.get("revocation_endpoint")
+        introspection = metadata.get("introspection_endpoint")
         # The form body, unless the vendor takes a secret only as HTTP Basic:
         # Airtable refuses one in the body. Metadata that lists no methods
         # means Basic (RFC 8414 §2).
@@ -332,6 +335,11 @@ class OAuthAdapter:
             resource=mcp_url,
             client_authentication=(
                 "client_secret_basic" if basic_only else "client_secret_post"
+            ),
+            introspection=(
+                None
+                if introspection is None
+                else _https(introspection, "introspection endpoint")
             ),
         )
         return self._endpoints
@@ -488,10 +496,15 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
+        if self._identity.introspection:
+            return await self._introspect(access_token)
+        url = self._identity.url
+        if url is None:
+            raise ServiceAdapterError(f"{self._name} names no identity call.")
         response = await self._send(
             self._http.build_request(
                 "GET",
-                self._identity.url,
+                url,
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Accept": "application/json",
@@ -507,13 +520,64 @@ class OAuthAdapter:
                 f"{self._name} would not say whose sign-in this is "
                 f"(HTTP {response.status_code})."
             )
-        body = self._json(response, "account")
-        account_id = _path_value(body, self._identity.account_id)
+        return self._identity_from(self._json(response, "account"))
+
+    async def _introspect(self, access_token: str) -> Identity:
+        """Whose the token is, as the vendor's introspection endpoint says
+        (RFC 7662): the vendor checks the live token, so the identity is never
+        taken from a token response alone."""
+        endpoints = await self.endpoints()
+        if endpoints.introspection is None:
+            raise ServiceAdapterError(
+                f"{self._name}'s authorization server does not advertise token "
+                "introspection, so Switch cannot tell whose sign-in this is."
+            )
+        client = await self._client.credentials(endpoints)
+        identifying, headers = client_fields(endpoints, client)
+        response = await self._send(
+            self._http.build_request(
+                "POST",
+                endpoints.introspection,
+                data={
+                    "token": access_token,
+                    "token_type_hint": "access_token",
+                    **identifying,
+                },
+                headers={**headers, "Accept": "application/json"},
+            )
+        )
+        if response.status_code != 200:
+            raise ServiceAdapterError(
+                f"{self._name} would not say whose sign-in this is "
+                f"(HTTP {response.status_code})."
+            )
+        body = self._json(response, "introspection")
+        if body.get("active") is not True:
+            raise ReauthorizationRequiredError(
+                f"{self._name} reports the new sign-in is not active."
+            )
+        return self._identity_from(body)
+
+    def _identity_from(self, body: dict[str, Any]) -> Identity:
+        """The account's id and label from the identity answer. An id made of
+        several values joins each, percent-encoded, with a colon, so no two
+        accounts share one; each value must be present."""
+        parts: list[str] = []
+        for path in self._identity.account_id_paths:
+            value = _path_value(body, path)
+            if type(value) is int:
+                value = str(value)
+            if not isinstance(value, str) or not value:
+                raise ServiceAdapterError(
+                    f"{self._name} did not name the account's id."
+                )
+            parts.append(value)
+        account_id = (
+            parts[0]
+            if len(parts) == 1
+            else ":".join(quote(part, safe="") for part in parts)
+        )
         label = _path_value(body, self._identity.label)
-        if type(account_id) is int:
-            account_id = str(account_id)
-        if not isinstance(account_id, str) or not account_id:
-            raise ServiceAdapterError(f"{self._name} did not name the account's id.")
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
         )

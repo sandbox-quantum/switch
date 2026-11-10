@@ -45,6 +45,15 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **The Notion connection.** A person connects Notion from Switch Console,
+  picking a workspace at Notion's consent screen, and a granted agent
+  searches, reads and updates its pages, databases and comments as them,
+  through Notion's hosted MCP server. Core registers its own client. Notion
+  has no read-only scope, so every connection can write. A catalog entry may
+  now read the account by RFC 7662 token introspection at the endpoint the
+  vendor advertises (`identity.introspection`), with an account id made of
+  several values (`account_id: [workspace_id, user_id]`), for a vendor whose
+  token reaches no account API. (#819)
 - **A one-screen Datadog board and alerts that say what to do.**
   `deploy/observability/signal-board.json` shows the four golden signals
   (latency, traffic, errors, saturation) plus whether agents are connected and
