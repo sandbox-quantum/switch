@@ -278,9 +278,11 @@ async def test_run_creates_the_room_under_the_templates_name(tools):
 
     async with tools["session_factory"]() as session:
         room = await session.get(Room, result["room_id"])
+        runs = await TemplateStore().run_count(session, template_id)
     assert room is not None
     assert (room.name, room.template_name) == ("jq room", "Topic room")
     assert room.created_by_agent_id == tools["agent_id"]
+    assert runs == 1
 
 
 @pytest.mark.asyncio
@@ -355,6 +357,7 @@ async def test_missing_agents_are_named_all_at_once_and_nothing_is_created(tools
         )
     async with tools["session_factory"]() as session:
         assert (await session.execute(select(Room))).scalars().all() == []
+        assert await TemplateStore().run_count(session, template_id) == 0
 
 
 @pytest.mark.asyncio

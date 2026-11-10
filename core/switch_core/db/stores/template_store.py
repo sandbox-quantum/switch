@@ -1,11 +1,11 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, func, or_, select
+from sqlalchemy import ColumnElement, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Template, require_tenant_id
+from switch_core.db.models import Template, TemplateRunRecord, require_tenant_id
 
 _LIKE_ESCAPE = "\\"
 
@@ -248,8 +248,39 @@ class TemplateStore:
         return template
 
     async def delete(self, session: AsyncSession, template_id: str) -> None:
+        """Delete a stored template, and the count of its runs with it."""
         template = await session.get(Template, template_id)
         if template is None:
             raise ValueError(f"Template not found: {template_id}")
+        await session.execute(
+            delete(TemplateRunRecord).where(
+                TemplateRunRecord.tenant_id == require_tenant_id(),
+                TemplateRunRecord.template_id == template_id,
+            )
+        )
         await session.delete(template)
         await session.flush()
+
+    async def record_run(self, session: AsyncSession, template_id: str) -> None:
+        """Count one run of a template, official or stored, in this tenant."""
+        session.add(TemplateRunRecord(template_id=template_id))
+        await session.flush()
+
+    async def run_counts(self, session: AsyncSession) -> dict[str, int]:
+        """How many times each template has been run in this tenant, by id.
+        A template never run is absent."""
+        result = await session.execute(
+            select(TemplateRunRecord.template_id, func.count())
+            .where(TemplateRunRecord.tenant_id == require_tenant_id())
+            .group_by(TemplateRunRecord.template_id)
+        )
+        return {template_id: count for template_id, count in result.tuples()}
+
+    async def run_count(self, session: AsyncSession, template_id: str) -> int:
+        result = await session.execute(
+            select(func.count()).where(
+                TemplateRunRecord.tenant_id == require_tenant_id(),
+                TemplateRunRecord.template_id == template_id,
+            )
+        )
+        return int(result.scalar_one())

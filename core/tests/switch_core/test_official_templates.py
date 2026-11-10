@@ -131,6 +131,21 @@ def test_switch_buddy_is_served_only_with_its_flag_and_agent_management():
     assert agent["addressing"] == "owner-agents"
 
 
+def test_only_switch_buddy_tells_a_person_not_to_run_it():
+    """Switch Console makes each person's buddy itself, so a client greys Run
+    on it; the expert is run like any other template."""
+    buddy = official_template(
+        "official:switch-buddy", agent_management=True, switch_buddy=True
+    )
+    assert buddy is not None
+    assert buddy.run_blocked_reason == (
+        "Switch Console sets up your switch-buddy for you."
+    )
+    for agent_management in (False, True):
+        (expert,) = official_templates(agent_management, switch_buddy=False)
+        assert expert.run_blocked_reason is None
+
+
 def test_switch_buddy_puts_itself_in_the_rooms_it_creates():
     """create_room does not add its caller, and an agent can only change a
     room it is in, so buddy is told to list itself and why."""

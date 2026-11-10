@@ -55,6 +55,9 @@ class OfficialTemplate:
     description: str
     kind: str
     content: str
+    # Why a person should not run it by hand, for a client to give beside a
+    # greyed Run. Advice, not a refusal: Switch Console still runs it.
+    run_blocked_reason: str | None
     owner_id: None = None
     created_by_agent_id: None = None
     read_visibility: str = "public"
@@ -73,6 +76,7 @@ class _Shipped:
     # document, and Console asks for it only where offered); "without_buddy"
     # only where switch-buddy is not served.
     served: Literal["buddy", "without_buddy"]
+    run_blocked_reason: str | None
 
 
 _SHIPPED = (
@@ -85,6 +89,7 @@ _SHIPPED = (
         ),
         kind="agent",
         served="without_buddy",
+        run_blocked_reason=None,
     ),
     _Shipped(
         slug="switch-buddy",
@@ -95,6 +100,9 @@ _SHIPPED = (
         ),
         kind="agent",
         served="buddy",
+        # Switch Console makes each person's switch-buddy itself, the first
+        # time they use a workspace; running it again makes a second one.
+        run_blocked_reason="Switch Console sets up your switch-buddy for you.",
     ),
 )
 
@@ -164,6 +172,7 @@ def official_templates(
             description=shipped.description,
             kind=shipped.kind,
             content=_document(shipped.slug, agent_management),
+            run_blocked_reason=shipped.run_blocked_reason,
             version=current_revision(shipped.slug),
         )
         for shipped in _SHIPPED
