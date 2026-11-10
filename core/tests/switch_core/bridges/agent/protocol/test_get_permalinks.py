@@ -20,6 +20,7 @@ from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
+from switch_core.bridges.agent.protocol import agent_core as agent_core_module
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
@@ -107,6 +108,21 @@ class _CountingAdapter:
         self.peak = max(self.peak, self.running)
         await asyncio.sleep(0.01)
         self.running -= 1
+        return f"https://example.slack.com/{external_post_id}"
+
+
+class _HangingAdapter:
+    """A live adapter that answers for the posts in `answers` and never
+    answers for any other."""
+
+    supports_message_permalinks = True
+
+    def __init__(self, answers: set[str]) -> None:
+        self._answers = answers
+
+    async def message_permalink(self, external_post_id: str) -> str:
+        if external_post_id not in self._answers:
+            await asyncio.Event().wait()
         return f"https://example.slack.com/{external_post_id}"
 
 
@@ -430,6 +446,58 @@ class TestSlackAnswers:
         )
 
         assert result["unavailable"] == {message.transport_event_id: "deleted_in_slack"}
+
+    async def test_ids_slack_has_not_answered_by_the_deadline_are_bridge_not_running(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        lifecycle: _Lifecycle,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setattr(agent_core_module, "_PERMALINK_DEADLINE_SECONDS", 0.2)
+        bridge_id = await _bridge(session_factory)
+        room_id = await _room(session_factory, bridge_id=bridge_id)
+        fast = await say(session_factory, room_id)
+        slow = await say(session_factory, room_id)
+        await _posted(session_factory, bridge_id, fast.transport_event_id, "C1:1.0")
+        await _posted(session_factory, bridge_id, slow.transport_event_id, "C1:2.0")
+        lifecycle.adapters[bridge_id] = _HangingAdapter({"C1:1.0"})  # type: ignore[assignment]
+
+        with caplog.at_level(logging.WARNING):
+            result = await asyncio.wait_for(
+                _service(session_factory, lifecycle).get_permalinks(
+                    AGENT, [fast.transport_event_id, slow.transport_event_id]
+                ),
+                timeout=5,
+            )
+
+        assert result == {
+            "permalinks": {fast.transport_event_id: "https://example.slack.com/C1:1.0"},
+            "unavailable": {slow.transport_event_id: "bridge_not_running"},
+        }
+        assert "1 of 2" in caplog.text
+
+    async def test_a_caller_cancel_is_not_turned_into_an_answer(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        lifecycle: _Lifecycle,
+    ) -> None:
+        bridge_id = await _bridge(session_factory)
+        room_id = await _room(session_factory, bridge_id=bridge_id)
+        message = await say(session_factory, room_id)
+        await _posted(session_factory, bridge_id, message.transport_event_id, "C1:1.0")
+        lifecycle.adapters[bridge_id] = _HangingAdapter(set())  # type: ignore[assignment]
+
+        call = asyncio.ensure_future(
+            _service(session_factory, lifecycle).get_permalinks(
+                AGENT, [message.transport_event_id]
+            )
+        )
+        await asyncio.sleep(0.2)
+        call.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await call
 
     async def test_slack_failure_is_bridge_not_running_and_logged_without_detail(
         self,

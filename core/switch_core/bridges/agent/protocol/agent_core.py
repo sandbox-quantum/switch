@@ -222,6 +222,9 @@ _VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
 
 # Platform permalink requests one `get_permalinks` call runs at once.
 _PERMALINK_CONCURRENCY = 5
+# The longest one `get_permalinks` call waits on the platform in all: the agent's
+# tool call is waiting, and each request has a much longer timeout of its own.
+_PERMALINK_DEADLINE_SECONDS = 15
 VALID_AGENT_NAME_RE = _VALID_NAME_RE
 
 # A hard ceiling on one read_context call, whatever limit the caller asks for.
@@ -2980,9 +2983,23 @@ class AgentCore:
                 )
                 unavailable[event_id] = PermalinkUnavailable.BRIDGE_NOT_RUNNING
 
-        await asyncio.gather(
-            *(ask(event_id, *target) for event_id, target in to_ask.items())
-        )
+        try:
+            async with asyncio.timeout(_PERMALINK_DEADLINE_SECONDS):
+                await asyncio.gather(
+                    *(ask(event_id, *target) for event_id, target in to_ask.items())
+                )
+        except TimeoutError:
+            unanswered = [
+                i for i in to_ask if i not in permalinks and i not in unavailable
+            ]
+            logger.warning(
+                "The platform gave no permalink within %ss for %d of %d messages",
+                _PERMALINK_DEADLINE_SECONDS,
+                len(unanswered),
+                len(to_ask),
+            )
+            for event_id in unanswered:
+                unavailable[event_id] = PermalinkUnavailable.BRIDGE_NOT_RUNNING
         return {
             "permalinks": {i: permalinks[i] for i in message_ids if i in permalinks},
             "unavailable": {
