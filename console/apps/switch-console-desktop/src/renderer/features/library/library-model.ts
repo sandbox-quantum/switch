@@ -50,22 +50,28 @@ export function visibilityOf(access: LibraryAccess): {
 export type Viewer = { id: string | null; isAdmin: boolean };
 
 /**
- * What the viewer may do with an item, as the server says. A server too old to
- * say leaves it to the server's rule, mirrored here: its owner and admins
- * change and delete it, and anyone changes an open one. The server still
- * checks every change.
+ * What the viewer may do with an item, as the server says. The server's flags
+ * are taken together: if it sends either, a flag it leaves out counts as no,
+ * so its answer is never mixed with the rule below. Only a server too old to
+ * send either leaves it to the server's rule, mirrored here: its owner and
+ * admins change and delete it, and anyone changes an open one. The server
+ * still checks every change.
  */
 export function libraryPermissions(
   item: Pick<LibraryItem, 'ownerId' | 'writeVisibility' | 'canEdit' | 'canManage'>,
   viewer: Viewer
 ): { canEdit: boolean; canDelete: boolean; canChangeAccess: boolean } {
+  if (item.canEdit !== undefined || item.canManage !== undefined) {
+    const manage = item.canManage ?? false;
+    // Access decides who else may change it, so it goes with managing it.
+    return { canEdit: item.canEdit ?? false, canDelete: manage, canChangeAccess: manage };
+  }
   const owns = viewer.isAdmin || (viewer.id !== null && item.ownerId === viewer.id);
-  const manage = item.canManage ?? owns;
   return {
-    canEdit: item.canEdit ?? (owns || (viewer.id !== null && item.writeVisibility === 'public')),
-    canDelete: manage,
+    canEdit: owns || (viewer.id !== null && item.writeVisibility === 'public'),
+    canDelete: owns,
     // Access decides who else may change it, so it stays with the owner and admins.
-    canChangeAccess: manage,
+    canChangeAccess: owns,
   };
 }
 

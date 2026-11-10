@@ -1822,8 +1822,8 @@ class DocumentDetail(BaseModel):
     # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
     # Those three are false for a room's own document, which is changed and
     # removed in its room, not through the library. `can_read` is whether the
-    # library opens it; a room's reader opens a document listed there through
-    # the room instead.
+    # library opens it; the room routes say otherwise for a room's own document
+    # (`RoomDocumentDetail`).
     can_read: bool
     can_edit: bool
     can_manage: bool
@@ -1836,7 +1836,10 @@ class DocumentDetail(BaseModel):
 
 
 class RoomDocumentDetail(DocumentDetail):
-    """A document as seen from a room it is in."""
+    """A document as seen from a room it is in. Its `can_read` is true for a
+    room's own document, which the room opens for everyone who may read the
+    room; an attached library document keeps the library's rule, which says
+    whether its own page opens."""
 
     can_remove: bool
 
@@ -1869,7 +1872,8 @@ class DocumentSummary(BaseModel):
 
 
 class RoomDocumentSummary(DocumentSummary):
-    """A document as listed in a room it is in."""
+    """A document as listed in a room it is in. `can_read` as on
+    `RoomDocumentDetail`."""
 
     can_remove: bool
 

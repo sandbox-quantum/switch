@@ -89,6 +89,22 @@ describe('libraryPermissions, from a server that says', () => {
       libraryPermissions(item({ canEdit: true, canManage: false }), { id: 'u2', isAdmin: false })
     ).toEqual({ canEdit: true, canDelete: false, canChangeAccess: false });
   });
+
+  it('never mixes a partial answer with the viewer’s own rule', () => {
+    // The owner, whose own rule would allow everything: a flag the server
+    // leaves out counts as no rather than falling back to that rule.
+    const owner = { id: 'u1', isAdmin: false };
+    expect(libraryPermissions(item({ canManage: true }), owner)).toEqual({
+      canEdit: false,
+      canDelete: true,
+      canChangeAccess: true,
+    });
+    expect(libraryPermissions(item({ canEdit: true }), owner)).toEqual({
+      canEdit: true,
+      canDelete: false,
+      canChangeAccess: false,
+    });
+  });
 });
 
 describe('libraryItemOpens', () => {
