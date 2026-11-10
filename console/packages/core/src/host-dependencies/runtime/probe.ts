@@ -60,6 +60,14 @@ function extractRealpath(stdout: string, platform: Platform): string | null {
   return paths.length > 0 ? paths[paths.length - 1] : null;
 }
 
+function whereArg(command: string): string {
+  const lastSlash = Math.max(command.lastIndexOf('/'), command.lastIndexOf('\\'));
+  if (lastSlash === -1) return command;
+  const dir = command.slice(0, lastSlash);
+  const pattern = command.slice(lastSlash + 1);
+  return `${dir}:${pattern}`;
+}
+
 /**
  * Resolves all absolute paths for a command binary in PATH order.
  * Uses `where` on Windows (which already lists all matches) and `which -a` on
@@ -77,7 +85,9 @@ export async function resolveAllCommandPaths(
   const plat = targetPlatform(platform);
   try {
     if (plat === 'windows') {
-      const { stdout } = await ctx.exec('where', [command], { timeout: WHICH_TIMEOUT_MS });
+      const { stdout } = await ctx.exec('where', [whereArg(command)], {
+        timeout: WHICH_TIMEOUT_MS,
+      });
       return extractCommandPaths(stdout, command, plat);
     }
     const { stdout } = await ctx.exec('which', ['-a', command], { timeout: WHICH_TIMEOUT_MS });
@@ -101,8 +111,9 @@ export async function resolveCommandPath(
 ): Promise<string | null> {
   const plat = targetPlatform(platform);
   const resolveCmd = plat === 'windows' ? 'where' : 'which';
+  const arg = plat === 'windows' ? whereArg(command) : command;
   try {
-    const { stdout } = await ctx.exec(resolveCmd, [command], { timeout: WHICH_TIMEOUT_MS });
+    const { stdout } = await ctx.exec(resolveCmd, [arg], { timeout: WHICH_TIMEOUT_MS });
     return extractCommandPaths(stdout, command, plat)[0] ?? null;
   } catch (error) {
     if (isTransportFailure(error)) throw error;
