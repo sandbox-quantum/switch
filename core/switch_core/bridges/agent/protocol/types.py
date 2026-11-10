@@ -118,6 +118,21 @@ class AgentStatus(StrEnum):
     NOT_PERMITTED = "not_permitted"
 
 
+class PermalinkUnavailable(StrEnum):
+    """Why `get_permalinks` gave no link for a message id."""
+
+    # No such message, or not in a room the agent belongs to. One reason for
+    # both, so an agent cannot learn which messages exist elsewhere.
+    NOT_FOUND = "not_found"
+    # The room has no bridge, or its platform has no message links.
+    NOT_SLACK = "not_slack"
+    # The room's bridge has no posted record of this message.
+    NO_SLACK_RECORD = "no_slack_record"
+    DELETED_IN_SLACK = "deleted_in_slack"
+    # No live adapter in this process, or Slack failed for another reason.
+    BRIDGE_NOT_RUNNING = "bridge_not_running"
+
+
 class RoomWideMentionStatus(StrEnum):
     """What a room-wide mention did, reported under `everyone`.
 

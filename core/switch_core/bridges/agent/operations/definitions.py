@@ -754,6 +754,55 @@ async def read_context(
     return context
 
 
+GET_PERMALINKS_MAX_IDS = 50
+
+
+@operation
+async def get_permalinks(message_ids: list[str]) -> dict[str, dict[str, str]]:
+    """Get Slack's own link for each of up to 50 messages.
+
+    Use this whenever you need a link to a Slack message. Never build a
+    Slack link yourself: the address depends on the workspace and on the
+    thread, and Slack knows both.
+
+    Returns::
+
+        {"permalinks": {<id>: <url>}, "unavailable": {<id>: <reason>}}
+
+    Each id you asked for is in exactly one of the two maps. A reply's link
+    opens it in its thread. `reason` is one of:
+
+    - "not_found": no such message, or not in a room you are a member of.
+    - "not_slack": the message's room is not connected to Slack.
+    - "no_slack_record": the room is on Slack, but this message was never
+      posted there (a join, a relay that failed) or its record was deleted.
+      For a message sent with several files, only the first file's id
+      (the id `read_context` shows) has a link.
+    - "deleted_in_slack": Slack says the message was deleted.
+    - "bridge_not_running": Slack cannot be asked right now. Try again later.
+
+    Args:
+        message_ids: Message ids, as `id` in `read_context` entries and
+            events. Any room you are a member of; you need not be connected
+            to it. 1 to 50 ids; repeats count once in the answer.
+    """
+    if not isinstance(message_ids, list) or not all(
+        isinstance(message_id, str) for message_id in message_ids
+    ):
+        raise ValueError("message_ids must be a list of message id strings")
+    if not message_ids:
+        raise ValueError("message_ids must name at least one message")
+    if len(message_ids) > GET_PERMALINKS_MAX_IDS:
+        raise ValueError(
+            f"message_ids can name at most {GET_PERMALINKS_MAX_IDS} messages; "
+            f"got {len(message_ids)}"
+        )
+    agent_id = get_agent_id()
+    return await get_protocol().get_permalinks(
+        agent_id, list(dict.fromkeys(message_ids))
+    )
+
+
 @operation
 async def list_participants() -> list[dict[str, Any]]:
     """List agents and users in the connected room.

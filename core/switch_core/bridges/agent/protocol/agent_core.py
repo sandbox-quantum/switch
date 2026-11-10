@@ -66,6 +66,7 @@ from switch_core.bridges.agent.protocol.types import (
     LlmCallReport,
     ModelSpec,
     ParticipantDescriptor,
+    PermalinkUnavailable,
     RegistrationResult,
     RoomDescriptor,
     RoomDetailDescriptor,
@@ -80,6 +81,7 @@ from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentIdentityConflict,
+    MessageGoneOnPlatform,
     agent_identity,
 )
 from switch_core.bridges.resource.service import ResourceService
@@ -120,6 +122,7 @@ from switch_core.db.stores.agent_runtime_state_store import (
 from switch_core.db.stores.agent_runtime_state_store import (
     AgentRuntimeStateStore,
 )
+from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
@@ -216,6 +219,9 @@ def _decode_room_cursor(cursor: str) -> tuple[datetime, str]:
 # \A and \Z rather than ^ and $: Python's $ also matches before a single
 # trailing newline, which would let an identifier carry a line break.
 _VALID_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]*\Z")
+
+# Platform permalink requests one `get_permalinks` call runs at once.
+_PERMALINK_CONCURRENCY = 5
 VALID_AGENT_NAME_RE = _VALID_NAME_RE
 
 # A hard ceiling on one read_context call, whatever limit the caller asks for.
@@ -462,6 +468,7 @@ class AgentCore:
         self.room_role_store = RoomRoleStore()
         self.room_group_store = RoomGroupStore()
         self.message_store = MessageStore()
+        self.bridge_message_map_store = BridgeMessageMapStore()
         self.budget_guard = BudgetGuard(BudgetStore())
         self.user_store = UserStore()
         self.room_store = room_store
@@ -2893,6 +2900,94 @@ class AgentCore:
             "threads": threads,
             "truncated": truncated,
             "oldest_timestamp": oldest_ts,
+        }
+
+    async def get_permalinks(
+        self, agent_id: str, message_ids: Sequence[str]
+    ) -> dict[str, dict[str, str]]:
+        """The platform's own link for each message id, or why there is none.
+
+        Every id lands in exactly one of `permalinks` and `unavailable`, the
+        second keyed to a `PermalinkUnavailable` value. The room comes from
+        the message, never from the caller, and the post from the room's own
+        bridge. The database reads finish before the platform is asked, so
+        no pool connection waits on it.
+        """
+        unavailable: dict[str, str] = {}
+        to_ask: dict[str, tuple[str, str]] = {}
+        async with self._bound_session() as session:
+            room_of = await self.message_store.rooms_of_events(session, message_ids)
+            bridge_of_room: dict[str, str | None] = {}
+            for room_id in set(room_of.values()):
+                try:
+                    room = await self._room_member_in(session, agent_id, room_id)
+                except (ValueError, PermissionError):
+                    continue
+                bridge_of_room[room_id] = room.bridge_id
+            bridge_ids = {b for b in bridge_of_room.values() if b is not None}
+            linkable = {
+                bridge.id
+                for bridge in await self.bridge_store.get_many(session, bridge_ids)
+                if (cls := self.collab_lifecycle.adapter_class(bridge.type))
+                and cls.supports_message_permalinks
+            }
+            for bridge_id in linkable:
+                events = [
+                    event_id
+                    for event_id, room_id in room_of.items()
+                    if bridge_of_room.get(room_id) == bridge_id
+                ]
+                posts = await self.bridge_message_map_store.posts_for_events(
+                    session, bridge_id=bridge_id, transport_event_ids=events
+                )
+                for event_id, post_id in posts.items():
+                    to_ask[event_id] = (bridge_id, post_id)
+
+        for event_id in message_ids:
+            event_room = room_of.get(event_id)
+            if event_room is None or event_room not in bridge_of_room:
+                unavailable[event_id] = PermalinkUnavailable.NOT_FOUND
+            elif bridge_of_room[event_room] not in linkable:
+                unavailable[event_id] = PermalinkUnavailable.NOT_SLACK
+            elif event_id not in to_ask:
+                unavailable[event_id] = PermalinkUnavailable.NO_SLACK_RECORD
+
+        permalinks: dict[str, str] = {}
+        limit = asyncio.Semaphore(_PERMALINK_CONCURRENCY)
+
+        async def ask(event_id: str, bridge_id: str, post_id: str) -> None:
+            adapter = self.collab_lifecycle.get_adapter(bridge_id)
+            if adapter is None:
+                unavailable[event_id] = PermalinkUnavailable.BRIDGE_NOT_RUNNING
+                return
+            try:
+                async with limit:
+                    permalinks[event_id] = await adapter.message_permalink(post_id)
+            except MessageGoneOnPlatform:
+                unavailable[event_id] = PermalinkUnavailable.DELETED_IN_SLACK
+            except NotImplementedError:
+                unavailable[event_id] = PermalinkUnavailable.NOT_SLACK
+            except Exception as exc:
+                # The platform's error code only: its full text can carry the
+                # response, and none of it is for the agent.
+                response: Any = getattr(exc, "response", None)
+                code = response.get("error") if hasattr(response, "get") else None
+                logger.warning(
+                    "Could not get a permalink for %s from bridge %s: %s",
+                    event_id,
+                    bridge_id,
+                    code or type(exc).__name__,
+                )
+                unavailable[event_id] = PermalinkUnavailable.BRIDGE_NOT_RUNNING
+
+        await asyncio.gather(
+            *(ask(event_id, *target) for event_id, target in to_ask.items())
+        )
+        return {
+            "permalinks": {i: permalinks[i] for i in message_ids if i in permalinks},
+            "unavailable": {
+                i: str(unavailable[i]) for i in message_ids if i in unavailable
+            },
         }
 
     async def download_media(
