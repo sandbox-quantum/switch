@@ -266,6 +266,32 @@ async def test_vendor_log_notifications_never_reach_the_logs(monkeypatch):
     assert not any("example-bearer-value" in message for message in client_side)
 
 
+@pytest.mark.parametrize(
+    "name", ["fastmcp.client.client", "mcp.client.streamable_http"]
+)
+def test_identity_diagnostics_are_suppressed_on_the_sdk_loggers(name):
+    # Handlers Core did not install: on fastmcp's own logger, which does not
+    # propagate, and on root.
+    records = _Records()
+    holders = [logging.getLogger("fastmcp"), logging.getLogger()]
+    for holder in holders:
+        holder.addHandler(records)
+    active = MCP_IDENTITY_DIAGNOSTICS.set(True)
+    try:
+        try:
+            raise ValueError(MARKER)
+        except ValueError:
+            logging.getLogger(name).exception("diagnostic %s", MARKER)
+    finally:
+        MCP_IDENTITY_DIAGNOSTICS.reset(active)
+        for holder in holders:
+            holder.removeHandler(records)
+    mine = [record for record in records.records if record.name == name]
+    assert mine
+    assert all("vendor-marker" not in record.getMessage() for record in mine)
+    assert all(record.exc_info is None for record in mine)
+
+
 def test_identity_diagnostic_filter_does_not_affect_other_contexts(caplog):
     logger = logging.getLogger("mcp.client.streamable_http")
     active = MCP_IDENTITY_DIAGNOSTICS.set(True)

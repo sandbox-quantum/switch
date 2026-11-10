@@ -115,8 +115,11 @@ class McpIdentityError(ServiceAdapterError):
         self.reason: McpIdentityReason = reason
 
 
-# fastmcp's loggers do not propagate, so the root handler's filter
-# (`logging_config.py`) never sees their records.
+# The root handler's filter (`logging_config.py`) sees only what reaches
+# root. `fastmcp.client.client` stops at the `fastmcp` logger, which does not
+# propagate and has its own handlers, so it needs this filter.
+# `mcp.client.streamable_http` reaches root; its filter covers handlers Core
+# did not install, such as pytest's `caplog`.
 for _sdk_logger in ("mcp.client.streamable_http", "fastmcp.client.client"):
     logging.getLogger(_sdk_logger).addFilter(McpIdentityDiagnosticFilter())
 
