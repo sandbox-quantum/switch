@@ -3,6 +3,7 @@ import type * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import type { McpServerSpec } from '../adapter';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
 
@@ -60,9 +61,12 @@ beforeEach(() => {
 });
 async function setup(
   resume = false,
-  runtimeMode: 'approval-required' | 'full-access' = 'approval-required'
+  runtimeMode: 'approval-required' | 'full-access' = 'approval-required',
+  mcpServers: Record<string, McpServerSpec> = {}
 ) {
-  const adapter = createOpenHandsAdapter();
+  const adapter = createOpenHandsAdapter({
+    mcpBridge: { command: '/host/node', args: ['/host/sidecar.mjs', '--mcp-bridge'] },
+  });
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((e) => events.push(e));
   const session = await adapter.startSession({
@@ -70,7 +74,7 @@ async function setup(
     cwd: '/work',
     runtimeMode,
     env: {},
-    mcpServers: {},
+    mcpServers,
     connectorMcpServers: [],
     ...(resume ? { resume: { nativeSessionId: 'native' } } : {}),
   });
@@ -204,6 +208,90 @@ it('answers a confirmation with the Confirm option the CLI offered', async () =>
 it('answers a declined confirmation with the Deny option the CLI offered', async () => {
   expect(await confirmationTurn('decline')).toEqual({
     outcome: { outcome: 'selected', optionId: 'Deny' },
+  });
+});
+
+it.each([
+  { title: 'task' },
+  { title: 'Read the README in a subagent', rawInput: { kind: 'TaskAction' } },
+  { title: 'Spawning sub-agents', rawInput: { kind: 'DelegateAction' } },
+])('reports OpenHands delegation as a subagent for $title', async (toolCall) => {
+  const { adapter, events, server } = await setup(false, 'full-access');
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'Delegate reading the README' });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'child',
+      kind: 'other',
+      status: 'in_progress',
+      ...toolCall,
+    },
+  });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'child',
+      status: 'completed',
+    },
+  });
+  expect(events).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'item.started',
+        turnId: 't',
+        item: expect.objectContaining({ id: 'child', type: 'subagent' }),
+      }),
+      expect.objectContaining({
+        type: 'item.completed',
+        turnId: 't',
+        item: expect.objectContaining({ id: 'child', type: 'subagent', status: 'completed' }),
+      }),
+    ])
+  );
+});
+
+it('requires manual approval for an opaque batch even with a registered MCP tool pending', async () => {
+  const { adapter, events, server } = await setup(false, 'approval-required', {
+    echo: { transport: 'http', url: 'http://127.0.0.1:9999/mcp' },
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'Call the MCP echo tool' });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call-echo',
+      kind: 'other',
+      title: 'Echo the text',
+      rawInput: { kind: 'MCPToolAction', data: { text: 'hello' } },
+    },
+  });
+  server.send({
+    id: 99,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: {
+        toolCallId: 'confirmation-native',
+        kind: 'other',
+        title: 'Confirm Agent Actions',
+      },
+      options: [
+        { optionId: 'confirm', name: 'Confirm', kind: 'allow_once' },
+        { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+      ],
+    },
+  });
+  await flush();
+  expect(server.received.find((message) => message.id === 99)).toBeUndefined();
+  const request = events.find((event) => event.type === 'request.opened');
+  expect(request).toMatchObject({ requestType: 'tool_approval', title: 'Confirm Agent Actions' });
+  if (!request) throw new Error('missing approval');
+  await adapter.respondToRequest('s', request.requestId, 'decline');
+  await flush();
+  expect(server.received.find((message) => message.id === 99)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'deny' },
   });
 });
 

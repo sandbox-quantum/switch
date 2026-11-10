@@ -64,6 +64,14 @@ export const openhandsAcp: AcpProviderHooks = {
   },
   launch: launchOpenHands,
   prepareMcpServers: prepareOpenHandsMcpServers,
+  // OpenHands marks the built-in subagent tool as "other". Streaming starts
+  // with the tool name as its title. Non-streaming starts include the action kind.
+  itemType: ({ kind, title, rawInput }) =>
+    rawInput?.kind === 'TaskAction' ||
+    rawInput?.kind === 'DelegateAction' ||
+    (rawInput == null && kind === 'other' && title === 'task')
+      ? 'subagent'
+      : undefined,
   maxRequestBytes: 16 * 1024 * 1024,
   loginCommand: 'openhands',
   // The one variable of OpenHands' a session host must pass through: a

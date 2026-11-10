@@ -1,19 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { describeConformance, echoMcpServerSpec } from '../testing/index';
+import { describeConformance } from '../testing/index';
 import { createOpenHandsAdapter, openhandsSignedIn } from './openhands-adapter';
 
 describeConformance('openhands', {
-  createAdapter: async () =>
-    createOpenHandsAdapter({
-      mcpBridge: {
-        command: process.execPath,
-        args: [
-          '--experimental-strip-types',
-          fileURLToPath(new URL('../testing/openhands-mcp-bridge.mjs', import.meta.url)),
-        ],
-      },
-    }),
+  createAdapter: async () => createOpenHandsAdapter(),
   unavailableReason: async () => {
     const probe = spawnSync('openhands', ['--version'], { encoding: 'utf8' });
     if (probe.error || probe.status !== 0) return 'the openhands binary is not on PATH';
@@ -34,8 +24,9 @@ describeConformance('openhands', {
     // request is `session/request_permission`, for confirmation prompts.
     'user-input':
       'OpenHands ACP has no question channel: its only client request is session/request_permission, for confirmation prompts.',
+    'mcp-registered':
+      'OpenHands ACP asks for approval of an opaque action batch. Switch cannot safely auto-approve a registered MCP tool without identifying the actions in that batch.',
   },
-  mcpServers: { echo: echoMcpServerSpec() },
   // The harness hands the CLI a minimal environment, so a home outside
   // ~/.openhands would not reach it and the session would read a different
   // home than the sign-in probe did.
