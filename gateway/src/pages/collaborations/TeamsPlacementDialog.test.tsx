@@ -1,23 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BridgeDetail } from "../../data/api";
+import { bridgeDetail } from "./testFixtures";
 import TeamsPlacementDialog from "./TeamsPlacementDialog";
 
-const bridge: BridgeDetail = {
-  bridge_id: "b1",
-  bridge_type: "teams",
-  display_name: "Acme Corp",
-  status: "active",
-  agent_greetings_enabled: true,
-  channel_creation_supported: true,
-  channel_creation_enabled: false,
-  room_count: 2,
-  created_at: "2026-01-01",
-  attention: null,
-  team_placement_supported: true,
-  can_manage: true,
-  can_delete: true,
-};
+const bridge = bridgeDetail({ team_placement_supported: true });
 
 function placements(
   overrides: Partial<{
