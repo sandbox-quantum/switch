@@ -1,19 +1,8 @@
 import SearchOutlined from "@mui/icons-material/SearchOutlined";
 import { Box, InputAdornment, Stack, TextField, Typography } from "@mui/material";
 import { Fragment, type ReactNode, useMemo } from "react";
+import { SCREEN_READER_ONLY } from "../screenReaderOnly";
 import type { CatalogueConnector } from "./ConnectorCard";
-
-const SCREEN_READER_ONLY = {
-  position: "absolute",
-  width: "1px",
-  height: "1px",
-  margin: "-1px",
-  padding: 0,
-  overflow: "hidden",
-  clip: "rect(0 0 0 0)",
-  whiteSpace: "nowrap",
-  border: 0,
-} as const;
 
 /**
  * A search box, the page's own controls beside it, and the connectors two

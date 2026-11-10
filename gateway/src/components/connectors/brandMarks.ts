@@ -21,14 +21,13 @@ const FOREGROUND = "var(--hoot-foreground)";
 /** The single-colour marks draw in `currentColor`. Each takes its brand
  *  colour, except on the scheme where that colour would vanish into the tile:
  *  there it takes the one-colour black or white version the brand's
- *  guidelines provide. Canva, Microsoft 365 and Salesforce ship full-colour
+ *  guidelines provide. Canva, Google, Microsoft 365 and Salesforce ship full-colour
  *  marks that read on both schemes, and need no entry. */
 export const MARK_COLOR: Readonly<Record<string, { light: string; dark: string }>> = {
   github: { light: FOREGROUND, dark: FOREGROUND },
   notion: { light: FOREGROUND, dark: FOREGROUND },
   vercel: { light: FOREGROUND, dark: FOREGROUND },
   linear: { light: "#5E6AD2", dark: "#5E6AD2" },
-  "google-workspace": { light: "#4285F4", dark: "#4285F4" },
   asana: { light: "#F06A6A", dark: "#F06A6A" },
   gitlab: { light: "#FC6D26", dark: "#FC6D26" },
   atlassian: { light: "#0052CC", dark: FOREGROUND },

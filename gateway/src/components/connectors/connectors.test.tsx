@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { brandSvg, monogram } from "./brandMarks";
 import BrandTile from "./BrandTile";
 import CatalogueGrid from "./CatalogueGrid";
+import ConnectorAvailability from "./ConnectorAvailability";
 import ConnectorCard, { type CatalogueConnector } from "./ConnectorCard";
 
 // Read through Vite rather than node:fs, which the gateway has no types for.
@@ -144,5 +145,40 @@ describe("CatalogueGrid", () => {
 
     fireEvent.change(search, { target: { value: "spreadsheets" } });
     expect(screen.getByRole("status").textContent).toBe("No connectors match that search.");
+  });
+});
+
+describe("ConnectorAvailability", () => {
+  afterEach(() => cleanup());
+
+  it("gives someone who may change it the state and a switch named for what it controls", () => {
+    const onChange = vi.fn();
+    render(
+      <ConnectorAvailability available connectorName="GitHub" scopeName="Acme" turnedOffBy={null} onChange={onChange} />,
+    );
+    fireEvent.click(screen.getByRole("switch", { name: "GitHub available in Acme" }));
+
+    expect(screen.getByText("Enabled")).toBeTruthy();
+    expect(onChange).toHaveBeenCalledWith(false);
+  });
+
+  it("gives anyone else the state in words, with no switch at all", () => {
+    render(
+      <ConnectorAvailability available={false} connectorName="GitHub" scopeName="Acme" turnedOffBy={null} onChange={null} />,
+    );
+
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.getByText("Disabled")).toBeTruthy();
+    expect(screen.getByText("GitHub is disabled in Acme.")).toBeTruthy();
+  });
+
+  it("says when the level above has it off, with no switch to fight it", () => {
+    render(
+      <ConnectorAvailability available connectorName="GitHub" scopeName="Acme" turnedOffBy="SandboxAQ" onChange={() => {}} />,
+    );
+
+    expect(screen.getByText("Off for SandboxAQ")).toBeTruthy();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByText("Enabled")).toBeNull();
   });
 });
