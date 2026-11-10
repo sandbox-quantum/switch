@@ -342,6 +342,10 @@ class CollaborationBridgeLifecycleService:
         # registration refuses a second claim, but rows predating that check
         # still start.
         self._running_workspaces: dict[str, str] = {}
+        # Pairs of bridges already reported as sharing a workspace, so a
+        # deliberate share (one Slack workspace behind several tenants) is
+        # said once per process rather than on every start.
+        self._shared_workspaces_said: set[tuple[str, str, str]] = set()
         # Resources the deployment itself holds and no bridge may, with who
         # holds them — the distributed Telegram app's bot, for one.
         self._reserved_resources: dict[str, str] = {}
@@ -1160,16 +1164,21 @@ class CollaborationBridgeLifecycleService:
             workspace = adapter_cls.claimed_workspace(bridge.connection_config or {})
             if workspace is not None:
                 for other_id, held in self._running_workspaces.items():
-                    if held == workspace and other_id != bridge_id:
-                        logger.warning(
-                            "Bridge %s (%s) connects %s, which bridge %s also "
-                            "connects. Its events may reach either bridge's "
-                            "tenant; delete one of them.",
-                            bridge_id,
-                            bridge.type,
-                            workspace,
-                            other_id,
-                        )
+                    if held != workspace or other_id == bridge_id:
+                        continue
+                    pair = (workspace, *sorted((bridge_id, other_id)))
+                    if pair in self._shared_workspaces_said:
+                        continue
+                    self._shared_workspaces_said.add(pair)
+                    logger.info(
+                        "Bridge %s (%s) connects %s, which bridge %s also "
+                        "connects. Its events may reach either bridge's "
+                        "tenant; delete one of them unless that is intended.",
+                        bridge_id,
+                        bridge.type,
+                        workspace,
+                        other_id,
+                    )
 
             typed_config = config_cls.model_validate(bridge.connection_config or {})
             await self.check_start_guards(
@@ -2028,6 +2037,9 @@ class CollaborationBridgeLifecycleService:
         self._connect_failures.pop(bridge_id, None)
         self._connect_started.pop(bridge_id, None)
         self._failed_take_overs.pop(bridge_id, None)
+        self._shared_workspaces_said = {
+            pair for pair in self._shared_workspaces_said if bridge_id not in pair[1:]
+        }
         lock = self._bridge_locks.get(bridge_id)
         if lock is not None and not lock.locked():
             del self._bridge_locks[bridge_id]

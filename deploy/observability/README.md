@@ -62,10 +62,10 @@ it (`switch.bridges.crashed`), and "the morning report didn't post" fires when
 the 09:00 report has been silent for 25 hours, so a quiet channel can be
 trusted.
 
-Five more alerts read logs rather than metrics, for failures that only show
+Four more alerts read logs rather than metrics, for failures that only show
 up there: a request failing with an unhandled error (`Exception in ASGI
-application`), a pod losing the lease on its agents' connections, two bridges
-connected to the same workspace, a bridge failing to post for 10 minutes (more
+application`), a pod losing the lease on its agents' connections, a bridge
+failing to post for 10 minutes (more
 than 10 `Could not publish` lines, so one message retrying briefly stays
 quiet), and a burst of more than 25 errors in 15 minutes. Before this change the
 worst 15 minutes of the first week of November held 54 errors, almost all the
