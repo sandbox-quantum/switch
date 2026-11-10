@@ -2269,10 +2269,12 @@ class TestRenameWorkspace:
         return organization_id
 
     async def _tenant(
-        self, session_factory: async_sessionmaker[AsyncSession]
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        tenant_id: str,
     ) -> Tenant:
-        async with tenant_session(session_factory, TENANT_A) as session:
-            tenant = await session.get(Tenant, TENANT_A)
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
             assert tenant is not None
             return tenant
 
@@ -2320,7 +2322,7 @@ class TestRenameWorkspace:
         assert renamed.json() == {"id": TENANT_A, "name": "Research"}
         assert current.json()["name"] == "Research"
         assert [t["name"] for t in listed.json()] == ["Research"]
-        tenant = await self._tenant(session_factory)
+        tenant = await self._tenant(session_factory, TENANT_A)
         assert (tenant.name, tenant.slug) == ("Research", TENANT_A)
         details = {"name": "Research", "previous_name": TENANT_A}
         assert await self._events(session_factory) == (
@@ -2392,7 +2394,7 @@ class TestRenameWorkspace:
             )
 
         assert refused.status_code == 403, refused.text
-        assert (await self._tenant(session_factory)).name == TENANT_A
+        assert (await self._tenant(session_factory, TENANT_A)).name == TENANT_A
         assert await self._events(session_factory) == ([], [])
 
     async def test_another_workspace_named_in_the_path_is_refused(
@@ -2409,10 +2411,23 @@ class TestRenameWorkspace:
             refused = await client.patch(f"/tenants/{TENANT_B}", json={"name": "B2"})
 
         assert refused.status_code == 403, refused.text
-        assert (await self._tenant(session_factory)).name == TENANT_A
+        assert (await self._tenant(session_factory, TENANT_B)).name == TENANT_B
+        assert (await self._tenant(session_factory, TENANT_A)).name == TENANT_A
 
-    @pytest.mark.parametrize("name", ["", "   ", "x" * 256])
-    async def test_a_blank_or_overlong_name_is_refused(
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            "   ",
+            "\u3000",
+            # Zero-width spaces: nothing to see, though not whitespace.
+            "\u200b\u200b",
+            "Line\nbreak",
+            "Tab\tbed",
+            "x" * 256,
+        ],
+    )
+    async def test_a_blank_unseeable_multiline_or_overlong_name_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession], name: str
     ) -> None:
         await self._in_organization(session_factory)
@@ -2425,7 +2440,43 @@ class TestRenameWorkspace:
             refused = await client.patch(f"/tenants/{TENANT_A}", json={"name": name})
 
         assert refused.status_code == 422, refused.text
-        assert (await self._tenant(session_factory)).name == TENANT_A
+        assert (await self._tenant(session_factory, TENANT_A)).name == TENANT_A
+
+    async def test_a_name_with_nothing_visible_says_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._in_organization(session_factory)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            refused = await client.patch(
+                f"/tenants/{TENANT_A}", json={"name": "\u200b"}
+            )
+
+        assert refused.status_code == 422, refused.text
+        assert [error["msg"] for error in refused.json()["detail"]] == [
+            "A name needs at least one visible character."
+        ]
+
+    async def test_any_script_is_a_name(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await self._in_organization(session_factory)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            renamed = await client.patch(
+                f"/tenants/{TENANT_A}", json={"name": "研究チーム 🔬"}
+            )
+
+        assert renamed.status_code == 200, renamed.text
+        assert (await self._tenant(session_factory, TENANT_A)).name == "研究チーム 🔬"
 
     async def test_the_name_it_already_has_changes_and_records_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]

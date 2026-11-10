@@ -105,8 +105,9 @@ version of their own to them without also giving them a release of their own.
 - **A workspace can be renamed.** `PATCH /gateway/tenants/{tenant_id}` with
   `{"name": ...}` renames the workspace the session is in, for whoever
   administers it: its admins, its organization's admins and the operator.
-  The name is trimmed and at most 255 characters, and the workspace's slug
-  does not change. Each rename is recorded in the workspace's audit log
+  The name is trimmed, at most 255 characters, needs a character that can be
+  seen and can't hold a line break or tab; the workspace's slug does not
+  change. Each rename is recorded in the workspace's audit log
   (`tenant.renamed`) and in its organization's
   (`organization.workspace_renamed`, shown as "Workspace renamed"), with the
   new and previous names. In the dashboard's new layout (`gateway_v2`),

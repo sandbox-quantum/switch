@@ -97,6 +97,19 @@ describe("EditableField", () => {
     expect(box().readOnly).toBe(true);
   });
 
+  it("sends once when Enter and Update come together", async () => {
+    const onSave = vi.fn(async () => {});
+    render(field({ onSave }));
+    fireEvent.click(screen.getByRole("button", { name: "Rename workspace" }));
+    fireEvent.change(box(), { target: { value: "Research" } });
+    await act(async () => {
+      fireEvent.keyDown(box(), { key: "Enter" });
+      fireEvent.click(update());
+    });
+
+    expect(onSave).toHaveBeenCalledOnce();
+  });
+
   it("does not update on the Enter that ends an input method's composition", () => {
     const onSave = vi.fn(async () => {});
     render(field({ onSave }));

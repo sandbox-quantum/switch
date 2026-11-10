@@ -914,6 +914,7 @@ describe("renaming the workspace (gateway_v2)", () => {
     // Closing it keeps the name while it fades.
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(screen.queryByText("Workspace renamed to .")).toBeNull();
+    await waitFor(() => expect(screen.queryByText("Workspace renamed to Research.")).toBeNull());
     expect(state.renames).toEqual(["Research"]);
     expect((screen.getByLabelText("Workspace name") as HTMLInputElement).value).toBe("Research");
     expect(breadcrumb().textContent).toContain("Research");

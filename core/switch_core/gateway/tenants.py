@@ -483,7 +483,9 @@ async def rename_tenant(
     added.
     """
     _require_bound_tenant(tenant_id)
-    tenant = await session.get(Tenant, tenant_id)
+    # Locked, so renames made at the same moment each record the name they
+    # replaced, and the second of two the same is the no-op it should be.
+    tenant = await session.get(Tenant, tenant_id, with_for_update=True)
     if tenant is None:
         raise HTTPException(status_code=404, detail="That workspace doesn't exist.")
     if req.name != tenant.name:

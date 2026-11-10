@@ -57,6 +57,8 @@ export default function EditableField({
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Read by `save` itself, so two calls before a render cannot both send.
+  const sending = useRef(false);
 
   // Back on the pencil when editing ends, so the keyboard is where it was.
   const pencil = useRef<HTMLButtonElement>(null);
@@ -81,7 +83,8 @@ export default function EditableField({
   };
 
   const save = async () => {
-    if (!changed || saving) return;
+    if (!changed || sending.current) return;
+    sending.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -90,6 +93,7 @@ export default function EditableField({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save it");
     } finally {
+      sending.current = false;
       setSaving(false);
     }
   };
