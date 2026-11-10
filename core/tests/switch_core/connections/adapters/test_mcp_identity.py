@@ -598,10 +598,12 @@ class _ScriptedMcp:
         *,
         status: int | None = None,
         compressed: bool = False,
+        call_error: int | None = None,
     ) -> None:
         self.pages = pages or {None: ([GET_USER], None)}
         self.status = status
         self.compressed = compressed
+        self.call_error = call_error
         self.requests: list[httpx.Request] = []
         self.calls: list[dict[str, Any]] = []
 
@@ -626,6 +628,15 @@ class _ScriptedMcp:
             result = {"tools": tools, **({"nextCursor": cursor} if cursor else {})}
         elif method == "tools/call":
             self.calls.append(message)
+            if self.call_error is not None:
+                return httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": message["id"],
+                        "error": {"code": self.call_error, "message": MARKER},
+                    },
+                )
             result = {
                 "content": [],
                 "structuredContent": {"data": {"gid": "account-example"}},
@@ -1243,3 +1254,17 @@ async def test_mcp_identity_leaves_the_shared_client_open(monkeypatch, status):
             assert http.is_closed is False
             assert (await http.get(url)).text == "ok"
     assert [t.closed for t in built] == [True]
+
+
+@pytest.mark.parametrize(
+    "code, reason", [(-32602, "tool_error"), (-32603, "protocol_error")]
+)
+async def test_mcp_identity_tool_that_refuses_empty_arguments(
+    monkeypatch, code, reason
+):
+    """A tool can refuse {} with a JSON-RPC invalid-params error instead of
+    an isError result: that is the tool's refusal, not a broken answer."""
+    vendor = _ScriptedMcp(call_error=code)
+    _over_mock(monkeypatch, vendor)
+    _assert_reason(await _identify_error(), reason)
+    assert len(vendor.calls) == 1

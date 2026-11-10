@@ -360,8 +360,9 @@ version of their own to them without also giving them a release of their own.
 - **OAuth catalog entries can opt into MCP identity and unscoped consent.**
   An entry can name a read-only MCP tool that identifies the account. The
   tool takes no arguments and must name one account. Otherwise sign-in fails
-  with a fixed reason. Core refuses a tool whose input schema
-  names a required property, and reads nothing else in it.
+  with a fixed reason. Core reads only the input schema's `type` and
+  `required`, and refuses a tool that is not `type: object` or names a
+  required property.
   It does not check the result against the tool's output schema. If the MCP
   server refuses with a 4xx other than 401 or 429, the message gives the
   status. The identity call reaches only what the outbound policy allows

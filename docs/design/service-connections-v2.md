@@ -463,7 +463,7 @@ Before Core calls the tool, it checks these things:
 Core reads nothing else in the schema and runs no JSON Schema validator. On a
 small hostile schema, a validator can spend minutes of CPU time and block
 Core's event loop. A tool that still refuses `{}` fails when Core calls it,
-with `tool_error`.
+with `tool_error`: an `isError` result or a JSON-RPC invalid-params error.
 
 This check only shows that the schema names no required argument. It does
 not show that the tool only reads. That rests on `readOnlyHint: true` and on

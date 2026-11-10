@@ -37,6 +37,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from mcp.shared.exceptions import McpError
 from mcp.types import (
     CONNECTION_CLOSED,
+    INVALID_PARAMS,
     CallToolRequest,
     CallToolRequestParams,
     CallToolResult,
@@ -896,16 +897,22 @@ class OAuthAdapter:
                 raise McpIdentityError(self._name, "needs_arguments")
             # Sent as a plain request: the SDK's `call_tool` checks the result
             # against the vendor's outputSchema, which can fetch any URL.
-            result: CallToolResult = await client.session.send_request(
-                ClientRequest(
-                    CallToolRequest(
-                        params=CallToolRequestParams(
-                            name=self._identity.mcp_tool, arguments={}
+            try:
+                result: CallToolResult = await client.session.send_request(
+                    ClientRequest(
+                        CallToolRequest(
+                            params=CallToolRequestParams(
+                                name=self._identity.mcp_tool, arguments={}
+                            )
                         )
-                    )
-                ),
-                CallToolResult,
-            )
+                    ),
+                    CallToolResult,
+                )
+            except McpError as refused:
+                # A tool can refuse `{}` this way, not with an isError result.
+                if refused.error.code == INVALID_PARAMS:
+                    raise McpIdentityError(self._name, "tool_error") from None
+                raise
             return result
 
     def _mcp_failure(
