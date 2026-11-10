@@ -512,7 +512,7 @@ class TestUse:
                 "name": "site",
                 "label": "Datadog site",
                 "secret": False,
-                "help": "The address you open Datadog at, without app.",
+                "help": "The address you open Datadog at, without app. On Datadog's consent page, Full access lets agents do all your user can, admin actions too; Limited is read-only.",
                 "choices": list(SITES),
             }
         ]
