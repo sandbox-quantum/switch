@@ -474,6 +474,7 @@ async def my_identities(
                 external_user_id=identity.external_user_id,
                 external_username=identity.external_username,
                 verified=claim.verified_at is not None,
+                linked_at=claim.created_at,
             )
         )
     return linked

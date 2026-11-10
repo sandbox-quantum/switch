@@ -968,6 +968,9 @@ class LinkedIdentity(BaseModel):
     # False for a link made before accounts had to confirm them: it works,
     # and Console asks its owner to confirm it.
     verified: bool
+    # When the link started counting. Confirming an older link later leaves
+    # this where it was: the link counted all along.
+    linked_at: datetime
 
 
 class PendingIdentity(BaseModel):
