@@ -12,8 +12,8 @@ It reuses the operator's organization purge (`organization_purge.py`):
 
 Whatever the purge left of the account then goes through `AccountDeletion`,
 which leaves the remaining workspaces, the server's default one included,
-and drops the organization memberships. Every refusal is checked before
-anything changes.
+and drops the organization memberships, once the account's cloud machines
+are torn down. Every refusal is checked before anything changes.
 """
 
 from __future__ import annotations
@@ -72,6 +72,9 @@ class AccountReset:
                 tenant = await scoped.get(Tenant, workspace.id)
             assert tenant is not None and tenant.organization_id is not None
             by_organization[tenant.organization_id].append(workspace)
+        # One whose workspaces an interrupted reset already purged.
+        for organization_id in await self.purge.organizations_of(user.id):
+            by_organization.setdefault(organization_id, [])
 
         plans: list[PurgePlan] = []
         alone: list[Workspace] = []
@@ -105,10 +108,18 @@ class AccountReset:
             for account in plan.accounts
         )
         if not deleted_by_purge:
-            reason = await self.deletion.refusal(session, user, remaining)
+            reason = await self.deletion.refusal_besides_machines(user, remaining)
             if reason is not None:
                 raise AccountDeletionRefused(reason)
         await self._check_installs(sorted(purged))
+        if not deleted_by_purge:
+            try:
+                teardown = await self.purge.tear_down_machines_of(
+                    user.id, {w.id for w in workspaces}
+                )
+            except PurgeRefused as refused:
+                raise AccountDeletionRefused(str(refused)) from None
+            _finished(teardown, user.id)
 
         request = f"Test-account reset by user {user.id}"
         # shortcut: a sole organization purged before workspaces in a shared one
@@ -120,7 +131,12 @@ class AccountReset:
                 raise AccountDeletionRefused(str(refused)) from None
             _finished(outcome, user.id)
         if alone:
-            outcome = await self.purge.purge_workspaces([w.id for w in alone], request)
+            try:
+                outcome = await self.purge.purge_workspaces(
+                    [w.id for w in alone], user.id, request
+                )
+            except PurgeRefused as refused:
+                raise AccountDeletionRefused(str(refused)) from None
             _finished(outcome, user.id)
         if not deleted_by_purge:
             await self.deletion.delete(session, user, remaining, actor_id=user.id)

@@ -386,11 +386,9 @@ class AccountDeletion:
         self, session: AsyncSession, user: User, workspaces: list[Workspace]
     ) -> str | None:
         """Why the account cannot be deleted now, or None when it can."""
-        if is_server_administrator(user, self.admin_email):
-            return (
-                "This is Switch's administrator account, which can't be "
-                "deleted. Switch recreates it every time it starts."
-            )
+        reason = await self.refusal_besides_machines(user, workspaces)
+        if reason is not None:
+            return reason
         machine = await session.scalar(
             select(CloudMachine.id).where(
                 CloudMachine.owner_id == user.id, CloudMachine.state != "deleted"
@@ -400,6 +398,18 @@ class AccountDeletion:
             return (
                 "Your account has a cloud machine. Deleting an account with a "
                 "cloud machine isn't supported yet."
+            )
+        return None
+
+    async def refusal_besides_machines(
+        self, user: User, workspaces: list[Workspace]
+    ) -> str | None:
+        """`refusal`, for a caller that tears the account's cloud machines
+        down itself."""
+        if is_server_administrator(user, self.admin_email):
+            return (
+                "This is Switch's administrator account, which can't be "
+                "deleted. Switch recreates it every time it starts."
             )
         for workspace in workspaces:
             reason = await self._workspace_refusal(user, workspace)

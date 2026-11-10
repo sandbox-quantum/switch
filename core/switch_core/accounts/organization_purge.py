@@ -348,10 +348,11 @@ class OrganizationPurge:
             return outcome
 
         await self._record_start(plan, request)
+        members = {account.id for account in plan.accounts}
         for workspace in plan.workspaces:
             with tenant_scope(workspace.id):
                 await self._end_installs(workspace)
-            await self._purge_workspace(workspace, request)
+            await self._purge_workspace(workspace, members, request)
         await self._detach_machines(plan.detached_machines)
         if not plan.resuming:
             await self._delete_organization(plan, request)
@@ -361,11 +362,12 @@ class OrganizationPurge:
         return outcome
 
     async def purge_workspaces(
-        self, tenant_ids: list[str], request: str
+        self, tenant_ids: list[str], member_id: str, request: str
     ) -> PurgeOutcome:
         """Purge these workspaces alone, as `run` purges each of an
         organization's, leaving the organization and every account. Returns
-        unfinished, having deleted nothing, while it waits."""
+        unfinished, having deleted nothing, while it waits. Raises
+        `PurgeRefused` for a workspace anyone but `member_id` is in."""
         workspaces = []
         for tenant_id in tenant_ids:
             async with tenant_session(self.session_factory, tenant_id) as session:
@@ -379,8 +381,39 @@ class OrganizationPurge:
         for workspace in workspaces:
             with tenant_scope(workspace.id):
                 await self._end_installs(workspace)
-            await self._purge_workspace(workspace, request)
+            await self._purge_workspace(workspace, {member_id}, request)
         outcome.finished = True
+        return outcome
+
+    async def organizations_of(self, user_id: str) -> list[str]:
+        """The organizations the account is a member of."""
+        found = []
+        for organization_id in await all_organization_ids(self.session_factory):
+            async with organization_session(
+                self.session_factory, organization_id
+            ) as session:
+                if await session.scalar(
+                    select(OrganizationMember.user_id).where(
+                        OrganizationMember.organization_id == organization_id,
+                        OrganizationMember.user_id == user_id,
+                    )
+                ):
+                    found.append(organization_id)
+        return found
+
+    async def tear_down_machines_of(
+        self, user_id: str, tenant_ids: set[str]
+    ) -> PurgeOutcome:
+        """Set the account's live cloud machines to be deleted, as `run` does
+        for an account it deletes. Raises `PurgeRefused` for one that also
+        serves a workspace outside `tenant_ids`. Unfinished while any is
+        still being torn down."""
+        machines, _, refusals = await self._machines(set(), {user_id}, tenant_ids)
+        if refusals:
+            raise PurgeRefused(" ".join(refusals))
+        outcome = PurgeOutcome(finished=False)
+        await self._tear_down_machines(machines, outcome)
+        outcome.finished = not outcome.waiting
         return outcome
 
     # ── Planning ─────────────────────────────────────────────────────────────
@@ -433,17 +466,8 @@ class OrganizationPurge:
         elsewhere = set(await tenants_of_user(self.session_factory, user.id))
         if elsewhere - tenant_ids:
             return "a member of another workspace"
-        for other in await all_organization_ids(self.session_factory):
-            if other == organization_id:
-                continue
-            async with organization_session(self.session_factory, other) as session:
-                if await session.scalar(
-                    select(OrganizationMember.user_id).where(
-                        OrganizationMember.organization_id == other,
-                        OrganizationMember.user_id == user.id,
-                    )
-                ):
-                    return "a member of another organization"
+        if set(await self.organizations_of(user.id)) - {organization_id}:
+            return "a member of another organization"
         if await workspaces_naming(self.session_factory, user.id, tenant_ids):
             return "still named by records in a workspace they left"
         return None
@@ -597,9 +621,25 @@ class OrganizationPurge:
             await session.commit()
 
     async def _purge_workspace(
-        self, workspace: WorkspaceContents, request: str
+        self, workspace: WorkspaceContents, members: set[str], request: str
     ) -> None:
+        """Refuses, deleting nothing, when anyone outside `members` is in
+        the workspace: the row lock holds off anyone joining until it commits."""
         async with tenant_session(self.session_factory, workspace.id) as session:
+            await session.execute(
+                select(Tenant.id).where(Tenant.id == workspace.id).with_for_update()
+            )
+            joined = set(
+                await session.scalars(
+                    select(TenantMember.user_id).where(
+                        TenantMember.tenant_id == workspace.id
+                    )
+                )
+            )
+            if joined - members:
+                raise PurgeRefused(
+                    f"Someone joined {workspace.name} during the purge. Run it again."
+                )
             agent_ids = list(
                 await session.scalars(
                     select(Agent.id).where(Agent.tenant_id == workspace.id)
@@ -656,16 +696,36 @@ class OrganizationPurge:
             )
 
     async def _delete_organization(self, plan: PurgePlan, request: str) -> None:
-        left = await tenants_of_organization(self.session_factory, plan.organization_id)
-        if left:
-            raise PurgeRefused(
-                f"{len(left)} workspace(s) joined the organization during the "
-                "purge. Run it again."
-            )
         scoped = organization_scoped_tables(Base.metadata)
         async with organization_session(
             self.session_factory, plan.organization_id
         ) as session:
+            # Holds off a new workspace or member until this commits.
+            await session.execute(
+                select(Organization.id)
+                .where(Organization.id == plan.organization_id)
+                .with_for_update()
+            )
+            left = await tenants_of_organization(
+                self.session_factory, plan.organization_id
+            )
+            if left:
+                raise PurgeRefused(
+                    f"{len(left)} workspace(s) joined the organization during the "
+                    "purge. Run it again."
+                )
+            joined = set(
+                await session.scalars(
+                    select(OrganizationMember.user_id).where(
+                        OrganizationMember.organization_id == plan.organization_id
+                    )
+                )
+            ) - {account.id for account in plan.accounts}
+            if joined:
+                raise PurgeRefused(
+                    f"{len(joined)} person(s) joined the organization during the "
+                    "purge. Run it again."
+                )
             # Children first, so no foreign key between two of them holds a
             # delete back.
             for table in reversed(Base.metadata.sorted_tables):

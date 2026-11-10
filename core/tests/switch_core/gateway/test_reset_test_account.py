@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,6 +24,7 @@ from switch_core.db.audit import (
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
+    CloudMachine,
     MessagingInstall,
     Organization,
     OrganizationMember,
@@ -53,6 +55,7 @@ from tests.switch_core.accounts.test_organization_purge import (
     _purge,
     _Signals,
 )
+from tests.switch_core.hosted_machine_helpers import seed_machine
 
 
 def _app(
@@ -395,4 +398,155 @@ async def test_a_purge_that_must_wait_is_refused_with_nothing_deleted(
     async with session_factory() as session:
         assert await session.get(User, user_id) is not None
         assert await session.get(Tenant, solo) is not None
+        assert await session.get(Organization, organization_id) is not None
+
+
+async def _shared_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> tuple[str, str, str, str]:
+    """A user alone in their workspace of an organization with another
+    organization admin in it. Returns as `_solo_workspace` does."""
+    user_id, email, mine, organization_id = await _solo_workspace(session_factory)
+    theirs = f"theirs-{mine}"
+    async with session_factory() as session:
+        session.add(
+            Tenant(id=theirs, slug=theirs, name=theirs, organization_id=organization_id)
+        )
+        await session.commit()
+    other_id = await _other_user(session_factory, theirs, "admin")
+    async with session_factory() as session:
+        session.add(
+            OrganizationMember(
+                organization_id=organization_id, user_id=other_id, role="org_admin"
+            )
+        )
+        await session.commit()
+    return user_id, email, mine, organization_id
+
+
+def _join_before_purging(
+    monkeypatch: pytest.MonkeyPatch,
+    app: FastAPI,
+    session_factory: async_sessionmaker[AsyncSession],
+    tenant_id: str,
+) -> None:
+    """Have someone join `tenant_id` and add a room to it after the reset
+    has checked who is in it, just before its rows go."""
+    purge = app.state.organization_purge
+    original = purge._end_installs
+
+    async def joining(workspace):
+        await _other_user(session_factory, tenant_id, "member")
+        async with tenant_session(session_factory, tenant_id) as session:
+            session.add(
+                Room(
+                    tenant_id=tenant_id,
+                    transport_room_id=f"!{uuid.uuid4().hex}:test",
+                    name="theirs",
+                    description="",
+                )
+            )
+            await session.commit()
+        await original(workspace)
+
+    monkeypatch.setattr(purge, "_end_installs", joining)
+
+
+@pytest.mark.parametrize("shared", [True, False])
+async def test_a_member_who_joins_during_the_reset_keeps_the_workspace(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    shared: bool,
+) -> None:
+    setup = _shared_organization if shared else _solo_workspace
+    user_id, email, mine, organization_id = await setup(session_factory)
+    app, _, _ = _app(session_factory, enabled=True)
+    _join_before_purging(monkeypatch, app, session_factory, mine)
+
+    async with _client(app, user_id, email, mine) as client:
+        response = await client.post(
+            "/auth/me/reset-test-account", json={"email": email}
+        )
+
+    assert response.status_code == 409, response.text
+    assert "joined" in response.json()["detail"]
+    async with session_factory() as session:
+        assert await session.get(User, user_id) is not None
+        assert await session.get(Tenant, mine) is not None
+        assert await session.get(Organization, organization_id) is not None
+    async with tenant_session(session_factory, mine) as session:
+        assert await session.scalar(select(Room.id)) is not None
+
+
+async def test_a_retry_after_the_workspaces_went_still_purges_the_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id, email, solo, organization_id = await _solo_workspace(session_factory)
+    app, _, _ = _app(session_factory, enabled=True)
+    purge = app.state.organization_purge
+    original = purge._delete_organization
+
+    async def interrupted(plan, request):
+        monkeypatch.setattr(purge, "_delete_organization", original)
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(purge, "_delete_organization", interrupted)
+    async with _client(app, user_id, email, solo) as client:
+        with pytest.raises(RuntimeError, match="interrupted"):
+            await client.post("/auth/me/reset-test-account", json={"email": email})
+        async with session_factory() as session:
+            assert await session.get(Tenant, solo) is None
+            assert await session.get(Organization, organization_id) is not None
+            assert await session.get(User, user_id) is not None
+        response = await client.post(
+            "/auth/me/reset-test-account", json={"email": email}
+        )
+
+    assert response.status_code == 200, response.text
+    async with session_factory() as session:
+        assert await session.get(Organization, organization_id) is None
+        assert await session.get(User, user_id) is None
+
+
+async def test_in_a_shared_organization_a_cloud_machine_is_torn_down_first(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, email, mine, organization_id = await _shared_organization(session_factory)
+    async with tenant_session(session_factory, mine) as session:
+        machine = await seed_machine(
+            session,
+            owner_id=user_id,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+        )
+        await session.commit()
+        machine_id = machine.id
+
+    app, _, _ = _app(session_factory, enabled=True)
+    async with _client(app, user_id, email, mine) as client:
+        waiting = await client.post(
+            "/auth/me/reset-test-account", json={"email": email}
+        )
+        assert waiting.status_code == 409, waiting.text
+        assert "being torn down" in waiting.json()["detail"]
+        async with session_factory() as session:
+            assert await session.get(Tenant, mine) is not None
+            assert await session.get(User, user_id) is not None
+            machine = await session.get(CloudMachine, machine_id)
+            assert machine is not None and machine.desired_state == "deleted"
+            # The hosted controller terminates it.
+            machine.state = "deleted"
+            await session.commit()
+        response = await client.post(
+            "/auth/me/reset-test-account", json={"email": email}
+        )
+
+    assert response.status_code == 200, response.text
+    async with session_factory() as session:
+        assert await session.get(User, user_id) is None
+        assert await session.get(Tenant, mine) is None
+        assert await session.get(CloudMachine, machine_id) is None
         assert await session.get(Organization, organization_id) is not None
