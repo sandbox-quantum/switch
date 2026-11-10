@@ -26,6 +26,7 @@ from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
+import jwt
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -40,6 +41,23 @@ from switch_core.connections.adapters import (
 from switch_core.connections.loader import AccessLevel, ConnectionDefinition
 
 MAX_METADATA_BYTES = 64 * 1024
+_ID_TOKEN_CLOCK_SKEW_SECONDS = 60
+# Only asymmetric algorithms: an id_token is checked against the keys the
+# issuer publishes, never against a shared secret, and `none` is never allowed.
+_ASYMMETRIC_ID_TOKEN_ALGS = frozenset(
+    {
+        "RS256",
+        "RS384",
+        "RS512",
+        "PS256",
+        "PS384",
+        "PS512",
+        "ES256",
+        "ES384",
+        "ES512",
+        "EdDSA",
+    }
+)
 
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
@@ -70,6 +88,11 @@ class AuthorizationEndpoints:
     # where the catalog names the endpoints.
     resource: str | None
     client_authentication: ClientAuthentication
+    # The authorization server's issuer, and where it publishes the keys its
+    # id_tokens are signed with, as its metadata names them. None where the
+    # catalog names the endpoints, or the metadata does not.
+    issuer: str | None = None
+    jwks_uri: str | None = None
 
 
 def client_fields(
@@ -121,15 +144,23 @@ class Identity:
 
     account_id: str
     label: str
+    # The scopes a verified id_token proves were granted, for a vendor whose
+    # token response does not list the identity scopes it was asked for.
+    oidc_scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class SignIn:
-    """What an authorization code was exchanged for, and through which client."""
+    """What an authorization code was exchanged for, and through which client.
+
+    `id_token` is the OpenID Connect token the vendor returned beside the
+    access token, if any: held in memory to read the account, never stored.
+    """
 
     secret: ConnectionSecret
     granted_scopes: list[str]
     client_id: str
+    id_token: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -333,6 +364,14 @@ class OAuthAdapter:
             client_authentication=(
                 "client_secret_basic" if basic_only else "client_secret_post"
             ),
+            issuer=metadata["issuer"]
+            if isinstance(metadata.get("issuer"), str)
+            else None,
+            jwks_uri=(
+                metadata["jwks_uri"]
+                if isinstance(metadata.get("jwks_uri"), str)
+                else None
+            ),
         )
         return self._endpoints
 
@@ -480,14 +519,26 @@ class OAuthAdapter:
         )
         values = self._credentials(answer.body, {})
         granted = values.get("scope")
+        id_token = answer.body.get("id_token")
         return SignIn(
             ConnectionSecret(values),
             granted.split() if isinstance(granted, str) else list(scopes),
             answer.client_id,
+            id_token if isinstance(id_token, str) and id_token else None,
         )
 
-    async def identify(self, access_token: str) -> Identity:
-        """The account the token acts as, as the catalog says to read it."""
+    async def identify(
+        self,
+        access_token: str,
+        *,
+        id_token: str | None = None,
+        client_id: str | None = None,
+    ) -> Identity:
+        """The account the token acts as, as the catalog says to read it: from
+        the vendor's account endpoint, or from the signed id_token."""
+        if self._identity.id_token:
+            return await self._identify_from_id_token(id_token, client_id)
+        assert self._identity.url is not None
         response = await self._send(
             self._http.build_request(
                 "GET",
@@ -516,6 +567,100 @@ class OAuthAdapter:
             raise ServiceAdapterError(f"{self._name} did not name the account's id.")
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
+        )
+
+    async def _id_token_keys(self) -> tuple[str, list[dict[str, Any]]]:
+        """The issuer, and the signing keys it publishes, from its metadata."""
+        endpoints = await self.endpoints()
+        issuer = endpoints.issuer
+        jwks_uri = endpoints.jwks_uri
+        if issuer is None:
+            raise ServiceAdapterError(
+                f"{self._name} names no issuer, so Switch cannot check who signed "
+                "its sign-in."
+            )
+        _https(issuer, "issuer")
+        if jwks_uri is None:
+            # The authorization server's own metadata may leave the keys to
+            # its OpenID Connect configuration.
+            parts = urlsplit(issuer)
+            path = parts.path.rstrip("/")
+            configuration = await self._metadata(
+                [
+                    f"{parts.scheme}://{parts.netloc}{path}/.well-known/openid-configuration"
+                ],
+                "OpenID Connect configuration",
+            )
+            if configuration.get("issuer") != issuer:
+                raise ServiceAdapterError(
+                    f"{self._name}'s OpenID Connect configuration names another issuer."
+                )
+            jwks_uri = configuration.get("jwks_uri")
+        published = await self._metadata(
+            [_https(jwks_uri, "signing keys")], "signing keys"
+        )
+        keys = published.get("keys")
+        if not isinstance(keys, list) or not all(isinstance(k, dict) for k in keys):
+            raise ServiceAdapterError(f"{self._name} published no signing keys.")
+        return issuer, keys
+
+    async def _identify_from_id_token(
+        self, id_token: str | None, client_id: str | None
+    ) -> Identity:
+        """The account an OpenID Connect id_token names, once it is checked:
+        signed by a key its issuer publishes, issued by that issuer, to this
+        client, and not expired. Anything less and the sign-in is refused."""
+        if id_token is None or client_id is None:
+            raise ServiceAdapterError(
+                f"{self._name} returned no signed identity, so Switch cannot tell "
+                "whose sign-in this is."
+            )
+        refused = ReauthorizationRequiredError(
+            f"{self._name}'s signed identity could not be verified."
+        )
+        try:
+            header = jwt.get_unverified_header(id_token)
+        except jwt.PyJWTError:
+            raise refused from None
+        algorithm = header.get("alg")
+        kid = header.get("kid")
+        if algorithm not in _ASYMMETRIC_ID_TOKEN_ALGS:
+            raise refused
+        issuer, keys = await self._id_token_keys()
+        candidates = [
+            key
+            for key in keys
+            if key.get("use", "sig") == "sig"
+            and (kid is None or key.get("kid") == kid)
+            and key.get("alg", algorithm) == algorithm
+        ]
+        if len(candidates) != 1:
+            raise refused
+        try:
+            signing_key = jwt.PyJWK(candidates[0]).key
+            claims = jwt.decode(
+                id_token,
+                signing_key,
+                algorithms=[algorithm],
+                audience=client_id,
+                issuer=issuer,
+                leeway=_ID_TOKEN_CLOCK_SKEW_SECONDS,
+                options={"require": ["exp", "iss", "aud", "sub"]},
+            )
+        except jwt.PyJWTError:
+            raise refused from None
+        account_id = _path_value(claims, self._identity.account_id)
+        label = _path_value(claims, self._identity.label)
+        if not isinstance(account_id, str) or not account_id:
+            raise ServiceAdapterError(f"{self._name} did not name the account's id.")
+        proven = (
+            "openid",
+            *(("email",) if isinstance(claims.get("email"), str) else ()),
+        )
+        return Identity(
+            account_id,
+            label if isinstance(label, str) and label else account_id,
+            proven,
         )
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────

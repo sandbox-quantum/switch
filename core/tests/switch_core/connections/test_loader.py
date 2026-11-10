@@ -18,7 +18,6 @@ PLACEHOLDERS = {
     "microsoft-365",
     "new-relic",
     "notion",
-    "linear",
     "salesforce",
     "box",
     "canva",
@@ -26,13 +25,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_linear():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "linear",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "linear",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["linear"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -228,6 +230,38 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_linear_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["linear"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback", "core"],
+    )
+    assert oauth.loopback_ports is None
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        86400,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("linear", "https://mcp.linear.app/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["openid", "email", "read"]
+    assert definition.access.write.scopes == ["openid", "email", "read", "write"]
+    identity = definition.auth.identity
+    assert identity is not None
+    # api.linear.app refuses the MCP server's tokens and there is no userinfo
+    # endpoint, so the account is read from the signed OpenID Connect id_token.
+    assert (identity.id_token, identity.url) == (True, None)
+    assert (identity.account_id, identity.label) == ("sub", "email")
 
 
 RESTRICTED_DRIVE = {
@@ -564,12 +598,13 @@ tools: { mode: pass_through }
 def _write_example(root, text: str = OAUTH_ENTRY) -> None:
     directory = root / "example"
     directory.mkdir(exist_ok=True)
-    (directory / "connection.yaml").write_text(text)
+    (directory / "connection.yaml").write_text(text, newline="\n")
     skill = directory / "skill"
     skill.mkdir(exist_ok=True)
     (skill / "SKILL.md").write_text(
         "---\nname: example\ndescription: Work with Example items.\n---\n\n"
-        "Use the tools.\n"
+        "Use the tools.\n",
+        newline="\n",
     )
 
 
@@ -581,6 +616,7 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.auth.oauth.registration == "dynamic"
     assert definition.auth.oauth.redirect == ["loopback", "core"]
     assert definition.auth.identity is not None
+    assert definition.auth.identity.id_token is False
     assert definition.auth.identity.account_id == "account.id"
     assert definition.token is not None
     assert definition.token.kind == "pass_through"
@@ -746,6 +782,21 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n    unchecked: Publish it.\n",
             "unchecked is for a static client",
         ),
+        (
+            "    url: https://api.example.test/me\n",
+            "    url: https://api.example.test/me\n    id_token: true\n",
+            "identity reads a URL with the access token, or the id_token",
+        ),
+        (
+            "    url: https://api.example.test/me\n",
+            "    id_token: false\n",
+            "identity reads a URL with the access token, or the id_token",
+        ),
+        (
+            "    url: https://api.example.test/me\n",
+            "    url: https://api.example.test/me\n    method: POST\n",
+            "method",
+        ),
     ],
 )
 def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
@@ -753,6 +804,49 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
 ):
     assert old in OAUTH_ENTRY
     _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+ID_TOKEN_ENTRY = OAUTH_ENTRY.replace(
+    "    url: https://api.example.test/me\n    account_id: account.id\n"
+    "    label: account.email\n",
+    "    id_token: true\n    account_id: sub\n    label: email\n",
+).replace(
+    'read: { scopes: ["read:items"] }\n'
+    '  write: { scopes: ["read:items", "write:items"] }',
+    'read: { scopes: ["openid", "email", "read:items"] }\n'
+    '  write: { scopes: ["openid", "email", "read:items", "write:items"] }',
+)
+
+
+def test_loads_an_oauth_entry_that_reads_its_identity_from_the_id_token(catalog_copy):
+    assert ID_TOKEN_ENTRY != OAUTH_ENTRY
+    _write_example(catalog_copy, ID_TOKEN_ENTRY)
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.id_token, identity.url) == (True, None)
+    assert (identity.account_id, identity.label) == ("sub", "email")
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            'read: { scopes: ["openid", "email", "read:items"] }',
+            'read: { scopes: ["email", "read:items"] }',
+            "needs the openid scope at every access level",
+        ),
+        (
+            '"openid", "email", "read:items", "write:items"',
+            '"email", "read:items", "write:items"',
+            "needs the openid scope at every access level",
+        ),
+    ],
+)
+def test_an_id_token_identity_needs_the_openid_scope(catalog_copy, old, new, message):
+    assert old in ID_TOKEN_ENTRY
+    _write_example(catalog_copy, ID_TOKEN_ENTRY.replace(old, new))
     with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
         load_catalog(catalog_copy)
 

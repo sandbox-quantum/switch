@@ -18,8 +18,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import jwt
 import pytest
 import yaml
+from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import (
@@ -51,7 +53,11 @@ from tests.switch_core.connections.fake_vendor import (
     s256,
 )
 from tests.switch_core.connections.test_broker import _user, pass_through_catalog
-from tests.switch_core.connections.test_loader import CLI_ENTRY, OAUTH_ENTRY
+from tests.switch_core.connections.test_loader import (
+    CLI_ENTRY,
+    ID_TOKEN_ENTRY,
+    OAUTH_ENTRY,
+)
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 STATIC = OAUTH_ENTRY.replace(
@@ -226,6 +232,144 @@ class TestSignIn:
         secret = await _sign_in(adapter, vendor)
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
             await adapter.identify(secret.access_token or "")
+
+
+ID_TOKEN_STATIC = ID_TOKEN_ENTRY.replace(
+    "    registration: dynamic\n",
+    "    registration: static\n    client_settings: EXAMPLE\n",
+)
+OPENID_SCOPES = ["openid", "email", "read:items"]
+
+
+async def _sign_in_with_id_token(adapter: OAuthAdapter, vendor: FakeOAuthServer):
+    verifier = secrets.token_urlsafe(48)
+    url = await adapter.authorization_url(
+        redirect_uri=REDIRECT,
+        state="state-1",
+        code_challenge=s256(verifier),
+        scopes=OPENID_SCOPES,
+    )
+    back = parse_qs(urlsplit(vendor.authorize(url)).query)
+    return await adapter.exchange_code(
+        code=back["code"][0],
+        verifier=verifier,
+        redirect_uri=REDIRECT,
+        scopes=OPENID_SCOPES,
+    )
+
+
+class TestIdTokenIdentity:
+    """A vendor whose own API refuses the sign-in's token (Linear's MCP server
+    issues tokens only the MCP server takes) names the account in the signed
+    id_token that comes with it."""
+
+    async def test_reads_the_account_from_the_verified_id_token(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, ID_TOKEN_STATIC)
+        signed_in = await _sign_in_with_id_token(adapter, vendor)
+        assert signed_in.id_token is not None
+        # Held for the one step that reads the account, never stored.
+        assert "id_token" not in signed_in.secret.values
+        identity = await adapter.identify(
+            signed_in.secret.access_token or "",
+            id_token=signed_in.id_token,
+            client_id=signed_in.client_id,
+        )
+        assert (identity.account_id, identity.label) == (
+            "usr_oidc_1",
+            "ada@example.test",
+        )
+        assert identity.oidc_scopes == ("openid", "email")
+        # The keys come from the OpenID Connect configuration, where the
+        # authorization server's metadata names none.
+        assert f"{ISSUER}/.well-known/openid-configuration" in vendor.paths
+        assert f"{ISSUER}/.well-known/jwks.json" in vendor.paths
+
+    async def test_the_account_endpoint_is_never_asked(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, ID_TOKEN_STATIC)
+        signed_in = await _sign_in_with_id_token(adapter, vendor)
+        await adapter.identify(
+            signed_in.secret.access_token or "",
+            id_token=signed_in.id_token,
+            client_id=signed_in.client_id,
+        )
+        assert IDENTITY_URL not in vendor.paths
+
+    async def test_a_sign_in_without_an_id_token_is_refused(self, vendor) -> None:
+        vendor.issues_id_tokens = False
+        adapter, _ = _adapter(vendor, ID_TOKEN_STATIC)
+        signed_in = await _sign_in_with_id_token(adapter, vendor)
+        assert signed_in.id_token is None
+        with pytest.raises(ServiceAdapterError, match="no signed identity"):
+            await adapter.identify(
+                signed_in.secret.access_token or "",
+                id_token=signed_in.id_token,
+                client_id=signed_in.client_id,
+            )
+
+    @pytest.mark.parametrize(
+        "claims",
+        [
+            {"iss": "https://evil.example.test"},
+            {"aud": "another-client"},
+            {"exp": 1},
+            {"exp": None},
+            {"sub": None},
+        ],
+    )
+    async def test_an_id_token_that_fails_a_check_is_refused(
+        self, vendor, claims
+    ) -> None:
+        adapter, _ = _adapter(vendor, ID_TOKEN_STATIC)
+        signed_in = await _sign_in_with_id_token(adapter, vendor)
+        forged = vendor.id_token(signed_in.client_id, **claims)
+        with pytest.raises(ReauthorizationRequiredError):
+            await adapter.identify(
+                signed_in.secret.access_token or "",
+                id_token=forged,
+                client_id=signed_in.client_id,
+            )
+
+    async def test_an_id_token_signed_by_another_key_is_refused(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, ID_TOKEN_STATIC)
+        signed_in = await _sign_in_with_id_token(adapter, vendor)
+        impostor = FakeOAuthServer()
+        impostor.signing_key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048
+        )
+        with pytest.raises(ReauthorizationRequiredError):
+            await adapter.identify(
+                signed_in.secret.access_token or "",
+                id_token=impostor.id_token(signed_in.client_id),
+                client_id=signed_in.client_id,
+            )
+
+    async def test_an_unsigned_or_symmetric_id_token_is_refused(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, ID_TOKEN_STATIC)
+        signed_in = await _sign_in_with_id_token(adapter, vendor)
+        claims = {"iss": ISSUER, "aud": signed_in.client_id, "sub": "x", "exp": 9**10}
+        for token in (
+            jwt.encode(claims, None, algorithm="none"),
+            jwt.encode(
+                claims, "a-shared-secret-of-sufficient-length!", algorithm="HS256"
+            ),
+        ):
+            with pytest.raises(ReauthorizationRequiredError):
+                await adapter.identify(
+                    signed_in.secret.access_token or "",
+                    id_token=token,
+                    client_id=signed_in.client_id,
+                )
+
+    async def test_configuration_naming_another_issuer_is_refused(self, vendor) -> None:
+        vendor.openid_issuer = "https://evil.example.test"
+        adapter, _ = _adapter(vendor, ID_TOKEN_STATIC)
+        signed_in = await _sign_in_with_id_token(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="another issuer"):
+            await adapter.identify(
+                signed_in.secret.access_token or "",
+                id_token=signed_in.id_token,
+                client_id=signed_in.client_id,
+            )
 
 
 class TestRefresh:

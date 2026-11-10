@@ -1,7 +1,50 @@
 slug: linear
 name: Linear
 category: Project management
-description: Read and update Linear issues and projects.
-enabled: false
+description: Read and update Linear issues and projects, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Linear rotates refresh tokens on every refresh and invalidates the spent one.
+  refresh: rotating
+  oauth:
+    # Linear's MCP authorization server advertises dynamic client registration
+    # (RFC 7591) at https://mcp.linear.app/register for public PKCE S256 clients.
+    registration: dynamic
+    # Linear accepts a portless http://127.0.0.1/switch-services/callback
+    # redirect and matches any loopback port per RFC 8252 alongside Core's
+    # https callback, so loopback_ports are not needed.
+    redirect: [loopback, core]
+    revocation_discovered: true
+  identity:
+    # Linear's MCP server issues tokens scoped to https://mcp.linear.app/mcp
+    # that https://api.linear.app/graphql refuses (401), and publishes no
+    # userinfo endpoint; it signs an OpenID Connect id_token (RS256) carrying
+    # sub and email instead.
+    id_token: true
+    account_id: sub
+    label: email
+# Linear's MCP OAuth tokens live 24 hours (measured ~86,399-86,400 s). Agents
+# still re-request hourly while an issued copy may remain valid up to 24 hours.
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    - { name: linear, url: "https://mcp.linear.app/mcp" }
+access:
+  # Narrowest scopes advertised by https://mcp.linear.app/.well-known/openid-configuration:
+  # `openid` and `email` for the signed id_token, plus `read` alone for
+  # read-only connections and `read` and `write` when writes are chosen,
+  # leaving out `admin` and `issues:create`-only variants.
+  read:
+    scopes:
+      - openid
+      - email
+      - read
+  write:
+    scopes:
+      - openid
+      - email
+      - read
+      - write
+tools: { mode: pass_through }
