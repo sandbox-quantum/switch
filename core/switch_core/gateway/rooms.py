@@ -514,11 +514,11 @@ async def create_room(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
-    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
 ) -> RoomDetail:
     _validate_create(req)
     if req.group_id is not None:
