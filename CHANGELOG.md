@@ -102,6 +102,13 @@ version of their own to them without also giving them a release of their own.
   `.env`, so a page can be checked as each role. Switching is an ordinary
   sign-in, so every check is the server's own. A production build leaves the
   switcher out, and `npm run build` now fails if it gets in.
+- **Deleting a room from the dashboard can retire its platform channel**, as
+  Switch Console already could. The delete dialog offers to archive the
+  channel on Slack and Mattermost, delete it on Discord, or have the bot leave
+  the chat on Telegram, and keeps it unless asked, saying what becomes of it
+  either way. On Microsoft Teams the channel always stays, and the dialog says
+  to remove it there. A channel that could not be retired is reported on the
+  Rooms page, with what is left to do by hand.
 
 #### Changed
 - **The operator dashboard follows the current design.** A field's label sits
@@ -157,6 +164,23 @@ version of their own to them without also giving them a release of their own.
   an app or by Telegram's anonymous group admins. switch-core logs a warning
   each time a notice goes to the channel for want of a private route. Notices
   about an agent's message are still posted for the room.
+- **The Rooms page uses the dashboard's shared table.** It counts the rooms,
+  searches their name, description, group, owner and bridge, and filters from
+  the column headers: by group (with its sub-groups, or "No group"), owner,
+  bridge (or "Not bridged") and connected user. Active and archived rooms are
+  two tabs with their counts, newest first. Archive and Delete are in each
+  row's menu, offered only where the server allows them. Deleting from the
+  list keeps a bridged room's channel and says so; delete the room from its
+  own page to remove the channel too. With `gateway_v2` on, a member sees the
+  rooms they own, are in or have an agent in, as Overview counts them, and so
+  does the rooms graph; an admin sees every room, and today's layout is
+  unchanged.
+- **Room actions in the dashboard ask first, and say why when refused.**
+  Archiving a room, deleting a room, deleting a role and deleting a room
+  document confirm in a dialog that stays open with the server's reason when
+  the action fails. Deleting a role, which takes its instructions with it,
+  used to happen at one click, and a failed delete or bulk archive gave no
+  reason. Unarchiving still acts at once.
 
 #### Fixed
 - **Managed agents no longer flip to "Connecting" every few seconds.** A
@@ -168,6 +192,13 @@ version of their own to them without also giving them a release of their own.
   open a new connection, because the pod holding the socket noticed it had
   closed only at its next ping. It now lets the socket go as it closes, and
   the other pod takes the connection up.
+- **The dashboard's Rooms page, rooms graph and Room groups say when they
+  cannot load.** They showed an empty page, or "No groups yet", when the
+  rooms or groups failed to load.
+- **The dashboard's New room says why Create is disabled.** Create stayed
+  greyed out with no explanation, most often because a room with no bridge
+  needs an agent. It now names what is missing, and Agents is marked required
+  while no bridge is chosen.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
