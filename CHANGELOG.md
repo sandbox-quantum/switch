@@ -110,6 +110,17 @@ version of their own to them without also giving them a release of their own.
   each time a notice goes to the channel for want of a private route. Notices
   about an agent's message are still posted for the room.
 
+#### Fixed
+- **Managed agents no longer flip to "Connecting" every few seconds.** A
+  controller from a released Switch Console calls its socket dead after 10
+  seconds without a frame, and since the server pings every 10 seconds it
+  dropped a healthy socket whenever a ping came a moment late. A controller's
+  socket is now pinged every 5 seconds. With two switch-core pods, a
+  controller reattaching through the other pod was also refused and had to
+  open a new connection, because the pod holding the socket noticed it had
+  closed only at its next ping. It now lets the socket go as it closes, and
+  the other pod takes the connection up.
+
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
   The room routes and the agent tools added agents and people to one from
@@ -357,6 +368,22 @@ version of their own to them without also giving them a release of their own.
   of the rooms it is in they may not read. All are decided by the same
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
+- **OAuth catalog entries can opt into MCP identity and unscoped consent.**
+  An entry can name a read-only MCP tool that identifies the account. The
+  tool takes no arguments and must name one account. Otherwise sign-in fails
+  with a fixed reason. Core reads only the input schema's `type` and
+  `required`, and refuses a tool that is not `type: object` or names a
+  required property.
+  It does not check the result against the tool's output schema. If the MCP
+  server refuses with a 4xx other than 401 or 429, the message gives the
+  status. The identity call reaches only what the outbound policy allows
+  (`OUTBOUND_ALLOWED_PRIVATE_HOSTS`). `account_id` can list 2 to 8 paths,
+  joined into one id, so a person in two accounts has two connections. An
+  entry whose vendor has no OAuth scopes can leave out `scope`. Its sign-ins
+  are always read and write, and it has no access profiles. For a discovered
+  server, Core now sends the `resource` that the server advertises. Core
+  accepts it only if it is the server's URL, or a parent path on the same
+  origin, with no query or fragment.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the

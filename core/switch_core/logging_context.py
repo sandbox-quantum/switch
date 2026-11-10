@@ -143,6 +143,23 @@ def log_context(**fields: str | None) -> Iterator[None]:
         yield
 
 
+MCP_IDENTITY_DIAGNOSTICS: ContextVar[bool] = ContextVar(
+    "mcp_identity_diagnostics", default=False
+)
+
+
+class McpIdentityDiagnosticFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if MCP_IDENTITY_DIAGNOSTICS.get():
+            # SDK validation diagnostics include raw vendor responses and exceptions.
+            record.msg = "MCP identity transport diagnostic (vendor details omitted)."
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+        return True
+
+
 class LogContextFilter(logging.Filter):
     """Stamp the bound context onto every record passing through a handler.
 
