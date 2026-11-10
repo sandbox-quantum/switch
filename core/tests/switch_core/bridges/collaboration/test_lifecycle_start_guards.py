@@ -208,3 +208,41 @@ async def test_a_quiet_copy_refused_after_a_hand_over_is_a_warning_not_a_trace(
     assert [r.levelno for r in refusals] == [logging.WARNING]
     assert refusals[0].exc_info is None
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+async def test_a_restart_elsewhere_tries_a_bridge_refused_here_again(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A restart leaves the row as it was, so it is announced as a restart:
+    a process that saw the bridge refused tries it again rather than reading
+    the unchanged row as nothing to do."""
+    _, bridge_id = await _bridge(session_factory)
+    here = _service(session_factory)
+    elsewhere = _service(session_factory)
+    asked: list[str] = []
+    for service in (here, elsewhere):
+        service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+
+    async def refuse(**kwargs: object) -> None:
+        asked.append(str(kwargs["bridge_id"]))
+        raise BridgeStartRefused("switch-mattermost does not resolve")
+
+    elsewhere.add_bridge_start_guard(refuse)
+    fence = object()
+    await elsewhere._take_over(bridge_id, fence)  # type: ignore[arg-type]
+    await elsewhere._take_over(bridge_id, fence)  # type: ignore[arg-type]
+    assert asked == [bridge_id]
+
+    announced: list[str] = []
+
+    class _Signals:
+        def restarted(self, bridge_id: str) -> None:
+            announced.append(bridge_id)
+
+    here.use_signals(_Signals())  # type: ignore[arg-type]
+    await here.restart(bridge_id)
+    assert announced == [bridge_id]
+
+    await elsewhere.restarted_elsewhere(bridge_id)
+    assert asked == [bridge_id, bridge_id]
+    await here.stop(bridge_id)

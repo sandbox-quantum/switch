@@ -432,6 +432,10 @@ class CollaborationBridgeLifecycleService:
         if self._signals is not None:
             self._signals.changed(bridge_id)
 
+    def _announce_restart(self, bridge_id: str) -> None:
+        if self._signals is not None:
+            self._signals.restarted(bridge_id)
+
     def register_adapter(
         self,
         bridge_type: str,
@@ -1759,7 +1763,18 @@ class CollaborationBridgeLifecycleService:
         await self.stop(bridge_id, reason="restart")
         await self.start(bridge_id)
         logger.info("Restarted collaboration bridge %s", bridge_id)
-        self._announce(bridge_id)
+        self._announce_restart(bridge_id)
+
+    async def restarted_elsewhere(self, bridge_id: str) -> None:
+        """Another process restarted the bridge: try it again here if it is
+        not running, even from a row this process saw refused or crash.
+
+        A restart does not change the row, so `reconcile_bridge` alone would
+        leave a copy that was refused or crashed here as it is."""
+        self._refused_rows.pop(bridge_id, None)
+        if self._running(bridge_id) is None:
+            self._started_rows.pop(bridge_id, None)
+        await self.reconcile_bridge(bridge_id)
 
     async def stop_all(self) -> None:
         """Stop every bridge still running here, as the process shuts down.
