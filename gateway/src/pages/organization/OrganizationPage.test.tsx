@@ -339,6 +339,8 @@ describe("OrganizationPage", () => {
   ];
   // The operator restoring an admin may change roles and remove nobody; who may
   // be made Org Admin follows where the members come from.
+  // The server lets the operator manage the members only while there is no
+  // admin, and says so in `can_manage_members`.
   const operatorRoutes = (membersAnswer: unknown, fromDirectory = false) => ({
     "GET /organizations/current": {
       id: "o1",
@@ -346,6 +348,7 @@ describe("OrganizationPage", () => {
       name: "Acme Inc",
       role: null,
       members_from_directory: fromDirectory,
+      can_manage_members: !(membersAnswer instanceof Refusal && membersAnswer.status === 403),
     },
     "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
     "GET /organizations/current/members": Array.isArray(membersAnswer)
@@ -379,7 +382,7 @@ describe("OrganizationPage", () => {
     expect(orgAdmin.getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("tells the operator why where the organization has an admin", async () => {
+  it("tells the operator why where the organization has an admin, asking for no members", async () => {
     signedInAs(session(null, false, true));
     const fetchMock = answer(operatorRoutes(new Refusal(403, "Only an organization admin may do this")));
 
@@ -388,7 +391,7 @@ describe("OrganizationPage", () => {
     expect(await screen.findByText(/only while it has no admin/)).toBeTruthy();
     expect(screen.queryByText("Only an organization admin may do this")).toBeNull();
     const asked = fetchMock.mock.calls.map(([input]) => String(input));
-    expect(asked.filter((path) => path.endsWith("/issues"))).toEqual([]);
+    expect(asked.filter((path) => path.endsWith("/issues") || path.endsWith("/members"))).toEqual([]);
   });
 
   it("shows the operator a failure as a failure", async () => {

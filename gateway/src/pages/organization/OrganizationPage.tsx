@@ -57,6 +57,7 @@ function MembersSection({
       selfId={session.user.id}
       organizationId={organizationId}
       asOperator={!isAdmin}
+      canManage={organization?.can_manage_members === true}
       fromDirectory={organization?.members_from_directory === true}
       directoryTakesChanges={organization?.directory_takes_changes === true}
       onChanged={onChanged}
