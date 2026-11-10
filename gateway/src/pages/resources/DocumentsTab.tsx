@@ -99,7 +99,7 @@ export default function DocumentsTab({ refreshKey }: Props) {
           emptyState={
             search || ownerId ? (
               <TableEmptyState title="No documents match these filters">
-                Clear the search or owner to see every one.
+                Clear the search or filters to see them all.
               </TableEmptyState>
             ) : (
               <TableEmptyState title="No documents yet">Create one to give agents text to read in rooms.</TableEmptyState>

@@ -109,7 +109,7 @@ export default function PackagesTab({ refreshKey }: Props) {
           emptyState={
             search || ownerId ? (
               <TableEmptyState title="No packages match these filters">
-                Clear the search or owner to see every one.
+                Clear the search or filters to see them all.
               </TableEmptyState>
             ) : (
               <TableEmptyState title="No packages yet">Create one to bundle references and documents for a room.</TableEmptyState>

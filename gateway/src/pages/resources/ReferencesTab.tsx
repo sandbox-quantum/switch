@@ -116,7 +116,7 @@ export default function ReferencesTab({ refreshKey }: Props) {
           emptyState={
             search || ownerId || typeFilter ? (
               <TableEmptyState title="No references match these filters">
-                Clear the search or owner to see every one.
+                Clear the search or filters to see them all.
               </TableEmptyState>
             ) : (
               <TableEmptyState title="No references yet">Create one to point agents at a page or repository elsewhere.</TableEmptyState>

@@ -140,7 +140,7 @@ export default function TemplatesTab({ refreshKey }: Props) {
           emptyState={
             searchSent || ownerId || kind ? (
               <TableEmptyState title="No templates match these filters">
-                Clear the search or owner to see every one.
+                Clear the search or filters to see them all.
               </TableEmptyState>
             ) : (
               <TableEmptyState title="No templates yet">Upload one to start rooms from it.</TableEmptyState>
