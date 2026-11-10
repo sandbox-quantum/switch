@@ -3073,6 +3073,17 @@ class AgentCore:
                     b.channel_creation_enabled
                     and self.collab_lifecycle.supports_channel_creation(b.type)
                 ),
+                # Whether create_room may ask for channel_private here, and
+                # whether that needs the room's owner to have linked their
+                # account on the platform: they are put in the channel through
+                # it (on Teams, as its owner), so nobody is locked out.
+                "can_create_private_channels": (
+                    b.channel_creation_enabled
+                    and self.collab_lifecycle.supports_private_channels(b.type)
+                ),
+                "private_channel_needs_linked_account": (
+                    self.collab_lifecycle.supports_private_channels(b.type)
+                ),
             }
             for b in bridges
         ]

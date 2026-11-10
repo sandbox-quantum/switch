@@ -22,6 +22,7 @@ from switch_core.bridges.agent.operations.agent_management import management_por
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
+    ChannelInUse,
     ChannelRetirement,
     ChannelType,
     RetireOutcome,
@@ -513,6 +514,10 @@ async def create_room(
     )
     try:
         result = await room_service.create_room(config)
+    except ChannelInUse as e:
+        # The channel is someone else's room's: not a malformed request, a
+        # conflict with what exists.
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except BridgeOperationError as e:
@@ -600,6 +605,8 @@ async def create_room_from_yaml(
             creator_name=builtins["$creator"],
             template_name=template_name or parsed.spec.name,
         )
+    except ChannelInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
@@ -799,6 +806,8 @@ async def run_template_document(
         )
     except AgentsNotCreated as error:
         return _refused_run(error)
+    except ChannelInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     result = await _run_as_person(
@@ -903,6 +912,8 @@ async def _run_as_person(
                 ) from error
     except (AgentsNotCreated, RunUndone) as error:
         return _refused_run(error)
+    except ChannelInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:

@@ -188,6 +188,11 @@ export interface BridgeDetail {
   // Why no existing channel can be linked by id on this connection, or null
   // when one can — the Switch Telegram app, whose chats come from connecting.
   channel_ids_refused?: string | null;
+  // Whether a new room here can have a private channel, and whether that needs
+  // the person asking to have linked their account there (Teams names them its
+  // owner). Absent on an older server.
+  private_channels_supported?: boolean;
+  private_channel_needs_linked_account?: boolean;
   room_count: number;
   created_at: string;
   // Empty for platforms whose app is installed through their own admin UI.
@@ -1901,6 +1906,9 @@ export interface ReferenceDetail {
   // it, and handing it to someone else.
   can_edit: boolean;
   can_manage: boolean;
+  // Whether the viewer may open its page. A package's or a room's list names
+  // a private item to everyone who may read the package or room.
+  can_read: boolean;
 }
 
 export interface ReferenceCreateInput {
@@ -1948,6 +1956,8 @@ export interface DocumentSummary {
   can_manage: boolean;
   // Handing it to someone else: never for a document scoped to one room.
   can_transfer: boolean;
+  // As on `ReferenceDetail`.
+  can_read: boolean;
 }
 
 export interface DocumentDetail extends DocumentSummary {

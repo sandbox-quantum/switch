@@ -77,6 +77,7 @@ import {
   type AgentRenameOutcome,
   type BridgeConfigField,
   type BridgeDirectoryUser,
+  type BridgePerson,
   type ChannelRetirement,
   type ChatClaim,
   type ConnectedChat,
@@ -1808,6 +1809,8 @@ type BridgeJson = {
   display_name: string;
   status: string;
   is_default?: boolean;
+  // Absent on a server predating the flag.
+  preconfigured?: boolean;
   home_url?: string | null;
   // Both absent on a server predating the capability — defaulting each to
   // true reproduces how every bridge behaved before it existed: any platform
@@ -1822,6 +1825,10 @@ type BridgeJson = {
   attention?: string | null;
   team_placement_supported?: boolean;
   channel_ids_refused?: string | null;
+  // Both absent on a server predating them, which could make a private
+  // channel on every platform but Teams; see `RemoteBridge.privateChannels`.
+  private_channels_supported?: boolean;
+  private_channel_needs_linked_account?: boolean;
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
@@ -1836,6 +1843,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     displayName: b.display_name,
     status: b.status,
     isDefault: b.is_default ?? false,
+    preconfigured: b.preconfigured ?? null,
     homeUrl: b.home_url ?? null,
     channelCreationSupported,
     canCreateChannels: channelCreationSupported && channelCreationEnabled,
@@ -1843,6 +1851,8 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     attention: b.attention ?? null,
     teamPlacementSupported: b.team_placement_supported ?? false,
     channelIdsRefused: b.channel_ids_refused ?? null,
+    privateChannels: b.private_channels_supported ?? null,
+    privateChannelNeedsLinkedAccount: b.private_channel_needs_linked_account ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
   };
@@ -3802,6 +3812,33 @@ export async function setRoomAutoRoute(
 }
 
 /**
+ * The people Switch knows on one bridge (`GET /collaborations/{id}/users`),
+ * with who has linked each account, for the New room dialog to offer them and
+ * to match them to the workspace's people. A link counts only once confirmed;
+ * a server that predates confirming leaves `verified` out, and its links count.
+ */
+export async function fetchBridgePeople(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<BridgePerson[]> {
+  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
+    authenticated: true,
+  });
+  const users = (await res.json()) as ExternalUserSummaryJson[];
+  return users
+    .map((user) => {
+      const linked = (user.claimed_by ?? []).filter((claim) => claim.verified !== false);
+      return {
+        username: user.external_username,
+        externalUserId: user.external_user_id,
+        linkedUserIds: linked.map((claim) => claim.user_id),
+        linkedName: linked[0]?.user_name ?? null,
+      };
+    })
+    .sort((a, b) => a.username.localeCompare(b.username));
+}
+
+/**
  * Add agents to an existing room (`POST /rooms/{id}/agents`). Requires write
  * access to the room. Agents already in the room are ignored server-side, so
  * this is safe to call with a set that overlaps the current membership.
@@ -3892,6 +3929,8 @@ export async function createRoom(
     /** Null makes an internal room: no channel, not even on the default app. */
     bridgeId: string | null;
     agentIds: string[];
+    /** Usernames on the bridge's app to add to the channel. */
+    userNames?: string[];
     /** Null for a new public channel. */
     channel: NewRoomChannel | null;
     groupId: string | null;
@@ -3923,6 +3962,7 @@ export async function createRoom(
           }
         : {}),
       agent_ids: params.agentIds,
+      ...(params.userNames?.length ? { user_names: params.userNames } : {}),
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);

@@ -44,6 +44,8 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
+    ChannelNotUsable,
     ChannelType,
     CreatedChannel,
     DirectoryUser,
@@ -2363,6 +2365,7 @@ class SlackAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
     ) -> CreatedChannel:
         if not self._web_client:
             raise RuntimeError("Slack client not connected")
@@ -2472,6 +2475,42 @@ class SlackAdapter(PlatformAdapter):
         if not self._config.workspace_id:
             return None
         return f"slack://open?team={self._config.workspace_id}"
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists, Slack lets the app see it, and the app is in it.
+
+        Slack reports a private channel the app is not in as not found, so
+        the two are said together.
+
+        A public channel the app is not in is refused too, not joined: the
+        app has neither `channels:join` nor `chat:write.public`, so in such a
+        channel it could not post and Slack would send it no events. Binding
+        it would make a room that looks set up and never works."""
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        try:
+            result = await self._web_client.conversations_info(channel=channel_id)
+        except SlackApiError as error:
+            reason = str(error.response.get("error") or error)
+            if reason == "channel_not_found":
+                raise ChannelNotUsable(
+                    f"Slack cannot find channel {channel_id} (channel_not_found). "
+                    "Check the id, and for a private channel add the Switch app "
+                    "to it first."
+                ) from error
+            raise BridgeOperationError(
+                f"Slack would not describe channel {channel_id}: {reason}."
+            ) from error
+        channel = result["channel"]
+        if channel.get("is_im") or channel.get("is_mpim"):
+            return
+        if not channel.get("is_member"):
+            raise ChannelNotUsable(
+                f"The Switch app is not in Slack channel {channel_id} "
+                "(not_in_channel), so it could not post or read there. Add it "
+                "to the channel (/invite @Switch, public or private), then "
+                "try again."
+            )
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         if not self._web_client:

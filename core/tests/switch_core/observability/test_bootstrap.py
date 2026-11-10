@@ -102,6 +102,7 @@ async def test_health_runs_even_with_nothing_configured(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     try:
@@ -120,6 +121,7 @@ async def test_a_dead_database_fails_readiness(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(fail=True),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     try:
@@ -139,6 +141,7 @@ async def test_a_crashed_bridge_is_reported_without_taking_the_server_down(
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(bridges_running=lambda: 1, bridges_configured=lambda: 3),
     )
     try:
@@ -163,6 +166,7 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     try:
@@ -212,6 +216,7 @@ async def test_the_room_cache_reports_what_it_holds(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(
             room_cache_stats=lambda: RoomCacheStats(bytes=4096, rooms=3, rows=12)
         ),
@@ -236,6 +241,7 @@ async def test_a_start_is_counted_once_so_restarts_line_up(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     try:
@@ -260,6 +266,7 @@ async def test_a_pool_that_reports_nothing_produces_no_reading(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(pool_stats=lambda: None),
     )
     try:
@@ -288,6 +295,7 @@ async def test_metrics_reach_the_collector(monkeypatch):
         version="9.9.9",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     try:
@@ -321,6 +329,7 @@ async def test_closing_stops_the_loops_and_uninstalls(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
     )
     monkeypatch.setattr(
@@ -353,6 +362,7 @@ async def test_the_database_sampler_starts_with_the_metrics_exporter(monkeypatch
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(),
         db_server_engine=engine,
     )
@@ -380,6 +390,7 @@ async def test_a_connection_kind_that_empties_out_is_reported_as_zero(monkeypatc
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(agents_connected=lambda: dict(connected)),
     )
     try:
@@ -412,6 +423,7 @@ async def test_one_replica_stays_in_service_with_a_listener_down(monkeypatch):
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(
             agent_event_listener_connected=lambda: False,
             signal_bus_connected=lambda: False,
@@ -446,6 +458,7 @@ async def test_with_several_replicas_a_dead_listener_takes_the_pod_out(
         version="1.0.0",
         session_factory=_session_factory(),
         process_id="core-0-abcd1234",
+        optional_checks=[],
         probes=_probes(**{dead: lambda: False}),
     )
     try:

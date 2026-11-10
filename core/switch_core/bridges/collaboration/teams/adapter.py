@@ -361,6 +361,12 @@ _TEAMS_ID = re.compile(
     r"^(?:\d+:\S+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
     re.IGNORECASE,
 )
+# An Entra (Azure AD) object id: the only kind of Teams account Graph will
+# make a channel's owner. A channel account (`29:…`) cannot be.
+_ENTRA_OBJECT_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 # A newline with no newline either side of it.
 _LONE_NEWLINE = re.compile(r"(?<!\n)\n(?!\n)")
 # Both prefixes reach the same dispatcher. `!` is Switch's own; `/` is what a
@@ -776,6 +782,7 @@ class TeamsAdapter(PlatformAdapter):
     #: Switch does not arrange, so a notice about someone's message is posted
     #: in the channel where everyone sees it.
     private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "in_channel"
+    private_channel_needs_owner: ClassVar[bool] = True
     docs_slug: ClassVar[str | None] = "microsoft-teams"
     # Graph delivers a channel's messages to every subscription made for it,
     # so only the process holding the bridge makes, adopts and renews them.
@@ -2620,6 +2627,7 @@ class TeamsAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
+        owner_external_id: str | None = None,
     ) -> CreatedChannel:
         if self._graph is None:
             raise RuntimeError("Teams adapter not started")
@@ -2636,12 +2644,23 @@ class TeamsAdapter(PlatformAdapter):
                 "does not know which team to create the channel in. Choose one "
                 "in the messaging app's Microsoft Teams settings."
             )
-        membership_type = "private" if channel_type == "channel_private" else "standard"
+        is_private = channel_type == "channel_private"
+        if is_private and (
+            owner_external_id is None or not self.can_own_channel(owner_external_id)
+        ):
+            # Room creation resolves the owner before it gets here; this is the
+            # backstop for a caller that did not, so Microsoft's refusal is not
+            # the first anyone hears of it.
+            raise ValueError(
+                "A private Teams channel needs an owner, and no linked Teams "
+                "account was given to make its owner."
+            )
         channel = await self._graph.create_channel(
             team_id=team_id,
             display_name=self.channel_name_for(name),
             description=topic,
-            membership_type=membership_type,
+            membership_type="private" if is_private else "standard",
+            owner_aad_id=owner_external_id if is_private else None,
         )
         channel_id = str(channel.get("id", ""))
         if not channel_id:
@@ -2655,6 +2674,12 @@ class TeamsAdapter(PlatformAdapter):
         # Capture the new channel's messages right away.
         await self._ensure_channel_subscription(channel_id)
         return CreatedChannel(id=channel_id, name=created_name)
+
+    def can_own_channel(self, external_user_id: str) -> bool:
+        """Only a directory (Entra) account can own a channel. Switch records a
+        Teams sender by its directory id where Teams gives one, and by its
+        channel account (`29:…`) otherwise, which Graph cannot make an owner."""
+        return bool(_ENTRA_OBJECT_ID.match(external_user_id))
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         known = self._channel_type.get(channel_id)

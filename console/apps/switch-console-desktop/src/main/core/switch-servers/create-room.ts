@@ -46,6 +46,7 @@ export async function createRoomOnServer(
       instructions: params.instructions,
       bridgeId: params.bridgeId,
       agentIds: params.agentIds,
+      userNames: params.userNames,
       channel: params.channel,
       groupId: params.groupId,
       access: params.access,
@@ -60,6 +61,10 @@ export async function createRoomOnServer(
           ? { kind: 'bridge-unavailable', message }
           : { kind: 'invalid', message };
       }
+      // The channel named is already another room's. The server says so in
+      // its own words, which name the channel and what to do instead.
+      if (cause.kind === 'http' && cause.status === 409 && cause.detail !== undefined)
+        return { kind: 'invalid', message: cause.detail };
       // The messaging app turned the request down (`BridgeOperationError`): the
       // server says so in its JSON error. A 502 without one comes from a proxy
       // in front of the server (while it restarts, say), not the messaging app.
@@ -70,11 +75,12 @@ export async function createRoomOnServer(
               message: `The messaging app could not make the room: ${cause.detail}`,
             }
           : { kind: 'error', message: 'The server could not be reached. Try again in a moment.' };
-      // A named channel the server cannot use (one another room already uses,
-      // or a messaging app error it does not map yet) escapes as an unhandled
-      // 500 with no JSON error. Said so, since Console is where the id was
-      // typed, and logged, since it is still a server fault. A 500 the server
-      // chose to send carries its own detail and is thrown like any other.
+      // A server that checks a named channel says why it cannot use it, as a
+      // 409 or a 400 handled above. An older one let the failure escape as an
+      // unhandled 500 with no JSON error. Said so, since Console is where the
+      // id was typed, and logged, since it is still a server fault. A 500 the
+      // server chose to send carries its own detail and is thrown like any
+      // other.
       if (
         cause.kind === 'http' &&
         cause.status === 500 &&

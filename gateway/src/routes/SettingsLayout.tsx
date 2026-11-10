@@ -1,4 +1,4 @@
-import { Box, List, ListItemButton, ListItemText, Stack, Typography } from "@mui/material";
+import { Box, List, ListItem, ListItemButton, ListItemText, Stack, Typography } from "@mui/material";
 import { useEffect } from "react";
 import { Navigate, NavLink, Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
@@ -46,20 +46,23 @@ export function SettingsLayout({ area, layout }: { area: SettingsArea; layout: L
         </Typography>
         <List dense>
           {menu.map((item) => (
-            <ListItemButton
-              key={item.path}
-              component={NavLink}
-              to={item.path}
-              selected={pathname === item.path}
-              sx={{ borderRadius: 1 }}
-            >
-              <ListItemText primary={item.label} />
-            </ListItemButton>
+            <ListItem key={item.path} disablePadding>
+              <ListItemButton
+                component={NavLink}
+                to={item.path}
+                selected={pathname === item.path}
+                sx={{ borderRadius: 1 }}
+              >
+                <ListItemText primary={item.label} />
+              </ListItemButton>
+            </ListItem>
           ))}
           {otherArea !== null && (
-            <ListItemButton component={NavLink} to={otherArea.path} sx={{ borderRadius: 1, mt: 1 }}>
-              <ListItemText primary={otherArea.label} />
-            </ListItemButton>
+            <ListItem disablePadding sx={{ mt: 1 }}>
+              <ListItemButton component={NavLink} to={otherArea.path} sx={{ borderRadius: 1 }}>
+                <ListItemText primary={otherArea.label} />
+              </ListItemButton>
+            </ListItem>
           )}
         </List>
       </Box>

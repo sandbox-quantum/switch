@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 from telegram.error import BadRequest, Conflict, TelegramError, TimedOut
 
+from switch_core.bridges.collaboration.adapter import MessagePartlySent
 from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundMessage,
@@ -979,11 +980,67 @@ def test_a_forum_target_deleted_mid_run_truncates_rather_than_scatters() -> None
     bot.send_message = gone_after_the_first  # type: ignore[method-assign]
     body = "\n".join(["x" * 200] * 60)
 
-    _run(adapter.send_message(str(CHAT_ID), "scout", body, f"{CHAT_ID}:88"))
+    with pytest.raises(MessagePartlySent):
+        _run(adapter.send_message(str(CHAT_ID), "scout", body, f"{CHAT_ID}:88"))
 
     sent = bot.messages
     assert len(sent) == 1
     assert all("reply_parameters" in m for m in sent)
+
+
+def _refuse_after(bot: _FakeBot, accepted: int) -> None:
+    """Make `bot` refuse every message after the first `accepted`, except a
+    notice that the message was cut short."""
+    original = bot.send_message
+
+    async def refusing(**kwargs: Any) -> Any:
+        if len(bot.messages) >= accepted and not kwargs["text"].startswith("⚠️ Only"):
+            raise TelegramError("refused")
+        return await original(**kwargs)
+
+    bot.send_message = refusing  # type: ignore[method-assign]
+
+
+def test_a_part_refused_mid_message_is_disclosed_and_raised() -> None:
+    adapter = _adapter()
+    bot = _bot(adapter)
+    _refuse_after(bot, 1)
+    body = "\n".join(["x" * 200] * 60)
+
+    with pytest.raises(MessagePartlySent) as raised:
+        _run(adapter.send_message(str(CHAT_ID), "scout", body, "88"))
+
+    assert raised.value.first_ref == f"{CHAT_ID}:501"
+    assert raised.value.delivered == 1
+    assert len(bot.messages) == 2
+    assert bot.messages[1]["text"].startswith("⚠️ Only 1 of")
+
+
+def test_a_refused_first_part_is_no_message() -> None:
+    adapter = _adapter()
+    bot = _bot(adapter)
+    _refuse_after(bot, 0)
+    body = "\n".join(["x" * 200] * 60)
+
+    assert _run(adapter.send_message(str(CHAT_ID), "scout", body)) is None
+    assert bot.messages == []
+
+
+def test_a_caption_sent_only_in_part_still_sends_the_file() -> None:
+    adapter = _adapter()
+    bot = _bot(adapter)
+    _refuse_after(bot, 1)
+    caption = "\n".join(["y" * 200] * 60)
+
+    ref = _run(
+        adapter.send_attachment(
+            str(CHAT_ID), "scout", "note.txt", "text/plain", b"hello", caption=caption
+        )
+    )
+
+    assert ref == f"{CHAT_ID}:501"
+    assert bot.messages[-1]["text"].startswith("⚠️ Only 1 of")
+    assert len(bot.documents) == 1
 
 
 def test_a_forum_attachment_carries_the_same_mandatory_anchor() -> None:
