@@ -35,6 +35,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivitySnapshot,
     AgentIdentity,
     AgentIdentityConflict,
+    MessagePartlySent,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -43,6 +44,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.chunking import split_markdown
 from switch_core.bridges.collaboration.ingress import (
     CallbackEndpoint,
     CallbackRefused,
@@ -149,8 +151,16 @@ _ATTACHMENTS_PROP = "attachments"
 _RECOVERY_SKEW_MS = 60_000
 
 # Mattermost's own default `MaxPostSize`. Servers can raise it to 16383, and a
-# message cut to fit the default is a message that fits everywhere.
+# message cut to fit the default is a message that fits everywhere. It is also
+# what a message is split at when the server will not say its own limit.
 _MAX_POST = 4000
+
+# Ends an edited post whose text did not fit and whose remainder could not be
+# posted after it.
+_EDIT_CUT_SHORT = (
+    "_(Cut short: the rest of this edit is longer than Mattermost accepts in "
+    "one post and could not be posted after it.)_"
+)
 
 # The values of `TeamSettings.TeammateNameDisplay` under which Mattermost puts
 # a bot's display name in the post header. Under any other value — including
@@ -580,6 +590,10 @@ class MattermostAdapter(PlatformAdapter):
         self._name_display_read = False
         self._name_display_warned = False
 
+        # The server's `MaxPostSize`, read the first time a message is long
+        # enough for it to matter. Mattermost refuses a longer post outright.
+        self._max_post_size: int | None = None
+
         # This bridge's place on the shared callback listener, installed by the
         # lifecycle service before start. None when the adapter is running
         # without one behind it, which is how most of the tests build it.
@@ -981,7 +995,7 @@ class MattermostAdapter(PlatformAdapter):
             if not self._admin_driver:
                 return None
             bot_driver = self._admin_driver
-        return await self._create_post(bot_driver, channel_id, content, thread_root_id)
+        return await self._create_posts(bot_driver, channel_id, content, thread_root_id)
 
     async def admin_message(
         self,
@@ -1018,7 +1032,7 @@ class MattermostAdapter(PlatformAdapter):
             if driver is None:
                 logger.error("No driver to post admin message in DM %s", channel_id)
                 return None
-            return await self._create_post(
+            return await self._create_posts(
                 driver, channel_id, f"_Switch:_ {content}", thread_root_id
             )
 
@@ -1034,7 +1048,7 @@ class MattermostAdapter(PlatformAdapter):
             await self._ensure_admin_bot_in_channel(channel_id)
         if driver is None:
             return None
-        return await self._create_post(driver, channel_id, content, thread_root_id)
+        return await self._create_posts(driver, channel_id, content, thread_root_id)
 
     async def send_attachment(
         self,
@@ -1188,6 +1202,111 @@ class MattermostAdapter(PlatformAdapter):
             )
             return None
 
+    async def _create_posts(
+        self,
+        driver: Driver,
+        channel_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> str | None:
+        """Post `content` as however many posts the server's limit needs.
+
+        The parts go out in order, each in `thread_root_id`'s thread when there
+        is one. Returns the FIRST post's id: that is the one the bridge maps
+        the room event to, so a reply threads under the start of what was said
+        rather than its tail. `None` when not even the first part was taken.
+
+        Raises `MessagePartlySent` when a later part is refused, after saying
+        in the channel that the rest is missing.
+        """
+        parts = split_markdown(content, await self._post_limit(content))
+        first_id = await self._create_post(driver, channel_id, parts[0], thread_root_id)
+        if first_id is None:
+            return None
+        await self._post_rest(driver, channel_id, parts, thread_root_id, first_id)
+        return first_id
+
+    async def _post_rest(
+        self,
+        driver: Driver,
+        channel_id: str,
+        parts: list[str],
+        thread_root_id: str | None,
+        first_id: str,
+    ) -> None:
+        """Post every part after the first, which is already `first_id`.
+
+        A refused part ends the run: the channel is told how much of the
+        message it has, and `MessagePartlySent` is raised."""
+        for index, part in enumerate(parts[1:], start=1):
+            if await self._create_post(driver, channel_id, part, thread_root_id):
+                continue
+            logger.error(
+                "Only %d of %d parts of a message reached Mattermost channel %s",
+                index,
+                len(parts),
+                channel_id,
+            )
+            notice = (
+                f"_Only {index} of {len(parts)} parts of this message could be "
+                "delivered; Mattermost rejected the rest._"
+            )
+            if (
+                await self._create_post(driver, channel_id, notice, thread_root_id)
+                is None
+            ):
+                logger.error(
+                    "Could not tell Mattermost channel %s that the message %s is "
+                    "missing its last %d parts; nothing there says it is cut short",
+                    channel_id,
+                    first_id,
+                    len(parts) - index,
+                )
+            raise MessagePartlySent(
+                platform="Mattermost",
+                first_ref=first_id,
+                delivered=index,
+                total=len(parts),
+            )
+
+    async def _post_limit(self, content: str) -> int:
+        """The longest post this server accepts, asked for only when `content`
+        is longer than every server accepts.
+
+        Only an answer is kept. A read that fails splits this message at
+        `_MAX_POST` and is tried again for the next one, so a passing fault
+        does not hold every later message to the smallest limit."""
+        if len(content) <= _MAX_POST:
+            return _MAX_POST
+        if self._max_post_size is None:
+            self._max_post_size = await self._read_max_post_size()
+        return _MAX_POST if self._max_post_size is None else self._max_post_size
+
+    async def _read_max_post_size(self) -> int | None:
+        """`MaxPostSize` from the client config, which any signed-in user can
+        read; `None`, with a warning, when the server does not answer with one."""
+        try:
+            config = await self._mm_api("get", "/config/client?format=old")
+            size = int(config["MaxPostSize"])
+        except Exception as e:
+            logger.warning(
+                "Could not read MaxPostSize from the Mattermost client config "
+                "(%s); splitting this message at %d characters and asking again "
+                "for the next",
+                e,
+                _MAX_POST,
+            )
+            return None
+        if size <= 0:
+            logger.warning(
+                "Mattermost reported a MaxPostSize of %d; splitting this message "
+                "at %d characters and asking again for the next",
+                size,
+                _MAX_POST,
+            )
+            return None
+        return size
+
     async def _create_post(
         self,
         driver: Driver,
@@ -1236,19 +1355,111 @@ class MattermostAdapter(PlatformAdapter):
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
     ) -> None:
+        """Rewrite a post, continuing in its thread when the new text is
+        longer than one post.
+
+        The post keeps the first part, and the rest follows it in its thread
+        (the post's own, when it is a thread's root) from the bot that wrote
+        it, so the edit reads as the post went on. Where that cannot be done,
+        the post is written to as much as fits and says it was cut short.
+        Each call that runs over posts its own follow-ups.
+        """
         if not self._admin_driver or not self._main_loop:
             logger.error("Cannot update message: Mattermost client not connected")
             return
-
         try:
-            await self._main_loop.run_in_executor(
-                None,
-                self._admin_driver.posts.patch_post,
+            await self._update_post(
+                self._admin_driver,
+                self._main_loop,
+                channel_id,
                 message_ref,
-                {"message": new_content},
+                new_content,
             )
         except Exception as e:
             logger.error("Failed to update Mattermost post %s: %s", message_ref, e)
+
+    async def _update_post(
+        self,
+        admin: Driver,
+        loop: asyncio.AbstractEventLoop,
+        channel_id: str,
+        message_ref: str,
+        new_content: str,
+    ) -> None:
+        limit = await self._post_limit(new_content)
+        parts = split_markdown(new_content, limit)
+        if len(parts) == 1:
+            await self._patch_message(admin, loop, message_ref, new_content)
+            return
+
+        try:
+            post = await loop.run_in_executor(None, admin.posts.get_post, message_ref)
+        except Exception as e:
+            logger.error(
+                "Could not read Mattermost post %s to continue its %d-character "
+                "edit in its thread (%s); writing what fits and marking it cut short",
+                message_ref,
+                len(new_content),
+                e,
+            )
+            await self._patch_truncated(admin, loop, message_ref, new_content, limit)
+            return
+        driver = self._author_driver(str(post.get("user_id", "")))
+        if driver is None:
+            logger.error(
+                "Mattermost post %s was not written by a bot this bridge drives, "
+                "so the rest of its %d-character edit cannot follow it as the "
+                "same author; writing what fits and marking it cut short",
+                message_ref,
+                len(new_content),
+            )
+            await self._patch_truncated(admin, loop, message_ref, new_content, limit)
+            return
+
+        await self._patch_message(admin, loop, message_ref, parts[0])
+        thread_root_id = str(post.get("root_id") or "") or message_ref
+        try:
+            await self._post_rest(
+                driver, channel_id, parts, thread_root_id, message_ref
+            )
+        except MessagePartlySent as e:
+            logger.error(
+                "The edit of Mattermost post %s was cut short: %s", message_ref, e
+            )
+
+    def _author_driver(self, user_id: str) -> Driver | None:
+        """The driver that posts as `user_id`, when it is one of this bridge's
+        own identities."""
+        agent_name = self._bot_id_to_username.get(user_id)
+        if agent_name is not None:
+            return self._bot_drivers.get(agent_name)
+        if user_id and user_id == self._admin_bot_id:
+            return self._admin_bot_driver
+        if user_id and user_id == self._admin_user_id:
+            return self._admin_driver
+        return None
+
+    async def _patch_truncated(
+        self,
+        admin: Driver,
+        loop: asyncio.AbstractEventLoop,
+        message_ref: str,
+        content: str,
+        limit: int,
+    ) -> None:
+        """Write as much of `content` as fits, ending in a line that says the
+        rest is missing, for an edit whose remainder has nowhere to go."""
+        marker = f"\n\n{_EDIT_CUT_SHORT}"
+        head = split_markdown(content, limit - len(marker))[0]
+        await self._patch_message(admin, loop, message_ref, head + marker)
+
+    @staticmethod
+    async def _patch_message(
+        admin: Driver, loop: asyncio.AbstractEventLoop, message_ref: str, message: str
+    ) -> None:
+        await loop.run_in_executor(
+            None, admin.posts.patch_post, message_ref, {"message": message}
+        )
 
     # ── SDK session publication ──────────────────────────────────────────────
 
