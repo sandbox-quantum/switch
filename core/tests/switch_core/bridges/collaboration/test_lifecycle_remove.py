@@ -498,7 +498,9 @@ async def test_a_bridge_that_cannot_start_is_not_left_registered(
     monkeypatch.setattr(service, "check_outbound_urls", reachable)
     monkeypatch.setattr(service, "start", refuse)
     monkeypatch.setattr(
-        MattermostAdapter, "verify_credentials", classmethod(lambda cls, c: accept(c))
+        MattermostAdapter,
+        "verify_credentials",
+        classmethod(lambda cls, c, policy: accept(c)),
     )
 
     with pytest.raises(RuntimeError, match="could not start"):
@@ -546,7 +548,9 @@ async def test_a_failed_cleanup_does_not_hide_why_the_bridge_could_not_start(
     monkeypatch.setattr(service, "start", refuse)
     monkeypatch.setattr(service, "remove", remove_fails)
     monkeypatch.setattr(
-        MattermostAdapter, "verify_credentials", classmethod(lambda cls, c: accept(c))
+        MattermostAdapter,
+        "verify_credentials",
+        classmethod(lambda cls, c, policy: accept(c)),
     )
 
     with pytest.raises(RuntimeError, match="could not start"):

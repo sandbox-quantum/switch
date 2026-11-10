@@ -51,6 +51,8 @@ def chunk_message(content: str, limit: int = MAX_MESSAGE) -> list[str]:
     # Leave room for a closing fence on this chunk and a reopening one on the
     # next, so honouring a code block can never push a chunk over the limit.
     budget = limit - (2 * len(_FENCE) + 2)
+    if budget < 1:
+        raise ValueError(f"Cannot split a message to fit a limit of {limit}.")
 
     chunks: list[str] = []
     buf: list[str] = []

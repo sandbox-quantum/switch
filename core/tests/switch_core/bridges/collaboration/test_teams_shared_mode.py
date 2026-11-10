@@ -51,6 +51,7 @@ from switch_core.bridges.collaboration.teams.shared_app import (
     TeamsSharedApp,
     client_state_for,
 )
+from switch_core.outbound import OutboundPolicy
 
 ORG = "aaaaaaaa-0000-0000-0000-000000000001"
 OTHER_ORG = "bbbbbbbb-0000-0000-0000-000000000002"
@@ -174,7 +175,7 @@ async def test_a_shared_bridge_has_no_credentials_of_its_own_to_verify() -> None
     """Whether the organisation approved the app is proved by the install, not
     by a secret this bridge never carries."""
     await TeamsAdapter.verify_credentials(
-        {"event_delivery": "shared", "tenant_id": ORG}
+        {"event_delivery": "shared", "tenant_id": ORG}, OutboundPolicy.parse("")
     )
 
 

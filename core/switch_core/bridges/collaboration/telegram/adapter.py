@@ -106,6 +106,7 @@ from switch_core.bridges.collaboration.telegram.install import (
 )
 from switch_core.observability.catalogue import BRIDGE_THROTTLE_HELD
 from switch_core.observability.metrics import metrics
+from switch_core.outbound import OutboundPolicy
 from switch_core.room_wide_mention import (
     CODE_AND_URLS,
     defuse_mass_mention_words_in_prose,
@@ -541,7 +542,9 @@ class TelegramAdapter(PlatformAdapter):
     keeps_quiet_unless_listening: ClassVar[bool] = True
 
     @classmethod
-    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+    async def verify_credentials(
+        cls, connection_config: dict[str, object], outbound_policy: OutboundPolicy
+    ) -> None:
         """Ask Telegram who the bot token belongs to (`getMe`).
 
         A bridge on the shared app bot holds no token of its own; the
