@@ -375,7 +375,7 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByText(/someone has to be made an organization admin there/)).toBeTruthy();
     fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-    const orgAdmin = await screen.findByRole("option", { name: "Org admin" });
+    const orgAdmin = await screen.findByRole("option", { name: "Org Admin" });
     expect(orgAdmin.getAttribute("aria-disabled")).toBe("true");
   });
 
@@ -424,13 +424,41 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByText(/come from your organization's account settings/)).toBeTruthy();
     fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-    const promote = await screen.findByRole("option", { name: "Org admin" });
+    const promote = await screen.findByRole("option", { name: "Org Admin" });
     expect(promote.getAttribute("aria-disabled")).toBe("true");
     fireEvent.keyDown(promote, { key: "Escape" });
     fireEvent.mouseDown(within(screen.getByTestId("row-u3")).getByRole("combobox"));
-    const demote = await screen.findByRole("option", { name: "Member" });
+    const demote = await screen.findByRole("option", { name: "Viewer" });
     expect(demote.getAttribute("aria-disabled")).toBeNull();
     expect(screen.getByLabelText("Remove bob@example.com from the organization")).toBeTruthy();
+  });
+
+  it("asks nothing where a change stays in Switch", async () => {
+    signedInAs(session("org_admin", true));
+    const fetchMock = answer({
+      "GET /organizations/current": {
+        id: "o1",
+        slug: "acme",
+        name: "Acme Inc",
+        role: "org_admin",
+        members_from_directory: true,
+      },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [
+        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01", can_change_role: true, can_grant_org_admin: false, can_remove: true },
+      ],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [],
+      "DELETE /organizations/current/members/u2": { warning: null },
+    });
+
+    render(<OrganizationPage />);
+    fireEvent.click(await screen.findByLabelText("Remove bob@example.com from the organization"));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   describe("where changes go to the organization's account settings", () => {
@@ -489,7 +517,7 @@ describe("OrganizationPage", () => {
 
       expect(await screen.findByText(/Changes you make here are made there too/)).toBeTruthy();
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      const promote = await screen.findByRole("option", { name: "Org admin" });
+      const promote = await screen.findByRole("option", { name: "Org Admin" });
       expect(promote.getAttribute("aria-disabled")).toBeNull();
     });
 
@@ -500,7 +528,8 @@ describe("OrganizationPage", () => {
 
       render(<OrganizationPage />);
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      fireEvent.click(await screen.findByRole("option", { name: "Org admin" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Make Org Admin" }));
 
       await waitFor(() =>
         expect(window.location.href).toBe(
@@ -520,7 +549,8 @@ describe("OrganizationPage", () => {
 
       render(<OrganizationPage />);
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      fireEvent.click(await screen.findByRole("option", { name: "Org admin" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Make Org Admin" }));
 
       await waitFor(() =>
         expect(window.location.href).toBe(
@@ -540,7 +570,8 @@ describe("OrganizationPage", () => {
 
       render(<OrganizationPage />);
       fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
-      fireEvent.click(await screen.findByRole("option", { name: "Org admin" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Make Org Admin" }));
 
       expect(
         await screen.findByText("Your sign-in has ended. Access was already taken away."),
@@ -606,6 +637,82 @@ describe("OrganizationPage", () => {
 
       expect(await screen.findByText("Confirm your sign-in.")).toBeTruthy();
       expect(window.location.href).toBe("");
+    });
+
+    const sent = (fetchMock: ReturnType<typeof answer>, method: string) =>
+      fetchMock.mock.calls.filter(([, init]) => init?.method === method).length;
+
+    it("shows the lower role as Viewer and Org Admin as Switch Trust names them", async () => {
+      signedInAs(session("org_admin", true));
+      answer({
+        ...routes({ ...bob, role: "org_admin", warning: null }),
+        "GET /organizations/current/members": [
+          bob,
+          { ...bob, user_id: "u3", name: "Cy", email: "cy@example.com", role: "org_admin", can_change_role: false, can_remove: false },
+        ],
+      });
+
+      render(<OrganizationPage />);
+
+      expect(within(await screen.findByTestId("row-u3")).getByText("Org Admin")).toBeTruthy();
+      expect(within(screen.getByTestId("row-u2")).getByRole("combobox").textContent).toBe("Viewer");
+    });
+
+    it("says a promotion gives billing permissions in Switch Trust, and sends nothing on cancel", async () => {
+      signedInAs(session("org_admin", true));
+      const fetchMock = answer(routes({ ...bob, role: "org_admin", warning: null }));
+
+      render(<OrganizationPage />);
+      fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
+      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+
+      const dialog = await screen.findByRole("dialog", { name: "Make Bob an Org Admin?" });
+      expect(within(dialog).getByText(/Org Admin in Switch Trust, with billing permissions/)).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(sent(fetchMock, "PATCH")).toBe(0);
+      expect(within(screen.getByTestId("row-u2")).getByRole("combobox").textContent).toBe("Viewer");
+    });
+
+    it("says a demotion makes the person a Viewer in Switch Trust, and sends it once confirmed", async () => {
+      signedInAs(session("org_admin", true));
+      const fetchMock = answer({
+        ...routes({ ...bob, warning: null }),
+        "GET /organizations/current/members": [{ ...bob, role: "org_admin" }],
+      });
+
+      render(<OrganizationPage />);
+      fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
+      fireEvent.click(await screen.findByRole("option", { name: "Viewer" }));
+
+      const dialog = await screen.findByRole("dialog", { name: "Make Bob a Viewer?" });
+      expect(within(dialog).getByText(/earlier Switch Trust role is not kept/)).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Make Viewer" }));
+
+      await waitFor(() => expect(sent(fetchMock, "PATCH")).toBe(1));
+    });
+
+    it("says a removal also removes the person from Switch Trust", async () => {
+      signedInAs(session("org_admin", true));
+      const fetchMock = answer({
+        ...routes(null),
+        "DELETE /organizations/current/members/u2": { warning: null },
+      });
+
+      render(<OrganizationPage />);
+      fireEvent.click(await screen.findByLabelText("Remove bob@example.com from the organization"));
+
+      const dialog = await screen.findByRole("dialog", { name: "Remove Bob from the organization?" });
+      expect(within(dialog).getByText(/removed from the organization in Switch Trust/)).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(sent(fetchMock, "DELETE")).toBe(0);
+
+      fireEvent.click(screen.getByLabelText("Remove bob@example.com from the organization"));
+      fireEvent.click(
+        within(await screen.findByRole("dialog")).getByRole("button", { name: "Remove" }),
+      );
+      await waitFor(() => expect(sent(fetchMock, "DELETE")).toBe(1));
     });
   });
 

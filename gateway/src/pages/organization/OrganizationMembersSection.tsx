@@ -4,6 +4,11 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   IconButton,
   MenuItem,
   Select,
@@ -35,6 +40,14 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
   member: "Member",
 };
 
+// Switch stores `member` either way. Where the members come from the
+// organization's WorkOS account, the lower role is shown as Switch Trust names
+// it, so the two products use one word for it.
+const DIRECTORY_ROLE_LABELS: Record<OrganizationRole, string> = {
+  org_admin: "Org Admin",
+  member: "Viewer",
+};
+
 /** A change kept across the sign-in to the organization's WorkOS account it
  * waited on, made again once, on coming back: only in the organization it was
  * made in, and only while the sign-in it waited on could still be coming back
@@ -43,6 +56,40 @@ type MemberChange = { userId: string; role: OrganizationRole } | { userId: strin
 type PendingChange = { change: MemberChange; organizationId: string; savedAt: number };
 const PENDING_CHANGE_KEY = "switch.pendingOrganizationMemberChange";
 const PENDING_CHANGE_TTL_MS = 10 * 60 * 1000;
+
+/** What a change also does in Switch Trust, which reads the same WorkOS
+ * membership, for the admin to confirm before it is sent. */
+function warningFor(change: MemberChange, name: string, self: boolean): {
+  title: string;
+  text: string;
+  confirm: string;
+} {
+  const who = self ? "yourself" : name;
+  const they = self ? "You" : "They";
+  if ("remove" in change) {
+    return {
+      title: self ? "Leave the organization?" : `Remove ${name} from the organization?`,
+      text:
+        `${they} are also removed from the organization in Switch Trust, and ` +
+        `${self ? "your" : "their"} Switch Trust API keys are revoked.`,
+      confirm: self ? "Leave" : "Remove",
+    };
+  }
+  if (change.role === "org_admin") {
+    return {
+      title: `Make ${who} an Org Admin?`,
+      text: `${they} also become Org Admin in Switch Trust, with billing permissions.`,
+      confirm: "Make Org Admin",
+    };
+  }
+  return {
+    title: `Make ${who} a Viewer?`,
+    text:
+      `${they} become Viewer in Switch Trust. ` +
+      `${self ? "Your" : "Their"} earlier Switch Trust role is not kept.`,
+    confirm: "Make Viewer",
+  };
+}
 
 function make(change: MemberChange): Promise<{ warning: string | null }> {
   return "remove" in change
@@ -114,6 +161,13 @@ export default function OrganizationMembersSection({
   // A change that ended someone's workspace access and then asked for a
   // sign-in, for the admin to finish knowingly.
   const [toFinish, setToFinish] = useState<MemberChange | null>(null);
+  // A change waiting for the admin to confirm what it also does in Switch
+  // Trust. Asked only where changes go to WorkOS; a change made again after
+  // the sign-in it waited on was confirmed before it.
+  const [toConfirm, setToConfirm] = useState<{ change: MemberChange; name: string } | null>(
+    null,
+  );
+  const labels = fromDirectory ? DIRECTORY_ROLE_LABELS : ROLE_LABELS;
   const { refresh } = useAuth();
 
   const act = useCallback(
@@ -154,6 +208,17 @@ export default function OrganizationMembersSection({
     [asOperator, onChanged, organizationId, refetch, refresh, selfId],
   );
 
+  const request = useCallback(
+    (change: MemberChange, name: string) => {
+      if (fromDirectory && directoryTakesChanges && !asOperator) {
+        setToConfirm({ change, name });
+        return;
+      }
+      void act(change);
+    },
+    [act, asOperator, directoryTakesChanges, fromDirectory],
+  );
+
   const replayed = useRef(false);
   useEffect(() => {
     if (replayed.current) return;
@@ -183,13 +248,13 @@ export default function OrganizationMembersSection({
               value={row.role}
               disabled={busy !== null}
               onChange={(e) =>
-                act({ userId: row.user_id, role: e.target.value as OrganizationRole })
+                request({ userId: row.user_id, role: e.target.value as OrganizationRole }, row.name)
               }
               // The name goes on the input: on the Select it labels nothing.
               inputProps={{ "aria-label": `Organization role for ${row.email}` }}
               sx={{ fontSize: "0.875rem" }}
             >
-              {(Object.keys(ROLE_LABELS) as OrganizationRole[]).map((role) => (
+              {(Object.keys(labels) as OrganizationRole[]).map((role) => (
                 <MenuItem
                   key={role}
                   value={role}
@@ -197,13 +262,13 @@ export default function OrganizationMembersSection({
                     role === "org_admin" && row.role !== "org_admin" && !row.can_grant_org_admin
                   }
                 >
-                  {ROLE_LABELS[role]}
+                  {labels[role]}
                 </MenuItem>
               ))}
             </Select>
           ) : (
             <Chip
-              label={ROLE_LABELS[row.role]}
+              label={labels[row.role]}
               size="small"
               color={row.role === "org_admin" ? "primary" : "default"}
             />
@@ -229,7 +294,7 @@ export default function OrganizationMembersSection({
                 <IconButton
                   size="small"
                   disabled={busy !== null}
-                  onClick={() => act({ userId: row.user_id, remove: true })}
+                  onClick={() => request({ userId: row.user_id, remove: true }, row.name)}
                   aria-label={
                     row.user_id === selfId
                       ? "Leave this organization"
@@ -243,7 +308,7 @@ export default function OrganizationMembersSection({
           ) : null,
       },
     ],
-    [act, busy, selfId],
+    [busy, labels, request, selfId],
   );
   // Nothing to offer when nobody may be removed, as for the operator, who
   // restores an admin and nothing more.
@@ -287,7 +352,7 @@ export default function OrganizationMembersSection({
         <Alert severity="info">
           This organization's users, and who is its admin, come from your organization's
           account settings. Add people and make someone an organization admin there; the change
-          shows here shortly. Removing someone here, or making an admin a member, takes effect at
+          shows here shortly. Removing someone here, or making an admin a Viewer, takes effect at
           once but lasts only while the account settings agree: they are read again at the
           person's next sign-in and once a day. Make the same change there to keep it.
         </Alert>
@@ -330,6 +395,46 @@ export default function OrganizationMembersSection({
           pageSize={25}
         />
       )}
+      {toConfirm && (
+        <ConfirmChange
+          {...warningFor(toConfirm.change, toConfirm.name, toConfirm.change.userId === selfId)}
+          onCancel={() => setToConfirm(null)}
+          onConfirm={() => {
+            const { change } = toConfirm;
+            setToConfirm(null);
+            void act(change);
+          }}
+        />
+      )}
     </Stack>
+  );
+}
+
+function ConfirmChange({
+  title,
+  text,
+  confirm,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  text: string;
+  confirm: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open onClose={onCancel} aria-labelledby="confirm-member-change-title">
+      <DialogTitle id="confirm-member-change-title">{title}</DialogTitle>
+      <DialogContent>
+        <DialogContentText>{text}</DialogContentText>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onCancel}>Cancel</Button>
+        <Button onClick={onConfirm} variant="contained" autoFocus>
+          {confirm}
+        </Button>
+      </DialogActions>
+    </Dialog>
   );
 }
