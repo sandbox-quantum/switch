@@ -608,16 +608,6 @@ export async function deleteRoom(
   return jsonRequest(`/rooms/${roomId}?retire_channel=${retireChannel}`, "DELETE");
 }
 
-export async function bulkDeleteRooms(
-  roomIds: string[],
-): Promise<{ deleted: number } | null> {
-  return fetchJson<{ deleted: number }>("/rooms/bulk-delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ room_ids: roomIds }),
-  });
-}
-
 /** Archive or unarchive many rooms. The server skips, without failing, any
  * room the viewer may not change or that is gone, and says how many it did
  * change. */
