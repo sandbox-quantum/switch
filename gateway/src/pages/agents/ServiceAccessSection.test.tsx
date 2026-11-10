@@ -9,6 +9,7 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import ServiceAccessSection from "./ServiceAccessSection";
+import { serviceConnection } from "../../test/serviceConnection";
 
 vi.mock("../../data/AuthContext", () => ({
   useAuth: vi.fn(() => ({ isOperator: false, capabilities: { features: { gateway_v2: false } } })),
@@ -180,22 +181,7 @@ describe("ServiceAccessSection", () => {
   const onOff = (
     status: ServiceConnection["status"],
     overrides: Partial<ServiceConnection> = {},
-  ): ServiceConnection => ({
-    slug: "example",
-    name: "Example",
-    category: "Project management",
-    description: "Example work items.",
-    enabled: true,
-    connectable: true,
-    unavailable_reason: null,
-    server_setup_needed: false,
-    app_source: "server",
-    status,
-    pass_through: true,
-    token_lifetime: 3600,
-    key: null,
-    ...overrides,
-  });
+  ): ServiceConnection => serviceConnection({ status, ...overrides });
   const NONE: ServiceGrants = { grants: [], addressing_open: false };
 
   it("turns a connected on/off service on with no level to choose", async () => {

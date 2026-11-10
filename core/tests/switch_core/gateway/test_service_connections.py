@@ -742,6 +742,7 @@ class TestTheWorkspacesView:
             (p["user_id"], p["name"], p["status"], p["agents"]) for p in body["people"]
         ] == [(ada.id, "ada", "active", 1), (bob.id, "bob", "active", 0)]
         assert all(p["connected_at"] for p in body["people"])
+        assert all(p["can_revoke"] for p in body["people"])
         [agent] = body["agents"]
         assert (agent["agent_id"], agent["name"]) == (builder, "builder")
         assert (agent["owner_id"], agent["owner_name"]) == (ada.id, "ada")
@@ -796,10 +797,12 @@ class TestTheWorkspacesView:
         ada = await add_member(harness.session_factory, "ada")
         await connect(harness.session_factory, admin.id)
 
+        mine = (await _in_workspace(harness, admin)).json()["people"]
         own = await _revoke(harness, admin, admin.id)
         missing = await _revoke(harness, admin, ada.id)
         unknown = await _in_workspace(harness, admin, "nowhere")
 
+        assert [(p["user_id"], p["can_revoke"]) for p in mine] == [(admin.id, False)]
         assert own.status_code == 409
         assert missing.status_code == 404
         assert missing.json()["code"] == "connector_not_connected"

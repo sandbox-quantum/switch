@@ -244,7 +244,7 @@ def _enabled_entry(service: str) -> None:
 @router.get("/service-connections/{service}/workspace")
 async def service_in_workspace(
     service: str,
-    _admin: Annotated[User, Depends(require_tenant_admin)],
+    admin: Annotated[User, Depends(require_tenant_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict[str, Any]:
@@ -276,6 +276,8 @@ async def service_in_workspace(
             "status": broker.connection_status(standing, connection),
             "connected_at": connection.created_at.isoformat(),
             "agents": granted.get(person.id, 0),
+            # Someone else's: an admin's own is disconnected, not revoked.
+            "can_revoke": person.id != admin.id,
         }
         for connection, person in (
             await session.execute(
