@@ -154,7 +154,9 @@ export function createdColumn<T extends { created_at: string | null }>(): TableC
   return {
     field: "created_at",
     headerName: "Created",
-    width: 116,
+    // The title, the sort arrow the lists open with, and the menu button on
+    // hover, without cutting the title short.
+    width: 136,
     type: "date",
     valueGetter: (value) => (value ? new Date(value as string) : null),
     valueFormatter: (value) => formatDate(value as Date | null),

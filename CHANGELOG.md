@@ -211,6 +211,10 @@ version of their own to them without also giving them a release of their own.
   browser, and says when there is no one to give the resource to. A failed
   page's Back goes to its own tab. A few errors that read "[object Object]"
   give the reason, and each list loads once when opened, not twice.
+- **Dashboard tables no longer scroll sideways by a sliver.** A table whose
+  last column has a header menu could be scrolled 23px to the side at any
+  width, because the menu button the table hides until the header is hovered
+  stuck out past it.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
