@@ -98,7 +98,7 @@ version of their own to them without also giving them a release of their own.
   Workspace settings › Messaging apps lists, for everyone, their own accounts
   in each of the workspace's messaging apps: linked, linked before links had to
   be confirmed, or waiting for a code. Each can be unlinked, confirmed or
-  cancelled there. Link account finds you in the app's directory and then
+  cancelled there, and each app opened in its platform. Link account finds you in the app's directory and then
   shows the one-time code to post from that account, the same confirmation
   Switch Console runs. Whoever administers the workspace also gets the apps
   table, with search, Type and Status filters, and each app's actions in its
