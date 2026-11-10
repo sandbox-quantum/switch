@@ -623,21 +623,6 @@ async def _snapshot_loop(reporter: SnapshotReporter) -> None:
         await reporter.run_forever()
 
 
-class _QuietPollFilter(logging.Filter):
-    _SUPPRESSED = [
-        "/events?timeout=",
-        "/room-history?",
-        "/agents/",
-    ]
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return not any(p in msg for p in self._SUPPRESSED)
-
-
-logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
-
-
 async def _prepare_database(config: SwitchConfig) -> None:
     """Re-issue the runtime role's grants, on the owner's connection.
 

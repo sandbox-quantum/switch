@@ -370,7 +370,8 @@ class AgentSessionActivityPublisher:
             except RichContentThrottled as throttled:
                 if lane == _CLOCK:
                     continue
-                logger.warning(
+                # Routine under load: the cooldown logs the workspace-wide hold.
+                logger.debug(
                     "%s asked bridge %s to wait %.1fs; retrying %s then.",
                     self._adapter.platform_name,
                     self._bridge_id,

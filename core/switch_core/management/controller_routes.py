@@ -396,7 +396,7 @@ async def open_connection(
         )
     except ControllerConnectionError as exc:
         raise _connection_refusal(exc) from exc
-    logger.info(
+    logger.debug(
         "Controller %s opened connection %s (client=%s version=%s)",
         principal.controller_id,
         conn.id,

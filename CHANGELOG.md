@@ -45,6 +45,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **switch-core counts controller reconnects.** `switch.controllers.connections`
+  counts agent controller connections opened, adopted from another process,
+  taken over and closed (with the close code as `reason`), so reconnect churn
+  shows as a rate instead of hundreds of thousands of log lines.
 - **A one-screen Datadog board and alerts that say what to do.**
   `deploy/observability/signal-board.json` shows the four golden signals
   (latency, traffic, errors, saturation) plus whether agents are connected and
@@ -83,6 +87,19 @@ version of their own to them without also giving them a release of their own.
   switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
+- **switch-core's logs keep to what matters.** Successful routine polls (health
+  checks, controller status, assignment and operations polls, Console's
+  controller and agent lists, host observations, session activity) and
+  uvicorn's per-connection WebSocket lines are no longer logged at info;
+  failures on the same routes still are. Controller connection churn moved to
+  debug, behind the new counter. Routine events that were warnings are info:
+  platform rate limits, agents calling a tool wrongly (a 4xx), addressing
+  refusals, attachments over the cap, activity drawn as a plain message, and
+  cleanup of user groups and turns left by deleted agents. The list of other
+  installations' Slack user groups is logged at debug, with only the count at
+  info. A Slack identity that cannot be provisioned (a handle already taken)
+  is a warning the first time a process sees it instead of an error on every
+  bridge start, and "trusting unverified OIDC email" is said once per process.
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.
