@@ -216,6 +216,7 @@ const LibraryItemPanel = observer(function LibraryItemPanel() {
           workspaceId={workspaceId}
           pkg={data}
           canEdit={permissions.canEdit}
+          viewer={viewer}
         />
       )}
       <RoomsSection workspaceId={workspaceId} item={data} />
