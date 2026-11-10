@@ -804,15 +804,16 @@ describe('room creation', () => {
       agentIds: [],
       channel: { kind: 'new', private: true },
       groupId: 'g1',
-      access: 'read_only',
+      access: 'public',
     });
 
-    expect(bodyOf(fetchMock.mock.calls[0])).toMatchObject({
+    const body = bodyOf(fetchMock.mock.calls[0]);
+    expect(body).toMatchObject({
       channel_type: 'channel_private',
       group_id: 'g1',
       read_visibility: 'public',
-      write_visibility: 'private',
     });
+    expect(body).not.toHaveProperty('write_visibility');
   });
 
   it('binds an existing channel by id and leaves its type and access to the server', async () => {

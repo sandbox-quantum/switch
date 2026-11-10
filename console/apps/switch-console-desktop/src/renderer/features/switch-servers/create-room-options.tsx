@@ -18,11 +18,16 @@ import {
   SelectValue,
 } from '@renderer/lib/ui/select';
 import { cn } from '@renderer/utils/utils';
-import type { RemoteBridge, RoomAccess } from '@shared/core/switch-servers/switch-servers';
+import {
+  type RemoteBridge,
+  type RoomAccess,
+  roomAccessForChannel,
+} from '@shared/core/switch-servers/switch-servers';
 import { channelChoiceCards, channelChoiceOf, channelIdProblem } from './room-channel-choices';
 import type { RoomCreateOptions } from './room-create-request';
 
 const NO_GROUP = '__none__';
+const SAME_AS_CHANNEL = 'The same as the channel';
 
 /**
  * Where a room on a messaging app lives: a new public channel (the default),
@@ -30,6 +35,7 @@ const NO_GROUP = '__none__';
  * saying what the choice means on this platform, because Console cannot move
  * a room to another channel afterwards.
  */
+
 export function RoomChannelField({
   bridge,
   value,
@@ -163,7 +169,11 @@ export function CreateRoomOptions({
       ? null
       : ((groups.data ?? []).find((group) => group.id === value.groupId)?.name ??
         (groups.isError ? 'unknown (the groups could not be read)' : 'loading…'));
-  const access = value.access ?? (bridged ? 'public' : 'private');
+  // Until someone picks, a bridged room takes it from its channel (for an
+  // existing channel only the server knows: it asks the platform), and a room
+  // on no app is private.
+  const access = value.access ?? (bridged ? roomAccessForChannel(value.channel) : 'private');
+  const accessLabel = access === null ? SAME_AS_CHANNEL : ACCESS_LABELS[access];
 
   return (
     <div className="flex flex-col gap-4">
@@ -171,9 +181,7 @@ export function CreateRoomOptions({
         open={open}
         title="More options"
         summary={
-          administersWorkspace
-            ? `Group: ${groupName ?? 'none'} · ${ACCESS_LABELS[access]}`
-            : ACCESS_LABELS[access]
+          administersWorkspace ? `Group: ${groupName ?? 'none'} · ${accessLabel}` : accessLabel
         }
         onToggle={() => setOpen(!open)}
       />
@@ -211,11 +219,11 @@ export function CreateRoomOptions({
           <Field>
             <FieldLabel>Access</FieldLabel>
             <Select
-              value={access}
+              value={access ?? ''}
               onValueChange={(next) => onChange({ ...value, access: next as RoomAccess })}
             >
               <SelectTrigger className="w-full" aria-label="Access">
-                <SelectValue>{ACCESS_LABELS[access]}</SelectValue>
+                <SelectValue>{accessLabel}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {ACCESS_ORDER.map((each) => (
@@ -226,7 +234,10 @@ export function CreateRoomOptions({
               </SelectContent>
             </Select>
             <span className="text-xs text-foreground-muted">
-              {ACCESS_HELPERS[access]}
+              {bridged && value.access === null
+                ? 'The same as the channel unless you pick: a private channel makes a private room. '
+                : ''}
+              {access !== null && ACCESS_HELPERS[access]}
               {bridged && ' It does not decide who can read or post in the channel.'}
             </span>
           </Field>

@@ -228,7 +228,7 @@ describe('room settings for someone who may write to the room', () => {
     const el = await renderPanel();
     expect(el.querySelector('[aria-label="Access"]')).not.toBeNull();
     // A short name in the control, and what it means spelled out under it.
-    expect(el.textContent).toMatch(/Public — read & write|Public — read only|Private/);
+    expect(el.textContent).toMatch(/Public|Private/);
     expect(el.textContent).toMatch(/Only its owner and admins can change/);
     expect(el.textContent).toContain('C123');
     expect(el.textContent).not.toContain('Notify on join');

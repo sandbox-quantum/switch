@@ -575,7 +575,6 @@ async def create_room(
         acting_user_id=user.id,
         acting_is_admin=is_admin,
         read_visibility=req.read_visibility,
-        write_visibility=req.write_visibility,
         roles=([RoleSpec(**r.model_dump()) for r in req.roles] if req.roles else None),
     )
     try:
@@ -1134,7 +1133,8 @@ async def patch_room(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     principal = Principal(user.id, is_admin)
-    changes_access = req.read_visibility is not None or req.write_visibility is not None
+    # A write visibility from an older client is ignored: it grants nothing.
+    changes_access = req.read_visibility is not None
     await _require_room_released(
         session,
         room_store,
@@ -1150,7 +1150,6 @@ async def patch_room(
             instructions=req.instructions,
             admin_mode=req.admin_mode,
             read_visibility=req.read_visibility,
-            write_visibility=req.write_visibility,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

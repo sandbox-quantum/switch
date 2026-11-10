@@ -52,8 +52,8 @@ vi.mock("./RoomResourcesSection", () => ({
   ),
 }));
 
-// Public read & write is the default for a new room, so any workspace member
-// can edit it. What the viewer may do comes from the server.
+// Stored "read & write" before rooms lost their write visibility; it shows as
+// Public. What the viewer may do comes from the server.
 const room = {
   id: "r1",
   name: "planning",
@@ -275,10 +275,17 @@ describe("RoomDetailPage permissions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(api.updateRoom).mock.calls[0][1]).toMatchObject({
+    expect(vi.mocked(api.updateRoom).mock.calls[0][1]).toEqual({
       read_visibility: "private",
-      write_visibility: "private",
     });
+  });
+
+  it("offers only Public and Private", async () => {
+    viewAs({ can_write: true, can_manage: true, can_unlink: false });
+
+    fireEvent.mouseDown(accessSelect());
+    const options = await screen.findAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual(["Public", "Private"]);
   });
 
   it("loads the platform's users only when someone adds one", async () => {

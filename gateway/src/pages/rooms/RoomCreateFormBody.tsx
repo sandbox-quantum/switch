@@ -28,7 +28,7 @@ import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { type RoomRoleSpec, createRoom, invitableAgents } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
-import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
+import type { AccessLevel } from "../../data/visibility";
 import {
   useAgents,
   useBridges,
@@ -38,9 +38,23 @@ import {
 } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
 import { flattenTree } from "./groupTree";
-import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
+import {
+  ROOM_ACCESS_HELPERS,
+  ROOM_ACCESS_LEVELS,
+  ROOM_ACCESS_OPTION_LABELS,
+  type RoomAccessLevel,
+  roomAccessForChannel,
+} from "./roomAccess";
 
 type ChannelSource = "existing" | "new";
+
+/** While the room is following its channel, say so. */
+const FOLLOWING_CHANNEL_HELPERS: Partial<Record<AccessLevel, string>> = Object.fromEntries(
+  ROOM_ACCESS_LEVELS.map((level) => [
+    level,
+    `The same as the channel. ${ROOM_ACCESS_HELPERS[level]}`,
+  ]),
+);
 
 export default function RoomCreateFormBody() {
   const navigate = useNavigate();
@@ -68,7 +82,9 @@ export default function RoomCreateFormBody() {
   // events in this room.
   const [joinEventListeners, setJoinEventListeners] = useState<string[]>([]);
   const [userNames, setUserNames] = useState<string[]>([]);
-  const [access, setAccess] = useState<AccessLevel>("public");
+  // Null until someone picks: the room then takes it from its channel, which
+  // the server works out (it asks the platform about an existing channel).
+  const [accessChoice, setAccessChoice] = useState<RoomAccessLevel | null>(null);
   const [groupId, setGroupId] = useState("");
   const [roles, setRoles] = useState<RoomRoleSpec[]>([]);
 
@@ -79,6 +95,15 @@ export default function RoomCreateFormBody() {
   const blockedReasonId = useId();
 
   const hasBridge = !!bridgeId;
+
+  // What the room gets from its channel when nobody picks; unknown for an
+  // existing channel until the server asks the platform.
+  const channelAccess: RoomAccessLevel | null = !hasBridge
+    ? "public"
+    : channelSource === "new"
+      ? roomAccessForChannel(newChannelType)
+      : null;
+  const access = accessChoice ?? channelAccess;
 
   const selectedBridge = useMemo(
     () => (bridges ?? []).find((b) => b.bridge_id === bridgeId),
@@ -240,7 +265,7 @@ export default function RoomCreateFormBody() {
                   exclusive: r.exclusive,
                 }))
             : undefined,
-        ...fromAccessLevel(access),
+        ...(accessChoice ? { read_visibility: accessChoice } : {}),
       });
       navigate(`/rooms/${room.id}`);
     } catch (err) {
@@ -261,7 +286,7 @@ export default function RoomCreateFormBody() {
     joinEventListeners,
     bridgeId,
     userNames,
-    access,
+    accessChoice,
     groupId,
     roles,
     navigate,
@@ -297,10 +322,12 @@ export default function RoomCreateFormBody() {
       />
 
       <AccessSelect
-        value={access}
-        onChange={setAccess}
+        value={access ?? ""}
+        onChange={(level: AccessLevel) => setAccessChoice(level as RoomAccessLevel)}
         disabled={submitting}
-        helpers={ROOM_ACCESS_HELPERS}
+        levels={ROOM_ACCESS_LEVELS}
+        helpers={hasBridge && accessChoice === null ? FOLLOWING_CHANNEL_HELPERS : ROOM_ACCESS_HELPERS}
+        emptyHelper="The same as the channel: a private channel makes a private room. Pick one to choose instead."
         optionLabels={ROOM_ACCESS_OPTION_LABELS}
       />
 

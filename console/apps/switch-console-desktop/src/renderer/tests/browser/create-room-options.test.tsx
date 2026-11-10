@@ -109,15 +109,25 @@ describe('creating a room on a messaging app', () => {
 
   it('says what More options holds while shut: no group, open to the workspace', async () => {
     const el = await render();
-    expect(el.textContent).toContain('Group: none · Public — read & write');
+    expect(el.textContent).toContain('Group: none · Public');
     expect(el.querySelector('[aria-label="Group"]')).toBeNull();
   });
 
-  it('picks a private channel without changing who can see the room in Switch', async () => {
+  it('shows a private channel making a private room, and leaves it to the server', async () => {
     const el = await render();
     await click(radio(el, 'New private channel')!);
     expect(latest.channel).toEqual({ kind: 'new', private: true });
     expect(latest.access).toBeNull();
+    expect(el.textContent).toContain(
+      'Group: none · Private: only those taking part and admins can see it'
+    );
+  });
+
+  it('says an existing channel decides who can see the room', async () => {
+    const el = await render();
+    await click(radio(el, 'Existing channel')!);
+    expect(latest.access).toBeNull();
+    expect(el.textContent).toContain('Group: none · The same as the channel');
   });
 
   it('takes an existing channel by its id', async () => {

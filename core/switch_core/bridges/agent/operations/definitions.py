@@ -960,8 +960,8 @@ async def create_room(
     reference_ids: list[str] | None = None,
     package_ids: list[str] | None = None,
     linked_rooms: list[dict[str, str]] | None = None,
-    read_visibility: str = "public",
-    write_visibility: str = "public",
+    read_visibility: str | None = None,
+    write_visibility: str | None = None,
     group_name: str | None = None,
     roles: list[dict[str, Any]] | None = None,
     include_subagents_for: list[str] | None = None,
@@ -1016,11 +1016,14 @@ async def create_room(
             references.
         linked_rooms: Directed links from this room to existing rooms. Each
             entry is `{"target_room_id": "...", "label": "..."}`.
-        read_visibility: "public" (anyone may read) or "private" (owner/admin
-            only). Defaults to "public".
-        write_visibility: "public" (anyone may modify — invite, attach, edit)
-            or "private" (owner/admin only). Defaults to "public". Must not be
-            "public" while read_visibility is "private".
+        read_visibility: Who may see the room: "public" (everyone in the
+            workspace) or "private" (those taking part, its owner and
+            admins). Omit it and the room follows its channel: a private
+            channel or DM makes a private room, a public channel or no
+            channel a public one. Only the owner and admins change a room,
+            whichever it is.
+        write_visibility: Ignored. Accepted so older instructions that pass
+            it still work; a room has no write visibility of its own.
         group_name: Optional existing room group to file this room under (a
             navigation/visualization layer surfaced in the room list and
             graph). Give its path from the top level, e.g. "Fraud/Incidents",
@@ -1083,7 +1086,6 @@ async def create_room(
             package_ids=package_ids,
             linked_rooms=linked_rooms,
             read_visibility=read_visibility,
-            write_visibility=write_visibility,
             group_name=group_name,
             roles=roles,
             aliases=aliases,

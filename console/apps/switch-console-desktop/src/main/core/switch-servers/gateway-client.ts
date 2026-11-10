@@ -126,7 +126,6 @@ import {
   type RoomResourceKind,
   type NewRoomChannel,
   type RoomAccess,
-  visibilityForAccess,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -3752,17 +3751,15 @@ export async function updateRoom(
     description?: string;
     instructions?: string;
     readVisibility?: RoomVisibility;
-    writeVisibility?: RoomVisibility;
   }
 ): Promise<RemoteRoomDetail> {
-  const { readVisibility, writeVisibility, ...fields } = changes;
+  const { readVisibility, ...fields } = changes;
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
     authenticated: true,
     method: 'PATCH',
     body: {
       ...fields,
       ...(readVisibility !== undefined ? { read_visibility: readVisibility } : {}),
-      ...(writeVisibility !== undefined ? { write_visibility: writeVisibility } : {}),
     },
   });
   return mapRoomDetail((await res.json()) as RoomDetailJson);
@@ -4134,13 +4131,11 @@ export async function createRoom(
     /** Null for a new public channel. */
     channel: NewRoomChannel | null;
     groupId: string | null;
-    /** The server's default (open to the workspace) when absent. */
-    /** Null for the server's default. */
+    /** Null takes it from the channel, as the server decides. */
     access: RoomAccess | null;
   }
 ): Promise<RemoteRoomSummary> {
   const channel = params.channel ?? { kind: 'new', private: false };
-  const visibility = params.access ? visibilityForAccess(params.access) : null;
   const res = await gatewayFetch(server, '/rooms', {
     authenticated: true,
     method: 'POST',
@@ -4155,12 +4150,7 @@ export async function createRoom(
         ? { external_channel_id: channel.externalChannelId }
         : { channel_type: channel.private ? 'channel_private' : 'channel_public' }),
       ...(params.groupId ? { group_id: params.groupId } : {}),
-      ...(visibility
-        ? {
-            read_visibility: visibility.readVisibility,
-            write_visibility: visibility.writeVisibility,
-          }
-        : {}),
+      ...(params.access ? { read_visibility: params.access } : {}),
       agent_ids: params.agentIds,
       ...(params.userNames?.length ? { user_names: params.userNames } : {}),
     },

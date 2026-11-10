@@ -197,8 +197,12 @@ class RoomCreateRequest(BaseModel):
     internal_only: bool = False
     external_channel_id: str | None = None
     group_id: str | None = None
-    read_visibility: str = "public"
-    write_visibility: str = "public"
+    # Left out, the room takes it from its channel: a private channel, group
+    # or DM makes a private room, anything else a public one.
+    read_visibility: str | None = None
+    # Accepted from older clients and ignored: a room has no write visibility
+    # of its own any more (see `room_policy`).
+    write_visibility: str | None = None
     roles: list[RoomRoleSpec] | None = None
 
 
@@ -208,6 +212,7 @@ class RoomUpdateRequest(BaseModel):
     instructions: str | None = None
     admin_mode: bool | None = None
     read_visibility: str | None = None
+    # Accepted from older clients and ignored, as on create.
     write_visibility: str | None = None
 
 

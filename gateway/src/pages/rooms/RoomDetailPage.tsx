@@ -50,8 +50,8 @@ import {
 } from "../../data/api";
 import { useAgents, useBridgeUsers, useRoom, useRoomAgentCandidates } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
-import { AccessChip, AccessSelect } from "../../components/AccessControls";
-import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
+import { AccessSelect } from "../../components/AccessControls";
+import type { AccessLevel } from "../../data/visibility";
 import {
   EM_DASH,
   MONO_SX,
@@ -66,7 +66,14 @@ import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
 import RoomResourcesSection from "./RoomResourcesSection";
 import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
 import type { RoomsNotice } from "./RoomsPage";
-import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
+import { RoomAccessChip } from "./RoomAccessChip";
+import {
+  ROOM_ACCESS_HELPERS,
+  ROOM_ACCESS_LEVELS,
+  ROOM_ACCESS_OPTION_LABELS,
+  type RoomAccessLevel,
+  roomAccessOf,
+} from "./roomAccess";
 import {
   channelCleanupText,
   channelKeptText,
@@ -230,6 +237,16 @@ export default function RoomDetailPage() {
 
 // ── Room info (read-only) ───────────────────────────────────────────────────
 
+
+/** On a room with a channel, changing who sees the room leaves the channel
+ * as it is on its platform. */
+const BRIDGED_ROOM_ACCESS_HELPERS: Partial<Record<AccessLevel, string>> = Object.fromEntries(
+  ROOM_ACCESS_LEVELS.map((level) => [
+    level,
+    `${ROOM_ACCESS_HELPERS[level]} The linked channel is not changed.`,
+  ]),
+);
+
 function RoomInfoSection({ room }: { room: RoomDetail }) {
   return (
     <Stack spacing={1}>
@@ -237,7 +254,7 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
         Room info
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
-        <AccessChip pair={room} />
+        <RoomAccessChip room={room} />
         {room.channel_type && (
           <InfoChip
             label="Channel type"
@@ -606,7 +623,7 @@ function EditableFieldsSection({
   const [name, setName] = useState(room.name);
   const [description, setDescription] = useState(room.description);
   const [instructions, setInstructions] = useState(room.instructions ?? "");
-  const [access, setAccess] = useState<AccessLevel>(toAccessLevel(room));
+  const [access, setAccess] = useState<RoomAccessLevel>(roomAccessOf(room));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -614,7 +631,7 @@ function EditableFieldsSection({
     setName(room.name);
     setDescription(room.description);
     setInstructions(room.instructions ?? "");
-    setAccess(toAccessLevel(room));
+    setAccess(roomAccessOf(room));
   }, [room]);
 
   const isBridged = !!room.bridge_id;
@@ -623,7 +640,7 @@ function EditableFieldsSection({
     name !== room.name ||
     description !== room.description ||
     instructions !== (room.instructions ?? "") ||
-    access !== toAccessLevel(room);
+    access !== roomAccessOf(room);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -634,7 +651,7 @@ function EditableFieldsSection({
         description: description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
-        ...(canManage && access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
+        ...(canManage && access !== roomAccessOf(room) ? { read_visibility: access } : {}),
       });
       onSaved();
     } catch (err) {
@@ -685,9 +702,10 @@ function EditableFieldsSection({
       />
       <AccessSelect
         value={access}
-        onChange={setAccess}
+        onChange={(level: AccessLevel) => setAccess(level as RoomAccessLevel)}
         disabled={!canManage || saving}
-        helpers={ROOM_ACCESS_HELPERS}
+        levels={ROOM_ACCESS_LEVELS}
+        helpers={isBridged ? BRIDGED_ROOM_ACCESS_HELPERS : ROOM_ACCESS_HELPERS}
         optionLabels={ROOM_ACCESS_OPTION_LABELS}
         sx={{ maxWidth: 360 }}
       />

@@ -3195,8 +3195,7 @@ class AgentCore:
         reference_ids: list[str] | None = None,
         package_ids: list[str] | None = None,
         linked_rooms: list[dict[str, str]] | None = None,
-        read_visibility: str = "public",
-        write_visibility: str = "public",
+        read_visibility: str | None = None,
         group_name: str | None = None,
         roles: list[dict[str, Any]] | None = None,
         include_subagents_for: list[str] | None = None,
@@ -3306,7 +3305,6 @@ class AgentCore:
                 owner_id=agent.owner_id,
                 group_id=group_id,
                 read_visibility=read_visibility,
-                write_visibility=write_visibility,
                 reference_ids=reference_ids,
                 package_ids=package_ids,
                 linked_rooms=(

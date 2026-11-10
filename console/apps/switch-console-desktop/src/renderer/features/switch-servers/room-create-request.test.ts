@@ -101,12 +101,12 @@ describe('roomCreateRequest', () => {
     const request = roomCreateRequest({
       ...form,
       bridgeId: 'b1',
-      options: { channel: { kind: 'new', private: true }, groupId: 'g1', access: 'read_only' },
+      options: { channel: { kind: 'new', private: true }, groupId: 'g1', access: 'public' },
     });
     expect(request.kind === 'room' && request.params).toMatchObject({
       channel: { kind: 'new', private: true },
       groupId: 'g1',
-      access: 'read_only',
+      access: 'public',
     });
   });
 
