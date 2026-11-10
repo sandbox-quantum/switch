@@ -7,7 +7,10 @@ from typing import Any
 import pytest
 
 from switch_core.bridges.collaboration.adapter import ChannelNotBindable
-from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
+from switch_core.bridges.collaboration.models import (
+    ChannelCreationUnsupported,
+    CreatedChannel,
+)
 from switch_core.room_service import RoomService
 
 
@@ -33,6 +36,7 @@ class _FakeRoomStore:
         self._room = room
         self._agent_ids = agent_ids
         self.update_bridge_calls: list[dict[str, Any]] = []
+        self.created_channel_names: list[tuple[str, str]] = []
 
     async def get(self, session: Any, room_id: str) -> Any:
         return self._room
@@ -58,6 +62,11 @@ class _FakeRoomStore:
             }
         )
 
+    async def set_created_channel_name(
+        self, session: Any, room_id: str, channel_name: str
+    ) -> None:
+        self.created_channel_names.append((room_id, channel_name))
+
 
 class _FakeAgentStore:
     def __init__(self, names: dict[str, str]) -> None:
@@ -80,9 +89,9 @@ class _FakeAdapter:
 
     async def create_channel(
         self, name: str, topic: str, *, channel_type: str = "channel_public"
-    ) -> str:
+    ) -> CreatedChannel:
         self._events.append(("create_channel", name, topic, channel_type))
-        return self._new_channel_id
+        return CreatedChannel(id=self._new_channel_id, name=name)
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]
@@ -238,6 +247,8 @@ class TestChangeBridge:
                 "external_channel_id": "chan-new",
             }
         ]
+        # The channel made for the room is the one the room now follows.
+        assert room_store.created_channel_names == [("room-1", "Work")]
         # Agents were re-added to the new channel; users are NOT carried over.
         assert ("add_agents", "chan-new", ["agent.one", "agent.two"]) in events
         assert not any(e[0] in ("add_users", "ensure_users") for e in events)

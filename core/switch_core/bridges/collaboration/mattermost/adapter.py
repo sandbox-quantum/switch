@@ -63,6 +63,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -2016,7 +2017,7 @@ class MattermostAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+    ) -> CreatedChannel:
         if not self._admin_driver or not self._main_loop:
             raise RuntimeError("Cannot create channel: Mattermost client not connected")
 
@@ -2065,7 +2066,7 @@ class MattermostAdapter(PlatformAdapter):
             channel_id = channel["id"]
 
         await self._add_default_member(channel_id)
-        return channel_id
+        return CreatedChannel(id=channel_id, name=channel.get("display_name") or name)
 
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         """Archive the channel: Mattermost's channel DELETE archives unless
@@ -2782,6 +2783,47 @@ class MattermostAdapter(PlatformAdapter):
 
     # ── WebSocket handling ───────────────────────────────────────────────────
 
+    def _first_sighting(self, post_id: str) -> bool:
+        """Whether this post is new to the bridge. Every agent's bot holds a
+        socket of its own, so a post in a channel several of them are in
+        arrives once per bot."""
+        with self._seen_lock:
+            if post_id in self._seen_post_ids:
+                return False
+            self._seen_post_ids[post_id] = None
+            if len(self._seen_post_ids) > self._seen_post_ids_max:
+                self._seen_post_ids.popitem(last=False)
+            return True
+
+    async def _handle_display_name_change(self, post: dict[str, Any]) -> None:
+        """Mattermost posts a system line into a channel whose display name
+        changed, carrying the old and the new one. The display name is what
+        a room adopted from the channel is named after, so it is what the room
+        follows. Runs on a bot's socket loop, so the bridge is handed the
+        rename on the main loop, as a message is."""
+        if not self._first_sighting(post.get("id", "")):
+            return
+        props = post.get("props") or {}
+        channel_id = str(post.get("channel_id") or "")
+        new_name = str(props.get("new_displayname") or "")
+        if not channel_id or not new_name:
+            logger.warning(
+                "Mattermost display-name change without a channel or a new "
+                "name, skipping post %s",
+                post.get("id"),
+            )
+            return
+        loop = self._main_loop
+        if loop is None:
+            raise RuntimeError("Cannot handle a channel rename: adapter not started")
+        if self._on_channel_named is not None:
+            self._dispatch(
+                self._on_channel_named(
+                    channel_id, str(props.get("old_displayname") or ""), new_name
+                ),
+                loop,
+            )
+
     async def _ws_handler(self, event_data: str, agent_name: str) -> None:
         try:
             event = json.loads(event_data)
@@ -2809,6 +2851,9 @@ class MattermostAdapter(PlatformAdapter):
 
         user_id = post.get("user_id", "")
         post_type = post.get("type", "")
+        if post_type == "system_displayname_change":
+            await self._handle_display_name_change(post)
+            return
         if post_type:
             return
 
@@ -2816,12 +2861,8 @@ class MattermostAdapter(PlatformAdapter):
             return
 
         post_id = post.get("id", "")
-        with self._seen_lock:
-            if post_id in self._seen_post_ids:
-                return
-            self._seen_post_ids[post_id] = None
-            if len(self._seen_post_ids) > self._seen_post_ids_max:
-                self._seen_post_ids.popitem(last=False)
+        if not self._first_sighting(post_id):
+            return
 
         channel_id = post.get("channel_id", "")
         message = post.get("message", "")

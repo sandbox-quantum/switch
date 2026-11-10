@@ -48,6 +48,19 @@ class RetireOutcome(BaseModel):
         return cls(outcome="failed", reason=reason)
 
 
+class CreatedChannel(BaseModel):
+    """A channel a bridge provisioned for a room.
+
+    `name` is the name the platform shows for it, in the form the bridge
+    reports when the channel is renamed. It can differ from what was asked
+    for: the platform's naming rules applied, and a suffix where the name was
+    taken.
+    """
+
+    id: str
+    name: str
+
+
 class ChannelCreationUnsupported(ValueError):
     """Raised when a bridge will not create a channel for a new room.
 

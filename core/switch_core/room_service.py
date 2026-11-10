@@ -642,6 +642,9 @@ class RoomService:
             raise ValueError("user_external_id is only for a direct room on a bridge.")
 
         user_external_id = config.user_external_id
+        # The name of a channel made here for the room, which the room then
+        # follows through the channel's renames (`NAME_SOURCE_KEY`).
+        created_channel_name: str | None = None
         if collaboration_core and external_channel_id is None:
             await self._require_channel_creation(bridge_id)  # type: ignore[arg-type]
             if is_dm:
@@ -671,11 +674,13 @@ class RoomService:
                     )
                 )
             else:
-                external_channel_id = await collaboration_core.adapter.create_channel(
+                created = await collaboration_core.adapter.create_channel(
                     config.name,
                     config.description,
                     channel_type=channel_type,
                 )
+                external_channel_id = created.id
+                created_channel_name = created.name
 
         # Guard the channel from the moment it exists until the room↔channel
         # mapping is registered. Creating the channel makes the bot auto-join
@@ -733,6 +738,14 @@ class RoomService:
                             LINKED_CHANNEL_NAME_KEY: config.named_after_channel,
                         }
                         if config.named_after_channel is not None
+                        else {}
+                    ),
+                    **(
+                        {
+                            NAME_SOURCE_KEY: "created",
+                            LINKED_CHANNEL_NAME_KEY: created_channel_name,
+                        }
+                        if created_channel_name is not None
                         else {}
                     ),
                 },
@@ -1263,14 +1276,25 @@ class RoomService:
         self.room_changed(tenant_id, room_id)
 
     async def follow_channel_name(
-        self, room_id: str, name: str, channel_name: str, legacy_name: str
+        self,
+        room_id: str,
+        *,
+        old_name: str,
+        new_name: str,
+        bridge_display_name: str,
+        channel_name_for: Callable[[str], str],
     ) -> bool:
         """Rename a bridged room after its renamed channel when it still follows
         the channel (`RoomStore.follow_channel_name`); False when it does not."""
         tenant_id = await self._room_tenant(room_id)
         async with tenant_session(self._session_factory, tenant_id) as session:
             followed = await self._room_store.follow_channel_name(
-                session, room_id, name, channel_name, legacy_name
+                session,
+                room_id,
+                old_name=old_name,
+                new_name=new_name,
+                bridge_display_name=bridge_display_name,
+                channel_name_for=channel_name_for,
             )
             await session.commit()
         if followed:
@@ -1447,11 +1471,14 @@ class RoomService:
         await self._require_tenant_bridge(bridge_id)
         collaboration_core = self._collab_lifecycle.get(bridge_id)
 
+        created_channel_name: str | None = None
         if external_channel_id is None and collaboration_core is not None:
             await self._require_channel_creation(bridge_id)
-            external_channel_id = await collaboration_core.adapter.create_channel(
+            created = await collaboration_core.adapter.create_channel(
                 room.name, room.description
             )
+            external_channel_id = created.id
+            created_channel_name = created.name
 
         async with tenant_session(self._session_factory, room.tenant_id) as session:
             await self._room_store.update_bridge(
@@ -1461,6 +1488,10 @@ class RoomService:
                 channel_type=channel_type,
                 external_channel_id=external_channel_id,
             )
+            if created_channel_name is not None:
+                await self._room_store.set_created_channel_name(
+                    session, room_id, created_channel_name
+                )
             await session.commit()
 
         if collaboration_core and external_channel_id:
@@ -1583,13 +1614,16 @@ class RoomService:
             channel_type or room.channel_type or "channel_public"  # type: ignore[assignment]
         )
 
+        created_channel_name: str | None = None
         if external_channel_id is None:
             await self._require_channel_creation(bridge_id)
-            external_channel_id = await new_bridge.adapter.create_channel(
+            created = await new_bridge.adapter.create_channel(
                 room.name,
                 room.description,
                 channel_type=resolved_channel_type,
             )
+            external_channel_id = created.id
+            created_channel_name = created.name
         else:
             await new_bridge.adapter.require_bindable_channel(external_channel_id)
 
@@ -1609,6 +1643,10 @@ class RoomService:
                         channel_type=resolved_channel_type,
                         external_channel_id=external_channel_id,
                     )
+                    if created_channel_name is not None:
+                        await self._room_store.set_created_channel_name(
+                            session, room_id, created_channel_name
+                        )
                     await session.commit()
 
                 new_bridge.add_room_mapping(
