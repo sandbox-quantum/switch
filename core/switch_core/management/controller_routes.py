@@ -101,7 +101,7 @@ class ControllerRoute(ManagementRoute):
                     error_body(
                         reason_codes.PROTOCOL_UNSUPPORTED,
                         f"Controller protocol {requested!r} is not supported; "
-                        f"this server accepts {SUPPORTED_PROTOCOLS}.",
+                        f"Switch accepts {SUPPORTED_PROTOCOLS}.",
                         retryable=False,
                     ),
                     status_code=426,
@@ -681,7 +681,7 @@ def _socket_principal(websocket: WebSocket, controller_id: str) -> ControllerPri
             426,
             reason_codes.PROTOCOL_UNSUPPORTED,
             f"Controller protocol {requested!r} is not supported; "
-            f"this server accepts {SUPPORTED_PROTOCOLS}.",
+            f"Switch accepts {SUPPORTED_PROTOCOLS}.",
         )
     return require_controller(controller_id, get_controller_principal(websocket))
 

@@ -212,8 +212,7 @@ class AgentTemplates:
         if size > self._max_bytes:
             raise AgentRefused(
                 "too_large",
-                f"The template is {size} bytes, over this server's limit of "
-                f"{self._max_bytes}.",
+                f"The template is {size} bytes, over the limit of {self._max_bytes}.",
             )
         lint = lint_template(content)
         if lint.blocked:

@@ -125,6 +125,7 @@ export default function TemplateDetailPage() {
               resourceId={id}
               resourceLabel={template.name || id}
               ownerId={template.owner_id}
+              blockedReason={null}
               onTransferred={() => navigate(0)}
             />
             <Divider />
