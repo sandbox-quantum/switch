@@ -45,6 +45,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **`switch-purge-organization` deletes an organization when its owner
+  asks.** Run where switch-core runs, it shows what would go and what stays;
+  with `--execute --request REFERENCE` it ends the organization's messaging
+  app installs, revokes its service sign-ins, tears down its cloud machines,
+  then deletes every workspace with everything in it, the organization, and
+  the accounts that belonged to nothing else. It waits, and says so, while a
+  machine or token is still live outside Switch. WorkOS is left alone; the
+  command lists what to remove there.
 - **A one-screen Datadog board and alerts that say what to do.**
   `deploy/observability/signal-board.json` shows the four golden signals
   (latency, traffic, errors, saturation) plus whether agents are connected and
@@ -69,8 +77,23 @@ version of their own to them without also giving them a release of their own.
   `alerted` or `errored`. A message Switch Trust left alone has no `trust`
   field, so its result is as before. Until now an agent whose words were
   redacted had no way to know.
+- **How many users and agents each workspace has.** `GET /gateway/tenants/counts`
+  answers for every workspace the caller may enter, counting people as the
+  workspace's members list shows them: its members, and its organization's
+  admins who are not one. The dashboard's new workspace switcher reads it.
+- **A dev-only role switcher for the dashboard.** `just seed-dev-roles`
+  creates local test accounts for an org admin, a workspace admin and a
+  member, plus a second workspace only the org admin can open, and
+  `just gateway-dev`, on a server with `gateway_v2` on, shows a **Role:**
+  control in the top bar that signs in as any of them, or as the operator from
+  `.env`, so a page can be checked as each role. Switching is an ordinary
+  sign-in, so every check is the server's own. A production build leaves the
+  switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
+- **The dashboard no longer claims the system is healthy.** The "System
+  healthy" indicator in its top bar was hard-coded and never checked anything,
+  so it is gone.
 - **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
   `GATEWAY_PASSWORD_LOGIN_ENABLED=false` the admin account is seeded without a
   password, and the first OIDC sign-in with `GATEWAY_ADMIN_EMAIL` links to it.
@@ -94,6 +117,17 @@ version of their own to them without also giving them a release of their own.
   an app or by Telegram's anonymous group admins. switch-core logs a warning
   each time a notice goes to the channel for want of a private route. Notices
   about an agent's message are still posted for the room.
+
+#### Fixed
+- **Managed agents no longer flip to "Connecting" every few seconds.** A
+  controller from a released Switch Console calls its socket dead after 10
+  seconds without a frame, and since the server pings every 10 seconds it
+  dropped a healthy socket whenever a ping came a moment late. A controller's
+  socket is now pinged every 5 seconds. With two switch-core pods, a
+  controller reattaching through the other pod was also refused and had to
+  open a new connection, because the pod holding the socket noticed it had
+  closed only at its next ping. It now lets the socket go as it closes, and
+  the other pod takes the connection up.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
@@ -253,6 +287,11 @@ version of their own to them without also giving them a release of their own.
   being built, so turn it on for development and staging only. With it off,
   the dashboard is laid out as before, and the new URLs lead back to today's
   pages.
+- **The new layout's Overview counts the workspace's agents, users and
+  rooms.** Each card opens its list, and View graph opens the ecosystem
+  graph, which leaves the new rail. A workspace's admins see its totals; a
+  member sees the agents they own and the rooms they take part in, marked
+  "Yours", and every user. A count that cannot be read shows a dash and why.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
@@ -337,6 +376,22 @@ version of their own to them without also giving them a release of their own.
   of the rooms it is in they may not read. All are decided by the same
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
+- **OAuth catalog entries can opt into MCP identity and unscoped consent.**
+  An entry can name a read-only MCP tool that identifies the account. The
+  tool takes no arguments and must name one account. Otherwise sign-in fails
+  with a fixed reason. Core reads only the input schema's `type` and
+  `required`, and refuses a tool that is not `type: object` or names a
+  required property.
+  It does not check the result against the tool's output schema. If the MCP
+  server refuses with a 4xx other than 401 or 429, the message gives the
+  status. The identity call reaches only what the outbound policy allows
+  (`OUTBOUND_ALLOWED_PRIVATE_HOSTS`). `account_id` can list 2 to 8 paths,
+  joined into one id, so a person in two accounts has two connections. An
+  entry whose vendor has no OAuth scopes can leave out `scope`. Its sign-ins
+  are always read and write, and it has no access profiles. For a discovered
+  server, Core now sends the `resource` that the server advertises. Core
+  accepts it only if it is the server's URL, or a parent path on the same
+  origin, with no query or fragment.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -840,6 +895,12 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **A room's detail says whether the caller takes part in it, and whether
+  it is a Switch Console chat.** The gateway's `GET /rooms/{id}`, and the
+  room it returns from a create or change, always answered
+  `viewer_is_member: false` and `is_console_chat: false`, so Console's room
+  settings named a Console chat's messaging app "None". Both now say what
+  the room list says.
 - **`!list-documents` and `!list-references` answer again.** Since they began
   listing what a room's packages bring, both failed on the admin client that
   runs them, and the channel got no answer at all.

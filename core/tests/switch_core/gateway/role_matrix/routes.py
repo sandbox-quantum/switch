@@ -205,6 +205,7 @@ ROUTES: dict[str, Case] = {
     ),
     # ── Workspaces ───────────────────────────────────────────────────────
     "GET /gateway/tenants": get(f"{G}/tenants", SELF),
+    "GET /gateway/tenants/counts": get(f"{G}/tenants/counts", SELF),
     "GET /gateway/tenants/current": get(f"{G}/tenants/current", SELF),
     "POST /gateway/tenants": post(f"{G}/tenants", SELF, json={"name": "{tag}-ws"}),
     "POST /gateway/tenants/{tenant_id}/switch": post(f"{W}/switch", SELF),

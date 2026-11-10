@@ -196,6 +196,7 @@ from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
+from switch_core.management.signals import REVOKED_SIGNAL
 from switch_core.management.template_updates import TemplateUpdates
 from switch_core.management.wiring import Management, create_management
 from switch_core.members_service import MembersService
@@ -1364,7 +1365,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         public_url=config.gateway_public_url,
         server_name=config.id_server_name,
     )
-    connector_apps = _connector_apps(
+    connector_apps = build_connector_apps(
         config,
         session_factory=session_factory,
         http=service_http,
@@ -1514,7 +1515,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         if config.organization_connector_apps_enabled
         else None
     )
-    service_broker = _service_broker(
+    service_broker = build_service_broker(
         config,
         connector_apps,
         organization_apps,
@@ -2355,7 +2356,7 @@ async def _bootstrap_key_tenant(
     return TENANT_ZERO_ID
 
 
-def _connector_apps(
+def build_connector_apps(
     config: SwitchConfig,
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -2375,7 +2376,18 @@ def _connector_apps(
     )
 
 
-def _service_broker(
+def controller_removal_publisher(signals: SignalBus) -> Callable[[str], None]:
+    """Tells every process a machine's controller is gone, as revoking it
+    does, for a process that runs no agent management of its own: the
+    operator's organization purge (`purge_organization.py`)."""
+
+    def publish(controller_id: str) -> None:
+        signals.publish(REVOKED_SIGNAL, controller_id=controller_id)
+
+    return publish
+
+
+def build_service_broker(
     config: SwitchConfig,
     connector_apps: ConnectorApps,
     organization_apps: OrganizationApps | None,

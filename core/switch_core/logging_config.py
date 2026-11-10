@@ -21,7 +21,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from switch_core.config import SwitchConfig
-from switch_core.logging_context import CONTEXT_FIELDS, LogContextFilter
+from switch_core.logging_context import (
+    CONTEXT_FIELDS,
+    LogContextFilter,
+    McpIdentityDiagnosticFilter,
+)
 
 _configured = False
 
@@ -159,6 +163,8 @@ def build_handler(
     else:
         handler.setFormatter(TextFormatter(process_id))
     handler.addFilter(AccessQueryRedaction())
+    # The MCP SDK also logs vendor messages on the root logger.
+    handler.addFilter(McpIdentityDiagnosticFilter())
     handler.addFilter(LogContextFilter(config.tenant_id))
     return handler
 

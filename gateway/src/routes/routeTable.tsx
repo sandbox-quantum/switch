@@ -46,6 +46,7 @@ import OrganizationPage, {
   OrganizationUsersPage,
   OrganizationWorkspacesPage,
 } from "../pages/organization/OrganizationPage";
+import OverviewPage from "../pages/overview/OverviewPage";
 import RegistrationKeysPage from "../pages/registration-keys/RegistrationKeysPage";
 import DocumentDetailPage from "../pages/resources/DocumentDetailPage";
 import PackageDetailPage from "../pages/resources/PackageDetailPage";
@@ -165,7 +166,7 @@ const orgConnectors = allOf(organizationAdminsOnly, serviceConnections, organiza
 export const ROUTES: readonly AppRoute[] = [
   redirect("/", CURRENT, "/rooms"),
   redirect("/", V2, "/overview"),
-  page("/overview", V2, everyone, <PlannedPage title="Overview" />),
+  page("/overview", V2, everyone, <OverviewPage />),
   redirect("/overview", CURRENT, "/"),
 
   page("/ecosystem", BOTH, everyone, <EcosystemGraphPage />),
@@ -343,6 +344,16 @@ export function accessTo(path: string, layout: Layout, caps: Capabilities): Acce
     : allOf(AREAS[route.area].access, route.access)(caps);
 }
 
+/** The settings area `pathname` (a page's own URL) is in, in `layout`, or
+ * null when it is in none. */
+export function areaOf(pathname: string, layout: Layout): SettingsArea | null {
+  for (const route of routesFor(layout)) {
+    if (route.kind === "redirect" || route.path !== pathname) continue;
+    return route.area ?? null;
+  }
+  return null;
+}
+
 /** The pages of `area`'s menu that `caps` may open, in order. */
 export function menuOf(
   area: SettingsArea,
@@ -364,15 +375,18 @@ export interface RailItem {
   icon: ComponentType<{ sx?: object }>;
   /** The paths under which the item shows as the current one. */
   activeFor: readonly string[];
+  /** Kept at the foot of the rail, beside the account button: an area for
+   * settings rather than for work. */
+  bottom: boolean;
 }
 
 function railItem(
   label: string,
   to: string,
   icon: ComponentType<{ sx?: object }>,
-  activeFor: readonly string[] = [to],
+  { activeFor = [to], bottom = false }: { activeFor?: readonly string[]; bottom?: boolean } = {},
 ): RailItem {
-  return { label, to, icon, activeFor };
+  return { label, to, icon, activeFor, bottom };
 }
 
 /** The rail, in order, for each layout. An item shows only to someone who may
@@ -393,17 +407,21 @@ export const RAIL: Record<Layout, readonly RailItem[]> = {
     railItem("Users", "/users", PeopleOutlined),
     railItem("Connectors", "/connectors", PowerOutlined),
   ],
-  // Ecosystem keeps a rail item until Overview links to the graph.
+  // The ecosystem graph is opened from Overview, which shows as current there.
   v2: [
-    railItem("Overview", "/overview", DashboardOutlined),
+    railItem("Overview", "/overview", DashboardOutlined, {
+      activeFor: ["/overview", "/ecosystem"],
+    }),
     railItem("Agents", "/agents", SmartToyOutlined),
     railItem("Rooms", "/rooms", MeetingRoomOutlined),
     railItem("Templates", "/templates", DescriptionOutlined),
     railItem("Connectors", "/connectors", PowerOutlined),
     railItem("Resources", "/resources", FolderOutlined),
-    railItem("Ecosystem", "/ecosystem", AccountTreeOutlined),
-    railItem("Settings", "/settings", SettingsOutlined, ["/settings", "/usage"]),
-    railItem("Platform", "/platform", AdminPanelSettingsOutlined),
+    railItem("Settings", "/settings", SettingsOutlined, {
+      activeFor: ["/settings", "/usage"],
+      bottom: true,
+    }),
+    railItem("Platform", "/platform", AdminPanelSettingsOutlined, { bottom: true }),
   ],
 };
 

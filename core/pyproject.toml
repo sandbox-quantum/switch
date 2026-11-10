@@ -56,6 +56,7 @@ Issues = "https://github.com/sandbox-quantum/switch/issues"
 switch-core = "switch_core.main:main"
 switch-migrate = "switch_core.main:migrate"
 switch-link-workos = "switch_core.workos_linking:main"
+switch-purge-organization = "switch_core.purge_organization:main"
 
 [build-system]
 requires = ["hatchling"]
