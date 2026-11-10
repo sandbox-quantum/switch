@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../../data/api";
 import * as hooks from "../../data/hooks";
@@ -136,17 +136,14 @@ describe("RoomResourcesSection", () => {
   });
 
   it("asks before deleting a room document, which cannot be undone", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<RoomResourcesSection roomId="r1" canWrite canUnlink />);
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Notes" }));
-    expect(confirm).toHaveBeenCalledWith(
-      "Delete room document “Notes”? This cannot be undone.",
-    );
+    const dialog = await screen.findByRole("dialog", { name: "Delete Notes?" });
+    expect(dialog.textContent).toContain("This cannot be undone.");
     expect(api.detachDocumentFromRoom).not.toHaveBeenCalled();
 
-    confirm.mockReturnValue(true);
-    fireEvent.click(screen.getByRole("button", { name: "Delete Notes" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete document" }));
     await waitFor(() => expect(api.detachDocumentFromRoom).toHaveBeenCalledWith("r1", "d2"));
   });
 });
