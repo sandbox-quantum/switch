@@ -349,10 +349,10 @@ describe("ServiceAccessSection", () => {
     expect(screen.getByRole("switch", { name: /for helper/ })).toHaveProperty("disabled", true);
   });
 
-  it("says GitHub is not set up, rather than an error, when its App is not", async () => {
+  it("says GitHub is not set up, rather than an error, when its App is not, and asks for no connection", async () => {
     const reason =
       "GitHub is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.";
-    mockServer(NONE, [
+    const calls = mockServer(NONE, [
       onOff("not_connected", {
         slug: "github",
         name: "GitHub",
@@ -363,5 +363,6 @@ describe("ServiceAccessSection", () => {
     ]);
     render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(reason)).toBeTruthy();
+    expect(calls.map((call) => call.path)).not.toContain("/gateway/provider-connections/github");
   });
 });
