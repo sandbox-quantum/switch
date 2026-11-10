@@ -225,6 +225,16 @@ def _invitation_detail(invitation: Invitation) -> InvitationDetail:
     return InvitationDetail(**_invitation_fields(invitation))
 
 
+LAST_ADMIN_REFUSAL = (
+    "This is the workspace's last admin. Make someone else an admin first."
+)
+
+SERVICE_ACCOUNT_ROLE_REFUSAL = (
+    "Agents added with the shared registration token act with this account's "
+    "role, so it can't be made an admin."
+)
+
+
 def _member_detail(
     user: User,
     membership: TenantMember,
@@ -232,11 +242,24 @@ def _member_detail(
     *,
     caller_id: str,
     administers: bool,
+    admin_count: int,
 ) -> MemberDetail:
+    """`admin_count` is the tenant's admin memberships, read without a lock:
+    the reasons it gives are what the routes would answer now, and the routes
+    check again, locked, when asked."""
     may_change = can_change_workspace_member(
         administers=administers,
         member_is_organization_admin=organization_role == ORGANIZATION_ADMIN_ROLE,
     )
+    last_admin = membership.role == "admin" and admin_count <= 1
+    change_refusal: str | None = None
+    remove_refusal: str | None = None
+    if may_change:
+        if last_admin:
+            change_refusal = remove_refusal = LAST_ADMIN_REFUSAL
+        elif membership.role != "admin" and is_bootstrap_owner(user):
+            # Admin is the only other role, so there is nothing to change it to.
+            change_refusal = SERVICE_ACCOUNT_ROLE_REFUSAL
     return MemberDetail(
         user_id=user.id,
         name=user.name,
@@ -246,8 +269,10 @@ def _member_detail(
         service_account=is_bootstrap_owner(user),
         organization_role=organization_role,
         via_organization=False,
-        can_change_role=may_change,
-        can_remove=may_change,
+        can_change_role=may_change and change_refusal is None,
+        change_role_blocked_reason=change_refusal,
+        can_remove=may_change and remove_refusal is None,
+        remove_blocked_reason=remove_refusal,
         can_receive_transfer=user.id != caller_id,
     )
 
@@ -1788,6 +1813,7 @@ async def list_members(
             if member.role == ORGANIZATION_ADMIN_ROLE:
                 organization_admins.append((person, member))
     members = await user_store.list_tenant_members(session)
+    admin_count = sum(1 for _, membership in members if membership.role == "admin")
     roster = [
         _member_detail(
             person,
@@ -1795,6 +1821,7 @@ async def list_members(
             organization_roles.get(person.id),
             caller_id=caller_id,
             administers=is_admin,
+            admin_count=admin_count,
         )
         for person, membership in members
     ]
@@ -1812,7 +1839,9 @@ async def list_members(
             # Changed only through the organization's members; and a transfer
             # needs a membership here, which they don't hold.
             can_change_role=False,
+            change_role_blocked_reason=None,
             can_remove=False,
+            remove_blocked_reason=None,
             can_receive_transfer=False,
         )
         for person, member in organization_admins
@@ -1843,6 +1872,10 @@ async def update_member_role(
     if membership is None:
         raise HTTPException(status_code=404, detail="Not a member of this workspace")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
+    user = await user_store.get(session, user_id)
+    assert user is not None
+    if role == "admin" and membership.role != "admin" and is_bootstrap_owner(user):
+        raise HTTPException(status_code=409, detail=SERVICE_ACCOUNT_ROLE_REFUSAL)
 
     if membership.role == "admin" and role != "admin":
         if await user_store.lock_admins(session) <= 1:
@@ -1861,14 +1894,13 @@ async def update_member_role(
     membership.role = role
     await session.commit()
 
-    user = await user_store.get(session, user_id)
-    assert user is not None
     return _member_detail(
         user,
         membership,
         await user_store.organization_role(session, tenant_id, user_id),
         caller_id=admin.id,
         administers=True,
+        admin_count=await user_store.count_admins(session),
     )
 
 
