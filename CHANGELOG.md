@@ -499,6 +499,13 @@ version of their own to them without also giving them a release of their own.
   and widens their next connection. Disconnecting or reconnecting says so and
   where in Airtable to remove it, as any OAuth service without revocation now
   does rather than reporting a failed revoke.
+- **The Notion connection.** A person connects Notion from Switch Console,
+  picks the workspace at Notion's consent screen, and a granted agent searches,
+  reads and updates its pages, databases and comments, as them, through
+  Notion's remote MCP server. Core registers its own client, so nothing is set
+  up on the server. A Notion MCP token reaches only Notion MCP, so live
+  identity is verified using RFC 7662 introspection, identifying the connection
+  by its workspace and user; every other entry keeps its call.
 - **Connector apps set up Airtable.** An app's entry in `GET /connector-apps`
   gains `redirect_uris` (every address to register), `needs_public_url` and
   `scopes`. The dashboard's Connectors page walks Airtable's Builder Hub, with

@@ -178,15 +178,34 @@ class OAuthClient(BaseModel):
         return self
 
 
+IdentityPath = Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
+
+
 class ConnectionIdentity(BaseModel):
     """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    token, or RFC 7662 introspection using the OAuth client's authentication,
+    and the dotted paths in its JSON answer to the id and to a label people
+    recognise. Composite ids are colon-separated tuples of the named fields."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
-    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    method: Literal["GET", "introspection"] = "GET"
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    account_id: (
+        IdentityPath | Annotated[list[IdentityPath], Field(min_length=1, max_length=8)]
+    )
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "ConnectionIdentity":
+        if self.method == "GET" and self.url is None:
+            raise ValueError("GET identity needs a url")
+        if self.method == "introspection" and self.url is not None:
+            raise ValueError("introspection uses the discovered endpoint, not a url")
+        if isinstance(self.account_id, list) and len(set(self.account_id)) != len(
+            self.account_id
+        ):
+            raise ValueError("composite identity paths must be distinct")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
