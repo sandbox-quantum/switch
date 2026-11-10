@@ -41,13 +41,14 @@ import {
   createRoomRole,
   deleteRoom,
   deleteRoomRole,
+  invitableAgents,
   removeRoomAgent,
   setRoomAgentJoinEvents,
   unarchiveRoom,
   updateRoom,
   updateRoomRole,
 } from "../../data/api";
-import { useAgents, useBridgeUsers, useRoom } from "../../data/hooks";
+import { useAgents, useBridgeUsers, useRoom, useRoomAgentCandidates } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
@@ -707,6 +708,8 @@ function ParticipantsSection({
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading } = useAgents();
+  // Only the agents the server's invite rule lets the viewer bring in.
+  const { data: candidates, loading: candidatesLoading } = useRoomAgentCandidates(room.id);
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -720,7 +723,7 @@ function ParticipantsSection({
 
   const addableAgentOptions = useMemo<PickerOption[]>(
     () =>
-      (allAgents ?? [])
+      invitableAgents(allAgents ?? [], candidates?.agent_ids)
         .filter((a) => !room.agent_ids.includes(a.id))
         .map((a) => ({
           id: a.id,
@@ -728,7 +731,7 @@ function ParticipantsSection({
           secondary: a.connector_type ?? "",
           search: `${a.name} ${a.connector_type ?? ""}`.toLowerCase(),
         })),
-    [allAgents, room.agent_ids],
+    [allAgents, candidates, room.agent_ids],
   );
 
   // Subagent counts, so the add-agent picker can offer "include subagents"
@@ -868,7 +871,7 @@ function ParticipantsSection({
               searchPlaceholder="Search agents…"
               submitLabel="Add"
               options={addableAgentOptions}
-              loading={agentsLoading}
+              loading={agentsLoading || candidatesLoading}
               subToggleCount={(id) => childCountByParent.get(id) ?? 0}
               subToggleLabel={(n) => `Also add ${n} subagent(s)`}
               onClose={() => setAddAgentOpen(false)}

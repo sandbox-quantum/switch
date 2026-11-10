@@ -759,6 +759,30 @@ export async function loadAgents(): Promise<AgentListEntry[]> {
   return jsonRequest<AgentListEntry[]>("/agents", "GET");
 }
 
+/**
+ * The agents the viewer may bring in, as the server's invite rule decides: into
+ * `roomId`, less those already in it, or into a new room when it is absent.
+ * `agent_ids` is null when the server cannot say (one from before the route),
+ * where a picker offers every agent and leaves the refusal to the invite.
+ */
+export async function fetchRoomAgentCandidates(
+  roomId?: string,
+): Promise<{ agent_ids: string[] | null }> {
+  const query = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
+  const answer = await fetchJson<{ agent_ids: string[] }>(`/rooms/agent-candidates${query}`);
+  return { agent_ids: answer?.agent_ids ?? null };
+}
+
+/** Of `agents`, the ones a picker may offer given the candidates: all when unknown. */
+export function invitableAgents<T extends { id: string }>(
+  agents: readonly T[],
+  candidateIds: readonly string[] | null | undefined,
+): T[] {
+  if (!candidateIds) return [...agents];
+  const allowed = new Set(candidateIds);
+  return agents.filter((agent) => allowed.has(agent.id));
+}
+
 export async function fetchAgent(agentId: string): Promise<AgentDetail | null> {
   return fetchJson<AgentDetail>(`/agents/${agentId}`);
 }

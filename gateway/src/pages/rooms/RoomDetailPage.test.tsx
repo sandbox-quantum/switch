@@ -19,6 +19,7 @@ vi.mock("../../data/hooks", () => ({
   useAgents: vi.fn(),
   useBridgeUsers: vi.fn(),
   useRoom: vi.fn(),
+  useRoomAgentCandidates: vi.fn(),
   useRoomGroups: vi.fn(),
 }));
 
@@ -150,6 +151,12 @@ describe("RoomDetailPage permissions", () => {
       error: null,
       refetch: vi.fn(),
     });
+    vi.mocked(hooks.useRoomAgentCandidates).mockReturnValue({
+      data: { agent_ids: null },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
     vi.mocked(api.updateRoom).mockResolvedValue(room);
   });
 
@@ -203,6 +210,31 @@ describe("RoomDetailPage permissions", () => {
 
     screen.getByRole("button", { name: "Add agent" });
     expect(screen.queryByRole("button", { name: "Remove planner" })).toBeNull();
+  });
+
+  it("lists only the agents the viewer may invite in the add-agent picker", async () => {
+    vi.mocked(hooks.useAgents).mockReturnValue({
+      data: [
+        agent,
+        { id: "a2", name: "helper", parent_agent_id: null } as AgentSummary,
+        { id: "a3", name: "someone-elses", parent_agent_id: null } as AgentSummary,
+      ],
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    vi.mocked(hooks.useRoomAgentCandidates).mockReturnValue({
+      data: { agent_ids: ["a2"] },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    viewAs({ can_write: false, can_manage: false, can_unlink: true, can_invite_agents: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
+
+    expect(await screen.findByText("helper")).toBeTruthy();
+    expect(screen.queryByText("someone-elses")).toBeNull();
   });
 
   it("doesn't offer adding an agent to someone who isn't in the room", () => {
