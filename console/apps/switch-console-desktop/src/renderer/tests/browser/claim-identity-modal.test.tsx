@@ -67,6 +67,7 @@ const SLACK: RemoteBridge = {
   displayName: 'Acme Slack',
   status: 'active',
   isDefault: false,
+  preconfigured: null,
   homeUrl: null,
   channelCreationSupported: true,
   canCreateChannels: true,

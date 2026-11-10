@@ -73,6 +73,7 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     displayName: 'Slack Test',
     status: 'active',
     isDefault: false,
+    preconfigured: null,
     homeUrl: null,
     channelCreationSupported: true,
     canCreateChannels: true,

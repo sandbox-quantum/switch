@@ -506,7 +506,7 @@ describe('room creation', () => {
     vi.unstubAllGlobals();
   });
 
-  it('maps the bridge list, defaulting is_default and home_url when absent', async () => {
+  it('maps the bridge list, defaulting is_default, preconfigured and home_url when absent', async () => {
     // `home_url` post-dates the pinned switch-core, so a current server omits
     // it entirely — that has to read as "no link", not undefined.
     fetchMock.mockResolvedValue(
@@ -517,6 +517,7 @@ describe('room creation', () => {
           display_name: 'Mattermost',
           status: 'active',
           is_default: true,
+          preconfigured: true,
           home_url: 'mattermost://chat.example.com/switch',
           channel_creation_supported: true,
           channel_creation_enabled: true,
@@ -532,6 +533,7 @@ describe('room creation', () => {
         displayName: 'Mattermost',
         status: 'active',
         isDefault: true,
+        preconfigured: true,
         homeUrl: 'mattermost://chat.example.com/switch',
         channelCreationSupported: true,
         canCreateChannels: true,
@@ -550,6 +552,8 @@ describe('room creation', () => {
         displayName: 'Slack',
         status: 'stopped',
         isDefault: false,
+        // Absent on a server predating the flag: unknown, not "a person connected it".
+        preconfigured: null,
         homeUrl: null,
         // Both fields post-date the pinned switch-core too, defaulting the
         // same way home_url does: absent reads as the pre-capability world,

@@ -9,6 +9,7 @@ function bridge(id: string, displayName: string): RemoteBridge {
     displayName,
     status: 'active',
     isDefault: false,
+    preconfigured: null,
     homeUrl: null,
     channelCreationSupported: true,
     canCreateChannels: true,

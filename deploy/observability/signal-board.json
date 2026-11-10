@@ -1,0 +1,1001 @@
+{
+  "title": "Switch signal",
+  "description": "Pilot at a glance. Tiles show the last hour; charts follow the time picker. Grey while normal; red, and a dashed red line, mark the limit an alert watches. Detail behind each section: Switch core: detail. Alerts post to Slack #switch-alert-hub. Kept in deploy/observability/signal-board.json; edit it there.",
+  "layout_type": "ordered",
+  "reflow_type": "fixed",
+  "widgets": [
+    {
+      "definition": {
+        "type": "manage_status",
+        "title": "Alerts: is anything firing right now?",
+        "title_align": "left",
+        "summary_type": "monitors",
+        "query": "tag:\"service:switch-core\" tag:\"tier:now\"",
+        "sort": "status,asc",
+        "display_format": "countsAndList",
+        "color_preference": "text",
+        "hide_zero_counts": false,
+        "show_status": true,
+        "show_last_triggered": true,
+        "show_priority": false
+      },
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 12,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Are agents connected?",
+        "show_title": true,
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "connections now",
+              "title_size": "13",
+              "autoscale": true,
+              "precision": 0,
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.agents.connected{service:switch-core}",
+                      "aggregator": "last"
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "conditional_formats": [
+                    {
+                      "comparator": "<=",
+                      "value": 0,
+                      "palette": "white_on_red"
+                    },
+                    {
+                      "comparator": ">",
+                      "value": 0,
+                      "palette": "custom_text",
+                      "custom_fg_color": "#5b6672"
+                    }
+                  ]
+                }
+              ],
+              "time": {
+                "live_span": "1h"
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 2,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "pods running",
+              "title_size": "13",
+              "precision": 0,
+              "autoscale": true,
+              "time": {
+                "live_span": "1h"
+              },
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "count_not_null(q)"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.runtime.cpu_seconds{service:switch-core} by {pod_name}.as_rate()",
+                      "aggregator": "last"
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "conditional_formats": [
+                    {
+                      "comparator": "<=",
+                      "value": 0,
+                      "palette": "white_on_red"
+                    },
+                    {
+                      "comparator": ">",
+                      "value": 0,
+                      "palette": "custom_text",
+                      "custom_fg_color": "#5b6672"
+                    }
+                  ]
+                }
+              ]
+            },
+            "layout": {
+              "x": 2,
+              "y": 0,
+              "width": 2,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "agent connections, all pods together",
+              "title_size": "13",
+              "show_legend": false,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "avg",
+                "max",
+                "value"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q",
+                      "alias": "connected"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.agents.connected{service:switch-core}"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "line",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "markers": [],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 2,
+              "width": 4,
+              "height": 3
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 3,
+        "width": 4,
+        "height": 7
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Are the messaging apps up?",
+        "show_title": true,
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "bridges health check, last hour",
+              "title_size": "13",
+              "autoscale": true,
+              "precision": 0,
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "1 - q",
+                      "number_format": {
+                        "unit": {
+                          "type": "custom_unit_label",
+                          "label": "failing"
+                        }
+                      }
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "min:switch.health.check{service:switch-core,check:bridges}",
+                      "aggregator": "last"
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "conditional_formats": [
+                    {
+                      "comparator": ">",
+                      "value": 0,
+                      "palette": "white_on_red"
+                    },
+                    {
+                      "comparator": "<=",
+                      "value": 0,
+                      "palette": "white_on_green"
+                    }
+                  ]
+                }
+              ],
+              "time": {
+                "live_span": "1h"
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "bridges running, by platform",
+              "title_size": "13",
+              "show_legend": true,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "value"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q",
+                      "alias": "running"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.bridges.running{service:switch-core} by {platform}"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "line",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "markers": [],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 2,
+              "width": 4,
+              "height": 3
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 3,
+        "width": 4,
+        "height": 7
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Latency: is it fast?",
+        "show_title": true,
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "API p95, ms",
+              "title_size": "13",
+              "autoscale": true,
+              "precision": 0,
+              "time": {
+                "live_span": "1h"
+              },
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "p95:switch.http.request.duration{service:switch-core,!route:/gateway/chats/events,!route:/gateway/chats/activity/events}",
+                      "aggregator": "avg"
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "conditional_formats": [
+                    {
+                      "comparator": ">",
+                      "value": 2000,
+                      "palette": "white_on_red"
+                    },
+                    {
+                      "comparator": "<=",
+                      "value": 2000,
+                      "palette": "white_on_green"
+                    }
+                  ]
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 2,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "delivery p95, ms",
+              "title_size": "13",
+              "autoscale": true,
+              "precision": 0,
+              "time": {
+                "live_span": "1h"
+              },
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "p95:switch.messages.delivery_lag{service:switch-core}",
+                      "aggregator": "avg"
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "conditional_formats": [
+                    {
+                      "comparator": ">",
+                      "value": 10000,
+                      "palette": "white_on_red"
+                    },
+                    {
+                      "comparator": "<=",
+                      "value": 10000,
+                      "palette": "white_on_green"
+                    }
+                  ]
+                }
+              ]
+            },
+            "layout": {
+              "x": 2,
+              "y": 0,
+              "width": 2,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "API p95 ms (live streams left out)",
+              "title_size": "13",
+              "show_legend": true,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "avg",
+                "max",
+                "value"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q",
+                      "alias": "API p95"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "p95:switch.http.request.duration{service:switch-core,!route:/gateway/chats/events,!route:/gateway/chats/activity/events}"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "line",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "markers": [
+                {
+                  "value": "y = 2000",
+                  "display_type": "error dashed",
+                  "label": "alert: 2 s"
+                }
+              ],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 2,
+              "width": 4,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "message delivery p95 ms",
+              "title_size": "13",
+              "show_legend": true,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "avg",
+                "max",
+                "value"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q",
+                      "alias": "delivery p95"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "p95:switch.messages.delivery_lag{service:switch-core}"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "line",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "markers": [
+                {
+                  "value": "y = 10000",
+                  "display_type": "error dashed",
+                  "label": "alert: 10 s"
+                }
+              ],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 4,
+              "width": 4,
+              "height": 2
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 3,
+        "width": 4,
+        "height": 7
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Traffic: how busy?",
+        "show_title": true,
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "requests per second, last hour",
+              "title_size": "13",
+              "autoscale": true,
+              "precision": 1,
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.http.requests{service:switch-core}.as_rate()",
+                      "aggregator": "avg"
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "conditional_formats": [
+                    {
+                      "comparator": ">=",
+                      "value": 0,
+                      "palette": "custom_text",
+                      "custom_fg_color": "#5b6672"
+                    }
+                  ]
+                }
+              ],
+              "time": {
+                "live_span": "1h"
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "requests per second, against the same time last week",
+              "title_size": "13",
+              "show_legend": true,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "avg",
+                "value"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q",
+                      "alias": "now"
+                    },
+                    {
+                      "formula": "week_before(q)",
+                      "alias": "last week"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.http.requests{service:switch-core}.as_rate()"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "line",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 2,
+              "width": 4,
+              "height": 3
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 10,
+        "width": 4,
+        "height": 8
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Errors: is it failing?",
+        "show_title": true,
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "server errors, last hour",
+              "title_size": "13",
+              "autoscale": true,
+              "precision": 0,
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "default_zero(q)"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.http.requests{service:switch-core,status_class:5xx}.as_count()",
+                      "aggregator": "sum"
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "conditional_formats": [
+                    {
+                      "comparator": ">=",
+                      "value": 10,
+                      "palette": "white_on_red"
+                    },
+                    {
+                      "comparator": "<",
+                      "value": 10,
+                      "palette": "white_on_green"
+                    }
+                  ]
+                }
+              ],
+              "time": {
+                "live_span": "1h"
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "failures per minute",
+              "title_size": "13",
+              "show_legend": true,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "avg",
+                "max",
+                "value"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q",
+                      "alias": "server errors"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.http.requests{service:switch-core,status_class:5xx}.as_count().rollup(sum, 60)"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "bars",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                },
+                {
+                  "formulas": [
+                    {
+                      "formula": "q",
+                      "alias": "failed deliveries"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.messages.delivery_failures{service:switch-core}.as_count().rollup(sum, 60)"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "bars",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                },
+                {
+                  "formulas": [
+                    {
+                      "formula": "q",
+                      "alias": "failed sends"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "sum:switch.messages.send_failures{service:switch-core}.as_count().rollup(sum, 60)"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "bars",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "markers": [],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 2,
+              "width": 4,
+              "height": 3
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 10,
+        "width": 4,
+        "height": 8
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Saturation: how full?",
+        "show_title": true,
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "database pool in use, per pod, % of its size",
+              "title_size": "13",
+              "show_legend": false,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "avg",
+                "max",
+                "value"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "100 * a / b",
+                      "alias": "pool used %"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "a",
+                      "query": "max:switch.db.pool.in_use{service:switch-core} by {pod_name}"
+                    },
+                    {
+                      "data_source": "metrics",
+                      "name": "b",
+                      "query": "max:switch.db.pool.size{service:switch-core} by {pod_name}"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "line",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "markers": [
+                {
+                  "value": "y = 100",
+                  "display_type": "error dashed",
+                  "label": "pool size"
+                }
+              ],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 4,
+              "height": 3
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "event-loop lag, worst, ms",
+              "title_size": "13",
+              "show_legend": false,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "avg",
+                "max",
+                "value"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "q",
+                      "alias": "lag"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "q",
+                      "query": "max:switch.runtime.event_loop_lag{service:switch-core}"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "line",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "markers": [
+                {
+                  "value": "y = 1000",
+                  "display_type": "error dashed",
+                  "label": "stall alert"
+                }
+              ],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 3,
+              "width": 4,
+              "height": 2
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "capacity: CPU cores used against pods running",
+              "title_size": "13",
+              "show_legend": true,
+              "legend_layout": "horizontal",
+              "legend_columns": [
+                "value",
+                "max"
+              ],
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "a",
+                      "alias": "cores used, all pods"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "a",
+                      "query": "sum:switch.runtime.cpu_seconds{service:switch-core}.as_rate()"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "area",
+                  "style": {
+                    "palette": "grey",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  }
+                },
+                {
+                  "formulas": [
+                    {
+                      "formula": "count_not_null(p)",
+                      "alias": "pods running (one core each)"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "p",
+                      "query": "sum:switch.runtime.cpu_seconds{service:switch-core} by {pod_name}.as_rate()"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "display_type": "line",
+                  "style": {
+                    "palette": "red",
+                    "line_type": "dashed",
+                    "line_width": "normal"
+                  }
+                }
+              ],
+              "yaxis": {
+                "min": "0",
+                "include_zero": true
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 5,
+              "width": 4,
+              "height": 2
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 10,
+        "width": 4,
+        "height": 8
+      }
+    }
+  ],
+  "template_variables": []
+}

@@ -138,6 +138,17 @@ describe('describeFailure', () => {
     });
   });
 
+  it('says a password changed whose new session could not be kept, not that it failed', () => {
+    const message =
+      'Your password was changed, but Console couldn’t save its new session. Sign in again with your new password.';
+    expect(
+      describeFailure(
+        rpcError('PasswordChangedSessionNotSavedError', message),
+        'Could not change your password.'
+      )
+    ).toEqual({ headline: message, detail: null });
+  });
+
   it('passes a refusal to remove a machine running moved agents straight through', () => {
     const message =
       'build-box runs builder as managed agents for this Console, so it cannot be removed yet. Delete those agents first.';

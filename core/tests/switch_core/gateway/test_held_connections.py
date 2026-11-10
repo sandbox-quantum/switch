@@ -263,7 +263,12 @@ def _config() -> SimpleNamespace:
         gateway_password_login_enabled=True,
         gateway_signup_open=True,
         gateway_signup_max_per_hour=100,
+        gateway_signup_refused_header=None,
         gateway_admin_email="admin@example.invalid",
+        decision_routing_enabled=False,
+        decision_endpoint_url=None,
+        decision_api_key=None,
+        decision_bedrock_enabled=False,
     )
 
 

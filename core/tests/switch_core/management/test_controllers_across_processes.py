@@ -20,15 +20,18 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from switch_core.bridges.agent.protocol import controller_presence
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.presence import agents_present_in
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID, AgentController, SwitchCoreProcess
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
+from switch_core.management import controller_routes
 from switch_core.process_lease import LEASE_TTL
 from switch_core.user_changes import MACHINE, UserChange
 from tests.db_buffer import say
 from tests.switch_core.management.harness import (
+    ControllerSocket,
     Harness,
     add_member,
     add_room,
@@ -469,6 +472,79 @@ class TestTheConnectionOnAnyProcess:
             )
             is None
         )
+
+
+class TestTheSocketOverTime:
+    """The controller's real socket, pings and pongs included, rather than
+    its stream alone."""
+
+    async def test_a_socket_held_through_the_other_process_outlasts_its_beats(
+        self, processes: tuple[Harness, Harness], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opened through one process, attached through the other, and held
+        there across several lapse windows while both processes re-check
+        their controllers: the pongs keep it live, neither process takes it
+        over, and both read the controller as connected."""
+        monkeypatch.setattr(controller_routes, "PING_INTERVAL_SECONDS", 0.05)
+        monkeypatch.setattr(controller_presence, "HEARTBEAT_TTL_SECONDS", 0.5)
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            opened = await open_connection(client, controller)
+        socket = ControllerSocket(there, controller, opened)
+        await socket.until("connection_state")
+
+        seen: list[str] = []
+        for _ in range(4):
+            seen += await socket.hold(0.5)
+            await here.management.service.signals.recheck()
+            await there.management.service.signals.recheck()
+        await there.management.ledger.flush_all()
+        await _eventually(
+            lambda: (
+                here.protocol.connections.controllers.holder_elsewhere(
+                    controller.controller_id
+                )
+                == there.bus.process_id
+            )
+        )
+        held = there.protocol.connections.controllers.current_connection(
+            controller.controller_id
+        )
+        await socket.go()
+
+        assert "evicted" not in seen
+        assert held is not None
+        assert held.id == opened["connection_id"]
+        assert held.closure is None
+        assert held.beats >= 20
+
+    async def test_a_socket_that_went_reattaches_through_the_other_process_at_once(
+        self, processes: tuple[Harness, Harness], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The socket went, and the controller reattached through the other
+        process a moment later, as its backoff has it. The process that held
+        the socket lets it go as it goes, not at its next ping, so the other
+        process takes the connection up rather than refusing it and making
+        the controller open a new one."""
+        monkeypatch.setattr(controller_routes, "PING_INTERVAL_SECONDS", 30.0)
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            opened = await open_connection(client, controller)
+        first = ControllerSocket(here, controller, opened)
+        await first.until("connection_state")
+
+        await first.go(timeout=2.0)
+        await here.management.ledger.flush_all()
+        second = ControllerSocket(there, controller, opened)
+        state = await second.until("connection_state")
+        await second.go()
+
+        assert state["connection_id"] == opened["connection_id"]
+        assert state["generation"] == opened["generation"]
 
 
 class TestTakenOverOnlyByANewerConnection:

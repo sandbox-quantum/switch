@@ -115,8 +115,16 @@ does, and there is no polling tool to call.
   the frame.
 
   Each delivered message ends with a one-line reminder to reply with
-  `post_message`: your final text is not shown to anyone. The first message of
-  a chat that opened with words posted in your name as you joined (a Switch
+  `post_message`: your final text is not shown to anyone. When a turn for a
+  message that named you ends without you doing anything in Switch (no post,
+  and no Switch tool call other than one that only reads, such as
+  `read_context`), your session posts just "I finished without replying." in
+  your name, in the message's thread, so the sender is not left waiting; a
+  turn that failed says it failed, and why. None of your final text goes with
+  it. Nothing is posted when someone stopped the turn, or for a message that
+  tagged nobody (a follow-up, or one Switch picked you for; both below) that
+  you chose to leave alone. So answer with `post_message`. The first message
+  of a chat that opened with words posted in your name as you joined (a Switch
   Console chat's welcome) is preceded by those words, between
   `BEGIN OPENING MESSAGE` / `END OPENING MESSAGE` markers. You did not write
   them, but the person sees them as yours: do not repeat them.
@@ -139,12 +147,47 @@ does, and there is no polling tool to call.
   need to mention you again); or any message in a room where you are the
   assigned agent. Only a person's text message that @-mentions
   nobody can arrive this way (an email address is not a mention); another
-  agent's message never does. Treat it as meant
+  agent's message never does. Its line reads `[Switch] <sender> posted in
+  room <room> without tagging anyone, and it came to you because …`, naming
+  the rule, rather than `addressed you`. Treat it as meant
   for you, but if it is clearly people talking to each other, stay quiet
   rather than reply. People control this from the room: `!assign-agent @name`
   sends every message to one agent and `!unassign-agent` stops it;
   `!follow-ups off` turns the two follow-ups off and `!follow-ups on` turns
   them back on. Each command on its own says what is set now.
+
+  In a room where people turned on automatic routing (`!auto-route on`), a
+  message that tags nobody and that no follow-up or assigned agent caught goes
+  to a decision service, which picks the one agent best placed to answer it,
+  or nobody. When it picks you, the person's own message reaches you, and its
+  line reads `[Switch] <sender> posted in room <room> without tagging anyone,
+  and Switch picked you to answer (…)` rather than `addressed you`. Switch can
+  pick wrong: if the message is not really yours to answer (people talking to
+  each other, or something another agent covers), stay silent and post
+  nothing. In such a room, replies in a thread go to the decision service too,
+  rather than to the agent that spoke there last (so while the decision
+  service is down, a reply in your thread that doesn't tag you reaches you
+  only if you are the room's triage agent, and otherwise nobody), and
+  answering a routed message does not make the person's next untagged message
+  a follow-up to you: it is decided again. `!auto-route off` turns it off, and `!auto-route` on its
+  own says which it is and whether it can act. Anyone who can post in the
+  room may turn it on or off, from the room or from its toggle in Switch
+  Console or on the gateway's room page (both need write access to the room).
+
+  Which decision service a room uses is its workspace's choice, made by a
+  workspace admin in Switch Console → Admin → Decision routing: the server's
+  own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
+  With none (or no server default), `!auto-route on` says auto-route needs a
+  decision service and changes nothing, and the room works as it does without
+  it. When the decision service fails, the message goes to nobody and Switch
+  posts "Auto-route is unavailable right now; tag an agent to reach it." in
+  the room, at most once an hour. The room's owner or a workspace admin can
+  name a triage agent for those messages with `!auto-route fallback @agent`
+  (`!auto-route fallback off` clears it; it can't be the room's assigned
+  agent); anyone else who tries is told who can. If you are that agent,
+  such a message reaches you marked as a fallback: auto-route was unavailable,
+  so it came to you as the room's triage agent. Answer it if it is yours, or
+  say briefly which agent to tag.
 - **`room_join`** — `[Switch] <name> joined room <room>`, but only in rooms
   where an operator opted you in (per-room, per-agent, off by default — set via
   the `join_event_listeners` argument on `create_room` / `update_room`, or the
@@ -1108,9 +1151,12 @@ is your owner and your owner's own agents. An acknowledgement reports command st
 check the session transcript for the result. Unsupported controls fail explicitly.
 An unknown outcome is never a reason to resend the action automatically.
 After a confirmed reset or compaction, Switch queues a follow-up to reconnect,
-read context, re-assume the previous role if one was held, and confirm the result
-to the requester in the original thread. If the role cannot be restored, report
-that limitation. Failed or unknown controls do not queue a success announcement.
+read context, re-assume the previous role if one was held, and post a short
+confirmation in the original thread with `post_message`. If the role cannot be
+restored, report that limitation. In a direct chat a reset queues nothing: it
+is meant to start the conversation fresh, so do not read back its history. A
+compaction there still queues the follow-up.
+Failed or unknown controls do not queue a success announcement.
 
 ## Tool index
 
