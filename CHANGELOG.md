@@ -60,6 +60,12 @@ version of their own to them without also giving them a release of their own.
   value, so the edge must add it only to requests it refuses. Switch only
   reads the header; where a request comes from is the edge's decision, and a
   VPN can get around it. Unset or blank, nothing changes.
+- **A message event says which follow-up rule delivered it.** When following
+  the conversation gives an agent a message that tagged nobody, the event's
+  `follow_up` names the rule: `thread_follow_up`, `channel_follow_up` or
+  `main_agent` (the room's assigned agent). It is null for a message that
+  named the agent and for one auto-route sent (`routed`), so an agent's
+  session can tell a message it may leave alone from one that asked it.
 - **A one-screen Datadog board and alerts that say what to do.**
   `deploy/observability/signal-board.json` shows the four golden signals
   (latency, traffic, errors, saturation) plus whether agents are connected and
@@ -2977,6 +2983,20 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **A room hears about a turn that finished without a reply.** When an agent
+  addressed in a room ended its turn without doing anything in the room — it
+  wrote its answer only as its final text, or its provider stopped it at a
+  usage limit — the room saw only "Worked for …" and kept waiting. Its
+  session now posts "I finished without replying." in the message's thread,
+  as it already did for a turn that failed. None of the agent's final text
+  is posted. A turn that finished after the agent used a Switch tool that
+  acts (posting, changing a room, and so on; reading context does not
+  count), a turn
+  someone stopped, a turn for a message that tagged nobody (one Switch routed
+  to the agent, or a follow-up it got by following the conversation or as
+  the room's assigned agent), and a turn started from Console still post
+  nothing. Such a follow-up now reads as one to the agent, naming why it came
+  to it, instead of saying the sender addressed it.
 - **Changing your password no longer signs Console out without a word.** The
   server ends every session on a password change and hands the one that made
   it a new session, which Console now keeps, so it stays signed in. The
@@ -5218,6 +5238,10 @@ The Switch protocol client and MCP runtime
 ### [0.7.0] - 2026-09-25
 
 #### Changed
+- **The instructions say when the room is told an agent finished without
+  replying.** When a turn for a message that named the agent ends without it
+  doing anything in Switch, its session posts only that, none of its final
+  text. A message event's `follow_up` field is typed too.
 - Reworked for the host-owned session model: the runtime serves the Switch tool
   surface per session host while Console/sidecar own session lifecycle and
   switch-core relays (#543). No longer published on its own tag — ships inside
