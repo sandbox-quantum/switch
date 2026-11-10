@@ -3,12 +3,16 @@
 For test and canary servers, where the same person signs up again and again.
 Deleting an account (`deletion.py`) keeps what other people depend on and
 leaves a workspace that still has rooms or a messaging app; a reset first
-disconnects the messaging apps and deletes every room, so the account's
-deletion takes the workspaces with it, and then deletes the organizations
-left empty.
+disconnects the messaging apps and deletes every room of each workspace the
+person is alone in, so the account's deletion takes those workspaces with it,
+and then deletes the organizations left empty.
 
-It only ever wipes what the person is alone in: a workspace or organization
-with anyone else in it refuses the whole reset before anything changes.
+It only ever wipes what the person is alone in, and never the server's default
+workspace. From any other workspace, shared or the default one, the person
+just leaves, as an account deletion does. An organization is deleted only when
+every workspace in it is wiped and nobody else is in it; otherwise it stays,
+and the person only leaves it. Every refusal is checked before anything
+changes.
 """
 
 from __future__ import annotations
@@ -23,7 +27,9 @@ from switch_core.accounts.workspace_deletion import refusal as workspace_refusal
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     MessagingInstall,
+    OrganizationAppCredential,
     OrganizationMember,
+    OrganizationServiceSetting,
     Room,
     Tenant,
 )
@@ -35,17 +41,14 @@ from switch_core.tenant_context import tenant_scope
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from switch_core.accounts.deletion import AccountDeletion
     from switch_core.bridges.collaboration.install_service import (
         MessagingInstallService,
     )
+    from switch_core.db.models import User
     from switch_core.db.stores.organization_store import OrganizationStore
     from switch_core.db.stores.user_store import UserStore
     from switch_core.room_service import RoomService
-
-
-def owned_workspaces(workspaces: list[Workspace]) -> list[Workspace]:
-    """The workspaces the person is a member of, which a reset deletes."""
-    return [workspace for workspace in workspaces if workspace.role != FORMER_MEMBER]
 
 
 @dataclass
@@ -55,29 +58,24 @@ class AccountReset:
     organizations: OrganizationStore
     installs: MessagingInstallService | None
     rooms: RoomService
+    deletion: AccountDeletion
 
     async def refusal(
-        self, user_id: str, workspaces: list[Workspace]
-    ) -> tuple[str | None, list[str]]:
-        """Why the account cannot be reset, or None, and the organizations
-        it would delete."""
+        self, session: AsyncSession, user: User, workspaces: list[Workspace]
+    ) -> tuple[str | None, list[Workspace], list[str]]:
+        """Why the account cannot be reset, or None, with the workspaces it
+        would wipe and the organizations it would delete. `session` is the
+        caller's, as `AccountDeletion.refusal` takes it."""
+        wiped: list[Workspace] = []
         organization_ids: set[str] = set()
         for workspace in workspaces:
-            if workspace.id == TENANT_ZERO_ID:
-                return (
-                    "You're in Switch's default workspace, which can't be "
-                    "deleted, so this account can't be reset.",
-                    [],
-                )
-            async with tenant_session(self.session_factory, workspace.id) as session:
-                members = await self.users.list_tenant_members(session)
-                if any(member.id != user_id for member, _ in members):
-                    return (
-                        f"{workspace.name} has other users. A test account "
-                        "can only be reset when it is alone in every workspace.",
-                        [],
-                    )
-                if self.installs is None and await session.scalar(
+            if workspace.role == FORMER_MEMBER or workspace.id == TENANT_ZERO_ID:
+                continue
+            async with tenant_session(self.session_factory, workspace.id) as scoped:
+                members = await self.users.list_tenant_members(scoped)
+                if any(member.id != user.id for member, _ in members):
+                    continue
+                if self.installs is None and await scoped.scalar(
                     select(MessagingInstall.id).where(
                         MessagingInstall.status == INSTALL_ACTIVE
                     )
@@ -86,42 +84,65 @@ class AccountReset:
                         f"{workspace.name} is connected to a messaging app this "
                         "server can't disconnect. Disconnect it first.",
                         [],
+                        [],
                     )
-                tenant = await session.get(Tenant, workspace.id)
+                # Of what the deletion refuses a workspace for, `empty` removes
+                # all but the organization's last admin.
+                reason = await self.deletion.organization_refusal(
+                    scoped, user, workspace.id
+                )
+                if reason is not None:
+                    return reason, [], []
+                tenant = await scoped.get(Tenant, workspace.id)
                 if tenant is None:
                     raise RuntimeError(
                         f"Workspace {workspace.id} vanished during lookup"
                     )
                 if tenant.organization_id is not None:
                     organization_ids.add(tenant.organization_id)
-        workspace_ids = {workspace.id for workspace in workspaces}
+            wiped.append(workspace)
+        reason = await self.deletion.refusal(
+            session, user, [w for w in workspaces if w not in wiped]
+        )
+        if reason is not None:
+            return reason, [], []
+        wiped_ids = {workspace.id for workspace in wiped}
+        deleted: list[str] = []
         for organization_id in sorted(organization_ids):
             if (
                 not set(
                     await tenants_of_organization(self.session_factory, organization_id)
                 )
-                <= workspace_ids
+                <= wiped_ids
             ):
-                return (
-                    "Your organization has workspaces you're not in, so this "
-                    "account can't be reset.",
-                    [],
-                )
+                continue
             async with organization_session(
                 self.session_factory, organization_id
-            ) as session:
-                if await session.scalar(
+            ) as scoped:
+                if await scoped.scalar(
                     select(OrganizationMember.user_id).where(
                         OrganizationMember.organization_id == organization_id,
-                        OrganizationMember.user_id != user_id,
+                        OrganizationMember.user_id != user.id,
+                    )
+                ):
+                    continue
+                if await scoped.scalar(
+                    select(OrganizationAppCredential.organization_id).where(
+                        OrganizationAppCredential.organization_id == organization_id
+                    )
+                ) or await scoped.scalar(
+                    select(OrganizationServiceSetting.organization_id).where(
+                        OrganizationServiceSetting.organization_id == organization_id
                     )
                 ):
                     return (
-                        "Your organization has other users, so this account "
-                        "can't be reset.",
+                        "Your organization has service apps or settings of its "
+                        "own. Remove them first.",
+                        [],
                         [],
                     )
-        return None, sorted(organization_ids)
+            deleted.append(organization_id)
+        return None, wiped, deleted
 
     async def empty(self, workspaces: list[Workspace]) -> None:
         """Disconnect every messaging app in `workspaces` and delete every

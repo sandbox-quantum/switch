@@ -12,15 +12,22 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.broker import get_service_broker
+from switch_core.db.audit import (
+    OrganizationAuditAction,
+    record_organization_audit_event,
+)
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Agent,
     MessagingInstall,
     Organization,
+    OrganizationAuditEvent,
     OrganizationMember,
     Room,
     Tenant,
@@ -49,6 +56,25 @@ from tests.switch_core.accounts.test_account_deletion import (
     _Rooms,
     _SignInFlows,
 )
+
+
+@pytest.fixture(autouse=True)
+def _members_of_the_bound_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`session_factory` connects as a superuser, which the policy narrowing
+    `list_tenant_members` to the bound workspace does not apply to; narrow it
+    here as the policy would, so a person in two workspaces is seen as such."""
+
+    async def list_tenant_members(
+        self: UserStore, session: AsyncSession
+    ) -> list[tuple[User, TenantMember]]:
+        result = await session.execute(
+            select(User, TenantMember)
+            .join(TenantMember, TenantMember.user_id == User.id)
+            .where(TenantMember.tenant_id == current_tenant_id())
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    monkeypatch.setattr(UserStore, "list_tenant_members", list_tenant_members)
 
 
 class _RoomService(_Rooms):
@@ -143,8 +169,9 @@ def _client(
 async def _solo_workspace(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> tuple[str, str, str, str]:
-    """A user alone in a workspace of an organization of their own. Returns
-    the user's id and email, the workspace's id and the organization's."""
+    """A user alone in a workspace of an organization of their own, with the
+    audit event creating it records. Returns the user's id and email, the
+    workspace's id and the organization's."""
     solo = f"solo-{uuid.uuid4().hex[:6]}"
     organization_id = f"org-{solo}"
     async with session_factory() as session:
@@ -163,6 +190,15 @@ async def _solo_workspace(
             OrganizationMember(
                 organization_id=organization_id, user_id=user.id, role="org_admin"
             )
+        )
+        await record_organization_audit_event(
+            session,
+            organization_id=organization_id,
+            actor_user_id=user.id,
+            action=OrganizationAuditAction.ORGANIZATION_CREATED,
+            target_type="organization",
+            target_id=organization_id,
+            details=None,
         )
         await session.commit()
         return user.id, user.email, solo, organization_id
@@ -185,7 +221,7 @@ async def test_it_is_not_found_unless_the_server_allows_it(
         assert await session.get(User, user_id) is not None
 
 
-async def test_a_workspace_with_anyone_else_in_it_is_refused(
+async def test_what_account_deletion_refuses_is_refused_before_anything_changes(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     user_id, email, solo, _ = await _solo_workspace(session_factory)
@@ -215,7 +251,7 @@ async def test_a_workspace_with_anyone_else_in_it_is_refused(
         )
     assert mismatch.status_code == 400
     assert response.status_code == 409
-    assert "other users" in response.json()["detail"]
+    assert "only admin" in response.json()["detail"]
     assert rooms.deleted == []
     async with session_factory() as session:
         assert await session.get(User, user_id) is not None
@@ -271,3 +307,84 @@ async def test_it_wipes_the_apps_rooms_agents_workspace_and_organization(
         assert await session.get(Tenant, solo) is None
         assert await session.get(Agent, agent_id) is None
         assert await session.get(Organization, organization_id) is None
+        assert await session.scalar(
+            select(OrganizationAuditEvent.id).where(
+                OrganizationAuditEvent.organization_id == organization_id
+            )
+        )
+
+
+async def _other_user(
+    session_factory: async_sessionmaker[AsyncSession], tenant_id: str, role: str
+) -> str:
+    async with session_factory() as session:
+        other = User(
+            name="other",
+            email=f"other-{uuid.uuid4().hex[:6]}@example.test",
+            role="user",
+        )
+        session.add(other)
+        await session.flush()
+        session.add(TenantMember(tenant_id=tenant_id, user_id=other.id, role=role))
+        await session.commit()
+        return other.id
+
+
+async def test_it_leaves_the_default_workspace_and_wipes_its_own(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, email, solo, organization_id = await _solo_workspace(session_factory)
+    other_id = await _other_user(session_factory, TENANT_ZERO_ID, "admin")
+    async with session_factory() as session:
+        session.add(
+            TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user_id, role="member")
+        )
+        await session.commit()
+
+    app, _, _ = _app(session_factory, enabled=True)
+    async with _client(app, user_id, email, solo) as client:
+        response = await client.post(
+            "/auth/me/reset-test-account", json={"email": email}
+        )
+
+    assert response.status_code == 200, response.text
+    async with session_factory() as session:
+        assert await session.get(User, user_id) is None
+        assert await session.get(Tenant, solo) is None
+        assert await session.get(Organization, organization_id) is None
+        assert await session.get(Tenant, TENANT_ZERO_ID) is not None
+        assert await session.get(TenantMember, (TENANT_ZERO_ID, other_id)) is not None
+
+
+async def test_it_leaves_a_shared_workspace_and_keeps_its_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, email, shared, organization_id = await _solo_workspace(session_factory)
+    other_id = await _other_user(session_factory, shared, "admin")
+    async with tenant_session(session_factory, shared) as session:
+        session.add(
+            Room(
+                tenant_id=shared,
+                transport_room_id=f"!{uuid.uuid4().hex}:test",
+                name="kept",
+                description="",
+            )
+        )
+        await session.commit()
+
+    app, rooms, _ = _app(session_factory, enabled=True)
+    async with _client(app, user_id, email, shared) as client:
+        response = await client.post(
+            "/auth/me/reset-test-account", json={"email": email}
+        )
+
+    assert response.status_code == 200, response.text
+    assert rooms.deleted == []
+    async with session_factory() as session:
+        assert await session.get(User, user_id) is None
+        assert await session.get(Tenant, shared) is not None
+        assert await session.get(TenantMember, (shared, other_id)) is not None
+        assert await session.get(Organization, organization_id) is not None
+        assert await session.get(OrganizationMember, (organization_id, user_id)) is None
+    async with tenant_session(session_factory, shared) as session:
+        assert await session.scalar(select(Room.id)) is not None

@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.accounts.account_reset import AccountReset, owned_workspaces
+from switch_core.accounts.account_reset import AccountReset
 from switch_core.accounts.deletion import (
     AccountDeletion,
     AccountDeletionIncomplete,
@@ -593,9 +593,11 @@ async def reset_test_account(
 ) -> dict[str, bool]:
     """Wipe the caller's own test account, on a test or canary server that
     allows it (`gateway_allow_test_account_reset`): what `DELETE /auth/me`
-    deletes, plus the messaging apps, rooms, workspaces and organization the
-    caller is alone in (`accounts/account_reset.py`). Refused with a 409,
-    before anything changes, when anyone else shares any of them."""
+    deletes, plus the messaging apps, rooms and workspaces the caller is alone
+    in, other than the server's default one, and the organizations left with
+    nothing and nobody in them (`accounts/account_reset.py`). From any other
+    workspace or organization the caller just leaves. Refused with a 409,
+    before anything changes, for anything `DELETE /auth/me` refuses."""
     if not config.gateway_allow_test_account_reset:
         raise HTTPException(
             status_code=404, detail="Test-account reset is not enabled on this server."
@@ -622,22 +624,17 @@ async def reset_test_account(
         organizations=organization_store,
         installs=install_service,
         rooms=room_service,
+        deletion=deletion,
     )
     workspaces = await _workspaces_to_delete(
         deletion, session_factory, user_store, user.id
     )
-    owned = owned_workspaces(workspaces)
-    reason, organization_ids = await reset.refusal(user.id, owned)
-    if reason is None:
-        # The workspaces it owns are only refused for what `empty` removes.
-        reason = await deletion.refusal(
-            session, user, [w for w in workspaces if w not in owned]
-        )
+    reason, wiped, organization_ids = await reset.refusal(session, user, workspaces)
     if reason is not None:
         raise HTTPException(status_code=409, detail=reason)
-    await reset.empty(owned)
+    await reset.empty(wiped)
     await _delete_account(session, deletion, user, workspaces)
-    await reset.delete_organizations(user.id, owned, organization_ids)
+    await reset.delete_organizations(user.id, wiped, organization_ids)
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 

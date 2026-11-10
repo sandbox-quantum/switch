@@ -338,7 +338,7 @@ class AccountDeletion:
 
     async def _workspace_refusal(self, user: User, workspace: Workspace) -> str | None:
         async with tenant_session(self.session_factory, workspace.id) as session:
-            organization_refusal = await self._organization_refusal(
+            organization_refusal = await self.organization_refusal(
                 session, user, workspace.id
             )
             if organization_refusal is not None:
@@ -373,7 +373,7 @@ class AccountDeletion:
                     )
         return None
 
-    async def _organization_refusal(
+    async def organization_refusal(
         self, session: AsyncSession, user: User, tenant_id: str
     ) -> str | None:
         """Refuse the last `org_admin` of the organization `tenant_id` belongs
