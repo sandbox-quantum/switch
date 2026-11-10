@@ -3561,6 +3561,7 @@ type RoomSummaryJson = {
   /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
   can_write?: boolean;
   can_change_members?: boolean;
+  can_invite_agents?: boolean;
   can_manage?: boolean;
   can_unlink?: boolean;
   group_id?: string | null;
@@ -3599,6 +3600,8 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
             canWrite: r.can_write,
             // Who is in a room took write access until the server said otherwise.
             canChangeMembers: r.can_change_members ?? r.can_write,
+            // Bringing agents in took the same as any member change until the server said otherwise.
+            canInviteAgents: r.can_invite_agents ?? r.can_change_members ?? r.can_write,
             canManage: r.can_manage,
             // Detaching took write access until the server said otherwise.
             canUnlink: r.can_unlink ?? r.can_write,
@@ -3902,6 +3905,30 @@ export async function addRoomAgents(
     method: 'POST',
     body: { agent_ids: agentIds },
   });
+}
+
+/**
+ * The ids of the agents the signed-in person may bring in
+ * (`GET /rooms/agent-candidates`): into `roomId`, less those already in it,
+ * or into a new room when it is null. The server's invite rule decides, so a
+ * picker built from it never offers an agent the invite would refuse.
+ *
+ * Null from a server from before the route (it answers 404), where every
+ * agent is offered and the invite itself says no.
+ */
+export async function fetchRoomAgentCandidates(
+  server: SwitchServer,
+  roomId: string | null
+): Promise<string[] | null> {
+  const query = roomId === null ? '' : `?room_id=${encodeURIComponent(roomId)}`;
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, `/rooms/agent-candidates${query}`, { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return ((await res.json()) as { agent_ids: string[] }).agent_ids;
 }
 
 /**

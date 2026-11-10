@@ -13,6 +13,7 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
+import { useRoomAgentCandidates } from '@renderer/lib/stores/use-room-agent-candidates';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
@@ -90,6 +91,9 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
   // The agents' own icons live on the server, not in the local row, so the
   // list is joined against the server's summary to draw them.
   const { data: remoteAgents } = useWorkspaceAgents(workspaceId);
+  // And only the ones the server's invite rule lets this person bring in.
+  const { data: invitableIds } = useRoomAgentCandidates(workspaceId, roomId);
+  const invitable = invitableIds ? new Set(invitableIds) : null;
   const remoteById = new Map((remoteAgents ?? []).map((agent) => [agent.id, agent]));
   // Only this install's agents are offered. An agent registered on another
   // Switch Console could be added server-side but could never be shown or driven
@@ -103,7 +107,12 @@ export const AddAgentsToRoomModal = observer(function AddAgentsToRoomModal({
           providerId: agent.providerId ?? null,
           iconUrl: remoteById.get(agent.switchAgentId as string)?.iconUrl ?? null,
         }))
-        .filter((a) => !members.has(a.id) && !selected.some((s) => s.id === a.id))
+        .filter(
+          (a) =>
+            !members.has(a.id) &&
+            !selected.some((s) => s.id === a.id) &&
+            (invitable === null || invitable.has(a.id))
+        )
     : [];
   const nothingToAdd = candidates.length === 0 && selected.length === 0;
 
