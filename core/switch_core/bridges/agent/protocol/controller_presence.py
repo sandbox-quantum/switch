@@ -94,6 +94,11 @@ class UnknownControllerConnectionError(ControllerConnectionError):
         )
 
 
+class ConnectionNotLetGoError(UnknownControllerConnectionError):
+    """Another process holds the connection and has not recorded its socket
+    going. Refused as `unknown_connection` once waiting for that has run out."""
+
+
 class ControllerTakenOverError(ControllerConnectionError):
     code = "taken_over"
 

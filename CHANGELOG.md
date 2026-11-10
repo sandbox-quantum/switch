@@ -119,7 +119,8 @@ version of their own to them without also giving them a release of their own.
   controller reattaching through the other pod was also refused and had to
   open a new connection, because the pod holding the socket noticed it had
   closed only at its next ping. It now lets the socket go as it closes, and
-  the other pod takes the connection up.
+  the other pod takes the connection up, waiting up to 2 seconds for the
+  first pod to record the socket going if the controller comes back sooner.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
