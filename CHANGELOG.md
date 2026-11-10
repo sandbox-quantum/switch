@@ -368,6 +368,22 @@ version of their own to them without also giving them a release of their own.
   of the rooms it is in they may not read. All are decided by the same
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
+- **OAuth catalog entries can opt into MCP identity and unscoped consent.**
+  An entry can name a read-only MCP tool that identifies the account. The
+  tool takes no arguments and must name one account. Otherwise sign-in fails
+  with a fixed reason. Core reads only the input schema's `type` and
+  `required`, and refuses a tool that is not `type: object` or names a
+  required property.
+  It does not check the result against the tool's output schema. If the MCP
+  server refuses with a 4xx other than 401 or 429, the message gives the
+  status. The identity call reaches only what the outbound policy allows
+  (`OUTBOUND_ALLOWED_PRIVATE_HOSTS`). `account_id` can list 2 to 8 paths,
+  joined into one id, so a person in two accounts has two connections. An
+  entry whose vendor has no OAuth scopes can leave out `scope`. Its sign-ins
+  are always read and write, and it has no access profiles. For a discovered
+  server, Core now sends the `resource` that the server advertises. Core
+  accepts it only if it is the server's URL, or a parent path on the same
+  origin, with no query or fragment.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the

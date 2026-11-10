@@ -9,6 +9,7 @@ from switch_core.db.models import TENANT_ZERO_ID, TenantNotBoundError, require_t
 from switch_core.logging_config import build_handler
 from switch_core.logging_context import (
     CONTEXT_FIELDS,
+    MCP_IDENTITY_DIAGNOSTICS,
     LogContextFilter,
     bind_log_context,
     current_log_context,
@@ -381,3 +382,23 @@ def test_access_logs_remove_authorization_query_parameters(monkeypatch, format):
     assert len(capture.lines) == 1
     assert "/gateway/provider-connections/github/callback" in capture.lines[0]
     assert "SYNTHETIC" not in capture.lines[0]
+
+
+def test_root_handler_redacts_identity_diagnostics(monkeypatch) -> None:
+    """The MCP SDK logs raw vendor messages on the root logger."""
+    config = _config(monkeypatch, LOG_FORMAT="json")
+    capture = _Capture(build_handler(config, None, "core-0-abcd1234"))
+    logger = logging.getLogger("example.sdk")
+    logger.propagate = False
+    logger.handlers = [capture]
+    active = MCP_IDENTITY_DIAGNOSTICS.set(True)
+    try:
+        logger.warning("vendor-marker %s", "example-bearer-value")
+    finally:
+        MCP_IDENTITY_DIAGNOSTICS.reset(active)
+    logger.warning("vendor-marker outside")
+    logger.handlers = []
+    assert len(capture.lines) == 2
+    assert "vendor-marker" not in capture.lines[0]
+    assert "example-bearer-value" not in capture.lines[0]
+    assert "vendor-marker outside" in capture.lines[1]
