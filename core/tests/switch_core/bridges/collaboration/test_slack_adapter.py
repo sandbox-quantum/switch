@@ -1429,6 +1429,55 @@ def test_message_permalink_retries_once_after_short_retry_after(
     assert len(client.permalink_calls) == 2
 
 
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        FakeResponse(
+            {"error": "too_many_requests"},
+            headers={"Retry-After": "1"},
+            status_code=429,
+        ),
+        FakeResponse({"error": "ratelimited"}, headers={"Retry-After": "1"}),
+    ],
+    ids=["http-429-only", "ratelimited-error-only"],
+)
+def test_message_permalink_either_rate_limit_signal_is_retried(
+    monkeypatch: pytest.MonkeyPatch, refusal: FakeResponse
+) -> None:
+    adapter, client = _permalink_adapter()
+    client.permalink_errors = [refusal, None]
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(slack_adapter_module.asyncio, "sleep", fake_sleep)
+
+    _run(adapter.message_permalink("C1:171.2"))
+
+    assert sleeps == [1]
+    assert len(client.permalink_calls) == 2
+
+
+def test_message_permalink_rate_limit_without_retry_after_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no header the wait is the 30-second default, too long to wait out."""
+    adapter, client = _permalink_adapter()
+    client.permalink_errors = [FakeResponse({"error": "ratelimited"}, status_code=429)]
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(slack_adapter_module.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(SlackApiError):
+        _run(adapter.message_permalink("C1:171.2"))
+    assert sleeps == []
+    assert len(client.permalink_calls) == 1
+
+
 def test_message_permalink_long_retry_after_is_not_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
