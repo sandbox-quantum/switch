@@ -201,6 +201,7 @@ class TestUnavailableReplyRouting:
             "opencode": "opencode auth login",
             "antigravity": "agy acp --login",
             "cursor": "agent login",
+            "qwen": "export OPENAI_API_KEY=<your Model Studio or other OpenAI-compatible key>",
         }
         for agent_type, command in sign_in.items():
             agent = _agent(

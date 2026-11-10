@@ -35,6 +35,7 @@ from switch_core.delivery.addressing import (
     addressable_text,
     named_agents,
 )
+from switch_core.providers.registry import agent_providers
 
 MESSAGE_EVENT_TYPE = "m.room.message"
 COMMAND_EVENT_TYPE = "com.switch.command"
@@ -44,14 +45,6 @@ PREVIEW_CHARS = 140
 
 _MESSAGE_STORE = MessageStore()
 
-_PROVIDER_OF_KNOWN_AGENT_TYPE = {
-    "claude-code": "claude",
-    "codex": "codex",
-    "opencode": "opencode",
-    "antigravity": "antigravity",
-    "cursor": "cursor",
-}
-
 
 def _provider(agent: Agent, defined: object) -> str | None:
     """The provider an agent runs on: its managed definition's, else its registration's."""
@@ -59,7 +52,14 @@ def _provider(agent: Agent, defined: object) -> str | None:
         return defined
     metadata = agent.metadata_ if isinstance(agent.metadata_, dict) else {}
     known = metadata.get("known_agent_type")
-    return _PROVIDER_OF_KNOWN_AGENT_TYPE.get(known) if isinstance(known, str) else None
+    return next(
+        (
+            provider.id
+            for provider in agent_providers()
+            if provider.known_agent_type == known
+        ),
+        None,
+    )
 
 
 class CamelModel(BaseModel):
