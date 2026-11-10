@@ -26,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_the_built_connections():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "supabase",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "supabase",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["supabase"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -228,6 +231,64 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_supabase_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["supabase"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    # Supabase matches a loopback redirect's port, so the ports are fixed.
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    # Supabase advertises no revocation endpoint, so people remove Switch in
+    # the organization's settings.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None
+    assert "Authorized apps" in oauth.remove_access
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        24 * 3600,
+    )
+    # The read-only server is what a read grant is given.
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert (server.name, server.url_for("write"), server.url_for("read")) == (
+        "supabase",
+        "https://mcp.supabase.com/mcp",
+        "https://mcp.supabase.com/mcp?read_only=true",
+    )
+    assert definition.access is not None and definition.access.write is not None
+    read = [
+        "organizations:read",
+        "projects:read",
+        "database:read",
+        "analytics:read",
+        "edge_functions:read",
+    ]
+    assert definition.access.read.scopes == read
+    assert definition.access.write.scopes == [
+        *read,
+        "database:write",
+        "edge_functions:write",
+    ]
+    # Never the scopes that bill (projects, branches) or reveal keys.
+    every = set(definition.access.write.scopes)
+    assert not every & {"projects:write", "secrets:read"}
+    assert not any(scope.startswith(("environment:", "storage:")) for scope in every)
+    # The one organization the sign-in reaches, from the list Supabase answers.
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.account_id, identity.label) == (
+        "https://api.supabase.com/v1/organizations",
+        "0.id",
+        "0.name",
+    )
 
 
 RESTRICTED_DRIVE = {
@@ -754,6 +815,104 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
     assert old in OAUTH_ENTRY
     _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
     with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize(
+    ("account_id", "label"), [("0.id", "0.name"), ("data.0.id", "data.0.name")]
+)
+def test_an_identity_path_may_index_the_one_entry_of_a_list(
+    catalog_copy, account_id, label
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "account_id: account.id", f"account_id: {account_id}"
+        ).replace("label: account.email", f"label: {label}"),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.account_id, identity.label) == (account_id, label)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("account_id: account.id", "account_id: 1.id"),
+        ("label: account.email", "label: data.2.name"),
+    ],
+)
+def test_an_identity_path_indexes_only_the_one_entry(catalog_copy, old, new):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match="indexes it with 0"):
+        load_catalog(catalog_copy)
+
+
+MCP_SERVER_LINE = '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n'
+
+
+def _with_read_url(read_url: str) -> str:
+    return OAUTH_ENTRY.replace(
+        MCP_SERVER_LINE,
+        '    - { name: example, url: "https://mcp.example.test/v1/mcp", '
+        f'read_url: "{read_url}" }}\n',
+    )
+
+
+def test_loads_a_read_url_for_read_grants(catalog_copy):
+    _write_example(
+        catalog_copy, _with_read_url("https://mcp.example.test/v1/mcp?read_only=true")
+    )
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.url_for("read") == "https://mcp.example.test/v1/mcp?read_only=true"
+    assert server.url_for("write") == "https://mcp.example.test/v1/mcp"
+
+
+def test_a_server_without_a_read_url_is_called_alike_at_both_levels(catalog_copy):
+    _write_example(catalog_copy)
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.url_for("read") == server.url_for("write") == server.url
+
+
+@pytest.mark.parametrize(
+    ("read_url", "message"),
+    [
+        ("https://other.example.test/v1/mcp?read_only=true", "same server"),
+        ("https://mcp.example.test/v2/mcp?read_only=true", "same server"),
+        ("https://mcp.example.test:8443/v1/mcp?read_only=true", "same server"),
+        ("https://mcp.example.test/v1/mcp", "names the read-only mode"),
+        ("http://mcp.example.test/v1/mcp?read_only=true", "read_url"),
+    ],
+)
+def test_rejects_a_read_url_that_is_not_the_same_server(
+    catalog_copy, read_url, message
+):
+    _write_example(catalog_copy, _with_read_url(read_url))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+def test_a_read_url_needs_a_write_level_to_stand_beside(catalog_copy):
+    entry = _with_read_url("https://mcp.example.test/v1/mcp?read_only=true").replace(
+        '  write: { scopes: ["read:items", "write:items"] }\n', ""
+    )
+    _write_example(catalog_copy, entry)
+    with pytest.raises(CatalogError, match="also has a write level"):
+        load_catalog(catalog_copy)
+
+
+def test_a_key_entry_has_no_read_url(catalog_copy):
+    entry = API_KEY_ENTRY.replace(
+        '      url: "https://mcp.{region}/mcp"\n',
+        '      url: "https://mcp.{region}/mcp"\n'
+        '      read_url: "https://mcp.{region}/mcp?read_only=true"\n',
+    )
+    _write_example(catalog_copy, entry)
+    with pytest.raises(CatalogError, match="no read_url"):
         load_catalog(catalog_copy)
 
 

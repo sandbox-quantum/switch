@@ -65,6 +65,19 @@ endpoints are discovered from the first MCP server: the metadata its 401 names
 metadata (RFC 8414), which must offer PKCE with S256. A dynamically registered
 client always discovers. Placeholder entries keep their short form.
 
+An `oauth` entry's MCP server may name a `read_url`: the same server in the
+vendor's own read-only mode, differing from `url` only in its query (Supabase's
+`?read_only=true`). A read grant is given it in place of `url`. It is for a
+vendor whose tools both read and write, such as a SQL tool, where no list of
+tools by level could hold a grant to reading, and only for an entry that also
+has a write level. A pass-through grant takes its connection's level, so a
+read-level connection's grants call the read-only server.
+
+An identity path may index a list with `0`, for a vendor that answers with the
+one account a sign-in reaches inside a list (Supabase's organizations, since
+its sign-in picks one). The list must hold exactly that entry: an answer with
+none or several fails the sign-in rather than picking one.
+
 The adapter is named for how it signs in, `oauth`, not for how its tools are
 reached. Its entry delivers its tools one of two ways, never both: the vendor's
 MCP servers (`mcp`), or the vendor's command-line tool (`cli`), which the
@@ -602,6 +615,40 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `enabled: false`, or remove its client (under Connectors, or by unsetting
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
+
+## Supabase
+
+Built from sign-in runs against a free Supabase organization through
+Supabase's hosted MCP server, with dynamically registered clients:
+
+- Supabase offers dynamic registration. Asked for a public client, it answers
+  with a secret that never expires and names no authentication method, so the
+  secret goes as HTTP Basic. It matches a loopback redirect exactly, port
+  included (one without the registered port is refused), so Supabase connects
+  through Switch Console on the same five fixed ports as Atlassian.
+- Its consent screen picks one organization and grants every scope asked for,
+  with nothing to untick. Supabase's `/v1/profile` refuses OAuth tokens, so the
+  account is the organization, read as `0.id` from `/v1/organizations`, which
+  must list exactly one.
+- Access tokens live 24 hours, and each refresh returns a new refresh token;
+  a spent one is answered 404. Supabase advertises no revocation endpoint, so
+  disconnecting says where to remove Switch: the organization's settings,
+  OAuth Apps, Authorized apps.
+- Scopes: read covers organizations, projects, databases, logs and edge
+  functions; write adds database and edge function writes. Not asked for:
+  `projects:write` (creating, pausing and restoring projects, which can add to
+  the bill), `secrets:read` (the projects' keys), `environment` (development
+  branches, billed by the hour) and `storage` (off by default on the server).
+- The server lists 31 tools, 19 with `?read_only=true`, which also runs SQL in
+  a read-only transaction. With only the read scopes, the normal server refuses
+  `execute_sql` outright for want of `database:write`, so a read grant is
+  given the read-only server (`read_url`). Supabase grants every scope asked
+  for and Switch Console asks for the write level, so connections today are
+  read and write.
+
+To connect: Connectors in Switch Console, then Supabase. Nothing needs
+configuring on the server. To roll back, add `supabase` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
 ## Not yet
 

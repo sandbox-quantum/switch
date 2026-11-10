@@ -150,12 +150,27 @@ def _https(url: object, what: str) -> str:
     return url
 
 
+class _NotOneEntry(Exception):
+    """A list an identity path indexes that does not hold exactly one entry."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__(count)
+        self.count = count
+
+
 def _path_value(document: Any, path: str) -> Any:
+    """The value at a dotted path. A `0` indexes a list, which must hold
+    exactly one entry: an answer naming several accounts names none."""
     value = document
     for part in path.split("."):
-        if not isinstance(value, dict):
+        if isinstance(value, list) and part.isdigit():
+            if len(value) != 1:
+                raise _NotOneEntry(len(value))
+            value = value[0]
+        elif isinstance(value, dict):
+            value = value.get(part)
+        else:
             return None
-        value = value.get(part)
     return value
 
 
@@ -207,13 +222,16 @@ class OAuthAdapter:
             )
         return response
 
-    def _json(self, response: httpx.Response, what: str) -> dict[str, Any]:
+    def _parsed(self, response: httpx.Response, what: str) -> Any:
         if len(response.content) > MAX_METADATA_BYTES:
             raise ServiceAdapterError(f"{self._name}'s {what} is too large.")
         try:
-            body = response.json()
+            return response.json()
         except ValueError:
-            body = None
+            return None
+
+    def _json(self, response: httpx.Response, what: str) -> dict[str, Any]:
+        body = self._parsed(response, what)
         if not isinstance(body, dict):
             raise ServiceAdapterError(f"{self._name}'s {what} is not a JSON object.")
         return body
@@ -507,9 +525,19 @@ class OAuthAdapter:
                 f"{self._name} would not say whose sign-in this is "
                 f"(HTTP {response.status_code})."
             )
-        body = self._json(response, "account")
-        account_id = _path_value(body, self._identity.account_id)
-        label = _path_value(body, self._identity.label)
+        body = self._parsed(response, "account")
+        if not isinstance(body, dict | list):
+            raise ServiceAdapterError(
+                f"{self._name}'s account is not a JSON object or list."
+            )
+        try:
+            account_id = _path_value(body, self._identity.account_id)
+            label = _path_value(body, self._identity.label)
+        except _NotOneEntry as listed:
+            raise ServiceAdapterError(
+                f"{self._name} answered with {listed.count} accounts for this "
+                "sign-in, and Switch needs exactly one."
+            ) from None
         if type(account_id) is int:
             account_id = str(account_id)
         if not isinstance(account_id, str) or not account_id:

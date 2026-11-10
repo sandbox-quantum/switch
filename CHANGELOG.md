@@ -82,6 +82,19 @@ version of their own to them without also giving them a release of their own.
   sign-in, so every check is the server's own. A production build leaves the
   switcher out, and `npm run build` now fails if it gets in.
 
+- **The Supabase connection.** A person connects Supabase from Switch Console,
+  choosing one organization at Supabase's consent screen, and a granted agent
+  inspects its projects, runs SQL, applies migrations, reads logs and deploys
+  edge functions there, as that person, through Supabase's hosted MCP server.
+  Nothing needs configuring on the server: Core registers its own client.
+  Creating, pausing or restoring projects, development branches, the
+  projects' keys and storage are not asked for. Supabase grants every scope
+  asked for, so every connection can write. Supabase cannot revoke a sign-in,
+  so disconnecting says where to remove it: the organization's OAuth Apps
+  settings. For this, a catalog entry's MCP server can name a read-only
+  `read_url` that read grants are given, and an identity path can read the
+  one account a vendor answers inside a list.
+
 #### Changed
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,

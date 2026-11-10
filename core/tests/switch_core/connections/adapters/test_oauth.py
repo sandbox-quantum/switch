@@ -228,6 +228,66 @@ class TestSignIn:
             await adapter.identify(secret.access_token or "")
 
 
+LISTED = STATIC.replace(
+    "    account_id: account.id\n    label: account.email\n",
+    "    account_id: 0.id\n    label: 0.name\n",
+)
+
+
+class TestAnAccountInAList:
+    async def test_reads_the_one_account_the_list_holds(self, vendor) -> None:
+        vendor.identity_answer = [{"id": "org-1", "name": "Ada's org"}]
+        adapter, _ = _adapter(vendor, LISTED)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("org-1", "Ada's org")
+
+    @pytest.mark.parametrize("count", [0, 2])
+    async def test_a_list_without_exactly_one_account_is_refused(
+        self, vendor, count
+    ) -> None:
+        vendor.identity_answer = [
+            {"id": f"org-{n}", "name": f"Org {n}"} for n in range(count)
+        ]
+        adapter, _ = _adapter(vendor, LISTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(
+            ServiceAdapterError, match=f"answered with {count} accounts"
+        ):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_an_object_where_a_list_is_named_names_no_account(
+        self, vendor
+    ) -> None:
+        vendor.identity_answer = {"id": "org-1", "name": "Ada's org"}
+        adapter, _ = _adapter(vendor, LISTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="did not name the account"):
+            await adapter.identify(secret.access_token or "")
+
+    async def test_a_list_inside_the_answer_is_indexed_too(self, vendor) -> None:
+        vendor.identity_answer = {"data": {"orgs": [{"id": 42, "name": "Ada"}]}}
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    account_id: account.id\n    label: account.email\n",
+                "    account_id: data.orgs.0.id\n    label: data.orgs.0.name\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("42", "Ada")
+
+    async def test_an_answer_that_is_neither_object_nor_list_is_refused(
+        self, vendor
+    ) -> None:
+        vendor.identity_answer = "org-1"
+        adapter, _ = _adapter(vendor, LISTED)
+        secret = await _sign_in(adapter, vendor)
+        with pytest.raises(ServiceAdapterError, match="not a JSON object or list"):
+            await adapter.identify(secret.access_token or "")
+
+
 class TestRefresh:
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:
         adapter, _ = _adapter(vendor)
