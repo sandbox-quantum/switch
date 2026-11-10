@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../../data/api";
 import type { DirectoryPerson, LinkCode } from "../../data/api";
 import { bridgeDetail, pendingIdentity } from "../collaborations/testFixtures";
@@ -9,6 +9,8 @@ vi.mock("../../data/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../data/api")>()),
   searchBridgeDirectory: vi.fn(),
   claimBridgeIdentity: vi.fn(),
+  fetchMyIdentities: vi.fn(),
+  fetchMyPendingIdentities: vi.fn(),
 }));
 
 const app = bridgeDetail({ bridge_id: "b1", display_name: "Acme Slack" });
@@ -32,7 +34,7 @@ const code: LinkCode = {
 
 function search(props: Partial<Parameters<typeof AccountSearch>[0]> = {}) {
   const handlers = { onBusy: vi.fn(), onLinked: vi.fn(), onConfirm: vi.fn() };
-  render(<AccountSearch app={app} currentUserId="u-ada" pending={[]} {...handlers} {...props} />);
+  render(<AccountSearch app={app} currentUserId="u-ada" {...handlers} {...props} />);
   return handlers;
 }
 
@@ -40,6 +42,11 @@ const type = (text: string) =>
   fireEvent.change(screen.getByLabelText("Search Acme Slack"), { target: { value: text } });
 
 describe("AccountSearch", () => {
+  beforeEach(() => {
+    vi.mocked(api.fetchMyIdentities).mockResolvedValue([]);
+    vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
@@ -134,9 +141,11 @@ describe("AccountSearch", () => {
 
   it("offers the code for a link already waiting rather than linking again", async () => {
     vi.mocked(api.searchBridgeDirectory).mockResolvedValue({ source: "directory", note: null, users: [person()] });
-    const { onConfirm } = search({
-      pending: [pendingIdentity({ id: "acct-1", bridge_id: "b1", external_user_id: "U-ada" })],
-    });
+    vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([
+      pendingIdentity({ id: "acct-1", bridge_id: "b1", external_user_id: "U-ada" }),
+    ]);
+    const { onConfirm } = search();
+    await waitFor(() => expect(api.fetchMyPendingIdentities).toHaveBeenCalled());
     type("ada");
 
     fireEvent.click(await screen.findByRole("button", { name: "Show code" }));
@@ -166,5 +175,31 @@ describe("AccountSearch", () => {
     type("ada");
 
     expect(await screen.findByText("Slack is answering too many searches. Try again in 30 seconds.")).toBeTruthy();
+  });
+
+  it("reads which links are waiting each time the search opens, not from before", async () => {
+    vi.mocked(api.searchBridgeDirectory).mockResolvedValue({ source: "directory", note: null, users: [person()] });
+    vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
+    search();
+    type("ada");
+
+    expect(await screen.findByRole("button", { name: "This is me" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Show code" })).toBeNull();
+  });
+
+  it("drops a search that comes back after the query got too short", async () => {
+    let answer: (value: api.DirectorySearch) => void = () => {};
+    vi.mocked(api.searchBridgeDirectory).mockImplementation(
+      () => new Promise((resolve) => (answer = resolve)),
+    );
+    search();
+    type("ada");
+    await waitFor(() => expect(api.searchBridgeDirectory).toHaveBeenCalled());
+
+    type("a");
+    await act(async () => answer({ source: "directory", note: null, users: [person()] }));
+
+    expect(screen.queryByText("Ada Lovelace")).toBeNull();
+    expect(screen.getByText(/Type at least 2 characters/)).toBeTruthy();
   });
 });

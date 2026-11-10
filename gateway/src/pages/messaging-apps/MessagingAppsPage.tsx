@@ -58,6 +58,8 @@ type OlderLinks = Record<string, { links: UnconfirmedLink[] } | { error: string 
 
 type Notice = { severity: "success" | "error"; text: string };
 
+const PINNED = ["actions"];
+
 /**
  * Workspace settings › Messaging apps, in the new layout.
  *
@@ -81,10 +83,13 @@ export default function MessagingAppsPage() {
   const [installsVersion, setInstallsVersion] = useState(0);
 
   const appsFailed = loadError !== null && bridges === null;
+  // Both stable, so the table's columns, which depend on this, are not
+  // rebuilt on every render (a rebuilt column model drops a dragged width).
+  const refreshAccounts = accounts.refresh;
   const refreshAll = useCallback(() => {
     refetch();
-    accounts.refresh();
-  }, [refetch, accounts]);
+    refreshAccounts();
+  }, [refetch, refreshAccounts]);
 
   return (
     <Box>
@@ -454,7 +459,7 @@ function ConnectedApps({
           columns={columns}
           height={480}
           search={{ label: "Search apps", text: (row) => `${row.display_name} ${platformLabel(row.bridge_type)}` }}
-          pinnedRight={["actions"]}
+          pinnedRight={PINNED}
           emptyState={
             <TableEmptyState title="No messaging apps yet">
               Add one to bring a Slack, Mattermost, Discord, Teams or Telegram workspace into rooms.

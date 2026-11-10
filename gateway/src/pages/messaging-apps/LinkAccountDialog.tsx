@@ -1,7 +1,7 @@
 import CloseOutlined from "@mui/icons-material/CloseOutlined";
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton } from "@mui/material";
 import { useState } from "react";
-import type { BridgeDetail, LinkCode, PendingIdentity } from "../../data/api";
+import type { BridgeDetail, LinkCode } from "../../data/api";
 import { platformLabel } from "../../theme/format";
 import AccountSearch from "./AccountSearch";
 import type { LinkTarget } from "./chatAccounts";
@@ -29,12 +29,10 @@ export type LinkDialogOpen =
 export default function LinkAccountDialog({
   open,
   currentUserId,
-  pending,
   onClose,
 }: {
   open: LinkDialogOpen | null;
   currentUserId: string | null;
-  pending: readonly PendingIdentity[];
   /** Called whenever the dialog closes, linked or not; the caller re-reads
    *  the accounts either way. */
   onClose: () => void;
@@ -60,7 +58,6 @@ export default function LinkAccountDialog({
           key={`${open.app.bridge_id}:${open.confirm?.identityId ?? ""}`}
           open={open}
           currentUserId={currentUserId}
-          pending={pending}
           busy={busy}
           onBusy={setBusy}
           onClose={onClose}
@@ -73,14 +70,12 @@ export default function LinkAccountDialog({
 function LinkAccountFlow({
   open,
   currentUserId,
-  pending,
   busy,
   onBusy,
   onClose,
 }: {
   open: LinkDialogOpen;
   currentUserId: string | null;
-  pending: readonly PendingIdentity[];
   busy: boolean;
   onBusy: (busy: boolean) => void;
   onClose: () => void;
@@ -109,7 +104,6 @@ function LinkAccountFlow({
           <AccountSearch
             app={app}
             currentUserId={currentUserId}
-            pending={pending}
             onBusy={onBusy}
             onLinked={onClose}
             onConfirm={(target, code) => setWaiting({ target, code })}

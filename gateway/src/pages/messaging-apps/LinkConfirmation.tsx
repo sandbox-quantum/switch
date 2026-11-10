@@ -4,6 +4,7 @@ import OpenInNewOutlined from "@mui/icons-material/OpenInNewOutlined";
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
+  ApiError,
   type BridgeDetail,
   cancelLinkRequest,
   fetchMyIdentities,
@@ -84,9 +85,14 @@ export default function LinkConfirmation({
   // Watched for as long as the code is up, expired or not: the expiry is read
   // off this machine's clock, and one running fast must not stop the page
   // noticing a code that was posted in time.
-  const { linked, pending, pendingReadAt, refresh } = useMyAccounts(
-    gone ? null : CONFIRMATION_POLL_MS,
-  );
+  const {
+    linked,
+    pending,
+    pendingReadAt,
+    error: watchError,
+    refresh,
+  } = useMyAccounts(gone ? null : CONFIRMATION_POLL_MS);
+  const [settleError, setSettleError] = useState<string | null>(null);
   const confirmed = linked?.some((i) => i.id === target.identityId && i.verified) ?? false;
 
   const issue = useCallback(async () => {
@@ -123,7 +129,8 @@ export default function LinkConfirmation({
 
   // In neither list after a pending read made since the screen opened: a read
   // of the linked accounts begun now settles whether it was confirmed or
-  // cancelled.
+  // cancelled. Asked again after every pending read while it looks so, so a
+  // settling read that fails is retried rather than left unanswered.
   const absent =
     !gone &&
     !confirmed &&
@@ -134,16 +141,16 @@ export default function LinkConfirmation({
     fetchMyIdentities().then(
       (fresh) => {
         if (!current) return;
+        setSettleError(null);
         if (fresh.some((i) => i.id === target.identityId)) refresh();
         else setGone(true);
       },
-      // Unsettled: the next poll asks again.
-      () => {},
+      (e: unknown) => current && setSettleError(e instanceof Error ? e.message : String(e)),
     );
     return () => {
       current = false;
     };
-  }, [absent, target.identityId, refresh]);
+  }, [absent, pendingReadAt, target.identityId, refresh]);
 
   // Read through a ref so a caller's inline callback does not restart the
   // hold on every render.
@@ -167,8 +174,13 @@ export default function LinkConfirmation({
       await cancelLinkRequest(app.bridge_id, target.identityId);
       onCancelled();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not cancel.");
-      refresh();
+      // Nothing was waiting: cancelled meanwhile, or no code was ever issued
+      // for it. Either way nothing is left to cancel, which is what was asked.
+      if (e instanceof ApiError && e.status === 404) onCancelled();
+      else {
+        setError(e instanceof Error ? e.message : "Could not cancel.");
+        refresh();
+      }
     } finally {
       setCancelling(false);
       onBusy(false);
@@ -231,12 +243,18 @@ export default function LinkConfirmation({
         sx={{ px: 2, py: 1.5, border: "1px solid var(--sw-border)", borderRadius: "12px", bgcolor: "var(--sw-muted)" }}
       >
         {code === null ? (
-          <Stack direction="row" spacing={1} alignItems="center">
-            <CircularProgress size={16} />
+          issuing ? (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <CircularProgress size={16} />
+              <Typography variant="body2" color="text.secondary">
+                Getting a code…
+              </Typography>
+            </Stack>
+          ) : (
             <Typography variant="body2" color="text.secondary">
-              Getting a code…
+              No code yet.
             </Typography>
-          </Stack>
+          )
         ) : (
           <Typography
             data-testid="link-code"
@@ -312,6 +330,14 @@ export default function LinkConfirmation({
       {error !== null && (
         <Alert severity="error" sx={{ overflowWrap: "anywhere" }}>
           {error}
+        </Alert>
+      )}
+
+      {/* Without these the screen would go on saying it is waiting while it
+          can no longer tell whether the code was posted. */}
+      {(watchError ?? settleError) !== null && (
+        <Alert severity="warning" sx={{ overflowWrap: "anywhere" }}>
+          Can&apos;t check whether the code was posted: {watchError ?? settleError}
         </Alert>
       )}
     </Stack>

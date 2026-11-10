@@ -184,4 +184,43 @@ describe("LinkConfirmation", () => {
       "https://acme.slack.com",
     );
   });
+
+  it("does not spin when the first code is refused, and Cancel still closes", async () => {
+    vi.mocked(api.issueLinkCode).mockRejectedValue(new Error("Bridge is not running — cannot check this account"));
+    vi.mocked(api.cancelLinkRequest).mockRejectedValue(
+      new api.ApiError(404, "That user has no link to this account waiting to be confirmed", "That user has no link to this account waiting to be confirmed"),
+    );
+    vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
+    vi.mocked(api.fetchMyIdentities).mockResolvedValue([linkedIdentity({ id: "acct-1", verified: false })]);
+    const { onCancelled } = show({ target: older });
+
+    expect(await screen.findByText("Bridge is not running — cannot check this account")).toBeTruthy();
+    expect(screen.queryByText("Getting a code…")).toBeNull();
+    expect(screen.getByText("No code yet.")).toBeTruthy();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Cancel confirmation" })),
+    );
+    expect(onCancelled).toHaveBeenCalledOnce();
+  });
+
+  it("says so when it can no longer tell whether the code was posted", async () => {
+    vi.mocked(api.fetchMyIdentities).mockRejectedValue(new Error("Not authenticated"));
+    show({ initialCode: code() });
+
+    expect(await screen.findByText(/Can't check whether the code was posted: Not authenticated/)).toBeTruthy();
+  });
+
+  it("asks again when the read that settles a cancellation fails", async () => {
+    vi.mocked(api.fetchMyPendingIdentities).mockResolvedValue([]);
+    vi.mocked(api.fetchMyIdentities)
+      // The two reads on open (React runs the effect twice here) find nothing.
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      // The settling read fails once, then the next one finds nothing too.
+      .mockRejectedValueOnce(new Error("Network error"))
+      .mockResolvedValue([]);
+    show({ initialCode: code() });
+
+    expect(await screen.findByText(/The link to @ada was cancelled/, undefined, { timeout: 5000 })).toBeTruthy();
+  });
 });

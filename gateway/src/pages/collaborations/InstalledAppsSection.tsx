@@ -214,6 +214,7 @@ export default function InstalledAppsSection({ onConnectionsChanged, memberView 
                 installs={rows.filter((row) => row.platform === platform)}
                 claimable={claimed}
                 canInstall={installable.includes(platform)}
+                memberView={memberView}
                 starting={starting}
                 onAdd={() =>
                   claimed ? handleClaim(platform) : handleInstall(platform)
@@ -245,6 +246,8 @@ interface CardProps {
   // Set for a claim-based platform, with what this caller may do on it.
   claimable: ClaimablePlatform | undefined;
   canInstall: boolean;
+  // The app's own table is not on a member's page, so nothing here points at it.
+  memberView: boolean;
   starting: string | null;
   onAdd: () => void;
   onDisconnect: (install: InstalledApp) => void;
@@ -255,6 +258,7 @@ function PlatformCard({
   installs,
   claimable,
   canInstall,
+  memberView,
   starting,
   onAdd,
   onDisconnect,
@@ -283,7 +287,9 @@ function PlatformCard({
             {active.length > 0
               ? `${pluralize(active.length, noun)} connected`
               : claimable?.connected
-                ? `No ${noun}s connected. The messaging app stays until an admin deletes it above.`
+                ? memberView
+                  ? `No ${noun}s connected.`
+                  : `No ${noun}s connected. The messaging app stays until an admin deletes it above.`
                 : "Not connected"}
           </Typography>
         </Box>

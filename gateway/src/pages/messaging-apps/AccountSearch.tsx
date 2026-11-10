@@ -10,6 +10,7 @@ import {
   searchBridgeDirectory,
 } from "../../data/api";
 import { afterClaim, type LinkTarget } from "./chatAccounts";
+import { useMyAccounts } from "./useMyAccounts";
 
 /** How long to wait after the last keystroke before asking. Every search is a
  * live call out to the platform, so this spares its rate limits as much as
@@ -41,16 +42,12 @@ type Result =
 export default function AccountSearch({
   app,
   currentUserId,
-  pending,
   onBusy,
   onLinked,
   onConfirm,
 }: {
   app: BridgeDetail;
   currentUserId: string | null;
-  /** Your links waiting for a code. The directory lists only links that
-   *  count, so these are matched to its people here. */
-  pending: readonly PendingIdentity[];
   onBusy: (busy: boolean) => void;
   /** The claim came back linked and confirmed: nothing to wait for. */
   onLinked: () => void;
@@ -64,14 +61,21 @@ export default function AccountSearch({
   const [claiming, setClaiming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const latest = useRef(0);
+  // Your links waiting for a code, read afresh each time the search opens:
+  // coming back to it from a code just cancelled, a list read before would
+  // still offer that link's code. The directory lists only links that count,
+  // so these are matched to its people here.
+  const { pending } = useMyAccounts(null);
 
   const query = text.trim();
   useEffect(() => {
+    // Bumped here too, so a search already in flight for a longer query does
+    // not land under a field that no longer reads it.
+    const asked = ++latest.current;
     if (query.length < MIN_QUERY_LENGTH) {
       setResult({ state: "idle" });
       return;
     }
-    const asked = ++latest.current;
     const timer = setTimeout(() => {
       setResult({ state: "searching", query });
       searchBridgeDirectory(app.bridge_id, query).then(
@@ -122,7 +126,7 @@ export default function AccountSearch({
         app={app}
         result={result}
         currentUserId={currentUserId}
-        pending={pending.filter((p) => p.bridge_id === app.bridge_id)}
+        pending={(pending ?? []).filter((p) => p.bridge_id === app.bridge_id)}
         claiming={claiming}
         onClaim={(person) => void claim(person)}
         onConfirm={(target) => onConfirm(target, null)}

@@ -92,4 +92,15 @@ describe("InstalledAppsSection", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(container.textContent).toBe("");
   });
+
+  it("points a member at no table they cannot see", async () => {
+    mockFetch([], {
+      platforms: [],
+      claimable: [{ platform: "telegram", connected: true, can_add_chat: true }],
+    });
+    render(<InstalledAppsSection onConnectionsChanged={() => {}} memberView />);
+
+    expect(await screen.findByText("No chats connected.")).toBeTruthy();
+    expect(screen.queryByText(/an admin deletes it above/)).toBeNull();
+  });
 });

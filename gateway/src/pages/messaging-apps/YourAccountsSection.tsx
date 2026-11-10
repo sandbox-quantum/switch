@@ -142,7 +142,6 @@ export default function YourAccountsSection({
       <LinkAccountDialog
         open={dialog}
         currentUserId={currentUserId}
-        pending={pending ?? []}
         onClose={() => {
           setDialog(null);
           refresh();
