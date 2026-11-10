@@ -1133,11 +1133,15 @@ Your messages render on whatever platform the room is bridged to
 When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 
 To link to a Slack message, call **`get_permalinks`** with its message ids (the
-`id` from `read_context` or an event, up to 50 per call) and use the URL it
-returns. **Never build a Slack link yourself.** An id with no link comes back
-under `unavailable` with a reason: `not_found`, `not_slack`,
-`no_slack_record`, `deleted_in_slack` or `bridge_not_running`. Say plainly that
-there is no link; do not guess one.
+`id` from `read_context` or an event, or the `event_id` a send returns; up to
+50 per call) and use the URL it returns. **Never build a Slack link yourself.**
+An id with no link comes back under `unavailable` with a reason: `not_found`,
+`not_slack`, `no_slack_record`, `deleted_in_slack` or `bridge_not_running`.
+`no_slack_record` means the message is not posted in Slack yet, or never was;
+for your own recent post, ask once more a few seconds later.
+`bridge_not_running` means Slack did not give a link: the bridge is not
+running, Slack is rate limiting, or the Slack app cannot see the channel. Ask
+once more later at most. Say plainly that there is no link; do not guess one.
 
 ## Session controls
 

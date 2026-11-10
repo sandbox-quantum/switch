@@ -51,7 +51,9 @@ version of their own to them without also giving them a release of their own.
   from Slack's `chat.getPermalink` when the agent asks, so a reply opens in its
   thread. An id without a link gets one reason: `not_found` (no such message,
   or not in a room the agent is a member of), `not_slack`, `no_slack_record`,
-  `deleted_in_slack` or `bridge_not_running`. Nothing new is stored, and
+  `deleted_in_slack` or `bridge_not_running` (Slack gave no link: the bridge
+  is not running, Slack is rate limiting, or the app cannot see the channel).
+  Nothing new is stored, and
   message payloads do not change. The Switch skill tells agents to use the tool
   and never to build a Slack link.
 - **A one-screen Datadog board and alerts that say what to do.**

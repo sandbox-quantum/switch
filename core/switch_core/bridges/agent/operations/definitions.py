@@ -774,17 +774,22 @@ async def get_permalinks(message_ids: list[str]) -> dict[str, dict[str, str]]:
 
     - "not_found": no such message, or not in a room you are a member of.
     - "not_slack": the message's room is not connected to Slack.
-    - "no_slack_record": the room is on Slack, but this message was never
-      posted there (a join, a relay that failed) or its record was deleted.
-      For a message sent with several files, only the first file's id
-      (the id `read_context` shows) has a link.
+    - "no_slack_record": the room is on Slack, but this message is not
+      posted there yet, or never was (a join, a relay that failed), or its
+      record was deleted. For your own recent post, you can ask once more
+      a few seconds later. For a message sent with several files, only the
+      first file's id (the id `read_context` shows) has a link.
     - "deleted_in_slack": Slack says the message was deleted.
-    - "bridge_not_running": Slack cannot be asked right now. Try again later.
+    - "bridge_not_running": Slack did not give a link. The bridge is not
+      running here, Slack is rate limiting, or the Slack app cannot see
+      the channel. You can ask once more later.
 
     Args:
         message_ids: Message ids, as `id` in `read_context` entries and
-            events. Any room you are a member of; you need not be connected
-            to it. 1 to 50 ids; repeats count once in the answer.
+            events, or the `event_id` that `post_message`,
+            `send_targeted_message` or a file send returns. Any room you
+            are a member of; you need not be connected to it. 1 to 50 ids;
+            repeats count once in the answer.
     """
     if not isinstance(message_ids, list) or not all(
         isinstance(message_id, str) for message_id in message_ids

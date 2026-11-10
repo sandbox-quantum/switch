@@ -129,7 +129,8 @@ class PermalinkUnavailable(StrEnum):
     # The room's bridge has no posted record of this message.
     NO_SLACK_RECORD = "no_slack_record"
     DELETED_IN_SLACK = "deleted_in_slack"
-    # No live adapter in this process, or Slack failed for another reason.
+    # Slack did not give a link: no live adapter in this process, a rate
+    # limit, or another Slack failure such as a channel the app cannot see.
     BRIDGE_NOT_RUNNING = "bridge_not_running"
 
 
