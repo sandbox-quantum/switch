@@ -112,7 +112,7 @@ describe("EditableField", () => {
     render(
       field({
         onSave: async () => {
-          throw new Error("Tenant admin access required");
+          throw new Error("Workspace admin access required");
         },
       }),
     );
@@ -122,7 +122,7 @@ describe("EditableField", () => {
 
     expect(box().value).toBe("Research");
     expect(box().readOnly).toBe(false);
-    const reason = screen.getByText("Tenant admin access required");
+    const reason = screen.getByText("Workspace admin access required");
     expect(box().getAttribute("aria-describedby")).toBe(reason.id);
     expect(box().getAttribute("aria-invalid")).toBe("true");
   });

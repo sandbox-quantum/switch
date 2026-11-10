@@ -117,6 +117,9 @@ version of their own to them without also giving them a release of their own.
   sign-in.
 
 #### Changed
+- **A refusal for not being a workspace admin says "Workspace admin access
+  required"**, where it said "Tenant admin access required", on every
+  gateway route that only the workspace's admins may use.
 - **The operator dashboard follows the current design.** A field's label sits
   above it rather than floating inside the box, and the field has a white fill
   and a firm border and ring when focused; switches are pills, and one that is
@@ -172,6 +175,8 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **The retention window picker sits beside "Delete messages older than"
+  again** in Workspace settings, rather than stretching across the page.
 - **Renaming a channel on a messaging app renames its room.** Slack,
   Mattermost, Microsoft Teams and Telegram now pass a channel's new name to
   Switch, as Discord already did, using what each platform already sends, so

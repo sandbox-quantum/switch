@@ -95,12 +95,16 @@ export default function WorkspacePage() {
  * name: the breadcrumb, the switcher and the rest. */
 function WorkspaceNameField({ tenant }: { tenant: TenantMembership }) {
   const { capabilities, recheck } = useAuth();
-  const [renamedTo, setRenamedTo] = useState<string | null>(null);
+  // Kept after the message closes, so it still names the workspace while it
+  // fades out.
+  const [renamedTo, setRenamedTo] = useState("");
+  const [noticeOpen, setNoticeOpen] = useState(false);
 
   const rename = async (draft: string) => {
     const { name } = await renameWorkspace(tenant.id, draft);
     await recheck();
     setRenamedTo(name);
+    setNoticeOpen(true);
   };
 
   return (
@@ -115,12 +119,12 @@ function WorkspaceNameField({ tenant }: { tenant: TenantMembership }) {
         onSave={rename}
       />
       <Snackbar
-        open={renamedTo !== null}
+        open={noticeOpen}
         autoHideDuration={5000}
-        onClose={() => setRenamedTo(null)}
+        onClose={() => setNoticeOpen(false)}
         anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
       >
-        <Alert severity="success" onClose={() => setRenamedTo(null)}>
+        <Alert severity="success" onClose={() => setNoticeOpen(false)}>
           Workspace renamed to {renamedTo}.
         </Alert>
       </Snackbar>

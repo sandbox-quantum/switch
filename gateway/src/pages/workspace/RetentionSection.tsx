@@ -154,6 +154,7 @@ export default function RetentionSection({
                 <TextField
                   select
                   size="small"
+                  fullWidth={false}
                   value={preset}
                   disabled={mode !== "window" || !canSetWindow}
                   onChange={(event) => setPreset(event.target.value)}
@@ -170,6 +171,7 @@ export default function RetentionSection({
                 {preset === CUSTOM && (
                   <TextField
                     size="small"
+                    fullWidth={false}
                     label="Days"
                     value={customDays}
                     disabled={mode !== "window" || !canSetWindow}
