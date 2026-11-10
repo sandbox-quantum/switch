@@ -63,6 +63,7 @@ from switch_core.decision.room import (
 )
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
+from switch_core.invites import InviteNotPermitted, inviter_for_sender
 from switch_core.platform_access import administers_on_record
 from switch_core.transport import RoomRef
 
@@ -1423,14 +1424,34 @@ async def _cmd_invite(
             )
             return
 
-    # `invite-agent` is admin-owned, so only the always-present admin client
-    # runs this handler — the `room_service` reference lives on CommandConsumer.
+        # `invite-agent` is admin-owned, so only the always-present admin
+        # client runs this handler — the `room_service` reference lives on
+        # CommandConsumer.
+        host = cast("CommandConsumer", client)
+        inviter = await inviter_for_sender(
+            AddressingResolver(
+                room_store=host._room_store,
+                room_role_store=host._room_role_store,
+                client_store=host.client_store,
+                agent_store=host._agent_store,
+                external_user_store=host._external_user_store,
+                live_connection_ids=host._connections.live_connection_ids,
+            ),
+            session,
+            event.user_id,
+            {},
+        )
+
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
     # MCP tool) so the agent is invited to the room AND added to any bridged
-    # channel.
-    await cast("CommandConsumer", client)._room_service.add_agents_to_room(
-        meta.room_id, agent_names=[target.name]
-    )
+    # channel, and so the target's addressing policy is applied once for both.
+    try:
+        await host._room_service.add_agents_to_room(
+            meta.room_id, agent_names=[target.name], invited_by=inviter
+        )
+    except InviteNotPermitted as refused:
+        await _reply(client, room, event, str(refused))
+        return
     await _reply(
         client,
         room,
