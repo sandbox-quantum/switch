@@ -937,13 +937,12 @@ class CollaborationCore:
         self, channel_id: str, old_name: str, new_name: str
     ) -> None:
         """The platform reports this channel's name (renamed from `old_name`,
-        or unchanged). The room linked to it follows when it is named after
-        the channel (`NAME_SOURCE_KEY` "channel"), or, from before that was
-        kept, when its name is exactly the one it was made with from the old
-        channel name. Any other room keeps its name, and the channel's is
-        recorded for whoever wants to take it (`/rooms/{id}/sync-name`)."""
-        bridge_name = self._bridge_display_name
-        name = f"{bridge_name}: {new_name}"
+        empty when the platform did not say, or unchanged). The room linked to
+        it follows when it is named after the channel (`NAME_SOURCE_KEY`
+        "channel" or "created"), or, from before that was kept, while its name
+        still matches the channel's old one (`RoomStore.follow_channel_name`).
+        Any other room keeps its name, and the channel's is recorded for
+        whoever wants to take it (`/rooms/{id}/sync-name`)."""
         with tenant_scope(self._bridge_tenant_id):
             async with tenant_session(
                 self._session_factory, self._bridge_tenant_id
@@ -953,12 +952,15 @@ class CollaborationCore:
                 )
             if room is None:
                 return
-            metadata = room.metadata_ or {}
-            if room.name != name and await self._room_service.follow_channel_name(
-                room.id, name, new_name, f"{bridge_name}: {old_name}"
+            if await self._room_service.follow_channel_name(
+                room.id,
+                old_name=old_name,
+                new_name=new_name,
+                bridge_display_name=self._bridge_display_name,
+                channel_name_for=self._adapter.channel_name_for,
             ):
                 return
-            if metadata.get(LINKED_CHANNEL_NAME_KEY) != new_name:
+            if (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY) != new_name:
                 await self._room_service.record_channel_name(room.id, new_name)
 
     # ── Inbound (platform → room) ───────────────────────────────────────────

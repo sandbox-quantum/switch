@@ -13,6 +13,7 @@ from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelInUse,
     ChannelNotUsable,
+    CreatedChannel,
 )
 from switch_core.room_service import RoomService
 
@@ -39,6 +40,7 @@ class _FakeRoomStore:
         self._room = room
         self._agent_ids = agent_ids
         self.update_bridge_calls: list[dict[str, Any]] = []
+        self.created_channel_names: list[tuple[str, str]] = []
         # Channel id → the id of the room already bound to it.
         self.bound: dict[str, str] = {}
         # Raised by `update_bridge`, standing in for the database refusing it.
@@ -75,6 +77,11 @@ class _FakeRoomStore:
                 "external_channel_id": external_channel_id,
             }
         )
+
+    async def set_created_channel_name(
+        self, session: Any, room_id: str, channel_name: str
+    ) -> None:
+        self.created_channel_names.append((room_id, channel_name))
 
 
 class _FakeAgentStore:
@@ -118,14 +125,14 @@ class _FakeAdapter:
         *,
         channel_type: str = "channel_public",
         owner_external_id: str | None = None,
-    ) -> str:
+    ) -> CreatedChannel:
         if owner_external_id is None:
             self._events.append(("create_channel", name, topic, channel_type))
         else:
             self._events.append(
                 ("create_channel", name, topic, channel_type, owner_external_id)
             )
-        return self._new_channel_id
+        return CreatedChannel(id=self._new_channel_id, name=name)
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]
@@ -311,6 +318,8 @@ class TestChangeBridge:
                 "external_channel_id": "chan-new",
             }
         ]
+        # The channel made for the room is the one the room now follows.
+        assert room_store.created_channel_names == [("room-1", "Work")]
         # Agents were re-added to the new channel; of the people, only the
         # owner is carried over, so the new private channel has someone in it.
         assert ("add_agents", "chan-new", ["agent.one", "agent.two"]) in events

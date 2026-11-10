@@ -57,6 +57,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelNotUsable,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -2431,7 +2432,7 @@ class DiscordAdapter(PlatformAdapter):
         *,
         channel_type: ChannelType = "channel_public",
         owner_external_id: str | None = None,
-    ) -> str:
+    ) -> CreatedChannel:
         if channel_type in ("group", "direct"):
             raise ValueError(
                 f"Cannot create {channel_type} channels — they are initiated from the messaging platform"
@@ -2439,7 +2440,7 @@ class DiscordAdapter(PlatformAdapter):
 
         guild = await self._get_guild()
         channel = await guild.create_text_channel(
-            name=self._sanitize_channel_name(name),
+            name=self.channel_name_for(name),
             topic=topic,
             overwrites=(
                 self._private_channel_overwrites(guild)
@@ -2447,7 +2448,11 @@ class DiscordAdapter(PlatformAdapter):
                 else {}
             ),
         )
-        return str(channel.id)
+        return CreatedChannel(id=str(channel.id), name=channel.name)
+
+    @classmethod
+    def channel_name_for(cls, room_name: str) -> str:
+        return cls._sanitize_channel_name(room_name)
 
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         try:
