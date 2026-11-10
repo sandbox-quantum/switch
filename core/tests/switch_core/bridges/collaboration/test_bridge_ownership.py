@@ -70,6 +70,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
+from switch_core.invites import PlatformInviter
 from switch_core.keys import Keyring
 from switch_core.messages.notify import MessageListener
 from switch_core.ownership import Ownership
@@ -909,7 +910,8 @@ class TestChangesMadeElsewhere:
                     external_channel_id="C2",
                     channel_type="channel_public",
                     created_by_kind="system",
-                )
+                ),
+                invited_by=PlatformInviter(bridge.bridge_id, None),
             )
         async with session_factory() as session:
             await RoomStore().add_client(session, bridge.speaker_id, created.room.id)

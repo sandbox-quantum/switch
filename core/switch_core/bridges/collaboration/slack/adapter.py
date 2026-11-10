@@ -3503,6 +3503,12 @@ class SlackAdapter(PlatformAdapter):
         channel_id = str(event.get("channel", ""))
         if not user_id or not channel_id:
             return
+        # Slack names whoever invited the member; a join by link or by the
+        # member themselves carries none. Whoever it was is who an agent
+        # join is judged as — the app join included, which the other
+        # reading of this event (a user joining) already had.
+        inviter = event.get("inviter")
+        added_by = str(inviter) if inviter else None
 
         if user_id == self._bot_user_id:
             # The app itself was invited to / joined the channel. Surface it so
@@ -3517,6 +3523,7 @@ class SlackAdapter(PlatformAdapter):
                     channel_id=channel_id,
                     channel_type=channel_type,
                     channel_name=channel_name,
+                    added_by_external_user_id=added_by,
                 )
             )
             return
@@ -3535,6 +3542,7 @@ class SlackAdapter(PlatformAdapter):
                 external_user_id=user_id,
                 external_username=user.name,
                 channel_name=channel_name,
+                added_by_external_user_id=added_by,
             )
         )
 

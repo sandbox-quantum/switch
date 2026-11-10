@@ -57,7 +57,12 @@ def _build_client(
 
 
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent",
+        args=args,
+        thread_id=None,
+        user_id="@inviter:switch.local",
+    )
 
 
 def _agent(
@@ -169,3 +174,53 @@ class TestInviteCommandRegistration:
         # reference).
         cmd = COMMANDS_BY_NAME["invite-agent"]
         assert cmd.admin_owned is True
+
+
+class TestInviteCommandRefused:
+    """The funnel refuses someone the agent's addressing policy does not
+    admit: the refusal is the reply — it already says why, and who
+    can invite instead — and no "Added" follows it."""
+
+    async def test_a_refusal_is_the_reply(self) -> None:
+        from switch_core.invites import InviteRefused
+
+        client, posted, added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=["a2"]
+        )
+
+        async def _refuse(room_id, agent_names=None, **_kw):  # type: ignore[no-untyped-def]
+            raise InviteRefused(
+                "claude-code.alice doesn't take instructions from you, so "
+                "it wasn't added. Ask its owner (Olivia Owner) to invite "
+                "it, or to change who it takes instructions from.",
+                ["a1"],
+                ["claude-code.alice"],
+            )
+
+        client._room_service = SimpleNamespace(add_agents_to_room=_refuse)
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@Claude-Code.Alice"), False
+        )
+        assert added == []
+        assert len(posted) == 1
+        assert "doesn't take instructions from you" in posted[0]
+        assert "its owner (Olivia Owner)" in posted[0]
+        assert "Added" not in posted[0]
+
+    async def test_the_inviter_is_the_command_sender(self) -> None:
+        from switch_core.invites import ChatSender
+
+        client, _posted, added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=["a2"]
+        )
+        seen: list[object] = []
+
+        async def _record(room_id, agent_names=None, **kw):  # type: ignore[no-untyped-def]
+            seen.append(kw.get("invited_by"))
+            added.append((room_id, list(agent_names or [])))
+
+        client._room_service = SimpleNamespace(add_agents_to_room=_record)
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@Claude-Code.Alice"), False
+        )
+        assert seen == [ChatSender("@inviter:switch.local")]

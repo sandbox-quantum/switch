@@ -3,6 +3,7 @@ import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
 import { type Layout, areaOf } from "../routes/routeTable";
 import NavRail from "./NavRail";
+import OwnerNotices from "./OwnerNotices";
 import TopBar from "./TopBar";
 
 /** Hoot's signature shell: a narrow icon rail and a slim top bar sitting bare on
@@ -12,6 +13,7 @@ import TopBar from "./TopBar";
  *  the workspace: no rail there, and the top bar leads back. */
 export default function PageShell({ layout }: { layout: Layout }) {
   const { pathname } = useLocation();
+  const { session } = useAuth();
   const withRail = areaOf(pathname, layout) !== "organization";
   return (
     <Box
@@ -48,6 +50,13 @@ export default function PageShell({ layout }: { layout: Layout }) {
           }}
         >
           <StaleSessionBanner />
+          {session?.tenant && (
+            <OwnerNotices
+              key={`${session.user.id}:${session.tenant.id}`}
+              ownerId={session.user.id}
+              tenantId={session.tenant.id}
+            />
+          )}
           <Outlet />
         </Stack>
       </Stack>

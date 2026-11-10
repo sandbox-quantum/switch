@@ -1202,6 +1202,96 @@ def test_user_join_does_not_fire_on_app_joined() -> None:
     assert user_joins[0].external_user_id == "U1"
 
 
+def test_an_app_join_names_who_invited_the_app() -> None:
+    # Slack's member_joined event carries the inviter; the join is judged
+    # by the agents' addressing policies as that person.
+    from switch_core.bridges.collaboration.models import InboundAppJoin
+
+    adapter = _adapter()
+    adapter._bot_user_id = "UBOT"
+    adapter._web_client = _FakeConversationsInfoClient({})  # type: ignore[assignment]
+    adapter._channel_name_cache["C123"] = "general"
+
+    joins: list[InboundAppJoin] = []
+
+    async def on_app_joined(join: InboundAppJoin) -> None:
+        joins.append(join)
+
+    adapter._on_app_joined = on_app_joined
+
+    _run(
+        adapter._handle_member_joined_channel(
+            {
+                "type": "member_joined_channel",
+                "user": "UBOT",
+                "channel": "C123",
+                "inviter": "U9",
+            }
+        )
+    )
+
+    assert len(joins) == 1
+    assert joins[0].added_by_external_user_id == "U9"
+
+
+def test_a_user_join_names_who_invited_them() -> None:
+    # A "user" who is an agent's bot is routed to the agent-join path with
+    # this inviter, so it has to survive the trip.
+    from switch_core.bridges.collaboration.models import InboundUserJoin
+
+    adapter = _adapter()
+    adapter._bot_user_id = "UBOT"
+    adapter._web_client = _FakeConversationsInfoClient({})  # type: ignore[assignment]
+    adapter._channel_name_cache["C123"] = "general"
+    adapter._user_cache["U1"] = SlackUser(name="alice", display_name="Alice")
+
+    joins: list[InboundUserJoin] = []
+
+    async def on_user_joined(join: InboundUserJoin) -> None:
+        joins.append(join)
+
+    adapter._on_user_joined = on_user_joined
+
+    _run(
+        adapter._handle_member_joined_channel(
+            {
+                "type": "member_joined_channel",
+                "user": "U1",
+                "channel": "C123",
+                "inviter": "U9",
+            }
+        )
+    )
+
+    assert len(joins) == 1
+    assert joins[0].added_by_external_user_id == "U9"
+
+
+def test_a_join_without_an_inviter_names_nobody() -> None:
+    from switch_core.bridges.collaboration.models import InboundAppJoin
+
+    adapter = _adapter()
+    adapter._bot_user_id = "UBOT"
+    adapter._web_client = _FakeConversationsInfoClient({})  # type: ignore[assignment]
+    adapter._channel_name_cache["C123"] = "general"
+
+    joins: list[InboundAppJoin] = []
+
+    async def on_app_joined(join: InboundAppJoin) -> None:
+        joins.append(join)
+
+    adapter._on_app_joined = on_app_joined
+
+    _run(
+        adapter._handle_member_joined_channel(
+            {"type": "member_joined_channel", "user": "UBOT", "channel": "C123"}
+        )
+    )
+
+    assert len(joins) == 1
+    assert joins[0].added_by_external_user_id is None
+
+
 # ── Outbound attachments ─────────────────────────────────────────────────────
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 
+from switch_core.invites import UserInviter
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import REGISTRATION_TOKEN, Harness, SessionEnv
 
@@ -88,7 +89,8 @@ async def test_bootstrap_owned_agent_cannot_write_a_private_room_it_does_not_own
             created_by=harness.owner_id,
             read_visibility="private",
             write_visibility="private",
-        )
+        ),
+        invited_by=UserInviter(harness.owner_id),
     )
 
     async with session_env.session_factory() as session:  # type: ignore[operator]

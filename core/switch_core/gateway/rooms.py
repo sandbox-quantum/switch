@@ -89,6 +89,7 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
+from switch_core.invites import InviteRefused, UserInviter
 from switch_core.room_service import (
     FIXED_MEMBERSHIP,
     MembershipFixed,
@@ -512,7 +513,12 @@ async def create_room(
         roles=([RoleSpec(**r.model_dump()) for r in req.roles] if req.roles else None),
     )
     try:
-        result = await room_service.create_room(config)
+        # The signed-in user is the inviter: an agent whose addressing
+        # policy does not admit them refuses the room, answered 403
+        # with the gate's own message — why, and who can invite instead.
+        result = await room_service.create_room(config, invited_by=UserInviter(user.id))
+    except InviteRefused as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except BridgeOperationError as e:
@@ -1323,7 +1329,10 @@ async def post_room_agents(
             agent_ids=req.agent_ids,
             include_subagents_for=req.include_subagents_for,
             join_event_listeners=req.join_event_listeners,
+            invited_by=UserInviter(user.id),
         )
+    except InviteRefused as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await session.commit()

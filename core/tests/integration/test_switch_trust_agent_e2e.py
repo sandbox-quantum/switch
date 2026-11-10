@@ -18,6 +18,7 @@ from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.db.models import Message
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
+from switch_core.invites import UserInviter
 from switch_core.room_service import RoomCreateConfig
 from switch_core.trust.client import (
     GuardrailBlockedError,
@@ -119,7 +120,8 @@ async def _setup_room(
             name=f"{agent_name}-room",
             description="integration switch trust test",
             agent_ids=[agent.agent_id],
-        )
+        ),
+        invited_by=UserInviter(harness.owner_id),
     )
     await _wait_joined(client, result.room.transport_room_id)
     return agent.agent_id, result.room.id

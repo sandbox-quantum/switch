@@ -5098,6 +5098,46 @@ class TenantDataMove(TenantScoped, Base):
     )
 
 
+class OwnerNotice(TenantScoped, Base):
+    """A pending notice for the current owner of an agent.
+
+    Refer to the current agent and room rather than retaining name snapshots:
+    erasure/renames are reflected immediately, transfer changes who may read
+    the notice, and deletion of the agent or room removes the pending notice.
+    """
+
+    __tablename__ = "owner_notices"
+    __table_args__ = (
+        CheckConstraint(
+            "kind = 'unverified_agent_invite'", name="ck_owner_notices_kind"
+        ),
+        UniqueConstraint(
+            "tenant_id", "agent_id", "room_id", name="uq_owner_notices_pending_join"
+        ),
+        Index("ix_owner_notices_tenant_created", "tenant_id", "created_at"),
+        ForeignKeyConstraint(
+            ["agent_id", "tenant_id"],
+            ["agents.id", "agents.tenant_id"],
+            name="fk_owner_notices_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["room_id", "tenant_id"],
+            ["rooms.id", "rooms.tenant_id"],
+            name="fk_owner_notices_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # Same reasoning as the notify trigger above: `create_all` has to build the
 # row-level-security policies too, or the isolation test would pass against a
 # schema that has none. See `db/rls_ddl.py` for the DDL and why it takes this

@@ -627,7 +627,9 @@ def test_join_names_the_existing_rooms_to_add_the_agent_to():
 async def test_a_new_agent_joins_an_existing_room_or_the_run_is_refused(managed):
     added: list[tuple[str, list[str]]] = []
 
-    async def add_agents_to_room(room_id: str, agent_ids: list[str]) -> None:
+    async def add_agents_to_room(
+        room_id: str, agent_ids: list[str], **kwargs: Any
+    ) -> None:
         added.append((room_id, agent_ids))
 
     managed["protocol"].room_service.add_agents_to_room = add_agents_to_room
@@ -790,9 +792,9 @@ async def test_the_rooms_wait_until_the_new_agents_are_listening(managed):
     order: list[str] = []
     names: dict[str, str] = {}
 
-    async def create_room(config: Any) -> Any:
+    async def create_room(config: Any, **kwargs: Any) -> Any:
         order.append(f"room {config.name}")
-        return await original(config)
+        return await original(config, **kwargs)
 
     original = managed["protocol"].room_service.create_room
     managed["protocol"].room_service.create_room = create_room
