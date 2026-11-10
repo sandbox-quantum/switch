@@ -344,6 +344,31 @@ describe("a connector's page", () => {
     );
   });
 
+  it("counts the repositories of someone else's GitHub grant rather than listing their numbers", async () => {
+    signedIn({ admin: true });
+    server(
+      serviceConnection({ slug: "github", name: "GitHub", pass_through: false }),
+      [],
+      {
+        people: [],
+        agents: [
+          {
+            agent_id: "b1",
+            name: "bobs-agent",
+            owner_id: "u2",
+            owner_name: "Bob",
+            grant: grant({ service: "github", resources: { installation_id: 9, repository_ids: [90, 91] } }),
+          },
+        ],
+      },
+    );
+    renderPage("github");
+
+    const card = await screen.findByTestId("connector-agent-b1");
+    expect(within(card).getByText("Bob · 2 repositories")).toBeTruthy();
+    expect(within(card).queryByText(/repository 90/)).toBeNull();
+  });
+
   it("disconnects after asking", async () => {
     signedIn();
     const calls = server(

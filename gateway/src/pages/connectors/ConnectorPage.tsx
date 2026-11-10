@@ -327,7 +327,7 @@ export default function ConnectorPage() {
           <BrandTile slug={connection.slug} name={connection.name} size={64} />
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: "wrap" }} useFlexGap>
-              <Typography variant="h4" component="h1">
+              <Typography variant="h5" component="h1">
                 {connection.name}
               </Typography>
               {!connection.enabled && <Chip size="small" label="Coming soon" />}

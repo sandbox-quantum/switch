@@ -27,6 +27,25 @@ import {
 import { GitHubGrantForm, REMOVED_NOTE, repositoryNames } from "../agents/ServiceAccessSection";
 import { OPEN_AGENT_NOTE, grantLabel } from "./connectorProfile";
 
+function repositoryCount(grant: ServiceGrant): number {
+  const ids = grant.resources.repository_ids;
+  return Array.isArray(ids) ? ids.length : 0;
+}
+
+/** A GitHub grant's repositories by name, where the viewer's own GitHub
+ * reaches them all: someone else's agent's, or one the viewer can no longer
+ * see, is counted instead of listed by number. */
+function repositoryNamesIfKnown(github: GitHubConnection | null, grant: ServiceGrant): string[] | null {
+  if (github?.status !== "connected") return null;
+  const installation = github.installations.find((i) => i.id === grant.resources.installation_id);
+  if (!installation) return null;
+  const names = repositoryNames(github, grant);
+  return names.length === repositoryCount(grant) &&
+    names.every((name) => installation.repositories.some((r) => r.name === name))
+    ? names
+    : null;
+}
+
 interface Entry {
   agentId: string;
   name: string;
@@ -79,14 +98,17 @@ function AgentCard({
   onManage: (() => void) | null;
   onRemove: (() => void) | null;
 }) {
-  const repositories = connection.slug === "github" ? repositoryNames(github, entry.grant) : [];
+  const repositories = connection.slug === "github" ? repositoryNamesIfKnown(github, entry.grant) : null;
+  const count = repositoryCount(entry.grant);
   const detail = [
     entry.ownerName,
-    repositories.length === 1
+    repositories?.length === 1
       ? repositories[0]
-      : repositories.length > 1
-        ? `${repositories.length} repositories`
-        : null,
+      : count === 0
+        ? null
+        : count === 1
+          ? "1 repository"
+          : `${count} repositories`,
   ].filter(Boolean);
   return (
     <Stack
@@ -120,7 +142,7 @@ function AgentCard({
           <Chip size="small" variant="outlined" label={grantLabel(entry.grant, connection.pass_through)} />
         </Stack>
         {detail.length > 0 && (
-          <Typography variant="body2" color="text.secondary" noWrap title={repositories.join(", ")}>
+          <Typography variant="body2" color="text.secondary" noWrap title={repositories?.join(", ")}>
             {detail.join(" · ")}
           </Typography>
         )}
