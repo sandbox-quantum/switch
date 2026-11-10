@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReferenceDetail } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
@@ -34,9 +34,19 @@ function Where() {
   return <output data-testid="where">{location.pathname + location.search}</output>;
 }
 
+function GoToR2() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate("/resources/references/r2")}>
+      Go to r2
+    </button>
+  );
+}
+
 const show = () =>
   render(
     <MemoryRouter initialEntries={["/resources/references/r1"]}>
+      <GoToR2 />
       <Routes>
         <Route path="/resources/references/:id" element={<ReferenceDetailPage />} />
         <Route path="/resources" element={<Where />} />
@@ -95,5 +105,27 @@ describe("ReferenceDetailPage", () => {
     expect(await screen.findByText("Onboarding")).toBeTruthy();
     expect(screen.getByText("1 private package you can't open")).toBeTruthy();
     expect(screen.queryByText("p-hidden")).toBeNull();
+  });
+
+  it("drops one reference's page when moving to another, rather than show it while the next loads", async () => {
+    let answerR2: (response: Response) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input).replace(/^\/gateway/, "").split("?")[0];
+        if (path === "/references/r1") return new Response(JSON.stringify(REF), { status: 200 });
+        if (path === "/references/r2") return new Promise<Response>((resolve) => (answerR2 = resolve));
+        return new Response(JSON.stringify([]), { status: 200 });
+      }),
+    );
+    show();
+    await screen.findByDisplayValue("Monorepo");
+
+    fireEvent.click(screen.getByRole("button", { name: "Go to r2" }));
+    expect(await screen.findByRole("progressbar")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Monorepo")).toBeNull();
+
+    answerR2(new Response(JSON.stringify({ ...REF, id: "r2", name: "Roadmap" }), { status: 200 }));
+    expect(await screen.findByDisplayValue("Roadmap")).toBeTruthy();
   });
 });

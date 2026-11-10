@@ -34,7 +34,11 @@ export function useResourceDetail<T>(id: string | undefined, load: (id: string) 
     setLoading(false);
   }, [id, load]);
 
+  // A new id is a different resource: the last one's page goes, rather than
+  // stay up, editable, while the next one loads.
   useEffect(() => {
+    setData(null);
+    setError(null);
     void reload();
   }, [reload]);
 

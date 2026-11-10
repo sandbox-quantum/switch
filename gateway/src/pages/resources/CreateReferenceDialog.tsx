@@ -109,6 +109,8 @@ export default function CreateReferenceDialog({ open, onClose, onCreated }: Prop
 
           {selectedType && (
             <UrlsValueForm
+              // A fresh box for each type: what was typed for another goes with it.
+              key={selectedType.type}
               value={value}
               onChange={setValue}
               disabled={submitting}
