@@ -118,9 +118,7 @@ describe('creating a room on a messaging app', () => {
     await click(radio(el, 'New private channel')!);
     expect(latest.channel).toEqual({ kind: 'new', private: true });
     expect(latest.access).toBeNull();
-    expect(el.textContent).toContain(
-      'Group: none · Private: only those taking part and admins can see it'
-    );
+    expect(el.textContent).toContain('Group: none · Private: people in the room and admins');
   });
 
   it('says an existing channel decides who can see the room', async () => {
