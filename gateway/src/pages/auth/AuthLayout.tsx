@@ -13,7 +13,7 @@ function Backdrop({ children }: { children: ReactNode }) {
         minHeight: "100vh",
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "var(--hoot-canvas)",
+        backgroundColor: "background.canvas",
         px: 2,
         py: 4,
       }}
@@ -45,7 +45,7 @@ export default function AuthLayout({
           width: "100%",
           maxWidth: 400,
           p: { xs: 3, sm: 4 },
-          boxShadow: "var(--hoot-shadow-surface)",
+          boxShadow: 2,
         }}
       >
         <Stack sx={{ alignItems: "center", textAlign: "center", mb: 3 }}>
