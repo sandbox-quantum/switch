@@ -1,3 +1,4 @@
+import { IS_PROCESS_ALIVE } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import { WATCHER_ROOT } from '@main/core/sdk-host/state-roots';
 
@@ -15,7 +16,7 @@ import { WATCHER_ROOT } from '@main/core/sdk-host/state-roots';
  * as Node, on an SSH host with its Node. Takes the JSON of a `HandoffRequest`
  * and prints the JSON of a `HandoffResult`.
  */
-export const HANDOFF_SCRIPT = String.raw`${WATCHER_ROOT}
+export const HANDOFF_SCRIPT = String.raw`${WATCHER_ROOT}${IS_PROCESS_ALIVE}
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto'), os = require('node:os');
 const request = JSON.parse(process.argv[1]);
 const state = path.join(os.homedir(), '.local', 'state', 'switch');
@@ -34,7 +35,7 @@ const alive = (file) => {
   const saved = read(file);
   if (!saved) return false;
   if (!Number.isSafeInteger(saved.pid) || saved.pid <= 0) throw new Error('Invalid owner record ' + file);
-  try { process.kill(saved.pid, 0); return true; } catch (e) { if (e.code === 'ESRCH') return false; throw e; }
+  return isProcessAlive(saved.pid, 'recorded');
 };
 const running = (root) => alive(path.join(root, 'shared-owner.lock')) || alive(path.join(root, 'supervisor', 'owner.json'));
 const journal = (root) => path.join(root, 'assignments.jsonl');
