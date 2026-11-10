@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -31,6 +33,7 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
+from switch_core.connections.adapters import oauth as oauth_module
 from switch_core.connections.adapters.oauth import (
     OAuthAdapter,
     OAuthClientCredentials,
@@ -57,6 +60,16 @@ from tests.switch_core.gateway.agent_route_harness import add_agent
 STATIC = OAUTH_ENTRY.replace(
     "    registration: dynamic\n",
     "    registration: static\n    client_settings: EXAMPLE\n",
+)
+UNSCOPED = STATIC.replace(
+    "    url: https://api.example.test/me\n"
+    "    account_id: account.id\n"
+    "    label: account.email\n",
+    "    mcp_tool: get_user_details\n    account_id: user.id\n    label: user.email\n",
+).replace(
+    '  read: { scopes: ["read:items"] }\n'
+    '  write: { scopes: ["read:items", "write:items"] }\n',
+    "  unscoped: true\n  read: { scopes: [] }\n  write: { scopes: [] }\n",
 )
 STORE = ServiceConnectionStore()
 REDIRECT = "http://127.0.0.1:43123/callback"
@@ -85,6 +98,34 @@ def _request(resources: dict | None = None) -> IssueRequest:
         reach={"scopes": ["read:items", "write:items"]},
         resources=resources or {},
     )
+
+
+async def test_mcp_identity_http_client_does_not_follow_redirects() -> None:
+    requests: list[httpx.Request] = []
+
+    def redirect(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(307, headers={"Location": "https://other.example.test"})
+
+    async with oauth_module._mcp_http_client(
+        transport=httpx.MockTransport(redirect)
+    ) as client:
+        response = await client.get("https://mcp.example.test")
+
+    assert response.status_code == 307
+    assert len(requests) == 1
+
+
+def test_mcp_identity_transport_logs_are_redacted(caplog) -> None:
+    logger = logging.getLogger("mcp.client.streamable_http")
+    context = oauth_module._IDENTITY_DIAGNOSTICS.set(True)
+    try:
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            logger.warning("authorization header: %s", "synthetic-token")
+    finally:
+        oauth_module._IDENTITY_DIAGNOSTICS.reset(context)
+
+    assert "synthetic-token" not in caplog.text
 
 
 async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> ConnectionSecret:
@@ -190,6 +231,19 @@ class TestSignIn:
         assert secret.expires_at == pytest.approx(time.time() + 3600, abs=5)
         assert signed_in.granted_scopes == ["read:items", "write:items"]
 
+    async def test_unscoped_oauth_does_not_send_a_scope_parameter(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, UNSCOPED)
+        url = await adapter.authorization_url(
+            redirect_uri=REDIRECT,
+            state="state-1",
+            code_challenge=s256("verifier"),
+            scopes=[],
+        )
+        query = parse_qs(urlsplit(url).query)
+        assert "scope" not in query
+        assert query["code_challenge_method"] == ["S256"]
+        assert query["resource"] == [MCP_URL]
+
     async def test_a_code_with_the_wrong_verifier_is_refused(self, vendor) -> None:
         adapter, _ = _adapter(vendor)
         url = await adapter.authorization_url(
@@ -212,6 +266,85 @@ class TestSignIn:
         secret = await _sign_in(adapter, vendor)
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+
+    async def test_reads_account_identity_from_the_configured_mcp_tool(
+        self, vendor, monkeypatch
+    ) -> None:
+        adapter, _ = _adapter(vendor, UNSCOPED)
+        calls: list[tuple[str, dict[str, str], object]] = []
+
+        class FakeClient:
+            def __init__(self, transport, **kwargs):
+                self.transport = transport
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def call_tool_mcp(self, name, arguments):
+                assert name == "get_user_details"
+                assert arguments == {}
+                return SimpleNamespace(
+                    isError=False,
+                    structuredContent={
+                        "user": {"id": "user-1", "email": "ada@example.test"}
+                    },
+                    content=[],
+                    model_dump_json=lambda: '{"user":{"id":"user-1"}}',
+                )
+
+        def fake_transport(url, *, headers, httpx_client_factory):
+            calls.append((url, headers, httpx_client_factory))
+            return object()
+
+        monkeypatch.setattr(oauth_module, "Client", FakeClient)
+        monkeypatch.setattr(oauth_module, "StreamableHttpTransport", fake_transport)
+
+        identity = await adapter.identify("synthetic-access-token")
+
+        assert (identity.account_id, identity.label) == ("user-1", "ada@example.test")
+        assert calls == [
+            (
+                MCP_URL,
+                {"Authorization": "Bearer synthetic-access-token"},
+                oauth_module._mcp_http_client,
+            )
+        ]
+
+    async def test_mcp_identity_errors_do_not_expose_vendor_details(
+        self, vendor, monkeypatch
+    ) -> None:
+        adapter, _ = _adapter(vendor, UNSCOPED)
+
+        class FakeClient:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def call_tool_mcp(self, *_args):
+                return SimpleNamespace(
+                    isError=True,
+                    structuredContent=None,
+                    content=[],
+                    model_dump_json=lambda: '{"error":"private vendor detail"}',
+                )
+
+        monkeypatch.setattr(oauth_module, "Client", FakeClient)
+        monkeypatch.setattr(
+            oauth_module, "StreamableHttpTransport", lambda *_args, **_kwargs: object()
+        )
+
+        with pytest.raises(ServiceAdapterError) as error:
+            await adapter.identify("synthetic-access-token")
+        assert "could not identify the account through MCP" in str(error.value)
+        assert "private vendor detail" not in str(error.value)
 
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}

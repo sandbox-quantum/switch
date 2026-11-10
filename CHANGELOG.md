@@ -2874,6 +2874,7 @@ version of their own to them without also giving them a release of their own.
   keeps its rooms. Offered on connections to your own bot, not on ones that
   came from installing Switch's app.
 - **Airtable's logo on the Connections grid.**
+- **HubSpot's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks
   the operator to confirm the integration's support details are set, which no
