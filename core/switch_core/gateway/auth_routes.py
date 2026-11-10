@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.account_reset import AccountReset, owned_workspaces
 from switch_core.accounts.deletion import (
     AccountDeletion,
     AccountDeletionIncomplete,
@@ -17,6 +18,7 @@ from switch_core.accounts.deletion import (
     is_server_administrator,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.collaboration.install_service import MessagingInstallService
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.member_names import rename_member_clients
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -62,6 +64,7 @@ from switch_core.gateway.dependencies import (
     get_client_lifecycle,
     get_config,
     get_external_user_store,
+    get_install_service,
     get_organization_store,
     get_protocol,
     get_resource_service,
@@ -539,13 +542,7 @@ async def delete_my_account(
     their email, since an SSO account has no password to ask for. A refusal
     is a 409 saying what to do first, and leaves the account untouched.
     """
-    user = await user_store.get(session, caller.id)
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-    if req.email.strip().lower() != user.email.lower():
-        raise HTTPException(
-            status_code=400, detail="That email doesn't match this account."
-        )
+    user = await _confirmed_user(session, user_store, caller, req)
     deletion = _account_deletion(
         request,
         session_factory,
@@ -564,6 +561,109 @@ async def delete_my_account(
     workspaces = await _workspaces_to_delete(
         deletion, session_factory, user_store, user.id
     )
+    await _delete_account(session, deletion, user, workspaces)
+    response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+@router.post("/auth/me/reset-test-account")
+async def reset_test_account(
+    req: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    install_service: Annotated[
+        MessagingInstallService | None, Depends(get_install_service)
+    ],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict[str, bool]:
+    """Wipe the caller's own test account, on a test or canary server that
+    allows it (`gateway_allow_test_account_reset`): what `DELETE /auth/me`
+    deletes, plus the messaging apps, rooms, workspaces and organization the
+    caller is alone in (`accounts/account_reset.py`). Refused with a 409,
+    before anything changes, when anyone else shares any of them."""
+    if not config.gateway_allow_test_account_reset:
+        raise HTTPException(
+            status_code=404, detail="Test-account reset is not enabled on this server."
+        )
+    user = await _confirmed_user(session, user_store, caller, req)
+    deletion = _account_deletion(
+        request,
+        session_factory,
+        protocol,
+        broker,
+        resource_service,
+        room_service,
+        user_store,
+        organization_store,
+        agent_store,
+        api_key_store,
+        template_store,
+        client_lifecycle,
+        config,
+    )
+    reset = AccountReset(
+        session_factory=session_factory,
+        users=user_store,
+        organizations=organization_store,
+        installs=install_service,
+        rooms=room_service,
+    )
+    workspaces = await _workspaces_to_delete(
+        deletion, session_factory, user_store, user.id
+    )
+    owned = owned_workspaces(workspaces)
+    reason, organization_ids = await reset.refusal(user.id, owned)
+    if reason is None:
+        # The workspaces it owns are only refused for what `empty` removes.
+        reason = await deletion.refusal(
+            session, user, [w for w in workspaces if w not in owned]
+        )
+    if reason is not None:
+        raise HTTPException(status_code=409, detail=reason)
+    await reset.empty(owned)
+    await _delete_account(session, deletion, user, workspaces)
+    await reset.delete_organizations(user.id, owned, organization_ids)
+    response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+async def _confirmed_user(
+    session: AsyncSession,
+    user_store: UserStore,
+    caller: AuthenticatedCaller,
+    req: DeleteAccountRequest,
+) -> User:
+    user = await user_store.get(session, caller.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    if req.email.strip().lower() != user.email.lower():
+        raise HTTPException(
+            status_code=400, detail="That email doesn't match this account."
+        )
+    return user
+
+
+async def _delete_account(
+    session: AsyncSession,
+    deletion: AccountDeletion,
+    user: User,
+    workspaces: list[Workspace],
+) -> None:
     reason = await deletion.refusal(session, user, workspaces)
     if reason is not None:
         raise HTTPException(status_code=409, detail=reason)
@@ -571,8 +671,6 @@ async def delete_my_account(
         await deletion.delete(session, user, workspaces, actor_id=user.id)
     except AccountDeletionRefused as refused:
         raise HTTPException(status_code=409, detail=str(refused)) from None
-    response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
 
 
 def _account_deletion(
