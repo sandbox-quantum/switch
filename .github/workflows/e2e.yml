@@ -2,7 +2,7 @@ name: E2E
 
 # The one definition of an end-to-end run: a lane of console/tooling-e2e on a
 # throwaway stack built from this checkout. Called by pr-ci.yml (the fast lane,
-# on every PR, and the browser lane in both layouts on gateway PRs) and by
+# on every PR, and the browser lane in both layouts on gateway and server PRs) and by
 # e2e-scheduled.yml (the provider lane after each merge and nightly, and every
 # lane on a release tag), and dispatchable by hand.
 #

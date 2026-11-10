@@ -135,11 +135,13 @@ jobs:
               - 'deploy/local/**'
               - '.env.example'
               - '.github/workflows/e2e.yml'
-            # The gateway's pages, which the browser lane opens as each role, and
-            # the harness and stack it runs on.
+            # The gateway's pages, which the browser lane opens as each role, the
+            # server whose answers decide what each role is shown, and the
+            # harness and stack it runs on.
             e2e_browser:
               - *shared
               - 'gateway/**'
+              - 'core/**'
               - 'console/tooling-e2e/**'
               - 'console/pnpm-lock.yaml'
               - 'deploy/local/**'

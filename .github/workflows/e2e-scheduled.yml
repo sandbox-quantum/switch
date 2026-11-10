@@ -24,7 +24,8 @@ name: E2E scheduled
 # configuration, not here.
 #
 # The fast lane on a throwaway stack is a PR check in pr-ci.yml, and so is the
-# browser lane, in both layouts, on PRs that touch the gateway or the harness.
+# browser lane, in both layouts, on PRs that touch the gateway, the server or
+# the harness.
 #
 # Notifications go to the incoming webhook in the repository secret
 # E2E_NOTIFY_WEBHOOK_URL (Slack and Mattermost both accept the payload). Without

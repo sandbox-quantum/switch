@@ -582,7 +582,7 @@ hand.
 | When | Lane | Environment | Required check |
 | --- | --- | --- | --- |
 | Every PR, and every push to main (`pr-ci.yml`) | fast | ephemeral | yes |
-| PRs that touch the gateway or the harness, and every push to main (`pr-ci.yml`) | browser, in both layouts | ephemeral | not yet |
+| PRs that touch the gateway, the server or the harness, and every push to main (`pr-ci.yml`) | browser, in both layouts | ephemeral | not yet |
 | After a merge to main (`e2e-scheduled.yml`) | provider | ephemeral | no |
 | Nightly (`e2e-scheduled.yml`) | provider | ephemeral | no |
 | A release tag, candidates included (`e2e-scheduled.yml`) | fast; provider; agentic; browser, in both layouts | ephemeral | no |
