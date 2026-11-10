@@ -20,6 +20,7 @@
     "get_advanced_config",
     "get_agent_detail",
     "get_my_context",
+    "get_permalinks",
     "get_role_detail",
     "get_room_detail",
     "get_room_group_detail",
