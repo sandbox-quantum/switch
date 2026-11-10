@@ -6,7 +6,9 @@ import type { ProviderReadiness } from '@switch-console/agent-providers-box';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers-box/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ControllerApiError } from './api';
-import { silentLogger } from './log';
+import { frontable } from './controller';
+import { VertexTokenCache } from './gateway-logins';
+import { type LogFields, type Logger, silentLogger } from './log';
 import type { LoginCheck, LoginVerdict } from './login-check';
 import type { RestState } from './rest';
 import { type AgentObservation, emptyObservation } from './runtime';
@@ -32,6 +34,7 @@ import {
   statusFingerprint,
   toolStatuses,
   sessionStateOf,
+  unusableLoginMessage,
 } from './status';
 import { type AgentRow, ControllerStore } from './store';
 import { FakeLocator, FakeRuntime } from './testing/fake-runtime';
@@ -465,7 +468,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
   function sealedAnswer(
     credential: string,
     revision = 1,
-    kind: 'setup-token' | 'vertex' = 'setup-token',
+    kind: 'setup-token' | 'vertex' | 'auth-json' | 'api-key' = 'setup-token',
     provider: 'claude' | 'codex' = 'claude'
   ): SealedLoginResponse {
     return {
@@ -480,11 +483,17 @@ describe('ProviderStatuses with logins given to the machine', () => {
     };
   }
 
-  function build(runtime: FakeRuntime, checkLogin?: LoginCheck) {
+  function build(
+    runtime: FakeRuntime,
+    checkLogin?: LoginCheck,
+    usable?: (login: GivenLogin) => boolean,
+    log: Logger = silentLogger
+  ) {
     return new ProviderStatuses({
       locator: new FakeLocator(),
       runtime,
       checkLogin,
+      ...(usable ? { usable } : {}),
       sealed: new SealedLogins({
         client: {
           sealedLogin: async () => {
@@ -498,7 +507,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
       }),
       probeCwd: '/tmp',
       now: () => NOW,
-      log: silentLogger,
+      log,
       onChange: () => {},
     });
   }
@@ -507,6 +516,100 @@ describe('ProviderStatuses with logins given to the machine', () => {
     answer = null;
     reachable = true;
     refusal = null;
+  });
+
+  describe('a login this machine cannot use (the provider gateway cannot front it)', () => {
+    // As the box controller wires it with the gateway on: only gateway-backed logins.
+    const gatewayOnly = (login: GivenLogin) =>
+      !(login.provider === 'codex' && login.kind === 'auth-json');
+    const codexSignIn = JSON.stringify({ tokens: { access_token: 'given-codex-sign-in' } });
+
+    it("refuses Codex's 'This computer's sign-in' at once, saying why and what to give instead", async () => {
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer(codexSignIn, 2, 'auth-json', 'codex');
+      const statuses = build(runtime, undefined, gatewayOnly);
+      const message =
+        "This cloud machine can't use Codex's 'This computer's sign-in'. Give it an OpenAI API key instead.";
+      expect(await statuses.check('codex', { verify: true })).toMatchObject({
+        auth: 'missing',
+        auth_source: 'sealed',
+        reason: 'provider_login_missing',
+        auth_problem: message,
+      });
+      // What the provider.login operation fails with, so main's Console shows it as is.
+      expect(statuses.loginProblem('codex')).toEqual({ code: 'provider_login_missing', message });
+      expect(await statuses.givenLogin('codex')).toBeNull();
+      // Never handed to the CLI, not even for a sign-in check.
+      expect(runtime.loginProbes).toEqual([]);
+    });
+
+    it('names only the kind of login, never any part of it, in the problem, the status or the logs', async () => {
+      const marker = 'MARKER-7f3a-never-shown';
+      const lines: string[] = [];
+      const capture = (level: string) => (message: string, fields?: LogFields) =>
+        lines.push(`${level} ${message} ${JSON.stringify(fields ?? {})}`);
+      const log: Logger = {
+        debug: capture('debug'),
+        info: capture('info'),
+        warn: capture('warn'),
+        error: capture('error'),
+      };
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer(
+        JSON.stringify({ tokens: { access_token: marker } }),
+        3,
+        'auth-json',
+        'codex'
+      );
+      const statuses = build(runtime, undefined, gatewayOnly, log);
+      const status = await statuses.check('codex', { verify: true });
+      const problem = statuses.loginProblem('codex');
+      expect(problem?.message).toContain("Codex's 'This computer's sign-in'");
+      expect(JSON.stringify(status)).not.toContain(marker);
+      expect(JSON.stringify(problem)).not.toContain(marker);
+      expect(lines.join('\n')).not.toContain(marker);
+    });
+
+    it('still uses a login it can use', async () => {
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer('sk-given-openai', 1, 'api-key', 'codex');
+      const statuses = build(runtime, undefined, gatewayOnly);
+      expect(await statuses.check('codex')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+      expect(statuses.loginProblem('codex')).toBeNull();
+    });
+
+    it('checks every login as before where nothing says which it can use (gateway off)', async () => {
+      const runtime = new FakeRuntime();
+      runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+      answer = sealedAnswer(codexSignIn, 2, 'auth-json', 'codex');
+      const statuses = build(runtime);
+      await statuses.check('codex');
+      expect(runtime.loginProbes.map((login) => login.kind)).toEqual(['auth-json']);
+    });
+
+    it('takes as usable exactly the logins the gateway fronts (the box wiring)', () => {
+      const gateway = { vertex: new VertexTokenCache() };
+      const given = (provider: 'claude' | 'codex', kind: GivenLogin['kind'], credential: string) =>
+        ({ status: 'connected', provider, revision: '1', kind, credential }) as GivenLogin;
+      expect(frontable(given('codex', 'auth-json', codexSignIn), gateway)).toBe(false);
+      expect(frontable(given('codex', 'api-key', 'sk-openai'), gateway)).toBe(true);
+      expect(frontable(given('claude', 'setup-token', 'sk-ant-oat'), gateway)).toBe(true);
+      expect(frontable(given('claude', 'api-key', 'sk-ant-api'), gateway)).toBe(true);
+      // Unreadable: left to the usual sign-in check, which says what is wrong.
+      expect(frontable(given('claude', 'vertex', 'not json'), gateway)).toBe(true);
+    });
+
+    it('says what to give instead for each kind it can refuse, with nothing of the login', () => {
+      expect(unusableLoginMessage({ provider: 'claude', kind: 'vertex' })).toMatch(
+        /can't use Vertex AI in this login's region/
+      );
+      expect(unusableLoginMessage({ provider: 'codex', kind: 'auth-json' })).toMatch(
+        /OpenAI API key instead/
+      );
+    });
   });
 
   it('uses the machine’s own login first, and never asks Switch then', async () => {

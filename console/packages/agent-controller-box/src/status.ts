@@ -281,6 +281,18 @@ type ProviderEntry = {
   sequence: number;
 };
 
+/**
+ * Why a given login can't be used on this machine, and what to give instead, in
+ * words main's Console shows as they are. Nothing of the login itself.
+ */
+export function unusableLoginMessage(login: Pick<GivenLogin, 'provider' | 'kind'>): string {
+  if (login.provider === 'codex' && login.kind === 'auth-json')
+    return "This cloud machine can't use Codex's 'This computer's sign-in'. Give it an OpenAI API key instead.";
+  if (login.provider === 'claude' && login.kind === 'vertex')
+    return "This cloud machine can't use Vertex AI in this login's region. Give it a Claude setup token or API key, or a Vertex AI login in a region with its own endpoint.";
+  return `This cloud machine can't use this ${login.provider} login. Give it an API key instead.`;
+}
+
 /** Fixed words: nothing Google said, and nothing of the key. */
 const LOGIN_REJECTED = "Google didn't accept this key.";
 const LOGIN_NOT_CHECKED = "Couldn't reach Google to check this key. It will be checked again.";
@@ -315,6 +327,11 @@ export class ProviderStatuses {
       verify?: (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null;
       /** The logins Switch gives this machine; null when it cannot open any. */
       sealed: SealedLogins | null;
+      /**
+       * Whether this machine can use a given login: with the provider gateway
+       * on, only one the gateway can front. Absent: any login can be used.
+       */
+      usable?: (login: GivenLogin) => boolean;
       /**
        * A given login's own check with its provider, after the CLI signs in
        * with it (a Vertex AI login asks Google for a token). Absent: the CLI's
@@ -396,7 +413,20 @@ export class ProviderStatuses {
       !this.givenDisabled
     ) {
       const given = await this.fetchGiven(provider);
-      if (given && 'login' in given) {
+      if (given && 'login' in given && this.deps.usable && !this.deps.usable(given.login)) {
+        // A login this machine can't use (with the provider gateway on, one it
+        // can't front) is refused at once, saying why and what to give instead,
+        // rather than as a sign-in check that "did not run".
+        const message = unusableLoginMessage(given.login);
+        problem = { code: 'provider_login_missing', message };
+        status = {
+          ...status,
+          auth: 'missing',
+          auth_source: 'sealed',
+          reason: 'provider_login_missing',
+          auth_problem: message,
+        };
+      } else if (given && 'login' in given) {
         let signedIn = await this.probe(provider, located.path, given.login);
         let verdict: LoginVerdict = 'ok';
         if (signedIn?.status === 'authenticated') {

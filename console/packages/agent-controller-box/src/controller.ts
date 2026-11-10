@@ -36,7 +36,7 @@ import {
   gatewayProbe,
   resolveGateway,
 } from './gateway-agents';
-import { VertexTokenCache } from './gateway-logins';
+import { gatewayPlanFor, VertexTokenCache } from './gateway-logins';
 import { DailyCallCap, dailyCalls, usageFile } from './gateway-usage';
 import type { HostTickets } from './host-tickets';
 import { HubSocket } from './hub-socket';
@@ -295,6 +295,19 @@ export type ControllerExit =
  * which a running agent host only reads when it starts, so it is restarted:
  * that is also what moves an agent host from before the hub onto it.
  */
+/**
+ * Whether the provider gateway can front a given login. One it can't even read
+ * (a malformed Vertex AI login) counts as frontable here, so the usual sign-in
+ * check meets it and says what is wrong, as before.
+ */
+export function frontable(login: GivenLogin, gateway: Pick<GatewayDeps, 'vertex'>): boolean {
+  try {
+    return gatewayPlanFor(login, gateway.vertex) !== null;
+  } catch {
+    return true;
+  }
+}
+
 function sameLogin(a: GivenLogin | null, b: GivenLogin | null): boolean {
   if (a === null || b === null) return a === b;
   return (
@@ -842,10 +855,14 @@ export async function runController(
     void registerSealingKey(client, keys, log).then((registered) => {
       if (!registered) providers.disableGiven();
     });
+  // With the provider gateway on, only a login it can front is used: any other
+  // is refused when given, saying so (rather than as a check that did not run).
+  const loginGateway = gateway;
   const providers = new ProviderStatuses({
     locator: deps.locator,
     runtime,
     sealed,
+    ...(loginGateway ? { usable: (login: GivenLogin) => frontable(login, loginGateway) } : {}),
     probeCwd: deps.dataDir,
     verify: deps.verifyLogin,
     checkLogin: deps.checkGivenLogin,
