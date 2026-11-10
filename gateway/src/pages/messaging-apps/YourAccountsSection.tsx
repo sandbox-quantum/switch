@@ -201,7 +201,9 @@ function AppAccounts({
       <Box sx={{ minWidth: 0, flexGrow: 1 }}>
         <Stack direction="row" spacing={1} alignItems="center" sx={{ minHeight: 36 }}>
           <Typography variant="body2" noWrap sx={{ fontWeight: 500, flexGrow: 1, minWidth: 0 }}>
-            {platform} · {app.display_name}
+            {/* The bundled Mattermost is named after its platform, and
+                "Mattermost · Mattermost" says nothing twice. */}
+            {app.display_name === platform ? platform : `${platform} · ${app.display_name}`}
           </Typography>
           {app.status !== "active" && <Chip size="small" label={sentenceCase(app.status)} />}
           <Guarded reason={unavailable}>
