@@ -34,7 +34,6 @@ function authState(canAdminTenant: boolean) {
     loading: false,
     loadError: null,
     isOperator: false,
-    isHostedOperator: false,
     canAdminTenant,
     capabilities: {
       isOperator: false,

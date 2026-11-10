@@ -1,4 +1,3 @@
-import { refuseWhileMocked } from '@main/core/shared-cloud/shared-cloud-client';
 import type {
   AgentRunner,
   MigrationOverview,
@@ -41,8 +40,6 @@ export const agentMigrationController = createRPCController({
   }): Promise<NewAgentMachine> => newManagedAgentService.machineFor(params),
 
   /** Creates a new agent as a managed agent on this computer or an SSH host. */
-  addManagedAgent: async (params: AddManagedAgentParams): Promise<AddManagedAgentResult> => {
-    refuseWhileMocked('add agents');
-    return newManagedAgentService.add(params);
-  },
+  addManagedAgent: (params: AddManagedAgentParams): Promise<AddManagedAgentResult> =>
+    newManagedAgentService.add(params),
 });

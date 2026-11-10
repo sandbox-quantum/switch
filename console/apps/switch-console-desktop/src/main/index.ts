@@ -63,7 +63,6 @@ import { registerLogEnrichment } from './lib/log-enrichment';
 import { log } from './lib/logger';
 import { withRPCLogContext } from './lib/rpc-logging';
 import { rpcRouter } from './rpc';
-import { guardLocalContent } from './utils/externalLinks';
 import { ensureUserBinDirsInPath, resolveUserEnv } from './utils/userEnv';
 
 if (import.meta.env.DEV) {
@@ -82,9 +81,6 @@ if (process.platform === 'linux') {
 
 registerAppScheme();
 setupDeeplinks();
-// Every window and guest, whatever it sets later: never a window on, or a move
-// to, local content such as a chat attachment's object URL.
-app.on('web-contents-created', (_event, contents) => guardLocalContent(contents));
 
 initializeFileLogger();
 registerLogEnrichment();

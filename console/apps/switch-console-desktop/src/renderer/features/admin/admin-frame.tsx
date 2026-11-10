@@ -24,14 +24,9 @@ import {
 const WIDTH = 1120;
 
 /** The Admin menu's entries for the signed-in account on `serverId`. */
-export function adminGroupsInScope(
-  serverId: string,
-  serviceConnections: boolean,
-  sharedCloud = false
-): AdminGroup[] {
+export function adminGroupsInScope(serverId: string, serviceConnections: boolean): AdminGroup[] {
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   return adminGroups({
-    sharedCloud,
     administers: administersWorkspaceInScope(serverId),
     operator: operatesServer(serverId),
     operatesGatewaylessServer:

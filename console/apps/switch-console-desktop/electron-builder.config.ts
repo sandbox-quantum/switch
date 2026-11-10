@@ -4,7 +4,7 @@ import type { AfterPackContext, Configuration } from 'electron-builder';
 import {
   APP_ID,
   APP_NAME_LOWER,
-  ARTIFACT_NAME_PREFIX,
+  ARTIFACT_PREFIX,
   PRODUCT_NAME,
   RELEASE_REPO_NAME,
   RELEASE_REPO_OWNER,
@@ -82,9 +82,7 @@ const config: Configuration = {
     },
   ],
   directories: { output: 'release' },
-  // A labelled test build (VITE_BUILD_LABEL) carries its label in the file name:
-  // switch-console-hosted-agents-v2-0.0.6-arm64.dmg. Unlabelled, it's as before.
-  artifactName: `${ARTIFACT_NAME_PREFIX}-\${arch}.\${ext}`,
+  artifactName: `${ARTIFACT_PREFIX}-\${arch}.\${ext}`,
   // Switch Console is distributed via GitHub Releases on the switch repo. This is
   // the one place the release identity diverges from Switch Console (the app id /
   // artifact names stay on Switch Console — see AGENTS.md).

@@ -7,8 +7,6 @@ import {
   useConnectorCatalog,
   useServerFeatureFlags,
 } from '@renderer/features/connectors/connectors-queries';
-import { SharedCloudAdmin } from '@renderer/features/shared-cloud/shared-cloud-admin';
-import { useSharedCloudOverview } from '@renderer/features/shared-cloud/use-shared-cloud';
 import { GuardrailsSection } from '@renderer/features/switch-servers/GuardrailsSection';
 import { MessagingAppsCard } from '@renderer/features/switch-servers/MessagingAppsCard';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
@@ -57,16 +55,12 @@ const AdminPanel = observer(function AdminPanel() {
   const { serverId } = params;
   const access = connectorsPageAccess(useServerFeatureFlags(serverId));
   const workspace = workspacesStore.onServerInScope(serverId);
-  // The shared machines are a Switch operator's view. The server says who that
-  // is; a workspace admin's view of them is parked for now.
-  const overview = useSharedCloudOverview(serverId);
-  const sharedCloud = overview.data?.viewer === 'operator';
-  const groups = adminGroupsInScope(serverId, access === 'shown', sharedCloud);
+  const groups = adminGroupsInScope(serverId, access === 'shown');
   const section = shownAdminSection(groups, params.section);
   const serverName =
     switchServersStore.servers.find((s) => s.id === serverId)?.name ?? 'This server';
 
-  if (access === 'loading' || overview.isLoading || workspace === null)
+  if (access === 'loading' || workspace === null)
     return (
       <ServerPage width={880} title="Admin" description="">
         <Spinner />
@@ -113,28 +107,6 @@ const AdminPanel = observer(function AdminPanel() {
             />
             {/* Keyed so a workspace switch reads that workspace's own setting. */}
             <DecisionRoutingSection key={workspace.id} workspaceId={workspace.id} />
-          </div>
-        </PageContent>
-      </AdminFrame>
-    );
-  // Hosted agents v2: the shared machines, for a Switch operator (the server says who that is).
-  if (section === 'cloud')
-    return (
-      <AdminFrame serverId={serverId} groups={groups} active="cloud">
-        <PageContent className="px-0">
-          <div className="space-y-6 pb-10">
-            <PageHeader
-              sticky
-              title={ADMIN_MENU_LABELS.cloud}
-              description={`The shared machines that run cloud agents on ${serverName}: how full each one is, and whether people are kept apart.`}
-            />
-            {overview.data ? (
-              <SharedCloudAdmin overview={overview.data} />
-            ) : (
-              <p className="text-sm text-foreground-muted">
-                The shared cloud isn't answering right now. This page fills in when it does.
-              </p>
-            )}
           </div>
         </PageContent>
       </AdminFrame>

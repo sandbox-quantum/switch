@@ -8,7 +8,6 @@ import { Button } from '@renderer/lib/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@renderer/lib/ui/dialog';
 import { chatRemovedChannel, chatResetChannel } from '@shared/core/chats/chatEvents';
 import type { ChatAttachment } from '@shared/core/chats/chats';
-import { attachmentBlobType, showsInline } from './attachment-blob-type';
 
 /**
  * A room attachment's bytes, fetched through the chat's media route (which
@@ -39,8 +38,7 @@ function mediaUrl(serverId: string, roomId: string, uri: string): Promise<string
   if (!url) {
     url = rpc.chats.media({ serverId, roomId, uri }).then(({ mimeType, data }) => {
       const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
-      // Only a safe image type is kept: HTML or SVG never sits here as a page.
-      return URL.createObjectURL(new Blob([bytes], { type: attachmentBlobType(mimeType) }));
+      return URL.createObjectURL(new Blob([bytes], { type: mimeType }));
     });
     url.catch(() => media.delete(key));
     media.set(key, url);
@@ -214,8 +212,7 @@ export function ChatAttachments({
   return (
     <div className="flex flex-wrap gap-2">
       {attachments.map((attachment) =>
-        // Shown inline only as a type kept as an image; SVG and the rest are files to save.
-        showsInline(attachment.mimetype) ? (
+        attachment.mimetype.startsWith('image/') ? (
           <ChatImage
             key={attachment.uri}
             serverId={serverId}

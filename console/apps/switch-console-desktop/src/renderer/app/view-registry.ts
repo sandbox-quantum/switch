@@ -2,7 +2,6 @@ import type { ComponentType, ReactNode } from 'react';
 import { homeView } from '@renderer/app/home-view';
 import { adminView } from '@renderer/features/admin/admin-view';
 import { chatView } from '@renderer/features/chats/chat-view';
-import { cloudFilesView } from '@renderer/features/cloud-files/cloud-files-view';
 import { connectorsView } from '@renderer/features/connectors/connectors-view';
 import { libraryItemView } from '@renderer/features/library/library-item-view';
 import { libraryView } from '@renderer/features/library/library-view';
@@ -56,7 +55,6 @@ export const views = {
   templateCapture: templateCaptureView,
   switchBuddy: switchBuddyView,
   admin: adminView,
-  cloudFiles: cloudFilesView,
   // oxlint-disable-next-line typescript/no-explicit-any
 } satisfies Record<string, ViewDefinition<any>>;
 

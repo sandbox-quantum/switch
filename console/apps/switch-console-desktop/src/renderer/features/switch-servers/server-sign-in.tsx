@@ -1,7 +1,6 @@
 import { TriangleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
-import { retainedBoxToWake } from '@renderer/features/cloud-agents/your-cloud';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -85,37 +84,16 @@ export type ServerSignIn = {
   submitLabel: string;
 };
 
-/** On a hosted agents v2 server: wake the person's box if it was put away. */
-async function wakeRetainedBox(serverId: string): Promise<void> {
-  const machines = await rpc.switchServers.cloudMachines(serverId);
-  if (!retainedBoxToWake(machines)) return;
-  await rpc.switchServers.ensureCloudMachine(serverId);
-}
-
 /**
  * Warm the signed-in user's cloud machine on Switch Cloud, so it
  * is starting while they set up their first agent. Not awaited: sign-in is
  * done whether or not the machine starts, so a refusal is a notice rather than
  * a failed sign-in. Skipped when the server does not turn cloud machines on.
- *
- * With hosted agents v2 on (`hosted_v2`), on any server: only a box that was
- * put away is woken, and no box is ever made here. Off, exactly as upstream.
  */
 function warmCloudMachine(serverId: string): void {
   void loadSwitchCloudOrigin().then(async () => {
-    const managed = serverId === managedCloudServerId();
+    if (serverId !== managedCloudServerId()) return;
     const flags = await rpc.featureFlags.current(serverId);
-    if (flags.success && flags.data.flags['hosted_v2']) {
-      wakeRetainedBox(serverId).catch((cause: unknown) => {
-        toast({
-          title: 'Your cloud did not start',
-          description: failureText(cause, 'Switch could not start your cloud.'),
-          variant: 'destructive',
-        });
-      });
-      return;
-    }
-    if (!managed) return;
     if (!flags.success || !flags.data.flags['hosted_agents']) return;
     rpc.switchServers.ensureCloudMachine(serverId).catch((cause: unknown) => {
       toast({

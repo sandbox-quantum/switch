@@ -25,9 +25,6 @@ interface AuthState {
   // signed out, so the app can say so instead of showing the login page.
   loadError: string | null;
   isOperator: boolean;
-  // A hint for the nav only: the Hosted page checks access with Core itself.
-  /** v2 only; optional so main's own test states need not name it. */
-  isHostedOperator?: boolean;
   canAdminTenant: boolean;
   capabilities: Capabilities;
   // Set when the session could not be read again on coming back to the tab:
@@ -187,8 +184,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loading,
     loadError,
     isOperator: capabilities.isOperator,
-    // A hint for the nav only: the Hosted page checks access with Core itself.
-    isHostedOperator: loaded.session?.user.hosted_operator === true,
     canAdminTenant: capabilities.administersWorkspace,
     capabilities,
     staleError,

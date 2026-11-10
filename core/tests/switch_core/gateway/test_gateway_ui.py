@@ -31,16 +31,9 @@ from switch_core.observability.metrics import MetricsRegistry, install, uninstal
 from switch_core.trust.client import NullTrustClient
 from tests.db_buffer import QuietRooms
 
-_REPO = Path(__file__).resolve().parents[4]
-_GATEWAY_SRC = _REPO / "gateway/src"
+_GATEWAY_SRC = Path(__file__).resolve().parents[4] / "gateway/src"
 _APP_TSX = _GATEWAY_SRC / "App.tsx"
 _ROUTE_TABLE = _GATEWAY_SRC / "routes/routeTable.tsx"
-# The gateway image's nginx serves Switch web's pages itself (only /gateway
-# reaches Core), so it must send the same headers Core does.
-_GATEWAY_NGINX = (
-    _REPO / "deploy/shared_resources/gateway-nginx.conf",
-    _REPO / "deploy/remote/helm/switch/templates/gateway/configmap-nginx.yaml",
-)
 
 _INDEX = "<!doctype html><title>dashboard</title>"
 _SCRIPT = "console.log('dashboard')"
@@ -150,10 +143,6 @@ def test_the_page_list_is_exactly_the_dashboards_routes() -> None:
         "/agents",
         "/agents/4b1d",
         "/workspace",
-        "/hosted",
-        "/hosted/",
-        "/hosted/boxes",
-        "/hosted/audit/ev-42",
     ],
 )
 def test_a_dashboard_path_is_a_page(path: str) -> None:
@@ -172,39 +161,10 @@ def test_a_dashboard_path_is_a_page(path: str) -> None:
         "/v1/management/controllers",
         "/version",
         "",
-        "/hostedx",
-        "/gateway/hosted/boxes",
     ],
 )
 def test_any_other_path_is_not_a_page(path: str) -> None:
     assert not is_page(path)
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/hosted/../secret.txt",
-        "/hosted/../../etc/passwd",
-        "/hosted/%2e%2e/secret.txt",
-        "/hosted/%2e%2e/%2e%2e/etc/passwd",
-        "/hosted/..%2fsecret.txt",
-        "/hosted/boxes/../../secret.txt",
-    ],
-)
-def test_the_hosted_splat_never_serves_a_file_off_the_build(
-    dist: Path, path: str
-) -> None:
-    """Security: anything under `/hosted/` is a page, so it only
-    ever gets `index.html`, never a file the rest of the path names, inside
-    the build or beside it. A client that folds the dots first sends a path
-    outside `/hosted`, which reaches the app and is refused there (401)."""
-    (dist.parent / "secret.txt").write_text("zz-secret-beside-the-build")
-    response = _client(dist).get(path)
-    assert response.status_code in (200, 401, 404)
-    assert "zz-secret" not in response.text
-    assert "root:" not in response.text
-    if response.status_code == 200:
-        assert response.text == _INDEX
 
 
 def _agent_bridge_app(gateway_ui: GatewayUi | None) -> FastAPI:
@@ -430,37 +390,3 @@ def test_every_page_load_is_counted_under_one_label(
     }
     # A label per page would be a series per room id.
     assert counts == {GATEWAY_UI_ROUTE: 4.0}
-
-
-# ── Frame and script headers (W.8, the Origin check piece) ──────────────────
-
-
-def test_a_page_carries_the_csp_and_refuses_framing(dist: Path) -> None:
-    for path in ("/", "/rooms", "/assets/index-3f9a1c.js"):
-        response = _client(dist).get(path)
-        assert response.status_code == 200
-        assert response.headers["content-security-policy"] == (
-            "frame-ancestors 'none'; script-src 'self'; object-src 'none'; "
-            "base-uri 'none'; form-action 'self'; connect-src 'self'; "
-            "img-src 'self' blob: data:; media-src 'self' blob:"
-        )
-        assert response.headers["x-frame-options"] == "DENY"
-        assert response.headers["x-content-type-options"] == "nosniff"
-
-
-@pytest.mark.parametrize("config", _GATEWAY_NGINX, ids=lambda path: path.name)
-def test_the_gateway_nginx_sends_core_s_page_headers(config: Path) -> None:
-    from switch_core.gateway.origin_check import CONTENT_SECURITY_POLICY
-
-    text = config.read_text()
-    page = text[text.index("location / {") :]
-    page = page[: page.index("}")]
-    assert (
-        f'add_header Content-Security-Policy "{CONTENT_SECURITY_POLICY}" always;'
-        in page
-    )
-    assert 'add_header X-Frame-Options "DENY" always;' in page
-    assert 'add_header X-Content-Type-Options "nosniff" always;' in page
-    # Core's own routes set their own headers; nginx adds none there, so no
-    # response carries two policies.
-    assert text.count("add_header Content-Security-Policy") == 1

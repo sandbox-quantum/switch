@@ -32,28 +32,6 @@ const RETIRED: { word: RegExp; instead: string; alone: boolean }[] = [
   { word: /\bMatrix\b/, instead: "nothing: Switch no longer runs on Matrix", alone: true },
 ];
 
-/** Hosted agents v2's own files, shown only with Core's `hosted_v2` flag on.
- * The operator pages name real cloud machines and the server. Their wording
- * is reviewed against this list before v2 is turned on for anyone; until
- * then they are listed one by one, so every other file stays checked. */
-const V2_ONLY = new Set([
-  "./pages/agents/CloudAgentDialog.tsx",
-  "./pages/agents/cloud/yourCloud.ts",
-  "./pages/agents/cloudAgent.ts",
-  "./pages/hosted/HostedPage.tsx",
-  "./pages/hosted/audit/auditWords.ts",
-  "./pages/hosted/boxes/BoxesTab.tsx",
-  "./pages/hosted/detail/BoxDetailPage.tsx",
-  "./pages/hosted/detail/MachineDetailPage.tsx",
-  "./pages/hosted/detail/detail.ts",
-  "./pages/hosted/hostedActions.ts",
-  "./pages/hosted/hostedTabs.ts",
-  "./pages/hosted/machines/MachinesTab.tsx",
-  "./pages/hosted/operators/OperatorsTab.tsx",
-  "./pages/hosted/overview/OverviewTab.tsx",
-  "./pages/hosted/overview/testing.ts",
-]);
-
 /** Uses of a retired word that mean something else, removed before checking. */
 const ALLOWED = [
   // A network connection, not a connector.
@@ -102,7 +80,6 @@ describe("dashboard vocabulary", () => {
   it("uses none of the retired words", () => {
     const problems: string[] = [];
     for (const [path, source] of Object.entries(SOURCES)) {
-      if (V2_ONLY.has(path)) continue;
       for (const { line, text, alone } of copyIn(source, path)) {
         const checked = ALLOWED.reduce((rest, allowed) => rest.split(allowed).join(" "), text);
         for (const { word, instead, alone: countsAlone } of RETIRED) {
@@ -113,9 +90,5 @@ describe("dashboard vocabulary", () => {
       }
     }
     expect(problems).toEqual([]);
-  });
-
-  it("lists only v2 files that still exist", () => {
-    expect([...V2_ONLY].filter((path) => !(path in SOURCES))).toEqual([]);
   });
 });

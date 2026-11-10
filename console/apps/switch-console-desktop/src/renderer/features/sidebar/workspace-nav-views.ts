@@ -2,7 +2,6 @@ export type WorkspaceNavView =
   | 'server'
   | 'serverAgents'
   | 'serverRooms'
-  | 'cloudFiles'
   | 'library'
   | 'templates'
   | 'connectors'
@@ -18,15 +17,11 @@ export function workspaceNavViews(server: {
   serviceConnections: boolean;
   /** Whether Admin has any section for this person. */
   admin: boolean;
-  /** Your cloud files shows for this person (`useCloudFilesVisible`: hosted v2 on). */
-  cloudFiles?: boolean;
 }): WorkspaceNavView[] {
   return [
     'server',
     'serverAgents',
     'serverRooms',
-    // Hosted agents v2's Your cloud files, beside the person's agents and rooms.
-    ...(server.cloudFiles ? (['cloudFiles'] as const) : []),
     'library',
     'templates',
     ...(server.serviceConnections ? (['connectors'] as const) : []),

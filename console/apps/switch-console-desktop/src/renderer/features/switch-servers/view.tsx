@@ -12,7 +12,6 @@ import {
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { type GuardResult, type ViewDefinition } from '@renderer/app/view-registry';
-import { YourCloudSummary } from '@renderer/features/cloud-agents/hosted-summary-view';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unreachable-panel';
@@ -302,7 +301,6 @@ const ServerMainPanel = observer(function ServerMainPanel() {
             )}
 
             {connected && <ServerStatTiles serverId={serverId} />}
-            {connected && <YourCloudSummary serverId={serverId} />}
           </>
         )}
       </div>

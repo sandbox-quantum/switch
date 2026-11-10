@@ -91,9 +91,6 @@ export default function DataTable<T extends { id: string | number }>({
       }}
       pageSizeOptions={[10, 25, 50]}
       pagination
-      // Switch web's CSP has no 'unsafe-eval' (Core's Origin check piece), so
-      // the grid must not try to compile its filters with `new Function`.
-      disableEval
       checkboxSelection={checkboxSelection}
       isRowSelectable={
         isRowSelectable ? (params: GridRowParams<T>) => isRowSelectable(params.row) : undefined

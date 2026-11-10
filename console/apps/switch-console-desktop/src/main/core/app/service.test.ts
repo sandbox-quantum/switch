@@ -104,33 +104,3 @@ describe('AppService.openIn', () => {
     expect(mocks.exec).not.toHaveBeenCalled();
   });
 });
-
-describe('AppService.openExternal', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.openExternal.mockResolvedValue(undefined);
-  });
-
-  it('hands web, messaging-app and email links to the OS', async () => {
-    for (const url of [
-      'https://example.com/docs',
-      'slack://channel?team=T1&id=C1',
-      'mailto:someone@example.com?subject=Hi',
-    ]) {
-      await appService.openExternal(url);
-      expect(mocks.openExternal).toHaveBeenLastCalledWith(url);
-    }
-  });
-
-  it('still refuses every other scheme', async () => {
-    for (const url of [
-      'file:///etc/hosts',
-      'javascript:alert(1)',
-      'ftp://example.com/x',
-      'foo:bar',
-    ]) {
-      await expect(appService.openExternal(url)).rejects.toThrow('is not allowed');
-    }
-    expect(mocks.openExternal).not.toHaveBeenCalled();
-  });
-});

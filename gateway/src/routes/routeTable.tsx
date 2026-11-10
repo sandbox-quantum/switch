@@ -66,7 +66,6 @@ import WorkspacePage, {
   WorkspaceGeneralPage,
   WorkspaceUsersPage,
 } from "../pages/workspace/WorkspacePage";
-import { FilesRoute, HostedRoute } from "./hostedRoutes";
 import { PlannedPage } from "./StatusPages";
 
 /** Every page the signed-in dashboard has, in one table: its URL, who may
@@ -211,11 +210,6 @@ export const ROUTES: readonly AppRoute[] = [
   page("/organization", CURRENT, inOrganization, <OrganizationPage />),
   redirect("/organization", V2, "/settings/org"),
   page("/usage", CURRENT, workspaceAdmins, <UsagePage />),
-  // Hosted agents v2's pages, in both layouts. Their elements check Core's flags
-  // themselves and go home when v2 (or Your cloud files) is off, so they're open
-  // to everyone here; their rail items are added by the rail on the same terms.
-  page("/files", BOTH, everyone, <FilesRoute />),
-  page("/hosted/*", BOTH, everyone, <HostedRoute />),
   page("/users", CURRENT, operators, <UsersPage />),
   redirect("/users", V2, "/platform/users"),
   page("/operator/workspaces", CURRENT, operators, <OperatorWorkspacesPage />),

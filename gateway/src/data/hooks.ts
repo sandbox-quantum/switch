@@ -6,7 +6,6 @@ import {
   type AgentDetail,
   type AgentSummary,
   type Budget,
-  type HostedUsage,
   type CurrentTenant,
   type UsageTotal,
   type ApiKeyDetail,
@@ -37,8 +36,6 @@ import {
   fetchAgents,
   fetchApiKeys,
   fetchBudgets,
-  fetchFeatureFlagMap,
-  fetchHostedUsage,
   fetchCurrentTenant,
   fetchUsage,
   fetchAllExternalUsers,
@@ -392,38 +389,6 @@ export function useTemplates(
 
 export function useCurrentTenant(): UseQueryResult<CurrentTenant> {
   return useQuery(fetchCurrentTenant);
-}
-
-/** `usage` is null when the server has no hosted view; a failed read is an error. */
-export function useHostedUsage(
-  tenantId: string,
-): UseQueryResult<{ usage: HostedUsage | null }> {
-  const fetcher = useCallback(
-    () =>
-      fetchHostedUsage(tenantId)
-        .then((usage) => ({ usage }))
-        .catch(() => null),
-    [tenantId],
-  );
-  return useQuery(fetcher);
-}
-
-export function useFeatureFlags(): UseQueryResult<Record<string, boolean>> {
-  return useQuery(fetchFeatureFlagMap);
-}
-
-/** Whether this server runs hosted agents v2, as Core says in its `hosted_v2`
- * feature flag (the v1/v2 switch). Null while it's being read. False when the
- * flag is off, missing or can't be read, so the hosted v2 screens stay hidden
- * unless Core says otherwise. */
-export function useHostedV2(): boolean | null {
-  const fetcher = useCallback(
-    () => fetchFeatureFlagMap().catch((): Record<string, boolean> => ({})),
-    [],
-  );
-  const { data, loading } = useQuery(fetcher);
-  if (loading && data === null) return null;
-  return data?.hosted_v2 === true;
 }
 
 export function useBudgets(tenantId: string): UseQueryResult<Budget[]> {

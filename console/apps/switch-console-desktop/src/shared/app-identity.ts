@@ -1,21 +1,10 @@
 type ImportMetaWithEnv = ImportMeta & {
-  env?: {
-    DEV?: boolean;
-    VITE_BUILD?: string;
-    VITE_RELEASE?: string;
-    VITE_DEFAULT_SERVER_URL?: string;
-    VITE_BUILD_LABEL?: string;
-  };
+  env?: { DEV?: boolean; VITE_BUILD?: string; VITE_RELEASE?: string };
 };
 
 const env = (import.meta as ImportMetaWithEnv).env;
 const isDev = env?.DEV === true;
 const isCanary = env?.VITE_BUILD === 'canary';
-// A tester's build (`VITE_BUILD=test`, packaged with electron-builder.test.config.ts):
-// its own install, name, data folder and keychain name, and no updates, so it can
-// sit beside stable or canary without touching either. Every value below is the
-// stable or canary one unless this is set.
-const isTest = env?.VITE_BUILD === 'test';
 // Stamped by the release workflow on a tagged build, and only there: a
 // workflow_dispatch test build, or one packaged on a laptop, is not a release
 // however it is otherwise configured.
@@ -47,81 +36,19 @@ const isRelease = env?.VITE_RELEASE === '1';
 // managed local server. That is why OS_APP_NAME and USER_DATA_DIR_NAME do not
 // branch on the channel — giving canary its own would start it empty and leave
 // it unable to decrypt the sign-ins stable saved.
-export const APP_ID = isTest
-  ? 'com.switchdash.hostedv2'
-  : isCanary
-    ? 'com.switchdash.canary'
-    : 'com.switchdash.stable';
-export const PRODUCT_NAME = isTest
-  ? 'Switch Console Hosted Agents v2'
-  : isCanary
-    ? 'Switch Console Canary'
-    : 'Switch Console';
-// The test build's own name, so its keychain key is its own too.
-export const OS_APP_NAME = isTest ? 'Switchdash Hosted v2' : 'Switchdash';
-export const APP_NAME_LOWER = isTest
-  ? 'switch-console-hosted-agents-v2'
-  : isCanary
-    ? 'switch-console-canary'
-    : 'switch-console';
+export const APP_ID = isCanary ? 'com.switchdash.canary' : 'com.switchdash.stable';
+export const PRODUCT_NAME = isCanary ? 'Switch Console Canary' : 'Switch Console';
+export const OS_APP_NAME = 'Switchdash';
+export const APP_NAME_LOWER = isCanary ? 'switch-console-canary' : 'switch-console';
 // Named on its own for code outside the Vite build (drizzle-kit), where isDev is
 // always false and USER_DATA_DIR_NAME is `switchdash`, the installed app's.
 export const DEV_USER_DATA_DIR_NAME = 'switchdash-dev';
-export const USER_DATA_DIR_NAME = isDev
-  ? DEV_USER_DATA_DIR_NAME
-  : isTest
-    ? 'switchdash-hosted-v2'
-    : 'switchdash';
-// The test build never checks for updates (IS_TEST_BUILD); the name is only ever logged.
-export const UPDATE_CHANNEL = isTest ? 'none' : isCanary ? 'v1-canary' : 'v1-stable';
-export const ARTIFACT_PREFIX = isTest
-  ? 'switch-console-hosted-agents-v2'
-  : isCanary
-    ? 'switch-console-canary'
-    : 'switch-console';
-// The test build can start the "Server address" box at the test server's
-// address, so a tester needn't paste it; they can still change it. The address
-// comes from VITE_DEFAULT_SERVER_URL, set only in the command that packages that
-// build, so no internal host name lives in this repo. Every other build, and a
-// test build packaged without it, starts the box empty.
-export const DEFAULT_SERVER_URL: string | null =
-  isTest && env?.VITE_DEFAULT_SERVER_URL ? env.VITE_DEFAULT_SERVER_URL : null;
+export const USER_DATA_DIR_NAME = isDev ? DEV_USER_DATA_DIR_NAME : 'switchdash';
+export const UPDATE_CHANNEL = isCanary ? 'v1-canary' : 'v1-stable';
+export const ARTIFACT_PREFIX = isCanary ? 'switch-console-canary' : 'switch-console';
 export const IS_CANARY = isCanary;
-export const IS_TEST_BUILD = isTest;
 export const IS_DEV = isDev;
 export const IS_RELEASE_BUILD = isRelease;
-
-// A test build's label, for example "Hosted Agents v2 · 0.0.6", set at build
-// time with VITE_BUILD_LABEL and empty otherwise, so a normal build is
-// unchanged. It is shown only: the window title, the About box and the
-// download file name. It never touches APP_ID, PRODUCT_NAME, OS_APP_NAME or
-// USER_DATA_DIR_NAME above, so a labelled build keeps its sign-ins and data.
-// Read from the Vite build's env, or from the process env when electron-builder
-// loads this file under bare Node (where import.meta.env is absent).
-const processEnvLabel = typeof process === 'undefined' ? undefined : process.env?.VITE_BUILD_LABEL;
-
-/** A label kept to plain characters and a sane length; anything else gives no label at all. */
-export function cleanBuildLabel(raw: unknown): string {
-  if (typeof raw !== 'string') return '';
-  const label = raw.trim();
-  return label.length <= 40 && /^[A-Za-z0-9 .·()_-]*$/.test(label) ? label : '';
-}
-
-/** The label as it appears in a file name: "Hosted Agents v2 · 0.0.6" gives "hosted-agents-v2-0.0.6". */
-export function buildLabelSlug(label: string): string {
-  return label
-    .toLowerCase()
-    .replace(/[^a-z0-9.]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-export const BUILD_LABEL = cleanBuildLabel(env?.VITE_BUILD_LABEL ?? processEnvLabel);
-/** The window title: "Switch Console — Hosted Agents v2 · 0.0.6", or just the product name. */
-export const WINDOW_TITLE = BUILD_LABEL ? `${PRODUCT_NAME} — ${BUILD_LABEL}` : PRODUCT_NAME;
-/** The start of the download's file name, before the architecture. */
-export const ARTIFACT_NAME_PREFIX = BUILD_LABEL
-  ? `${ARTIFACT_PREFIX}-${buildLabelSlug(BUILD_LABEL)}`
-  : ARTIFACT_PREFIX;
 
 // GitHub repo the desktop app publishes releases to / reads auto-updates from.
 // The repo is public, so the feed is read unauthenticated. Mirrored in

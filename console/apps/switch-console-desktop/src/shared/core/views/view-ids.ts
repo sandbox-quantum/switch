@@ -32,7 +32,6 @@ export const VIEW_IDS = [
   'templateCapture',
   'switchBuddy',
   'admin',
-  'cloudFiles',
 ] as const;
 
 export type ViewIdName = (typeof VIEW_IDS)[number];

@@ -22,9 +22,6 @@ vi.mock("../../data/AuthContext", () => ({
 vi.mock("../../data/hooks", () => ({
   useAgent: vi.fn(),
   useKnownAgentTypes: vi.fn(),
-  // Hosted agents v2 off, as on main.
-  useHostedV2: () => false,
-  useFeatureFlags: () => ({ data: {}, loading: false, error: null, refetch: () => {} }),
 }));
 
 // The page's other sections fetch on their own; they are not under test here.

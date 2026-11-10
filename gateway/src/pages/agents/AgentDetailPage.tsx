@@ -1,7 +1,6 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import EditOutlined from "@mui/icons-material/EditOutlined";
-import FolderOpenOutlined from "@mui/icons-material/FolderOpenOutlined";
 import {
   Alert,
   Box,
@@ -30,8 +29,7 @@ import {
   renameAgent,
   updateAgentOptions,
 } from "../../data/api";
-import { useAgent, useHostedV2, useKnownAgentTypes } from "../../data/hooks";
-import { useCloudView } from "../../data/hostedCloud";
+import { useAgent, useKnownAgentTypes } from "../../data/hooks";
 import {
   EM_DASH,
   MONO_SX,
@@ -39,11 +37,8 @@ import {
   sentenceCase,
 } from "../../theme/hootFormat";
 import { useAuth } from "../../data/AuthContext";
-import { useCloudFilesBox } from "../files/useCloudFiles";
 import AddressingPolicySection from "./AddressingPolicySection";
 import AgentManagementSection from "./AgentManagementSection";
-// Loaded on first use (hosted agents v2 only), so v1 downloads none of it.
-import { CloudAgentSection, CloudRenameDialog } from "./cloud/lazyCloudAgentControls";
 import ServiceAccessSection from "./ServiceAccessSection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 import { sessionPlace, sessionRunner } from "./sessionLabels";
@@ -84,16 +79,8 @@ function StatusDot({ color, title }: { color: string; title?: string }) {
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
-  const { capabilities, user } = useAuth();
+  const { capabilities } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
-  // With hosted agents v2 on: the person's box, so an agent on it gets the
-  // cloud start, stop, restart, rename and delete. Nothing is read with it off.
-  const hostedV2 = useHostedV2() === true;
-  const cloud = useCloudView(hostedV2);
-  const boxController =
-    hostedV2 && agentId && cloud.machine?.controller_id && cloud.machine.agents.includes(agentId)
-      ? cloud.machine.controller_id
-      : null;
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
     severity: "success" | "warning";
@@ -128,9 +115,6 @@ export default function AgentDetailPage() {
   // access shows only to its owner: the server answers anyone else's request
   // for its grants as not found.
   const canManage = agent.can_manage;
-  // v2's cloud agent section is its owner's alone: the box it runs on is
-  // theirs, and Core refuses anyone else.
-  const isOwner = !!user && user.id === agent.owner_id;
 
   return (
     <Box>
@@ -151,7 +135,6 @@ export default function AgentDetailPage() {
           </Tooltip>
         )}
         <Box sx={{ flexGrow: 1 }} />
-        <ViewFilesButton agentId={agent.id} agentName={agent.name} />
         <Chip label={agent.connector_type} size="small" variant="outlined" />
         {agent.connection_model && (
           <Chip
@@ -174,45 +157,20 @@ export default function AgentDetailPage() {
         </Alert>
       )}
 
-      {boxController ? (
-        <CloudRenameDialog
-          open={renameOpen}
-          agentId={agent.id}
-          name={agent.name}
-          displayName={agent.display_name}
-          onClose={() => setRenameOpen(false)}
-          onRenamed={(line) => {
-            setRenameOpen(false);
-            setRenameNotice({ lines: [line], severity: "success" });
-            refetch();
-          }}
-        />
-      ) : (
-        <RenameAgentDialog
-          open={renameOpen}
-          agent={agent}
-          onClose={() => setRenameOpen(false)}
-          onRenamed={(lines, severity) => {
-            setRenameOpen(false);
-            setRenameNotice({ lines, severity });
-            refetch();
-          }}
-        />
-      )}
+      <RenameAgentDialog
+        open={renameOpen}
+        agent={agent}
+        onClose={() => setRenameOpen(false)}
+        onRenamed={(lines, severity) => {
+          setRenameOpen(false);
+          setRenameNotice({ lines, severity });
+          refetch();
+        }}
+      />
 
       <Stack spacing={4}>
         <InfoSection agent={agent} />
         <Divider />
-        {isOwner && boxController && (
-          <>
-            <CloudAgentSection
-              agent={{ id: agent.id, name: agent.display_name || agent.name }}
-              controllerId={boxController}
-              onDeleted={() => navigate("/agents")}
-            />
-            <Divider />
-          </>
-        )}
         <CapabilitiesSection agent={agent} />
         {agent.known_agent_type && (
           <>
@@ -822,26 +780,5 @@ function SubagentsSection({ children }: { children: AgentSummary[] }) {
         ))}
       </Stack>
     </Stack>
-  );
-}
-
-/**
- * View files: opens Your cloud files at this agent's own folder, for an agent
- * on the person's v2 box and only where Your cloud files shows. The folder is
- * found by the agent's name, never its label.
- */
-function ViewFilesButton({ agentId, agentName }: { agentId: string; agentName: string }) {
-  const navigate = useNavigate();
-  const box = useCloudFilesBox();
-  if (!box?.shown || !box.agentIds.includes(agentId)) return null;
-  return (
-    <Button
-      size="small"
-      variant="outlined"
-      startIcon={<FolderOpenOutlined />}
-      onClick={() => navigate(`/files?${new URLSearchParams({ agent: agentName }).toString()}`)}
-    >
-      View files
-    </Button>
   );
 }

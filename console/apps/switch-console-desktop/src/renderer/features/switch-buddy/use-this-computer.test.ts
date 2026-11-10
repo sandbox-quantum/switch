@@ -5,9 +5,6 @@ vi.mock('@renderer/lib/ipc', () => ({ rpc: {} }));
 vi.mock('@renderer/features/managed-agents/use-managed-agents', () => ({
   MANAGED_AGENTS_KEY: 'managed-agents',
 }));
-vi.mock('@renderer/features/cloud-agents/use-cloud-agents', () => ({
-  useCloudMachines: () => ({ data: undefined }),
-}));
 
 const { thisComputerIn, thisComputerState } = await import('./use-this-computer');
 

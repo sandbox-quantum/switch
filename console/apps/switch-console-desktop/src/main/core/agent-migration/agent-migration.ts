@@ -27,7 +27,6 @@ import { connectionHealth } from '@main/core/sdk-host/connection-health';
 import { listHostSessionsFor } from '@main/core/sdk-host/host-sessions';
 import { stopLocalSessionsOf } from '@main/core/sdk-host/local-host';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
-import { sharedCloudMock } from '@main/core/shared-cloud/mock-mode';
 import { listStoppedControllerAgentIds } from '@main/core/switch-rooms/auto-session-store';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import { parseSwitchAgentCredentials } from '@main/core/switch-rooms/switch-credentials';
@@ -63,7 +62,6 @@ import {
   type MigrationManagementPort,
   type TargetLookup,
 } from './agent-migration-service';
-import { ASK_FIRST_REASON, asksFirstFrom, healAskingFirst } from './ask-first-heal';
 import { deleteFiles, readFiles, stopWatchers } from './host-batch';
 import {
   credentialsStashKey,
@@ -665,23 +663,8 @@ async function controllerRefusal(serverId: string): Promise<string | null> {
   return `${server.name} accepts agent controller protocol ${accepts ?? 'older than this Console’s'}, but this Console’s controller speaks ${protocol}. Upgrade the server to move agents onto it.`;
 }
 
-/**
- * Whether the automatic move must ask first on the agent's server (see
- * `asksFirstFrom`): yes unless a good read says hosted agents v2 is off. The
- * dev-only shared-cloud mock counts as v2 on, as `hostedV2On` does.
- */
-async function asksFirst(serverId: string): Promise<boolean> {
-  if (sharedCloudMock()) return true;
-  const server = await getServer(serverId);
-  return asksFirstFrom(server ? await featureFlagsService.current(server) : null);
-}
-
-/**
- * Repairs the controller an agent's machine runs for its server; see `AgentMigrationDeps.targets.heal`.
- * `mayEnrolAgain` false (hosted agents v2, `healAskingFirst`): a machine Switch removed is not enrolled
- * again by itself; the agent stays where it is with the ask-first reason.
- */
-async function healMachine(agent: MigrationAgent, mayEnrolAgain: boolean): Promise<MachineHealth> {
+/** Repairs the controller an agent's machine runs for its server; see `AgentMigrationDeps.targets.heal`. */
+async function healMachine(agent: MigrationAgent): Promise<MachineHealth> {
   const serverId = agent.serverId!;
   const refusal = await controllerRefusal(serverId);
   if (refusal) return { kind: 'incompatible', reason: refusal };
@@ -708,7 +691,6 @@ async function healMachine(agent: MigrationAgent, mayEnrolAgain: boolean): Promi
         serverId,
         controllerId: record.controllerId,
       });
-      if (!mayEnrolAgain) return { kind: 'incompatible', reason: ASK_FIRST_REASON };
       await hostControllerService.enrollAgain(sshHost, serverId);
       return { kind: 'changed' };
     }
@@ -743,7 +725,6 @@ async function healMachine(agent: MigrationAgent, mayEnrolAgain: boolean): Promi
       serverId,
       controllerId: overview.enrollment.controllerId,
     });
-    if (!mayEnrolAgain) return { kind: 'incompatible', reason: ASK_FIRST_REASON };
     await embeddedControllerService.enrollAgain(serverId);
     return { kind: 'changed' };
   }
@@ -794,11 +775,7 @@ export const agentMigrationService = new AgentMigrationService({
         await hostControllerService.enable(agent.sshHost, agent.serverId, agent.workspaceId);
       else await embeddedControllerService.enable(agent.serverId, agent.workspaceId);
     },
-    heal: (agent) =>
-      healAskingFirst(
-        () => asksFirst(agent.serverId!),
-        (mayEnrolAgain) => healMachine(agent, mayEnrolAgain)
-      ),
+    heal: (agent) => healMachine(agent),
   },
   management,
   machine,

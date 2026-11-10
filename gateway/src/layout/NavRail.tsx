@@ -1,7 +1,5 @@
 import AccountCircleOutlined from "@mui/icons-material/AccountCircleOutlined";
 import AddOutlined from "@mui/icons-material/AddOutlined";
-import CloudOutlined from "@mui/icons-material/CloudOutlined";
-import FolderOpenOutlined from "@mui/icons-material/FolderOpenOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
 import {
@@ -22,34 +20,10 @@ import { memo, useState } from "react";
 import { NavLink, Link as RouterLink, useLocation } from "react-router";
 import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
-import { useHostedV2 } from "../data/hooks";
-import { useCloudFilesShown } from "../pages/files/useCloudFiles";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
 import { type Layout, type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
 import ChangePasswordDialog from "./ChangePasswordDialog";
 import ThemeModeToggle from "./ThemeModeToggle";
-
-// Hosted agents v2's rail items, after the route table's own. Core's flags decide
-// them, as their pages' elements do (`routes/hostedRoutes.tsx`): Your cloud files
-// with v2 and `hosted_cloud_files` on, to someone with an agent in their cloud;
-// Hosted with v2 on, to people on Core's Switch operator list (`hosted_operator`,
-// not the server admin flag). The operator Hosted area never shows files.
-const CLOUD_FILES_ITEM: RailItemDefinition = {
-  label: "Your cloud files",
-  to: "/files",
-  icon: FolderOpenOutlined,
-  activeFor: ["/files"],
-  // With the pages, not in the settings group at the rail's foot.
-  bottom: false,
-};
-const HOSTED_ITEM: RailItemDefinition = {
-  label: "Hosted",
-  to: "/hosted",
-  icon: CloudOutlined,
-  activeFor: ["/hosted"],
-  // With the pages, not in the settings group at the rail's foot.
-  bottom: false,
-};
 
 // The rail follows the window's height: at a laptop's it is sized so an
 // operator's eleven labelled items and the account button fit, and it grows
@@ -112,10 +86,8 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
 
 export default memo(function NavRail({ layout }: { layout: Layout }) {
   const location = useLocation();
-  const { user, session, isOperator, isHostedOperator, capabilities, logout, logoutEverywhere, switchTo } =
+  const { user, session, isOperator, capabilities, logout, logoutEverywhere, switchTo } =
     useAuth();
-  const hostedV2 = useHostedV2() === true;
-  const cloudFiles = useCloudFilesShown() === true;
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -130,11 +102,7 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
     }
   };
 
-  const items = [
-    ...railFor(layout, capabilities),
-    ...(cloudFiles ? [CLOUD_FILES_ITEM] : []),
-    ...(isHostedOperator && hostedV2 ? [HOSTED_ITEM] : []),
-  ];
+  const items = railFor(layout, capabilities);
   const isActive = (item: RailItemDefinition) =>
     item.activeFor.some((prefix) => location.pathname.startsWith(prefix));
   const current = session?.tenant ?? null;

@@ -31,7 +31,6 @@ from starlette.responses import FileResponse
 from starlette.routing import Match, Router
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from switch_core.gateway.origin_check import CONTENT_SECURITY_POLICY
 from switch_core.observability.http import GATEWAY_UI_SCOPE_KEY
 
 logger = logging.getLogger(__name__)
@@ -56,7 +55,6 @@ PAGE_PATHS: tuple[str, ...] = (
     "/resources/templates/{id}",
     "/agents",
     "/agents/{agent_id}",
-    "/files",
     "/machines",
     "/collaborations",
     "/registration-keys",
@@ -92,29 +90,20 @@ PAGE_PATHS: tuple[str, ...] = (
     "/platform/workspaces",
     "/platform/users",
     "/platform/connectors",
-    # Switch web's Hosted page (operators): one route, its tabs and their own
-    # sub-pages beneath it.
-    "/hosted/*",
 )
 
 _PARAM = re.compile(r"\{[^/}]+\}")
 
-
-def _page_pattern(path: str) -> re.Pattern[str]:
-    """A `{param}` segment matches one segment; a trailing `/*` matches the
-    path itself and anything beneath it, as react-router's splat does."""
-    splat = path.endswith("/*")
-    if splat:
-        path = path[:-2]
-    body = "/".join(
-        "[^/]+" if _PARAM.fullmatch(segment) else re.escape(segment)
-        for segment in path.split("/")
-    )
-    return re.compile("^" + body + ("(?:/.*)?" if splat else "") + "$")
-
-
 _PAGE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    _page_pattern(path) for path in PAGE_PATHS
+    re.compile(
+        "^"
+        + "/".join(
+            "[^/]+" if _PARAM.fullmatch(segment) else re.escape(segment)
+            for segment in path.split("/")
+        )
+        + "$"
+    )
+    for path in PAGE_PATHS
 )
 
 # Vite names every file under `assets/` by its content hash, so a cached copy
@@ -213,15 +202,5 @@ class GatewayUiMiddleware:
             return
         file, cache_control = resolved
         scope[GATEWAY_UI_SCOPE_KEY] = True
-        response = FileResponse(
-            file,
-            headers={
-                "Cache-Control": cache_control,
-                # W.8: no framing, scripts from the server only (origin_check).
-                "Content-Security-Policy": CONTENT_SECURITY_POLICY,
-                "X-Frame-Options": "DENY",
-                # The same set the gateway's nginx sends on these pages.
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+        response = FileResponse(file, headers={"Cache-Control": cache_control})
         await response(scope, receive, send)

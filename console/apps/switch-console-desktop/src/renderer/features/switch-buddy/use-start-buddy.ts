@@ -4,7 +4,6 @@ import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { buddyPerson } from './buddy-person';
 import { reportBuddyStep } from './buddy-telemetry';
 import { createBuddy } from './create-buddy';
-import { addFailedLine } from './this-computer-ask';
 import type { ThisComputer } from './use-this-computer';
 
 /**
@@ -15,24 +14,17 @@ import type { ThisComputer } from './use-this-computer';
  * exists (or the start fails, when it is null again and `error` says why). A
  * provider chosen while this computer is still getting ready is started once
  * it is, and dropped if setting it up fails.
- *
- * On a computer not yet a machine of the workspace (B38), a Start is the
- * person's yes: `allow` adds it (`adding` while it does), and the buddy is
- * started once it reports. If adding fails, `error` says why and nothing starts.
  */
 export function useStartBuddy({
   serverId,
   workspaceId,
   computer,
-  allow,
   entryPoint,
   onCreated,
 }: {
   serverId: string;
   workspaceId: string;
   computer: ThisComputer;
-  /** Adds this computer to the workspace, when it is still to be asked (B38). */
-  allow?: () => Promise<void>;
   /** Where the person set the buddy up: the first run, or the buddy's chat later. */
   entryPoint: UiEntryPoint;
   onCreated: (agent: { agentId: string; name: string }) => void;
@@ -40,26 +32,9 @@ export function useStartBuddy({
   const [starting, setStarting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [waitingToStart, setWaitingToStart] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
 
   const start = async (providerId: string) => {
     setStarting(providerId);
-    if (computer.kind === 'needs-permission' && allow) {
-      // The person's yes: add this computer, then start once it reports.
-      setError(null);
-      setAdding(true);
-      try {
-        await allow();
-      } catch (cause) {
-        setError(addFailedLine(failureText(cause, 'It could not be set up to run agents.')));
-        setStarting(null);
-        return;
-      } finally {
-        setAdding(false);
-      }
-      setWaitingToStart(providerId);
-      return;
-    }
     if (computer.kind !== 'ready') {
       setWaitingToStart(providerId);
       return;
@@ -100,11 +75,5 @@ export function useStartBuddy({
   }, [computer, waitingToStart]);
 
   const clearError = useCallback(() => setError(null), []);
-  return {
-    starting,
-    error,
-    start: (providerId: string) => void start(providerId),
-    clearError,
-    adding,
-  };
+  return { starting, error, start: (providerId: string) => void start(providerId), clearError };
 }

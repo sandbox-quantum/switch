@@ -3,13 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({ issueMachineEnrollment: vi.fn() }));
 
 vi.mock('@main/core/agent-migration/agent-migration', () => ({ agentMigrationService: {} }));
-// The controller's hosted agents v2 paths (off here) and this computer's provider files,
-// which would otherwise reach the app's database at import.
-vi.mock('@main/core/shared-cloud/hosted-v2', () => ({ hostedV2On: async () => false }));
-vi.mock('@main/core/switch-servers/local-provider-sign-in', () => ({
-  localProviderAuthPath: () => '/home/me/.codex/auth.json',
-  readLocalProviderSignIn: vi.fn(),
-}));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock('@main/core/embedded-controller/embedded-controllers', () => ({
   embeddedControllerService: {},

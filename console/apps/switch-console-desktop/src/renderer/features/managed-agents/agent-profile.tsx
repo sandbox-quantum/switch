@@ -1,12 +1,4 @@
-import {
-  Cloud,
-  FolderOpen,
-  Laptop,
-  type LucideIcon,
-  Plug,
-  ServerOff,
-  Settings,
-} from 'lucide-react';
+import { Cloud, Laptop, type LucideIcon, Plug, ServerOff, Settings } from 'lucide-react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
@@ -67,8 +59,6 @@ export function managedAgentMachineLine(
  * button for each of the agent's own sections. `onSelect` is null while the
  * agent does not exist yet, so the buttons show but do nothing. With
  * `onOpenMachine` the line saying where it runs opens that machine's page.
- * `onViewFiles`, when given, adds View files: the agent's folder in Your
- * cloud files.
  */
 export function AgentProfile({
   name,
@@ -78,7 +68,6 @@ export function AgentProfile({
   sections,
   selected,
   onSelect,
-  onViewFiles,
   onOpenMachine,
 }: {
   name: string;
@@ -88,7 +77,6 @@ export function AgentProfile({
   sections: readonly AgentSection[];
   selected: AgentSection | null;
   onSelect: ((section: AgentSection) => void) | null;
-  onViewFiles?: () => void;
   onOpenMachine: (() => void) | null;
 }) {
   const MachineIcon = machine.icon;
@@ -148,23 +136,6 @@ export function AgentProfile({
             </Tooltip>
           );
         })}
-        {onViewFiles && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label="View files"
-                  onClick={onViewFiles}
-                  className="focus-visible:ring-ring flex size-9 items-center justify-center rounded-lg bg-background-2 text-foreground-muted transition-colors hover:bg-background-3 hover:text-foreground focus-visible:ring-2 focus-visible:outline-none"
-                >
-                  <FolderOpen className="size-4" />
-                </button>
-              }
-            />
-            <TooltipContent>View files</TooltipContent>
-          </Tooltip>
-        )}
       </div>
     </div>
   );

@@ -730,28 +730,6 @@ describe('a canary build', () => {
   });
 });
 
-describe('a test build', () => {
-  afterEach(() => {
-    vi.doUnmock('@shared/app-identity');
-  });
-
-  it('never checks for updates, so it cannot update into a real release', async () => {
-    vi.resetModules();
-    vi.doMock('@shared/app-identity', async (importOriginal) => ({
-      ...(await importOriginal<typeof AppIdentity>()),
-      IS_TEST_BUILD: true,
-    }));
-    const { updateService: tester } = await import('./update-service');
-    await tester.initialize();
-    h.checkForUpdatesAndNotify.mockClear();
-
-    // Inert: a check, even one the user asks for, goes nowhere.
-    expect(await tester.checkForUpdates('user')).toBeNull();
-    expect(h.checkForUpdatesAndNotify).not.toHaveBeenCalled();
-    tester.dispose();
-  });
-});
-
 describe('the dev harness', () => {
   it('reports one event for a simulated install, not two', async () => {
     // A dev build has no binary to restart into, so the harness always unwinds.

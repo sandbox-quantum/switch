@@ -1,11 +1,4 @@
-export type AdminSection =
-  | 'messaging-apps'
-  | 'connectors'
-  | 'decision'
-  | 'switch-trust'
-  | 'apps'
-  // Hosted agents v2's shared machines, for a Switch operator (only offered with v2 on).
-  | 'cloud';
+export type AdminSection = 'messaging-apps' | 'connectors' | 'decision' | 'switch-trust' | 'apps';
 
 export type AdminScope = 'workspace' | 'server';
 
@@ -15,7 +8,6 @@ export const ADMIN_MENU_LABELS = {
   'switch-trust': 'Switch Trust',
   decision: 'Decision routing',
   apps: 'Connector apps',
-  cloud: 'Shared machines',
 } as const satisfies Record<AdminSection, string>;
 
 export type AdminGroup = { scope: AdminScope; items: AdminSection[] };
@@ -42,21 +34,12 @@ export type AdminGroup = { scope: AdminScope; items: AdminSection[] };
  *
  * The server's operator administers every workspace. A server's status is in
  * Settings. A group with nothing in it is left out.
- *
- * With hosted agents v2 on, a Switch operator also gets Shared machines
- * (`cloud`) under Server.
  */
 export function adminGroups(person: {
   administers: boolean;
   operator: boolean;
   operatesGatewaylessServer: boolean;
   serviceConnections: boolean;
-  /**
-   * Whether the server shows this person the shared machines underneath the
-   * cloud agents (hosted agents v2). It answers that only for a Switch
-   * operator, so it sits under Server, beside the other operator entries.
-   */
-  sharedCloud?: boolean;
 }): AdminGroup[] {
   const { serviceConnections } = person;
   const groups: AdminGroup[] = [
@@ -70,7 +53,6 @@ export function adminGroups(person: {
       scope: 'server',
       items: [
         ...(person.operator ? (['switch-trust'] as const) : []),
-        ...(person.sharedCloud ? (['cloud'] as const) : []),
         ...(serviceConnections && person.operatesGatewaylessServer ? (['apps'] as const) : []),
       ],
     },

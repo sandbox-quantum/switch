@@ -1,4 +1,4 @@
-import { IS_CANARY, IS_RELEASE_BUILD, IS_TEST_BUILD } from '@shared/app-identity';
+import { IS_CANARY, IS_RELEASE_BUILD } from '@shared/app-identity';
 
 type ImportMetaWithEnv = ImportMeta & { env?: { DEV?: boolean } };
 
@@ -36,7 +36,7 @@ export type TelemetryConfig = {
  * Why a build reports nothing. Only one reason now: the relay needs no key, so
  * there is no longer such a thing as a build that was configured wrongly.
  */
-export type TelemetryDisabledReason = 'dev_build' | 'test_build';
+export type TelemetryDisabledReason = 'dev_build';
 
 export type TelemetryResolution =
   | { enabled: true; config: TelemetryConfig }
@@ -85,8 +85,6 @@ export type TelemetryEnvironment = {
   /** Whether the release workflow stamped this build as a published release. */
   release: boolean;
   env: NodeJS.ProcessEnv;
-  /** A tester's build (VITE_BUILD=test): it never sends usage, consent or not. */
-  testBuild?: boolean;
 };
 
 /**
@@ -108,9 +106,7 @@ export function resolveTelemetryEnvironment({
   build,
   release,
   env,
-  testBuild = false,
 }: TelemetryEnvironment): TelemetryResolution {
-  if (testBuild) return { enabled: false, reason: 'test_build' };
   const isDev = build === 'dev';
   if (isDev && env.SWITCHDASH_TELEMETRY_DEV !== '1') {
     return { enabled: false, reason: 'dev_build' };
@@ -133,7 +129,6 @@ export function resolveTelemetryConfig(): TelemetryResolution {
     build: telemetryBuildChannel(),
     release: IS_RELEASE_BUILD,
     env: process.env,
-    testBuild: IS_TEST_BUILD,
   });
 }
 

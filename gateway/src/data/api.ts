@@ -337,7 +337,7 @@ export function errorText(detail: unknown, fallback: string): string {
   return fallback;
 }
 
-export async function jsonRequest<T>(
+async function jsonRequest<T>(
   path: string,
   method: string,
   body?: unknown,
@@ -1255,10 +1255,6 @@ export interface SessionUser {
   name: string;
   email: string;
   is_operator: boolean;
-  // On Core's Switch operator list, which is not `is_operator`. Only decides
-  // whether Hosted shows in the nav; Core checks every operator route. Older
-  // servers don't send it.
-  hosted_operator?: boolean;
 }
 
 export type SessionStateName = "ready" | "needs_selection" | "needs_workspace";
@@ -1345,83 +1341,6 @@ export interface Member {
 
 export async function fetchMembers(tenantId: string): Promise<Member[]> {
   return jsonRequest<Member[]>(`/tenants/${encodeURIComponent(tenantId)}/members`, "GET");
-}
-
-/** Visibility V4 (spec A1): a member's hosted agents, as the workspace's
- * admins see them. Counts, states and a memory band only, never content. */
-export interface HostedPerson {
-  user_id: string;
-  name: string;
-  hosted: "on" | "off";
-  agents: number;
-  box_state:
-    | "running"
-    | "resting"
-    | "stopped"
-    | "paused"
-    | "starting"
-    | "stopping"
-    | "error"
-    | "retired"
-    | null;
-  memory_band: "low" | "medium" | "high" | null;
-  last_active_at: string | null;
-  /** An operator's pause wins over the admin's switch (spec A2). */
-  paused_by_switch?: boolean;
-  /** False when the server's own allow-list doesn't admit this person, so the
-   * switch would change nothing (QA): the page shows "Not enabled by Switch". */
-  switchable?: boolean;
-}
-
-/** One fixed message per refusal of the switch, never the server's own text:
- * the call carries the admin's reason, so its answer is never shown or logged
- * as sent (security). */
-export const HOSTED_SWITCH_REFUSALS: Record<number, string> = {
-  403: "Only workspace admins can do this.",
-  404: "This person isn't a member of this workspace.",
-  409: "Switch has paused this person. Their switch can change once Switch resumes them.",
-  422: "The reason wasn't accepted. Use up to 500 characters, with no names, messages or secrets.",
-};
-export const HOSTED_SWITCH_FAILED = "That didn't go through. Reload the page and try again.";
-
-export function hostedSwitchFailure(err: unknown): string {
-  if (err instanceof ApiError) return HOSTED_SWITCH_REFUSALS[err.status] ?? HOSTED_SWITCH_FAILED;
-  return HOSTED_SWITCH_FAILED;
-}
-
-/** Turn hosted agents on or off for one person (spec A2), with the admin's
- * short reason (the lead's decision). Workspace admins only, audited by the
- * server; the answer is the person's new hosted state. */
-export async function setHostedEnabled(
-  tenantId: string,
-  userId: string,
-  enabled: boolean,
-  reason: string,
-): Promise<{ enabled: boolean }> {
-  try {
-    return await jsonRequest<{ enabled: boolean }>(
-      `/tenants/${encodeURIComponent(tenantId)}/hosted-people/${encodeURIComponent(userId)}`,
-      "PUT",
-      { enabled, reason },
-    );
-  } catch (err) {
-    throw new Error(hostedSwitchFailure(err));
-  }
-}
-
-export interface HostedPeople {
-  people: HostedPerson[];
-  /** Whether the per-person switch can be used yet (false until V3 lands). */
-  switchable?: boolean;
-}
-
-/** The workspace's hosted people. Admins only: the server refuses anyone else
- * (403), and answers 503 until it's set up for visibility. Members never call it. */
-export async function fetchHostedPeople(tenantId: string): Promise<HostedPeople> {
-  return jsonRequest<HostedPeople>(
-    `/tenants/${encodeURIComponent(tenantId)}/hosted-people`,
-    "GET",
-  );
 }
 
 // Owner only, and only once the workspace is empty: the server refuses
@@ -2698,11 +2617,7 @@ export type UsageMetric =
   | "input_tokens"
   | "output_tokens"
   | "cache_read_tokens"
-  | "cache_write_tokens"
-  // Hosted agents (visibility L1 and L5): awake time per agent, and AI calls
-  // through each box's gateway.
-  | "awake_minutes"
-  | "hosted_ai_calls";
+  | "cache_write_tokens";
 
 export const USAGE_METRICS: UsageMetric[] = [
   "messages",
@@ -2712,69 +2627,6 @@ export const USAGE_METRICS: UsageMetric[] = [
   "cache_read_tokens",
   "cache_write_tokens",
 ];
-
-/**
- * The metrics a budget may be added on. `awake_minutes` only while the
- * server's `hosted_awake_budgets` flag is on, since Core refuses it otherwise.
- * `hosted_ai_calls` only as the daily AI cap per person (visibility L1b): every
- * agent, per day, and enforced by each box's gateway, never by Core.
- */
-export function budgetMetrics(awakeBudgets: boolean, hostedV2: boolean): UsageMetric[] {
-  return [
-    ...USAGE_METRICS,
-    // Awake-time budgets and the daily AI cap (L1b) are hosted agents v2's:
-    // offered only while it's on, and awake time also needs its own flag.
-    ...(awakeBudgets && hostedV2 ? (["awake_minutes"] as UsageMetric[]) : []),
-    ...(hostedV2 ? (["hosted_ai_calls"] as UsageMetric[]) : []),
-  ];
-}
-
-/** The daily AI cap's range: what the gateway applies by default (L1b). Core
- * accepts more and the gateway clamps, so the page holds the admin to this. */
-export const DAILY_CAP_MIN = 50;
-export const DAILY_CAP_MAX = 5000;
-export const DAILY_CAP_HELP =
-  "Each person's agents in this workspace can make up to this many AI calls a day. Switch's own limit still applies if it's lower.";
-
-/** `GET /tenants/{id}/hosted-usage` (visibility L1): each person's awake hours
- * and AI calls this month. Counts only. */
-export interface HostedUsagePerson {
-  user_id: string;
-  name: string;
-  awake_hours: number;
-  ai_calls: number;
-  /** The daily AI cap their box's gateway applies now, and which number set it (L1b). */
-  cap_in_force?: number | null;
-  cap_source?: "local" | "workspace" | null;
-}
-
-export interface HostedUsage {
-  since: string;
-  people: HostedUsagePerson[];
-}
-
-/** Null when this server has no hosted usage view (404, or 503 before it's set
- * up) or refuses (403), so the page shows what it showed before. */
-export async function fetchHostedUsage(tenantId: string): Promise<HostedUsage | null> {
-  try {
-    return await jsonRequest<HostedUsage>(
-      `/tenants/${encodeURIComponent(tenantId)}/hosted-usage`,
-      "GET",
-    );
-  } catch (err) {
-    if (err instanceof ApiError && [403, 404, 503].includes(err.status)) return null;
-    throw err;
-  }
-}
-
-/** Every flag the deployment sends (`GET /feature-flags`), as key to on or
- * off, including ones outside main's known list (`hosted_v2`). */
-export async function fetchFeatureFlagMap(): Promise<Record<string, boolean>> {
-  const answer = await fetchJson<{ flags: { key: string; enabled: boolean }[] }>(
-    "/feature-flags",
-  );
-  return Object.fromEntries((answer?.flags ?? []).map((flag) => [flag.key, flag.enabled]));
-}
 
 // Messages and turns are not counted per model, so a budget on them covers
 // every model and the server refuses one that names a model.
@@ -3190,60 +3042,4 @@ export async function removeConnectorApp(
   service: string,
 ): Promise<ConnectorAppImpact> {
   return jsonRequest<ConnectorAppImpact>(`${CONNECTOR_APPS_PATH[scope]}/${service}`, "DELETE");
-}
-
-// ── Hosted operator actions (W6) ───────────────────────────────────────────
-// Core's hosted operators only (`require_operator`, checked by the server on
-// every call). The reason travels in the body, never in the URL.
-
-/** Pause a user's hosted agents (V3, spec O5). Answers the action's id. */
-export async function pauseHostedUser(
-  userKeyedId: string,
-  reason: string,
-): Promise<{ action_id: string }> {
-  return jsonRequest<{ action_id: string }>(
-    `/shared-cloud/users/${encodeURIComponent(userKeyedId)}/pause`,
-    "POST",
-    { reason },
-  );
-}
-
-/** Resume a paused user's hosted agents (V3, spec O5). */
-export async function resumeHostedUser(
-  userKeyedId: string,
-  reason: string,
-): Promise<{ action_id: string }> {
-  return jsonRequest<{ action_id: string }>(
-    `/shared-cloud/users/${encodeURIComponent(userKeyedId)}/resume`,
-    "POST",
-    { reason },
-  );
-}
-
-/** Ask for a box restart (L2, spec O3); the cluster carries it out. */
-export async function restartHostedBox(
-  boxKeyedId: string,
-  reason: string,
-): Promise<{ action_id: string }> {
-  return jsonRequest<{ action_id: string }>(
-    `/shared-cloud/boxes/${encodeURIComponent(boxKeyedId)}/restart`,
-    "POST",
-    { reason },
-  );
-}
-
-/** W4's Show name (V4): the name behind one keyed id, for this view only.
- *  The reason goes in the body, never the URL. Core never caches the answer
- *  and audits every call. */
-export async function revealHostedName(
-  kind: "user" | "workspace",
-  keyedId: string,
-  reason: string,
-): Promise<{ name: string }> {
-  // Core answers the name only (ff5738fc).
-  return jsonRequest<{ name: string }>("/shared-cloud/reveal", "POST", {
-    kind,
-    keyed_id: keyedId,
-    reason,
-  });
 }

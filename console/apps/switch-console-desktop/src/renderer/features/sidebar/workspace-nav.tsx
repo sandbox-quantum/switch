@@ -2,7 +2,6 @@ import {
   Bot,
   DoorOpen,
   FileText,
-  FolderOpen,
   House,
   Library,
   type LucideIcon,
@@ -12,8 +11,6 @@ import {
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { adminGroupsInScope } from '@renderer/features/admin/admin-frame';
-import { useCloudFilesVisible } from '@renderer/features/cloud-files/use-cloud-files';
-import { useSharedCloudOverview } from '@renderer/features/shared-cloud/use-shared-cloud';
 import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
 import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
 import { FROZEN, isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
@@ -46,13 +43,9 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { params: templatesParams } = useParams('templates');
   const { params: libraryParams } = useParams('library');
   const { params: adminParams } = useParams('admin');
-  const { params: cloudFilesParams } = useParams('cloudFiles');
   const active = switchServersStore.activeServer;
-  // Your cloud files: shown only from a good flags read, with a hosted agent (`useCloudFilesVisible`).
-  const cloudFilesShown = useCloudFilesVisible(active?.id ?? null);
   const health = useRoomHealth(active?.id ?? null);
   const serviceConnections = useFeatureFlags(active?.id ?? null).service_connections;
-  const sharedCloud = useSharedCloudOverview(active?.id ?? null).data?.viewer === 'operator';
   const warningCount =
     health.data?.agents.filter((agent) => connectionNeedsAttention(agent.state)).length ?? 0;
   // While the server can't answer, only Settings — where it is operated — stays live.
@@ -66,7 +59,6 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     serverAgents: { icon: Bot, label: 'Your Agents', params: agentsParams },
     serverRooms: { icon: DoorOpen, label: 'Rooms', params: roomsParams },
     library: { icon: Library, label: 'Resources', params: libraryParams },
-    cloudFiles: { icon: FolderOpen, label: 'Your cloud files', params: cloudFilesParams },
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
     connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
     admin: { icon: ShieldCheck, label: 'Admin', params: adminParams },
@@ -74,8 +66,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const shown = active
     ? workspaceNavViews({
         serviceConnections,
-        admin: adminGroupsInScope(active.id, serviceConnections, sharedCloud).length > 0,
-        cloudFiles: cloudFilesShown,
+        admin: adminGroupsInScope(active.id, serviceConnections).length > 0,
       })
     : [];
   const onSettings =

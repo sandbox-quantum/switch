@@ -1,6 +1,5 @@
 import { resolve } from 'node:path';
 import { app } from 'electron';
-import { IS_TEST_BUILD } from '@shared/app-identity';
 import { consoleDeeplinkChannel } from '@shared/core/deeplinks/console-link-events';
 import { CONSOLE_LINK_PREFIX } from '@shared/core/deeplinks/console-links';
 import { sessionDeeplinkChannel } from '@shared/core/switch-rooms/switchRoomEvents';
@@ -159,11 +158,7 @@ export function setupDeeplinks(): void {
   // gated behind an explicit opt-in (see DEV_REGISTER_DEEPLINK_ENV). When opted
   // in, point the registration at the app entry rather than the bare Electron
   // binary — otherwise the OS launches Electron with no app (the welcome screen).
-  if (IS_TEST_BUILD) {
-    // A tester's build installs beside the everyday Console and never claims the
-    // scheme (its Info.plist doesn't declare it either), so links from Slack and
-    // Mattermost keep opening the everyday app.
-  } else if (!app.isPackaged) {
+  if (!app.isPackaged) {
     if (process.env[DEV_REGISTER_DEEPLINK_ENV] === '1' && process.argv.length >= 2) {
       app.setAsDefaultProtocolClient(DEEPLINK_SCHEME, process.execPath, [resolve(process.argv[1])]);
     }

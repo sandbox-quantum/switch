@@ -6,7 +6,6 @@ import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
 import type { FeatureFlagKey } from "./data/featureFlags";
 import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
-import { HEADING as HOSTED_HEADING } from "./pages/hosted/HostedPage";
 
 const acme: TenantMembership = {
   id: "t1",
@@ -218,93 +217,6 @@ describe("AppRoutes", () => {
     expect(screen.getByRole("link", { name: /Workspace/ })).toBeTruthy();
     expect(screen.queryByRole("link", { name: /Users/ })).toBeNull();
     expect(screen.queryByRole("link", { name: /Connectors/ })).toBeNull();
-  });
-
-  describe("the hosted agents v2 switch", () => {
-    // A member on the hosted operator list, on main's signed-in answers, with
-    // Core's flags as given. `null` flags: Core's flags can't be read, which
-    // on main stops the whole page loading.
-    const asOperator = (flags: { key: string; enabled: boolean }[] | null): Routes => {
-      const routes = signedInAs("member");
-      const [, signedIn] = routes["/auth/session"] as [number, Session];
-      return {
-        ...routes,
-        "/auth/session": [200, { ...signedIn, user: { ...signedIn.user, hosted_operator: true } }],
-        "/feature-flags": flags === null ? [500, { detail: "no" }] : [200, { flags }],
-      };
-    };
-    const v2 = (on: boolean) => [{ key: "hosted_v2", enabled: on }];
-    // With v2 off, both addresses read as main's not-found page, exactly as an
-    // address main doesn't know, with no spinner left behind.
-    const notFound = async () => {
-      expect(await screen.findByRole("heading", { name: "There's no page here" })).toBeTruthy();
-      expect(screen.getByRole("link", { name: "Go to the start page" })).toBeTruthy();
-      expect(screen.queryByRole("progressbar")).toBeNull();
-      expect(screen.queryByRole("heading", { name: HOSTED_HEADING })).toBeNull();
-      expect(screen.queryByRole("heading", { name: "Your cloud files" })).toBeNull();
-      expect(screen.queryByText(/once you have an agent in your cloud/)).toBeNull();
-    };
-    const unreadable = async () => {
-      expect(await screen.findByRole("alert")).toBeTruthy();
-      expect(screen.queryByRole("heading", { name: HOSTED_HEADING })).toBeNull();
-      expect(screen.queryByRole("heading", { name: "Your cloud files" })).toBeNull();
-    };
-
-    it("shows main's not-found page at an address main doesn't know, the yardstick for v2 off", async () => {
-      mockFetch(asOperator(v2(false)));
-      renderAt("/no-such-page");
-      await notFound();
-    });
-
-    it("shows /hosted as not found when Core says v2 is off, as main does", async () => {
-      mockFetch(asOperator(v2(false)));
-      renderAt("/hosted/overview");
-      await notFound();
-      expect(screen.queryByRole("link", { name: /Hosted/ })).toBeNull();
-    });
-
-    it("never opens /hosted when Core's flags can't be read", async () => {
-      mockFetch(asOperator(null));
-      renderAt("/hosted/overview");
-      await unreadable();
-    });
-
-    describe("/files, which needs hosted_v2 and hosted_cloud_files", () => {
-      const both = (on: boolean, files: boolean) => [
-        { key: "hosted_v2", enabled: on },
-        { key: "hosted_cloud_files", enabled: files },
-      ];
-      it("is not found with v2 off, as on main", async () => {
-        mockFetch(asOperator(both(false, true)));
-        renderAt("/files");
-        await notFound();
-      });
-
-      it("is not found with Your cloud files off, even with v2 on", async () => {
-        mockFetch(asOperator(both(true, false)));
-        renderAt("/files");
-        await notFound();
-      });
-
-      it("never opens when Core's flags can't be read", async () => {
-        mockFetch(asOperator(null));
-        renderAt("/files");
-        await unreadable();
-      });
-
-      it("opens Your cloud files with both on", async () => {
-        mockFetch(asOperator(both(true, true)));
-        renderAt("/files");
-        expect(await screen.findByRole("heading", { name: "Your cloud files" })).toBeTruthy();
-      });
-    });
-
-    it("opens the Hosted pages when Core says v2 is on", async () => {
-      mockFetch(asOperator(v2(true)));
-      renderAt("/hosted/overview");
-      expect(await screen.findByRole("heading", { name: HOSTED_HEADING })).toBeTruthy();
-      expect(screen.getByRole("link", { name: /Hosted/ })).toBeTruthy();
-    });
   });
 
   it("gives the server's operator Connectors beside Users", async () => {
