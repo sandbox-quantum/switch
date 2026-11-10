@@ -53,6 +53,12 @@ class _Adapter:
         self.asked.append(name)
         return CreatedChannel(id=f"chan-{len(self.asked)}", name="payments-team-1a2b")
 
+    async def require_bindable_channel(self, channel_id: str) -> None:
+        return None
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        return None
+
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]
     ) -> None:
