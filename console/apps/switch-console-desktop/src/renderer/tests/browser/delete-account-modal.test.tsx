@@ -16,11 +16,16 @@ vi.hoisted(() => {
 });
 
 const deleteAccount = vi.hoisted(() => vi.fn());
+const resetTestAccount = vi.hoisted(() => vi.fn());
+const replayAsFreshInstall = vi.hoisted(() => vi.fn());
 const rehearse = vi.hoisted(() => vi.fn());
 const navigate = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { deleteAccount },
+  switchServersStore: { deleteAccount, resetTestAccount },
+}));
+vi.mock('@renderer/lib/ipc', () => ({
+  rpc: { app: { replayAsFreshInstall } },
 }));
 vi.mock('@renderer/features/onboarding/onboarding-store', () => ({
   onboardingStore: { rehearse },
@@ -44,7 +49,7 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
-async function render() {
+async function render(mode: 'delete' | 'reset' = 'delete') {
   const onClose = vi.fn();
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -57,6 +62,7 @@ async function render() {
             serverId="srv-1"
             serverName="Switch Cloud"
             email="ada@example.test"
+            mode={mode}
             onSuccess={() => {}}
             onClose={onClose}
           />
@@ -117,5 +123,43 @@ describe('DeleteAccountModal', () => {
     expect(onClose).toHaveBeenCalled();
     expect(rehearse).toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith('home');
+  });
+});
+
+describe('DeleteAccountModal in reset mode', () => {
+  it("shows the server's reason verbatim when it refuses", async () => {
+    resetTestAccount.mockRejectedValueOnce(
+      new Error('Test-account reset is not enabled on this server.')
+    );
+    await render('reset');
+    await type('ada@example.test');
+    await act(async () => button('Reset test account').click());
+    expect(deleteAccount).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+      'Test-account reset is not enabled on this server.'
+    );
+  });
+
+  it('resets, then replays as a fresh install', async () => {
+    resetTestAccount.mockResolvedValueOnce(undefined);
+    replayAsFreshInstall.mockResolvedValueOnce({ success: true });
+    await render('reset');
+    await type('ada@example.test');
+    await act(async () => button('Reset test account').click());
+    expect(resetTestAccount).toHaveBeenCalledWith('srv-1', 'ada@example.test');
+    expect(document.body.textContent).toContain('The test account is reset');
+    await act(async () => button('Replay as a fresh install').click());
+    expect(replayAsFreshInstall).toHaveBeenCalled();
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('says why a replay failed', async () => {
+    resetTestAccount.mockResolvedValueOnce(undefined);
+    replayAsFreshInstall.mockResolvedValueOnce({ success: false, error: 'Could not relaunch.' });
+    await render('reset');
+    await type('ada@example.test');
+    await act(async () => button('Reset test account').click());
+    await act(async () => button('Replay as a fresh install').click());
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe('Could not relaunch.');
   });
 });

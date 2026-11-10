@@ -2,6 +2,7 @@ import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { describeFailure } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { Button } from '@renderer/lib/ui/button';
@@ -17,24 +18,29 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import { switchServersStore } from './switch-servers-store';
 
-type Args = { serverId: string; serverName: string; email: string };
+type Args = { serverId: string; serverName: string; email: string; mode: 'delete' | 'reset' };
 
 /**
  * Deleting your account on a server, confirmed by typing its email: an SSO
  * account has no password to ask for. Says what goes and what stays before,
  * and the server's own reason when it refuses. Once it is gone, "Start over"
  * opens the first-run pages, for whoever wants to come back as someone new.
+ * `reset` is the dev-only variant that wipes a test account and everything it
+ * owns on a server that allows it, then offers to replay Console as fresh.
  */
 export const DeleteAccountModal = observer(function DeleteAccountModal({
   serverId,
   serverName,
   email,
+  mode,
   onClose,
 }: Args & BaseModalProps<void>) {
+  const reset = mode === 'reset';
   const [typed, setTyped] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deleted, setDeleted] = useState(false);
+  const [replaying, setReplaying] = useState(false);
   const matches = typed.trim().toLowerCase() === email.toLowerCase();
 
   const confirm = async () => {
@@ -42,16 +48,62 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
     setDeleting(true);
     setError(null);
     try {
-      await switchServersStore.deleteAccount(serverId, typed.trim());
+      if (reset) await switchServersStore.resetTestAccount(serverId, typed.trim());
+      else await switchServersStore.deleteAccount(serverId, typed.trim());
       setDeleted(true);
     } catch (cause) {
       // The server's refusal is already a sentence saying what to do first.
-      const { headline, detail } = describeFailure(cause, 'Could not delete your account.');
+      const { headline, detail } = describeFailure(
+        cause,
+        reset ? 'Could not reset the test account.' : 'Could not delete your account.'
+      );
       setError(detail ?? headline);
     } finally {
       setDeleting(false);
     }
   };
+
+  const replay = async () => {
+    setReplaying(true);
+    setError(null);
+    try {
+      const result = await rpc.app.replayAsFreshInstall();
+      if (!result.success) setError(result.error ?? 'Could not replay as a fresh install.');
+    } catch (cause) {
+      const { headline, detail } = describeFailure(cause, 'Could not replay as a fresh install.');
+      setError(detail ?? headline);
+    } finally {
+      setReplaying(false);
+    }
+  };
+
+  if (deleted && reset)
+    return (
+      <>
+        <DialogHeader>
+          <DialogTitle>The test account is reset</DialogTitle>
+        </DialogHeader>
+        <DialogContentArea className="gap-4 pt-0">
+          <p className="text-sm text-foreground-muted">
+            {email} and everything it owned on {serverName} is gone.
+          </p>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+        </DialogContentArea>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={replaying}>
+            Close
+          </Button>
+          <Button onClick={() => void replay()} disabled={replaying}>
+            {replaying && <Spinner className="size-3.5" />}
+            Replay as a fresh install
+          </Button>
+        </DialogFooter>
+      </>
+    );
 
   if (deleted)
     return (
@@ -87,22 +139,37 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Delete your account on {serverName}?</DialogTitle>
+        <DialogTitle>
+          {reset
+            ? `Reset the test account on ${serverName}?`
+            : `Delete your account on ${serverName}?`}
+        </DialogTitle>
       </DialogHeader>
       <DialogContentArea className="gap-4 pt-0">
         <div className="space-y-2 text-sm text-foreground-muted">
           <p>This can't be undone.</p>
-          <ul className="list-disc space-y-1 pl-5">
-            <li>
-              Your agents, the machines you connected, and your templates, references, documents and
-              packages are deleted.
-            </li>
-            <li>
-              Rooms you created stay, for the rest of the workspace. Your private chats are
-              archived.
-            </li>
-            <li>A workspace only you are in is left empty.</li>
-          </ul>
+          {reset ? (
+            <ul className="list-disc space-y-1 pl-5">
+              <li>For test accounts only.</li>
+              <li>
+                Everything this account has on {serverName} is wiped: messaging and Slack installs
+                are disconnected, and its agents, machines, rooms, workspace, organization and user
+                are deleted.
+              </li>
+            </ul>
+          ) : (
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                Your agents, the machines you connected, and your templates, references, documents
+                and packages are deleted.
+              </li>
+              <li>
+                Rooms you created stay, for the rest of the workspace. Your private chats are
+                archived.
+              </li>
+              <li>A workspace only you are in is left empty.</li>
+            </ul>
+          )}
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="delete-account-email">
@@ -134,7 +201,7 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
           disabled={!matches || deleting}
         >
           {deleting && <Spinner className="size-3.5" />}
-          Delete my account
+          {reset ? 'Reset test account' : 'Delete my account'}
         </Button>
       </DialogFooter>
     </>
