@@ -1808,6 +1808,8 @@ type BridgeJson = {
   display_name: string;
   status: string;
   is_default?: boolean;
+  // Absent on a server predating the flag.
+  preconfigured?: boolean;
   home_url?: string | null;
   // Both absent on a server predating the capability — defaulting each to
   // true reproduces how every bridge behaved before it existed: any platform
@@ -1836,6 +1838,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     displayName: b.display_name,
     status: b.status,
     isDefault: b.is_default ?? false,
+    preconfigured: b.preconfigured ?? null,
     homeUrl: b.home_url ?? null,
     channelCreationSupported,
     canCreateChannels: channelCreationSupported && channelCreationEnabled,

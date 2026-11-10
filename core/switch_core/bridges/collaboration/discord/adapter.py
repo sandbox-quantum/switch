@@ -25,6 +25,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivitySnapshot,
     AgentIdentity,
     ChannelNotBindable,
+    MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
     RemovalFailed,
@@ -968,9 +969,10 @@ class DiscordAdapter(PlatformAdapter):
         said rather than its tail, and a thread created from it opens where the
         message begins.
 
-        A part failing mid-sequence leaves the message *visibly* truncated
-        rather than silently so: what was posted stays, and a short notice says
-        the rest did not make it.
+        `None` when not even the first part was taken. A later part failing
+        leaves the message *visibly* truncated rather than silently so: what
+        was posted stays, a short notice says the rest did not make it, and
+        `MessagePartlySent` is raised.
         """
         chunks = chunk_message(content)
         first_ref: str | None = None
@@ -986,8 +988,15 @@ class DiscordAdapter(PlatformAdapter):
                     where,
                     e,
                 )
+                if first_ref is None:
+                    return None
                 await self._note_truncation(send, index, len(chunks))
-                return first_ref
+                raise MessagePartlySent(
+                    platform="Discord",
+                    first_ref=first_ref,
+                    delivered=index,
+                    total=len(chunks),
+                ) from e
             if first_ref is None:
                 first_ref = f"{sent.channel.id}:{sent.id}"
 
@@ -1003,7 +1012,11 @@ class DiscordAdapter(PlatformAdapter):
                 "delivered — the rest was rejected by Discord."
             )
         except discord.HTTPException:
-            logger.exception("Failed to post Discord truncation notice")
+            logger.exception(
+                "Failed to post the Discord notice that a message is missing its "
+                "last %d parts; nothing in the channel says it is cut short",
+                total - delivered,
+            )
 
     async def send_attachment(
         self,

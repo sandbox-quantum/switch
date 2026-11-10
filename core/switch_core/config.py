@@ -267,9 +267,14 @@ class SwitchConfig(BaseSettings):
     # once, so one tenant with a slow backend does not hold up the others.
     decision_sweep_concurrency: int = Field(default=4, ge=1, le=64)
 
-    @field_validator("decision_endpoint_url", "decision_api_key", mode="before")
+    @field_validator(
+        "decision_endpoint_url",
+        "decision_api_key",
+        "gateway_signup_refused_header",
+        mode="before",
+    )
     @classmethod
-    def _blank_decision_setting_is_unset(cls, value: object) -> object:
+    def _blank_setting_is_unset(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -346,6 +351,19 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # The name of a request header that a trusted edge in front of the server
+    # (prod's WAF) adds to requests from countries where new accounts are not
+    # offered. A request carrying it, with any value (empty included), may not
+    # create an account: neither a first OIDC sign-in nor a password sign-up,
+    # the two ways a person creates their own. The edge must therefore add it
+    # only to requests it refuses, never set it to a "no" value for the rest.
+    # Existing accounts sign in as before, and accounts that are not sign-ups
+    # (`POST /users`, the seeded admin, the bootstrap owner) are unaffected.
+    # Trusting the header's presence is safe, since a client that sends it
+    # only refuses itself; its absence proves nothing, because the edge
+    # decides where a request comes from and this server never checks. Unset
+    # or blank turns the check off.
+    gateway_signup_refused_header: str | None = None
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
     # Cloud machines run the agent controller, so above 0 this needs the
