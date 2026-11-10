@@ -55,6 +55,7 @@ WorkOS organization and users to remove there, for whoever owns it.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
@@ -110,7 +111,6 @@ from switch_core.db.tenant_lookup import (
     tenants_of_organization,
     tenants_of_user,
 )
-from switch_core.management.signals import REVOKED_SIGNAL
 from switch_core.tenant_context import tenant_scope
 
 if TYPE_CHECKING:
@@ -207,6 +207,10 @@ class OrganizationPurge:
     installers: MessagingInstallerRegistry
     keyring: Keyring
     signals: SignalBus
+    # Tells every process a machine's controller is gone, as revoking it
+    # does. Agent management's, handed over by the wiring: core does not
+    # import it.
+    controller_removed: Callable[[str], None]
     admin_email: str
 
     async def find(self, reference: str) -> str:
@@ -610,7 +614,7 @@ class OrganizationPurge:
         for bridge_id in bridge_ids:
             self.signals.publish(BRIDGE_CHANGED_SIGNAL, bridge_id=bridge_id)
         for controller_id in controller_ids:
-            self.signals.publish(REVOKED_SIGNAL, controller_id=controller_id)
+            self.controller_removed(controller_id)
         logger.info("Purged workspace %s (%s)", workspace.id, workspace.slug)
 
     async def _detach_machines(self, machine_ids: list[str]) -> None:

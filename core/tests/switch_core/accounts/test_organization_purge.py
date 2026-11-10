@@ -96,6 +96,9 @@ def _purge(
         installers=installers,
         keyring=KEYRING,
         signals=signals,  # type: ignore[arg-type]
+        controller_removed=lambda controller_id: signals.publish(
+            "controller.revoked", controller_id=controller_id
+        ),
         admin_email=ADMIN_EMAIL,
     )
     return purge, installer, signals

@@ -66,7 +66,11 @@ from switch_core.db.runtime_role import RuntimeRoleError, verify_restricted_role
 from switch_core.db.stores.organization_app_credential_store import (
     OrganizationAppCredentialStore,
 )
-from switch_core.main import build_connector_apps, build_service_broker
+from switch_core.main import (
+    build_connector_apps,
+    build_service_broker,
+    controller_removal_publisher,
+)
 from switch_core.outbound import guarded_async_client
 from switch_core.signals import SignalBus
 
@@ -270,6 +274,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                 installers=await _installers(config),
                 keyring=config.keyring,
                 signals=signals,
+                controller_removed=controller_removal_publisher(signals),
                 admin_email=config.gateway_admin_email,
             )
             try:

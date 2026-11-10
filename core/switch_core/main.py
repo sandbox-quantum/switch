@@ -196,6 +196,7 @@ from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
+from switch_core.management.signals import REVOKED_SIGNAL
 from switch_core.management.template_updates import TemplateUpdates
 from switch_core.management.wiring import Management, create_management
 from switch_core.members_service import MembersService
@@ -2373,6 +2374,17 @@ def build_connector_apps(
         http=http,
         registration=registration,
     )
+
+
+def controller_removal_publisher(signals: SignalBus) -> Callable[[str], None]:
+    """Tells every process a machine's controller is gone, as revoking it
+    does, for a process that runs no agent management of its own: the
+    operator's organization purge (`purge_organization.py`)."""
+
+    def publish(controller_id: str) -> None:
+        signals.publish(REVOKED_SIGNAL, controller_id=controller_id)
+
+    return publish
 
 
 def build_service_broker(
