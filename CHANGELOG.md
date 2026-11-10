@@ -508,6 +508,16 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **The Notion connection.** A person connects Notion from Switch Console,
+  picks the workspace at Notion's consent screen, and a granted agent searches,
+  reads and updates its pages, databases and comments, as them, through
+  Notion's remote MCP server. Core registers its own client, so nothing is set
+  up on the server. A Notion MCP token reaches only Notion MCP, so an OAuth
+  entry can now read the account by token introspection (RFC 7662) at the
+  endpoint the vendor's metadata advertises, in place of an identity call,
+  and its `account_id` can list several paths, joined into one id: Notion's
+  is the workspace and the user, so a person in two workspaces has two
+  connections. Every other entry keeps its call.
 
 #### Changed
 - **The dashboard, and what Switch tells people, use Switch's own words.** A

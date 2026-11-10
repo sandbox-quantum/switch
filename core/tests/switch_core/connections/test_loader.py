@@ -17,7 +17,6 @@ PLACEHOLDERS = {
     "bitbucket",
     "microsoft-365",
     "new-relic",
-    "notion",
     "linear",
     "salesforce",
     "box",
@@ -26,13 +25,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_notion():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "notion",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "notion",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["notion"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -228,6 +230,43 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_notion_entry_reads_its_account_by_introspection():
+    definition = CATALOG["notion"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_discovered is True
+    # Every refresh retires the refresh token it spends.
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("notion", "https://mcp.notion.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["default"]
+    assert definition.access.write.scopes == ["default"]
+    # A Notion MCP token works only with Notion MCP, so the account is what
+    # Notion's introspection says of the token: its workspace and user.
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (
+        identity.url,
+        identity.introspection,
+        identity.account_id,
+        identity.label,
+    ) == (None, True, ["workspace_id", "user_id"], "workspace_id")
 
 
 RESTRICTED_DRIVE = {
@@ -561,6 +600,16 @@ tools: { mode: pass_through }
 """
 
 
+INTROSPECTION_ENTRY = OAUTH_ENTRY.replace(
+    "    url: https://api.example.test/me\n"
+    "    account_id: account.id\n"
+    "    label: account.email\n",
+    "    introspection: true\n"
+    "    account_id: [workspace_id, user_id]\n"
+    "    label: workspace_id\n",
+)
+
+
 def _write_example(root, text: str = OAUTH_ENTRY) -> None:
     directory = root / "example"
     directory.mkdir(exist_ok=True)
@@ -587,6 +636,34 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_loads_an_identity_read_by_introspection(catalog_copy):
+    _write_example(catalog_copy, INTROSPECTION_ENTRY)
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (
+        identity.url,
+        identity.introspection,
+        identity.account_id,
+        identity.label,
+    ) == (None, True, ["workspace_id", "user_id"], "workspace_id")
+
+
+def test_introspection_needs_the_endpoints_discovered(catalog_copy):
+    _write_example(
+        catalog_copy,
+        INTROSPECTION_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: static\n    client_settings: EXAMPLE\n"
+            "    authorization_url: https://auth.example.test/authorize\n"
+            "    token_url: https://auth.example.test/token\n",
+        ),
+    )
+    with pytest.raises(
+        CatalogError, match="(?s)example is invalid.*names its endpoints"
+    ):
+        load_catalog(catalog_copy)
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
@@ -746,6 +823,22 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n    unchecked: Publish it.\n",
             "unchecked is for a static client",
         ),
+        (
+            "    url: https://api.example.test/me\n",
+            "",
+            "exactly one of url or introspection",
+        ),
+        (
+            "    url: https://api.example.test/me\n",
+            "    url: https://api.example.test/me\n    introspection: true\n",
+            "exactly one of url or introspection",
+        ),
+        (
+            "    account_id: account.id\n",
+            "    account_id: [account.id, account.id]\n",
+            "each account_id path once",
+        ),
+        ("    account_id: account.id\n", "    account_id: []\n", "account_id"),
     ],
 )
 def test_rejects_an_incomplete_or_inconsistent_oauth_entry(

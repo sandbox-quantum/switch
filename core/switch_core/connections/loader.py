@@ -180,13 +180,33 @@ class OAuthClient(BaseModel):
 
 class ConnectionIdentity(BaseModel):
     """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    token, or with `introspection` the vendor's RFC 7662 answer for the token
+    at the introspection endpoint its metadata advertises. `account_id` and
+    `label` are dotted paths in that JSON answer to the id and to a label
+    people recognise (an email, a login); `account_id` may list several
+    paths, joined into one id."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
-    account_id: str = Field(pattern=JSON_PATH_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    introspection: bool = False
+    account_id: (
+        Annotated[str, Field(pattern=JSON_PATH_PATTERN)]
+        | Annotated[
+            list[Annotated[str, Field(pattern=JSON_PATH_PATTERN)]],
+            Field(min_length=1, max_length=8),
+        ]
+    )
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "ConnectionIdentity":
+        if (self.url is None) != self.introspection:
+            raise ValueError("identity needs exactly one of url or introspection")
+        if isinstance(self.account_id, list) and len(set(self.account_id)) != len(
+            self.account_id
+        ):
+            raise ValueError("identity lists each account_id path once")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -725,6 +745,18 @@ class ConnectionDefinition(BaseModel):
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
         oauth = self.auth.oauth
+        identity = self.auth.identity
+        if (
+            identity is not None
+            and identity.introspection
+            and (
+                self.mcp is None or (oauth is not None and oauth.token_url is not None)
+            )
+        ):
+            raise ValueError(
+                "introspection is found in the metadata an MCP server points to, "
+                "so an entry that names its endpoints cannot use it"
+            )
         # Discovery starts from an MCP server, so without one the catalog names
         # the endpoints, and the client is the operator's.
         if self.mcp is None and oauth is not None:

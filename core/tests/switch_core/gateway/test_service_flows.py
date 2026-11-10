@@ -39,8 +39,12 @@ from switch_core.gateway.service_connections import (
 )
 from switch_core.gateway.service_flows import router as service_flows_router
 from tests.conftest import TEST_KEYRING
-from tests.switch_core.connections.fake_vendor import FakeOAuthServer
-from tests.switch_core.connections.test_loader import OAUTH_ENTRY, _write_example
+from tests.switch_core.connections.fake_vendor import IDENTITY_URL, FakeOAuthServer
+from tests.switch_core.connections.test_loader import (
+    INTROSPECTION_ENTRY,
+    OAUTH_ENTRY,
+    _write_example,
+)
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
@@ -76,6 +80,7 @@ def _world(
     public_url: str | None = None,
     disabled: dict[str, str] | None = None,
     workspace_gate: bool = False,
+    entry: str = OAUTH_ENTRY,
     organization_apps: object = None,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
@@ -83,9 +88,7 @@ def _world(
     ports = "\n    loopback_ports: [43123, 43124]" if "loopback" in redirect else ""
     _write_example(
         root,
-        OAUTH_ENTRY.replace(
-            "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
-        ),
+        entry.replace("redirect: [loopback, core]", f"redirect: {redirect}{ports}"),
     )
     catalog = load_catalog(root)
     oauth = catalog["example"].definition.auth.oauth
@@ -272,6 +275,24 @@ class TestLoopback:
         secret = json.loads(TEST_KEYRING.decrypt(connection.encrypted_secret))
         assert secret["refresh_token"] in world.vendor.live_refresh
         assert await _flow_ids(session_factory) == set()
+
+    async def test_takes_the_account_from_introspection_where_the_entry_says(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", entry=INTROSPECTION_ENTRY)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            completed = await _loopback_connect(world, Console(client, ada))
+            assert completed.json()["account"] == "ws-1"
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert (connection.account_id, connection.external_identity) == (
+            "ws-1:user-1",
+            "ws-1",
+        )
+        [asked] = world.vendor.introspections
+        assert asked["token_type_hint"] == "access_token"
+        assert IDENTITY_URL not in world.vendor.paths
 
     async def test_a_code_is_completed_once(self, session_factory, tmp_path) -> None:
         world = _world(session_factory, tmp_path / "catalog")

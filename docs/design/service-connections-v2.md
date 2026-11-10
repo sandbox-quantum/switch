@@ -46,6 +46,9 @@ auth:
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
+    # or introspection: true, in place of url: the RFC 7662 answer for the
+    #   token at the introspection_endpoint the discovered metadata
+    #   advertises; account_id may list paths, joined into one id
 token: { kind: pass_through, max_lifetime: 28800 }
 mcp:
   servers:
@@ -538,6 +541,37 @@ back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
+## Notion
+
+Built from a sign-in run against a test Notion workspace:
+
+- Notion offers dynamic registration, so Core registers its client. It takes a
+  loopback redirect, so Notion connects through Switch Console, on Atlassian's
+  five ports, and a server without a public address can connect it too.
+- A person's sign-in has one scope, `default`, which reaches every tool they
+  can use, so both levels name it and every connection is granted the write
+  level. Notion also lists `ema_issuer:manage`, for enterprise identity
+  providers, which is not asked for.
+- A Notion MCP token works only with Notion MCP: Notion's REST API refuses it
+  (401). So the account is read by token introspection (RFC 7662): Notion's
+  metadata advertises an `introspection_endpoint`, Core asks it as its
+  client asks at the token endpoint, and the answer must say `active: true`. Measured, the answer
+  names the workspace and the user by id only (`workspace_id`, `user_id`),
+  so the account id is both, each escaped and joined with `:`, and the
+  connection is labelled with the workspace's id. A person in two workspaces
+  has two connections. The token answer is never trusted for identity, since
+  nothing checks it against the token later.
+- Access tokens live 8 hours (28,800 s measured); every refresh rotates the
+  refresh token, and revoking it ends the sign-in.
+- The server's tools pass through unchanged: 65 at the first run, 64 a week
+  later, when `notion-connector-search` was no longer listed. Some depend on
+  the workspace's plan, and some reach Notion agent sessions, calendar events
+  and Notion Skills; the skill tells the agent to use those only when asked.
+
+To connect: Settings, Connections in Switch Console, then Notion. Nothing
+needs configuring on the server. To roll back, add `notion` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP
@@ -624,9 +658,9 @@ it as unavailable, with its reason, and the next token request fails.
 - Google Workspace on Switch's hosted service, which waits on Google's review
   of Switch's own app.
 - Keeping a CLI vendor's token out of the CLI's process (a credential proxy).
-- Live runs against a real Jira site, a real Google Workspace and a real
-  Datadog organization stay manual and outside CI, which tests `gws`'s
-  handling against a stand-in, never the real binary, and Datadog's key check
-  against a stand-in transport.
+- Live runs against a real Jira site, a real Google Workspace, a real Notion
+  workspace and a real Datadog organization stay manual and outside CI, which
+  tests `gws`'s handling against a stand-in, never the real binary, and
+  Datadog's key check against a stand-in transport.
 - Connecting a key from the web dashboard: Switch Console starts it, as every
   connect.

@@ -65,6 +65,8 @@ class AuthorizationEndpoints:
     registration: str | None
     # Where a sign-in is revoked (RFC 7009), as the metadata advertises it.
     revocation: str | None
+    # Where a token is introspected (RFC 7662), as the metadata advertises it.
+    introspection: str | None
     # The MCP server the endpoints were discovered from, named as the
     # `resource` of every authorization and token request (RFC 8707). None
     # where the catalog names the endpoints.
@@ -244,6 +246,7 @@ class OAuthAdapter:
                 token=self._oauth.token_url,
                 registration=None,
                 revocation=None,
+                introspection=None,
                 resource=None,
                 client_authentication="client_secret_post",
             )
@@ -303,6 +306,7 @@ class OAuthAdapter:
             )
         registration = metadata.get("registration_endpoint")
         revocation = metadata.get("revocation_endpoint")
+        introspection = metadata.get("introspection_endpoint")
         # The form body, unless the vendor takes a secret only as HTTP Basic:
         # Airtable refuses one in the body. Metadata that lists no methods
         # means Basic (RFC 8414 §2).
@@ -328,6 +332,11 @@ class OAuthAdapter:
                 None
                 if revocation is None
                 else _https(revocation, "revocation endpoint")
+            ),
+            introspection=(
+                None
+                if introspection is None
+                else _https(introspection, "introspection endpoint")
             ),
             resource=mcp_url,
             client_authentication=(
@@ -488,35 +497,83 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
+        if self._identity.introspection:
+            body = await self._introspect(access_token)
+        else:
+            assert self._identity.url is not None
+            response = await self._send(
+                self._http.build_request(
+                    "GET",
+                    self._identity.url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                    },
+                )
+            )
+            if response.status_code == 401:
+                raise ReauthorizationRequiredError(
+                    f"{self._name} refused the new sign-in when asked whose it is."
+                )
+            if response.status_code != 200:
+                raise ServiceAdapterError(
+                    f"{self._name} would not say whose sign-in this is "
+                    f"(HTTP {response.status_code})."
+                )
+            body = self._json(response, "account")
+        paths = self._identity.account_id
+        parts = [
+            _path_value(body, path)
+            for path in (paths if isinstance(paths, list) else [paths])
+        ]
+        if any(type(part) not in (str, int) or not str(part).strip() for part in parts):
+            raise ServiceAdapterError(f"{self._name} did not name the account's id.")
+        # Each part escaped, so a separator inside one cannot alias another account.
+        account_id = (
+            ":".join(quote(str(part), safe="") for part in parts)
+            if isinstance(paths, list)
+            else str(parts[0])
+        )
+        label = _path_value(body, self._identity.label)
+        return Identity(
+            account_id, label if isinstance(label, str) and label else account_id
+        )
+
+    async def _introspect(self, access_token: str) -> dict[str, Any]:
+        """The vendor's own answer for the token (RFC 7662), from the
+        introspection endpoint its metadata advertises, asked as the client
+        asks at the token endpoint."""
+        endpoints = await self.endpoints()
+        if endpoints.introspection is None:
+            raise ServiceAdapterError(
+                f"{self._name} advertises no token introspection, so Switch "
+                "cannot tell whose sign-in this is."
+            )
+        client = await self._client.credentials(endpoints)
+        identifying, headers = client_fields(endpoints, client)
         response = await self._send(
             self._http.build_request(
-                "GET",
-                self._identity.url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json",
+                "POST",
+                endpoints.introspection,
+                data={
+                    "token": access_token,
+                    "token_type_hint": "access_token",
+                    **identifying,
                 },
+                headers={"Accept": "application/json", **headers},
             )
         )
-        if response.status_code == 401:
-            raise ReauthorizationRequiredError(
-                f"{self._name} refused the new sign-in when asked whose it is."
-            )
         if response.status_code != 200:
             raise ServiceAdapterError(
                 f"{self._name} would not say whose sign-in this is "
                 f"(HTTP {response.status_code})."
             )
-        body = self._json(response, "account")
-        account_id = _path_value(body, self._identity.account_id)
-        label = _path_value(body, self._identity.label)
-        if type(account_id) is int:
-            account_id = str(account_id)
-        if not isinstance(account_id, str) or not account_id:
-            raise ServiceAdapterError(f"{self._name} did not name the account's id.")
-        return Identity(
-            account_id, label if isinstance(label, str) and label else account_id
-        )
+        body = self._json(response, "token introspection")
+        if body.get("active") is not True:
+            raise ReauthorizationRequiredError(
+                f"{self._name} says the new sign-in is not active."
+            )
+        return body
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 

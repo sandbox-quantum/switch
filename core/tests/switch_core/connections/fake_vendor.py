@@ -360,6 +360,7 @@ class FakeOAuthServer:
             "token_endpoint": f"{ISSUER}/token",
             "registration_endpoint": f"{ISSUER}/register",
             "revocation_endpoint": f"{ISSUER}/revoke",
+            "introspection_endpoint": f"{ISSUER}/introspect",
             "response_types_supported": ["code"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": [
@@ -368,6 +369,13 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        # What introspection says of a live access token, besides `active`,
+        # as Notion's names its user and workspace (RFC 7662).
+        self.introspected: dict[str, Any] = {
+            "workspace_id": "ws-1",
+            "user_id": "user-1",
+        }
+        self.introspections: list[dict[str, str]] = []
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -441,6 +449,8 @@ class FakeOAuthServer:
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
+        if where == f"{ISSUER}/introspect" and request.method == "POST":
+            return self._introspect(request)
         if where == IDENTITY_URL and request.method == "GET":
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
@@ -514,6 +524,24 @@ class FakeOAuthServer:
             del self.live_refresh[minted.pop("refresh_token")]
             return _json(200, minted)
         return _json(400, {"error": "unsupported_grant_type"})
+
+    def _introspect(self, request: httpx.Request) -> httpx.Response:
+        form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+        self.introspections.append(form)
+        if not self._client_ok(request, form):
+            return _json(401, {"error": "invalid_client"})
+        scopes = self.live_access.get(form.get("token", ""))
+        if scopes is None:
+            return _json(200, {"active": False})
+        return _json(
+            200,
+            {
+                "active": True,
+                "token_type": "bearer",
+                "scope": " ".join(scopes),
+                **self.introspected,
+            },
+        )
 
     def _register(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
