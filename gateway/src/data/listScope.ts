@@ -14,11 +14,11 @@ export function listScopeOf(caps: Capabilities): ListScope {
 
 /** A member's agents are the ones they own. A sub-agent is owned by whoever
  * added it, so theirs are counted with them. */
-export function agentsInScope(
-  agents: readonly AgentSummary[],
+export function agentsInScope<A extends AgentSummary>(
+  agents: readonly A[],
   scope: ListScope,
   userId: string,
-): readonly AgentSummary[] {
+): readonly A[] {
   return scope === "workspace" ? agents : agents.filter((agent) => agent.owner_id === userId);
 }
 
