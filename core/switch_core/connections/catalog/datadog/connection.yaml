@@ -56,7 +56,7 @@ auth:
         - name: pat
           label: Personal access token
           secret: true
-          help: "Personal Settings, Access Tokens. Scopes: mcp_read, mcp_write for writes; user_access_read lets Switch name the account, and keeps agents' grants when you paste a new token."
+          help: "Personal Settings, Access Tokens. Scopes: mcp_read, mcp_write for writes, the read scope of each product agents use (monitors_read, metrics_read, logs_read_data), user_access_read to keep grants."
       headers: { Authorization: "Bearer {pat}" }
       # Datadog requires every personal access token to expire, from 24 hours
       # to one year after it is made, so no token is one that never expires.
@@ -74,7 +74,7 @@ auth:
         - name: application_key
           label: Application key
           secret: true
-          help: Personal Settings, Application Keys, with mcp_read and, for writes, mcp_write.
+          help: Personal Settings, Application Keys, with mcp_read, mcp_write for writes, and the read scope of each product agents use (monitors_read, metrics_read, logs_read_data).
       # Datadog's MCP server takes the keys in headers named with
       # underscores, unlike its REST API.
       headers:

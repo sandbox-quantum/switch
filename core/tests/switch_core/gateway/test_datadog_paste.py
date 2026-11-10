@@ -69,9 +69,9 @@ class TestList:
                         "secret": True,
                         "help": (
                             "Personal Settings, Access Tokens. Scopes: mcp_read, "
-                            "mcp_write for writes; user_access_read lets Switch "
-                            "name the account, and keeps agents' grants when you "
-                            "paste a new token."
+                            "mcp_write for writes, the read scope of each product "
+                            "agents use (monitors_read, metrics_read, "
+                            "logs_read_data), user_access_read to keep grants."
                         ),
                         "choices": None,
                     }
@@ -101,8 +101,9 @@ class TestList:
             (
                 "application_key",
                 True,
-                "Personal Settings, Application Keys, with mcp_read and, for "
-                "writes, mcp_write.",
+                "Personal Settings, Application Keys, with mcp_read, mcp_write "
+                "for writes, and the read scope of each product agents use "
+                "(monitors_read, metrics_read, logs_read_data).",
             ),
         ]
 
