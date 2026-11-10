@@ -243,6 +243,12 @@ def guarded_transport(
     return transport
 
 
+# Each sends some or all of a client's traffic through a transport other
+# than the guarded one: its own, a mounted one, a proxy's, or the
+# environment's proxy.
+_UNGUARDED_CLIENT_OPTIONS = ("transport", "mounts", "proxy", "trust_env")
+
+
 class GuardedAsyncClient(httpx.AsyncClient):
     """A client over `guarded_transport`. It names its policy and TLS
     setting, so code that needs its own transport can hold it to the same."""
@@ -250,6 +256,12 @@ class GuardedAsyncClient(httpx.AsyncClient):
     def __init__(
         self, policy: OutboundPolicy, *, verify: bool, **client_kwargs: Any
     ) -> None:
+        for option in _UNGUARDED_CLIENT_OPTIONS:
+            if option in client_kwargs:
+                raise TypeError(
+                    f"A guarded client cannot take {option}: it would send "
+                    "traffic around the outbound policy."
+                )
         super().__init__(
             transport=guarded_transport(policy, verify=verify),
             trust_env=False,

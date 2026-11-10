@@ -242,6 +242,24 @@ class TestTheGuardedClient:
         async with guarded_async_client(_NOTHING_ALLOWED) as client:
             assert client.verify is True
 
+    @pytest.mark.parametrize(
+        "option",
+        [
+            {"transport": httpx.MockTransport(lambda request: httpx.Response(200))},
+            {"mounts": {"all://": httpx.AsyncHTTPTransport()}},
+            {"proxy": "http://proxy.invalid:3128"},
+            {"trust_env": True},
+            {"trust_env": False},
+        ],
+        ids=["transport", "mounts", "proxy", "trust_env", "trust_env-false"],
+    )
+    @pytest.mark.parametrize("build", [GuardedAsyncClient, guarded_async_client])
+    def test_it_refuses_options_that_route_around_the_policy(
+        self, build: Any, option: dict[str, Any]
+    ) -> None:
+        with pytest.raises(TypeError, match=f"cannot take {next(iter(option))}"):
+            build(_NOTHING_ALLOWED, verify=True, **option)
+
 
 class TestTheGuardedTransport:
     async def test_a_refused_address_is_never_connected_to(
