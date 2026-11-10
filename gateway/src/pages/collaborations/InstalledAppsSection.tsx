@@ -78,9 +78,13 @@ interface Props {
   // Disconnecting removes the connection the install created, so the list of
   // connections above this section is stale once it succeeds.
   onConnectionsChanged: () => void;
+  // For someone who does not administer the workspace, on a page that shows
+  // them only their own side: just the platforms whose chats they can add to
+  // or still have connected, not every platform's history.
+  memberView: boolean;
 }
 
-export default function InstalledAppsSection({ onConnectionsChanged }: Props) {
+export default function InstalledAppsSection({ onConnectionsChanged, memberView }: Props) {
   const { data: offered, refetch: refetchOffered } = useInstallablePlatforms();
   const { data: installs, loading, refetch } = useInstalledApps();
   const [starting, setStarting] = useState<string | null>(null);
@@ -101,12 +105,21 @@ export default function InstalledAppsSection({ onConnectionsChanged }: Props) {
   // for — a platform whose app was since removed still shows its history.
   // The server offers the OAuth platforms to its admins alone.
   const platforms = useMemo(() => {
+    if (memberView) {
+      return claimable
+        .filter(
+          (c) =>
+            c.can_add_chat ||
+            rows.some((row) => row.platform === c.platform && row.status === "active"),
+        )
+        .map((c) => c.platform);
+    }
     const seen = new Set<string>();
     for (const c of claimable) seen.add(c.platform);
     for (const p of installable) seen.add(p);
     for (const row of rows) seen.add(row.platform);
     return [...seen];
-  }, [claimable, installable, rows]);
+  }, [claimable, installable, rows, memberView]);
 
   const handleInstall = useCallback(async (platform: string) => {
     setStarting(platform);
@@ -159,14 +172,28 @@ export default function InstalledAppsSection({ onConnectionsChanged }: Props) {
 
   return (
     <Box mt={5}>
-      <Typography variant="h5" mb={1}>
-        Installed apps
-      </Typography>
-      <Typography variant="body2" color="text.secondary" mb={2}>
-        This deployment&apos;s own apps, using credentials only the deployment
-        holds. Disconnect what an app is installed in here: a messaging app above
-        cannot be deleted while an app is still installed through it.
-      </Typography>
+      {memberView ? (
+        <>
+          <Typography variant="h6" component="h2" mb={1}>
+            Chats
+          </Typography>
+          <Typography variant="body2" color="text.secondary" mb={2}>
+            Some messaging apps join Switch one chat at a time. Add a chat here,
+            or disconnect one you can write in.
+          </Typography>
+        </>
+      ) : (
+        <>
+          <Typography variant="h5" mb={1}>
+            Installed apps
+          </Typography>
+          <Typography variant="body2" color="text.secondary" mb={2}>
+            This deployment&apos;s own apps, using credentials only the deployment
+            holds. Disconnect what an app is installed in here: a messaging app above
+            cannot be deleted while an app is still installed through it.
+          </Typography>
+        </>
+      )}
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>

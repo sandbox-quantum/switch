@@ -333,7 +333,7 @@ export default function CollaborationsPage() {
         />
       )}
 
-      <InstalledAppsSection key={installsVersion} onConnectionsChanged={refetch} />
+      <InstalledAppsSection key={installsVersion} onConnectionsChanged={refetch} memberView={false} />
 
       <RegisterMessagingAppDialog
         open={registerOpen}
