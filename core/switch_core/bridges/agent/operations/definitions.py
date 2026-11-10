@@ -1431,10 +1431,11 @@ async def list_bridges() -> list[dict[str, Any]]:
 
         `can_create_private_channels` says whether `channel_type`
         "channel_private" can be asked for there. Where
-        `private_channel_needs_linked_account` is true (Teams), the room's
-        owner, your owner when you create it, must have linked and confirmed
-        their account on that platform: Switch names them the channel's
-        owner, and refuses the room when they have not.
+        `private_channel_needs_linked_account` is true, the room's owner,
+        your owner when you create it, must have linked and confirmed their
+        account on that platform: Switch puts them in the private channel
+        through it (on Teams, as its owner), and refuses the room when they
+        have not, since nobody could get into it otherwise.
     """
     protocol = get_protocol()
     return await protocol.list_bridges()

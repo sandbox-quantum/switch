@@ -17,6 +17,7 @@ const form = {
   instructions: '',
   agentIds: ['a1'],
   memberUserIds: ['u2'],
+  userNames: [],
   requestId: 'req',
   bridgeType: null,
   options: DEFAULT_ROOM_OPTIONS,
@@ -78,12 +79,22 @@ describe('roomCreateRequest', () => {
         instructions: undefined,
         bridgeId: 'b1',
         agentIds: [],
+        userNames: [],
         // A new public channel and the server's default access, as before.
         channel: { kind: 'new', private: false },
         groupId: null,
         access: null,
       },
     });
+  });
+
+  it('gives a bridged room its people by their username on the app, once each', () => {
+    const request = roomCreateRequest({
+      ...form,
+      bridgeId: 'b1',
+      userNames: ['bob', 'carol', 'bob'],
+    });
+    expect(request.kind === 'room' && request.params.userNames).toEqual(['bob', 'carol']);
   });
 
   it('carries the More options: a private channel, a group and an access choice', () => {

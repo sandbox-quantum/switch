@@ -636,14 +636,6 @@ class CollaborationBridgeLifecycleService:
             and adapter_cls.supports_private_channels
         )
 
-    def private_channel_needs_owner(self, bridge_type: str) -> bool:
-        """Whether a private channel on this platform needs the person asking
-        to have a linked account there, which Switch names as its owner."""
-        adapter_cls = self._adapter_registry.get(bridge_type)
-        if adapter_cls is None:
-            return False
-        return adapter_cls.private_channel_needs_owner
-
     def supports_directory_search(self, bridge_type: str) -> bool:
         """Whether this platform has a user directory Switch can search.
 
