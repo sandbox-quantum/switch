@@ -43,6 +43,22 @@ describe("brand logos", () => {
     }
   });
 
+  it("give each tile's gradients their own ids, so two tiles for one connector both keep them", () => {
+    const { container } = render(
+      <>
+        <BrandTile slug="canva" name="Canva" size={56} />
+        <BrandTile slug="canva" name="Canva" size={56} />
+      </>,
+    );
+    const ids = [...container.querySelectorAll("[id]")].map((element) => element.id);
+
+    expect(ids.length).toBeGreaterThan(1);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const use of container.querySelectorAll("[fill^='url(#']")) {
+      expect(ids).toContain(use.getAttribute("fill")!.slice(5, -1));
+    }
+  });
+
   it("fall back to initials for a service this build has no logo for", () => {
     expect(brandSvg("some-future-service")).toBeUndefined();
     expect(monogram("New Relic")).toBe("NR");

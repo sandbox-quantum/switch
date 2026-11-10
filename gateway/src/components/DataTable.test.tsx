@@ -102,6 +102,14 @@ describe("DataTable toolbar", () => {
     expect(heightOf({ height: 600, pageSize: 2 })).toBe("600px");
   });
 
+  it("keeps its height and footer when its rows fit the page but not the height", () => {
+    const { container } = render(<DataTable rows={rows} columns={columns} height={150} />);
+    const grid = container.querySelector(".MuiDataGrid-root") as HTMLElement;
+
+    expect(getComputedStyle(grid).height).toBe("150px");
+    expect(container.querySelector(".MuiDataGrid-footerContainer")).not.toBeNull();
+  });
+
   it("has no footer while its rows fit on one page, since there is nothing to page through", () => {
     const footer = (props: Partial<Parameters<typeof DataTable<Row>>[0]>) => {
       const { container, unmount } = render(<DataTable rows={rows} columns={columns} {...props} />);

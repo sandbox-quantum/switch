@@ -426,10 +426,15 @@ export default function DataTable<T extends { id: string | number }>({
     });
   });
 
-  // Everything on one page: no footer, since there is nothing to page
-  // through, and no taller than its rows, so a short or narrowed table
-  // leaves no blank card under it.
-  const fitsOnePage = shown.length <= pageSize;
+  // Every row on one page and in view: no footer, since there is nothing to
+  // page through, and no taller than its rows, so a short or narrowed table
+  // leaves no blank card under it. Rows that fit the page size but not the
+  // height keep the footer and its count, so none sit unseen below the fold.
+  // A table filling its parent can't know its height here, so it keeps its
+  // footer whenever it has rows.
+  const rowsHeight = HEADER_HEIGHT + ROW_HEIGHT * shown.length;
+  const fitsOnePage =
+    shown.length === 0 || (!fillHeight && shown.length <= pageSize && rowsHeight <= height);
 
   // Tables that leave filtering to the grid keep its own overlays.
   const tableOverlay = emptyState !== undefined || (ownFiltering && rows.length > 0);
@@ -479,7 +484,7 @@ export default function DataTable<T extends { id: string | number }>({
       disableRowSelectionOnClick
       // A sticky column only sticks while it is rendered, and the grid drops
       // a column once it scrolls out of view, so with one pinned every cell
-      // renders. A page holds at most 50 rows, so that stays cheap.
+      // renders. A page holds at most 100 rows, so that stays cheap.
       disableVirtualization={pinnedRight.length > 0}
       disableColumnFilter={ownFiltering}
       hideFooter={fitsOnePage}
@@ -508,7 +513,7 @@ export default function DataTable<T extends { id: string | number }>({
                 shown.length === 0
                   ? Math.max(height, EMPTY_TABLE_HEIGHT)
                   : fitsOnePage
-                    ? Math.min(height, HEADER_HEIGHT + ROW_HEIGHT * shown.length)
+                    ? rowsHeight
                     : height,
             },
         ...extraSx,
