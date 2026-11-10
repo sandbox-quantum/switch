@@ -183,7 +183,10 @@ describe("AppRoutes", () => {
       await screen.findByText("New to Switch? Sign in with Example SSO to create a workspace or join one."),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Continue with Example SSO" })).toBeTruthy();
+    const sso = screen.getByRole("button", { name: "Continue with Example SSO" });
+    // A provider without a known mark gets none, and no space kept for one.
+    expect(sso.querySelector("svg")).toBeNull();
+    expect(sso.querySelector(".MuiButton-startIcon")).toBeNull();
   });
 
   it("offers a button for each configured way of signing in", async () => {
@@ -201,8 +204,11 @@ describe("AppRoutes", () => {
       ],
     });
     renderAt("/");
-    expect(await screen.findByRole("button", { name: "Continue with Google" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Continue with Microsoft" })).toBeTruthy();
+    const google = await screen.findByRole("button", { name: "Continue with Google" });
+    const microsoft = screen.getByRole("button", { name: "Continue with Microsoft" });
+    // Each provider's own mark, as Switch Console shows it.
+    expect(google.querySelector('[data-logo="google"]')).not.toBeNull();
+    expect(microsoft.querySelector('[data-logo="microsoft"]')).not.toBeNull();
     expect(screen.queryByRole("button", { name: "Continue with Example SSO" })).toBeNull();
     expect(
       screen.getByText("New to Switch? Sign in to create a workspace or join one."),

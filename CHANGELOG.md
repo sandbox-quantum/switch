@@ -132,8 +132,8 @@ version of their own to them without also giving them a release of their own.
 - **One sign-in button for each configured way of signing in.** Where
   `GATEWAY_OIDC_LOGIN_OPTIONS` lists several (Google and Microsoft, say), the
   dashboard's sign-in page now offers a button for each, going straight to that
-  provider, as Switch Console already does. Without any, it keeps the single
-  button. When the page cannot read how sign-in is set up, it says so above
+  provider and carrying its mark for Google, Microsoft and GitHub, as Switch
+  Console already does. Without any, it keeps the single button. When the page cannot read how sign-in is set up, it says so above
   the password form instead of quietly offering only that.
 - **The workspace picker lists workspaces by organization.** Someone in
   workspaces of more than one organization sees them under each organization's

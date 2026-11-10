@@ -17,6 +17,7 @@ import {
 import { useAuth } from "../../data/AuthContext";
 import { readPendingInvite } from "../../data/sessionState";
 import AuthLayout from "./AuthLayout";
+import signInProviderLogo from "./SignInProviderLogo";
 
 type ConfigState =
   | { status: "loading" }
@@ -24,17 +25,15 @@ type ConfigState =
   | { status: "failed"; message: string };
 
 /** The identity provider's buttons: one per configured login option, each
- * going straight to that way of signing in, or a single one that leaves the
- * choice to the provider. */
-function ssoButtons(config: AuthConfig): { key: string; label: string; provider: string | null }[] {
-  const providerLabel = config.oidc_provider_label ?? "SSO";
+ * going straight to that way of signing in, or a single one (no id) that
+ * leaves the choice to the provider. */
+function ssoButtons(config: AuthConfig): { id: string | null; label: string }[] {
   if (config.oidc_login_options.length === 0) {
-    return [{ key: "oidc", label: `Continue with ${providerLabel}`, provider: null }];
+    return [{ id: null, label: config.oidc_provider_label ?? "SSO" }];
   }
   return config.oidc_login_options.map((option: OidcLoginOption) => ({
-    key: option.id,
-    label: `Continue with ${option.label}`,
-    provider: option.id,
+    id: option.id,
+    label: option.label,
   }));
 }
 
@@ -152,16 +151,17 @@ export default function LoginPage() {
           {passwordLoginEnabled && sso.length > 0 && (
             <Divider sx={{ typography: "caption", color: "text.secondary" }}>or</Divider>
           )}
-          {sso.map((button) => (
+          {sso.map((option) => (
             <Button
-              key={button.key}
+              key={option.id ?? "oidc"}
               variant="outlined"
               fullWidth
+              startIcon={signInProviderLogo(option.id, option.label)}
               onClick={() => {
-                window.location.href = oidcLoginUrl(button.provider);
+                window.location.href = oidcLoginUrl(option.id);
               }}
             >
-              {button.label}
+              {`Continue with ${option.label}`}
             </Button>
           ))}
         </Stack>
