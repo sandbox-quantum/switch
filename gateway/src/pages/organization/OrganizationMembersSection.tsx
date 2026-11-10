@@ -13,7 +13,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import {
   type OrganizationMember,
@@ -325,6 +325,7 @@ export default function OrganizationMembersSection({
         <DataTable
           rows={(members ?? []).map((m) => ({ ...m, id: m.user_id }))}
           columns={shown}
+          emptyState={<TableEmptyState title="No users in this organization yet" />}
           height={Math.min(520, 108 + (members?.length ?? 0) * 52)}
           pageSize={25}
         />

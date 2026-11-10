@@ -20,7 +20,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import {
   type BridgeDetail,
   beginAppInstall,
@@ -302,7 +302,17 @@ export default function CollaborationsPage() {
       {loading ? (
         <CircularProgress />
       ) : (
-        <DataTable rows={rows} columns={columns} />
+        <DataTable
+          rows={rows}
+          columns={columns}
+          emptyState={
+            <TableEmptyState title="No messaging apps yet">
+              {isAdmin
+                ? "Add one to bring a Slack, Mattermost, Discord, Teams or Telegram workspace into rooms."
+                : "A workspace admin adds them."}
+            </TableEmptyState>
+          }
+        />
       )}
 
       <InstalledAppsSection key={installsVersion} onConnectionsChanged={refetch} />
