@@ -92,6 +92,10 @@ class RoomSummary(BaseModel):
     viewer_is_member: bool = False
     # A Switch Console chat (made through the chats API): only its members can open it.
     is_console_chat: bool = False
+    # Its people (`connected_user_*`) are its Switch members rather than
+    # accounts on a messaging app: a Console chat on no app. Lets a client tell
+    # a chat with no members from a server too old to count them.
+    people_are_members: bool = False
     # What the caller may do with it, so a client offers a change only where
     # the server would allow it. `can_write` covers its settings, roles,
     # links and attaching resources; `can_change_members` covers adding and

@@ -446,6 +446,45 @@ class TestRoomList:
         assert detail["connected_user_names"] == chat["connected_user_names"]
         assert detail["connected_user_names"] == sorted(detail["connected_user_names"])
 
+    async def test_a_console_chat_lists_its_members_in_python_order(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+        adapter: _Adapter,
+    ) -> None:
+        # Names whose order depends on collation: Python puts "Bob" before
+        # "ada", which a locale-aware database collation would not.
+        seed = _Seed(session_factory)
+        user = await seed.admin()
+        async with session_factory() as session:
+            room = Room(
+                transport_room_id="!chat-order:test",
+                name="chat-order",
+                description="d",
+                channel_type="channel_private",
+                metadata_={"chat_operation_id": "op-order"},
+            )
+            session.add(room)
+            await session.flush()
+            for name in ("émile", "ada", "Bob"):
+                member = User(
+                    name=name, email=f"{secrets.token_hex(4)}@example.com", role="user"
+                )
+                session.add(member)
+                await session.flush()
+                client = await seed._client(session, "member")
+                client.user_id = member.id
+                session.add(ClientRoom(client_id=client.id, room_id=room.id))
+            await session.commit()
+            room_id = room.id
+        app = _app(session_factory, statement_counts, pool_checkouts)
+
+        async with _client(app, user) as client:
+            _, detail = await _count(client, statement_counts, f"/rooms/{room_id}")
+
+        assert detail["connected_user_names"] == ["Bob", "ada", "émile"]
+
     async def test_the_platform_is_asked_for_deeplinks_holding_no_connection(
         self,
         session_factory: async_sessionmaker[AsyncSession],

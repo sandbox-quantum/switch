@@ -76,6 +76,7 @@ describe('a room as the Rooms page shows it', () => {
         bridgeType: null,
         bridgeDisplayName: null,
         isConsoleChat: true,
+        peopleAreMembers: true,
         connectedUserCount: 3,
       }),
       VIEWER
@@ -93,6 +94,26 @@ describe('a room as the Rooms page shows it', () => {
       VIEWER
     );
     expect(card.peopleCount).toBeNull();
+  });
+
+  it('takes a current server at its word when a Console chat has no members', () => {
+    const card = roomCard(
+      room({
+        bridgeId: null,
+        bridgeType: null,
+        bridgeDisplayName: null,
+        isConsoleChat: true,
+        peopleAreMembers: true,
+        connectedUserCount: 0,
+      }),
+      VIEWER
+    );
+    expect(card.peopleCount).toBe(0);
+  });
+
+  it("counts a bridged Console chat's app accounts, as the server does", () => {
+    const card = roomCard(room({ isConsoleChat: true, connectedUserCount: 4 }), VIEWER);
+    expect(card.peopleCount).toBe(4);
   });
 
   it('does not know the people of a Console chat on a server that does not count them', () => {

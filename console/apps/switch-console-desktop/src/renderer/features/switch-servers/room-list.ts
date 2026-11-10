@@ -96,9 +96,10 @@ export function roomCard(
 
 /**
  * How many people a room has, or null when not known. The server counts the
- * accounts on a bridged room's app and a Console chat's members. Any other room
- * with no app always reads 0 whoever is in it, as does a chat on a server from
- * before it counted members (a chat always has one): not known, rather than none.
+ * accounts on a bridged room's app and, where it says `peopleAreMembers`, a
+ * Console chat's members, 0 included. Any other room with no app always reads 0
+ * whoever is in it, as does a chat on a server from before it counted members
+ * (a chat always has one): not known, rather than none.
  */
 function peopleCount(
   room: RemoteRoomSummary,
@@ -107,7 +108,9 @@ function peopleCount(
 ): number | null {
   const count = room.connectedUserCount ?? null;
   if (bridged) return count;
-  if (isConsoleChat) return count !== null && count > 0 ? count : null;
+  if (room.peopleAreMembers === true) return count;
+  if (isConsoleChat && room.peopleAreMembers === undefined)
+    return count !== null && count > 0 ? count : null;
   return null;
 }
 

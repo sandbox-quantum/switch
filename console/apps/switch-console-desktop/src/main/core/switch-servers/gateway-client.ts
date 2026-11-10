@@ -3483,6 +3483,8 @@ type RoomSummaryJson = {
   owner_id?: string | null;
   viewer_is_member?: boolean;
   is_console_chat?: boolean;
+  /** Its people are its Switch members; absent from a server too old to count them. */
+  people_are_members?: boolean;
   archived: boolean;
   created_at: string;
   write_visibility?: string;
@@ -3511,6 +3513,7 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     ownerId: r.owner_id ?? null,
     viewerIsMember: r.viewer_is_member ?? false,
     isConsoleChat: r.is_console_chat ?? false,
+    ...(r.people_are_members !== undefined ? { peopleAreMembers: r.people_are_members } : {}),
     archived: r.archived,
     createdAt: r.created_at,
     // The same reading as a room's detail, so the list and the room page offer the same changes.

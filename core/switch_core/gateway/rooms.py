@@ -262,6 +262,7 @@ async def _build_room_detail(
         archived=room.archived_at is not None,
         viewer_is_member=takes_part,
         is_console_chat=is_console_chat(room),
+        people_are_members=people_are_members(room),
         transport_room_id=room.transport_room_id,
         matrix_room_id=room.transport_room_id,
         external_channel_id=room.external_channel_id,
@@ -281,7 +282,6 @@ async def _build_room_detail(
             if room.external_channel_id
             else None
         ),
-        is_console_chat=is_console_chat(room),
         can_write=can(principal, "write", room),
         can_manage=can(principal, "delete", room),
         can_unlink=can_unlink_from_room(principal, takes_part=takes_part),
@@ -468,6 +468,7 @@ async def list_rooms(
                 archived=room.archived_at is not None,
                 viewer_is_member=room.id in involved,
                 is_console_chat=is_console_chat(room),
+                people_are_members=people_are_members(room),
                 can_write=can(principal, "write", room),
                 can_manage=can(principal, "delete", room),
                 can_unlink=can_unlink_from_room(
