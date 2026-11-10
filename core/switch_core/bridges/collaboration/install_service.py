@@ -690,7 +690,7 @@ class MessagingInstallService:
                     grant.external_workspace_id,
                 )
                 raise MessagingInstallError(
-                    "Switch recorded the approval, but the connection could not "
+                    "Switch recorded the approval, but the messaging app could not "
                     f"restart to use it ({error}). It is stopped until Switch "
                     "restarts or the approval is given again."
                 ) from error

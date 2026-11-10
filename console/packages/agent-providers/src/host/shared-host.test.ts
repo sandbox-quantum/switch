@@ -137,6 +137,8 @@ async function start(
     /** The provider reports work, such as subagents, still running outside any turn. */
     backgroundWork?: { running: boolean };
     resettable?: boolean;
+    /** The provider compacts its conversation natively. */
+    compactable?: boolean;
     /**
      * Stopping a conversation reports it stopped and exited, as every provider
      * adapter does, and returns only after the host has had time to look.
@@ -273,6 +275,7 @@ async function start(
       };
     },
   };
+  if (opts.compactable) adapter.compactSession = vi.fn(async () => {});
   const continuing = opts.continuing;
   if (continuing) adapter.conversationHistory = vi.fn(async () => structuredClone(continuing));
   if (opts.conversationLost)
@@ -1031,12 +1034,76 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     expect(host.turns[0]!.text).toContain('The requested reset completed successfully.');
     expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
     expect(host.turns[0]!.text).toContain('in thread "thread"');
-    expect(host.turns[0]!.text).toContain('targeted message to "louisa"');
+    expect(host.turns[0]!.text).toContain(
+      'post_message a short note in the room in thread "thread"'
+    );
+    expect(host.turns[0]!.text).toContain('mention "louisa" only if list_participants lists them');
+    expect(host.turns[0]!.text).toContain('Do not use send_targeted_message');
     expect(host.turns[0]!.text).toContain('your session has been reset');
     // Asked again (a relay retried), the follow-up is not sent twice.
     await host.parent.ask({ type: 'command', command: reset, requesterName: 'louisa' });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('owes no follow-up for a reset asked for in a direct chat', async () => {
+  const host = await start({ resettable: true });
+  try {
+    const reset: Command = {
+      ...relayed('current', 'room-reset', { type: 'session.reset' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'console',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: reset,
+      requesterName: 'louisa',
+      direct: true,
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-reset', status: 'applied' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(host.turns).toHaveLength(0);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('still owes the follow-up for a compaction asked for in a direct chat', async () => {
+  const host = await start({ compactable: true });
+  try {
+    const compact: Command = {
+      ...relayed('current', 'room-compact', { type: 'session.compact' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'console',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: compact,
+      requesterName: 'louisa',
+      direct: true,
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-compact', status: 'applied' },
+    });
+    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
   } finally {
     expect(await host.stop()).toBeNull();
   }

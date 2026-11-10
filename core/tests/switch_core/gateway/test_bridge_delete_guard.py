@@ -296,7 +296,7 @@ async def test_a_bridge_serving_several_installs_is_refused_for_all_of_them(
         ("slack", "revokes Switch's token at Slack", "then delete"),
         ("discord", "remove it in Discord", "token"),
         ("teams", "out of every team", "token"),
-        ("telegram", "then delete the connection here", "token"),
+        ("telegram", "then delete the messaging app here", "token"),
     ],
 )
 def test_the_refusal_says_what_disconnecting_does_on_each_platform(

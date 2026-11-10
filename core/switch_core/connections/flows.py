@@ -61,7 +61,7 @@ INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
 
 
 def client_changed(name: str) -> str:
-    return f"This server's {name} app changed during your sign-in. Start it again."
+    return f"Switch's {name} app changed during your sign-in. Start it again."
 
 
 class FlowError(Exception):
@@ -164,8 +164,8 @@ class ServiceFlows:
         mode = self.mode(definition)
         if mode is None:
             raise FlowError(
-                f"{definition.name} can return a sign-in only to this server, "
-                "which has no public address (GATEWAY_PUBLIC_URL)."
+                f"{definition.name} can return a sign-in only to Switch's public "
+                "address, and none is set (GATEWAY_PUBLIC_URL)."
             )
         assert definition.auth.oauth is not None
         ports = definition.auth.oauth.loopback_ports
