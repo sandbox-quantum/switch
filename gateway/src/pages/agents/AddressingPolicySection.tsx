@@ -14,6 +14,7 @@ import {
   TextField,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
@@ -23,6 +24,7 @@ import {
   type AddressingPolicy,
   type AddressingRule,
   type AgentDetail,
+  OWNER_ONLY_POLICY,
   updateAgentAddressingPolicy,
 } from "../../data/api";
 import {
@@ -52,9 +54,8 @@ interface RuleState {
   room_groups: DimState;
   users: DimState;
   agents: DimState;
-  // The owner and owner-agents subjects and the platform opt-in are carried
-  // through untouched: this editor does not offer them, and saving must not
-  // strip what another surface set.
+  // The owner and owner-agents subjects are kept absent rather than false
+  // unless changed here, so saving does not rewrite what another surface set.
   owner?: boolean;
   owner_agents?: boolean;
   platform: boolean;
@@ -99,17 +100,23 @@ function fromRuleState(state: RuleState): AddressingRule {
   return rule;
 }
 
-// A rule that can never match (so it would silently never apply): a context
-// dimension set to Specific-but-empty, or both sender dimensions matching nobody.
+// Why a rule can never let anyone in, as the server decides it and refuses
+// it on save: no rooms, no room groups, or no sender at all (no people, no
+// agents, not the owner, not the owner's agents, not the platform). Null for
+// a rule that can.
 function dimMatchesNobody(state: DimState): boolean {
   return state.mode === "none" || (state.mode === "specific" && state.ids.length === 0);
 }
-function ruleIsDead(rule: RuleState): boolean {
-  return (
-    dimMatchesNobody(rule.rooms) ||
-    dimMatchesNobody(rule.room_groups) ||
-    (dimMatchesNobody(rule.users) && dimMatchesNobody(rule.agents))
-  );
+function deadRuleReason(rule: RuleState): string | null {
+  if (dimMatchesNobody(rule.rooms)) return "it names no rooms";
+  if (dimMatchesNobody(rule.room_groups)) return "it names no room groups";
+  const noSender =
+    dimMatchesNobody(rule.users) &&
+    dimMatchesNobody(rule.agents) &&
+    !rule.owner &&
+    !rule.owner_agents &&
+    !rule.platform;
+  return noSender ? "it lets in no people, no agents, not the owner and not the platform" : null;
 }
 
 const EMPTY_RULE: RuleState = {
@@ -119,6 +126,9 @@ const EMPTY_RULE: RuleState = {
   agents: { mode: "any", ids: [] },
   platform: false,
 };
+
+// What choosing Restricted starts from: the owner, and the agents they run.
+const OWNER_ONLY_RULES: RuleState[] = OWNER_ONLY_POLICY.rules.map(toRuleState);
 
 function DimensionField({
   label,
@@ -205,10 +215,11 @@ export default function AddressingPolicySection({
   canEdit: boolean;
   onUpdated: () => void;
 }) {
-  const initialRestricted = !!agent.addressing_policy;
-  const initialRules: RuleState[] = (agent.addressing_policy?.rules ?? []).map(
-    toRuleState,
-  );
+  // A policy with no rules lets anyone in, so it is shown as Open, which is
+  // what the server treats it as.
+  const savedRules = agent.addressing_policy?.rules ?? [];
+  const initialRestricted = savedRules.length > 0;
+  const initialRules: RuleState[] = savedRules.map(toRuleState);
 
   const [restricted, setRestricted] = useState(initialRestricted);
   const [rules, setRules] = useState<RuleState[]>(initialRules);
@@ -240,10 +251,16 @@ export default function AddressingPolicySection({
   const desired: AddressingPolicy | null = restricted
     ? { rules: rules.map(fromRuleState) }
     : null;
-  const dirty =
-    JSON.stringify(desired) !==
-    JSON.stringify(agent.addressing_policy ?? null);
-  const hasDeadRule = restricted && rules.some(ruleIsDead);
+  // Against the saved policy as this editor would write it back, so a field
+  // the server spells out (`platform: false`) is not taken for a change. A
+  // policy saved with no rules stays a change: saving records it as Open.
+  const saved: AddressingPolicy | null =
+    agent.addressing_policy === null
+      ? null
+      : { rules: initialRules.map(fromRuleState) };
+  const dirty = JSON.stringify(desired) !== JSON.stringify(saved);
+  const hasDeadRule = restricted && rules.some((rule) => deadRuleReason(rule) !== null);
+  const savedEmpty = agent.addressing_policy !== null && savedRules.length === 0;
 
   const handleSave = async () => {
     setSaving(true);
@@ -276,7 +293,13 @@ export default function AddressingPolicySection({
 
       <RadioGroup
         value={restricted ? "restricted" : "open"}
-        onChange={(e) => setRestricted(e.target.value === "restricted")}
+        onChange={(e) => {
+          const next = e.target.value === "restricted";
+          // A restricted policy with no rules would let anyone in, so it
+          // never starts empty.
+          if (next && rules.length === 0) setRules(OWNER_ONLY_RULES);
+          setRestricted(next);
+        }}
       >
         <FormControlLabel
           value="open"
@@ -292,14 +315,15 @@ export default function AddressingPolicySection({
         />
       </RadioGroup>
 
+      {savedEmpty && !restricted && (
+        <Alert severity="info">
+          This agent&apos;s policy has no rules, so anyone can address it.
+          {canEdit && " Saving records it as Open."}
+        </Alert>
+      )}
+
       {restricted && (
         <Stack spacing={2}>
-          {rules.length === 0 && (
-            <Alert severity="warning">
-              No rules — with a restricted policy and no rules, nobody can address
-              this agent. Add a rule or switch back to Open.
-            </Alert>
-          )}
           {rules.map((rule, index) => (
             <Paper key={index} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
               <Stack direction="row" alignItems="center" mb={1}>
@@ -307,15 +331,26 @@ export default function AddressingPolicySection({
                   Rule {index + 1}
                 </Typography>
                 {canEdit && (
-                  <IconButton
-                    size="small"
-                    onClick={() =>
-                      setRules((prev) => prev.filter((_r, i) => i !== index))
+                  <Tooltip
+                    title={
+                      rules.length === 1
+                        ? "A restricted policy needs a rule. To let anyone address this agent, choose Open."
+                        : "Remove rule"
                     }
-                    aria-label="Remove rule"
                   >
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
+                    <span>
+                      <IconButton
+                        size="small"
+                        disabled={rules.length === 1}
+                        onClick={() =>
+                          setRules((prev) => prev.filter((_r, i) => i !== index))
+                        }
+                        aria-label="Remove rule"
+                      >
+                        <DeleteOutline fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
                 )}
               </Stack>
               <Stack spacing={1.5}>
@@ -361,6 +396,32 @@ export default function AddressingPolicySection({
                   control={
                     <Checkbox
                       size="small"
+                      checked={rule.owner === true}
+                      disabled={!canEdit}
+                      onChange={(e) =>
+                        updateRule(index, { ...rule, owner: e.target.checked })
+                      }
+                    />
+                  }
+                  label="Its owner"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={rule.owner_agents === true}
+                      disabled={!canEdit}
+                      onChange={(e) =>
+                        updateRule(index, { ...rule, owner_agents: e.target.checked })
+                      }
+                    />
+                  }
+                  label="Its owner's other agents"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
                       checked={rule.platform}
                       disabled={!canEdit}
                       onChange={(e) =>
@@ -370,10 +431,10 @@ export default function AddressingPolicySection({
                   }
                   label="Switch itself: let the platform address this agent on its own account. A message it sends for a person, such as a template kickoff, is judged as that person and needs no opt-in."
                 />
-                {ruleIsDead(rule) && (
+                {deadRuleReason(rule) !== null && (
                   <Alert severity="warning">
-                    This rule can never match (an empty Specific/None dimension
-                    excludes everyone), so it will never apply.
+                    This rule can never let anyone in: {deadRuleReason(rule)}. Change it or
+                    remove it to save.
                   </Alert>
                 )}
               </Stack>

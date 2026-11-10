@@ -191,10 +191,11 @@ class TestGetAgentDetail:
         async with session_factory() as session:
             owner = await _make_user(session, "owner")
             agent = await _make_agent(session, "target", owner_id=owner.id)
+            caller = await _make_agent(session, "caller", owner_id=owner.id)
             await session.commit()
-            agent_id = agent.id
+            agent_id, caller_id = agent.id, caller.id
 
-        detail = await svc.get_agent_detail("caller", agent_id)
+        detail = await svc.get_agent_detail(caller_id, agent_id)
         assert detail.name == "target"
         assert detail.agent_type == "session_addressable"
         assert detail.known_agent_type == "claude-code"
@@ -451,7 +452,7 @@ class TestUpdateAgentDetail:
         self,
     ) -> None:
         dicebear = generated_icon_url("target")
-        with pytest.raises(InvalidIconUrl, match="third-party avatars turned off"):
+        with pytest.raises(InvalidIconUrl, match="third-party avatars are turned off"):
             _profile(icon_url=dicebear, third_party_avatars=False)
         assert _profile(icon_url=dicebear).columns == {"icon_url": dicebear}
         other = "https://example.com/r.png"

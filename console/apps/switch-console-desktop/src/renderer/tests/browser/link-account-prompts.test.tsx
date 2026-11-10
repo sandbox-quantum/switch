@@ -51,6 +51,7 @@ function bridge(id: string, type: string, patch: Partial<RemoteBridge> = {}): Re
     displayName: `${type} workspace`,
     status: 'active',
     isDefault: false,
+    preconfigured: null,
     homeUrl: null,
     channelCreationSupported: true,
     canCreateChannels: true,

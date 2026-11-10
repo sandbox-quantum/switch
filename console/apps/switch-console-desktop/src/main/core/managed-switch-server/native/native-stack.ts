@@ -2,7 +2,6 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import path from 'node:path';
-import { fetchBridges, updateBridge } from '@main/core/switch-servers/gateway-client';
 import {
   assertManagedServerUrlFree,
   getManagedServer,
@@ -12,6 +11,7 @@ import { RELEASE_REPO_NAME, RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
   type DeployedTelemetry,
+  type LocalServerAdminPages,
   type StartLocalServerResult,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
@@ -41,6 +41,7 @@ import { clearSecrets, loadOrCreateSecrets } from '../secrets';
 import { managedSwitchVersion } from '../server-version';
 import { deployedTelemetryOf, telemetryConsent } from '../telemetry-consent';
 import { materializeBundle, pruneBundleCopies, readLocalServerBundle } from './bundle';
+import { pointBundledMattermostBridgeAt } from './bundled-bridge-address';
 import {
   CORE_ENV_FILE,
   coreFailureLine,
@@ -50,6 +51,7 @@ import {
   waitForCoreHealth,
 } from './core-process';
 import { buildNativeCoreSettings, nativeApiUrl } from './core-settings';
+import { checkoutGatewayUi, nativeAdminPages } from './gateway-ui';
 import {
   mattermostCallbackBaseUrl,
   pullMattermostImage,
@@ -74,6 +76,7 @@ import {
   writeClusterConfig,
 } from './postgres-cluster';
 import {
+  downloadedInstallWouldServePages,
   existingSwitchCoreInstall,
   installSwitchCore,
   pruneSwitchCoreInstalls,
@@ -246,24 +249,13 @@ async function startNativeMattermost(
   });
 }
 
-/**
- * Point an already-registered Mattermost bridge at the addresses that work
- * from this machine, before the seeder runs: the seeder sets the address only
- * when it first registers the bridge, and a server moved off Docker carries
- * one under the compose network's name for Mattermost, which the server then
- * refuses as unresolvable. A server with no bridge yet has nothing to point —
- * the seeder registers it with the right address.
- */
+/** {@link pointBundledMattermostBridgeAt} on the registered local server. */
 async function pointMattermostBridgeAt(url: string, callbackBaseUrl: string): Promise<void> {
   const server = await getManagedServer();
   if (!server) {
     throw new Error('The local server is not registered, so its bridge cannot be updated.');
   }
-  const bridge = (await fetchBridges(server)).find((candidate) => candidate.type === 'mattermost');
-  if (!bridge) return;
-  await updateBridge(server, bridge.id, {
-    connectionConfig: { url, callback_base_url: callbackBaseUrl },
-  });
+  await pointBundledMattermostBridgeAt(server, url, callbackBaseUrl);
 }
 
 /**
@@ -311,6 +303,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
         message:
           'The local server cannot run as root: PostgreSQL refuses to. Start Switch Console as ' +
           'a normal user, then set up the server.',
+        failure: 'running_as_root',
       },
       bringUpMattermost: null,
     };
@@ -362,6 +355,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     owner: RELEASE_REPO_OWNER,
     repo: RELEASE_REPO_NAME,
     checkoutRoot,
+    buildGatewayUiFromSource: import.meta.env.DEV,
     onMessage,
   });
 
@@ -418,6 +412,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       telemetryEnvironment: currentFlintEnv(),
       telemetryInternal: (await currentInternalFlag()) === 'true',
       telemetryEndpoint: nativeServerTelemetryEndpoint(),
+      gatewayUiDir: install.gatewayUiDir,
     });
     await writeDeployedVersion(layout, install.version);
     onMessage('Starting switch-core…');
@@ -445,7 +440,11 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
           ? ''
           : `: ${reason.length > room ? `${reason.slice(0, room - 1)}…` : reason}`;
       return {
-        result: { kind: 'error', message: `${head}${shown}${tail}` },
+        result: {
+          kind: 'error',
+          message: `${head}${shown}${tail}`,
+          failure: alive ? 'health_timeout' : 'core_exited',
+        },
         bringUpMattermost: null,
       };
     }
@@ -600,6 +599,36 @@ export function nativeServerTelemetryEndpoint(): string {
     }
   );
   return TELEMETRY_RELAY_ORIGIN;
+}
+
+/**
+ * Whether a start now would hand switch-core the gateway's pages: the
+ * checkout has a build of them, this build's bundle ships them, or (dev
+ * builds) the install a start would use would have them built (see
+ * `downloadedInstallWouldServePages`).
+ */
+export async function nativeAdminPagesOnRestart(
+  layout: NativeLayout,
+  checkoutRoot: string | null,
+  bundleRoot: string | null
+): Promise<boolean> {
+  if (checkoutRoot !== null) return (await checkoutGatewayUi(checkoutRoot)) !== null;
+  const version = managedSwitchVersion();
+  const bundle = await readLocalServerBundle(bundleRoot, version);
+  if (bundle !== null) return bundle.gatewayUi !== null;
+  return import.meta.env.DEV && (await downloadedInstallWouldServePages(layout, version));
+}
+
+/** What the running native server's admin pages are doing, for its page to
+ * show the links to them, or offer the restart that turns them on. */
+export function readNativeAdminPages(
+  layout: NativeLayout,
+  checkoutRoot: string | null,
+  bundleRoot: string | null
+): Promise<LocalServerAdminPages> {
+  return nativeAdminPages(layout, () =>
+    nativeAdminPagesOnRestart(layout, checkoutRoot, bundleRoot)
+  );
 }
 
 export async function readNativeTelemetry(layout: NativeLayout): Promise<DeployedTelemetry> {

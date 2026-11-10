@@ -23,7 +23,12 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import validate_alias_format, validate_alias_map
-from switch_core.authz import Principal, can, validate_visibility_pair
+from switch_core.authz import (
+    Principal,
+    can,
+    require_group_filing,
+    validate_visibility_pair,
+)
 from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelType,
@@ -94,6 +99,10 @@ class RoomCreateConfig(BaseModel):
     # Agents not listed keep the default (off).
     join_event_listeners: list[str] | None = None
     user_names: list[str] | None = None
+    # A direct room's one user, as their account id on the bridge, when the
+    # caller already knows it (a linked identity). Used instead of resolving
+    # `user_names[0]`, a name two accounts can share after a rename.
+    user_external_id: str | None = None
     channel_type: ChannelType | None = None
     bridge_id: str | None = None
     # Opt out of the instance default bridge and create a room with no external
@@ -170,6 +179,31 @@ class RoomCreateResult(BaseModel):
 
 
 ROOM_NAME_MAX = 200
+
+
+# The channel types whose members their platform fixes.
+FIXED_MEMBERSHIP = ("direct", "group")
+
+
+class MembershipFixed(ValueError):
+    """Who is in a direct or group conversation is not changed from outside it."""
+
+
+def require_membership_changeable_from_outside(room: Room) -> None:
+    """Raise `MembershipFixed` for a direct or group conversation.
+
+    Its platform fixes who is in it, and a direct one is one person and one
+    agent by rule, so its agents and people are changed only from inside it:
+    by its platform, by the commands its own participants post in it, and for
+    a Switch Console chat through the chat's own routes. The Gateway's room
+    routes, the agent tools and a template's `join:` act from outside, and
+    refuse it."""
+    if room.channel_type in FIXED_MEMBERSHIP:
+        raise MembershipFixed(
+            f"This is a {room.channel_type} conversation: who is in it is fixed "
+            "by its platform, so its agents and people can't be changed from "
+            "outside it."
+        )
 
 
 class RoomService:
@@ -477,9 +511,9 @@ class RoomService:
             return
         raise ChannelCreationUnsupported(
             f"Creating channels is turned off for the '{bridge.display_name}' "
-            "connection. Create the channel on the platform and add the Switch "
+            "messaging app. Create the channel on the platform and add the Switch "
             "app to it — Switch adopts it as a room — or ask an administrator to "
-            "allow channel creation for this connection."
+            "allow channel creation for this messaging app."
         )
 
     @staticmethod
@@ -555,8 +589,10 @@ class RoomService:
         for alias in (config.aliases or {}).values():
             validate_alias_format(alias)
         # Validate the group up front so a bad id fails before we provision a
-        # room / external channel.
+        # room / external channel. Filing a room in a group needs a workspace
+        # admin; checked first, so a refusal does not reveal which groups exist.
         if config.group_id is not None:
+            require_group_filing(config.acting_is_admin)
             async with self._session_factory() as session:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
@@ -602,16 +638,25 @@ class RoomService:
         )
         if is_dm:
             self._validate_dm_room(config, agent_ids)
+        elif config.user_external_id is not None:
+            raise ValueError("user_external_id is only for a direct room on a bridge.")
 
+        user_external_id = config.user_external_id
         if collaboration_core and external_channel_id is None:
             await self._require_channel_creation(bridge_id)  # type: ignore[arg-type]
             if is_dm:
                 user_name = (config.user_names or [])[0]
-                agent_name = (await self._resolve_ids_to_names(agent_ids))[0]
-                ext_id_map = await collaboration_core.resolve_external_user_id_map(
-                    [user_name]
-                )
-                user_external_id = ext_id_map.get(user_name)
+                async with self._session_factory() as session:
+                    agent = await self._agent_store.get(session, agent_ids[0])
+                if agent is None:
+                    raise ValueError(f"Unknown agent ID: {agent_ids[0]}")
+                # The channel is named for people, so by the name they read.
+                agent_name = agent.display_name or agent.name
+                if user_external_id is None:
+                    ext_id_map = await collaboration_core.resolve_external_user_id_map(
+                        [user_name]
+                    )
+                    user_external_id = ext_id_map.get(user_name)
                 if user_external_id is None:
                     raise ValueError(
                         f"Cannot create DM room: no user '{user_name}' is known on "
@@ -673,6 +718,11 @@ class RoomService:
                         else {}
                     ),
                     **(
+                        {"user_external_id": config.user_external_id}
+                        if config.user_external_id is not None
+                        else {}
+                    ),
+                    **(
                         {"agent_greeting": config.agent_greeting}
                         if config.agent_greeting is not None
                         else {}
@@ -691,7 +741,12 @@ class RoomService:
             async with self._session_factory() as session:
                 await self._room_store.create(session, room)
                 if config.group_id is not None:
-                    await self._room_store.set_group(session, room.id, config.group_id)
+                    await self._room_store.set_group(
+                        session,
+                        room.id,
+                        config.group_id,
+                        acting_is_admin=config.acting_is_admin,
+                    )
                 if agent_ids:
                     await self._room_store.add_agents(
                         session,
@@ -799,9 +854,9 @@ class RoomService:
                     room.id, transport_room_id, config.user_names
                 )
 
-        if collaboration_core and external_channel_id and is_dm and config.user_names:
-            await collaboration_core.ensure_users_in_room(
-                room.id, transport_room_id, config.user_names
+        if collaboration_core and external_channel_id and is_dm and user_external_id:
+            await collaboration_core.ensure_external_users_in_room(
+                room.id, transport_room_id, [user_external_id]
             )
 
         agent_clients = self._resolve_agent_clients(agent_ids)
@@ -958,7 +1013,7 @@ class RoomService:
         collaboration_core = self._collab_lifecycle.get(bridge_id)
         if collaboration_core is None:
             outcome = RetireOutcome.failed(
-                "The messaging connection is not running, so Switch could not "
+                "The messaging app is not running, so Switch could not "
                 "reach the channel"
             )
         else:
@@ -1734,13 +1789,14 @@ class RoomService:
                 ", ".join(failures),
             )
 
-    async def reconcile_room(self, room: Room, user_names: list[str] | None) -> None:
+    async def reconcile_room(self, room: Room, external_user_ids: list[str]) -> None:
         """Put the room's agent and system clients in it where they are missing.
 
         For a caller repairing one room whose creation may have stopped after
         the room row committed and before its clients joined. A room on a
-        bridge also gets the bridge client and the actors of `user_names`,
-        ahead of the agents as in `create_room`.
+        bridge also gets the bridge client and the actors of
+        `external_user_ids` (account ids on that bridge), ahead of the agents
+        as in `create_room`.
         """
         if room.bridge_id is not None and room.external_channel_id is not None:
             collaboration_core = self._collab_lifecycle.get(room.bridge_id)
@@ -1750,10 +1806,9 @@ class RoomService:
                 room.transport_room_id,
                 collaboration_core._workspace_consumer_transport_user_id,
             )
-            if user_names:
-                await collaboration_core.ensure_users_in_room(
-                    room.id, room.transport_room_id, user_names
-                )
+            await collaboration_core.ensure_external_users_in_room(
+                room.id, room.transport_room_id, external_user_ids
+            )
         await self._reconcile_one_room(room)
 
     async def _reconcile_one_room(self, room: Room) -> None:

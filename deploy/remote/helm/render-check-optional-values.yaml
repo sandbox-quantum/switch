@@ -4,9 +4,33 @@
 mattermost:
   enabled: true
 switchCore:
+  featureFlags:
+    enabled:
+      - follow_the_conversation
+      - decision_routing
   migrations:
     preUpgradeJob: true
   teamsBridge:
     enabled: true
     ingress:
       mode: external
+  # Rendered so the JSON settings' template is checked too.
+  disabledServices:
+    datadog: "Not offered on this server."
+  serviceAccessProfiles:
+    google-workspace: drive-file
+  # Reporting on, so the OTLP settings switch-core and the decision service
+  # share are rendered too.
+  observability:
+    otlpEndpoint: https://collector.example.com
+    deploymentId: 00000000-0000-4000-8000-000000000000
+    logs: true
+secrets:
+  otlpHeaders: "render-check=render-check"
+decision:
+  enabled: true
+  bedrock:
+    enabled: true
+  modelServer:
+    hfTokenSecret:
+      name: render-check-hf-token

@@ -300,7 +300,11 @@ class ManagementService:
             "The enrollment code is invalid, already used, or expired.",
         )
         key = await self.api_keys.get_by_hash(session, tokens.hash_secret(code))
-        if key is None or key.type != CONTROLLER_ENROLLMENT_KEY_TYPE:
+        if (
+            key is None
+            or key.type != CONTROLLER_ENROLLMENT_KEY_TYPE
+            or key.expired(self.now())
+        ):
             raise invalid
         consumed = await self.controllers.consume_enrollment_code(
             session, tenant_id, key.id, self.now()
@@ -395,7 +399,7 @@ class ManagementService:
             401, reason_codes.INVALID_CREDENTIAL, "The credential is not valid."
         )
         key = await self.api_keys.get_by_hash(session, tokens.hash_secret(credential))
-        if key is None or key.type != CONTROLLER_KEY_TYPE:
+        if key is None or key.type != CONTROLLER_KEY_TYPE or key.expired(self.now()):
             raise invalid
         controller = await self.controllers.get_by_api_key(session, tenant_id, key.id)
         if controller is None or controller.id != controller_id:
@@ -849,7 +853,7 @@ class ManagementService:
                     409,
                     reason_codes.VALIDATION_ERROR,
                     "This controller already has a different public key. Enroll "
-                    "the machine again to give it a new one.",
+                    "the device again to give it a new one.",
                 )
         if not details:
             leases = await self.leases(session)
@@ -1001,15 +1005,15 @@ class ManagementService:
             raise ManagementError(
                 409,
                 reason_codes.VALIDATION_ERROR,
-                "This machine has no key to seal a login to yet. Update its "
+                "This device has no key to seal a login to yet. Update its "
                 "controller, which registers one when it next runs.",
             )
         if sealed.key_id != key_id(public_key["key"]):
             raise ManagementError(
                 409,
                 reason_codes.VALIDATION_ERROR,
-                "The login was sealed to a key this machine no longer has. Seal "
-                "it again to the key the machine shows now.",
+                "The login was sealed to a key this device no longer has. Seal "
+                "it again to the key the device shows now.",
             )
         row = await self.controllers.put_sealed_login(
             session,
@@ -1116,7 +1120,7 @@ class ManagementService:
             raise ManagementError(
                 404,
                 reason_codes.PROVIDER_LOGIN_MISSING,
-                f"No {provider} login has been given to this machine.",
+                f"No {provider} login has been given to this device.",
             )
         return {
             "provider": row.provider,
@@ -1224,7 +1228,9 @@ class ManagementService:
         if check_placement:
             # Placing an agent on a sleeping Switch cloud machine wakes it.
             machine = (
-                await wake_controller_machine(session, controller.id, self.now())
+                await wake_controller_machine(
+                    session, controller.id, self.now(), "agent_placed"
+                )
                 if controller.kind == "ec2"
                 else None
             )

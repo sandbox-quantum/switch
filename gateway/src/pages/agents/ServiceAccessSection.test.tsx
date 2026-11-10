@@ -11,7 +11,7 @@ import { useAuth } from "../../data/AuthContext";
 import ServiceAccessSection from "./ServiceAccessSection";
 
 vi.mock("../../data/AuthContext", () => ({
-  useAuth: vi.fn(() => ({ isOperator: false })),
+  useAuth: vi.fn(() => ({ isOperator: false, capabilities: { features: { gateway_v2: false } } })),
 }));
 
 const agent: AgentDetail = {
@@ -39,6 +39,13 @@ const agent: AgentDetail = {
   children: [],
   addressing_policy: null,
   can_manage_agents: false,
+  can_manage: true,
+  can_rename: true,
+  can_edit_options: true,
+  can_transfer: true,
+  transfer_blocked_reason: null,
+  can_change_manage_agents: true,
+  can_grant_services: true,
 };
 
 const GITHUB = {
@@ -113,7 +120,7 @@ describe("ServiceAccessSection", () => {
   it("shows each grant with its repositories, and offers owner-only when anyone can address the agent", async () => {
     const calls = mockServer(GRANTED);
     const updated = vi.fn();
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={updated} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={updated} />);
     expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
     expect(await screen.findByText("example-org/project")).toBeTruthy();
     expect(screen.getByText(/show as the Switch GitHub App/)).toBeTruthy();
@@ -130,9 +137,9 @@ describe("ServiceAccessSection", () => {
 
   it("says what removing a grant does, and does not, on the agent's own machine", async () => {
     const calls = mockServer(GRANTED);
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const remove = await screen.findByRole("button", { name: "Remove" });
-    expect(remove.getAttribute("title")).toMatch(/may still use the machine's own sign-in/);
+    expect(remove.getAttribute("title")).toMatch(/may still use the device's own sign-in/);
 
     fireEvent.click(remove);
     expect(await screen.findByText(/Removing a grant stops Switch giving this access/)).toBeTruthy();
@@ -145,7 +152,7 @@ describe("ServiceAccessSection", () => {
 
   it("grants GitHub on the repositories picked, for reading unless asked", async () => {
     const calls = mockServer({ grants: [], addressing_open: false });
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const account = await screen.findByLabelText("GitHub account");
     fireEvent.mouseDown(account);
     fireEvent.click(await screen.findByText("example-org"));
@@ -161,12 +168,13 @@ describe("ServiceAccessSection", () => {
     );
   });
 
-  it("shows nothing to someone who does not own the agent", async () => {
-    mockServer(null);
+  it("shows nothing to someone who does not own the agent, and reads none of their own connections", async () => {
+    const calls = mockServer(null);
     const { container } = render(
-      <ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />,
+      <ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />,
     );
     await waitFor(() => expect(container.textContent).toBe(""));
+    expect(calls.map((c) => c.path)).toEqual(["/gateway/agents/a1/service-grants"]);
   });
 
   const onOff = (
@@ -192,7 +200,7 @@ describe("ServiceAccessSection", () => {
 
   it("turns a connected on/off service on with no level to choose", async () => {
     const calls = mockServer(NONE, [onOff("active")]);
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const toggle = await screen.findByLabelText("Example for helper");
     expect(screen.getByText(/helper acts as you at Example/)).toBeTruthy();
     expect(screen.getByText(/within a minute/)).toBeTruthy();
@@ -225,7 +233,7 @@ describe("ServiceAccessSection", () => {
       },
       [onOff("active", { token_lifetime: 24 * 3600 })],
     );
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText("helper reads and writes Example as you.")).toBeTruthy();
     expect(screen.getByText(/stays valid at Example until it expires/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
@@ -248,7 +256,7 @@ describe("ServiceAccessSection", () => {
       onOff("active", { key, token_lifetime: 24 * 3600 }),
       onOff("not_connected", { slug: "other", name: "Other", key }),
     ]);
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     await screen.findByLabelText("Example for helper");
     expect(
       screen.getByText(
@@ -257,7 +265,7 @@ describe("ServiceAccessSection", () => {
     ).toBeTruthy();
     expect(screen.queryByText(/stays valid/)).toBeNull();
     expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getByText(/To turn Other on, first connect it from Switch Console/)).toBeTruthy();
+    expect(screen.getByText(/To turn Other on, first connect it in Switch Console/)).toBeTruthy();
   });
 
   it("says why a service cannot be turned on: not connected, or not available here", async () => {
@@ -266,21 +274,21 @@ describe("ServiceAccessSection", () => {
       onOff("active", {
         slug: "other",
         name: "Other",
-        unavailable_reason: "Coming to this server soon.",
+        unavailable_reason: "Coming here soon.",
       }),
     ]);
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const example = await screen.findByLabelText("Example for helper");
     expect((example as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getByText(/first connect it from Switch Console/)).toBeTruthy();
-    expect(screen.getByText("Coming to this server soon.")).toBeTruthy();
+    expect(screen.getByText(/first connect it in Switch Console/)).toBeTruthy();
+    expect(screen.getByText("Coming here soon.")).toBeTruthy();
     expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
   });
 
   it("says a service signs in through the organization's app only while that app works", async () => {
     const through = "Signs in through your organization's Example app.";
     mockServer(NONE, [onOff("active", { app_source: "organization" })]);
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(through)).toBeTruthy();
     cleanup();
 
@@ -288,39 +296,62 @@ describe("ServiceAccessSection", () => {
     mockServer(NONE, [
       onOff("active", { app_source: "organization", unavailable_reason: broken }),
     ]);
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(broken)).toBeTruthy();
     expect(screen.queryByText(through)).toBeNull();
   });
 
   const NOT_SET_UP =
-    "Example is not set up on this server. Ask whoever runs your Switch server to add it under Connectors in the Switch dashboard.";
+    "Example is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.";
 
   it("offers the operator Set up for a service waiting on its app, and nobody else", async () => {
     const services = [
       onOff("not_connected", { unavailable_reason: NOT_SET_UP, server_setup_needed: true }),
     ];
     mockServer(NONE, services);
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
     cleanup();
 
-    vi.mocked(useAuth).mockReturnValue({ isOperator: true } as ReturnType<typeof useAuth>);
-    mockServer(NONE, services);
-    render(
-      <MemoryRouter>
-        <ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />
-      </MemoryRouter>,
-    );
-    const setUp = await screen.findByRole("link", { name: "Set up" });
-    expect(setUp.getAttribute("href")).toBe("/connectors");
-    vi.mocked(useAuth).mockReturnValue({ isOperator: false } as ReturnType<typeof useAuth>);
+    for (const [newLayout, where] of [
+      [false, "/connectors"],
+      [true, "/platform/connectors"],
+    ] as const) {
+      vi.mocked(useAuth).mockReturnValue({
+        isOperator: true,
+        capabilities: { features: { gateway_v2: newLayout } },
+      } as ReturnType<typeof useAuth>);
+      mockServer(NONE, services);
+      render(
+        <MemoryRouter>
+          <ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />
+        </MemoryRouter>,
+      );
+      const setUp = await screen.findByRole("link", { name: "Set up" });
+      expect(setUp.getAttribute("href")).toBe(where);
+      cleanup();
+    }
+    vi.mocked(useAuth).mockReturnValue({
+      isOperator: false,
+      capabilities: { features: { gateway_v2: false } },
+    } as ReturnType<typeof useAuth>);
+  });
+
+  it("keeps what an agent was granted removable where it may be granted nothing more", async () => {
+    mockServer(GRANTED, [onOff("active")]);
+    render(<ServiceAccessSection agent={agent} canGrant={false} onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
+    expect(screen.getByText(/New grants are only for an agent Switch Console runs/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    expect(screen.queryByLabelText("GitHub account")).toBeNull();
+    expect(screen.getByRole("switch", { name: /for helper/ })).toHaveProperty("disabled", true);
   });
 
   it("says GitHub is not set up, rather than an error, when its App is not", async () => {
     const reason =
-      "GitHub is not set up on this server. Ask whoever runs your Switch server to add it under Connectors in the Switch dashboard.";
+      "GitHub is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.";
     mockServer(NONE, [
       onOff("not_connected", {
         slug: "github",
@@ -330,7 +361,7 @@ describe("ServiceAccessSection", () => {
         server_setup_needed: true,
       }),
     ]);
-    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(reason)).toBeTruthy();
   });
 });

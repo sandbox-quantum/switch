@@ -56,6 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
+    MessagePartlySent,
     PlatformAdapter,
     RemovalFailed,
     RichContentFailed,
@@ -704,6 +705,7 @@ class AgentSessionActivityPublisher:
                 row,
                 target,
                 asked_at_root=_asked_at_root(turn_row),
+                broadcast=_known_root_turn(turn_row),
                 unavailable_reason=unavailable,
                 notify_external_id=recipient,
                 notify_unreachable=recipient is None
@@ -737,6 +739,7 @@ class AgentSessionActivityPublisher:
         target: _Target,
         *,
         asked_at_root: bool,
+        broadcast: bool,
         unavailable_reason: str | None,
         notify_external_id: str | None,
         notify_unreachable: bool,
@@ -753,6 +756,7 @@ class AgentSessionActivityPublisher:
             notify_external_id=notify_external_id,
             notify_unreachable=notify_unreachable,
         )
+        card = replace(card, asked_at_root=broadcast)
         thread_ref = target.thread_ref
         try:
             try:
@@ -851,16 +855,27 @@ class AgentSessionActivityPublisher:
             )
             state = (row.state, unavailable_reason)
             if self._card_edit_failures.get(post.token) != state:
-                await self._adapter.admin_message(
-                    post.external_channel_id,
-                    f"The card for request {post.handle} above could not be "
-                    "updated, so it may still be offering buttons that no "
-                    "longer work.",
-                    self._adapter.notice_address(
-                        post.external_post_id, post.thread_ref
-                    ),
-                    drawn=error.text,
-                )
+                try:
+                    await self._adapter.admin_message(
+                        post.external_channel_id,
+                        f"The card for request {post.handle} above could not be "
+                        "updated, so it may still be offering buttons that no "
+                        "longer work.",
+                        self._adapter.notice_address(
+                            post.external_post_id, post.thread_ref
+                        ),
+                        drawn=error.text,
+                    )
+                except MessagePartlySent as partial:
+                    # Part of it is in the channel, with a line saying the rest
+                    # is missing; posting it again would repeat that part.
+                    logger.error(
+                        "The notice that the card for request %s could not be "
+                        "updated reached channel %s only in part: %s",
+                        post.request_id,
+                        post.external_channel_id,
+                        partial,
+                    )
                 self._card_edit_failures[post.token] = state
             raise
         self._card_edit_failures.pop(post.token, None)
@@ -1707,6 +1722,17 @@ def _until_the_clock_moves(elapsed: float | None) -> float:
     if elapsed is None:
         return RUNNING_CLOCK_SECONDS
     return RUNNING_CLOCK_SECONDS - elapsed % RUNNING_CLOCK_SECONDS
+
+
+def _known_root_turn(turn_row: AgentSessionActivityItem | None) -> bool:
+    """Whether the turn is recorded and was asked at the channel root. Only
+    then is its card also shown in the channel: an unrecorded turn may have
+    been a thread conversation the channel was never part of."""
+    return (
+        turn_row is not None
+        and turn_row.message_id is not None
+        and turn_row.thread_id in (None, turn_row.message_id)
+    )
 
 
 def _asked_at_root(turn_row: AgentSessionActivityItem | None) -> bool:

@@ -149,7 +149,7 @@ class TelegramAppClient:
         if self._username is None:
             raise TelegramAppNotReady(
                 "the Switch Telegram bot has not connected yet, so there is no "
-                "link to offer. Try again shortly; the server log says why if "
+                "link to offer. Try again shortly; Switch's log says why if "
                 "it keeps failing."
             )
 

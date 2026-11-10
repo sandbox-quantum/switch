@@ -25,7 +25,7 @@ vi.mock('@renderer/lib/ipc', () => ({
   },
   events: { on: () => () => {}, emit: () => {} },
 }));
-vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
+vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl, reportOpenAttempt: vi.fn() }));
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useShowModal: (id: string) => (args: unknown) => showModal(id, args),
 }));
@@ -73,6 +73,7 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     displayName: 'Slack Test',
     status: 'active',
     isDefault: false,
+    preconfigured: null,
     homeUrl: null,
     channelCreationSupported: true,
     canCreateChannels: true,
