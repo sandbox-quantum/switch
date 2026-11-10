@@ -54,6 +54,7 @@ import {
   addableAgents,
   agentsSummary,
   agentsUnlistedText,
+  noAddableAgentsText,
   noAgentsText,
   offersAddAgent,
 } from '@renderer/features/connectors/grant-agents';
@@ -772,6 +773,14 @@ describe('the agents on a connector page', () => {
     expect(noAgentsText('Example')).toBe(
       "You have no agents in this workspace yet. Once you add one, turn Example on for it from the agent's Connectors."
     );
+  });
+
+  it('says why the search offers no agent, and nothing more when there are none', () => {
+    expect(noAddableAgentsText(agents, 'Example', '')).toBe(
+      'Every one of your agents already uses Example.'
+    );
+    expect(noAddableAgentsText(agents, 'Example', 'M3')).toBe('No agent here matches “M3”.');
+    expect(noAddableAgentsText([], 'Example', '')).toBeNull();
   });
 });
 

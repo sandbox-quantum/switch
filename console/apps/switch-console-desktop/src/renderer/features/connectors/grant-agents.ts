@@ -34,6 +34,19 @@ export function addableAgents(agents: ConnectionAgent[], filter: string): Connec
   );
 }
 
+/**
+ * What the search says when it offers no agent. Null when the person has no
+ * agents at all, which the section already says (`noAgentsText`).
+ */
+export function noAddableAgentsText(
+  agents: ConnectionAgent[],
+  serviceName: string,
+  query: string
+): string | null {
+  if (query !== '') return `No agent here matches “${query}”.`;
+  return agents.length === 0 ? null : `Every one of your agents already uses ${serviceName}.`;
+}
+
 /** What the section says when the person has no agents in the workspace. */
 export function noAgentsText(serviceName: string): string {
   return `You have no agents in this workspace yet. Once you add one, turn ${serviceName} on for it from the agent's Connectors.`;

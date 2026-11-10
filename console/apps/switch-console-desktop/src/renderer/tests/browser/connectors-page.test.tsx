@@ -624,6 +624,22 @@ it("shows GitHub's repositories on its profile, and adds an agent with them", as
   });
 });
 
+it('says only that the person has no agents when there are none to add', async () => {
+  workspaces.getServiceConnections.mockResolvedValue(CATALOG);
+  const page = await render();
+
+  await vi.waitFor(() => expect(button(/^Atlassian/, grid(page)!)).toBeDefined());
+  await act(async () => button(/^Atlassian/, grid(page)!)!.click());
+  await vi.waitFor(() => expect(button(/^Add agent$/, page)).toBeDefined());
+  await act(async () => button(/^Add agent$/, page)!.click());
+
+  await vi.waitFor(() =>
+    expect(page.querySelector('input[aria-label="Search agents to add"]')).not.toBeNull()
+  );
+  expect(page.textContent).toContain('You have no agents in this workspace yet.');
+  expect(page.textContent).not.toContain('Every one of your agents');
+});
+
 it('shows a connection the workspace has switched off as off, not as connected', async () => {
   workspaces.getServiceConnections.mockResolvedValue([
     entry({ slug: 'atlassian', name: 'Atlassian', status: 'connected', workspace_enabled: false }),
