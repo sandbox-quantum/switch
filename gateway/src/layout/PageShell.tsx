@@ -5,7 +5,7 @@ import { type Layout, areaOf } from "../routes/routeTable";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
 
-/** Hoot's signature shell: a narrow icon rail and a slim top bar sitting bare on
+/** The signature shell: a narrow icon rail and a slim top bar sitting bare on
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
  *  the content is the hero — an "app within a surface", not edge-to-edge chrome.
  *  The new layout's organization settings are a place of their own, outside
@@ -19,7 +19,7 @@ export default function PageShell({ layout }: { layout: Layout }) {
         display: "flex",
         height: "100vh",
         overflow: "hidden",
-        backgroundColor: "var(--hoot-canvas)",
+        backgroundColor: "var(--sw-canvas)",
       }}
     >
       {withRail && <NavRail layout={layout} />}
@@ -43,7 +43,7 @@ export default function PageShell({ layout }: { layout: Layout }) {
             borderRadius: "16px",
             backgroundColor: "background.paper",
             color: "text.primary",
-            boxShadow: "var(--hoot-shadow-surface)",
+            boxShadow: "var(--sw-shadow-surface)",
             p: 4,
           }}
         >
