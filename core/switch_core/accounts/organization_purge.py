@@ -360,6 +360,29 @@ class OrganizationPurge:
         outcome.finished = True
         return outcome
 
+    async def purge_workspaces(
+        self, tenant_ids: list[str], request: str
+    ) -> PurgeOutcome:
+        """Purge these workspaces alone, as `run` purges each of an
+        organization's, leaving the organization and every account. Returns
+        unfinished, having deleted nothing, while it waits."""
+        workspaces = []
+        for tenant_id in tenant_ids:
+            async with tenant_session(self.session_factory, tenant_id) as session:
+                workspaces.append(await _contents(session, tenant_id))
+        outcome = PurgeOutcome(finished=False)
+        for workspace in workspaces:
+            with tenant_scope(workspace.id):
+                await self._revoke_services(workspace, outcome)
+        if outcome.waiting:
+            return outcome
+        for workspace in workspaces:
+            with tenant_scope(workspace.id):
+                await self._end_installs(workspace)
+            await self._purge_workspace(workspace, request)
+        outcome.finished = True
+        return outcome
+
     # ── Planning ─────────────────────────────────────────────────────────────
 
     async def _started_runs(self, organization_id: str) -> list[dict[str, Any]]:

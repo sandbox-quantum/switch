@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from switch_core.accounts.organization_purge import OrganizationPurge
 from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -1525,6 +1526,25 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    # A bus skips signals carrying its own process id, as acted on locally
+    # already; the purge acts on nothing here, so it signals under its own id
+    # for this process to hear too, as the CLI does.
+    purge_signals = SignalBus(
+        session_factory,
+        lambda: create_unpooled_engine(config),
+        process_id=f"{process_id}-purge",
+        announcer=announcer,
+    )
+    # What resetting a test account deletes with (`accounts/account_reset.py`).
+    gateway_app.state.organization_purge = OrganizationPurge(
+        session_factory=session_factory,
+        broker=service_broker,
+        installers=installers,
+        keyring=config.keyring,
+        signals=purge_signals,
+        controller_removed=controller_removal_publisher(purge_signals),
+        admin_email=config.gateway_admin_email,
+    )
     gateway_app.state.organization_apps = organization_apps
     if config.members_service_url:
         # Checked set together, under the WorkOS directory

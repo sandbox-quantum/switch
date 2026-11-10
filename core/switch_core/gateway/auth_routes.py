@@ -18,7 +18,6 @@ from switch_core.accounts.deletion import (
     is_server_administrator,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.collaboration.install_service import MessagingInstallService
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.member_names import rename_member_clients
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -64,7 +63,6 @@ from switch_core.gateway.dependencies import (
     get_client_lifecycle,
     get_config,
     get_external_user_store,
-    get_install_service,
     get_organization_store,
     get_protocol,
     get_resource_service,
@@ -561,7 +559,13 @@ async def delete_my_account(
     workspaces = await _workspaces_to_delete(
         deletion, session_factory, user_store, user.id
     )
-    await _delete_account(session, deletion, user, workspaces)
+    reason = await deletion.refusal(session, user, workspaces)
+    if reason is not None:
+        raise HTTPException(status_code=409, detail=reason)
+    try:
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
+    except AccountDeletionRefused as refused:
+        raise HTTPException(status_code=409, detail=str(refused)) from None
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
@@ -584,20 +588,17 @@ async def reset_test_account(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
     room_service: Annotated[RoomService, Depends(get_room_service)],
-    install_service: Annotated[
-        MessagingInstallService | None, Depends(get_install_service)
-    ],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
     """Wipe the caller's own test account, on a test or canary server that
-    allows it (`gateway_allow_test_account_reset`): what `DELETE /auth/me`
-    deletes, plus the messaging apps, rooms and workspaces the caller is alone
-    in, other than the server's default one, and the organizations left with
-    nothing and nobody in them (`accounts/account_reset.py`). From any other
-    workspace or organization the caller just leaves. Refused with a 409,
-    before anything changes, for anything `DELETE /auth/me` refuses."""
+    allows it (`gateway_allow_test_account_reset`): an organization nobody
+    else is in is purged whole; elsewhere only the workspaces the caller is
+    alone in are purged, and the caller leaves the rest, the server's default
+    workspace included (`accounts/account_reset.py`). Refused with a 409,
+    before anything changes, for anything `DELETE /auth/me` refuses or the
+    purge must wait for."""
     if not config.gateway_allow_test_account_reset:
         raise HTTPException(
             status_code=404, detail="Test-account reset is not enabled on this server."
@@ -620,21 +621,16 @@ async def reset_test_account(
     )
     reset = AccountReset(
         session_factory=session_factory,
-        users=user_store,
-        organizations=organization_store,
-        installs=install_service,
-        rooms=room_service,
+        purge=request.app.state.organization_purge,
         deletion=deletion,
     )
     workspaces = await _workspaces_to_delete(
         deletion, session_factory, user_store, user.id
     )
-    reason, wiped, organization_ids = await reset.refusal(session, user, workspaces)
-    if reason is not None:
-        raise HTTPException(status_code=409, detail=reason)
-    await reset.empty(wiped)
-    await _delete_account(session, deletion, user, workspaces)
-    await reset.delete_organizations(user.id, wiped, organization_ids)
+    try:
+        await reset.reset(session, user, workspaces)
+    except AccountDeletionRefused as refused:
+        raise HTTPException(status_code=409, detail=str(refused)) from None
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
@@ -653,21 +649,6 @@ async def _confirmed_user(
             status_code=400, detail="That email doesn't match this account."
         )
     return user
-
-
-async def _delete_account(
-    session: AsyncSession,
-    deletion: AccountDeletion,
-    user: User,
-    workspaces: list[Workspace],
-) -> None:
-    reason = await deletion.refusal(session, user, workspaces)
-    if reason is not None:
-        raise HTTPException(status_code=409, detail=reason)
-    try:
-        await deletion.delete(session, user, workspaces, actor_id=user.id)
-    except AccountDeletionRefused as refused:
-        raise HTTPException(status_code=409, detail=str(refused)) from None
 
 
 def _account_deletion(

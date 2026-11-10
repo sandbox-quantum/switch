@@ -125,11 +125,6 @@ _ALLOWED_MODULES = {
     # look for their rows in each under its own policy, the same fan-out as
     # the boot work.
     "switch_core.accounts.deletion",
-    # Resetting a test account deletes an organization only when every one
-    # of its workspaces is being wiped, including any the person is not in,
-    # which no binding of theirs reaches: `tenants_of_organization` names
-    # them before anything is bound.
-    "switch_core.accounts.account_reset",
     # The operator purging an organization: which workspaces it has, which
     # others each of its people belong to, and which workspaces each of its
     # cloud machines serves, asked with no tenant bound because the operator
