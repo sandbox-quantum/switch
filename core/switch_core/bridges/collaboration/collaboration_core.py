@@ -49,7 +49,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
-from switch_core.db.models import BridgeMessageMap, Client, ExternalUser
+from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
@@ -61,6 +61,14 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_room
+from switch_core.invite_policy import (
+    Inviter,
+    InviteRefused,
+    may_invite,
+    needs_verified_inviter,
+    platform_refused_notice,
+    unverified_join_notice,
+)
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
@@ -1645,13 +1653,26 @@ class CollaborationCore:
                 join.channel_id,
             )
             return
+        # Whoever put the agent's bot in the channel is judged like any other
+        # inviter. When the platform does not say who that was, the join
+        # stands but is disclosed (`_disclose_unverified_join`).
+        inviter = await self._platform_inviter(join.added_by_external_user_id)
         existing = self._channel_to_room.get(join.channel_id)
         if existing is not None:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
-            await self._room_service.add_agents_to_room(
-                room_id, agent_names=[join.agent_name], added_by_kind="system"
-            )
+            try:
+                added = await self._room_service.add_agents_to_room(
+                    room_id,
+                    agent_ids=[agent.id],
+                    added_by_kind="system",
+                    invited_by=inviter or Inviter.system(),
+                )
+            except InviteRefused:
+                await self._refuse_platform_join(join.channel_id, agent)
+                return
+            if inviter is None and added:
+                await self._disclose_unverified_join(join.channel_id, agent)
             return
 
         await self._create_room_for_channel(
@@ -1659,7 +1680,74 @@ class CollaborationCore:
             channel_type=join.channel_type,
             agent_name=join.agent_name,
             channel_name=join.channel_name,
+            joined_agent=agent,
+            inviter=inviter,
         )
+
+    async def _platform_inviter(self, external_user_id: str | None) -> Inviter | None:
+        """Who added an agent on the platform, or None when it did not say.
+
+        An account Switch has not seen yet is judged as an unlinked one, which
+        only an open policy (or `users: "*"`) admits."""
+        if external_user_id is None:
+            return None
+        async with self._session_factory() as session:
+            account = await self._external_user_store.get_by_external_id(
+                session, self._bridge_id, external_user_id
+            )
+            if account is None:
+                return Inviter.chat_account("")
+            claimants = await self._external_user_store.claimant_ids(
+                session, account.id
+            )
+        return Inviter.chat_account(account.id, claimants)
+
+    async def _refuse_platform_join(self, channel_id: str, agent: Agent) -> None:
+        """The person who added the agent's bot may not bring it in: keep it
+        out of the room and say so in the channel. The bot itself stays in the
+        channel, since adapters cannot remove members, but without the room it
+        reads and answers nothing."""
+        logger.info(
+            "Kept agent %s out of channel %s on %s: its addressing policy does "
+            "not admit the person who added it",
+            agent.name,
+            channel_id,
+            self._bridge_id,
+        )
+        await self._adapter.admin_message(channel_id, platform_refused_notice(agent))
+
+    async def _disclose_unverified_join(self, channel_id: str, agent: Agent) -> None:
+        """The platform added the agent without saying who did. Let it in, but
+        never quietly: log a warning, and post a notice in the channel that
+        mentions the owner when they have an account on this platform, so the
+        owner hears of it and can remove the agent. Only for agents whose
+        policy restricts who may talk to them; anyone may add an open one."""
+        if not needs_verified_inviter(agent):
+            return
+        logger.warning(
+            "Agent %s was added to channel %s on %s by someone the platform did "
+            "not name; its addressing policy could not be checked against them",
+            agent.name,
+            channel_id,
+            self._bridge_id,
+        )
+        await self._adapter.admin_message(
+            channel_id, unverified_join_notice(agent, await self._owner_mention(agent))
+        )
+
+    async def _owner_mention(self, agent: Agent) -> str | None:
+        """A mention of the agent's owner on this platform, when they have
+        claimed an account on it."""
+        if agent.owner_id is None:
+            return None
+        async with self._session_factory() as session:
+            accounts = await self._external_user_store.get_by_user(
+                session, agent.owner_id
+            )
+        for account in accounts:
+            if account.bridge_id == self._bridge_id:
+                return f"@{account.external_username}"
+        return None
 
     async def _handle_app_joined_channel(self, join: InboundAppJoin) -> None:
         """The bridge app itself was added to a channel. Auto-create the room
@@ -1773,7 +1861,13 @@ class CollaborationCore:
         agent_name: str | None = None,
         sender_name: str | None = None,
         channel_name: str | None = None,
+        joined_agent: Agent | None = None,
+        inviter: Inviter | None = None,
     ) -> tuple[str, str] | None:
+        """`joined_agent` is the agent whose bot joining the channel started
+        this, and `inviter` who added it there (None when the platform did not
+        say). That agent is judged as an invite to a room not made yet; the
+        other agents already in the channel were there before anyone asked."""
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
         #  1. Switch is itself provisioning this channel right now — the mapping
@@ -1793,6 +1887,13 @@ class CollaborationCore:
             return existing
 
         agent_ids = await self._resolve_agents_for_channel(channel_id, channel_type)
+        refused = unverified = False
+        if joined_agent is not None and joined_agent.id in agent_ids:
+            if inviter is None:
+                unverified = True
+            elif not may_invite(joined_agent, inviter, room_id="", group_id=None):
+                agent_ids = [aid for aid in agent_ids if aid != joined_agent.id]
+                refused = True
 
         bridge_name = self._bridge_display_name
         if channel_type == "direct":
@@ -1867,6 +1968,10 @@ class CollaborationCore:
                 _no_agents_notice(self._adapter.slash_invite_hint()),
                 message_type=AdminMessageType.NO_AGENTS,
             )
+        if joined_agent is not None and refused:
+            await self._refuse_platform_join(channel_id, joined_agent)
+        elif joined_agent is not None and unverified:
+            await self._disclose_unverified_join(channel_id, joined_agent)
 
         return (room.id, room.transport_room_id)
 
@@ -2222,6 +2327,7 @@ class CollaborationCore:
                     channel_type=join.channel_type,
                     agent_name=join.external_username,
                     channel_name=join.channel_name,
+                    added_by_external_user_id=join.added_by_external_user_id,
                 )
             )
             return

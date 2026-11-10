@@ -121,6 +121,16 @@ A rule admits an attempt when the room matches **and** the group matches **and**
 
 Policies are set from the Gateway by the agent's owner or an admin. They aren't agent-facing, so an agent can't widen its own.
 
+### Inviting
+
+The same policy decides who may bring an agent into a room. Inviting is asked as "could this inviter address the agent in that room": the owner can always invite an owner-only agent, anyone can invite an open one, and an agent inviting another is judged as an agent sender (`owner_agents` admits the owner's own agents). A room that doesn't exist yet is named by no `rooms` rule, so a rule scoped to particular rooms admits nobody into a new one.
+
+Every way of adding an agent goes through this check: `!invite-agent` and `/invite-agent`, the `invite_agent_to_room` tool and the agent API, creating a room with agents (Gateway, agent tools, room YAML, Switch Console) and the Gateway's room page. A refused invite names the agent and says to ask its owner, or to be allowed in its "who can talk to this agent" setting.
+
+Agents already in a room stay there when their policy changes; the check runs only for agents an invite would add.
+
+Someone can also add an agent's bot to a channel on the platform itself. When the platform reports who did it (Slack and Telegram do), that person is the inviter, judged like anyone else; an account Switch hasn't seen yet counts as an unlinked one. If they may not invite the agent, it stays out of the room and the channel is told why: the bot remains in the channel, since Switch can't remove it there, but it reads and answers nothing. When the platform doesn't say who it was (Mattermost, or a channel found on startup), the join goes through but is never trusted silently: for an agent whose policy restricts who may talk to it, Switch logs a warning and posts a notice in the channel that it couldn't verify who added the agent, mentioning the owner when they have a linked account on that platform, so they can remove it.
+
 ## Identity claims
 
 A **claim** links a platform account to a Switch user. Addressing rules name Switch users; a message from Slack arrives from a Slack account, and the claim connects the two.
@@ -141,6 +151,7 @@ Refusal takes a different form per action, by design.
 - **Commands** are gated the same way. Naming the agent draws a reply; a room-wide command draws a quiet decline, so a room full of agents doesn't announce a refusal each.
 - **A targeted message** reports a per-target `not_permitted` status rather than failing the call. Addressing several agents at once doesn't fail because one declined.
 - **Delegating a task** raises an error instead. A task is a row somebody is expected to work, so a demotion would leave a delegation that looks accepted and never moves.
+- **An invite** is refused with a reply in the room, or an error from the tool, API or Gateway, and nothing is added.
 
 Conversational refusals stay conversational and visible. Refusals that would otherwise create dangling state are raised as errors.
 

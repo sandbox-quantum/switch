@@ -47,6 +47,7 @@ from switch_core.db.stores.room_store import (
     RoomStore,
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.invite_policy import Inviter, require_may_invite
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -297,6 +298,38 @@ class RoomService:
         if expand_parent_ids:
             agent_ids = await self._expand_with_children(agent_ids, expand_parent_ids)
         return agent_ids
+
+    async def _require_may_invite_to_new_room(
+        self, config: RoomCreateConfig, agent_ids: list[str]
+    ) -> None:
+        """Refuse a new room whose creator may not bring these agents in.
+
+        The creator is read from the config: an agent creating a room through
+        its tools, or the user it was created for. A config that names neither
+        (a channel the platform delivered to a bridge) has nobody to judge.
+        The room does not exist yet, so a rule naming particular rooms admits
+        nobody into it.
+        """
+        async with self._session_factory() as session:
+            inviter = Inviter.system()
+            if config.created_by_kind == "agent" and config.created_by_agent_id:
+                creator = await self._agent_store.get(
+                    session, config.created_by_agent_id
+                )
+                inviter = Inviter.agent(
+                    config.created_by_agent_id,
+                    creator.owner_id if creator is not None else None,
+                )
+            elif config.created_by_kind == "user" and config.created_by:
+                inviter = Inviter.person(config.created_by)
+            if inviter.kind == "system":
+                return
+            require_may_invite(
+                await self._agent_store.get_many(session, agent_ids),
+                inviter,
+                room_id="",
+                group_id=config.group_id,
+            )
 
     async def _resolve_join_event_listeners(self, config: RoomCreateConfig) -> set[str]:
         """Resolve `config.join_event_listeners` to a set of agent ids, in the
@@ -597,6 +630,8 @@ class RoomService:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
+        if agent_ids:
+            await self._require_may_invite_to_new_room(config, agent_ids)
         join_event_listeners = await self._resolve_join_event_listeners(config)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
@@ -1057,9 +1092,18 @@ class RoomService:
         join_event_listeners: list[str] | None = None,
         added_by_kind: Literal["user", "agent", "system"] = "user",
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
-    ) -> None:
+        *,
+        invited_by: Inviter,
+    ) -> list[str]:
         """`with_agents` runs in the transaction that records the agents, so
-        what it writes commits with them or not at all."""
+        what it writes commits with them or not at all.
+
+        `invited_by` is who is adding them. Each agent not already in the room
+        must be one its addressing policy lets them talk to there, or
+        `InviteRefused` is raised and nothing is added (see `invite_policy`).
+        Agents already in the room are left alone.
+
+        Returns the ids of the agents this call added."""
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -1083,8 +1127,15 @@ class RoomService:
                 raise ValueError(f"Room not found: {room_id}")
 
             existing = await self._room_store.get_agent_ids(session, room.id)
+            new_agent_ids = [aid for aid in agent_ids if aid not in existing]
+            if new_agent_ids and invited_by.kind != "system":
+                require_may_invite(
+                    await self._agent_store.get_many(session, new_agent_ids),
+                    invited_by,
+                    room_id=room.id,
+                    group_id=room.group_id,
+                )
 
-        new_agent_ids = [aid for aid in agent_ids if aid not in existing]
         if not new_agent_ids:
             logger.debug(
                 "All agents are already part of the room, existing %s, new agent ids %s, agent ids %s",
@@ -1092,7 +1143,7 @@ class RoomService:
                 new_agent_ids,
                 agent_ids,
             )
-            return
+            return []
 
         agent_clients = self._resolve_agent_clients(new_agent_ids)
 
@@ -1141,6 +1192,7 @@ class RoomService:
                 "added_by_kind": added_by_kind,
             },
         )
+        return new_agent_ids
 
     async def remove_agents_from_room(
         self,

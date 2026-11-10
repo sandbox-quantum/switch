@@ -99,6 +99,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import MENTIONS_KEY, AddressingResolver
+from switch_core.invite_policy import Inviter
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
@@ -1132,6 +1133,7 @@ class ChatService:
             room.id,
             agent_ids=[agent_id],
             with_agents=lambda session: self._group_if_several_agents(session, room),
+            invited_by=Inviter.person(actor.id),
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
             return await self._room(session, tenant_id, room_id)

@@ -248,6 +248,19 @@ version of their own to them without also giving them a release of their own.
   admins still see every room. Whoever may manage a resource is still told
   how many rooms they cannot open it is in, without their names, and deleting
   it warns about those rooms too.
+- **Inviting an agent follows who can talk to it.** Someone an agent's
+  addressing policy does not admit could still pull it into their room, where
+  it sat replying that it couldn't act, and the room showed where the agent was
+  used. Now only people (and agents) the policy lets address the agent in that
+  room may invite it: `!invite-agent` and `/invite-agent`, the
+  `invite_agent_to_room` tool and the agent API, creating a room with agents
+  (gateway, agent tools, room YAML) and the gateway's room page. A refused
+  invite names the agent and says to ask its owner. The check lives in
+  `RoomService`, whose `add_agents_to_room` now requires `invited_by`. Agents
+  already in rooms stay where they are. An agent added on the platform itself
+  is judged as whoever added it when the platform says (Slack, Telegram);
+  when it doesn't, the join stands, but Switch logs a warning and posts a
+  notice that mentions the owner.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when

@@ -133,6 +133,7 @@ from switch_core.events import (
 from switch_core.events import (
     ToolCallReport as RoomToolCallReport,
 )
+from switch_core.invite_policy import Inviter
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
 from switch_core.room_service import require_membership_changeable_from_outside
@@ -3288,6 +3289,10 @@ class AgentCore:
             require_membership_changeable_from_outside(
                 await self._require_room_roster_change(session, agent_id, room_id)
             )
+            caller = await self.agent_store.get(session, agent_id)
+            inviter = Inviter.agent(
+                agent_id, caller.owner_id if caller is not None else None
+            )
             if include_subagents:
                 target = await self.agent_store.get_by_name(session, agent_name)
                 if target is None:
@@ -3301,6 +3306,7 @@ class AgentCore:
                 agent_names=[agent_name],
                 include_subagents_for=include_for,
                 added_by_kind="agent",
+                invited_by=inviter,
             )
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e

@@ -2732,7 +2732,11 @@ class TelegramAdapter(PlatformAdapter):
         new_members = getattr(message, "new_chat_members", None) or []
         if new_members:
             await self._handle_new_members(
-                new_members, chat_id, channel_type, channel_name
+                new_members,
+                chat_id,
+                channel_type,
+                channel_name,
+                added_by=str(author.id) if author is not None else None,
             )
             return
 
@@ -2921,6 +2925,8 @@ class TelegramAdapter(PlatformAdapter):
         chat_id: str,
         channel_type: ChannelType,
         channel_name: str | None,
+        *,
+        added_by: str | None = None,
     ) -> None:
         for member in members:
             if member.id == self._bot_user_id:
@@ -2942,6 +2948,10 @@ class TelegramAdapter(PlatformAdapter):
                     external_user_id=str(member.id),
                     external_username=self._display_name(member),
                     channel_name=channel_name,
+                    # Someone joining by link sends their own join message.
+                    added_by_external_user_id=(
+                        added_by if added_by != str(member.id) else None
+                    ),
                 )
             )
 

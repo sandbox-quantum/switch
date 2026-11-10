@@ -89,6 +89,7 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
+from switch_core.invite_policy import Inviter, InviteRefused
 from switch_core.room_service import (
     FIXED_MEMBERSHIP,
     MembershipFixed,
@@ -513,6 +514,8 @@ async def create_room(
     )
     try:
         result = await room_service.create_room(config)
+    except InviteRefused as e:
+        raise HTTPException(status_code=403, detail=e.message) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except BridgeOperationError as e:
@@ -1323,7 +1326,10 @@ async def post_room_agents(
             agent_ids=req.agent_ids,
             include_subagents_for=req.include_subagents_for,
             join_event_listeners=req.join_event_listeners,
+            invited_by=Inviter.person(user.id),
         )
+    except InviteRefused as e:
+        raise HTTPException(status_code=403, detail=e.message) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await session.commit()
