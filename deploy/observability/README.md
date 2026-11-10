@@ -72,6 +72,11 @@ in 15 minutes in the first week of November, against 7 without them); lower it
 to about 25 once those are logged as warnings. Log alerts filter on
 `service:switch-core env:pilot`, for the reason the board's log panels do.
 
+"Agent controllers keep reconnecting" watches `switch.controllers.reconnects`
+for the reconnect storm seen on pilot in November (around 650 controller
+connections opened every 10 minutes): more than 300 in 10 minutes fires. A
+rollout reconnects every controller once, which stays below that.
+
 Priority follows what a user loses: P1 when Switch is down or messages are
 lost, P2 when some people or one platform are affected, P3 when it is slow but
 nothing is lost, P4 when only our own visibility is.

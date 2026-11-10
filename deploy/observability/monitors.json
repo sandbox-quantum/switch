@@ -445,5 +445,27 @@
       }
     },
     "priority": 3
+  },
+  {
+    "name": "[Switch] agent controllers keep reconnecting",
+    "type": "query alert",
+    "query": "sum(last_10m):default_zero(sum:switch.controllers.reconnects{service:switch-core}.as_count()) > 300",
+    "message": "{{#is_alert}}Agent controllers reconnected more than 300 times in 10 minutes: the reconnect storm. While it lasts, Console can show agents as Connecting and messages to them wait for the next connection.\n\n**Check:** `reason` on `switch.controllers.reconnects` says why connections end (taken over by another pod, heartbeat lapsed); the controller log on an affected machine says what it saw. A rollout reconnects every controller once, which stays well below this limit.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent controllers keep reconnecting.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 300
+      }
+    },
+    "priority": 3
   }
 ]
