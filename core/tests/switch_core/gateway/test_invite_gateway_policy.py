@@ -67,6 +67,7 @@ async def test_gateway_add_agent_judges_the_signed_in_user(
             "bridge_store": None,
             "external_user_store": None,
             "protocol": None,
+            "decisions": None,
             "is_admin": False,
         }
 
