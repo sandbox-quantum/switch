@@ -82,9 +82,9 @@ def test_create_standard_channel() -> None:
     fake = _FakeGraph()
     adapter._graph = fake  # type: ignore[assignment]
 
-    channel_id = _run(adapter.create_channel("My Room", "the topic"))
+    created = _run(adapter.create_channel("My Room", "the topic"))
 
-    assert channel_id == "19:new@thread.tacv2"
+    assert (created.id, created.name) == ("19:new@thread.tacv2", "My Room")
     assert len(fake.created_channels) == 1
     created = fake.created_channels[0]
     assert created["team_id"] == "team-7"
@@ -165,11 +165,11 @@ def test_create_channel_rejects_group_and_direct() -> None:
 
 
 def test_channel_name_is_sanitized() -> None:
-    assert TeamsAdapter._sanitize_channel_name("bug/fix #42: urgent!") == (
+    assert TeamsAdapter.channel_name_for("bug/fix #42: urgent!") == (
         "bug-fix -42- urgent!"
     )
-    assert TeamsAdapter._sanitize_channel_name("  ...  ") == "switch"
-    assert len(TeamsAdapter._sanitize_channel_name("x" * 80)) == 50
+    assert TeamsAdapter.channel_name_for("  ...  ") == "switch"
+    assert len(TeamsAdapter.channel_name_for("x" * 80)) == 50
 
 
 # ── get_channel_type ─────────────────────────────────────────────────────────

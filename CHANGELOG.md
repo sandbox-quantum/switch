@@ -165,6 +165,14 @@ version of their own to them without also giving them a release of their own.
 - **A workspace admin can no longer clear the workspace's own setting for a
   connector its organization has locked**, as they already couldn't switch
   it. The workspace's choice is kept for when the organization unlocks it.
+- **Renaming a channel on a messaging app renames its room.** Slack,
+  Mattermost, Microsoft Teams and Telegram now pass a channel's new name to
+  Switch, as Discord already did, using what each platform already sends, so
+  no app needs reinstalling or new permissions. A room created in Switch
+  follows its channel's renames too, taking the name as the platform shows it,
+  until someone renames the room in Switch; that name is kept, and the room's
+  settings offer the channel's current one. On Telegram, a title changed while
+  Switch was stopped is picked up with the next message.
 - **Managed agents no longer flip to "Connecting" every few seconds.** A
   controller from a released Switch Console calls its socket dead after 10
   seconds without a frame, and since the server pings every 10 seconds it

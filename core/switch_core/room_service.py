@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelInUse,
     ChannelType,
+    CreatedChannel,
     PrivateChannelOwnerMissing,
     RetireOutcome,
 )
@@ -643,8 +644,8 @@ class RoomService:
         channel_type: ChannelType,
         *,
         owner_user_id: str | None,
-    ) -> tuple[str, ExternalUser | None]:
-        """Make a new channel for a room: its external id, and for a private
+    ) -> tuple[CreatedChannel, ExternalUser | None]:
+        """Make a new channel for a room: the channel, and for a private
         channel the account of the person it is for.
 
         Where the platform needs a private channel's owner named (Teams) that
@@ -656,17 +657,17 @@ class RoomService:
         )
         adapter = collaboration_core.adapter
         if creator is None or not adapter.private_channel_needs_owner:
-            external_channel_id = await adapter.create_channel(
+            created = await adapter.create_channel(
                 name, topic, channel_type=channel_type
             )
         else:
-            external_channel_id = await adapter.create_channel(
+            created = await adapter.create_channel(
                 name,
                 topic,
                 channel_type=channel_type,
                 owner_external_id=creator.external_user_id,
             )
-        return external_channel_id, creator
+        return created, creator
 
     @staticmethod
     async def _add_creator_to_channel(
@@ -876,6 +877,9 @@ class RoomService:
             raise ValueError("user_external_id is only for a direct room on a bridge.")
 
         user_external_id = config.user_external_id
+        # The name of a channel made here for the room, which the room then
+        # follows through the channel's renames (`NAME_SOURCE_KEY`).
+        created_channel_name: str | None = None
         # The person a new private channel is for, put in it below.
         creator: ExternalUser | None = None
         if collaboration_core and external_channel_id is None:
@@ -907,7 +911,7 @@ class RoomService:
                     )
                 )
             else:
-                external_channel_id, creator = await self._create_channel(
+                created, creator = await self._create_channel(
                     collaboration_core,
                     bridge_id,  # type: ignore[arg-type]
                     config.name,
@@ -915,6 +919,8 @@ class RoomService:
                     channel_type,
                     owner_user_id=config.owner_id,
                 )
+                external_channel_id = created.id
+                created_channel_name = created.name
 
         # Guard the channel from the moment it exists until the room↔channel
         # mapping is registered. Creating the channel makes the bot auto-join
@@ -972,6 +978,14 @@ class RoomService:
                             LINKED_CHANNEL_NAME_KEY: config.named_after_channel,
                         }
                         if config.named_after_channel is not None
+                        else {}
+                    ),
+                    **(
+                        {
+                            NAME_SOURCE_KEY: "created",
+                            LINKED_CHANNEL_NAME_KEY: created_channel_name,
+                        }
+                        if created_channel_name is not None
                         else {}
                     ),
                 },
@@ -1520,14 +1534,25 @@ class RoomService:
         self.room_changed(tenant_id, room_id)
 
     async def follow_channel_name(
-        self, room_id: str, name: str, channel_name: str, legacy_name: str
+        self,
+        room_id: str,
+        *,
+        old_name: str,
+        new_name: str,
+        bridge_display_name: str,
+        channel_name_for: Callable[[str], str],
     ) -> bool:
         """Rename a bridged room after its renamed channel when it still follows
         the channel (`RoomStore.follow_channel_name`); False when it does not."""
         tenant_id = await self._room_tenant(room_id)
         async with tenant_session(self._session_factory, tenant_id) as session:
             followed = await self._room_store.follow_channel_name(
-                session, room_id, name, channel_name, legacy_name
+                session,
+                room_id,
+                old_name=old_name,
+                new_name=new_name,
+                bridge_display_name=bridge_display_name,
+                channel_name_for=channel_name_for,
             )
             await session.commit()
         if followed:
@@ -1704,10 +1729,11 @@ class RoomService:
         await self._require_tenant_bridge(bridge_id)
         collaboration_core = self._collab_lifecycle.get(bridge_id)
 
+        created_channel_name: str | None = None
         creator: ExternalUser | None = None
         if external_channel_id is None and collaboration_core is not None:
             await self._require_channel_creation(bridge_id)
-            external_channel_id, creator = await self._create_channel(
+            created, creator = await self._create_channel(
                 collaboration_core,
                 bridge_id,
                 room.name,
@@ -1715,6 +1741,8 @@ class RoomService:
                 channel_type,
                 owner_user_id=room.owner_id,
             )
+            external_channel_id = created.id
+            created_channel_name = created.name
         elif external_channel_id is not None and collaboration_core is not None:
             await self._check_existing_channel(
                 collaboration_core,
@@ -1732,6 +1760,10 @@ class RoomService:
                     channel_type=channel_type,
                     external_channel_id=external_channel_id,
                 )
+                if created_channel_name is not None:
+                    await self._room_store.set_created_channel_name(
+                        session, room_id, created_channel_name
+                    )
                 await session.commit()
             except IntegrityError as error:
                 raise self._channel_in_use(error, external_channel_id) from error
@@ -1867,11 +1899,12 @@ class RoomService:
             channel_type or room.channel_type or "channel_public"  # type: ignore[assignment]
         )
 
+        created_channel_name: str | None = None
         creator: ExternalUser | None = None
         creator_left_out = False
         if external_channel_id is None:
             await self._require_channel_creation(bridge_id)
-            external_channel_id, creator = await self._create_channel(
+            created, creator = await self._create_channel(
                 new_bridge,
                 bridge_id,
                 room.name,
@@ -1879,6 +1912,8 @@ class RoomService:
                 resolved_channel_type,
                 owner_user_id=room.owner_id,
             )
+            external_channel_id = created.id
+            created_channel_name = created.name
         else:
             await self._check_existing_channel(
                 new_bridge, bridge_id, external_channel_id, except_room_id=room_id
@@ -1903,6 +1938,10 @@ class RoomService:
                             channel_type=resolved_channel_type,
                             external_channel_id=external_channel_id,
                         )
+                        if created_channel_name is not None:
+                            await self._room_store.set_created_channel_name(
+                                session, room_id, created_channel_name
+                            )
                         await session.commit()
                     except IntegrityError as error:
                         raise self._channel_in_use(
