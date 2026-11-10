@@ -191,7 +191,7 @@ describe("AgentListPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Actions for parent" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: /Delete/ }));
     const dialog = await screen.findByRole("dialog", { name: "Delete agent" });
-    expect(within(dialog).getByText(/Its sub-agent stays, as top-level agent/)).toBeTruthy();
+    expect(within(dialog).getByText(/Its sub-agent stays, as a top-level agent/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     expect(await within(dialog).findByText("Only the agent's owner or an admin can delete it.")).toBeTruthy();

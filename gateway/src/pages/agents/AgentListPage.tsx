@@ -188,7 +188,7 @@ function AgentList({
         field: "name",
         headerName: "Name",
         flex: 1,
-        minWidth: 180,
+        minWidth: 160,
         renderCell: ({ row, tabIndex }) => (
           <Link
             component={RouterLink}
@@ -206,27 +206,27 @@ function AgentList({
       {
         field: "connector_type",
         headerName: "Agent type",
-        width: 150,
+        width: 124,
         filter: { value: (agent) => agent.connector_type },
         renderCell: ({ value }) => <Chip label={value} size="small" variant="outlined" />,
       },
       {
         field: "connection_model",
         headerName: "Availability",
-        width: 170,
+        width: 165,
         valueFormatter: (value) => (value ? sentenceCase(value as string) : EM_DASH),
       },
       {
         field: "status",
         headerName: "Status",
-        width: 130,
+        width: 120,
         filter: { value: (agent) => agent.status, options: STATUS_OPTIONS },
         renderCell: ({ row }) => <StatusCell status={row.status} />,
       },
       {
         field: "parent_agent_id",
         headerName: "Parent",
-        width: 170,
+        width: 140,
         filter: { value: (agent) => agent.parent_agent_id ?? TOP_LEVEL, options: parents },
         valueGetter: (value) => (value ? (nameById.get(value as string) ?? value) : ""),
         renderCell: ({ value }) => value || EM_DASH,
@@ -235,7 +235,7 @@ function AgentList({
         field: "description",
         headerName: "Description",
         flex: 2,
-        minWidth: 220,
+        minWidth: 140,
         sortable: false,
         renderCell: ({ value }) => (
           <Box
@@ -247,12 +247,12 @@ function AgentList({
           </Box>
         ),
       },
-      { field: "tool_count", headerName: "Tools", width: 80, type: "number" },
-      { field: "model_count", headerName: "Models", width: 90, type: "number" },
+      { field: "tool_count", headerName: "Tools", width: 64, type: "number" },
+      { field: "model_count", headerName: "Models", width: 72, type: "number" },
       {
         field: "owner_name",
         headerName: "Owner",
-        width: 150,
+        width: 140,
         ...(!yours && { filter: { value: (agent: AgentListEntry) => agent.owner_id ?? NO_OWNER, options: owners } }),
         renderCell: ({ value }) => value ?? EM_DASH,
       },
@@ -261,21 +261,24 @@ function AgentList({
             {
               field: "device",
               headerName: "Device",
-              width: 170,
+              width: 150,
               sortable: false,
               filter: {
                 value: (agent: AgentListEntry) => agent.device?.id ?? NO_DEVICE,
                 options: deviceOptions,
               },
-              renderCell: ({ row }: { row: AgentListEntry }) =>
-                row.device ? (devices.get(row.device.id) ?? row.device.name) : EM_DASH,
+              renderCell: ({ row }: { row: AgentListEntry }) => {
+                if (!row.device) return EM_DASH;
+                const label = devices.get(row.device.id) ?? row.device.name;
+                return <span title={label}>{label}</span>;
+              },
             } satisfies TableColumn<AgentListEntry>,
           ]
         : []),
       {
         field: "created_at",
         headerName: "Created",
-        width: 116,
+        width: 112,
         type: "date",
         valueGetter: (value) => new Date(value as string),
         valueFormatter: (value) => formatDate(value as Date),
@@ -283,7 +286,7 @@ function AgentList({
       {
         field: "actions",
         headerName: "",
-        width: 64,
+        width: 56,
         sortable: false,
         disableColumnMenu: true,
         renderCell: ({ row, tabIndex }) => (
@@ -461,7 +464,9 @@ function AgentList({
             <>
               Delete "{deleting.name}"? Its client stops, and its tools and models are removed.
               {deletingChildren > 0 &&
-                ` Its ${deletingChildren === 1 ? "sub-agent stays" : `${deletingChildren} sub-agents stay`}, as top-level ${deletingChildren === 1 ? "agent" : "agents"}.`}
+                (deletingChildren === 1
+                  ? " Its sub-agent stays, as a top-level agent."
+                  : ` Its ${deletingChildren} sub-agents stay, as top-level agents.`)}
             </>
           )
         }
