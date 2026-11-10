@@ -26,7 +26,7 @@ import { useNavigate } from "react-router";
 import DataTable from "../../components/DataTable";
 import { type AgentSummary, deleteAgent } from "../../data/api";
 import { useAgents } from "../../data/hooks";
-import { EM_DASH, formatDate, sentenceCase } from "../../theme/hootFormat";
+import { EM_DASH, formatDate, sentenceCase } from "../../theme/format";
 import RegisterAgentDialog from "./RegisterAgentDialog";
 
 // Connector type is a category, not a status. Colour here would compete with
@@ -250,7 +250,7 @@ export default function AgentsPage() {
       <Stack
         direction="row"
         spacing={2}
-        sx={{ mb: 2, flexWrap: "wrap", rowGap: 2 }}
+        sx={{ mb: 2, flexWrap: "wrap", rowGap: 2, alignItems: "flex-end" }}
       >
         <TextField
           size="small"

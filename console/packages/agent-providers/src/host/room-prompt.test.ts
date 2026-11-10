@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   FALLBACK_NOTE,
+  FOLLOW_UP_NOTE,
   REPLY_REMINDER,
   ROUTED_NOTE,
   roomCommand,
@@ -138,6 +139,36 @@ describe('a room command', () => {
     expect(FALLBACK_NOTE).toContain('stay silent');
     expect(said.indexOf(FALLBACK_NOTE)).toBeGreaterThan(said.indexOf('END SWITCH MESSAGE'));
     expect(said.endsWith(REPLY_REMINDER)).toBe(true);
+  });
+
+  it('says why a follow-up came to the agent, and that it may stay silent', () => {
+    const cases = [
+      [
+        'thread_follow_up',
+        'you spoke or were tagged in this thread more recently than any other agent',
+      ],
+      ['channel_follow_up', 'it continues their exchange with you'],
+      ['main_agent', "you are this room's assigned agent"],
+    ] as const;
+    for (const [followUp, why] of cases) {
+      const said = text({ ...event, payload: { ...event.payload, follow_up: followUp } });
+      expect(said).toContain(
+        `[Switch] Owner posted in room !room:example.test without tagging anyone, and it came to you because ${why} (message_id $m, thread_id none):`
+      );
+      expect(said).not.toContain('addressed you');
+      expect(said).toContain(FOLLOW_UP_NOTE);
+      expect(said.indexOf(FOLLOW_UP_NOTE)).toBeGreaterThan(said.indexOf('END SWITCH MESSAGE'));
+      expect(said.endsWith(REPLY_REMINDER)).toBe(true);
+    }
+    expect(FOLLOW_UP_NOTE).toContain('stay silent');
+  });
+
+  it('reads a follow-up rule it does not know as addressing the agent', () => {
+    const unknown = { ...event, payload: { ...event.payload, follow_up: 'something_new' } };
+    expect(roomMessageSchema.parse(unknown).payload.follow_up).toBeNull();
+    const said = text(unknown);
+    expect(said).toContain('[Switch] Owner addressed you');
+    expect(said).not.toContain(FOLLOW_UP_NOTE);
   });
 
   it('reads a routing reason it does not know as Switch’s pick, rather than losing the message', () => {

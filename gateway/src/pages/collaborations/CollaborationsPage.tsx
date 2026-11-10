@@ -28,7 +28,7 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useBridges, useInstallablePlatforms } from "../../data/hooks";
-import { formatDate, platformLabel, sentenceCase } from "../../theme/hootFormat";
+import { formatDate, platformLabel, sentenceCase } from "../../theme/format";
 import AddToChatDialog from "./AddToChatDialog";
 import AttentionBanner from "./AttentionBanner";
 import DeleteConnectionText from "./DeleteConnectionText";

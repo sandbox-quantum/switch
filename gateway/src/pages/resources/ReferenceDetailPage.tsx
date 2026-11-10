@@ -28,7 +28,7 @@ import {
   toAccessLevel,
 } from "../../data/visibility";
 import { usePackages, useReferenceTypes } from "../../data/hooks";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
+import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
 import JsonValueForm from "./value_forms/JsonValueForm";

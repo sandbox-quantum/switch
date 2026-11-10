@@ -53,7 +53,7 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
         opacity: active ? 1 : 0.75,
         transition: "opacity 150ms",
         "&:hover": { opacity: 1 },
-        "&:focus-visible": { outline: "2px solid var(--hoot-ring)", outlineOffset: 2, borderRadius: "16px" },
+        "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2, borderRadius: "16px" },
       }}
     >
       <Box
@@ -68,9 +68,9 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
           // The active indicator is a subtle vertical gradient pill with a
           // whisper of lift — never a filled accent.
           ...(active && {
-            background: "linear-gradient(to bottom, var(--hoot-card), var(--hoot-secondary))",
-            border: "1px solid var(--hoot-border)",
-            boxShadow: "var(--hoot-shadow-rail-active)",
+            background: "linear-gradient(to bottom, var(--sw-card), var(--sw-secondary))",
+            border: "1px solid var(--sw-border)",
+            boxShadow: "var(--sw-shadow-rail-active)",
           }),
         }}
       >
@@ -125,7 +125,9 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
       }}
     >
       <Tooltip title="Switch Gateway" placement="right">
+        {/* An image, so the name the tooltip gives it is allowed on it. */}
         <Box
+          role="img"
           sx={{
             width: TARGET,
             height: TARGET,
@@ -190,7 +192,7 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
             fontSize: "0.9375rem",
             fontWeight: 700,
             letterSpacing: "-0.02em",
-            "&:focus-visible": { outline: "2px solid var(--hoot-ring)", outlineOffset: 2 },
+            "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2 },
           }}
         >
           {initial}

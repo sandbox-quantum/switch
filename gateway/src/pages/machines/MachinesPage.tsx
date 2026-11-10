@@ -42,7 +42,7 @@ import {
   unmanageAgent,
   updateManagedAgent,
 } from "../../data/management";
-import { EM_DASH, absoluteTitle, formatRelative } from "../../theme/hootFormat";
+import { EM_DASH, absoluteTitle, formatRelative } from "../../theme/format";
 import AddMachineDialog from "./AddMachineDialog";
 import EditMachineDialog from "./EditMachineDialog";
 import ManagedAgentDialog from "./ManagedAgentDialog";

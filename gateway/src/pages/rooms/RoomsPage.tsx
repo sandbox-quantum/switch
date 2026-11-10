@@ -16,7 +16,7 @@ import {
   unarchiveRoom,
 } from "../../data/api";
 import { useRoomGroups, useRooms } from "../../data/hooks";
-import { EM_DASH, MONO_SX, channelTypeLabel, formatDate } from "../../theme/hootFormat";
+import { EM_DASH, MONO_SX, channelTypeLabel, formatDate } from "../../theme/format";
 import { buildGroupIndex, effectiveColor, groupPathName } from "./groupTree";
 import { RoomFilters, filterRooms, useRoomFilterState } from "./roomFilters";
 

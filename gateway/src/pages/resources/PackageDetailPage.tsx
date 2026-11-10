@@ -26,7 +26,7 @@ import {
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
+import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import PackageMembersSection from "./PackageMembersSection";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";

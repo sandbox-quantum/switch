@@ -16,7 +16,7 @@ import {
   fetchInvitations,
   revokeInvitation,
 } from "../../data/api";
-import { formatDate, sentenceCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase } from "../../theme/format";
 import CreateInvitationDialog from "./CreateInvitationDialog";
 import { useLoad } from "./useLoad";
 

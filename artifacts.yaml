@@ -85,13 +85,13 @@ artifacts:
     # move `pins` to it; drop the canary pin back to it too unless a newer
     # pre-release is being tried.
     canary_pins:
-      switch-core: 0.31.0
+      switch-core: 0.32.0-rc.2
 
   agent-runtime:
     description: >-
       The Switch protocol client and the MCP tool surface each session host
       serves. Bundled into Switch Console and its sidecar, not published.
-    version: 0.8.2
+    version: 0.8.3
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:

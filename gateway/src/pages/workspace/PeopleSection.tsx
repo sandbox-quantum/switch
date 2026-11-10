@@ -11,7 +11,7 @@ import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { type Erasure, type Person, fetchErasures, fetchPeople } from "../../data/api";
-import { formatDate, sentenceCase, titleCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase, titleCase } from "../../theme/format";
 import EraseDialog from "./EraseDialog";
 import { useLoad } from "./useLoad";
 

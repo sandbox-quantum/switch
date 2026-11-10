@@ -25,7 +25,7 @@ import { useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { type Budget, type CurrentTenant, type UsageTotal, deleteBudget } from "../../data/api";
 import { useBudgets, useCurrentTenant, useUsage } from "../../data/hooks";
-import { formatDateTime } from "../../theme/hootFormat";
+import { formatDateTime } from "../../theme/format";
 import BudgetDialog from "./BudgetDialog";
 import { formatAmount, formatPeriod, metricLabel } from "./usageFormat";
 

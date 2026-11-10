@@ -34,7 +34,7 @@ import {
   toAccessLevel,
 } from "../../data/visibility";
 import { INSTRUCTIONS_DISCLOSURE } from "./CreateReferenceTypeDialog";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 interface Props {
   refreshKey: number;
