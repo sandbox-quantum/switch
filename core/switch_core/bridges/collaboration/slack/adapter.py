@@ -27,6 +27,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     AgentIdentity,
     AgentIdentityConflict,
+    MessageGoneOnPlatform,
     PlatformAdapter,
     RemovalFailed,
     RequestCard,
@@ -117,6 +118,9 @@ SOCKET_ACK_WITHIN_SECONDS = 2.0
 # retries connection errors but not throttling.
 _RATE_LIMIT_MAX_ATTEMPTS = 5
 _RATE_LIMIT_DEFAULT_DELAY = 30
+# The longest Retry-After a permalink request waits out once before it gives
+# up: an agent is waiting on the answer.
+_PERMALINK_RETRY_MAX_SECONDS = 2
 
 # These responses confirm that Slack rejected the format before publication.
 # Never retry an uncertain delivery as another message merely to change format.
@@ -518,6 +522,7 @@ class SlackAdapter(PlatformAdapter):
     #: Slack writes a `switchdash://` link as `<switchdash://…|label>`, which
     #: its clients do not open, so it needs the https redirect too.
     renders_custom_url_schemes: ClassVar[bool] = False
+    supports_message_permalinks: ClassVar[bool] = True
 
     # Every Slack bridge in this process shares one, because resolving a
     # mention that crossed a workspace boundary means reading a group another
@@ -2466,6 +2471,38 @@ class SlackAdapter(PlatformAdapter):
         if not self._config.workspace_id:
             return None
         return f"slack://open?team={self._config.workspace_id}"
+
+    async def message_permalink(self, external_post_id: str) -> str:
+        """Slack's own link to a `channel:ts` post, from `chat.getPermalink`.
+        Slack gives a reply its thread form itself. A rate limit is waited
+        out once when Slack asks for a short wait, and raised otherwise."""
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        channel, ts = self._parse_message_ref(external_post_id)
+        if not channel or not ts:
+            raise ValueError(f"Not a Slack message ref: {external_post_id!r}")
+        for attempt in range(2):
+            try:
+                result = await self._web_client.chat_getPermalink(
+                    channel=channel, message_ts=ts
+                )
+                permalink: str = result["permalink"]
+                return permalink
+            except SlackApiError as e:
+                error = e.response.get("error")
+                if error == "message_not_found":
+                    raise MessageGoneOnPlatform(external_post_id) from e
+                rate_limited = (
+                    error == "ratelimited"
+                    or getattr(e.response, "status_code", None) == 429
+                )
+                if not rate_limited or attempt == 1:
+                    raise
+                delay = _retry_after_seconds(e)
+                if delay > _PERMALINK_RETRY_MAX_SECONDS:
+                    raise
+                await asyncio.sleep(delay)
+        raise RuntimeError("Unreachable: exhausted retries for a permalink")
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         if not self._web_client:

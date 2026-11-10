@@ -264,6 +264,11 @@ class PrivateNoticeRefused(Exception):
     it without a traceback and posts the notice in the channel instead."""
 
 
+class MessageGoneOnPlatform(Exception):
+    """The platform says the post no longer exists, as it says for a message
+    someone deleted there."""
+
+
 class ChannelNotBindable(ValueError):
     """A room was asked to bind to a channel that is not this bridge's to bind.
 
@@ -633,6 +638,11 @@ class PlatformAdapter(ABC):
     # requests and webhooks that reach it. An adapter that cannot keep quiet
     # listens wherever it runs, so its platform delivers to every process.
     keeps_quiet_unless_listening: ClassVar[bool] = False
+
+    #: Whether `message_permalink` can ask the platform for a link to a post.
+    #: Read from the class, so a caller can tell a platform with no links
+    #: from a bridge that is not running.
+    supports_message_permalinks: ClassVar[bool] = False
 
     #: What `retire_channel` does to a deleted room's channel when it works.
     #:
@@ -1630,6 +1640,12 @@ class PlatformAdapter(ABC):
         connection config, which never leaves the server; only the resulting
         URL is exposed."""
         return None
+
+    async def message_permalink(self, external_post_id: str) -> str:
+        """The platform's own link to one post, as the platform gives it.
+        Raises `MessageGoneOnPlatform` when the post was deleted there, and
+        `NotImplementedError` where the platform has no such links."""
+        raise NotImplementedError(f"{self.platform_name} has no message permalinks")
 
     async def install_links(self) -> list[BridgeInstallLink]:
         """One-click links that add this bridge's app to a chat, if the

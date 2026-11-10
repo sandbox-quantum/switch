@@ -65,6 +65,11 @@ class FakeWebClient:
         self.start_error: str | None = None
         self.append_error: str | FakeResponse | None = None
         self.stop_error: str | FakeResponse | None = None
+        # Every chat.getPermalink asked, as (channel, message_ts), and the
+        # errors for successive calls, oldest first; a None is a call that
+        # succeeds.
+        self.permalink_calls: list[tuple[str, str]] = []
+        self.permalink_errors: list[str | FakeResponse | None] = []
         self._ts = 0
 
     async def api_call(self, method: str, **kwargs: Any) -> FakeResponse:
@@ -107,6 +112,19 @@ class FakeWebClient:
             raise SlackApiError("failed", _refusal(error))
         self.updated.append(kwargs)
         return FakeResponse({"ok": True})
+
+    async def chat_getPermalink(self, *, channel: str, message_ts: str) -> FakeResponse:
+        self.permalink_calls.append((channel, message_ts))
+        error = self.permalink_errors.pop(0) if self.permalink_errors else None
+        if error is not None:
+            raise SlackApiError("failed", _refusal(error))
+        return FakeResponse(
+            {
+                "ok": True,
+                "channel": channel,
+                "permalink": f"https://example.slack.com/archives/{channel}/p{message_ts.replace('.', '')}",
+            }
+        )
 
     async def chat_startStream(self, **kwargs: Any) -> FakeResponse:
         if self.start_error:

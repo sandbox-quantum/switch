@@ -7,13 +7,18 @@ from typing import Any
 import pytest
 from slack_sdk.errors import SlackApiError
 
+from switch_core.bridges.collaboration.adapter import MessageGoneOnPlatform
 from switch_core.bridges.collaboration.collaboration_core import _no_agents_notice
 from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
+from switch_core.bridges.collaboration.slack import adapter as slack_adapter_module
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
     SlackUser,
 )
+
+from .dummy_platform.adapter import DummyChatAdapter, DummyChatConnectionConfig
+from .slack_fakes import FakeResponse, FakeWebClient
 
 
 def _adapter() -> SlackAdapter:
@@ -1373,3 +1378,113 @@ def test_backtick_wrapped_command_from_bot_is_not_run() -> None:
 
     # An agent posting a `!command` reference must never trigger it.
     assert commands == []
+
+
+def _permalink_adapter() -> tuple[SlackAdapter, FakeWebClient]:
+    adapter = _adapter()
+    client = FakeWebClient()
+    adapter._web_client = client  # type: ignore[assignment]
+    return adapter, client
+
+
+def _rate_limited(retry_after: str) -> FakeResponse:
+    return FakeResponse(
+        {"error": "ratelimited"}, headers={"Retry-After": retry_after}, status_code=429
+    )
+
+
+def test_message_permalink_asks_slack_with_channel_and_ts() -> None:
+    adapter, client = _permalink_adapter()
+
+    link = _run(adapter.message_permalink("C1:171.2"))
+
+    assert client.permalink_calls == [("C1", "171.2")]
+    assert link == "https://example.slack.com/archives/C1/p1712"
+
+
+def test_message_permalink_message_not_found_raises_gone() -> None:
+    adapter, client = _permalink_adapter()
+    client.permalink_errors = ["message_not_found"]
+
+    with pytest.raises(MessageGoneOnPlatform):
+        _run(adapter.message_permalink("C1:171.2"))
+
+
+def test_message_permalink_retries_once_after_short_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, client = _permalink_adapter()
+    client.permalink_errors = [_rate_limited("1"), None]
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(slack_adapter_module.asyncio, "sleep", fake_sleep)
+
+    link = _run(adapter.message_permalink("C1:171.2"))
+
+    assert link.startswith("https://example.slack.com/")
+    assert sleeps == [1]
+    assert len(client.permalink_calls) == 2
+
+
+def test_message_permalink_long_retry_after_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, client = _permalink_adapter()
+    client.permalink_errors = [_rate_limited("30")]
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(slack_adapter_module.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(SlackApiError):
+        _run(adapter.message_permalink("C1:171.2"))
+    assert sleeps == []
+    assert len(client.permalink_calls) == 1
+
+
+def test_message_permalink_second_rate_limit_is_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, client = _permalink_adapter()
+    client.permalink_errors = [_rate_limited("1"), _rate_limited("1")]
+
+    async def fake_sleep(delay: float) -> None:
+        pass
+
+    monkeypatch.setattr(slack_adapter_module.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(SlackApiError):
+        _run(adapter.message_permalink("C1:171.2"))
+    assert len(client.permalink_calls) == 2
+
+
+def test_message_permalink_without_client_raises() -> None:
+    adapter = _adapter()
+
+    with pytest.raises(RuntimeError, match="not connected"):
+        _run(adapter.message_permalink("C1:171.2"))
+
+
+def test_message_permalink_unparseable_ref_raises() -> None:
+    adapter, client = _permalink_adapter()
+
+    with pytest.raises(ValueError):
+        _run(adapter.message_permalink("not-a-ref"))
+    assert client.permalink_calls == []
+
+
+def test_slack_has_message_permalinks() -> None:
+    assert SlackAdapter.supports_message_permalinks is True
+
+
+def test_base_adapter_has_no_message_permalinks() -> None:
+    adapter = DummyChatAdapter(config=DummyChatConnectionConfig(api_token="t"))
+
+    assert DummyChatAdapter.supports_message_permalinks is False
+    with pytest.raises(NotImplementedError):
+        _run(adapter.message_permalink("C1:171.2"))
