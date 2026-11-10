@@ -31,6 +31,7 @@ from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelRetirement,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -1586,6 +1587,14 @@ class PlatformAdapter(ABC):
             f"Link your {self.platform_name} account in Switch Console to be notified."
         )
 
+    @classmethod
+    def channel_name_for(cls, room_name: str) -> str:
+        """The channel name `create_channel` derives from a room's name, before
+        any suffix added because the name was taken. The platform's own form of
+        the name, as a rename reports it. A platform that takes the room's name
+        as it is leaves this alone."""
+        return room_name
+
     @abstractmethod
     async def create_channel(
         self,
@@ -1594,8 +1603,9 @@ class PlatformAdapter(ABC):
         *,
         channel_type: ChannelType = "channel_public",
         owner_external_id: str | None = None,
-    ) -> str:
-        """Provision a channel on the platform and return its external id.
+    ) -> CreatedChannel:
+        """Provision a channel on the platform and return its id and the name
+        the platform gave it.
 
         ``owner_external_id`` is the platform account of the person the room is
         for, passed only for a private channel on a platform that
@@ -2056,7 +2066,8 @@ class PlatformAdapter(ABC):
     ) -> None:
         """Install the callback an adapter calls with a channel's name when the
         platform reports a change to it, so the room linked to it can follow.
-        Used by the adapters whose platform reports it (Discord)."""
+        Called with an empty old name when the platform did not say, and with
+        both names the same when the bridge is only reporting what it sees."""
         self._on_channel_named = handler
 
     def set_channel_type_handler(

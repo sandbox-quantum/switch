@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.collaboration.models import (
     ChannelInUse,
     ChannelNotUsable,
+    CreatedChannel,
     PrivateChannelOwnerMissing,
 )
 from switch_core.db.models import (
@@ -73,11 +74,11 @@ class _Adapter:
         *,
         channel_type: str = "channel_public",
         owner_external_id: str | None = None,
-    ) -> str:
+    ) -> CreatedChannel:
         self.created.append(
             {"channel_type": channel_type, "owner_external_id": owner_external_id}
         )
-        return "19:new@thread.tacv2"
+        return CreatedChannel(id="19:new@thread.tacv2", name=name)
 
 
 class _Core:
@@ -293,7 +294,7 @@ async def test_a_private_channel_elsewhere_is_made_for_the_owners_account(
     adapter = _Adapter(needs_owner=False)
     svc = _service(session_factory, bridge_id, adapter)
 
-    channel_id, creator = await svc._create_channel(
+    created, creator = await svc._create_channel(
         _Core(adapter),  # type: ignore[arg-type]
         bridge_id,
         "Secret",
@@ -302,7 +303,7 @@ async def test_a_private_channel_elsewhere_is_made_for_the_owners_account(
         owner_user_id=user_id,
     )
 
-    assert channel_id == "19:new@thread.tacv2"
+    assert created.id == "19:new@thread.tacv2"
     assert adapter.created == [
         {"channel_type": "channel_private", "owner_external_id": None}
     ]
