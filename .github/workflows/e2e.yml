@@ -66,7 +66,7 @@ permissions:
 jobs:
   run:
     name: ${{ inputs.lane }} lane
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Playwright 1.60 cannot install browser deps on ubuntu-latest (26.04)
     timeout-minutes: 45
     environment: ${{ (inputs.lane == 'provider' || inputs.lane == 'agentic') && 'e2e-provider' || '' }}
     outputs:

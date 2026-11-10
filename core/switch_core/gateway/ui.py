@@ -8,7 +8,7 @@ origin and the dashboard on another.
 It answers ahead of the bearer middleware, because a person loading a page
 holds a cookie rather than an agent key. So what it answers is an exact list
 and never a fallback: the built files by name, and the dashboard's page paths,
-which `test_gateway_ui.py` holds equal to the routes in `gateway/src/App.tsx`.
+which `test_gateway_ui.py` holds equal to the routes the dashboard declares.
 Everything else passes through untouched.
 
 The API wins any path both could answer. `/agents` is where they meet: the
@@ -35,7 +35,8 @@ from switch_core.observability.http import GATEWAY_UI_SCOPE_KEY
 
 logger = logging.getLogger(__name__)
 
-# The dashboard's page routes, as `gateway/src/App.tsx` declares them.
+# The dashboard's page routes, as `gateway/src/App.tsx` and its route table
+# (`gateway/src/routes/routeTable.tsx`) declare them, in both of its layouts.
 PAGE_PATHS: tuple[str, ...] = (
     "/",
     "/login",
@@ -63,6 +64,32 @@ PAGE_PATHS: tuple[str, ...] = (
     "/workspace",
     "/organization",
     "/operator/workspaces",
+    # The new layout's (`gateway_v2`). With it off they redirect to today's.
+    "/overview",
+    "/templates",
+    "/templates/{id}",
+    "/connectors/{connector_id}",
+    "/settings",
+    "/settings/general",
+    "/settings/users",
+    "/settings/messaging-apps",
+    "/settings/connectors",
+    "/settings/api-keys",
+    "/settings/guardrails",
+    "/settings/devices",
+    "/settings/account",
+    "/settings/org",
+    "/settings/org/general",
+    "/settings/org/workspaces",
+    "/settings/org/users",
+    "/settings/org/connectors",
+    "/settings/org/guardrails",
+    "/settings/org/devices",
+    "/settings/org/audit-log",
+    "/platform",
+    "/platform/workspaces",
+    "/platform/users",
+    "/platform/connectors",
 )
 
 _PARAM = re.compile(r"\{[^/}]+\}")

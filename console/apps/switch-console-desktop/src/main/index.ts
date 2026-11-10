@@ -41,6 +41,7 @@ import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { retireDashboardFallbacks } from './core/switch-servers/server-address';
+import { bridgeSessionEndedToRenderer } from './core/switch-servers/session-ended-bridge';
 import { startActivationTracking } from './core/telemetry/activation';
 import { currentInternalFlag } from './core/telemetry/internal-account';
 import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
@@ -225,6 +226,10 @@ void app.whenReady().then(async () => {
   void retireDashboardFallbacks().catch((error: unknown) => {
     log.error('Could not check which servers still need a separate dashboard address:', error);
   });
+
+  // A signed-in call refused with 401 tells the window to re-check that server's
+  // sign-in, so a revoked session reads as signed out rather than offline.
+  bridgeSessionEndedToRenderer();
 
   // Each server's feature flags, read on a schedule so a redeploy that changes
   // them reaches the window without a restart. Started once the managed stacks

@@ -37,7 +37,16 @@ export function describeRetention(days: number | null): string {
   return `Messages older than ${days} ${days === 1 ? "day" : "days"} are deleted.`;
 }
 
-export default function RetentionSection({ tenantId }: { tenantId: string }) {
+/** `canSetWindow` is the server's answer for turning retention on or changing
+ * its window, which takes an admin's own membership of the workspace; any
+ * admin may read it and turn it off. */
+export default function RetentionSection({
+  tenantId,
+  canSetWindow,
+}: {
+  tenantId: string;
+  canSetWindow: boolean;
+}) {
   const load = useCallback(() => fetchRetentionPolicy(tenantId), [tenantId]);
   const { data: policy, error, loading, refetch } = useLoad(load);
   const current = policy?.message_retention_days ?? null;
@@ -139,13 +148,14 @@ export default function RetentionSection({ tenantId }: { tenantId: string }) {
                   value="window"
                   control={<Radio />}
                   label="Delete messages older than"
+                  disabled={!canSetWindow}
                   sx={{ mr: 0 }}
                 />
                 <TextField
                   select
                   size="small"
                   value={preset}
-                  disabled={mode !== "window"}
+                  disabled={mode !== "window" || !canSetWindow}
                   onChange={(event) => setPreset(event.target.value)}
                   sx={{ minWidth: 140 }}
                   inputProps={{ "aria-label": "Retention window" }}
@@ -162,7 +172,7 @@ export default function RetentionSection({ tenantId }: { tenantId: string }) {
                     size="small"
                     label="Days"
                     value={customDays}
-                    disabled={mode !== "window"}
+                    disabled={mode !== "window" || !canSetWindow}
                     onChange={(event) => setCustomDays(event.target.value)}
                     error={mode === "window" && invalid && customDays !== ""}
                     helperText={`1 to ${MAX_MESSAGE_RETENTION_DAYS}`}
@@ -171,6 +181,12 @@ export default function RetentionSection({ tenantId }: { tenantId: string }) {
                 )}
               </Stack>
             </RadioGroup>
+            {!canSetWindow && (
+              <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                Only this workspace&apos;s own admins can turn retention on or change its
+                window. You can turn it off.
+              </Typography>
+            )}
             <Stack direction="row" spacing={1} justifyContent="flex-end">
               <Button disabled={unchanged || saving} onClick={resetToCurrent}>
                 Cancel

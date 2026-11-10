@@ -142,7 +142,7 @@ export default function CreateInvitationDialog({
               helperText={
                 emailEnabled
                   ? "We'll e-mail them the link. Only someone signed in with this address can accept. Leave empty for anyone with the link."
-                  : "E-mail isn't set up on this server, so you'll get a link to send yourself. Only someone signed in with this address can accept. Leave empty for anyone with the link."
+                  : "E-mail isn't set up here, so you'll get a link to send yourself. Only someone signed in with this address can accept. Leave empty for anyone with the link."
               }
             />
             <Stack direction="row" spacing={2}>

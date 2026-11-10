@@ -210,7 +210,7 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
               <CircularProgress size={28} />
               {restarting && (
                 <Typography variant="body2" color="text.secondary">
-                  The connection is restarting with your change…
+                  Switch is reconnecting to Teams with your change…
                 </Typography>
               )}
             </Stack>

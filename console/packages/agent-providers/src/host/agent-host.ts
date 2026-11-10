@@ -1339,7 +1339,7 @@ export async function runAgentHost(
       // A room control (!reset, !interrupt) typed in one of the agent's rooms,
       // which only Switch sees. Handed to the session's host like any other.
       onSessionCommand: async (relayed) => {
-        const { requesterName, roomId, ...rest } = relayed;
+        const { requesterName, direct, roomId, ...rest } = relayed;
         const sessionId =
           rest.sessionId ?? (typeof roomId === 'string' ? placements.sessionIn(roomId) : null);
         if (!sessionId) {
@@ -1376,6 +1376,7 @@ export async function runAgentHost(
             type: 'command',
             command,
             requesterName: typeof requesterName === 'string' ? requesterName : null,
+            direct: direct === true,
           },
           `command ${command.commandId}`,
           restarted || relaunched ? HOST_START_MS : 0

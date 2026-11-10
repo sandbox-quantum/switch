@@ -100,11 +100,11 @@ export default function AddMachineDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle>Add a machine</DialogTitle>
+      <DialogTitle>Add a device</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ mb: 2 }}>
-          Run the agent controller on the machine that should run your agents (a laptop, your
-          own VM or a server). Enroll it once with the code below; it then runs whatever agents
+          Run the agent controller on the device that should run your agents (a laptop, a
+          desktop or your own VM). Enroll it once with the code below; it then runs whatever agents
           you place on it here. It needs Linux or macOS with Node 22.13 or later, and the CLI of
           each provider your agents use (such as <code>claude</code> or <code>codex</code>),
           signed in as the user the controller runs as.
@@ -119,7 +119,7 @@ export default function AddMachineDialog({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 error={nameError !== null}
-                helperText={nameError ?? "Defaults to the machine's host name."}
+                helperText={nameError ?? "Defaults to the device's host name."}
                 size="small"
                 fullWidth
               />
@@ -128,7 +128,7 @@ export default function AddMachineDialog({
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 error={descriptionError !== null}
-                helperText={descriptionError ?? "What the machine is for, e.g. the build box in the office."}
+                helperText={descriptionError ?? "What the device is for, e.g. the build box in the office."}
                 size="small"
                 fullWidth
               />
@@ -147,9 +147,9 @@ export default function AddMachineDialog({
                       label="Copy install command"
                     />
                     <Typography variant="caption" color="text.secondary">
-                      Installs the newest controller with npm, enrolls this machine, and runs the
+                      Installs the newest controller with npm, enrolls this device, and runs the
                       controller as a service of your user. <code>--server</code> is this Switch's
-                      API address. If the machine reaches Switch at a different address, change it
+                      API address. If the device reaches Switch at a different address, change it
                       to that one.
                     </Typography>
                   </Box>
@@ -168,8 +168,8 @@ export default function AddMachineDialog({
                 </Stack>
               ) : (
                 <Alert severity="warning">
-                  This server does not say where its Switch API is, so no enrollment command
-                  can be shown. Set <code>GATEWAY_PUBLIC_URL</code> on the Switch server to its
+                  Switch does not say where its API is, so no enrollment command can be
+                  shown. Set <code>GATEWAY_PUBLIC_URL</code> in Switch&apos;s configuration to its
                   API address, or enroll with{" "}
                   <code>switch-agent-controller enroll --server &lt;Switch API URL&gt; --code</code>{" "}
                   and the code below. This page's address is not it.
@@ -183,7 +183,7 @@ export default function AddMachineDialog({
               <CopyBlock text={enrollment.code} label="Copy code" />
             </Box>
             <Alert severity="info">
-              Single use, valid until {formatDate(enrollment.expires_at)}. The machine appears in
+              Single use, valid until {formatDate(enrollment.expires_at)}. The device appears in
               the list once its controller reports. If it does not, run{" "}
               <code>switch-agent-controller doctor</code> on it to see what is missing.
             </Alert>

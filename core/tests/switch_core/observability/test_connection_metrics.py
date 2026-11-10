@@ -8,6 +8,7 @@ metric.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator
 from typing import Any
 
@@ -162,6 +163,7 @@ def _probes(agents_connected: Any) -> RuntimeProbes:
         bridges_running=lambda: 0,
         bridges_running_by_platform=lambda: {},
         bridges_configured=lambda: 0,
+        bridges_crashed=lambda: [],
         consumers_running=lambda: 0,
         agents_connected=agents_connected,
         pool_stats=lambda: None,
@@ -191,6 +193,27 @@ def test_the_gauge_carries_transport_and_client_but_never_the_version() -> None:
     }
 
 
+def test_a_crashed_bridge_reads_one_and_zero_once_it_runs_again() -> None:
+    """Named, so the alert says which bridge; and back to 0 rather than gone,
+    so the alert recovers instead of going quiet."""
+    crashed = [("teams", "SAQ Teams")]
+    probes = dataclasses.replace(
+        _probes(lambda: {}), bridges_crashed=lambda: list(crashed)
+    )
+    readings = _state_readings(probes)
+
+    def now() -> dict[tuple, float]:
+        return {
+            tuple(sorted(r.attributes.items())): r.value
+            for r in readings()
+            if r.spec.name == "switch.bridges.crashed"
+        }
+
+    assert now() == {(("bridge_name", "SAQ Teams"), ("platform", "teams")): 1.0}
+    crashed.clear()
+    assert now() == {(("bridge_name", "SAQ Teams"), ("platform", "teams")): 0.0}
+
+
 def test_the_gauge_still_reports_zero_with_nobody_connected() -> None:
     """A panel over no series reads "no data", which is not the same as none."""
     readings = _connected_readings(_probes(lambda: {}))
@@ -201,44 +224,18 @@ def test_the_gauge_still_reports_zero_with_nobody_connected() -> None:
 # ── Refused ──────────────────────────────────────────────────────────────────
 
 
-async def test_the_event_stream_is_served_so_never_refused_as_removed(
-    registry,
-) -> None:
-    """Kept for old clients for a compatibility window, so `transport_removed`
-    does not fire; a stream refused for another reason is counted for it."""
+async def test_a_request_for_the_old_event_stream_is_counted(registry) -> None:
     with pytest.raises(HTTPException):
         await handlers.poll_events(
             agent_id=AGENT_ID,
             agent=Agent(id=AGENT_ID, name="agent"),
             protocol=None,  # type: ignore[arg-type]
-            config=None,  # type: ignore[arg-type]
             accept="text/event-stream",
         )
 
     assert _counts(registry, "switch.agent.connections_refused") == {
-        (("reason", "other"),): 1.0
+        (("reason", "transport_removed"),): 1.0
     }
-
-
-def test_a_stream_attached_over_sse_is_counted_as_sse() -> None:
-    connections = AgentConnectionRegistry()
-    connections.open(
-        agent_id="a1",
-        connection_id="c1",
-        scope="all",
-        delivery_filter="all",
-        spawn_capable=False,
-        position={OWN_EVENTS: 0},
-        declaration=ClientDeclaration(speaks=6, accepts=1, artifact="agent-runtime"),
-        expected_generation=None,
-        transport="sse",
-    )
-    _open(connections, "a2", "c2", "agent-runtime")
-
-    readings = _connected_readings(_probes(connections.live_agents_by_transport))
-
-    assert readings[(("client", "agent-runtime"), ("transport", "sse"))] == 1.0
-    assert readings[(("client", "agent-runtime"), ("transport", "websocket"))] == 1.0
 
 
 class _EmptyBuffer(EventBuffer):

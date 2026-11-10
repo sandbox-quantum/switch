@@ -91,7 +91,7 @@ export default function RoomCreateFormBody() {
     if (!selectedBridge.channel_creation_supported) {
       return `${selectedBridge.display_name} cannot create channels from Switch. Create the channel on the platform, then add the app to it.`;
     }
-    return "Channel creation is turned off for this connection. An admin can turn it on in Messaging Apps.";
+    return "Channel creation is turned off for this messaging app. An admin can turn it on in the workspace's messaging apps.";
   }, [selectedBridge, channelCreationBlocked]);
 
   // If the user had "Create new channel" selected and then picks a bridge

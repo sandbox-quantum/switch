@@ -1545,8 +1545,28 @@ class _FakeApplication:
 class _FakeBuilder:
     def __init__(self, app: _FakeApplication) -> None:
         self._app = app
+        self.connect_timeout_val: float | None = None
+        self.read_timeout_val: float | None = None
+        self.get_updates_connect_timeout_val: float | None = None
+        self.get_updates_read_timeout_val: float | None = None
 
     def token(self, _token: str) -> _FakeBuilder:
+        return self
+
+    def connect_timeout(self, timeout: float) -> _FakeBuilder:
+        self.connect_timeout_val = timeout
+        return self
+
+    def read_timeout(self, timeout: float) -> _FakeBuilder:
+        self.read_timeout_val = timeout
+        return self
+
+    def get_updates_connect_timeout(self, timeout: float) -> _FakeBuilder:
+        self.get_updates_connect_timeout_val = timeout
+        return self
+
+    def get_updates_read_timeout(self, timeout: float) -> _FakeBuilder:
+        self.get_updates_read_timeout_val = timeout
         return self
 
     def build(self) -> _FakeApplication:
@@ -1575,6 +1595,22 @@ def test_starting_begins_polling_and_learns_the_bot_id() -> None:
         "my_chat_member",
         "callback_query",
     ]
+
+
+def test_starting_configures_network_timeouts_on_application_builder() -> None:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication()
+    builder = _FakeBuilder(app)
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: builder):
+        _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert builder.connect_timeout_val == 30.0
+    assert builder.read_timeout_val == 30.0
+    assert builder.get_updates_connect_timeout_val == 30.0
+    assert builder.get_updates_read_timeout_val == 30.0
 
 
 def test_a_quiet_copy_calls_the_bot_api_without_polling() -> None:

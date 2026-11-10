@@ -555,6 +555,11 @@ export class SwitchClient {
     return this.gateway<OrganizationSummary[]>("GET", "/organizations");
   }
 
+  /** `GET /gateway/tenants/counts` — how many users and agents each workspace the caller may enter has. */
+  async workspaceCounts(): Promise<{ id: string; users: number; agents: number }[]> {
+    return this.gateway("GET", "/tenants/counts");
+  }
+
   /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter. */
   async organizationWorkspaces(): Promise<WorkspaceMembership[]> {
     return this.gateway<WorkspaceMembership[]>(
@@ -707,6 +712,40 @@ export class SwitchClient {
       user_names: params.userNames,
     });
     return toRoomDetail(row);
+  }
+
+  // ── decision routing (auto-route) ────────────────────────────────────────
+
+  /** `GET /gateway/decision-settings`: the signed-in workspace's decision settings. */
+  async decisionSettings(): Promise<Record<string, unknown>> {
+    return this.gateway("GET", "/decision-settings");
+  }
+
+  /** `PUT /gateway/decision-settings`: save the workspace's decision backend. */
+  async saveDecisionSettings(
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.gateway("PUT", "/decision-settings", body);
+  }
+
+  /** `DELETE /gateway/decision-settings`: back to the server default. */
+  async resetDecisionSettings(): Promise<void> {
+    await this.gateway("DELETE", "/decision-settings");
+  }
+
+  /** `POST /gateway/decision-settings/test`: one sample decision, nothing saved. */
+  async testDecisionSettings(
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.gateway("POST", "/decision-settings/test", body);
+  }
+
+  /** `PUT /gateway/rooms/{room_id}/auto-route`: the room's auto-route switch. */
+  async setRoomAutoRoute(
+    roomId: string,
+    body: { on?: boolean; fallback_agent?: string | null },
+  ): Promise<Record<string, unknown>> {
+    return this.gateway("PUT", `/rooms/${roomId}/auto-route`, body);
   }
 
   async deleteRoom(roomId: string): Promise<void> {

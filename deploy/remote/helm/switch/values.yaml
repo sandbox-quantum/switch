@@ -100,11 +100,13 @@ ingress:
 #      DB_OWNER_PASSWORD (only if postgresql.owner.username is set, and unless
 #        postgresql.owner.existingSecret is set),
 #      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
-#      GATEWAY_ADMIN_PASSWORD,
+#      GATEWAY_ADMIN_PASSWORD (unless switchCore.oidc.enabled with
+#        passwordLoginEnabled false, and Mattermost off),
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
 #      CONTROLLER_TOKEN_SECRET (with the agent_management feature flag on),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
-#      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
+#      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled),
+#      WORKOS_API_KEY (if switchCore.organizationDirectory.mode is workos).
 secrets:
   # Name of a pre-existing Secret to read all of the above from. Empty = the
   # chart manages its own Secret from the values below.
@@ -134,6 +136,8 @@ secrets:
   # under secretKeys. Remove it afterwards.
   jwtSecretKey: ""
   gatewayAdminEmail: ""
+  # Required while password login is on (or with Mattermost); may be left
+  # empty with switchCore.oidc.passwordLoginEnabled false.
   gatewayAdminPassword: ""
   mattermostAdminPassword: ""
   mattermostUserPassword: ""
@@ -144,6 +148,11 @@ secrets:
   controllerTokenSecret: ""
   # Gateway OIDC client secret (required when switchCore.oidc.enabled).
   gatewayOidcClientSecret: ""
+  # WorkOS API key (required when switchCore.organizationDirectory.mode is
+  # workos). With member changes on, it must belong to the AuthKit application
+  # in organizationDirectory.workosClientId: WorkOS exchanges that
+  # application's sign-ins only with its own key.
+  workosApiKey: ""
   # SMTP relay password for invitation e-mails (required when
   # switchCore.smtp.enabled and a username is set, either way below).
   gatewaySmtpPassword: ""
@@ -398,6 +407,23 @@ switchCore:
     # turns self-service creation off. Applies in every mode but invite_only,
     # which allows none.
     maxWorkspacesPerUser: 3
+  # Who keeps the record of organizations and their members
+  # (docs/old/workos-directory.md).
+  #   local  — this server, in its own tables
+  #   workos — the WorkOS environment behind the OIDC sign-in, read with
+  #            secrets.workosApiKey. Needs oidc.enabled against that
+  #            environment and signup.mode invite_only.
+  organizationDirectory:
+    mode: local
+    # Member changes made from Switch to a linked organization, sent to the
+    # service the WorkOS environment's members are changed through, with the
+    # admin's own WorkOS token. All three or none; workos mode only.
+    membersServiceUrl: ""
+    # The AuthKit application admins sign in to for that token.
+    workosClientId: ""
+    # Its callback, <gatewayPublicUrl>/gateway/auth/workos/callback, registered
+    # on that application.
+    workosRedirectUrl: ""
   # Answer a person with several workspaces and none selected with a 409 that
   # lists them, rather than a 403. The gateway UI does not need it; turn it on
   # once every API client authenticating against this deployment handles it.
@@ -422,6 +448,29 @@ switchCore:
     # people mention the agent again. FOLLOW_THE_CONVERSATION_WINDOW_SECONDS,
     # 1 to 3600.
     windowSeconds: 300
+  # Auto-route's server default: the decision service switch-core asks who
+  # should answer an untagged message in a room with auto-route on (the
+  # "decision_routing" feature flag, featureFlags.enabled below). Every
+  # workspace that has not chosen its own backend in Switch Console's Decision
+  # routing settings uses it. With decision.enabled (below) the chart runs the
+  # service itself and points switch-core at it; leave endpointUrl empty then.
+  # Set endpointUrl instead to use a decision service run elsewhere.
+  decision:
+    # DECISION_ENDPOINT_URL, e.g. http://switch-decision.decision.svc:8230.
+    endpointUrl: ""
+    # DECISION_API_KEY for that endpoint: the bearer token a decision service
+    # run elsewhere requires (its DECISION_SERVICE_TOKEN), read from an
+    # existing Secret. Only with endpointUrl; with decision.enabled the chart
+    # wires its own token.
+    apiKey:
+      existingSecret: ""
+      existingSecretKey: token
+    # DECISION_BEDROCK_ENABLED: workspaces may choose Claude Haiku on Amazon
+    # Bedrock, which runs inside the decision service on its own AWS
+    # credentials. With decision.enabled, decision.bedrock.enabled sets this.
+    bedrockEnabled: false
+    # DECISION_TIMEOUT_SECONDS; empty keeps switch-core's default.
+    timeoutSeconds: ""
   # The agent controller release switch-core tells every controller to run
   # (CONTROLLER_RELEASE_VERSION / _URL / _SHA256), except Switch Console's own,
   # which updates with Console. A controller that runs
@@ -450,7 +499,8 @@ switchCore:
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
   # hosted_agents, service_connections, agent_chats, follow_the_conversation,
-  # switch_buddy, buddy_slack_handoff.
+  # switch_buddy, buddy_slack_handoff, decision_routing, gateway_v2
+  # (development and staging only until the new dashboard layout is finished).
   featureFlags:
     enabled: []
   # Catalog services turned off on this server, each with the reason people
@@ -840,6 +890,189 @@ mattermost:
     limits:
       memory: "512Mi"
       cpu: "500m"
+
+# ── Decision service (auto-route) ─────────────────────────────────────────────
+# The service switch-core asks who should answer an untagged message in a room
+# with auto-route on. Off by default. When on, the chart runs one pod with two
+# containers, points switch-core at it (DECISION_ENDPOINT_URL; leave
+# switchCore.decision.endpointUrl empty) and admits only switch-core to it:
+#
+#   decision      the switch-decision image: POST /decide and GET /health on
+#                 `port`. CPU only. The Service exposes this port and no other.
+#   model-server  the self-hosted decision model (modelServer.kind: Strands
+#                 Decider 4B by default, or Qwen3.5-4B on llama.cpp), reached
+#                 by the decision container on localhost. Its weights are
+#                 downloaded at first start into a PVC, never baked into an
+#                 image.
+#
+# The model server needs one NVIDIA GPU (an L4 answers in well under a
+# second): it requests nvidia.com/gpu, so the cluster needs the NVIDIA device
+# plugin and a GPU node; point nodeSelector/tolerations at it. Strands Decider
+# 4B also requests 24Gi of memory, so the node needs 32 GiB (a g6.2xlarge).
+# Turn on the "decision_routing" and "follow_the_conversation" feature flags
+# (switchCore.featureFlags.enabled) for auto-route to be offered in rooms.
+decision:
+  enabled: false
+  image: switch-decision:latest
+  # Empty: IfNotPresent when the image is pinned by digest (as in a published
+  # chart), Always otherwise. Set it to override.
+  imagePullPolicy: ""
+  port: 8230
+  # DECISION_BACKEND. Empty: the API the model server speaks (systemone for
+  # modelServer.kind strands, llamacpp for llamacpp). To run without a GPU,
+  # turn modelServer.enabled off and set anthropic or bedrock (their settings
+  # in `env`).
+  backend: ""
+  # DECISION_MODEL, the name /health reports and the decision log records.
+  # Empty: the model server's modelName.
+  model: ""
+  # DECISION_CONFIDENCE_THRESHOLD; empty keeps the service's default (0.6).
+  confidenceThreshold: ""
+  # Claude Haiku on Amazon Bedrock as a per-workspace choice. Sets
+  # DECISION_BEDROCK_ENABLED on the service and on switch-core. Bedrock is
+  # called with the pod's AWS credentials: on EKS, an IAM role allowing
+  # bedrock:InvokeModel on Haiku, through serviceAccount.annotations.
+  bedrock:
+    enabled: false
+    # DECISION_BEDROCK_MODEL and AWS_REGION; empty keeps the service's default.
+    model: ""
+    region: ""
+  # Extra container env for the decision container (DECISION_TIMEOUT_S,
+  # DECISION_HISTORY_LIMIT, SYSTEMONE_URL, ...), as Kubernetes env entries.
+  env: []
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+  # The model server, a sidecar in the decision pod on one GPU, reached on
+  # localhost. Its weights live in the PVC below, downloaded on the first start.
+  modelServer:
+    enabled: true
+    # strands: Strands Decider 4B (E4B), the default. 92/100 on our routing
+    #   scenarios with 2 wrong picks, 0.27 s median on one NVIDIA L4. Needs a
+    #   24 GB GPU and about 24 GiB of RAM to load (a g6.2xlarge, say).
+    # llamacpp: Qwen3.5-4B in 4-bit on the llama.cpp server. 88/100 with 9
+    #   wrong picks, 0.16 s; a smaller footprint (8 GiB of RAM).
+    kind: strands
+    # A Secret holding a Hugging Face token (key below), passed to whichever
+    # model server downloads: for a gated checkpoint (one whose licence the
+    # token's account has accepted) or higher Hub rate limits. Empty name: none.
+    hfTokenSecret:
+      name: ""
+      key: HF_TOKEN
+    strands:
+      # The release pins this image (switch-decision-strands) by digest.
+      image: switch-decision-strands:latest
+      # Empty: IfNotPresent when pinned by digest, Always otherwise.
+      imagePullPolicy: ""
+      port: 8400
+      # The Hugging Face checkpoint, downloaded into the PVC (HF_HOME) on the
+      # first start with its base model (google/gemma-4-E4B-it, about 16 GB,
+      # under the Gemma terms). Later starts only load it.
+      checkpoint: StrandsAgents/strands-decider-E4B-gemma4-v1-2610
+      # The commits of the checkpoint (STRANDS_REVISION) and of its base model
+      # (STRANDS_BASE_REVISION) to download, so a new push to either repo
+      # changes nothing here. The base revision must be the one the checkpoint
+      # records in its provenance.json (the one it was trained on): the server
+      # refuses to start otherwise. Bump both together, from the checkpoint's
+      # Hugging Face page.
+      revision: 1344d44397c457f3be34b8ff15c593b41248c6bf
+      baseRevision: ee0ef6023621cff504d758262d4e04895a5af4a2
+      # The name the server answers as, and DECISION_MODEL unless `model`
+      # above is set.
+      modelName: strands-decider-E4B
+      # Extra container env, as Kubernetes env entries. The server (the image's
+      # serve.py, which merges the adapter into the base weights) is
+      # configured only by env, e.g. STRANDS_MAX_BATCH (default 32).
+      env: []
+      # The port opens only once the model is loaded: the first start
+      # downloads about 16 GB and then loads it (a few minutes with 32 GiB of
+      # RAM). 10 s x 180 allows 30 minutes before the container is restarted.
+      startupProbe:
+        periodSeconds: 10
+        failureThreshold: 180
+      resources:
+        requests:
+          memory: "24Gi"
+          cpu: "2"
+          nvidia.com/gpu: 1
+        limits:
+          memory: "28Gi"
+          nvidia.com/gpu: 1
+    llamacpp:
+      image: ghcr.io/ggml-org/llama.cpp:server-cuda
+      imagePullPolicy: IfNotPresent
+      port: 8300
+      # DECISION_MODEL unless `model` above is set.
+      modelName: qwen3.5-4b-q4_k_m
+      # $(MODEL_PATH) is /models/<model.file>, expanded by Kubernetes.
+      args:
+        - -m
+        - $(MODEL_PATH)
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8300"
+        - -ngl
+        - "99"
+        - -c
+        - "16384"
+        - -np
+        - "4"
+        - --jinja
+      # The weights, downloaded into the PVC by an init container when the
+      # file is not there yet, from a fixed Hugging Face commit. A file that
+      # fails its checksum is deleted and downloaded again; a download that
+      # fails it is deleted and the pod restarts, so a bad file never sticks.
+      # To change model, set url, file and sha256 together.
+      model:
+        url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf
+        file: Qwen3.5-4B-Q4_K_M.gguf
+        # Hex SHA-256 of the file. Empty skips the check (not recommended).
+        sha256: 00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4
+        downloaderImage: curlimages/curl:8.11.1
+      # llama.cpp's /health is 503 until the model is loaded (seconds).
+      startupProbe:
+        periodSeconds: 5
+        failureThreshold: 120
+      resources:
+        requests:
+          memory: "8Gi"
+          cpu: "2"
+          nvidia.com/gpu: 1
+        limits:
+          memory: "14Gi"
+          nvidia.com/gpu: 1
+  # The weights volume. Empty storageClass uses global.storageClass.
+  # 40Gi holds Strands Decider's Hugging Face cache (about 17 GB) with room
+  # for a second checkpoint; Qwen's file is 2.7 GB.
+  persistence:
+    size: 40Gi
+    storageClass: ""
+  nodeSelector: {}
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  serviceAccount:
+    # e.g. eks.amazonaws.com/role-arn for Bedrock through IRSA.
+    annotations: {}
+  # Admit only this release's switch-core pods to the decision port. Needs a
+  # CNI that enforces NetworkPolicy; without one it is accepted and ignored,
+  # and the token below is what keeps other pods out.
+  networkPolicy:
+    enabled: true
+  # The bearer token the service requires (DECISION_SERVICE_TOKEN) and
+  # switch-core sends (DECISION_API_KEY). By default the chart generates it
+  # into the Secret <release>-decision-token on the first install and keeps it
+  # on upgrades. Name a Secret of your own instead with existingSecret; the
+  # token is its existingSecretKey entry.
+  token:
+    existingSecret: ""
+    existingSecretKey: token
 
 # ── Setup Job ─────────────────────────────────────────────────────────────────
 setup:

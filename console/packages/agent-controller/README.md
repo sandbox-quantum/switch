@@ -46,7 +46,7 @@ relay accepts.
 
 Each `switch-agent-controller-v*` release on GitHub carries one npm package, the CLI
 and the shared-host bundle it runs agents with, with no dependencies. The gateway's
-Machines page shows the one command that installs it, enrolls the machine and starts
+Devices page shows the one command that installs it, enrolls the machine and starts
 it as a service:
 
 ```bash
@@ -99,7 +99,7 @@ switch-agent-controller update [--check]
   through the controller's relay.
 - `--name` defaults to the host name.
 - `--description` says what the machine is for (optional, at most 500
-  characters). Its owner sees it in the gateway's Machines page, where both the
+  characters). Its owner sees it in the gateway's Devices page, where both the
   name and the description can be changed later, and so do the agents allowed
   to manage agents for that owner.
 - `set-info` changes the machine's name and/or description on the server after

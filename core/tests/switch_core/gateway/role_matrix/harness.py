@@ -72,6 +72,8 @@ from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessSto
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.client import DynamicDecisionClient
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.feature_flags import KNOWN_FEATURE_FLAGS
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import create_jwt
@@ -82,6 +84,7 @@ from switch_core.management.wiring import (
     mount_gateway_routes,
 )
 from switch_core.organization_directory import LocalDirectory
+from switch_core.outbound import OutboundPolicy
 from switch_core.process_lease import ProcessLease
 from switch_core.providers.github import GitHubConnections, GitHubReach
 from switch_core.signals import SignalBus
@@ -378,12 +381,30 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         _store=OrganizationAppCredentialStore(settings.keyring),
     )
     gateway.state.controller_revoker = management.service
+    # Auto-route's decision client, asking nothing: the decision settings
+    # routes read and save the workspace's row, and Test meets a service that
+    # is down.
+    gateway.state.decision_client = DynamicDecisionClient(
+        session_factory=session_factory,
+        availability=DecisionAvailability.from_config(settings),
+        keyring=settings.keyring,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(_decision_down)),
+        guarded_client=httpx.AsyncClient(transport=httpx.MockTransport(_decision_down)),
+        outbound_policy=OutboundPolicy.parse(""),
+        timeout_seconds=1.0,
+        telemetry=None,
+        cache_seconds=0,
+    )
     gateway.state.github_connections = _github()
     # The clients the room and chat services think are running: `World` adds
     # each agent it makes, as a running client would announce itself.
     gateway.state.matrix_lifecycle = lifecycle
     gateway.add_exception_handler(Reached, reached_response)
     return gateway
+
+
+def _decision_down(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(503)
 
 
 def _github() -> GitHubConnections:

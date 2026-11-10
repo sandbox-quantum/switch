@@ -121,8 +121,8 @@ describe("MembersSection", () => {
 
     render(<MembersSection tenantId="t1" selfId="u1" />);
 
-    expect(await screen.findByText("Org Admin, via organization")).toBeTruthy();
-    expect(screen.getByText("Admin · Org Admin")).toBeTruthy();
+    expect(await screen.findByText("Org admin, via organization")).toBeTruthy();
+    expect(screen.getByText("Admin · Org admin")).toBeTruthy();
     expect(screen.queryByLabelText("Remove dee@example.com")).toBeNull();
     expect(screen.queryByLabelText("Role for cy@example.com")).toBeNull();
     expect(screen.queryByLabelText("Remove cy@example.com")).toBeNull();

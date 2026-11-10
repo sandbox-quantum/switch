@@ -22,6 +22,9 @@ interface Props {
   resourceId: string;
   resourceLabel: string;
   ownerId: string | null;
+  // Why the server would refuse to move it, which disables the button and is
+  // shown beside it; null when it can be moved.
+  blockedReason: string | null;
   onTransferred: () => void;
 }
 
@@ -35,15 +38,11 @@ const LABELS: Record<OwnershipKind, string> = {
   template: "template",
 };
 
-/** Who the thing can go to: anyone in the workspace but its owner and the
- * caller. An admin handing over someone else's thing can't take it for
- * themselves; the server refuses that too. */
-export function transferCandidates(
-  members: Member[],
-  ownerId: string | null,
-  callerId: string | null,
-): Member[] {
-  return members.filter((m) => m.user_id !== ownerId && m.user_id !== callerId);
+/** Who the thing can go to: whoever the server says may receive it (a
+ * member of this workspace other than the caller, and not an organization
+ * admin listed through the organization), but the owner it already has. */
+export function transferCandidates(members: Member[], ownerId: string | null): Member[] {
+  return members.filter((m) => m.can_receive_transfer && m.user_id !== ownerId);
 }
 
 /** Hands the thing to another member of this workspace. The server decides
@@ -53,6 +52,7 @@ export default function TransferOwnershipSection({
   resourceId,
   resourceLabel,
   ownerId,
+  blockedReason,
   onTransferred,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -66,10 +66,16 @@ export default function TransferOwnershipSection({
         variant="outlined"
         startIcon={<SwapHoriz />}
         onClick={() => setOpen(true)}
+        disabled={blockedReason !== null}
         sx={{ alignSelf: "flex-start" }}
       >
         Transfer ownership
       </Button>
+      {blockedReason !== null && (
+        <Typography variant="body2" sx={{ color: "text.secondary" }}>
+          {blockedReason}
+        </Typography>
+      )}
       {open && (
         <TransferOwnershipDialog
           kind={kind}
@@ -106,7 +112,7 @@ export function TransferOwnershipDialog({
   onClose,
   onTransferred,
 }: DialogProps) {
-  const { session, user } = useAuth();
+  const { session } = useAuth();
   const tenantId = session?.tenant?.id;
   const [members, setMembers] = useState<Member[] | null>(null);
   const [recipient, setRecipient] = useState("");
@@ -122,7 +128,7 @@ export function TransferOwnershipDialog({
         if (!cancelled) setMembers(found);
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Could not load members");
+        if (!cancelled) setError(e instanceof Error ? e.message : "Could not load users");
       });
     return () => {
       cancelled = true;
@@ -147,7 +153,7 @@ export function TransferOwnershipDialog({
     }
   };
 
-  const candidates = transferCandidates(members ?? [], ownerId, user?.id ?? null);
+  const candidates = transferCandidates(members ?? [], ownerId);
 
   return (
     <Dialog open onClose={close} fullWidth maxWidth="xs">
@@ -174,7 +180,7 @@ export function TransferOwnershipDialog({
             aria-label="New owner"
           >
             <MenuItem value="" disabled>
-              Choose a member
+              Choose a user
             </MenuItem>
             {candidates.map((m) => (
               <MenuItem key={m.user_id} value={m.user_id}>

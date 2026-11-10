@@ -290,7 +290,7 @@ class ChatService:
         that turned it off (or never on) says so rather than half-serving it."""
         if not self.group_chats_enabled:
             raise ChatError(
-                409, "GROUP_CHATS_OFF", "Group chats are not turned on for this server."
+                409, "GROUP_CHATS_OFF", "Group chats are not turned on here."
             )
 
     def _lock(self, *key: str) -> asyncio.Lock:
@@ -1414,7 +1414,7 @@ class ChatService:
             raise ChatError(
                 409,
                 "BUDDY_SLACK_HANDOFF_OFF",
-                "Chats on a bridge are not turned on for this server.",
+                "Chats on a messaging app are not turned on here.",
             )
         if bridge_id is not None and not direct:
             raise ChatError(

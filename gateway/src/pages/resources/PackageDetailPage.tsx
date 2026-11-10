@@ -19,9 +19,9 @@ import {
   fetchPackage,
   updatePackage,
 } from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import {
+  ACCESS_HELPERS_FOR_OTHERS,
   type AccessLevel,
   fromAccessLevel,
   toAccessLevel,
@@ -34,7 +34,6 @@ import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
 export default function PackageDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, canAdminTenant } = useAuth();
   const [pkg, setPkg] = useState<PackageDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -76,9 +75,6 @@ export default function PackageDetailPage() {
     );
   }
 
-  const canMutate =
-    !!user && (user.id === pkg.owner_id || canAdminTenant);
-
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
@@ -99,18 +95,19 @@ export default function PackageDetailPage() {
         <Divider />
         <EditFieldsSection
           pkg={pkg}
-          canMutate={canMutate}
+          canEdit={pkg.can_edit}
+          canChangeAccess={pkg.can_manage}
           onSaved={(updated) => setPkg(updated)}
         />
         <Divider />
-        <PackageMembersSection packageId={id} canMutate={canMutate} />
+        <PackageMembersSection packageId={id} canMutate={pkg.can_edit} />
         <Divider />
         <ResourceAttachmentsSection
           kind="package"
           resourceId={id}
           hiddenRoomsCount={pkg.hidden_rooms_count}
         />
-        {canMutate && (
+        {pkg.can_manage && (
           <>
             <Divider />
             <TransferOwnershipSection
@@ -118,8 +115,13 @@ export default function PackageDetailPage() {
               resourceId={id}
               resourceLabel={pkg.name || id}
               ownerId={pkg.owner_id}
+              blockedReason={null}
               onTransferred={() => navigate(0)}
             />
+          </>
+        )}
+        {pkg.can_manage && (
+          <>
             <Divider />
             <DangerSection onDelete={() => setDeleteOpen(true)} />
           </>
@@ -168,11 +170,13 @@ function InfoSection({ pkg }: { pkg: PackageDetail }) {
 
 function EditFieldsSection({
   pkg,
-  canMutate,
+  canEdit,
+  canChangeAccess,
   onSaved,
 }: {
   pkg: PackageDetail;
-  canMutate: boolean;
+  canEdit: boolean;
+  canChangeAccess: boolean;
   onSaved: (updated: PackageDetail) => void;
 }) {
   const [name, setName] = useState(pkg.name);
@@ -199,7 +203,8 @@ function EditFieldsSection({
         name,
         description,
         instructions,
-        ...fromAccessLevel(access),
+        // Changing who may see or change it is the manager's alone.
+        ...(access !== toAccessLevel(pkg) ? fromAccessLevel(access) : {}),
       });
       onSaved(updated);
     } catch (e) {
@@ -218,13 +223,13 @@ function EditFieldsSection({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
       />
       <TextField
         label="Description"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={2}
         helperText="Short summary. Shown in lists."
@@ -233,7 +238,7 @@ function EditFieldsSection({
         label="Instructions"
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={6}
         helperText="Sent to agents on connect. Not shown in lists."
@@ -241,7 +246,8 @@ function EditFieldsSection({
       <AccessSelect
         value={access}
         onChange={setAccess}
-        disabled={!canMutate || saving}
+        disabled={!canChangeAccess || saving}
+        helpers={canChangeAccess ? undefined : ACCESS_HELPERS_FOR_OTHERS}
         sx={{ maxWidth: 320 }}
       />
       {error && <Alert severity="error">{error}</Alert>}
@@ -249,7 +255,7 @@ function EditFieldsSection({
         <Button
           variant="contained"
           onClick={handleSave}
-          disabled={!canMutate || !dirty || saving}
+          disabled={!(canEdit || canChangeAccess) || !dirty || saving}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
           Save

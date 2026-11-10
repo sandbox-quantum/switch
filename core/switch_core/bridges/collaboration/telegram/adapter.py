@@ -717,7 +717,15 @@ class TelegramAdapter(PlatformAdapter):
             return
 
         assert self._config.bot_token is not None  # guaranteed by the validator
-        app = ApplicationBuilder().token(self._config.bot_token).build()
+        app = (
+            ApplicationBuilder()
+            .token(self._config.bot_token)
+            .connect_timeout(30.0)
+            .read_timeout(30.0)
+            .get_updates_connect_timeout(30.0)
+            .get_updates_read_timeout(30.0)
+            .build()
+        )
         app.add_handler(TypeHandler(Update, self._make_on_update()))
         self._app = app
         self._bot = app.bot

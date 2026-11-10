@@ -26,7 +26,7 @@ import { useNavigate } from "react-router";
 import DataTable from "../../components/DataTable";
 import { type AgentSummary, deleteAgent } from "../../data/api";
 import { useAgents } from "../../data/hooks";
-import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
+import { EM_DASH, formatDate, sentenceCase } from "../../theme/hootFormat";
 import RegisterAgentDialog from "./RegisterAgentDialog";
 
 // Connector type is a category, not a status. Colour here would compete with
@@ -157,7 +157,7 @@ export default function AgentsPage() {
       { field: "name", headerName: "Name", flex: 1, minWidth: 200 },
       {
         field: "connector_type",
-        headerName: "Agent Type",
+        headerName: "Agent type",
         width: 150,
         renderCell: ({ value }) =>
           value ? (
@@ -170,9 +170,9 @@ export default function AgentsPage() {
       },
       {
         field: "connection_model",
-        headerName: "Connection Type",
+        headerName: "Availability",
         width: 170,
-        valueFormatter: (value) => (value ? titleCase(value as string) : EM_DASH),
+        valueFormatter: (value) => (value ? sentenceCase(value as string) : EM_DASH),
       },
       {
         field: "parent_agent_id",
@@ -233,7 +233,7 @@ export default function AgentsPage() {
           startIcon={<AddCircleOutline />}
           onClick={() => setRegisterOpen(true)}
         >
-          Register Agent
+          Add agent
         </Button>
       </Stack>
 

@@ -11,7 +11,7 @@ import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { type Erasure, type Person, fetchErasures, fetchPeople } from "../../data/api";
-import { formatDate, titleCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase, titleCase } from "../../theme/hootFormat";
 import EraseDialog from "./EraseDialog";
 import { useLoad } from "./useLoad";
 
@@ -133,7 +133,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
         <Stack key={erasure.id} direction="row" spacing={1} alignItems="center">
           <Chip
             size="small"
-            label={titleCase(erasure.state)}
+            label={sentenceCase(erasure.state)}
             color={STATE_COLORS[erasure.state]}
           />
           <Typography variant="body2">

@@ -431,7 +431,7 @@ class OAuthAdapter:
         if not isinstance(refresh_token, str) or not refresh_token:
             raise ServiceAdapterError(
                 f"{self._name} returned no refresh token, so Switch could not keep "
-                "the connection signed in."
+                "the connector signed in."
             )
         values = {
             **previous,
@@ -587,7 +587,7 @@ class OAuthAdapter:
         refresh_token = secret.values.get("refresh_token")
         if not isinstance(refresh_token, str) or not refresh_token:
             raise ReauthorizationRequiredError(
-                f"The {self._name} connection holds no refresh token."
+                f"The {self._name} connector holds no refresh token."
             )
         answer = await self._token_request(
             {"grant_type": "refresh_token", "refresh_token": refresh_token}
@@ -599,7 +599,7 @@ class OAuthAdapter:
     ) -> dict[str, Any]:
         if request.resources:
             raise ServiceAdapterError(
-                f"A {self._name} grant reaches the whole connection; it names "
+                f"A {self._name} grant reaches the whole connector; it names "
                 "no resources."
             )
         return {}

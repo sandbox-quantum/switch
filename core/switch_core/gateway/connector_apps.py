@@ -199,7 +199,7 @@ async def _usages(
 def app_spec(apps: ConnectorApps, service: str) -> AppSpec:
     spec = apps.specs.get(service)
     if spec is None:
-        raise HTTPException(404, f"{service} has no app to set up on this server.")
+        raise HTTPException(404, f"{service} has no app to set up here.")
     return spec
 
 

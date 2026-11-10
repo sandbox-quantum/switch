@@ -250,7 +250,12 @@ describe('placeTurns', () => {
         body: 'I finished without replying. The turn failed: model',
         sentAt: at(2),
       },
-      { ...said('retry', null), body: '!retry @helper q1', sentAt: at(3) },
+      {
+        ...said('retry', null),
+        body: 'Retry requested for helper by me',
+        sender: { kind: 'system', agentId: null, clientId: 'me' },
+        sentAt: at(3),
+      },
       {
         ...said('ack', 'helper'),
         body: 'Trying that message again.',
@@ -463,6 +468,18 @@ describe('bindTurns', () => {
       'ls -la',
       'mcp__switch__list_bridges',
     ]);
+  });
+
+  it('hides Codex and OpenCode posts as it hides Claude Code ones', () => {
+    const turn = turnOf(
+      [
+        row('t1', 'a', { title: 'switch.post_message' }),
+        row('t1', 'b', { title: 'switch_send_targeted_message' }),
+        row('t1', 'c', { title: 'switch.read_context' }),
+      ],
+      'completed'
+    );
+    expect(turnTools(turn).map((each) => each.title)).toEqual(['switch.read_context']);
   });
 
   it('shows an unfinished tool of an interrupted turn as failed', () => {

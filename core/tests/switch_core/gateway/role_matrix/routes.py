@@ -200,6 +200,7 @@ ROUTES: dict[str, Case] = {
     ),
     # ── Workspaces ───────────────────────────────────────────────────────
     "GET /gateway/tenants": get(f"{G}/tenants", SELF),
+    "GET /gateway/tenants/counts": get(f"{G}/tenants/counts", SELF),
     "GET /gateway/tenants/current": get(f"{G}/tenants/current", SELF),
     "POST /gateway/tenants": post(f"{G}/tenants", SELF, json={"name": "{tag}-ws"}),
     "POST /gateway/tenants/{tenant_id}/switch": post(f"{W}/switch", SELF),
@@ -504,6 +505,20 @@ ROUTES: dict[str, Case] = {
     ),
     "DELETE /gateway/rooms/{room_id}/roles/{name}": delete(
         f"{G}/rooms/{{room_role}}/roles/reviewer", owner_or_admins()
+    ),
+    "GET /gateway/decision-settings": get(f"{G}/decision-settings", admins()),
+    "PUT /gateway/decision-settings": put(
+        f"{G}/decision-settings", admins(), json={"backend": "none"}
+    ),
+    "DELETE /gateway/decision-settings": delete(f"{G}/decision-settings", admins()),
+    "POST /gateway/decision-settings/test": post(
+        f"{G}/decision-settings/test", admins(), json={"backend": "none"}
+    ),
+    "PUT /gateway/rooms/{room_id}/auto-route": put(
+        f"{G}/rooms/{{room}}/auto-route",
+        owner_or_admins(),
+        json={"on": False},
+        why="Write access to the room; this room's write access is private.",
     ),
     "PUT /gateway/rooms/{room_id}/protection": put(
         f"{G}/rooms/{{room}}/protection",

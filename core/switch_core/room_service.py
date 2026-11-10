@@ -511,9 +511,9 @@ class RoomService:
             return
         raise ChannelCreationUnsupported(
             f"Creating channels is turned off for the '{bridge.display_name}' "
-            "connection. Create the channel on the platform and add the Switch "
+            "messaging app. Create the channel on the platform and add the Switch "
             "app to it — Switch adopts it as a room — or ask an administrator to "
-            "allow channel creation for this connection."
+            "allow channel creation for this messaging app."
         )
 
     @staticmethod
@@ -1013,7 +1013,7 @@ class RoomService:
         collaboration_core = self._collab_lifecycle.get(bridge_id)
         if collaboration_core is None:
             outcome = RetireOutcome.failed(
-                "The messaging connection is not running, so Switch could not "
+                "The messaging app is not running, so Switch could not "
                 "reach the channel"
             )
         else:

@@ -359,7 +359,7 @@ async function setInfoCommand(args: string[]): Promise<number> {
     const credential = await secrets.get(CONTROLLER_CREDENTIAL);
     if (!credential)
       throw new ConfigurationError(
-        `${dataDir} holds no controller credential (it is handed over at run time, or was removed). Change the name and description in the gateway's Machines page instead.`
+        `${dataDir} holds no controller credential (it is handed over at run time, or was removed). Change the name and description in the gateway's Devices page instead.`
       );
     const log = createLogger({
       level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,

@@ -266,6 +266,125 @@ switchCore:
 
 An unknown service or profile stops switch-core at startup.
 
+## Auto-route and the decision service
+
+Off by default. With the `decision_routing` feature flag on (it needs
+`follow_the_conversation` too), a room with auto-route on asks a decision
+service who should answer a message that names nobody and that no follow-up
+rule delivered. The chart can run that service itself:
+
+```yaml
+switchCore:
+  featureFlags:
+    enabled: ["follow_the_conversation", "decision_routing"]
+decision:
+  enabled: true
+  nodeSelector:
+    nvidia.com/gpu.present: "true"   # whatever labels your GPU nodes carry
+```
+
+With `decision.enabled` the chart renders one Deployment (the `decision`
+container, plus the `model-server` sidecar serving the model), a ClusterIP
+Service on port 8230, a PVC the weights are downloaded into at first start, a
+ServiceAccount, a NetworkPolicy that admits only this release's switch-core
+pods to port 8230, and a Secret holding the service's bearer token. It sets
+`DECISION_ENDPOINT_URL` on switch-core to the Service, so every workspace's
+Decision routing settings in Switch Console show it as the server default with
+no further setup.
+
+- **The service token.** The decision service requires a bearer token on
+  everything but `/health` (`DECISION_SERVICE_TOKEN`), and switch-core sends it
+  (`DECISION_API_KEY`). The model server beside it, which listens on the pod's
+  IP for its probes, requires the same token (`LLAMA_API_KEY` for llama.cpp,
+  `STRANDS_API_KEY` for Strands), and the decision container sends it
+  (`MODEL_SERVER_TOKEN`). So another pod in the cluster gets 401 from either
+  port even where the NetworkPolicy isn't enforced; only `/health` answers
+  without it. The chart generates it into the Secret
+  `<release>-decision-token` on the first install, and reads it back with
+  `lookup` on every upgrade, so it stays the same. `helm template` can't read
+  the cluster, so it renders a new value each time; that is expected, and only
+  matters if you apply its output directly (do it with
+  `decision.token.existingSecret` then). To manage the token yourself, put it
+  in a Secret of your own and name it in `decision.token.existingSecret` (the
+  entry `decision.token.existingSecretKey`, `token` by default); the chart then
+  renders no Secret. Rotating it: change the Secret's value and restart both
+  the decision and switch-core pods.
+
+- **The model.** `decision.modelServer.kind` picks the model server:
+  - `strands` (default): **Strands Decider 4B** (the E4B checkpoint) on its own
+    server image, `switch-decision-strands`, which the release builds and pins
+    like the chart's other first-party images. On one NVIDIA L4 it scored
+    92/100 on our routing scenarios with 2 wrong picks, at 0.27 s median.
+  - `llamacpp`: **Qwen3.5-4B** (4-bit) on llama.cpp's CUDA server: 88/100 with
+    9 wrong picks, at 0.16 s median, in a smaller footprint (8 GiB of RAM).
+
+  The decision service's backend and model name follow the kind
+  (`systemone` and `strands-decider-E4B`, or `llamacpp` and
+  `qwen3.5-4b-q4_k_m`); `decision.backend` and `decision.model` override them.
+  Each kind's image, arguments, probes and resources are under
+  `decision.modelServer.strands` or `decision.modelServer.llamacpp`.
+- **GPU and memory.** Either model server requests `nvidia.com/gpu: 1`, so the
+  cluster needs the NVIDIA device plugin and a GPU node. The pod tolerates the
+  usual `nvidia.com/gpu` taint; set `decision.nodeSelector` (and
+  `decision.tolerations`) for your nodes. Strands Decider 4B also requests
+  24Gi of memory to load its 16 GB of bf16 weights, so give it a node with
+  32 GiB (an AWS g6.2xlarge, one L4). The image needs an NVIDIA driver for
+  CUDA 13.0 (580 or later).
+- **Weights and the first start.** Nothing is baked into an image. Strands
+  Decider downloads its checkpoint and base model (about 17 GB) from Hugging
+  Face into the PVC (`decision.persistence.size`, 40Gi) on its first start,
+  then loads them; the port opens only once the model is loaded. Its startup
+  probe allows 30 minutes (`decision.modelServer.strands.startupProbe`), and
+  the decision service reports not ready until then. Later starts only load
+  the weights, a few minutes. For Qwen, an init container downloads the GGUF
+  file (`decision.modelServer.llamacpp.model`: URL, file name, SHA-256) first.
+  `decision.modelServer.hfTokenSecret` names a Secret with a Hugging Face
+  token, for a gated checkpoint or higher Hub rate limits.
+- **Pinned weights.** Every model is downloaded at a fixed Hugging Face
+  commit, so a new push upstream changes nothing that runs:
+  - Qwen's URL names a commit (`…/resolve/<commit>/…`), and the init container
+    checks the file's SHA-256 (`model.sha256`). A file already on the volume
+    that fails the check is deleted and downloaded again; a fresh download
+    that fails it is deleted before the init container exits non-zero, so the
+    next start downloads it again rather than failing on every restart.
+  - Strands Decider's checkpoint is downloaded at
+    `decision.modelServer.strands.revision` and its base model at
+    `baseRevision` (`STRANDS_REVISION`, `STRANDS_BASE_REVISION`). The base
+    revision must be the one the checkpoint records in its `provenance.json`,
+    the one it was trained on; the server refuses to start otherwise.
+
+  To move to a newer model, set the URL, file and SHA-256 together (or both
+  Strands revisions), from the model's Hugging Face page.
+- **Licence.** Strands Decider is Apache-2.0, but its 4B checkpoint is built on
+  Google's Gemma 4 (`google/gemma-4-E4B-it`), whose terms apply to anyone
+  deploying it. The chart downloads the weights at deploy time from Hugging
+  Face; Switch does not redistribute them. Choose `llamacpp` if those terms
+  don't suit you.
+- **Haiku on Bedrock.** `decision.bedrock.enabled` lets workspaces choose Claude
+  Haiku on Amazon Bedrock (`DECISION_BEDROCK_ENABLED` on the service and on
+  switch-core). The service calls Bedrock with the pod's credentials: give it
+  a role through `decision.serviceAccount.annotations` (on EKS,
+  `eks.amazonaws.com/role-arn` for an IAM role allowing `bedrock:InvokeModel`
+  on Haiku). Without a GPU, set `decision.modelServer.enabled: false` and
+  `decision.backend` to `anthropic` or `bedrock`.
+- **Other settings.** `decision.env` passes anything else in the service's
+  environment (`DECISION_TIMEOUT_S`, `DECISION_HISTORY_LIMIT`, …).
+- **The NetworkPolicy** needs a CNI that enforces it; where none does, the
+  token still keeps other pods from asking for decisions or using the model
+  (they can read `/health`). It stays on by
+  default as a second layer; turn it off with
+  `decision.networkPolicy.enabled: false`.
+
+To use a decision service run elsewhere instead, leave `decision.enabled` off
+and set `switchCore.decision.endpointUrl` (and `bedrockEnabled` if that service
+allows Bedrock). If that service requires a token, put it in a Secret and
+name it in `switchCore.decision.apiKey.existingSecret` (key
+`existingSecretKey`, default `token`); switch-core sends it as
+`DECISION_API_KEY`. Setting both `decision.enabled` and an endpoint is refused
+at render time. With neither,
+auto-route is unavailable until a workspace admin sets up a backend in Switch
+Console. `switchCore.decision.timeoutSeconds` sets `DECISION_TIMEOUT_SECONDS`.
+
 ## Agent management
 
 Managed agents, and the agent controllers that run them on users' machines, are

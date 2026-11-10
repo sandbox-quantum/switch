@@ -4,6 +4,10 @@
 mattermost:
   enabled: true
 switchCore:
+  featureFlags:
+    enabled:
+      - follow_the_conversation
+      - decision_routing
   migrations:
     preUpgradeJob: true
   teamsBridge:
@@ -15,3 +19,10 @@ switchCore:
     datadog: "Not offered on this server."
   serviceAccessProfiles:
     google-workspace: drive-file
+decision:
+  enabled: true
+  bedrock:
+    enabled: true
+  modelServer:
+    hfTokenSecret:
+      name: render-check-hf-token

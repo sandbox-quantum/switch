@@ -80,8 +80,10 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
+    AuthenticatedSession,
     all_workspaces,
     get_authenticated_caller,
+    get_authenticated_session,
     get_authenticated_user_id,
     get_current_user,
     get_tenant_is_admin,
@@ -94,6 +96,7 @@ from switch_core.gateway.auth import (
     session_auth_time,
     set_session_cookie,
     tenant_of_invitation_token,
+    tenants_bindable_by,
     tenants_open_to,
     tenants_with_invitations_for,
 )
@@ -157,6 +160,7 @@ from switch_core.gateway.schemas import (
     TenantDeleteRequest,
     TenantMembershipResponse,
     UsageTotalResponse,
+    WorkspaceCountsResponse,
 )
 from switch_core.gateway.service_connections import service_refusal
 from switch_core.gateway.workspace_creation import (
@@ -201,7 +205,7 @@ def _require_bound_tenant(tenant_id: str) -> None:
     codebase follows refuses to do.
     """
     if current_tenant_id() != tenant_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this tenant")
+        raise HTTPException(status_code=403, detail="Not allowed in this workspace")
 
 
 def _invitation_fields(invitation: Invitation) -> dict[str, object]:
@@ -264,9 +268,9 @@ async def _refuse_organization_admin(
         raise HTTPException(
             status_code=409,
             detail=(
-                "This member administers the workspace's organization, which "
+                "This user administers the workspace's organization, which "
                 "gives them admin rights in every one of its workspaces. Change "
-                "their role in the organization's members first."
+                "their role in the organization's users first."
             ),
         )
 
@@ -322,6 +326,53 @@ async def list_tenants(
     the others — see `list_tenant_memberships`.
     """
     return await list_tenant_memberships(session_factory, user_store, user_id)
+
+
+@router.get("/tenants/counts")
+async def workspace_counts(
+    auth: Annotated[AuthenticatedSession, Depends(get_authenticated_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+) -> list[WorkspaceCountsResponse]:
+    """How many people and agents each workspace the caller may enter has:
+    those of `GET /tenants`, and the one the platform operator entered on the
+    operator flag alone, which their session is in without being one of them.
+
+    For the dashboard's workspace switcher, which asks when it opens rather
+    than on every page: each workspace is read on its own short session, as
+    `GET /tenants` reads them, so this costs as much again.
+    """
+    tenant_ids = await tenants_bindable_by(session_factory, auth.user_id)
+    claim = auth.tenant_claim
+    if (
+        claim is not None
+        and claim not in tenant_ids
+        and await may_bind_tenant(session_factory, user_store, auth.user_id, claim)
+    ):
+        tenant_ids.append(claim)
+    counts: list[WorkspaceCountsResponse] = []
+    for tenant_id in tenant_ids:
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            if tenant is None:
+                logger.warning(
+                    "User %s may enter workspace %s, but it was gone by the "
+                    "time its counts were read",
+                    auth.user_id,
+                    tenant_id,
+                )
+                continue
+            counts.append(
+                WorkspaceCountsResponse(
+                    id=tenant_id,
+                    users=await user_store.count_people(session, tenant),
+                    agents=await agent_store.count(session),
+                )
+            )
+    return counts
 
 
 @router.get("/tenants/current")
@@ -507,7 +558,7 @@ async def switch_tenant(
     workspace (`initial_tenant_claim`), so every visit starts here.
     """
     if not await may_bind_tenant(session_factory, user_store, user_id, tenant_id):
-        raise HTTPException(status_code=403, detail="Not a member of this tenant")
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
 
     user = await user_store.get(session, user_id)
     if user is None:
@@ -1790,7 +1841,7 @@ async def update_member_role(
 
     membership = await session.get(TenantMember, (tenant_id, user_id))
     if membership is None:
-        raise HTTPException(status_code=404, detail="Not a member of this tenant")
+        raise HTTPException(status_code=404, detail="Not a member of this workspace")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
     if membership.role == "admin" and role != "admin":
@@ -1885,7 +1936,7 @@ async def remove_member(
         populate_existing=True,
     )
     if membership is None:
-        raise HTTPException(status_code=404, detail="Not a member of this tenant")
+        raise HTTPException(status_code=404, detail="Not a member of this workspace")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
     if membership.role == "admin":
@@ -1898,7 +1949,7 @@ async def remove_member(
         raise HTTPException(
             status_code=409,
             detail=(
-                "Cannot remove: this member owns agents in this workspace. "
+                "Cannot remove: this user owns agents in this workspace. "
                 f"Transfer or delete them first: {names}"
             ),
         )

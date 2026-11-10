@@ -10,7 +10,6 @@ import pytest
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_LAPSED,
     PROTOCOL_VERSION,
-    ROOM_RELEASED_PROTOCOL_REVISION,
     AgentConnection,
     AgentConnectionRegistry,
     ClientDeclaration,
@@ -100,12 +99,10 @@ def test_displacing_a_sibling_on_the_same_connection_releases_nothing() -> None:
     assert conn.released_rooms == {}
 
 
-@pytest.mark.parametrize("speaks", [ROOM_RELEASED_PROTOCOL_REVISION - 1, None])
-def test_a_client_that_cannot_take_the_frame_is_not_sent_it(speaks: int | None) -> None:
-    """A client from before the frame, or one that declared no revision, gets
-    only what every client takes."""
+def test_a_client_that_cannot_take_the_frame_is_not_sent_it() -> None:
+    """A client that declared no revision gets only what every client takes."""
     registry = AgentConnectionRegistry()
-    loser = _open(registry, "loser", speaks=speaks, scope="single")
+    loser = _open(registry, "loser", speaks=None, scope="single")
     winner = _open(registry, "winner", speaks=PROTOCOL_VERSION, scope="all")
     registry.claim_room(loser, ROOM_A)
 
@@ -248,7 +245,7 @@ async def test_a_client_that_declared_nothing_is_not_sent_room_released(
 
 def test_closing_a_local_connection_keeps_its_placements() -> None:
     registry = AgentConnectionRegistry()
-    conn = _open(registry, "local", speaks=ROOM_RELEASED_PROTOCOL_REVISION, scope="all")
+    conn = _open(registry, "local", speaks=PROTOCOL_VERSION, scope="all")
     registry.replace_placements(conn, {"session-1": ROOM_A})
 
     registry.close(conn.id, HEARTBEAT_LAPSED)

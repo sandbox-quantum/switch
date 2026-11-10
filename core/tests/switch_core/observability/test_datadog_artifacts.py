@@ -32,10 +32,19 @@ def _load(name: str) -> object:
     return json.loads((_ARTIFACTS / name).read_text())
 
 
-@pytest.mark.parametrize("filename", ["dashboard.json", "monitors.json"])
+@pytest.mark.parametrize(
+    "filename", ["dashboard.json", "monitors.json", "signal-board.json"]
+)
 def test_every_metric_referenced_exists(filename: str) -> None:
     referenced = _referenced_metrics(_load(filename))
-    unknown = sorted(referenced - set(CATALOGUE))
+    # The morning report sends its own "posted" mark; that one is not core's.
+    from_report = set(
+        re.findall(
+            r'"metric": "(switch\.[a-z0-9_.]+)"',
+            (_ARTIFACTS / "daily_report.py").read_text(),
+        )
+    )
+    unknown = sorted(referenced - set(CATALOGUE) - from_report)
     assert not unknown, (
         f"{filename} references {unknown}, which no longer exist in the metric "
         "catalogue. A Datadog monitor over an absent series does not fire, and "
@@ -72,3 +81,28 @@ def test_monitors_are_individually_importable() -> None:
         assert "@REPLACE-WITH-NOTIFICATION-HANDLE" in monitor["message"], monitor[
             "name"
         ]
+
+
+def _charts(widgets: list[dict]) -> list[dict]:
+    """Every widget definition on a dashboard, groups opened up."""
+    found = []
+    for widget in widgets:
+        definition = widget["definition"]
+        if definition["type"] == "group":
+            found += _charts(definition["widgets"])
+        else:
+            found.append(definition)
+    return found
+
+
+def test_the_signal_board_stays_readable_at_a_glance() -> None:
+    """Working memory holds three to seven things, so a chart that draws more
+    lines than that is read by going back and forth to the legend. The board
+    is for seeing, so it keeps to five."""
+    board = _load("signal-board.json")
+    assert isinstance(board, dict)
+    for chart in _charts(board["widgets"]):
+        series = sum(
+            len(request.get("formulas", [])) for request in chart.get("requests", [])
+        )
+        assert series <= 5, f"{chart.get('title')} draws {series} series"

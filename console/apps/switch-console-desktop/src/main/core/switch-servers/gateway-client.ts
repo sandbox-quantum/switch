@@ -80,6 +80,11 @@ import {
   type ChannelRetirement,
   type ChatClaim,
   type ConnectedChat,
+  type DecisionBackend,
+  type DecisionSettings,
+  type DecisionSettingsInput,
+  type DecisionTestInput,
+  type DecisionTestOutcome,
   type DeleteBridgeResult,
   type LinkCode,
   type LinkedIdentity,
@@ -100,7 +105,9 @@ import {
   type RoomVisibility,
   type RetireOutcome,
   type SwitchApiKey,
+  type ApiKeyLifetime,
   type CreatedRegistrationKey,
+  type RoomAutoRoute,
   type SwitchAuthConfig,
   type SwitchServer,
   type SwitchServerDeclaration,
@@ -130,6 +137,7 @@ import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from '
 import { consoleIdentityHeaders } from './console-identity';
 import { NoManagementApiError } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
+import { noteSessionEnded } from './session-ended';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
 function gatewayUrl(server: SwitchServer, path: string): string {
@@ -420,6 +428,9 @@ export async function gatewayRequest(
   }
 
   if (response.status === 401) {
+    // Only a call that sent a session can say the session is gone; a 401 to an
+    // unauthenticated call is about something else.
+    if (options.authenticated) noteSessionEnded(server.id);
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
   if (answeredWithPage(response)) {
@@ -549,6 +560,137 @@ export async function clearTrustSettings(server: SwitchServer): Promise<TrustSet
   return mapTrustSettings((await res.json()) as TrustSettingsJson);
 }
 
+type DecisionSettingsJson = {
+  source: 'workspace' | 'server_default';
+  effective: {
+    backend: DecisionBackend;
+    endpoint: string | null;
+    threshold: number | null;
+    available: boolean;
+    reason: string | null;
+  };
+  workspace: {
+    backend: DecisionBackend;
+    endpoint: string | null;
+    threshold: number | null;
+    has_api_key: boolean;
+    api_key_last4: string | null;
+    api_key_unreadable: boolean;
+    updated_at: string;
+  } | null;
+  server_default: { configured: boolean; endpoint: string | null; has_api_key: boolean };
+  options: { haiku_anthropic: boolean; haiku_bedrock: boolean };
+};
+
+function mapDecisionSettings(json: DecisionSettingsJson): DecisionSettings {
+  const { workspace } = json;
+  return {
+    source: json.source,
+    effective: {
+      backend: json.effective.backend,
+      endpoint: json.effective.endpoint,
+      threshold: json.effective.threshold,
+      available: json.effective.available,
+      reason: json.effective.reason,
+    },
+    workspace:
+      workspace === null
+        ? null
+        : {
+            backend: workspace.backend,
+            endpoint: workspace.endpoint,
+            threshold: workspace.threshold,
+            hasApiKey: workspace.has_api_key,
+            apiKeyLast4: workspace.api_key_last4,
+            apiKeyUnreadable: workspace.api_key_unreadable,
+            updatedAt: workspace.updated_at,
+          },
+    serverDefault: {
+      configured: json.server_default.configured,
+      endpoint: json.server_default.endpoint,
+      hasApiKey: json.server_default.has_api_key,
+    },
+    options: {
+      haikuAnthropic: json.options.haiku_anthropic,
+      haikuBedrock: json.options.haiku_bedrock,
+    },
+  };
+}
+
+/** The wire body `PUT /decision-settings` and its test take; a field left
+ * unset is left out, so the stored key survives a save that doesn't name one. */
+function decisionSettingsBody(input: DecisionTestInput): Record<string, unknown> {
+  if (input.backend === 'default') return { backend: 'default' };
+  return {
+    backend: input.backend,
+    ...(input.endpoint !== undefined ? { endpoint: input.endpoint } : {}),
+    ...(input.apiKey !== undefined ? { api_key: input.apiKey } : {}),
+    ...(input.clearApiKey !== undefined ? { clear_api_key: input.clearApiKey } : {}),
+    ...(input.threshold !== undefined ? { threshold: input.threshold } : {}),
+  };
+}
+
+/** The decision routing settings of the workspace the session selects, its
+ * admins only (`GET /decision-settings`). */
+export async function fetchDecisionSettings(server: SwitchServer): Promise<DecisionSettings> {
+  const res = await gatewayFetch(server, '/decision-settings', { authenticated: true });
+  return mapDecisionSettings((await res.json()) as DecisionSettingsJson);
+}
+
+/** Save the selected workspace's decision routing settings (`PUT /decision-settings`). */
+export async function updateDecisionSettings(
+  server: SwitchServer,
+  input: DecisionSettingsInput
+): Promise<DecisionSettings> {
+  const res = await gatewayFetch(server, '/decision-settings', {
+    authenticated: true,
+    method: 'PUT',
+    body: decisionSettingsBody(input),
+  });
+  return mapDecisionSettings((await res.json()) as DecisionSettingsJson);
+}
+
+/** Return the selected workspace to the server default (`DELETE /decision-settings`,
+ * which answers 204), then read the settings back as they now stand. */
+export async function clearDecisionSettings(server: SwitchServer): Promise<DecisionSettings> {
+  await gatewayFetch(server, '/decision-settings', { authenticated: true, method: 'DELETE' });
+  return fetchDecisionSettings(server);
+}
+
+type DecisionTestJson = {
+  ok: boolean;
+  agent: string | null;
+  model_choice: string | null;
+  confidence: number | null;
+  latency_ms: number | null;
+  backend: string | null;
+  error: { code: string; message: string } | null;
+};
+
+/** Run one sample decision against unsaved values, or the server default
+ * (`POST /decision-settings/test`). A failed decision is an answer, not an
+ * error: it comes back with `ok` false. */
+export async function testDecisionSettings(
+  server: SwitchServer,
+  input: DecisionTestInput
+): Promise<DecisionTestOutcome> {
+  const res = await gatewayFetch(server, '/decision-settings/test', {
+    authenticated: true,
+    method: 'POST',
+    body: decisionSettingsBody(input),
+  });
+  const json = (await res.json()) as DecisionTestJson;
+  return {
+    ok: json.ok,
+    agent: json.agent,
+    modelChoice: json.model_choice,
+    confidence: json.confidence,
+    latencyMs: json.latency_ms,
+    backend: json.backend,
+    error: json.error === null ? null : { code: json.error.code, message: json.error.message },
+  };
+}
+
 type ServerDeclarationJson = {
   version: string | null;
   contracts: Record<string, { speaks: number; accepts: number }>;
@@ -640,14 +782,23 @@ export async function updateMyName(server: SwitchServer, name: string): Promise<
  * with the server's reason, such as a wrong current password. An account made
  * through single sign-on has no password to change; the server says so on the
  * user (`hasPassword`), and Settings offers no change for one.
+ *
+ * The server ends every session on a password change, the one that made it
+ * included, and answers with a new session cookie for this caller. Keeping it
+ * is what leaves Console signed in: the stored cookie is now refused. A server
+ * that sends none leaves the old one, and the next call finds it signed out.
+ *
+ * Failing to keep the new cookie is not a failed change: the password has
+ * changed by then, so it is reported as what it is, with what to do next.
  */
 export async function changeMyPassword(
   server: SwitchServer,
   currentPassword: string,
   newPassword: string
 ): Promise<void> {
+  let res: Response;
   try {
-    await gatewayFetch(server, '/auth/me/password', {
+    res = await gatewayFetch(server, '/auth/me/password', {
       authenticated: true,
       method: 'PUT',
       body: { current_password: currentPassword, new_password: newPassword },
@@ -655,6 +806,29 @@ export async function changeMyPassword(
   } catch (error) {
     if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
     throw error;
+  }
+  const cookie = extractAuthCookie(res.headers.getSetCookie());
+  if (!cookie) return;
+  try {
+    await setSessionCookie(server.id, cookie);
+  } catch (cause) {
+    throw new PasswordChangedSessionNotSavedError(cause);
+  }
+}
+
+/**
+ * The password changed, but Console could not keep the session the server
+ * answered with. Named, so the window says it as it is rather than leading
+ * with "Could not change your password", which would leave the person
+ * believing the old password still works.
+ */
+export class PasswordChangedSessionNotSavedError extends Error {
+  constructor(cause: unknown) {
+    super(
+      'Your password was changed, but Console couldn’t save its new session. Sign in again with your new password.',
+      { cause }
+    );
+    this.name = 'PasswordChangedSessionNotSavedError';
   }
 }
 
@@ -3385,6 +3559,8 @@ type RoomDetailJson = RoomSummaryJson & {
   external_channel_id?: string | null;
   transport_room_id?: string | null;
   archived_at?: string | null;
+  /** Absent from a server that predates decision routing. */
+  auto_route?: RoomAutoRouteJson;
 };
 
 /** The server's visibility words; anything else reads as private, the narrower of the two. */
@@ -3392,6 +3568,25 @@ function visibilityOf(value: string | undefined): RoomVisibility {
   // Absent only from a server that predates the setting, where every room was open.
   if (value === undefined) return 'public';
   return value === 'public' ? 'public' : 'private';
+}
+
+type RoomAutoRouteJson = {
+  on: boolean;
+  available: boolean;
+  reason: string | null;
+  fallback_agent: string | null;
+  /** Absent from a server that predates it. */
+  fallback_agent_name?: string | null;
+};
+
+function mapRoomAutoRoute(json: RoomAutoRouteJson): RoomAutoRoute {
+  return {
+    on: json.on,
+    available: json.available,
+    reason: json.reason,
+    fallbackAgent: json.fallback_agent,
+    fallbackAgentName: json.fallback_agent_name ?? null,
+  };
 }
 
 function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
@@ -3414,6 +3609,7 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     externalChannelId: r.external_channel_id ?? null,
     transportRoomId: r.transport_room_id ?? null,
     archivedAt: r.archived_at ?? null,
+    ...(r.auto_route ? { autoRoute: mapRoomAutoRoute(r.auto_route) } : {}),
   };
 }
 
@@ -3582,6 +3778,27 @@ export async function fetchBridgeUserNames(
   return [...new Set(users.map((user) => user.external_username))].sort((a, b) =>
     a.localeCompare(b)
   );
+}
+
+/**
+ * Change a room's auto-route setting (`PUT /rooms/{id}/auto-route`), the same
+ * store `!auto-route` writes; a field left out is left alone. Answers with the
+ * setting as it now stands.
+ */
+export async function setRoomAutoRoute(
+  server: SwitchServer,
+  roomId: string,
+  changes: { on?: boolean; fallbackAgent?: string | null }
+): Promise<RoomAutoRoute> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/auto-route`, {
+    authenticated: true,
+    method: 'PUT',
+    body: {
+      ...(changes.on !== undefined ? { on: changes.on } : {}),
+      ...(changes.fallbackAgent !== undefined ? { fallback_agent: changes.fallbackAgent } : {}),
+    },
+  });
+  return mapRoomAutoRoute((await res.json()) as RoomAutoRouteJson);
 }
 
 /**
@@ -5028,7 +5245,12 @@ export async function deleteManagedAgent(
 }
 
 type ApiKeyJson = { id: string; label: string; type: string };
-type ApiKeyDetailJson = ApiKeyJson & { key_prefix: string; created_at: string };
+// `expires_at` is absent on a server older than key expiry, where no key expires.
+type ApiKeyDetailJson = ApiKeyJson & {
+  key_prefix: string;
+  created_at: string;
+  expires_at?: string | null;
+};
 
 /**
  * The signed-in person's own API keys (`GET /api-keys`): the registration
@@ -5043,21 +5265,38 @@ export async function fetchMyApiKeys(server: SwitchServer): Promise<SwitchApiKey
     type: key.type,
     keyPrefix: key.key_prefix,
     createdAt: key.created_at,
+    expiresAt: key.expires_at ?? null,
   }));
 }
 
-/** Make a registration key (`POST /api-keys`). Its value is in the answer and nowhere else. */
+/**
+ * Make a registration key (`POST /api-keys`) that works for `lifetime`. Its
+ * value is in the answer and nowhere else.
+ */
 export async function createRegistrationKey(
   server: SwitchServer,
-  label: string
+  label: string,
+  lifetime: ApiKeyLifetime
 ): Promise<CreatedRegistrationKey> {
   const res = await gatewayFetch(server, '/api-keys', {
     authenticated: true,
     method: 'POST',
-    body: { label },
+    body: { label, expires_in_days: lifetime },
   });
-  const json = (await res.json()) as { id: string; label: string; key: string; created_at: string };
-  return { id: json.id, label: json.label, key: json.key, createdAt: json.created_at };
+  const json = (await res.json()) as {
+    id: string;
+    label: string;
+    key: string;
+    created_at: string;
+    expires_at?: string | null;
+  };
+  return {
+    id: json.id,
+    label: json.label,
+    key: json.key,
+    createdAt: json.created_at,
+    expiresAt: json.expires_at ?? null,
+  };
 }
 
 /** One of the signed-in person's keys in full (`GET /api-keys/{id}/reveal`). The server audits it. */
