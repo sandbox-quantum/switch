@@ -1485,6 +1485,43 @@ def test_message_permalink_rate_limit_without_retry_after_is_not_retried(
     assert adapter._permalink_cooldown.remaining() == 30
 
 
+class _UnparsedResponse:
+    """What slack_sdk hands a `SlackApiError` when Slack's body is not JSON:
+    aiohttp's own response, with `status` and headers and no `get`."""
+
+    def __init__(self, status: int, headers: dict[str, str]) -> None:
+        self.status = status
+        self.headers = headers
+
+
+@pytest.mark.parametrize(
+    ("status", "held_for"), [(429, 30), (502, 0)], ids=["rate-limited", "bad-gateway"]
+)
+def test_message_permalink_unparsed_response_is_a_slack_error(
+    monkeypatch: pytest.MonkeyPatch, status: int, held_for: int
+) -> None:
+    """A body that is not JSON (a proxy's error page) is still Slack's
+    refusal, and a 429 among them is still a rate limit."""
+    adapter, client = _permalink_adapter()
+    monkeypatch.setattr(
+        cooldown_module, "time", SimpleNamespace(monotonic=lambda: 1000.0)
+    )
+
+    async def unparsed(*, channel: str, message_ts: str) -> FakeResponse:
+        client.permalink_calls.append((channel, message_ts))
+        raise SlackApiError(
+            "Received a response in a non-JSON format: <html>",
+            _UnparsedResponse(status, {"Retry-After": "30"}),
+        )
+
+    monkeypatch.setattr(client, "chat_getPermalink", unparsed)
+
+    with pytest.raises(SlackApiError):
+        _run(adapter.message_permalink("C1:171.2"))
+    assert len(client.permalink_calls) == 1
+    assert adapter._permalink_cooldown.remaining() == held_for
+
+
 def test_message_permalink_long_retry_after_is_not_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

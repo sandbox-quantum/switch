@@ -2508,13 +2508,16 @@ class SlackAdapter(PlatformAdapter):
                     )
                 return permalink
             except SlackApiError as e:
-                error = e.response.get("error")
+                # A body that is not JSON leaves aiohttp's own response here,
+                # with `status` and no `get`, rather than Slack's parsed one.
+                response = e.response
+                error = response.get("error") if hasattr(response, "get") else None
                 if error == "message_not_found":
                     raise MessageGoneOnPlatform(external_post_id) from e
-                rate_limited = (
-                    error == "ratelimited"
-                    or getattr(e.response, "status_code", None) == 429
+                status = getattr(response, "status_code", None) or getattr(
+                    response, "status", None
                 )
+                rate_limited = error == "ratelimited" or status == 429
                 if not rate_limited:
                     raise
                 delay = _retry_after_seconds(e)
