@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 from sqlalchemy import ColumnElement, delete, func, or_, select
@@ -266,12 +266,19 @@ class TemplateStore:
         session.add(TemplateRunRecord(template_id=template_id))
         await session.flush()
 
-    async def run_counts(self, session: AsyncSession) -> dict[str, int]:
-        """How many times each template has been run in this tenant, by id.
-        A template never run is absent."""
+    async def run_counts(
+        self, session: AsyncSession, template_ids: Collection[str]
+    ) -> dict[str, int]:
+        """How many times each of these templates has been run in this tenant,
+        by id. A template never run is absent."""
+        if not template_ids:
+            return {}
         result = await session.execute(
             select(TemplateRunRecord.template_id, func.count())
-            .where(TemplateRunRecord.tenant_id == require_tenant_id())
+            .where(
+                TemplateRunRecord.tenant_id == require_tenant_id(),
+                TemplateRunRecord.template_id.in_(template_ids),
+            )
             .group_by(TemplateRunRecord.template_id)
         )
         return {template_id: count for template_id, count in result.tuples()}

@@ -2530,17 +2530,18 @@ export interface TemplateFilter {
   owner_id?: string;
 }
 
-/** The templates the signed-in user may see, narrowed on the server. */
+/** The templates the signed-in user may see, narrowed on the server, or an
+ * error carrying the server's reason. */
 export async function fetchTemplates(
   filter: TemplateFilter = {},
-): Promise<TemplateSummary[] | null> {
+): Promise<TemplateSummary[]> {
   const params = new URLSearchParams();
   const q = filter.q?.trim();
   if (q) params.set("q", q);
   if (filter.kind) params.set("kind", filter.kind);
   if (filter.owner_id) params.set("owner_id", filter.owner_id);
   const qs = params.toString();
-  return fetchJson<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`);
+  return jsonRequest<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`, "GET");
 }
 
 /** One template, or an error carrying the server's reason (403, 404, or the

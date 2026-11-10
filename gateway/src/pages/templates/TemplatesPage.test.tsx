@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TemplateSummary } from "../../data/api";
@@ -84,10 +84,60 @@ describe("TemplatesPage", () => {
     expect(await screen.findByText("No shared templates in Acme yet")).toBeTruthy();
   });
 
-  it("shows why the catalogue did not load instead of the tables", async () => {
+  it("shows the server's reason the catalogue did not load, instead of the tables", async () => {
     showWith({ status: 500, detail: "database unavailable" });
-    expect(await screen.findByText(/Could not load templates:/)).toBeTruthy();
+    expect(await screen.findByText("Could not load templates: database unavailable")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Shared templates" })).toBeNull();
+  });
+
+  it("keeps the tables, and says why, when a refresh after an action fails", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: { id: "u-1" },
+      session: { tenant: { id: "ten-1", name: "Acme" } },
+    } as unknown as ReturnType<typeof useAuth>);
+    let listed = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input).split("?")[0];
+        const method = init?.method ?? "GET";
+        if (path === "/gateway/templates" && method === "GET") {
+          listed += 1;
+          return listed === 1
+            ? new Response(JSON.stringify([template({ id: "a" })]), { status: 200 })
+            : new Response(JSON.stringify({ detail: "database unavailable" }), { status: 500 });
+        }
+        if (path === "/gateway/templates/validate") {
+          return new Response(
+            JSON.stringify({ ok: true, blocked: false, errors: [], warnings: [] }),
+            { status: 200 },
+          );
+        }
+        if (path === "/gateway/templates" && method === "POST") {
+          return new Response(JSON.stringify(template({ id: "new-1", name: "Fresh" })), { status: 201 });
+        }
+        throw new Error(`unexpected ${method} ${path}`);
+      }),
+    );
+    render(
+      <MemoryRouter>
+        <TemplatesPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("1 template")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "New template" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Fresh" } });
+    fireEvent.change(screen.getByLabelText("Document"), { target: { value: "room:\n  name: r\n" } });
+    const create = screen.getByRole("button", { name: "Create" });
+    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 });
+    fireEvent.click(create);
+
+    expect(
+      await screen.findByText("Could not refresh templates: database unavailable"),
+    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Shared templates" })).toBeTruthy();
+    expect(screen.getByText("1 template")).toBeTruthy();
   });
 
   it("lets anyone start a new template", async () => {

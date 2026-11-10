@@ -16,6 +16,7 @@ const saveTeamsPackage = vi.hoisted(() => vi.fn());
 const createRoomFromTemplate = vi.hoisted(() => vi.fn());
 const runTemplateWithAgents = vi.hoisted(() => vi.fn());
 const runTemplateDocument = vi.hoisted(() => vi.fn());
+const recordTemplateRun = vi.hoisted(() => vi.fn());
 const fetchRoomDetail = vi.hoisted(() => vi.fn());
 const fetchManagedAgent = vi.hoisted(() => vi.fn());
 const claimIdentityOnServer = vi.hoisted(() => vi.fn());
@@ -135,6 +136,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchTemplateSchema: vi.fn(),
   GatewayError: class GatewayError extends Error {},
   ownsOwnerAddressedAgent: vi.fn(),
+  recordTemplateRun,
   releaseBridgeIdentity: vi.fn(),
   removeBridgeTeam,
   removeRoomAgent: vi.fn(),
@@ -160,6 +162,7 @@ vi.mock('./workspaces-store', () => ({
 }));
 
 const { workspacesController } = await import('./controller');
+const { log } = await import('@main/lib/logger');
 
 function server(overrides: Record<string, unknown>) {
   return {
@@ -373,6 +376,48 @@ describe('linking a messaging account', () => {
         bridge_platform: 'slack',
         outcome: 'failure',
       })
+    );
+  });
+});
+
+describe('counting a template run', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+  });
+
+  const RUN = { workspaceId: 'ws', templateId: 'official:switch-expert' };
+
+  it('reports the run to the server', async () => {
+    recordTemplateRun.mockResolvedValue(true);
+
+    await expect(workspacesController.recordTemplateRun(RUN)).resolves.toBeUndefined();
+    expect(recordTemplateRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'official:switch-expert'
+    );
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('says so, without failing, when the server does not count runs', async () => {
+    recordTemplateRun.mockResolvedValue(false);
+
+    await expect(workspacesController.recordTemplateRun(RUN)).resolves.toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('not counted'),
+      expect.objectContaining({ errorCode: 'not_counted', templateId: 'official:switch-expert' })
+    );
+  });
+
+  it('never fails the run it follows, even when the server cannot be reached', async () => {
+    recordTemplateRun.mockRejectedValue(new Error('unreachable'));
+
+    await expect(workspacesController.recordTemplateRun(RUN)).resolves.toBeUndefined();
+    expect(log.warn).toHaveBeenCalledWith(
+      'A template run was not counted',
+      expect.objectContaining({ event: 'template_run_count', error: 'Error: unreachable' })
     );
   });
 });

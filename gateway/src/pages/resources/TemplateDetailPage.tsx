@@ -336,8 +336,9 @@ function DocumentSection({
           </Alert>
         ) : (
           <Alert severity="info">
-            This template belongs to {template.owner_name ?? "a former member"}. You
-            can copy or download it; only its owner or an admin can change it.
+            {template.owner_name === null
+              ? "This template belongs to a former member. You can copy or download it; only a workspace admin can change it."
+              : `This template belongs to ${template.owner_name}. You can copy or download it; only they or a workspace admin can change it.`}
           </Alert>
         ))}
       <TextField

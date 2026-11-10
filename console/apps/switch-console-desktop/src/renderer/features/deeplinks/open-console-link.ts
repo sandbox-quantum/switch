@@ -1,3 +1,4 @@
+import { when } from 'mobx';
 import { toast } from 'sonner';
 import type { AdminSection } from '@renderer/features/admin/admin-sections';
 import { isAgentSection } from '@renderer/features/managed-agents/agent-sections';
@@ -33,10 +34,23 @@ export async function openConsoleLink(raw: string): Promise<void> {
   }
   const serverId = serverFor(link);
   if (serverId === null) return;
-  if (switchServersStore.activeServerId !== serverId) await switchServersStore.setActive(serverId);
+  if (switchServersStore.activeServerId !== serverId) {
+    await switchServersStore.setActive(serverId);
+    // The switch reports its own failure rather than raising it. Going on
+    // would open the page on the server still on screen.
+    if (switchServersStore.activeServerId !== serverId) {
+      toast.error('Could not open that link', {
+        description: switchServersStore.error ?? 'Could not switch to that server.',
+      });
+      return;
+    }
+  }
   if (link.workspace !== null && !(await scopeToWorkspace(serverId, link.workspace))) return;
   await openOnServer(serverId, link);
 }
+
+/** How long a link waits for Console to match its workspaces to the server's. */
+const WORKSPACE_MATCH_WAIT_MS = 10_000;
 
 /**
  * Scope the window to the workspace a link names, by its tenant id: a link
@@ -45,7 +59,19 @@ export async function openConsoleLink(raw: string): Promise<void> {
  * why, when the account is in no such workspace on the server.
  */
 async function scopeToWorkspace(serverId: string, tenantId: string): Promise<boolean> {
-  const workspace = workspacesStore.onServer(serverId).find((w) => w.tenantId === tenantId);
+  const find = () => workspacesStore.onServer(serverId).find((w) => w.tenantId === tenantId);
+  let workspace = find();
+  if (!workspace) {
+    // The list may be older than the membership: read it again.
+    await workspacesStore.refresh();
+    workspace = find();
+  }
+  if (!workspace && workspacesStore.onServer(serverId).some((w) => w.tenantId === null)) {
+    // A workspace Console has not matched to the server's yet, as just after
+    // signing in, may be this one: give the match a moment to land.
+    await when(() => find() !== undefined, { timeout: WORKSPACE_MATCH_WAIT_MS }).catch(() => {});
+    workspace = find();
+  }
   if (!workspace) {
     toast.error('Could not open that link', {
       description: 'It is for a workspace this Switch Console is not signed in to.',

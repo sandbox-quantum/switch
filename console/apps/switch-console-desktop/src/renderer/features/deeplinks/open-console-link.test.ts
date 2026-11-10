@@ -39,14 +39,16 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
 vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
   administersWorkspaceInScope: administers,
 }));
+const WORKSPACES = [
+  { id: 'ws-1', serverId: 'srv-1', name: 'Home', tenantId: 't-1' as string | null },
+  { id: 'ws-2', serverId: 'srv-1', name: 'Sales', tenantId: 't-2' as string | null },
+];
 const workspaces = vi.hoisted(() => ({
   activeId: 'ws-1' as string | null,
+  list: [] as { id: string; serverId: string; name: string; tenantId: string | null }[],
   idOnServerInScope: () => 'ws-1',
-  onServer: (serverId: string) =>
-    [
-      { id: 'ws-1', serverId: 'srv-1', name: 'Home', tenantId: 't-1' },
-      { id: 'ws-2', serverId: 'srv-1', name: 'Sales', tenantId: 't-2' },
-    ].filter((w) => w.serverId === serverId),
+  onServer: (serverId: string) => workspaces.list.filter((w) => w.serverId === serverId),
+  refresh: vi.fn(async () => {}),
   setActive: vi.fn(async (id: string) => {
     workspaces.activeId = id;
   }),
@@ -61,6 +63,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   servers.activeServerId = 'srv-1';
   workspaces.activeId = 'ws-1';
+  workspaces.list = WORKSPACES.map((w) => ({ ...w }));
 });
 
 describe('openConsoleLink', () => {
@@ -82,6 +85,34 @@ describe('openConsoleLink', () => {
     expect(navigate).toHaveBeenCalledWith('templateDetail', {
       serverId: 'srv-1',
       templateId: 'official:switch-expert',
+    });
+  });
+
+  it('reads the workspaces again when the one named is not matched to the server yet', async () => {
+    workspaces.list[1]!.tenantId = null;
+    workspaces.refresh.mockImplementationOnce(async () => {
+      workspaces.list[1]!.tenantId = 't-2';
+    });
+
+    await openConsoleLink('switchdash://open/template/tpl-1?workspace=t-2&use=1');
+
+    expect(workspaces.setActive).toHaveBeenCalledWith('ws-2');
+    expect(navigate).toHaveBeenCalledWith('templateUse', {
+      serverId: 'srv-1',
+      templateId: 'tpl-1',
+    });
+  });
+
+  it('opens nothing, and says why, when the server it names cannot be switched to', async () => {
+    servers.setActive.mockImplementationOnce(async () => {});
+
+    await openConsoleLink(
+      'switchdash://open/template/tpl-1?server=https%3A%2F%2Fswitch.example.com&workspace=t-2'
+    );
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith('Could not open that link', {
+      description: 'Could not switch to that server.',
     });
   });
 

@@ -317,16 +317,13 @@ async def list_templates(
         owner_id=owner_id,
     )
     names = await _owner_names(session, user_store, {r.owner_id for r in rows})
-    runs = await template_store.run_counts(session)
     principal = Principal(user.id, is_admin)
     # The ones that come with Switch first, as nobody's own.
-    official = (
+    shipped = (
         []
         if owner_id
         else [
-            TemplateSummary(
-                **_official_detail(t, runs.get(t.id, 0)).model_dump(exclude={"content"})
-            )
+            t
             for t in official_templates(
                 config.feature_flags[AGENT_MANAGEMENT],
                 config.feature_flags[SWITCH_BUDDY],
@@ -334,6 +331,15 @@ async def list_templates(
             if matches(t, q, kind)
         ]
     )
+    runs = await template_store.run_counts(
+        session, [t.id for t in shipped] + [r.id for r in rows]
+    )
+    official = [
+        TemplateSummary(
+            **_official_detail(t, runs.get(t.id, 0)).model_dump(exclude={"content"})
+        )
+        for t in shipped
+    ]
     return official + [
         _summary(r, names.get(r.owner_id), principal, runs.get(r.id, 0)) for r in rows
     ]

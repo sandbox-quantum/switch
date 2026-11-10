@@ -202,7 +202,14 @@ export default function TemplatesPage() {
         </Alert>
       )}
 
-      {error ? (
+      {error && data !== null && (
+        // A refresh that failed after an action: what is on screen stays,
+        // since it was right a moment ago, with why it could not be updated.
+        <Alert severity="error" sx={{ mb: 2 }}>
+          Could not refresh templates: {error}
+        </Alert>
+      )}
+      {error && data === null ? (
         // Shown in place of the tables: an empty table would read as a
         // workspace with no templates.
         <Alert severity="error">Could not load templates: {error}</Alert>
