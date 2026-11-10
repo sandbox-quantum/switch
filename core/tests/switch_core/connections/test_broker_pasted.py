@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -280,6 +281,23 @@ class TestCheck:
             "Example refused the pasted token, which may be wrong, revoked or expired."
         )
 
+    async def test_a_refused_paste_is_logged_without_the_credential(
+        self, session_factory, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        p = _pasting(session_factory, tmp_path / "c")
+        caplog.set_level(logging.WARNING, logger="switch_core.connections.broker")
+
+        with pytest.raises(ServiceError):
+            await _check(p, "token", {"pat": TOKEN})
+
+        [record] = [r for r in caplog.records if r.name.endswith(".broker")]
+        assert record.levelno == logging.WARNING
+        assert record.getMessage() == (
+            "example paste refused: method=token reason=Example refused the "
+            "pasted token, which may be wrong, revoked or expired."
+        )
+        assert TOKEN not in caplog.text
+
     async def test_a_paste_is_checked_against_the_organizations_app(
         self, session_factory, tmp_path
     ) -> None:
@@ -477,6 +495,26 @@ class TestIssue:
                 },
             }
         ]
+
+    async def test_a_token_the_vendor_now_refuses_is_logged_without_it(
+        self, session_factory, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        p = _pasting(session_factory, tmp_path / "c")
+        p.vendor.pasted_tokens[TOKEN] = True
+        _, agent = await _connected(session_factory, p, "token", {"pat": TOKEN})
+        del p.vendor.pasted_tokens[TOKEN]
+        caplog.set_level(logging.WARNING, logger="switch_core.connections.broker")
+
+        await _refused(p.broker, session_factory, agent.id, service="example")
+
+        [record] = [r for r in caplog.records if r.name.endswith(".broker")]
+        assert record.levelno == logging.WARNING
+        assert record.getMessage() == (
+            "example pasted credential refused at token issue: method=token "
+            "reason=Example refused the pasted token, which may be wrong, "
+            "revoked or expired."
+        )
+        assert TOKEN not in caplog.text
 
     async def test_a_token_the_vendor_now_refuses_needs_a_new_one(
         self, session_factory, tmp_path

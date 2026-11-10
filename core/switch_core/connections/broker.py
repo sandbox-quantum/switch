@@ -1465,6 +1465,12 @@ class ServiceBroker:
         except ServiceUnavailableError as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         except ReauthorizationRequiredError as error:
+            logger.warning(
+                "%s pasted credential refused at token issue: method=%s reason=%s",
+                service,
+                secret.values.get("method"),
+                error,
+            )
             await self._store.mark_needs_reauthorization(
                 session, owner_id, service, TOKEN_REFUSED
             )
@@ -2526,9 +2532,11 @@ class ServiceBroker:
             or not isinstance(adapter, OAuthAdapter)
             or oauth is None
         ):
-            raise ServiceError(
-                503, INTERNAL, self._reason(service, choice), retryable=False
+            reason = self._reason(service, choice)
+            logger.warning(
+                "%s paste refused: method=%s reason=%s", service, method, reason
             )
+            raise ServiceError(503, INTERNAL, reason, retryable=False)
         try:
             picked = oauth.checked_choices(choices)
             values = adapter.checked_paste(paste, fields)
@@ -2537,6 +2545,9 @@ class ServiceBroker:
             async with asyncio.timeout(VENDOR_CALL_SECONDS):
                 identity = await adapter.identify_pasted(paste, values, picked)
         except ServiceUnavailableError as error:
+            logger.warning(
+                "%s paste refused: method=%s reason=%s", service, method, error
+            )
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         except TimeoutError:
             raise ServiceError(
@@ -2546,6 +2557,9 @@ class ServiceBroker:
                 retryable=True,
             ) from None
         except (ChoicesError, ServiceAdapterError) as error:
+            logger.warning(
+                "%s paste refused: method=%s reason=%s", service, method, error
+            )
             raise ServiceError(
                 422, VALIDATION_ERROR, str(error), retryable=False
             ) from None
