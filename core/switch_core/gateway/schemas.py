@@ -1608,10 +1608,14 @@ class ReferenceDetail(BaseModel):
     # Resolved server-side, unfiltered by the type's visibility: the caller can
     # already read the raw slug. Null when the slug resolves to no type at all.
     type_display_name: str | None = None
-    # What the caller may do with it (`switch_core.authz`). `can_edit`: change
-    # it — its owner, an admin, or anyone when it is publicly writable.
-    # `can_manage`: delete it, change who may see or edit it, transfer it — its
-    # owner or an admin.
+    # What the caller may do with it (`switch_core.authz`). `can_read`: open
+    # it — its owner, an admin, or anyone when it is publicly readable. Every
+    # route returns only what the caller may read, except a package's or a
+    # room's list, which names a private item to everyone who may read the
+    # package or room. `can_edit`: change it — its owner, an admin, or anyone
+    # when it is publicly writable. `can_manage`: delete it, change who may see
+    # or edit it, transfer it — its owner or an admin.
+    can_read: bool
     can_edit: bool
     can_manage: bool
 
@@ -1822,8 +1826,11 @@ class DocumentDetail(BaseModel):
     created_by_agent_name: str | None = None
     created_at: str
     # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
-    # All three are false for a room's own document, which is changed and
-    # removed in its room, not through the library.
+    # Those three are false for a room's own document, which is changed and
+    # removed in its room, not through the library. `can_read` is whether the
+    # library opens it; the room routes say otherwise for a room's own document
+    # (`RoomDocumentDetail`).
+    can_read: bool
     can_edit: bool
     can_manage: bool
     can_transfer: bool
@@ -1835,7 +1842,10 @@ class DocumentDetail(BaseModel):
 
 
 class RoomDocumentDetail(DocumentDetail):
-    """A document as seen from a room it is in."""
+    """A document as seen from a room it is in. Its `can_read` is true for a
+    room's own document, which the room opens for everyone who may read the
+    room; an attached library document keeps the library's rule, which says
+    whether its own page opens."""
 
     can_remove: bool
 
@@ -1861,13 +1871,15 @@ class DocumentSummary(BaseModel):
     created_by_agent_name: str | None = None
     created_at: str
     # As on `DocumentDetail`.
+    can_read: bool
     can_edit: bool
     can_manage: bool
     can_transfer: bool
 
 
 class RoomDocumentSummary(DocumentSummary):
-    """A document as listed in a room it is in."""
+    """A document as listed in a room it is in. `can_read` as on
+    `RoomDocumentDetail`."""
 
     can_remove: bool
 
