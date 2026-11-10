@@ -110,6 +110,17 @@ version of their own to them without also giving them a release of their own.
   each time a notice goes to the channel for want of a private route. Notices
   about an agent's message are still posted for the room.
 
+#### Fixed
+- **Managed agents no longer flip to "Connecting" every few seconds.** A
+  controller from a released Switch Console calls its socket dead after 10
+  seconds without a frame, and since the server pings every 10 seconds it
+  dropped a healthy socket whenever a ping came a moment late. A controller's
+  socket is now pinged every 5 seconds. With two switch-core pods, a
+  controller reattaching through the other pod was also refused and had to
+  open a new connection, because the pod holding the socket noticed it had
+  closed only at its next ping. It now lets the socket go as it closes, and
+  the other pod takes the connection up.
+
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
   The room routes and the agent tools added agents and people to one from
