@@ -103,6 +103,11 @@ class RoomDescriptor(BaseModel):
     bridge_id: str | None = None
 
 
+# Whether an agent is up at all, outside any one room: `not_tracked` for an
+# agent that only polls, which holds nothing Switch can see between polls.
+OverallStatus = Literal["online", "offline", "not_tracked"]
+
+
 class AgentStatus(StrEnum):
     LIVE = "live"
     DISCONNECTED = "disconnected"

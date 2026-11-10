@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
+from switch_core.bridges.agent.protocol.types import OverallStatus
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelRetirement,
@@ -444,6 +445,9 @@ class AgentDevice(BaseModel):
 
     id: str
     name: str
+    # Whose device it is: two people's devices can share a name, as every
+    # Switch cloud device does.
+    owner_name: str
     # Removed from Switch. The agent stays placed on it, and runs nowhere,
     # until its owner moves it.
     removed: bool
@@ -458,7 +462,7 @@ class GatewayAgentListEntry(GatewayAgentSummary):
     # `online` while it holds a live connection or session, or its device
     # runs it; `offline` otherwise; `not_tracked` for an agent that only
     # polls, which holds nothing Switch can see between polls.
-    status: Literal["online", "offline", "not_tracked"]
+    status: OverallStatus
     # Named to the device's owner and to workspace admins, who see every
     # device in the workspace. Null for an agent placed on no device, and for
     # anyone else.

@@ -344,8 +344,8 @@ version of their own to them without also giving them a release of their own.
   they own, and an empty list says whether the workspace has no agents or
   none of them are yours. `GET /gateway/agents` now reports each agent's
   `status` (`online`, `offline`, or `not_tracked` for an agent that only
-  polls) and its `device`, which is named to the device's owner and to
-  workspace admins.
+  polls) and its `device` with whose device it is, which is named to the
+  device's owner and to workspace admins.
 - **An agent's page says when you can see the agent but not change it.**
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and

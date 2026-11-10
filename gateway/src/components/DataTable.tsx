@@ -197,9 +197,10 @@ const NOT_PINNED: string[] = [];
 const NO_SELECTS: SelectFilter[] = [];
 
 /** A select filter's value with nothing picked, and with several picked from
- *  the header menu. Neither can be a column's value: filter values are text
- *  a row holds, and these are not. */
-const ALL_VALUES = "";
+ *  the header menu. Neither can be a column's value, "" included: filter
+ *  values are text a row holds, and these start with a character no text a
+ *  person reads does. */
+const ALL_VALUES = "\u0000all";
 const SEVERAL_VALUES = "\u0000several";
 
 /** The free grid has no column pinning, so a pinned column is a sticky one:
@@ -370,7 +371,7 @@ export default function DataTable<T extends { id: string | number }>({
   emptyState,
 }: DataTableProps<T>) {
   const apiRef = useGridApiRef();
-  const [selection, setSelectionState] = useState<FilterSelection>({});
+  const [storedSelection, setSelectionState] = useState<FilterSelection>({});
   const [query, setQueryState] = useState("");
   const filterHeadingId = useId();
 
@@ -403,7 +404,12 @@ export default function DataTable<T extends { id: string | number }>({
   }
 
   // A pick whose value no row holds any more matches nothing; it goes,
-  // rather than leave a chip over an empty table.
+  // rather than leave a chip over an empty table. It is left out from the
+  // render the rows change in, and then dropped from the state for good.
+  const selection = useMemo(
+    () => pruneSelection(storedSelection, filterable, rows),
+    [storedSelection, filterable, rows],
+  );
   useEffect(() => {
     setSelectionState((current) => pruneSelection(current, filterable, rows));
   }, [filterable, rows]);
@@ -596,6 +602,7 @@ export default function DataTable<T extends { id: string | number }>({
                     )
                   }
                   fullWidth={false}
+                  // A column's value may be "", which a select otherwise shows as nothing.
                   slotProps={{ select: { displayEmpty: true } }}
                   sx={{ width: 180 }}
                 >

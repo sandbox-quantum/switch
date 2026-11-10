@@ -180,7 +180,9 @@ class TestDevice:
             member = await add_user(session, name="member")
             agent = await add_agent(session, name="managed", owner_id=owner.id)
             controller = await _place(session, agent, owner, name="Laptop")
-            device = AgentDevice(id=controller.id, name="Laptop", removed=False)
+            device = AgentDevice(
+                id=controller.id, name="Laptop", owner_name="owner", removed=False
+            )
 
             assert (await _listed(session, owner, admin=False))[
                 "managed"
@@ -215,3 +217,25 @@ class TestDevice:
 
             assert device is not None
             assert (device.name, device.removed) == ("Old laptop", True)
+
+    async def test_each_device_carries_its_own_owner_not_the_agents(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Two people's devices can share a name, as every Switch cloud device
+        does; what tells them apart is whose each is, read from the device."""
+        async with session_factory() as session:
+            ada = await add_user(session, name="ada")
+            grace = await add_user(session, name="grace")
+            admin = await add_user(session, name="admin")
+            first = await add_agent(session, name="first", owner_id=ada.id)
+            second = await add_agent(session, name="second", owner_id=ada.id)
+            await _place(session, first, ada, name="Switch cloud")
+            # Placed on Grace's device though Ada owns it.
+            await _place(session, second, grace, name="Switch cloud")
+
+            listed = await _listed(session, admin, admin=True)
+
+            assert listed["first"].device is not None
+            assert listed["second"].device is not None
+            assert listed["first"].device.owner_name == "ada"
+            assert listed["second"].device.owner_name == "grace"

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.presence import agents_present_in
-from switch_core.bridges.agent.protocol.types import AgentStatus
+from switch_core.bridges.agent.protocol.types import AgentStatus, OverallStatus
 from switch_core.db.models import Agent
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 
@@ -220,9 +219,6 @@ def controller_statuses(
         else:
             statuses[agent.id] = AgentStatus.DISCONNECTED
     return statuses
-
-
-OverallStatus = Literal["online", "offline", "not_tracked"]
 
 
 async def overall_statuses(

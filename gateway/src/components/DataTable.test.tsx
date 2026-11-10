@@ -202,6 +202,35 @@ describe("DataTable toolbar", () => {
     expect(screen.queryByRole("button", { name: "Remove Status: Idle filter" })).toBeNull();
   });
 
+  it("filters on an empty value from a dropdown, which reading as nothing picked would lose", async () => {
+    const unnamed = [...rows, { id: 4, name: "orphan", status: "" }];
+    const statusColumn: TableColumn<Row> = {
+      field: "status",
+      headerName: "Status",
+      width: 120,
+      filter: {
+        value: (row) => row.status,
+        options: [
+          { value: "Active", label: "Active" },
+          { value: "", label: "No status" },
+        ],
+      },
+    };
+    render(
+      table({
+        rows: unnamed,
+        columns: [columns[0], statusColumn, columns[2]],
+        quickFilters: [],
+        selectFilters: [{ field: "status", label: "State", allLabel: "All states" }],
+      }),
+    );
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: "State" }));
+    fireEvent.click(await screen.findByRole("option", { name: "No status" }));
+
+    expect(screen.getByText("1 of 4 agents")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "State" }).textContent).toBe("No status");
+  });
+
   it("opens sorted as asked", () => {
     const { container } = render(table({ initialSort: { field: "name", sort: "desc" } }));
     const header = container.querySelector('.MuiDataGrid-columnHeader[data-field="name"]') as HTMLElement;

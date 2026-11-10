@@ -200,13 +200,26 @@ async def _detail_for_caller(
     )
 
 
+def _sees_device(placed: PlacedDevice, user: User, is_admin: bool) -> bool:
+    """A device is named to its owner, and to the workspace's admins, who see
+    every device in it."""
+    return is_admin or placed.owner_id == user.id
+
+
 def _device_for(
-    placed: PlacedDevice | None, user: User, is_admin: bool
+    placed: PlacedDevice | None,
+    user: User,
+    is_admin: bool,
+    owner_names: dict[str, str],
 ) -> AgentDevice | None:
-    if placed is None or not (is_admin or placed.owner_id == user.id):
+    if placed is None or not _sees_device(placed, user, is_admin):
         return None
     return AgentDevice(
-        id=placed.controller_id, name=placed.name, removed=placed.revoked
+        id=placed.controller_id,
+        name=placed.name,
+        # The device's row names its owner, a user that exists, so this is found.
+        owner_name=owner_names[placed.owner_id],
+        removed=placed.revoked,
     )
 
 
@@ -228,11 +241,19 @@ async def list_agents(
         protocol.connections,
     )
     devices = await _DEFINITIONS.devices(session, require_tenant_id())
+    device_owners = await user_store.names_by_id(
+        session,
+        {
+            placed.owner_id
+            for placed in devices.values()
+            if _sees_device(placed, user, is_admin)
+        },
+    )
     return [
         GatewayAgentListEntry(
             **agent.model_dump(),
             status=statuses[agent.id],
-            device=_device_for(devices.get(agent.id), user, is_admin),
+            device=_device_for(devices.get(agent.id), user, is_admin, device_owners),
         )
         for agent in agents
     ]

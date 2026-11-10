@@ -25,7 +25,7 @@ import PageBanner from "../../components/PageBanner";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
 import { useAuth } from "../../data/AuthContext";
-import { type AgentListEntry, deleteAgent, loadAgents } from "../../data/api";
+import { type AgentDevice, type AgentListEntry, deleteAgent, loadAgents } from "../../data/api";
 import { AGENT_MANAGEMENT } from "../../data/featureFlags";
 import { type ListScope, agentsInScope, listScopeOf } from "../../data/listScope";
 import { EM_DASH, formatDate, sentenceCase } from "../../theme/format";
@@ -66,18 +66,16 @@ interface Notice {
  * name, as two people's laptops may, so a name shared by several devices
  * carries its owner too. */
 export function deviceLabels(agents: readonly AgentListEntry[]): Map<string, string> {
-  const devices = new Map<string, { name: string; owner: string | null; removed: boolean }>();
+  const devices = new Map<string, AgentDevice>();
   for (const agent of agents) {
-    if (agent.device) {
-      devices.set(agent.device.id, { name: agent.device.name, owner: agent.owner_name, removed: agent.device.removed });
-    }
+    if (agent.device) devices.set(agent.device.id, agent.device);
   }
   const named = new Map<string, number>();
   for (const { name } of devices.values()) named.set(name, (named.get(name) ?? 0) + 1);
   const labels = new Map<string, string>();
-  for (const [id, { name, owner, removed }] of devices) {
-    const shared = (named.get(name) ?? 0) > 1 && owner !== null;
-    labels.set(id, `${shared ? `${name} · ${owner}` : name}${removed ? " (removed)" : ""}`);
+  for (const [id, { name, owner_name, removed }] of devices) {
+    const shared = (named.get(name) ?? 0) > 1;
+    labels.set(id, `${shared ? `${name} · ${owner_name}` : name}${removed ? " (removed)" : ""}`);
   }
   return labels;
 }

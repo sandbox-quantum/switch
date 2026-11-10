@@ -219,10 +219,30 @@ describe("AgentListPage", () => {
     expect(calls.filter((call) => call.method === "GET" && call.path === "/agents")).toHaveLength(2);
   });
 
+  it("keeps the last list under a warning when a refresh fails", async () => {
+    signedInAs("admin");
+    answer({
+      "GET /agents": [
+        [200, [agent("doomed", "u1"), agent("kept", "u1")]],
+        [503, { detail: "The database is unavailable." }],
+      ],
+      "DELETE /agents/doomed": [200, { ok: true, bridge_cleanup_failures: [] }],
+    });
+    show();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Actions for doomed" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Delete/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete agent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    expect(await screen.findByText(/Couldn't refresh the agents: The database is unavailable/)).toBeTruthy();
+    expect(screen.getByText("2 agents")).toBeTruthy();
+  });
+
   it("shows devices only where agent management is on", async () => {
     signedInAs("admin");
     answer({
-      "GET /agents": [200, [agent("managed", "u1", { device: { id: "d1", name: "Laptop", removed: false } })]],
+      "GET /agents": [200, [agent("managed", "u1", { device: { id: "d1", name: "Laptop", owner_name: "Ada", removed: false } })]],
     });
     show();
     expect(await screen.findByText("1 agent")).toBeTruthy();
@@ -236,9 +256,10 @@ describe("AgentListPage", () => {
 
   it("tells apart devices that share a name by their owner, and marks a removed one", () => {
     const labels = deviceLabels([
-      agent("a", "u1", { device: { id: "d1", name: "Switch cloud", removed: false } }),
-      agent("b", "u2", { device: { id: "d2", name: "Switch cloud", removed: false } }),
-      agent("c", "u1", { device: { id: "d3", name: "Old laptop", removed: true } }),
+      agent("a", "u1", { device: { id: "d1", name: "Switch cloud", owner_name: "Ada", removed: false } }),
+      // Placed on Grace's device, though Ada owns the agent: the device says whose it is.
+      agent("b", "u1", { device: { id: "d2", name: "Switch cloud", owner_name: "Grace", removed: false } }),
+      agent("c", "u1", { device: { id: "d3", name: "Old laptop", owner_name: "Ada", removed: true } }),
     ]);
 
     expect(labels.get("d1")).toBe("Switch cloud · Ada");
