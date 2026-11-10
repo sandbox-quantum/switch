@@ -1080,6 +1080,10 @@ class TeamsAdapter(PlatformAdapter):
         self._team_of_channel: dict[str, str] = dict(config.channel_teams)
         # Installed by the bridge to persist a newly-learned channel/team pair.
         self._persist_channel_team: Callable[[str, str], Awaitable[None]] | None = None
+        # Installed by the bridge to store the first team Switch joins as the
+        # default team; see `_adopt_first_team`.
+        self._default_team_adopter: Callable[[str], Awaitable[bool]] | None = None
+        self._adopting_default_team = False
         self._sub_lock = asyncio.Lock()
         # Whether the subscriptions Graph already holds for this bridge have
         # been read since it started; see `_adopt_existing_subscriptions`.
@@ -1632,6 +1636,9 @@ class TeamsAdapter(PlatformAdapter):
         self, persist: Callable[[str, str], Awaitable[None]]
     ) -> None:
         self._persist_channel_team = persist
+
+    def set_default_team_adopter(self, adopt: Callable[[str], Awaitable[bool]]) -> None:
+        self._default_team_adopter = adopt
 
     async def _learn_channel_team(self, channel_id: str, team_id: str) -> None:
         """Record which team a channel belongs to, and persist it.
@@ -2804,7 +2811,9 @@ class TeamsAdapter(PlatformAdapter):
             raise BridgeOperationError(
                 "No default team is set for this Teams messaging app, so Switch "
                 "does not know which team to create the channel in. Choose one "
-                "in the messaging app's Microsoft Teams settings."
+                "in the messaging app's Microsoft Teams settings, or add Switch "
+                "to a team there: a team it joins with no default set becomes "
+                "the default."
             )
         is_private = channel_type == "channel_private"
         if is_private and (
@@ -3531,15 +3540,47 @@ class TeamsAdapter(PlatformAdapter):
             )
 
     async def _switch_joined_team(self, team_id: str) -> None:
-        """Switch is in a team now: capture the channels waiting on that."""
+        """Switch is in a team now: capture the channels waiting on that, and
+        make it the default team if there is none."""
         if not self._listening:
             self._hand_to_holder({"action": "team_joined", "team_id": team_id})
             return
         self._team_has_switch[team_id] = (True, time.monotonic())
+        await self._adopt_first_team(team_id)
         waiting = [c for c, t in self._capture_parked.items() if t == team_id]
         for channel_id in waiting:
             del self._capture_parked[channel_id]
             await self._ensure_channel_subscription(channel_id)
+
+    async def _adopt_first_team(self, team_id: str) -> None:
+        """Make a team Switch just joined the default team, if none is set.
+
+        A connection on the distributed app is approved before Switch is in
+        any team, so it starts with no default team, and every channel Switch
+        is asked to create fails until an admin picks one. The first team it
+        joins is the one an admin just put it in, from Switch or from Teams.
+        A default team already set is never replaced, and one the bridge
+        could not store stays unset, to be tried again at the next join.
+        """
+        if (
+            not self.serves_shared_app
+            or self._config.team_id
+            or self._default_team_adopter is None
+            or self._adopting_default_team
+        ):
+            return
+        self._adopting_default_team = True
+        try:
+            adopted = await self._default_team_adopter(team_id)
+        except Exception:
+            logger.warning(
+                "Failed to make Teams team %s the default team", team_id, exc_info=True
+            )
+            return
+        finally:
+            self._adopting_default_team = False
+        if adopted:
+            self._config = self._config.model_copy(update={"team_id": team_id})
 
     async def _switch_left_team(self, team_id: str) -> None:
         """Switch is out of a team: stop capturing it, ready to resume on return."""

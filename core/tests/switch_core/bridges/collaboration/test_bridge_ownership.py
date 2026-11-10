@@ -868,6 +868,45 @@ class TestChangesMadeElsewhere:
 
         assert [p.bridges.get(bridge.bridge_id) for p in (holder, quiet)] == running
 
+    async def test_a_default_team_a_bridge_adopted_rebuilds_only_the_quiet_copy(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """A Teams bridge on the distributed app stores the first team it
+        joins as its default team. That is an edit: a copy still built without
+        it would create channels nowhere. The copy that joined already uses
+        it, so it is left running."""
+        holder, quiet = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await _eventually(lambda: quiet.bridges.is_connected(bridge.bridge_id))
+        held = holder.bridges.get(bridge.bridge_id)
+        copy = quiet.bridges.get(bridge.bridge_id)
+
+        assert await holder.bridges._adopt_default_team(
+            bridge.bridge_id, TENANT_ZERO_ID, "team-9"
+        )
+        for process in (holder, quiet):
+            await process.bridges.reconcile_all()
+
+        assert holder.bridges.get(bridge.bridge_id) is held
+        await _eventually(lambda: quiet.bridges.get(bridge.bridge_id) is not copy)
+        await _eventually(lambda: quiet.bridges.is_connected(bridge.bridge_id))
+
+        # A team joined later is not the default: the first one is kept.
+        assert not await holder.bridges._adopt_default_team(
+            bridge.bridge_id, TENANT_ZERO_ID, "team-10"
+        )
+        async with session_factory() as session:
+            stored = await session.get(CollaborationBridge, bridge.bridge_id)
+        assert stored is not None
+        assert stored.connection_config["team_id"] == "team-9"
+
     async def test_a_bridge_removed_through_the_quiet_process_stops_listening(
         self,
         postgres_url: str,

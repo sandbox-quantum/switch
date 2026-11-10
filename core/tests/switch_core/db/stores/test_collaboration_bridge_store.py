@@ -491,3 +491,42 @@ async def test_an_edit_merges_into_what_the_bridge_learned_since_it_was_read(
         assert bridge.connection_config["channel_teams"] == {
             "19:a@thread.tacv2": "team-1"
         }
+
+
+@pytest.mark.asyncio
+async def test_set_team_if_unset_stores_a_first_default_team(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.set_service_url(session, bridge_id, "https://smba.example")
+
+        stored = await store.set_team_if_unset(session, bridge_id, "team-1")
+        await session.commit()
+
+    assert stored is not None
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["team_id"] == "team-1"
+        assert bridge.connection_config["service_url"] == "https://smba.example"
+
+
+@pytest.mark.asyncio
+async def test_set_team_if_unset_keeps_a_default_team_already_chosen(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = CollaborationBridgeStore()
+    async with session_factory() as session:
+        bridge_id = await _make_bridge(session)
+        await store.merge_connection_config(session, bridge_id, {"team_id": "chosen"})
+
+        stored = await store.set_team_if_unset(session, bridge_id, "team-1")
+        await session.commit()
+
+    assert stored is None
+    async with session_factory() as session:
+        bridge = await store.get(session, bridge_id)
+        assert bridge is not None
+        assert bridge.connection_config["team_id"] == "chosen"

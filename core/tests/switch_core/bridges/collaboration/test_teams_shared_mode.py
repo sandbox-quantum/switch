@@ -2000,6 +2000,108 @@ async def test_a_bring_your_own_bridges_default_team_is_its_operators() -> None:
     assert graph.asked == []
 
 
+class _Adopter:
+    """Stands in for the lifecycle storing the default team: each call gives
+    the next answer, whether the team was stored, or raises it."""
+
+    def __init__(self, *answers: bool | Exception) -> None:
+        self.answers = list(answers)
+        self.asked: list[str] = []
+
+    async def __call__(self, team_id: str) -> bool:
+        self.asked.append(team_id)
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _adopting_adapter(adopter: _Adopter, **overrides: Any) -> TeamsAdapter:
+    adapter = _shared_adapter(**overrides)
+    adapter._graph = _SubscribingGraph(list_failures=0, held=[])  # type: ignore[assignment]
+    adapter.set_default_team_adopter(adopter)
+    return adapter
+
+
+async def test_the_first_team_switch_is_added_to_becomes_the_default() -> None:
+    """A connection is approved before Switch is in any team, so it has no
+    default team, and every channel it is asked to create fails until it has
+    one. The team an admin first puts it in is that team."""
+    adopter = _Adopter(True)
+    adapter = _adopting_adapter(adopter)
+    assert adapter.default_team_id is None
+
+    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
+
+    assert adopter.asked == ["team-2"]
+    assert adapter.default_team_id == "team-2"
+
+
+async def test_switch_added_to_its_first_team_from_teams_makes_it_the_default() -> None:
+    adopter = _Adopter(True)
+    adapter = _adopting_adapter(adopter)
+
+    await adapter._dispatch_installation_update(
+        {"action": "add", "channelData": {"team": {"aadGroupId": "team-2"}}}
+    )
+
+    assert adapter.default_team_id == "team-2"
+
+
+async def test_a_team_joined_later_does_not_replace_the_default() -> None:
+    adopter = _Adopter()
+    adapter = _adopting_adapter(adopter, team_id="team-1")
+
+    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
+
+    assert adopter.asked == []
+    assert adapter.default_team_id == "team-1"
+
+
+async def test_a_default_team_chosen_meanwhile_is_not_taken_over() -> None:
+    """The lifecycle found one stored: an admin chose it while Switch was
+    joining. The bridge is restarted from that choice, so this copy keeps
+    none rather than claiming the team it joined."""
+    adopter = _Adopter(False)
+    adapter = _adopting_adapter(adopter)
+
+    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
+
+    assert adapter.default_team_id is None
+
+
+async def test_a_default_team_that_could_not_be_stored_is_tried_at_the_next_join(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adopter = _Adopter(RuntimeError("database unavailable"), True)
+    adapter = _adopting_adapter(adopter)
+
+    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
+
+    assert adapter.default_team_id is None
+    assert "Failed to make Teams team team-2 the default team" in caplog.text
+
+    await adapter.add_to_team("team-3", catalog_app_id="cat-1")
+
+    assert adopter.asked == ["team-2", "team-3"]
+    assert adapter.default_team_id == "team-3"
+
+
+async def test_a_quiet_copy_leaves_the_default_team_to_the_holder() -> None:
+    """The holder adopts it when it is handed the join, so two copies never
+    race to store different teams."""
+    adopter = _Adopter()
+    adapter = _adopting_adapter(adopter)
+    adapter.set_listening(False)
+    relayed: list[dict[str, str]] = []
+    adapter.set_holder_relay(relayed.append)
+
+    await adapter.add_to_team("team-2", catalog_app_id="cat-1")
+
+    assert relayed == [{"action": "team_joined", "team_id": "team-2"}]
+    assert adopter.asked == []
+
+
 async def test_two_catalogue_ids_for_the_app_are_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

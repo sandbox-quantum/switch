@@ -1295,6 +1295,9 @@ class CollaborationBridgeLifecycleService:
                     bridge_id, tenant_id, channel_id, team_id
                 )
             )
+            adapter.set_default_team_adopter(
+                lambda team_id: self._adopt_default_team(bridge_id, tenant_id, team_id)
+            )
             adapter.set_holder_relay(
                 lambda request: self._relay_to_holder(bridge_id, request)
             )
@@ -1468,6 +1471,35 @@ class CollaborationBridgeLifecycleService:
                 session, bridge_id, channel_id, team_id
             )
             await session.commit()
+
+    async def _adopt_default_team(
+        self, bridge_id: str, tenant_id: str, team_id: str
+    ) -> bool:
+        """Store a team a bridge joined as its default team, unless one has
+        been chosen meanwhile; whether it was stored (used by the Teams
+        adapter).
+
+        Unlike what a bridge learns from traffic, this is an edit: every other
+        process rebuilds its copy from the new row, so a channel created
+        through any of them goes in that team. The copy that joined the team
+        already uses it, so the row it now runs from is recorded as the one
+        it started from, and the re-check leaves it running."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            bridge = await self._bridge_store.set_team_if_unset(
+                session, bridge_id, team_id
+            )
+            await session.commit()
+        if bridge is None:
+            return False
+        self._started_rows[bridge_id] = _started_from(bridge)
+        logger.info(
+            "Collaboration bridge %s joined team %s with no default team set; "
+            "it is now the default",
+            bridge_id,
+            team_id,
+        )
+        self._announce(bridge_id)
+        return True
 
     async def _record_bridge_memberships(
         self, bridge_id: str, tenant_id: str, client_id: str

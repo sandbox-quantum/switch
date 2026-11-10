@@ -202,7 +202,8 @@ export default function TeamsPlacementDialog({ bridge, onClose, onChanged }: Pro
           <Typography variant="body2" color="text.secondary">
             Choose which of your organisation&apos;s teams Switch is in, and which
             one new channels go in by default. Only a team Switch is in can be the
-            default.
+            default, and the first team it joins becomes the default if none is
+            set.
           </Typography>
 
           {loading && (
