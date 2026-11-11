@@ -64,7 +64,7 @@ from . import (
     turn_state,
     unanswerable,
 )
-from .subagents import subagent_lines
+from .subagents import is_tool_call, subagent_lines
 
 _CONSOLE = "Open in Switch Console"
 
@@ -241,7 +241,7 @@ def turn_summary(
     """
     state = turn_state(items, turn, tool_detail=True)
     children = subagent_lines(
-        items, turn, fit=lambda text, size: _fit(text, size, escape=escape)
+        items, fit=lambda text, size: _fit(text, size, escape=escape)
     )
     for line in children:
         if len(state) + len(line) + 1 > limit:
@@ -320,13 +320,13 @@ def turn_status(
     lines = [head]
     spent = len(head)
     for line in subagent_lines(
-        items, turn, fit=lambda text, size: _fit(text, size, escape=escape)
+        items, fit=lambda text, size: _fit(text, size, escape=escape)
     ):
         if spent + len(line) + 1 > budget:
             break
         lines.append(line)
         spent += len(line) + 1
-    did = [item for item in items if item.kind == "tool-activity"]
+    did = [item for item in items if is_tool_call(item)]
     for line in _doing(
         did, turn, escape=escape, budget=budget, tool_detail=tool_detail
     ):

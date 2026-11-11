@@ -254,6 +254,12 @@ class TurnUpsert(_Model):
 
 TURN_ENDED = frozenset({"completed", "interrupted", "error"})
 
+# The text Switch gives a subagent it settles because the agent's session went
+# away while the subagent was still running, so nothing said how it ended.
+ORPHANED_SUBAGENT_TEXT = (
+    "Ended by Switch: the agent's session went away before this subagent finished."
+)
+
 
 class ItemUpsert(_Model):
     type: Literal["item.upsert"]

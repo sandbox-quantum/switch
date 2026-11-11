@@ -1983,17 +1983,28 @@ async def test_a_stranded_stream_closed_but_not_redrawn_in_time_is_waited_out() 
     assert ref not in adapter._unredrawable
 
 
-async def test_child_progress_updates_the_same_stream_block_without_another_message() -> (
-    None
-):
+async def test_child_progress_updates_the_same_stream_without_another_message() -> None:
+    """A subagent is a task card in the streamed plan, drawn once, whose status
+    follows it; it is never a block of its own beside the plan."""
     client = FakeWebClient()
     adapter = _adapter(client)
     child = _tool("child-a", "Reviewer: Check changes").model_copy(
         update={"kind": "tool-activity", "subagent": True}
     )
+
+    def child_cards() -> list[dict[str, Any]]:
+        return [
+            task
+            for block in _drawn(client).values()
+            for task in block.get("tasks", [])
+            if task["title"].startswith("Subagent:")
+        ]
+
     content = TurnActivity([child], _turn())
     ref = await adapter.post_rich(CHANNEL, "Agent", content, THREAD)
-    assert "— running" in _drawn(client)["switch-subagents"]["text"]["text"]
+    assert all(block["type"] == "plan" for block in _drawn(client).values())
+    [card] = child_cards()
+    assert (card["status"], card["icon"]["name"]) == ("in_progress", "bot")
     before = len(client.appended)
     await adapter.update_rich(CHANNEL, "Agent", ref, content, THREAD)
     assert len(client.appended) == before
@@ -2001,7 +2012,7 @@ async def test_child_progress_updates_the_same_stream_block_without_another_mess
     await adapter.update_rich(
         CHANNEL, "Agent", ref, TurnActivity([child], _turn("completed")), THREAD
     )
-    assert "— done" in _drawn(client)["switch-subagents"]["text"]["text"]
-    assert "— running" not in _drawn(client)["switch-subagents"]["text"]["text"]
+    [card] = child_cards()
+    assert card["status"] == "complete"
     assert len(client.started) == 1
     assert client.posted == []

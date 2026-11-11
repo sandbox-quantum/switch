@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 
 import pytest
@@ -18,6 +17,7 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
 )
 from switch_core.db.models import AgentSessionActivityItem
 from switch_core.session_activity.bridge_turns import status_state, turn_view
+from switch_core.sessions.contract import ORPHANED_SUBAGENT_TEXT
 
 from .session_fixtures import _item, _turn
 
@@ -43,77 +43,124 @@ def _text(items, state="running", limit=4000):
     )
 
 
+def _tasks(message):
+    """Every step's task card in a Slack render, in order, without the
+    session's own card."""
+    found = []
+    for block in message.blocks:
+        if block.get("type") == "plan":
+            found.extend(block.get("tasks", []))
+        elif block.get("type") == "task_card":
+            found.append(block)
+    return [task for task in found if task.get("task_id") != "switch-session"]
+
+
 @pytest.mark.parametrize(
     "render", [render_activity, render_activity_plan, render_activity_stream]
 )
-def test_slack_lists_children_with_independent_outcomes_and_stable_block(render):
-    items = [_child(0), _child(1, "completed"), _child(2, "failed")]
-    result = render(items, _turn("running"))
-    blocks = [
-        block for block in result.blocks if block.get("block_id") == "switch-subagents"
-    ]
-    assert len(blocks) == 1
-    body = blocks[0]["text"]["text"]
-    assert "Subagents (3):" in body
-    assert "Review changes — running" in body
-    assert "Review changes — done" in body
-    assert "Review changes — failed" in body
-    finished = render(
-        [child.model_copy(update={"status": "completed"}) for child in items],
-        _turn("completed"),
-    )
-    section = next(
-        block
-        for block in finished.blocks
-        if block.get("block_id") == "switch-subagents"
-    )
-    assert "running" not in section["text"]["text"]
-    assert section["text"]["text"].count("— done") == 3
-
-
-def test_slack_keeps_running_children_visible_after_the_tool_log_rolls_over():
+def test_slack_draws_each_child_once_as_a_bot_card_with_its_outcome(render):
     items = [
-        _child(title="Still reviewing"),
-        *[_item(itemId=f"tool-{i}", title="Read file") for i in range(160)],
+        _child(0),
+        _child(1, "completed"),
+        _child(2, "failed"),
+        _child(3, "declined"),
+        _item(itemId="tool-1", title="Read file", status="completed"),
     ]
-    drawn = render_activity_stream(items, _turn("running"))
-    section = next(
-        block for block in drawn.blocks if block.get("block_id") == "switch-subagents"
+    result = render(items, _turn("running"))
+    assert all(
+        block.get("type") in ("plan", "task_card", "context", "section", "actions")
+        for block in result.blocks
     )
-    assert "Still reviewing — running" in section["text"]["text"]
+    assert not any(
+        block.get("block_id") == "switch-subagents" for block in result.blocks
+    )
+    tasks = _tasks(result)
+    children = [task for task in tasks if task["title"].endswith("Review changes")]
+    assert len(children) == 4
+    assert {task["icon"]["name"] for task in children} == {"bot"}
+    tools = [task for task in tasks if "Read file" in task["title"]]
+    assert [task["icon"]["name"] for task in tools] == ["code"]
+    titles = [task["title"] for task in children]
+    assert "Subagent: Review changes" in titles
+    assert "✗ Subagent: Review changes" in titles
+    assert "Stopped: Subagent: Review changes" in titles
 
 
-def test_both_renderers_bound_the_list_and_prioritize_running_children():
+def test_slack_keeps_a_child_running_after_its_turn_ends():
+    result = render_activity_plan([_child()], _turn("completed"))
+    [task] = _tasks(result)
+    assert task["status"] == "in_progress"
+    assert "Unfinished" not in task["title"]
+    assert task["title"] == "Subagent: Review changes"
+
+
+def test_slack_text_fallback_lists_children_once_apart_from_calls():
+    result = render_activity(
+        [_child(0), _item(itemId="tool-1", title="Read file", status="completed")],
+        _turn("running"),
+    )
+    assert result.text.count("Review changes") == 1
+    assert "Subagents (1):" in result.text
+    assert "Review changes — running" in result.text
+
+
+def test_neutral_lists_children_once_and_counts_only_calls():
+    text = _text(
+        [
+            _child(0),
+            _child(1),
+            _item(itemId="tool-1", title="Read file", status="failed"),
+        ]
+    )
+    assert "Subagents (2):" in text
+    assert text.count("Review changes") == 2
+    assert "1 failed" in text
+    ended = _text(
+        [_child(0, "completed"), _item(itemId="tool-1", title="Read file")],
+        "completed",
+    )
+    assert "Subagents (1):" in ended
+
+
+def test_the_list_is_bounded_and_running_children_come_first():
     items = [_child(i, "completed", f"Finished {i}") for i in range(20)]
     items.append(_child(20, title="Still working"))
-    neutral = _text(items)
-    slack = render_activity_stream(items, _turn("running"))
-    section = next(
-        block for block in slack.blocks if block.get("block_id") == "switch-subagents"
-    )
-    for text in [neutral, section["text"]["text"]]:
-        assert "Subagents (21):" in text
-        assert "Still working — running" in text
-        assert text.count("• ") == 5
-        assert "16 more not shown" in text
+    text = _text(items)
+    assert "Subagents (21):" in text
+    assert "Still working — running" in text
+    assert text.count("• ") == 5
+    assert "16 more not shown" in text
 
 
-def test_ended_parent_does_not_claim_an_unfinished_child_succeeded_or_is_running():
-    for state in ["completed", "interrupted", "error"]:
-        assert "not confirmed finished" in _text([_child()], state)
-        assert "— running" not in _text([_child()], state)
-        assert "1 step left unfinished" in _text([_child()], state)
+@pytest.mark.parametrize("state", ["completed", "interrupted", "error"])
+def test_a_child_outliving_its_turn_is_running_and_not_left_unfinished(state):
+    text = _text([_child()], state)
+    assert "Review changes — running" in text
+    assert "not confirmed finished" not in text
+    assert "left unfinished" not in text
 
 
-def test_slack_escapes_mentions_and_bounds_long_descriptions():
+def test_a_child_switch_settled_after_its_session_went_away_is_not_confirmed():
+    orphan = _child(status="failed").model_copy(update={"text": ORPHANED_SUBAGENT_TEXT})
+    assert "Review changes — not confirmed finished" in _text([orphan], "completed")
+    [task] = _tasks(render_activity_plan([orphan], _turn("completed")))
+    assert task["title"] == "Not confirmed finished: Subagent: Review changes"
+
+
+def test_a_stopped_child_reads_stopped_not_failed():
+    text = _text([_child(status="declined"), _child(1, status="failed")])
+    assert "Review changes — stopped" in text
+    assert "Review changes — failed" in text
+
+
+def test_slack_bounds_long_descriptions():
+    """A task card's title is plain text, so a mention in it pings nobody;
+    what matters is that it stays inside Slack's limit."""
     result = render_activity_plan(
         [_child(title="<!channel> & " + "x" * 10_000)], _turn("running")
     )
-    block = next(
-        block for block in result.blocks if block.get("block_id") == "switch-subagents"
-    )
-    assert "<!channel>" not in json.dumps(block)
-    assert len(block["text"]["text"]) < 1000
+    [task] = _tasks(result)
+    assert len(task["title"]) <= 200
 
 
 def test_text_fallback_and_activity_log_identify_subagents():
