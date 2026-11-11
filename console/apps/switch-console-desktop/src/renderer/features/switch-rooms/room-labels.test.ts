@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { addableAgents, addablePeople, membershipSummary, roomTitle } from './room-labels';
+import {
+  addableAgents,
+  addableBridgePeople,
+  addablePeople,
+  membershipSummary,
+  roomTitle,
+} from './room-labels';
 
 describe('roomTitle', () => {
   it('marks a bridged room as the channel it is', () => {
@@ -45,6 +51,50 @@ describe('addableAgents', () => {
   it('offers only the agents the server names as candidates', () => {
     expect(addableAgents([{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }], ['a2', 'gone'])).toEqual([
       { id: 'a2' },
+    ]);
+  });
+});
+
+describe('addableBridgePeople', () => {
+  const person = (username: string, linkedName: string | null) => ({
+    username,
+    externalUserId: `U-${username}`,
+    linkedUserIds: linkedName ? [`id-${username}`] : [],
+    linkedName,
+  });
+
+  it('shows a linked person by their full name, with the username beside it', () => {
+    expect(addableBridgePeople([person('simon.flack', 'Simon Flack')], new Set())).toEqual([
+      { id: 'simon.flack', name: 'Simon Flack', detail: '@simon.flack' },
+    ]);
+  });
+
+  it('shows someone nobody has linked by their username, as there is no name for them', () => {
+    expect(addableBridgePeople([person('ada', null)], new Set())).toEqual([
+      { id: 'ada', name: 'ada', detail: '@ada' },
+    ]);
+  });
+
+  it('leaves out who is already in the room, by username', () => {
+    const people = [person('ada', 'Ada Lovelace'), person('bob', null)];
+    expect(addableBridgePeople(people, new Set(['ada'])).map((row) => row.id)).toEqual(['bob']);
+  });
+
+  it('offers a username seen under two accounts once, keeping the name either gave', () => {
+    const people = [
+      person('carol', null),
+      { ...person('carol', 'Carol Shaw'), externalUserId: 'U-2' },
+    ];
+    expect(addableBridgePeople(people, new Set())).toEqual([
+      { id: 'carol', name: 'Carol Shaw', detail: '@carol' },
+    ]);
+  });
+
+  it('sorts by the name shown', () => {
+    const people = [person('zed', 'Ada Zed'), person('bea', null)];
+    expect(addableBridgePeople(people, new Set()).map((row) => row.name)).toEqual([
+      'Ada Zed',
+      'bea',
     ]);
   });
 });

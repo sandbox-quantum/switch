@@ -3779,23 +3779,6 @@ export async function fetchArchivedRooms(server: SwitchServer): Promise<RemoteRo
 }
 
 /**
- * The messaging-app usernames Switch knows on one bridge
- * (`GET /collaborations/{id}/users`) — the people a bridged room can be given.
- */
-export async function fetchBridgeUserNames(
-  server: SwitchServer,
-  bridgeId: string
-): Promise<string[]> {
-  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
-    authenticated: true,
-  });
-  const users = (await res.json()) as ExternalUserSummaryJson[];
-  return [...new Set(users.map((user) => user.external_username))].sort((a, b) =>
-    a.localeCompare(b)
-  );
-}
-
-/**
  * Change a room's auto-route setting (`PUT /rooms/{id}/auto-route`), the same
  * store `!auto-route` writes; a field left out is left alone. Answers with the
  * setting as it now stands.

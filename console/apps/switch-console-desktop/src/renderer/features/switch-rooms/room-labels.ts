@@ -1,3 +1,5 @@
+import type { BridgePerson } from '@shared/core/switch-servers/switch-servers';
+
 /**
  * A room's name as it is written where the room actually lives.
  *
@@ -34,6 +36,32 @@ export function addablePeople<T extends { userId: string; serviceAccount: boolea
   memberIds: Set<string>
 ): T[] {
   return roster.filter((person) => !person.serviceAccount && !memberIds.has(person.userId));
+}
+
+/**
+ * The people Switch knows on a bridge who are not in the room yet, as rows to
+ * add: by the full name of the Switch user who linked the account when there
+ * is one, with the username beside it, so either can be searched for. The
+ * username is still what the room is given. Someone seen under two accounts
+ * with the same username is offered once, by the first name found.
+ */
+export function addableBridgePeople(
+  people: BridgePerson[],
+  present: Set<string>
+): { id: string; name: string; detail: string }[] {
+  const byUsername = new Map<string, string | null>();
+  for (const person of people) {
+    if (present.has(person.username)) continue;
+    const known = byUsername.get(person.username) ?? null;
+    byUsername.set(person.username, known ?? person.linkedName);
+  }
+  return [...byUsername]
+    .map(([username, linkedName]) => ({
+      id: username,
+      name: linkedName ?? username,
+      detail: `@${username}`,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
