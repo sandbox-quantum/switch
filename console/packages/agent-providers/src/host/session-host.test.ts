@@ -13,7 +13,13 @@ import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { Redactions } from './redaction';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
-import { HostedSession, recentTurns, type RoomReply, unpostedReply } from './session-host';
+import {
+  HostedSession,
+  recentTurns,
+  type RoomReply,
+  unpostedReply,
+  usageLimitReply,
+} from './session-host';
 
 // Every step here is a journal write flushed to disk, and Windows runners take
 // many times longer over that. The waits have no deadline of their own (see
@@ -141,7 +147,7 @@ async function start(provider: Session['provider']) {
   await until(() => expect(host.snapshot().session.status).toBe('ready'));
   return { ...fixture, root, host };
 }
-it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen'] as const)(
   'serializes and deduplicates %s commands across recovery',
   async (provider) => {
     const { root, host, adapter } = await start(provider);
@@ -1297,7 +1303,7 @@ it('resumes a stopped native conversation only once per explicit operation witho
   expect(again.adapter.startSession).not.toHaveBeenCalled();
 });
 
-it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen'] as const)(
   'starts %s without waiting for model discovery',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), 'startup-models-'));
@@ -1833,6 +1839,31 @@ it('tells the room to !reset when the provider refused the turn for size', async
   await host.shutdown();
 });
 
+it('tells the room the agent stopped at its usage limit, and when it resets, though it had posted', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, root, adapter } = await startReplying(reply);
+  await host.command(roomMessage('limited', 'thread'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  host.agentPostedToRoom();
+  const notice = "You've hit your 5-hour limit · resets 8:40am";
+  emit({
+    type: 'turn.completed',
+    turnId: 'limited',
+    outcome: 'error',
+    message: notice,
+    usageLimit: { resetsAt: Date.UTC(2026, 10, 11, 8, 40) },
+    usage: [],
+  });
+  await until(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply).toHaveBeenCalledWith({
+    roomId: 'room',
+    threadId: 'thread',
+    body: `I stopped before finishing: my provider's usage limit was reached. It resets at 2026-11-11 08:40 UTC. Address me again after it resets to continue.\n\nThe provider said: ${notice}`,
+  });
+  expect(host.snapshot().turns[0]?.status).toBe('error');
+  expect(await roomReplyRecords(root)).toEqual([{ type: 'room-reply', commandId: 'limited' }]);
+});
+
 it('leaves a room turn alone when the agent posted to the room during it', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, adapter } = await startReplying(reply);
@@ -1956,6 +1987,15 @@ it('leads with a !reset hint when the provider refuses the request for size', ()
   expect(unpostedReply('error', 'Prompt is too long')).toContain(hint);
   expect(unpostedReply('error', 'Other error')).toBe(
     'I finished without replying. The turn failed: Other error'
+  );
+});
+
+it('says the agent stopped at its usage limit, without a reset time the provider did not give', () => {
+  expect(usageLimitReply({ resetsAt: null }, null)).toBe(
+    "I stopped before finishing: my provider's usage limit was reached. Address me again after it resets to continue."
+  );
+  expect(usageLimitReply({ resetsAt: null }, 'Try again at 8:40 AM.')).toBe(
+    "I stopped before finishing: my provider's usage limit was reached. Address me again after it resets to continue.\n\nThe provider said: Try again at 8:40 AM."
   );
 });
 
@@ -2254,6 +2294,51 @@ describe('retrying a room message', () => {
 });
 
 describe('mid-turn room steering', () => {
+  it('reports an older turn usage limit without releasing a newer provider-started turn', async () => {
+    const reply = vi.fn(async (_reply: RoomReply) => {});
+    const { host, adapter, emit } = await startReplying(reply);
+    adapter.capabilities.steering = true;
+    await host.command(roomMessage('first', 'thread'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+    const correction = roomMessage('second', 'thread');
+    if (correction.body.type !== 'message.send') throw new Error('Expected message');
+    correction.body.delivery = 'steer';
+    await host.command(correction);
+    await host.command(roomMessage('queued', 'thread'));
+    emit({
+      type: 'turn.completed',
+      turnId: 'first',
+      outcome: 'error',
+      usageLimit: { resetsAt: null },
+      usage: [],
+    });
+    // A subsequent provider notice proves the completion handler has finished.
+    emit({ type: 'runtime.warning', message: 'After old completion' });
+    await until(() =>
+      expect(host.replay(0).events.map((event) => event.body)).toContainEqual(
+        expect.objectContaining({ type: 'notice', message: 'After old completion' })
+      )
+    );
+    expect(reply).toHaveBeenCalledWith({
+      roomId: 'room',
+      threadId: 'thread',
+      body: usageLimitReply({ resetsAt: null }, null),
+    });
+    expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'queued')?.status).toBe('queued');
+    expect(
+      (
+        await host.command({
+          ...message('interrupt-second'),
+          body: { type: 'turn.interrupt', turnId: 'second' },
+        })
+      ).status
+    ).toBe('applied');
+    emit({ type: 'turn.completed', turnId: 'second', outcome: 'completed', usage: [] });
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(adapter.sendTurn).mock.calls[2]![0].turnId).toBe('queued');
+  });
+
   it.each([
     ['starter', true, false, 'same', 'room', 'thread', 'steer', true],
     ['agent owner', true, true, 'other', 'room', 'thread', 'steer', true],

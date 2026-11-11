@@ -3234,7 +3234,7 @@ class TelegramAdapter(PlatformAdapter):
 
         for file_id, filename, mimetype, size in self._describe_files(message):
             if isinstance(size, int) and size > cap:
-                logger.warning(
+                logger.info(
                     "Telegram attachment %s is %d bytes, over the %d cap",
                     filename,
                     size,

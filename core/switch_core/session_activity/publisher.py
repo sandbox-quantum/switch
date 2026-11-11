@@ -135,6 +135,10 @@ _TICK_SECONDS = 5.0
 _AFTER_PLATFORM_CLOSE = timedelta(seconds=2)
 _RETRY_MIN_SECONDS = 5.0
 _RETRY_MAX_SECONDS = 600.0
+# How many refusals in a row a publication gets when the platform says such a
+# refusal can clear on its own (a bot not yet in the channel, a post not yet
+# visible). With the backoff above, five attempts span a little over a minute.
+_MAX_REFUSALS = 5
 # How many turns' drawn state one bridge remembers. Forgetting one costs a
 # redraw nobody needed if that turn changes again, not a wrong one.
 _MAX_REMEMBERED_TURNS = 4096
@@ -198,17 +202,25 @@ class _TurnDrawn:
 
 @dataclass
 class _Backoff:
-    """A key's waits between failed attempts: doubling, capped, cleared on success."""
+    """A key's waits between failed attempts: doubling, capped, cleared on
+    success, and how many refusals in a row it has had."""
 
     waits: dict[tuple[str, ...], float] = field(default_factory=dict)
+    refusals: dict[tuple[str, ...], int] = field(default_factory=dict)
 
     def next(self, key: tuple[str, ...]) -> float:
         wait = self.waits.get(key, _RETRY_MIN_SECONDS)
         self.waits[key] = min(wait * 2, _RETRY_MAX_SECONDS)
         return wait
 
+    def refused(self, key: tuple[str, ...]) -> int:
+        """Count one more refusal for `key`, and say how many it has had."""
+        self.refusals[key] = self.refusals.get(key, 0) + 1
+        return self.refusals[key]
+
     def clear(self, key: tuple[str, ...]) -> None:
         self.waits.pop(key, None)
+        self.refusals.pop(key, None)
 
 
 class _ThreadNotMappedYet(Exception):
@@ -343,6 +355,41 @@ class AgentSessionActivityPublisher:
     def _retry_later(self, key: _Key) -> None:
         self._enqueue_later(key, self._retries.next(key), _SOON)
 
+    def _give_up_on(self, key: _Key, error: Exception) -> str | None:
+        """Why a failed publication is not worth another attempt, or None to
+        try it again.
+
+        A refusal the platform calls permanent is given up on at once, and a
+        bounded one after `_MAX_REFUSALS` of them in a row; a transient
+        failure is always tried again.
+        """
+        kind = self._adapter.classify_refusal(error)
+        if kind == "transient":
+            return None
+        if kind == "bounded":
+            refusals = self._retries.refused(key)
+            if refusals < _MAX_REFUSALS:
+                return None
+            reason = f"refused it {refusals} times in a row"
+        else:
+            reason = "refused it, and sending it again would be refused again"
+        self._retries.clear(key)
+        return f"{self._adapter.platform_name} {reason}"
+
+    def _retry_ended_turn(
+        self, key: _Key, error: RichContentFailed, ended: bool
+    ) -> str:
+        """Try an ended turn's refused message again after a wait, unless it is
+        not worth another attempt. Says which, for the log line reporting the
+        refusal."""
+        if not ended:
+            return "The next change to the turn tries again."
+        reason = self._give_up_on(key, error)
+        if reason is not None:
+            return f"The turn has ended and {reason}; dropping it."
+        self._retry_later(key)
+        return "The turn has ended; trying again after a wait."
+
     async def _next(self) -> tuple[_Key, int]:
         """The first key in the most urgent lane holding one, and that lane.
 
@@ -371,7 +418,8 @@ class AgentSessionActivityPublisher:
             except RichContentThrottled as throttled:
                 if lane == _CLOCK:
                     continue
-                logger.warning(
+                # Routine under load: the cooldown logs the workspace-wide hold.
+                logger.debug(
                     "%s asked bridge %s to wait %.1fs; retrying %s then.",
                     self._adapter.platform_name,
                     self._bridge_id,
@@ -381,7 +429,18 @@ class AgentSessionActivityPublisher:
                 self._enqueue_later(key, throttled.retry_after, _SOON)
             except _ThreadNotMappedYet:
                 self._enqueue_later(key, _THREAD_WAIT_SECONDS, lane)
-            except Exception:
+            except Exception as error:
+                reason = self._give_up_on(key, error)
+                if reason is not None:
+                    logger.error(
+                        "Could not publish %s on bridge %s, and %s; dropping it: %s",
+                        key,
+                        self._bridge_id,
+                        reason,
+                        error,
+                        exc_info=error,
+                    )
+                    continue
                 # The delivery loop: one key failing must not stop the rest.
                 delay = self._retries.next(key)
                 logger.exception(
@@ -1306,6 +1365,7 @@ class AgentSessionActivityPublisher:
                 )
                 self._enqueue_later(key, failed.retry_after, _SOON)
             else:
+                what_next = self._retry_ended_turn(key, failed, view.ended)
                 logger.error(
                     "%s made the message for turn %s in channel %s but could not "
                     "draw the turn into it: %s. %s",
@@ -1313,26 +1373,22 @@ class AgentSessionActivityPublisher:
                     view.turn.turn_id,
                     target.channel_id,
                     failed,
-                    "The turn has ended; trying again after a wait."
-                    if view.ended
-                    else "The next change to the turn draws into the same message.",
+                    what_next,
                 )
-                if view.ended:
-                    self._retry_later(key)
         except RichContentThrottled:
             raise
         except RichContentFailed as error:
+            what_next = self._retry_ended_turn(key, error, view.ended)
             logger.error(
                 "Could not post the activity for turn %s of session %s in "
                 "channel %s: %s. The channel shows what the agent asked without "
-                "what it did.",
+                "what it did. %s",
                 view.turn.turn_id,
                 view.row.session_id,
                 target.channel_id,
                 error,
+                what_next,
             )
-            if view.ended:
-                self._retry_later(key)
             return None
         closes_in = self._adapter.activity_closes_in(ref)
         drawn.platform_closes_at = (
@@ -1381,6 +1437,7 @@ class AgentSessionActivityPublisher:
             await self._say_wedged(post, view, target)
             return
         except RichContentFailed as error:
+            what_next = self._retry_ended_turn(key, error, view.ended)
             logger.error(
                 "Could not update the activity for turn %s of session %s in "
                 "channel %s: %s. %s",
@@ -1388,12 +1445,8 @@ class AgentSessionActivityPublisher:
                 view.row.session_id,
                 post.external_channel_id,
                 error,
-                "The turn has ended; trying again after a wait."
-                if view.ended
-                else "The next change to the turn will try the same message.",
+                what_next,
             )
-            if view.ended:
-                self._retry_later(key)
             return
         drawn.status_state = state
         drawn.final = view.ended

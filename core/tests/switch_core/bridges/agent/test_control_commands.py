@@ -103,7 +103,7 @@ def _client(
         _connections=SimpleNamespace(
             controllers=SimpleNamespace(is_bound=lambda _agent: False),
             live_connection_ids=lambda: set(),
-            session_in_room=lambda _agent, _room: placed,
+            live_session_in_room=lambda _agent, _room: placed,
             relay_session_command=_relay,
         ),
         _event_buffer=SimpleNamespace(enqueue=_enqueue),

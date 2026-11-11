@@ -597,6 +597,44 @@ describe('CodexAdapter', () => {
     await vi.waitFor(() => expect(eventsOf(events, 'turn.completed')).toHaveLength(1));
   });
 
+  it('marks a turn Codex failed for the usage limit, and only that one', async () => {
+    const { adapter, server, events } = await start();
+    let native = 0;
+    server.replyAlways('turn/start', () => ({
+      turn: { id: `native-${++native}`, status: 'inProgress' },
+    }));
+    const limit = "You've hit your usage limit. Try again at 8:40 AM.";
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-1', text: 'run' });
+    server.notify('turn/completed', {
+      threadId: THREAD,
+      turn: {
+        id: 'native-1',
+        status: 'failed',
+        error: { message: limit, codexErrorInfo: 'usageLimitExceeded' },
+      },
+    });
+    await vi.waitFor(() => expect(eventsOf(events, 'turn.completed')).toHaveLength(1));
+    expect(eventsOf(events, 'turn.completed')[0]).toMatchObject({
+      outcome: 'error',
+      message: limit,
+      usageLimit: { resetsAt: null },
+    });
+
+    await adapter.sendTurn({ sessionId: 'session-1', turnId: 'caller-2', text: 'run' });
+    server.notify('turn/completed', {
+      threadId: THREAD,
+      turn: {
+        id: 'native-2',
+        status: 'failed',
+        error: { message: 'stream disconnected', codexErrorInfo: 'responseStreamDisconnected' },
+      },
+    });
+    await vi.waitFor(() => expect(eventsOf(events, 'turn.completed')).toHaveLength(2));
+    expect(eventsOf(events, 'turn.completed')[1]?.outcome).toBe('error');
+    expect(eventsOf(events, 'turn.completed')[1]).not.toHaveProperty('usageLimit');
+    await adapter.stopAll();
+  });
+
   it('settles unfinished items when interruption omits item/completed', async () => {
     const { adapter, server, events } = await start();
     server.replyAlways('turn/start', () => ({ turn: { id: 'native-a', status: 'inProgress' } }));
