@@ -808,6 +808,14 @@ WORKOS_FULL_CHECK_AGE = _spec(
     "organization's members in full, which it does when it starts and once a "
     "day.",
 )
+WORKOS_ORGANIZATION_DELETED = _spec(
+    "switch.workos.organization_deleted",
+    "sum",
+    "{organization}",
+    "WorkOS organizations deleted while a Switch organization followed them. "
+    "The Switch organization keeps its members, rooms and agents, and is left "
+    "for an operator to remove.",
+)
 
 
 # ── Health ───────────────────────────────────────────────────────────────────
@@ -890,6 +898,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         WORKOS_CURSOR_AGE,
         WORKOS_RECHECK_OLDEST_AGE,
         WORKOS_FULL_CHECK_AGE,
+        WORKOS_ORGANIZATION_DELETED,
         HEALTH_CHECK,
     )
 }

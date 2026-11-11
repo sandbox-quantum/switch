@@ -91,7 +91,12 @@ def test_monitors_are_individually_importable() -> None:
 
 # Every replica reports the same server-wide value for these, so a sum would
 # multiply the reading by the number of pods.
-_READ_WITH_MAX = ("switch.decision.pending", "switch.workos.")
+_READ_WITH_MAX = (
+    "switch.decision.pending",
+    "switch.workos.cursor_age",
+    "switch.workos.recheck.",
+    "switch.workos.full_check.",
+)
 
 
 @pytest.mark.parametrize(

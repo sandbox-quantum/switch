@@ -312,7 +312,9 @@ Datadog monitor can't subtract a timestamp from now, and they are computed when
 the metrics are collected, so a pass stuck waiting on WorkOS keeps the cursor
 age growing instead of freezing it. No other process reports them, so their
 absence means nobody runs the mirror; read them with max, which also covers
-the moment the hold changes hands. What each means is in
+the moment the hold changes hands. It also counts
+`switch.workos.organization_deleted`, a WorkOS organization deleted while a
+Switch organization follows it. What each means is in
 `docs/old/workos-directory.md`.
 
 ## Health: two routes, on purpose

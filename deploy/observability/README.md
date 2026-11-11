@@ -133,7 +133,7 @@ WORKOS_DIRECTORY=1 ...   # also the WorkOS directory monitors
 ```
 
 The monitors tagged `requires:workos-directory` are imported only with
-`WORKOS_DIRECTORY=1`. They read the WorkOS mirror's gauges, which only a server
+`WORKOS_DIRECTORY=1`. They read the WorkOS mirror's metrics, which only a server
 with `ORGANIZATION_DIRECTORY=workos` reports, and the first fires on no data;
 on any other server it would fire for ever. A test keeps every monitor on a
 `switch.workos.*` metric tagged.
@@ -260,7 +260,7 @@ notice rather than a page.
 ## The WorkOS directory
 
 On a server whose organizations come from WorkOS, the mirror applies changes
-made there (a removal, a demotion) to Switch. Three monitors watch it, and the
+made there (a removal, a demotion) to Switch. Four monitors watch it, and the
 "WorkOS directory" section at the bottom of `dashboard.json` draws their
 gauges with the limits:
 
@@ -273,8 +273,12 @@ gauges with the limits:
   failing.
 - **The daily check hasn't finished** (P3): no full check of every linked
   organization for 26 hours, the backstop for what WorkOS sends no event for.
+- **A WorkOS organization that Switch follows was deleted** (P3): the Switch
+  organization keeps everything and is no longer checked; remove it if the
+  customer is leaving (`docs/old/workos-directory.md`, "When a customer
+  leaves").
 
-Only the cursor-age monitor fires on no data: the other two read gauges from
+Only the cursor-age monitor fires on no data: the other gauges come from
 the same process, so a missing mirror would otherwise post three alerts for one
 cause.
 

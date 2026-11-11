@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -27,6 +27,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.organization_directory import DirectoryUnavailable
 from switch_core.ownership import Fence
 from switch_core.workos_directory import EventCursorRejected
@@ -165,6 +166,35 @@ async def _roles(owner, organization_id: str) -> dict[str, str]:
         return {user_id: role for user_id, role in rows}
 
 
+@pytest.fixture
+def registry() -> Iterator[MetricsRegistry]:
+    registry = MetricsRegistry()
+    install(registry)
+    try:
+        yield registry
+    finally:
+        uninstall()
+
+
+def _deletions_counted(registry: MetricsRegistry) -> float:
+    return sum(
+        number.value
+        for payload in registry.collect()
+        if payload.name == "switch.workos.organization_deleted"
+        for number in payload.numbers
+    )
+
+
+def _delete_organization(workos: _WorkOS, workos_id: str) -> None:
+    workos.log.append(
+        {
+            "id": f"event_{len(workos.log):04d}",
+            "event": "organization.deleted",
+            "data": {"id": workos_id},
+        }
+    )
+
+
 class _Running:
     """A mirror and the fence it holds, as `ownership.py` would start it."""
 
@@ -301,7 +331,7 @@ class TestEvents:
         assert await _roles(owner, organization_id) == {ada: "member"}
 
     async def test_a_deleted_organization_removes_nobody_and_is_reported(
-        self, rls_harness: RLSHarness
+        self, rls_harness: RLSHarness, registry: MetricsRegistry
     ) -> None:
         owner = rls_harness.owner
         organization_id, workos_id = await _linked(owner)
@@ -310,17 +340,21 @@ class TestEvents:
         workos = _WorkOS()
         mirror = await _mirror(rls_harness, workos)
         await mirror.poll_once()
-        workos.log.append(
-            {
-                "id": "event_9999",
-                "event": "organization.deleted",
-                "data": {"id": workos_id},
-            }
-        )
+        _delete_organization(workos, workos_id)
 
         await mirror.poll_once()
 
         assert await _roles(owner, organization_id) == {ada: "org_admin"}
+        assert _deletions_counted(registry) == 1
+        async with owner() as session:
+            assert (
+                await session.scalar(
+                    select(Organization.workos_organization_id).where(
+                        Organization.id == organization_id
+                    )
+                )
+                == workos_id
+            )
         async with owner() as session:
             [event] = await session.scalars(
                 select(OrganizationAuditEvent).where(
@@ -333,6 +367,53 @@ class TestEvents:
             "kind": "directory_organization_deleted",
             "workos_organization_id": workos_id,
         }
+
+
+class TestDeletedOrganization:
+    """An organization whose WorkOS organization was deleted is no longer
+    followed: nothing is left there to check it against."""
+
+    async def test_it_leaves_the_recheck_and_the_full_check(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        workos = _WorkOS()
+        workos.fail_members = True
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.check_once()
+        assert mirror.mirror._recheck.keys() == {organization_id}
+        _delete_organization(workos, workos_id)
+
+        await mirror.poll_once()
+        assert mirror.mirror._recheck == {}
+        await mirror.check_once()
+        await mirror.poll_once()
+
+        assert mirror.mirror._recheck == {}
+
+    async def test_a_restarted_mirror_does_not_follow_it_either(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        workos = _WorkOS()
+        first = await _mirror(rls_harness, workos)
+        await first.poll_once()
+        _delete_organization(workos, workos_id)
+        await first.poll_once()
+
+        workos.fail_members = True
+        second = WorkOSMirror(
+            rls_harness.restricted,
+            workos,  # type: ignore[arg-type]
+            _dependencies(rls_harness.restricted),
+            OwnershipLeaseStore(),
+            ISSUER,
+        )
+        await second.check_once(first.fence)
+
+        assert second._recheck == {}
 
 
 class TestDailyCheck:
