@@ -52,6 +52,7 @@ _PROVIDER_OF_KNOWN_AGENT_TYPE = {
     "antigravity": "antigravity",
     "cursor": "cursor",
     "deepseek-harness": "deepseek-harness",
+    "pi": "pi",
 }
 
 
