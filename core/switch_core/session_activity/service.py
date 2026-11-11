@@ -45,6 +45,7 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.process_lease import LEASE_TTL
 from switch_core.sessions.contract import (
+    ORPHANED_SUBAGENT_TEXT,
     TURN_ENDED,
     ApprovalResult,
     QuestionsResult,
@@ -569,8 +570,9 @@ class AgentSessionActivityService:
             return row
 
     async def end_orphaned_turns(self) -> list[tuple[str, str, str]]:
-        """End the bound tenant's turns whose session is gone
-        (`end_orphaned_turns` on the store). Run on a timer."""
+        """End the bound tenant's turns whose session is gone, and settle the
+        subagents still running in it (`end_orphaned_turns` on the store). Run
+        on a timer."""
         async with (
             tenant_session(self._sessions, require_tenant_id()) as db,
             db.begin(),
@@ -582,6 +584,7 @@ class AgentSessionActivityService:
                 lease_ttl=LEASE_TTL,
                 heartbeat_ttl=AgentSessionStore.ALWAYS_ON_TTL,
                 text=ORPHANED_TURN_TEXT,
+                subagent_text=ORPHANED_SUBAGENT_TEXT,
             )
 
     async def expire_due(self) -> list[ApprovalRequest]:
