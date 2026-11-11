@@ -18,8 +18,13 @@ from switch_core.connections.adapters.oauth import (
     OAuthClientCredentials,
     StaticClient,
 )
-from switch_core.connections.broker import ServiceBroker
-from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
+from switch_core.connections.broker import ServiceBroker, ServiceError
+from switch_core.connections.loader import (
+    CATALOG,
+    CATALOG_ROOT,
+    Connection,
+    load_catalog,
+)
 from switch_core.connections.oauth_clients import RegisteredClient
 from switch_core.connections.registry import (
     ClientRegistration,
@@ -103,6 +108,60 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
         "search:confluence:agent-interface write:jira:agent-interface "
         "write:confluence:agent-interface"
     )
+
+
+def test_unverified_monday_is_not_available_for_sign_in() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    assert "monday" not in adapters
+
+
+def test_disabled_monday_is_rejected_by_the_broker_without_io() -> None:
+    def no_session():
+        pytest.fail("A disabled service must not open a database session")
+
+    broker = _broker(CATALOG, no_session, {}, None)
+    # Disabled catalog entries stay coming_soon; both answers are catalog-only.
+    assert broker.server_serves("monday") is False
+    with pytest.raises(ServiceError) as refused:
+        broker._entry("monday")
+    assert refused.value.status_code == 404
+    assert refused.value.retryable is False
+
+
+def test_monday_candidate_registration_declares_fixed_redirects_and_scopes() -> None:
+    entry = CATALOG["monday"]
+    candidate = Connection(
+        definition=entry.definition.model_copy(update={"enabled": True}),
+        skill_files=entry.skill_files,
+    )
+    adapters = build_adapters(
+        {"monday": candidate},
+        github_app=None,
+        oauth_clients={},
+        http=HTTP,
+        registration=REG,
+    )
+    adapter = adapters["monday"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request["redirect_uris"] == [
+        f"http://127.0.0.1:{port}/switch-services/callback"
+        for port in (39231, 39232, 39233, 39234, 39235)
+    ]
+    assert client._request["scope"].split() == [
+        "me:read",
+        "users:read",
+        "workspaces:read",
+        "boards:read",
+        "updates:read",
+        "docs:read",
+        "boards:write",
+        "updates:write",
+        "docs:write",
+    ]
 
 
 def test_airtable_is_set_up_by_its_operators_own_client() -> None:

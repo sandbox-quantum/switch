@@ -26,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_keeps_monday_disabled_alongside_enabled_connections():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "monday",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -46,6 +47,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert not CATALOG["monday"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -228,6 +230,53 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_monday_candidate_stays_disabled_pending_live_verification():
+    definition = CATALOG["monday"].definition
+    assert definition.enabled is False
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # An account admin approves the dynamic client and its redirect URIs, so
+    # the loopback ports are a fixed list. Live revocation remains unverified.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_discovered is False
+    assert oauth.authorization_url is None and oauth.revocation_url is None
+    assert (
+        oauth.remove_access == "Remove Switch in monday.com's connected apps settings."
+    )
+    # Token lifetime is intentionally unspecified until vendor behavior is
+    # measured; the candidate must not encode a guessed policy.
+    assert definition.token is None
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("monday", "https://mcp.monday.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = definition.access.read.scopes or []
+    write = definition.access.write.scopes or []
+    # These are requested scopes, not proof of vendor-enforced permissions.
+    assert not [scope for scope in read if scope.endswith(":write")]
+    assert set(read) < set(write)
+    assert set(write) - set(read) == {"boards:write", "updates:write", "docs:write"}
+    # The requested list omits admin and workspace-write scopes.
+    for scope in (
+        "account:read",
+        "users:write",
+        "teams:write",
+        "webhooks:write",
+        "workspaces:write",
+    ):
+        assert scope not in write
+    identity = definition.auth.identity
+    assert identity is not None
+    assert identity.url.startswith("https://api.monday.com/v2?query=")
+    assert (identity.account_id, identity.label) == ("data.me.id", "data.me.email")
 
 
 RESTRICTED_DRIVE = {
