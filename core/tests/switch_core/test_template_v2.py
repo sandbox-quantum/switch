@@ -247,3 +247,33 @@ def test_an_existing_room_left_out_is_refused():
             machines=MACHINES,
         )
     assert {p.code for p in e.value.problems} == {"input_missing"}
+
+
+def test_a_rooms_triage_names_an_agent_by_key_and_auto_route_passes_through():
+    text = """\
+version: 2
+resources:
+  lead:
+    type: agent
+    name: ops-lead
+    provider: claude
+    machine: m-laptop
+  work:
+    type: room
+    name: Work
+    description: d
+    agents: [lead, existing-helper]
+    auto_route: true
+    triage: lead
+"""
+    doc = yaml.safe_load(compile_v2(text, {}, {"$creator": "ada"}).document)
+    assert doc["room"]["triage_agent"] == "ops-lead"
+    assert doc["room"]["auto_route"] is True
+    assert "triage" not in doc["room"]
+    room = RoomSpec.model_validate(doc["room"])
+    assert (room.auto_route, room.triage_agent) == (True, "ops-lead")
+
+
+def test_a_room_says_nothing_of_auto_route_unless_asked():
+    room = RoomSpec.model_validate({"name": "Work", "description": "d"})
+    assert (room.auto_route, room.triage_agent) == (None, None)

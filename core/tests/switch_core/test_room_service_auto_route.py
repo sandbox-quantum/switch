@@ -7,8 +7,8 @@ Postgres, with provisioning and clients faked."""
 from __future__ import annotations
 
 import uuid
-from types import SimpleNamespace
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import pytest

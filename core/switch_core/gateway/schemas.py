@@ -186,6 +186,11 @@ class RoomCreateRequest(BaseModel):
     read_visibility: str = "public"
     write_visibility: str = "public"
     roles: list[RoomRoleSpec] | None = None
+    # Whether the room starts with auto-route on; omitted, the workspace's
+    # default for new rooms decides (never for a direct room).
+    auto_route: bool | None = None
+    # The room's triage agent for auto-route, by id or name: one of its agents.
+    triage_agent: str | None = None
 
 
 class RoomUpdateRequest(BaseModel):

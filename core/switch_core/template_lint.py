@@ -162,6 +162,29 @@ def _check_room_keys(
         )
 
 
+def _check_triage(room: Any, where: str, key: str, errors: list[Finding]) -> None:
+    """Refuse a triage agent that is not among the room's agents, which the
+    run would refuse before making the room. A value still to be filled in
+    from a param is left to the run."""
+    if not isinstance(room, dict):
+        return
+    triage, agents = room.get(key), room.get("agents")
+    if not isinstance(triage, str) or "{{" in triage:
+        return
+    if not isinstance(agents, list) or any("{{" in str(a) for a in agents):
+        return
+    if triage not in [str(a) for a in agents]:
+        errors.append(
+            Finding(
+                "triage_not_in_room",
+                f"Room '{where}' names {triage} as its triage agent, but {triage} "
+                "is not one of its agents: add it to the room's agents, or name "
+                "one of them.",
+                key,
+            )
+        )
+
+
 _V1_ROOM_KEYS = frozenset(RoomSpec.model_fields)
 _V2_ROOM_KEYS = _V1_ROOM_KEYS | frozenset(ROOM_RESOURCE_KEYS)
 
@@ -423,6 +446,7 @@ def _lint_v2(
         elif kind == "room":
             room_count += 1
             _check_room_keys(spec, str(key), _V2_ROOM_KEYS, errors)
+            _check_triage(spec, str(key), "triage", errors)
         else:
             has_group = True
     if room_count > 1 and not has_group:
@@ -593,6 +617,7 @@ def lint_template(text: str) -> LintResult:
     for room in rooms:
         if isinstance(room, dict):
             _check_room_keys(room, str(room.get("name", "")), _V1_ROOM_KEYS, errors)
+            _check_triage(room, str(room.get("name", "")), "triage_agent", errors)
 
     # Placeholders are looked for everywhere except the params block, which
     # declares them rather than using them.

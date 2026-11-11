@@ -3194,6 +3194,8 @@ class AgentCore:
         from_room_id: str | None = None,
         *,
         include_owner: bool,
+        auto_route: bool | None = None,
+        triage_agent: str | None = None,
     ) -> RoomCreateResult:
         """Create a room. The caller agent's owner_id is used as the acting
         user for attachment authorization and as the new room's owner.
@@ -3291,6 +3293,8 @@ class AgentCore:
                 ),
                 roles=([RoleSpec(**r) for r in roles] if roles else None),
                 aliases=aliases,
+                auto_route=auto_route,
+                triage_agent=triage_agent,
                 acting_user_id=agent.owner_id,
                 acting_is_admin=owner_is_admin,
             )

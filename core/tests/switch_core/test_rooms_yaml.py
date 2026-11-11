@@ -97,6 +97,10 @@ class FakeRoomService:
         #: username → external id, the people a bridge would resolve.
         self.bridge_users: dict[str, str] = {}
         self.bridge_user_lookups: list[tuple[str, list[str]]] = []
+        #: Each room asked for, as asked.
+        self.configs: list[RoomCreateConfig] = []
+        #: Why an explicit auto_route=True cannot be applied, when it cannot.
+        self.auto_route_refused: str | None = None
 
     async def resolve_bridge_users(
         self, bridge_id: str, names: list[str]
@@ -105,6 +109,7 @@ class FakeRoomService:
         return {n: self.bridge_users[n] for n in names if n in self.bridge_users}
 
     async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+        self.configs.append(config)
         async with self._sf() as session:
             agent_ids: list[str] = []
             if config.agent_names:
@@ -152,7 +157,13 @@ class FakeRoomService:
                     insert(room_packages).values(room_id=room.id, package_id=pid)
                 )
             await session.commit()
-            return RoomCreateResult(room=room, failed_attachments=[])
+            return RoomCreateResult(
+                room=room,
+                failed_attachments=[],
+                auto_route_refused=(
+                    self.auto_route_refused if config.auto_route else None
+                ),
+            )
 
 
 async def _make_agent(session: AsyncSession, name: str, user_id: str) -> Agent:
@@ -394,6 +405,57 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
     assert len(result.created_document_ids) == 1
     assert result.role_names == ["manager"]
     assert result.failed_attachments == []
+
+
+@pytest.mark.asyncio
+async def test_provision_passes_auto_route_and_the_triage_agent_on(env):
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Routed"
+          description: "d"
+          agents: ["claude-code.alice", "claude-code.bob"]
+          auto_route: true
+          triage_agent: "claude-code.bob"
+        """
+    )
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    (config,) = env["rooms"].configs
+    assert (config.auto_route, config.triage_agent) == (True, "claude-code.bob")
+    assert result.auto_route_refused is None
+
+
+@pytest.mark.asyncio
+async def test_provision_leaves_auto_route_to_the_default_when_unsaid(env):
+    spec, _ = _svc(env).parse('room:\n  name: "Plain"\n  description: "d"\n')
+    await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    (config,) = env["rooms"].configs
+    assert (config.auto_route, config.triage_agent) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_provision_reports_a_refused_auto_route_per_room(env):
+    env["rooms"].auto_route_refused = "No decision service is set up."
+    spec = _group(
+        env,
+        """
+group:
+  name: "Routed"
+rooms:
+  - name: asked
+    description: d
+    auto_route: true
+  - name: unsaid
+    description: d
+""",
+        {},
+    )
+    result = await _svc(env).provision_group(
+        spec, user_id=env["user_id"], is_admin=True
+    )
+    refused = {r.room_name: r.auto_route_refused for r in result.rooms}
+    assert refused == {"asked": "No decision service is set up.", "unsaid": None}
+    assert result.model_dump()["rooms"][0]["auto_route_refused"]
 
 
 @pytest.mark.asyncio
@@ -2283,6 +2345,9 @@ def test_template_schema_covers_both_shapes():
     titles = {b["$ref"].rsplit("/", 1)[-1] for b in branches}
     assert titles == {"RoomTemplateDocument", "GroupTemplateDocument"}
     assert "aliases" in schema["$defs"]["RoomSpec"]["properties"]
+    assert {"auto_route", "triage_agent"} <= set(
+        schema["$defs"]["RoomSpec"]["properties"]
+    )
 
 
 # ── group provision ──────────────────────────────────────────────────────────

@@ -468,6 +468,11 @@ class RoomSpec(BaseModel):
     docs: list[DocSpec] = []
     # Agent name to the alias it can be addressed by in this room.
     aliases: dict[str, str] | None = None
+    # Whether the room starts with auto-route on; omitted, it follows the
+    # workspace's default for new rooms.
+    auto_route: bool | None = None
+    # The room's triage agent for auto-route: one of `agents`, by name.
+    triage_agent: str | None = None
     # Used only for a room inside a group's ``rooms:`` list, where each room
     # has its own kickoff. A single-room document puts ``kickoff:`` at the
     # top level, next to ``room:``.
@@ -545,6 +550,9 @@ class ProvisionResult(BaseModel):
     created_document_ids: list[str] = []
     role_names: list[str] = []
     failed_attachments: list[dict[str, Any]] = []
+    # Why the room's `auto_route: true` could not be applied; it was made with
+    # auto-route off.
+    auto_route_refused: str | None = None
 
 
 class GroupProvisionResult(BaseModel):
@@ -1098,6 +1106,8 @@ class RoomYamlService:
             reference_ids=attached_ref_ids or None,
             package_ids=attached_package_ids or None,
             aliases=spec.aliases,
+            auto_route=spec.auto_route,
+            triage_agent=spec.triage_agent,
         )
         result = await self._rooms.create_room(config)
         room_id = result.room.id
@@ -1135,6 +1145,7 @@ class RoomYamlService:
             created_document_ids=created_doc_ids,
             role_names=[r.name for r in spec.roles],
             failed_attachments=failures,
+            auto_route_refused=result.auto_route_refused,
         )
 
     async def provision_group(

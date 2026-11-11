@@ -188,10 +188,14 @@ class RoomCreateConfig(BaseModel):
     # Auto-route for the new room: None leaves it to the workspace's default
     # for new rooms (never for a direct room), True or False says so outright.
     auto_route: bool | None = None
-    # The room's triage agent for auto-route, by name, or by id when the room's
-    # agents are given by id. It must be one of the room's agents, and is set
+    # The room's triage agent for auto-route, by name or id. It must be one of
+    # the room's agents, and is set
     # even when auto-route ends up off, ready for when someone turns it on.
     triage_agent: str | None = None
+
+
+class TriageAgentNotInRoom(ValueError):
+    """The triage agent named for a new room is not one of its agents."""
 
 
 class RoomCreateResult(BaseModel):
@@ -348,20 +352,19 @@ class RoomService:
     async def _resolve_triage_agent(
         self, config: RoomCreateConfig, agent_ids: list[str]
     ) -> str | None:
-        """The id of the room's triage agent, refused before anything is made
-        when it is not one of the room's agents. Named the way the room's
-        agents are: by id when they are given by id, else by name."""
+        """The id of the room's triage agent, named by its id or its name,
+        refused before anything is made when it is not one of the room's
+        agents."""
         triage = config.triage_agent
         if triage is None:
             return None
         if triage in agent_ids:
             return triage
-        if config.agent_ids is None:
-            async with self._session_factory() as session:
-                agents = await self._agent_store.get_by_names(session, [triage])
-            if agents and agents[0].id in agent_ids:
-                return agents[0].id
-        raise ValueError(
+        async with self._session_factory() as session:
+            agents = await self._agent_store.get_by_names(session, [triage])
+        if agents and agents[0].id in agent_ids:
+            return agents[0].id
+        raise TriageAgentNotInRoom(
             f"The triage agent {triage} is not one of this room's agents; "
             "add it to the room's agents, or name one of them."
         )

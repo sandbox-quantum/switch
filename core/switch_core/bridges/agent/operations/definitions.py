@@ -964,6 +964,8 @@ async def create_room(
     join_event_listeners: list[str] | None = None,
     aliases: dict[str, str] | None = None,
     include_owner: bool = False,
+    auto_route: bool | None = None,
+    triage_agent: str | None = None,
 ) -> dict[str, Any]:
     """Create a new Switch room.
 
@@ -1049,14 +1051,26 @@ async def create_room(
             `internal_only=True`, no `bridge_id`, and a channel_type other
             than "direct". As in any group chat, their messages reach an
             agent they @-mention (or a follow-up to one).
+        auto_route: Whether the room starts with auto-route on, so a message
+            that tags nobody goes to the agent best placed to answer it.
+            Omit it to follow the workspace's "auto-route new rooms" default
+            (a direct room is never turned on by that default). Where the
+            workspace has no decision service, `true` still creates the room,
+            with auto-route off, and says why in `warnings`.
+        triage_agent: The room's triage agent for auto-route, by name: it
+            gets messages that tag nobody while auto-route is unavailable. It
+            must be in `agent_names`, or the room is not created. It is set
+            even when auto-route is off, ready for when it is turned on.
 
     Returns:
         `{"id", "name", "matrix_room_id", "caller_is_member",
-        "failed_attachments": [...]}`.
+        "failed_attachments": [...], "warnings": [...]}`.
         `failed_attachments` is empty on full success; otherwise it lists
         `{kind, id, error}` for each attachment that could not be applied
         after the room was created (race-time failures only; predictable
-        errors like missing ids abort creation upfront).
+        errors like missing ids abort creation upfront). `warnings` lists
+        what was asked for and not applied, such as `auto_route`, each a
+        sentence to pass on.
     """
     agent_id = get_agent_id()
     protocol = get_protocol()
@@ -1085,6 +1099,8 @@ async def create_room(
             aliases=aliases,
             from_room_id=await connected_room(),
             include_owner=include_owner,
+            auto_route=auto_route,
+            triage_agent=triage_agent,
         )
     async with protocol.session_factory() as session:
         caller_is_member = agent_id in await protocol.room_store.get_agent_ids(
@@ -1098,6 +1114,11 @@ async def create_room(
         "matrix_room_id": result.room.transport_room_id,
         "caller_is_member": caller_is_member,
         "failed_attachments": result.failed_attachments,
+        "warnings": (
+            [f"The room was created with auto-route off: {result.auto_route_refused}"]
+            if result.auto_route_refused
+            else []
+        ),
     }
 
 

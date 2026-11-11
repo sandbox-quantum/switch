@@ -119,10 +119,17 @@ existing agent may stand in for it.
                value: {urls: [...]}}]
   docs: [{name, description, instructions, content}]
   aliases: {agent key or name: alias}   # @alias addresses it in this room
+  auto_route: true | false       # left out, the workspace's default for new
+                                 # rooms decides
+  triage: <agent key or name>    # one of the room's agents: gets untagged
+                                 # messages while auto-route is unavailable
   packages: [{id: package id} or {name: package name}]   # packages that
                                  # exist, attached as they are
   kickoff: text                  # posted once the room exists
   group: <group key>             # when the template has a group
+
+auto_route: true where the workspace has no decision service still makes
+the room, with auto-route off, and the run result says why for that room.
 
 roles are hats for the room's agents: one assumes a role with assume_role,
 works under its instructions and releases it; exclusive: true (default
@@ -231,7 +238,8 @@ Older templates have no resources: and say what a block is by where it sits.
 A top-level agent: or agents: list holds agents (each with location: local |
 ssh host instead of machine: on a Console that runs them itself), room: one
 room with a top-level kickoff:, and group: with rooms: and links: a group. A
-room lists agents by the text written as their name, and in a single agent:
-document {agent} is its name. They still run as they are; write new ones in
+room lists agents by the text written as their name, names its triage agent
+with triage_agent: <name>, and in a single agent: document {agent} is its
+name. They still run as they are; write new ones in
 version 2.
 """
