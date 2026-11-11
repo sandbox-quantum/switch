@@ -14,6 +14,7 @@ import { provider as kiro } from './impl/kiro';
 import { provider as mistralVibe } from './impl/mistral-vibe';
 import { provider as opencode } from './impl/opencode';
 import { provider as pi } from './impl/pi';
+import { provider as qwen } from './impl/qwen';
 
 export const pluginRegistry = createPluginRegistry<CLIAgentPluginProvider>();
 
@@ -30,6 +31,7 @@ for (const p of [
   pi,
   mistralVibe,
   goose,
+  qwen,
 ]) {
   pluginRegistry.register(p);
 }

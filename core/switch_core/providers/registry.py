@@ -220,6 +220,21 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="delegate", description="Delegates to a subagent"),
         ),
     ),
+    AgentProvider(
+        id="qwen",
+        label="Qwen Code",
+        sign_in_command="qwen",
+        tools=(
+            ToolSpec(name="run_shell_command", description="Executes shell commands"),
+            ToolSpec(name="write_file", description="Writes files"),
+            ToolSpec(name="edit", description="Edits existing files"),
+            ToolSpec(name="read_file", description="Reads file contents"),
+            ToolSpec(name="grep_search", description="Searches file contents"),
+            ToolSpec(name="glob", description="Finds files by pattern"),
+            ToolSpec(name="web_fetch", description="Fetches web pages"),
+            ToolSpec(name="agent", description="Delegates a task to a subagent"),
+        ),
+    ),
 )
 
 
