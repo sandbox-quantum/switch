@@ -1,6 +1,9 @@
+import { USAGE_LIMIT_ERROR_PREFIXES } from '@anthropic-ai/claude-agent-sdk';
 import type {
   McpServerConfig,
   PermissionMode,
+  SDKAssistantMessage,
+  SDKRateLimitInfo,
   SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { McpServerSpec, RuntimeMode } from '../adapter';
@@ -170,6 +173,53 @@ export function resultMessageText(result: SDKResultMessage): string | undefined 
 function resultErrors(result: SDKResultMessage): string[] {
   const errors = 'errors' in result ? result.errors : undefined;
   return Array.isArray(errors) ? errors.filter((error) => typeof error === 'string') : [];
+}
+
+/** The CLI's own wording for a usage limit it hit, such as "You've hit your 5-hour limit · resets 8:40am". */
+export function isUsageLimitText(text: string): boolean {
+  const trimmed = text.trim();
+  return USAGE_LIMIT_ERROR_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
+/**
+ * The text of an assistant message the CLI wrote in place of a reply because
+ * the account's usage or rate limit was reached, or undefined when it is not
+ * one. The CLI marks such a message with `error`; its text is the notice.
+ */
+export function usageLimitNotice(message: SDKAssistantMessage): string | undefined {
+  if (message.error === undefined) return undefined;
+  const text = assistantText(message);
+  if (message.error === 'rate_limit') return text || 'The provider rate limit was reached.';
+  return isUsageLimitText(text) ? text : undefined;
+}
+
+/** Whether a result reports a turn the provider refused for the account's usage limit. */
+export function resultHitUsageLimit(result: SDKResultMessage): boolean {
+  if (result.subtype === 'success')
+    return result.is_error && (result.api_error_status === 429 || isUsageLimitText(result.result));
+  return resultErrors(result).some(isUsageLimitText);
+}
+
+/**
+ * When a rejected limit lifts, in epoch ms, or null for a request that is
+ * still allowed or draws on overage. The CLI gives `resetsAt` in epoch seconds.
+ */
+export function rejectedLimitResetsAt(info: SDKRateLimitInfo): number | null {
+  if (info.status !== 'rejected' || info.isUsingOverage === true) return null;
+  return typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt)
+    ? info.resetsAt * 1000
+    : null;
+}
+
+function assistantText(message: SDKAssistantMessage): string {
+  const content: unknown = message.message.content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .flatMap((block: unknown) =>
+      isRecord(block) && block.type === 'text' && typeof block.text === 'string' ? [block.text] : []
+    )
+    .join('\n')
+    .trim();
 }
 
 export interface ParsedAskUserQuestion {

@@ -45,6 +45,7 @@ import type {
   ProviderRuntimeEvent,
   TokenUsage,
   TurnOutcome,
+  UsageLimit,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
@@ -58,13 +59,16 @@ import {
   outcomeForResult,
   parseAskUserQuestionInput,
   PERMISSION_MODE_BY_RUNTIME_MODE,
+  rejectedLimitResetsAt,
   requestTypeForTool,
+  resultHitUsageLimit,
   resultMessageText,
   textFromToolResultContent,
   toMcpServerConfig,
   toolNameForItem,
   toolTitle,
   truncate,
+  usageLimitNotice,
 } from './claude-mapping';
 import { claudeConfigDir, configDirSessionStore, savedConversationPath } from './cli-conversations';
 
@@ -179,6 +183,10 @@ interface ActiveTurn {
   turnId: string;
   /** Message uuids this turn is still waiting on a `result` for. */
   outstanding: Set<string>;
+  /** The CLI's notice when it stopped this turn at a usage or rate limit. */
+  usageLimitNotice: string | null;
+  /** When the limit the CLI last reported as rejected lifts, in epoch ms. */
+  limitResetsAt: number | null;
 }
 
 interface TextBlockState {
@@ -600,7 +608,12 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (session.turn) {
       session.turn.outstanding.add(uuid);
     } else {
-      session.turn = { turnId: input.turnId, outstanding: new Set([uuid]) };
+      session.turn = {
+        turnId: input.turnId,
+        outstanding: new Set([uuid]),
+        usageLimitNotice: null,
+        limitResetsAt: null,
+      };
       this.emit(session, { type: 'session.state.changed', status: 'running' });
       this.emit(session, { type: 'turn.started', turnId: input.turnId });
     }
@@ -861,9 +874,17 @@ export class ClaudeAdapter implements ProviderAdapter {
       case 'stream_event':
         this.handleStreamEvent(session, message.event, message.parent_tool_use_id);
         return;
-      case 'assistant':
+      case 'assistant': {
+        const notice = message.parent_tool_use_id === null ? usageLimitNotice(message) : undefined;
+        if (notice !== undefined && session.turn) session.turn.usageLimitNotice = notice;
         this.handleAssistantMessage(session, message.message, message.parent_tool_use_id);
         return;
+      }
+      case 'rate_limit_event': {
+        const resetsAt = rejectedLimitResetsAt(message.rate_limit_info);
+        if (resetsAt !== null && session.turn) session.turn.limitResetsAt = resetsAt;
+        return;
+      }
       case 'user':
         this.handleToolResults(session, message.message.content);
         return;
@@ -1100,7 +1121,11 @@ export class ClaudeAdapter implements ProviderAdapter {
     const single = result.user_message_uuid;
     if (consumed.length === 0 && single !== undefined) consumed.push(single);
 
-    const outcome = outcomeForResult(result);
+    const resultOutcome = outcomeForResult(result);
+    const limited =
+      resultOutcome !== 'interrupted' &&
+      (turn.usageLimitNotice !== null || resultHitUsageLimit(result));
+    const outcome: TurnOutcome = limited ? 'error' : resultOutcome;
     if (consumed.length === 0) {
       turn.outstanding.clear();
     } else {
@@ -1116,7 +1141,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.textBlocks.clear();
     session.streamedMessageIds.clear();
     session.streamMessageId = null;
-    const message = turnStatusMessage(result, outcome);
+    const usageLimit: UsageLimit | null = limited ? { resetsAt: turn.limitResetsAt } : null;
+    const message = (limited ? turn.usageLimitNotice : null) ?? turnStatusMessage(result, outcome);
     if (outcome === 'error') {
       this.emit(session, { type: 'runtime.error', message: message ?? 'Claude turn failed.' });
     }
@@ -1125,6 +1151,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       turnId: turn.turnId,
       outcome,
       ...(message ? { message } : {}),
+      ...(usageLimit ? { usageLimit } : {}),
       usage: this.takeUsage(session),
       raw: { source: 'claude', payload: result },
     });

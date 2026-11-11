@@ -121,7 +121,10 @@ does, and there is no polling tool to call.
   `read_context`), your session posts just "I finished without replying." in
   your name, in the message's thread, so the sender is not left waiting; a
   turn that failed says it failed, and why. None of your final text goes with
-  it. Nothing is posted when someone stopped the turn, or for a message that
+  it. A turn your provider cut off at its usage limit (Claude Code, Codex) is
+  always announced the same way, even if you had posted: that you stopped,
+  when the limit resets if the provider said, and the provider's notice; you
+  carry on only when someone addresses you again. Nothing is posted when someone stopped the turn, or for a message that
   tagged nobody (a follow-up, or one Switch picked you for; both below) that
   you chose to leave alone. So answer with `post_message`. The first message
   of a chat that opened with words posted in your name as you joined (a Switch
