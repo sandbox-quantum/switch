@@ -1,0 +1,52 @@
+slug: grafana
+name: Grafana
+category: Observability
+description: Query Grafana Cloud dashboards, metrics, logs and alerts, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Grafana's MCP OAuth metadata advertises the refresh_token grant; rotation
+  # was not measured, so assume it rotates until a live sign-in confirms.
+  refresh: rotating
+  oauth:
+    # Grafana Cloud's MCP server advertises a registration endpoint, so Core
+    # registers its own client and discovers the endpoints from the server.
+    registration: dynamic
+    redirect: [loopback, core]
+    # Grafana's MCP OAuth metadata names no revocation endpoint, so people
+    # remove the connection in Grafana themselves.
+    revocation_discovered: false
+    remove_access: >-
+      Grafana does not offer a way to revoke this sign-in from Switch. To cut
+      an agent's access, remove the authorized application in your Grafana
+      Cloud account settings; a token already handed out stays valid until it
+      expires.
+  # Grafana Cloud's current-user endpoint names the account. NOT yet confirmed
+  # that an MCP-issued token is accepted against it; validate before relying on
+  # it (the issue asks for a connect/grant/use video).
+  identity:
+    url: https://grafana.com/api/user
+    account_id: id
+    label: email
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # Grafana Cloud's hosted MCP server. It needs Grafana Assistant on the
+    # stack, and MCP users count as Grafana Assistant users for billing.
+    # Self-hosted Grafana is out of scope.
+    - name: grafana
+      url: "https://mcp.grafana.com/mcp"
+access:
+  # Grafana's MCP OAuth exposes grafana:read and grafana:query for reading and
+  # grafana:write for changes.
+  read:
+    scopes:
+      - grafana:read
+      - grafana:query
+  write:
+    scopes:
+      - grafana:read
+      - grafana:query
+      - grafana:write
+tools: { mode: pass_through }
