@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from switch_core.logging_context import LogContextFilter, log_context
+from switch_core.logging_context import STRUCTURED_FIELDS, LogContextFilter, log_context
 from switch_core.observability.logs import (
     LogExporter,
     OtlpLogHandler,
@@ -83,6 +83,40 @@ def test_the_log_context_travels_with_the_record():
     assert attributes["request_id"] == "req-1"
     assert attributes["agent_id"] == "agent-7"
     assert attributes["tenant_id"] == "default"
+
+
+def test_a_structured_group_becomes_dotted_attributes():
+    """The decision record's fields arrive as `decision.*`, typed, and a
+    field with no value is left out rather than sent empty."""
+    handler = OtlpLogHandler(capacity=10)
+    record = _record()
+    setattr(
+        record,
+        STRUCTURED_FIELDS,
+        {
+            "decision": {
+                "outcome": "delivered",
+                "candidates": 3,
+                "confidence": 0.9,
+                "choice": None,
+            }
+        },
+    )
+    handler.emit(record)
+
+    attributes = handler.take(10)[0][0].attributes
+    assert attributes["decision.outcome"] == "delivered"
+    assert attributes["decision.candidates"] == 3
+    assert attributes["decision.confidence"] == 0.9
+    assert "decision.choice" not in attributes
+
+
+def test_a_record_without_a_structured_group_has_no_extra_attributes():
+    handler = OtlpLogHandler(capacity=10)
+    handler.emit(_record())
+
+    attributes = handler.take(10)[0][0].attributes
+    assert not any(key.startswith("decision.") for key in attributes)
 
 
 def test_an_exception_becomes_datadog_error_attributes():

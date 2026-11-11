@@ -1,30 +1,37 @@
-import { ChevronDown, DoorOpen, MessagesSquare, Plus } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { DoorOpen, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
-import { ArchivedFold } from '@renderer/features/chats/components/archived-fold';
-import { UnreadBadge } from '@renderer/features/chats/components/unread-badge';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { useArchiveRoomConfirm } from '@renderer/features/switch-rooms/archive-room-confirm';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
-import { roomTitle } from '@renderer/features/switch-rooms/room-labels';
+import { roomDetailKey } from '@renderer/features/switch-rooms/room-participants';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
-import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { FilterSelect } from '@renderer/lib/components/filter-select';
+import { LIST_PAGE_WIDTH, ListToolbar } from '@renderer/lib/components/list-toolbar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
-import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
-import { cn } from '@renderer/utils/utils';
+import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
-import { allReadableRooms, isConsoleGroupChatSummary } from './room-filters';
-import { groupByMessagingApp, type RoomGroup } from './rooms-by-messaging-app';
+import { AppMark, RoomCard } from './room-card';
+import { allReadableRooms, isConsoleGroupChatSummary, withConsoleGroupChats } from './room-filters';
+import {
+  appOptions,
+  filterRoomCards,
+  groupOptions,
+  NO_FILTER,
+  offeredFilter,
+  type RoomCard as RoomCardData,
+  type RoomsFilter,
+  roomCard,
+} from './room-list';
 import { ServerPage, ServerTableEmpty } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
@@ -36,45 +43,152 @@ function useServerId(): string {
 }
 
 const ServerRoomsTitlebar = observer(function ServerRoomsTitlebar() {
-  return <ServerSectionTitlebar serverId={useServerId()} icon={DoorOpen} label="Your Rooms" />;
+  return <ServerSectionTitlebar serverId={useServerId()} icon={DoorOpen} label="Rooms" />;
 });
 
+type Scope = 'mine' | 'all';
+type State = 'active' | 'archived';
+
+const SCOPES = [
+  { value: 'mine', label: 'Mine' },
+  { value: 'all', label: 'All rooms' },
+] as const satisfies readonly { value: Scope; label: string }[];
+
+const STATES = [
+  { value: 'active', label: 'Active' },
+  { value: 'archived', label: 'Archived' },
+] as const satisfies readonly { value: State; label: string }[];
+
+/**
+ * The workspace's rooms as cards: yours by default, every room you can read
+ * at a switch, and the archived ones at another. The same card whichever
+ * slice you look at.
+ */
 const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   const serverId = useServerId();
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const showCreateRoomModal = useShowModal('createRoomModal');
-  const [filter, setFilter] = useState('');
+  const queryClient = useQueryClient();
+  const [scope, setScope] = useState<Scope>('mine');
+  const [state, setState] = useState<State>('active');
+  const [picked, setFilter] = useState<RoomsFilter>(NO_FILTER);
+  const confirmArchive = useArchiveRoomConfirm();
 
   useEffect(() => {
     void refreshSidebarRoomState(false);
   }, [serverId]);
 
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const yours = useListedRoomsInWorkspace(workspaceId);
-  const all = allReadableRooms(yours, useReadableRoomsInWorkspace(workspaceId));
-  // Only someone who can read more than their own (an admin, or public rooms) gets the choice.
-  const [showAll, setShowAll] = useState(false);
-  const canShowAll = all.length > yours.length;
-  const rooms = showAll && canShowAll ? all : yours;
+  const viewerId = switchServersStore.statusFor(serverId)?.user?.id ?? null;
+  const listed = useListedRoomsInWorkspace(workspaceId);
+  const all = allReadableRooms(listed, useReadableRoomsInWorkspace(workspaceId));
   const signedOut = switchRoomsStore.workspacesNotSignedIn.some((w) => w.id === workspaceId);
   const failed = switchRoomsStore.workspacesThatFailedToLoad.some((w) => w.id === workspaceId);
+  // On a server Console runs, the sidebar lists every room, so only the
+  // server's word says which are yours. Elsewhere what the sidebar lists as
+  // yours counts too, for a server that does not say.
+  const listedIds = server?.managed ? undefined : new Set(listed.map((room) => room.id));
 
-  const query = filter.trim().toLowerCase();
-  const matching = query === '' ? rooms : rooms.filter((r) => r.name.toLowerCase().includes(query));
-  const groups = groupByMessagingApp(matching);
-  const archived =
-    chatsStore.serverId === serverId
-      ? [...chatsStore.archived.values()]
-          .filter(isConsoleGroupChatSummary)
-          .filter((chat) => query === '' || chat.name.toLowerCase().includes(query))
-          .sort((a, b) => a.name.localeCompare(b.name))
-      : [];
+  // Archived rooms in a messaging app come from the server; archived group
+  // chats from the chats list, which follows the active workspace.
+  const archivedRoomsQuery = useQuery({
+    queryKey: ['archived-rooms', workspaceId],
+    queryFn: async () => {
+      const found = await rpc.workspaces.listArchivedRooms({ workspaceId: workspaceId as string });
+      switchRoomsStore.noteRooms(workspaceId as string, found);
+      return found.filter((room) => !room.isConsoleChat);
+    },
+    enabled: workspaceId !== null && !signedOut,
+  });
+  const chatsHere = chatsStore.serverId === serverId;
+  const archivedChats = chatsHere
+    ? [...chatsStore.archived.values()].filter(isConsoleGroupChatSummary)
+    : [];
+
+  const toCard = (room: RemoteRoomSummary): RoomCardData => {
+    const card = roomCard(room, { id: viewerId, listedIds });
+    // On a server from before room lists counted a chat's members, the chat
+    // list knows them. A chat made a channel on an app keeps the server's
+    // count, of the app's accounts, as the gateway shows it.
+    const chat =
+      room.isConsoleChat && card.peopleCount === null
+        ? (chatsStore.chats.get(room.id) ?? chatsStore.archived.get(room.id))
+        : undefined;
+    return chat && chat.memberCount > 0 ? { ...card, peopleCount: chat.memberCount } : card;
+  };
+  const activeCards = all.map(toCard);
+  const archivedCards = [
+    ...(archivedRoomsQuery.data ?? []).map(toCard),
+    ...withConsoleGroupChats([], archivedChats).map((room) => ({
+      ...toCard(room),
+      archived: true,
+    })),
+  ];
+  const cards = (state === 'archived' ? archivedCards : activeCards).filter(
+    (card) => scope === 'all' || card.mine
+  );
+  const apps = appOptions(cards);
+  const groups = groupOptions(cards);
+  const filter = offeredFilter(picked, apps, groups);
+  const shown = filterRoomCards(cards, filter);
+  const archivedError =
+    state === 'archived' &&
+    (archivedRoomsQuery.isError || (chatsHere && chatsStore.archivedError !== null));
+
+  const summaries = new Map(
+    [...all, ...(archivedRoomsQuery.data ?? [])].map((room) => [room.id, room] as const)
+  );
+  const archivedSummary = (card: RoomCardData) => summaries.get(card.id);
+  const mayArchive = (card: RoomCardData): boolean => {
+    if (card.isConsoleChat)
+      return (
+        (card.archived ? chatsStore.archived.get(card.id) : chatsStore.chats.get(card.id))
+          ?.canManage ?? false
+      );
+    const room = archivedSummary(card);
+    return room !== undefined && workspaceId !== null
+      ? switchRoomsStore.roomPermissions(workspaceId, room).canWrite
+      : false;
+  };
+  async function setArchived(card: RoomCardData) {
+    if (workspaceId === null) return;
+    const archived = !card.archived;
+    try {
+      if (card.isConsoleChat) {
+        if (archived) await chatsStore.archive(serverId, card.id);
+        else await chatsStore.unarchive(serverId, card.id);
+      } else {
+        const updated = await rpc.workspaces.setRoomArchived({
+          workspaceId,
+          roomId: card.id,
+          archived,
+        });
+        // The room's page reads its detail from the cache: give it the answer, as its own Archive does.
+        queryClient.setQueryData(roomDetailKey(workspaceId, card.id), updated);
+        await queryClient.invalidateQueries({ queryKey: ['archived-rooms', workspaceId] });
+        await switchRoomsStore.refreshRoomState();
+      }
+      void refreshSidebarRoomState(true);
+    } catch (error) {
+      toast({
+        title: failureText(
+          error,
+          archived ? 'Could not archive the room.' : 'Could not unarchive the room.'
+        ),
+        variant: 'destructive',
+      });
+    }
+  }
 
   return (
     <ServerPage
-      width={880}
-      title="Your Rooms"
-      description={`Rooms on ${server?.name ?? 'this server'}. Create one, see who is in it, and where it is bridged.`}
+      width={LIST_PAGE_WIDTH}
+      title="Rooms"
+      description={
+        scope === 'mine'
+          ? 'Rooms you own, take part in, or have an agent in.'
+          : `Every room on ${server?.name ?? 'this server'} you can see.`
+      }
       action={
         <Button
           size="sm"
@@ -86,9 +200,9 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
         </Button>
       }
     >
-      {/* Four ways to have no rows, and only one of them means "there are no
-        rooms". Saying that in the others would send someone off to create a
-        room they already have. */}
+      {/* Four ways to have no rooms to show, and only one of them means
+        "there are no rooms". Saying that in the others would send someone off
+        to create a room they already have. */}
       {workspaceId === null ? (
         <ServerTableEmpty>
           This server has no workspace yet, so its rooms cannot be read.
@@ -101,261 +215,122 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
         <ServerTableEmpty>
           This server&apos;s room list could not be read. Refresh from Home to try again.
         </ServerTableEmpty>
-      ) : all.length === 0 ? (
-        <ServerTableEmpty>
-          No rooms here yet. Create one to give your agents somewhere to work.
-        </ServerTableEmpty>
       ) : (
-        <div className="flex flex-col gap-6">
-          <div className="flex items-center gap-2">
-            {canShowAll && (
-              <ToggleGroup
-                multiple={false}
-                value={[showAll ? 'all' : 'yours']}
-                onValueChange={([value]) => {
-                  if (value) setShowAll(value === 'all');
-                }}
-              >
-                <ToggleGroupItem value="yours">Your rooms</ToggleGroupItem>
-                <ToggleGroupItem value="all">All rooms</ToggleGroupItem>
-              </ToggleGroup>
-            )}
-            <SearchInput
-              containerClassName="flex-1"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter rooms by name…"
-              aria-label="Filter rooms by name"
-            />
-          </div>
-          {/* The filter finding nothing is not the same as the server having no
-            rooms, and the empty state above answers a question this user is not
-            asking. */}
-          {groups.length === 0 ? (
-            <p className="py-2 text-sm text-foreground-muted">
-              {query === ''
-                ? 'You are in none of these rooms yet. Choose All rooms to see the rest.'
-                : `No room here matches “${filter.trim()}”.`}
-            </p>
-          ) : (
-            groups.map((group) => (
-              <MessagingAppGroup
-                key={group.key}
-                group={group}
-                serverId={serverId}
-                workspaceId={workspaceId}
-                // Nothing folds while a filter is on. Typing a name and being
-                // shown a "Show 3 more" where the match is hiding is the one
-                // moment the fold would cost more than it saves.
-                fold={query === ''}
+        <div className="flex flex-col gap-4">
+          <ListToolbar
+            scope={
+              <SegmentedControl
+                ariaLabel="Whose rooms"
+                value={scope}
+                onChange={setScope}
+                options={SCOPES}
               />
-            ))
+            }
+            search={
+              <SearchInput
+                containerClassName="w-full"
+                value={filter.query}
+                onChange={(e) => setFilter({ ...filter, query: e.target.value })}
+                placeholder="Search rooms…"
+                aria-label="Search rooms by name"
+              />
+            }
+            filters={
+              <>
+                <FilterSelect
+                  label="Messaging app"
+                  anyLabel="Any messaging app"
+                  value={filter.app}
+                  options={apps.map((app) => ({
+                    value: app.value,
+                    label: app.label,
+                    icon: <AppMark bridgeType={app.bridgeType} />,
+                  }))}
+                  onChange={(app) => setFilter({ ...filter, app })}
+                />
+                <FilterSelect
+                  label="Group"
+                  anyLabel="Any group"
+                  value={filter.groupId}
+                  options={groups.map((group) => ({ value: group.id, label: group.name }))}
+                  onChange={(groupId) => setFilter({ ...filter, groupId })}
+                />
+                <SegmentedControl
+                  ariaLabel="Active or archived rooms"
+                  value={state}
+                  onChange={setState}
+                  options={STATES}
+                />
+              </>
+            }
+          />
+          {archivedError && (
+            <p className="text-xs text-destructive">
+              {archivedRoomsQuery.isError
+                ? failureText(archivedRoomsQuery.error, 'Could not list the archived rooms.')
+                : chatsStore.archivedError}
+            </p>
           )}
-          <ArchivedFold
-            count={archived.length}
-            error={chatsStore.serverId === serverId ? chatsStore.archivedError : null}
-          >
-            <div className="divide-y divide-border overflow-hidden rounded-[10px] border border-border">
-              {archived.map((chat) => (
-                <div key={chat.roomId} className="flex items-center gap-3 bg-background px-4 py-3">
-                  <button
-                    type="button"
-                    onClick={() => void openRoom(chat.roomId)}
-                    className="min-w-0 flex-1 cursor-pointer truncate text-left text-sm font-medium text-foreground hover:underline"
-                  >
-                    {chat.name}
-                  </button>
-                  {chat.canManage && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        void chatsStore.unarchive(serverId, chat.roomId).catch((error: unknown) =>
-                          toast({
-                            title: failureText(error, 'Could not unarchive the room.'),
-                            variant: 'destructive',
-                          })
-                        )
-                      }
-                    >
-                      Unarchive
-                    </Button>
-                  )}
+          {shown.length === 0 ? (
+            // While the archived rooms load, or after they failed, "none" would be a claim.
+            state === 'archived' && archivedRoomsQuery.isPending && !signedOut ? (
+              <p className="py-2 text-sm text-foreground-muted">Loading archived rooms…</p>
+            ) : archivedError ? null : (
+              <p className="py-2 text-sm text-foreground-muted">
+                {emptyText({ rooms: cards.length, scope, state, query: filter.query })}
+              </p>
+            )
+          ) : (
+            <div
+              role="list"
+              aria-label="Rooms"
+              className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-[14px]"
+            >
+              {shown.map((card) => (
+                <div role="listitem" key={card.id}>
+                  <RoomCard
+                    card={card}
+                    unread={chatsStore.unread(card.id)}
+                    showYours={scope === 'all'}
+                    onOpen={() => void openRoom(card.id)}
+                    onArchive={
+                      mayArchive(card)
+                        ? () =>
+                            card.archived
+                              ? void setArchived(card)
+                              : confirmArchive.request(card.name, () => void setArchived(card))
+                        : null
+                    }
+                  />
                 </div>
               ))}
             </div>
-          </ArchivedFold>
+          )}
+          {confirmArchive.dialog}
         </div>
       )}
     </ServerPage>
   );
 });
 
-/**
- * How many rooms a messaging app shows before the rest are folded away.
- *
- * A single busy workspace can hold more rooms than the whole page otherwise
- * has, and left whole it pushes every other app off the screen — so the page
- * stops answering "where are my rooms" and answers only "what is in Slack".
- * Five is enough to see the group is real and to recognise the room you came
- * for; the count in the heading always says how many there are in total, so
- * nothing is hidden silently.
- */
-const ROOMS_BEFORE_FOLD = 5;
-
-const MessagingAppGroup = observer(function MessagingAppGroup({
-  group,
-  serverId,
-  workspaceId,
-  fold,
+/** What an empty page means, which depends on why it is empty. */
+export function emptyText({
+  rooms,
+  scope,
+  state,
+  query,
 }: {
-  group: RoomGroup;
-  serverId: string;
-  workspaceId: string;
-  /** Whether long groups are cut short. False while the list is filtered. */
-  fold: boolean;
-}) {
-  const [open, setOpen] = useState(true);
-  const [visible, setVisible] = useState(ROOMS_BEFORE_FOLD);
-
-  const shown = fold ? group.rooms.slice(0, visible) : group.rooms;
-  const remaining = group.rooms.length - shown.length;
-  // One page at a time rather than the whole tail at once: a workspace with
-  // forty rooms in it would otherwise unfold into the same wall the fold
-  // exists to prevent, and there would be no way back to a readable page
-  // short of collapsing the app entirely.
-  const nextBatch = Math.min(remaining, ROOMS_BEFORE_FOLD);
-
-  return (
-    <section className="flex flex-col gap-2">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className="-mx-2 flex w-fit cursor-pointer items-center gap-2 rounded-md px-2 py-1 transition-colors hover:bg-[var(--sel-soft)]"
-      >
-        <ChevronDown
-          className={cn(
-            'size-3.5 shrink-0 text-foreground-muted transition-transform',
-            !open && '-rotate-90'
-          )}
-        />
-        {hasBridgeIcon(group.bridgeType) ? (
-          <BridgeIcon bridgeType={group.bridgeType} size={16} />
-        ) : (
-          <MessagesSquare className="size-4 text-foreground-muted" />
-        )}
-        <span className="truncate text-sm font-medium text-foreground">{group.label}</span>
-        <span className="shrink-0 text-xs text-foreground-muted">
-          {group.rooms.length} {group.rooms.length === 1 ? 'room' : 'rooms'}
-        </span>
-      </button>
-
-      {open && (
-        <div className="divide-y divide-border overflow-hidden rounded-[10px] border border-border">
-          {shown.map((room) => (
-            <RoomRow key={room.id} room={room} serverId={serverId} workspaceId={workspaceId} />
-          ))}
-          {fold && group.rooms.length > ROOMS_BEFORE_FOLD && (
-            <button
-              type="button"
-              onClick={() =>
-                setVisible((v) => (remaining > 0 ? v + ROOMS_BEFORE_FOLD : ROOMS_BEFORE_FOLD))
-              }
-              className="flex w-full cursor-pointer items-center gap-1.5 px-4 py-2.5 text-sm text-foreground-muted transition-colors hover:bg-[var(--fill)] hover:text-foreground"
-            >
-              <ChevronDown className={cn('size-4 shrink-0', remaining === 0 && 'rotate-180')} />
-              {remaining > 0 ? `Show ${nextBatch} more` : 'Show fewer'}
-            </button>
-          )}
-        </div>
-      )}
-    </section>
-  );
-});
-
-const RoomRow = observer(function RoomRow({
-  room,
-  serverId,
-  workspaceId,
-}: {
-  room: RemoteRoomSummary;
-  serverId: string;
-  workspaceId: string;
-}) {
-  const members = switchRoomsStore.localMemberIds(room.id);
-  const { data: remoteAgents } = useWorkspaceAgents(workspaceId);
-  const remoteById = new Map((remoteAgents ?? []).map((agent) => [agent.id, agent]));
-  const localAgents = agentsStore
-    .agentsOnServer(serverId)
-    .filter((agent) => agent.switchAgentId != null && members.includes(agent.switchAgentId));
-
-  return (
-    <button
-      type="button"
-      onClick={() => void openRoom(room.id)}
-      // A solid hover rather than a translucent one, because the discs holding
-      // the agent marks have to be filled with whatever the row is filled with
-      // — an overlay would leave them reading as holes punched in the row.
-      className="group/room flex w-full cursor-pointer items-center gap-3 bg-background px-4 py-3 text-left transition-colors hover:bg-[var(--fill)]"
-    >
-      <div className="flex min-w-0 flex-1 flex-col">
-        <span className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-foreground">{roomTitle(room)}</span>
-          <UnreadBadge roomId={room.id} />
-        </span>
-        {/* An empty room is a state, not a quantity. "0 agents" reads as a
-          measurement of something that is working; a room nobody is in is a
-          room that cannot answer, and it should say so in words. */}
-        <span className="text-xs text-foreground-muted">
-          {room.agentCount === 0
-            ? 'No agent in this room yet'
-            : `${room.agentCount} ${room.agentCount === 1 ? 'agent' : 'agents'}`}
-        </span>
-      </div>
-
-      {/* The agents of this install that are in the room, by the mark of what
-        they run. Deliberately not a second count: the number above is the
-        server's, other people's agents included, and only these are ones this
-        app could open. The tooltip says so rather than leaving two numbers on
-        one row disagreeing in silence. */}
-      {localAgents.length > 0 && (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              // Overlapped rather than spaced: this is one fact — who is in
-              // the room — and a stack reads as that, where an evenly spaced
-              // row reads as a set of separate controls to click.
-              //
-              // Each avatar keeps its ring, so what the one in front hides is a
-              // clean circle rather than a bitten-into picture — the avatars
-              // are all different, and letting them interlock made two agents
-              // read as one broken image.
-              <span className="flex shrink-0 items-center -space-x-1.5">
-                {localAgents.map((agent) => (
-                  <span
-                    key={agent.id}
-                    className="flex size-6 items-center justify-center rounded-full bg-background ring-1 ring-[var(--hair-soft)] transition-colors group-hover/room:bg-[var(--fill)]"
-                  >
-                    <AgentAvatar
-                      name={agent.name}
-                      iconUrl={remoteById.get(agent.switchAgentId ?? '')?.iconUrl ?? null}
-                      serverId={serverId}
-                      size={22}
-                    />
-                  </span>
-                ))}
-              </span>
-            }
-          />
-          <TooltipContent>
-            Your agents here: {localAgents.map((agent) => agent.name).join(', ')}
-          </TooltipContent>
-        </Tooltip>
-      )}
-    </button>
-  );
-});
+  rooms: number;
+  scope: Scope;
+  state: State;
+  query: string;
+}): string {
+  if (rooms > 0) return query.trim() ? `No room matches “${query.trim()}”.` : 'No room matches.';
+  if (state === 'archived') return 'No archived rooms.';
+  return scope === 'mine'
+    ? 'You are in no rooms yet. Create one, or choose All rooms to see the rest.'
+    : 'No rooms here yet. Create one to give your agents somewhere to work.';
+}
 
 export const serverRoomsView = {
   WrapView: ({ children }: { children: React.ReactNode; serverId: string }) => <>{children}</>,

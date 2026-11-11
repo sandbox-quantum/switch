@@ -1,4 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import ArchiveOutlined from "@mui/icons-material/ArchiveOutlined";
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import Close from "@mui/icons-material/Close";
@@ -19,7 +20,6 @@ import {
   Divider,
   FormControlLabel,
   IconButton,
-  MenuItem,
   Stack,
   Switch,
   TextField,
@@ -42,12 +42,12 @@ import {
   deleteRoomRole,
   removeRoomAgent,
   setRoomAgentJoinEvents,
-  setRoomGroup,
   unarchiveRoom,
   updateRoom,
   updateRoomRole,
 } from "../../data/api";
-import { useAgents, useBridgeUsers, useRoom, useRoomGroups } from "../../data/hooks";
+import { useAgents, useBridgeUsers, useRoom } from "../../data/hooks";
+import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
 import {
@@ -55,9 +55,10 @@ import {
   MONO_SX,
   channelTypeLabel,
   formatDateTime,
-  titleCase,
-} from "../../theme/hootFormat";
-import { effectiveColor, buildGroupIndex, flattenTree } from "./groupTree";
+  sentenceCase,
+} from "../../theme/format";
+import RoomAutoRouteSection from "./RoomAutoRouteSection";
+import RoomGroupSection from "./RoomGroupSection";
 import RoomGraphView from "./RoomGraphView";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
 import RoomResourcesSection from "./RoomResourcesSection";
@@ -67,6 +68,7 @@ import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
+  const { canAdminTenant } = useAuth();
   const { data: room, loading, error, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -97,7 +99,7 @@ export default function RoomDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
@@ -120,10 +122,26 @@ export default function RoomDetailPage() {
       <Stack spacing={4}>
         <RoomInfoSection room={room} />
         <Divider />
-        <GroupSection room={room} canWrite={canWrite} onChanged={refetch} />
+        <RoomGroupSection
+          room={room}
+          canWrite={canWrite}
+          canFile={canAdminTenant}
+          onChanged={refetch}
+        />
         <Divider />
         <RolesSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
+        {room.auto_route && (
+          <>
+            <RoomAutoRouteSection
+              room={room}
+              autoRoute={room.auto_route}
+              canWrite={canWrite}
+              canManage={canManage}
+            />
+            <Divider />
+          </>
+        )}
         <EditableFieldsSection
           room={room}
           canWrite={canWrite}
@@ -152,6 +170,19 @@ export default function RoomDetailPage() {
           <>
             <Divider />
             <ArchiveSection room={room} onChanged={refetch} />
+          </>
+        )}
+        {room.can_transfer && (
+          <>
+            <Divider />
+            <TransferOwnershipSection
+              kind="room"
+              resourceId={room.id}
+              resourceLabel={room.name}
+              ownerId={room.owner_id}
+              blockedReason={null}
+              onTransferred={refetch}
+            />
           </>
         )}
         {canManage && (
@@ -224,82 +255,6 @@ function InfoChip({
         </Box>
       )}
     </Typography>
-  );
-}
-
-// ── Group ─────────────────────────────────────────────────────────────────────
-
-function GroupSection({
-  room,
-  canWrite,
-  onChanged,
-}: {
-  room: RoomDetail;
-  canWrite: boolean;
-  onChanged: () => void;
-}) {
-  const { data: groups, refetch: refetchGroups } = useRoomGroups();
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const groupList = useMemo(() => groups ?? [], [groups]);
-  const byId = useMemo(() => buildGroupIndex(groupList), [groupList]);
-
-  const handleChange = useCallback(
-    async (value: string) => {
-      setSaving(true);
-      setError(null);
-      try {
-        await setRoomGroup(room.id, value || null);
-        refetchGroups();
-        onChanged();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to update group");
-      } finally {
-        setSaving(false);
-      }
-    },
-    [room.id, onChanged, refetchGroups],
-  );
-
-  return (
-    <Stack spacing={1.5}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
-        Group
-      </Typography>
-      {error && <Alert severity="error">{error}</Alert>}
-      <Stack direction="row" spacing={1.5} alignItems="center">
-        {room.group_id && (
-          <Box
-            sx={{
-              width: 12,
-              height: 12,
-              borderRadius: "50%",
-              bgcolor: effectiveColor(room.group_id, byId),
-              flexShrink: 0,
-            }}
-          />
-        )}
-        <TextField
-          select
-          size="small"
-          label="Group"
-          value={room.group_id ?? ""}
-          onChange={(e) => handleChange(e.target.value)}
-          disabled={saving || !canWrite}
-          sx={{ width: 320 }}
-          helperText="Groups organise rooms in the list and colour them in the graph."
-        >
-          <MenuItem value="">Standalone (no group)</MenuItem>
-          {flattenTree(groupList).map(({ group, depth }) => (
-            <MenuItem key={group.id} value={group.id}>
-              {"  ".repeat(depth)}
-              {group.name}
-            </MenuItem>
-          ))}
-        </TextField>
-      </Stack>
-    </Stack>
   );
 }
 
@@ -546,6 +501,7 @@ function RoleRow({
               size="small"
               disabled={busy}
               onClick={() => run(() => deleteRoomRole(roomId, role.name))}
+              aria-label={`Delete role ${role.name}`}
             >
               <DeleteOutline fontSize="small" />
             </IconButton>
@@ -632,8 +588,7 @@ function EditableFieldsSection({
     try {
       await updateRoom(room.id, {
         name: name !== room.name ? name : undefined,
-        description:
-          !isBridged && description !== room.description ? description : undefined,
+        description: description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
         ...(canManage && access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
@@ -644,7 +599,7 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, canManage, onSaved]);
+  }, [room, name, description, instructions, access, canManage, onSaved]);
 
   return (
     <Stack spacing={2}>
@@ -676,7 +631,6 @@ function EditableFieldsSection({
         disabled={!canWrite || saving}
         multiline
         rows={2}
-        slotProps={{ input: { readOnly: isBridged } }}
       />
       <TextField
         label="Instructions"
@@ -824,7 +778,10 @@ function ParticipantsSection({
     [room.id, onChanged],
   );
 
-  const isFixedMembership = room.channel_type === "group" || room.channel_type === "direct";
+  // A direct or group chat takes its members from its platform: the server
+  // refuses changing them, and the page says where they are changed.
+  const platformMembership = room.channel_type === "group" || room.channel_type === "direct";
+  const canChangeMembers = room.can_change_members;
 
   return (
     <Stack spacing={3}>
@@ -851,9 +808,7 @@ function ParticipantsSection({
                   : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                !canWrite || isFixedMembership || working
-                  ? undefined
-                  : () => handleRemoveAgent(id)
+                !canChangeMembers || working ? undefined : () => handleRemoveAgent(id)
               }
             />
           ))}
@@ -863,7 +818,7 @@ function ParticipantsSection({
             </Typography>
           )}
         </Stack>
-        {canWrite && !isFixedMembership && (
+        {canChangeMembers && (
           <>
             <Button
               size="small"
@@ -888,14 +843,31 @@ function ParticipantsSection({
             />
           </>
         )}
-        {isFixedMembership && (
+        {platformMembership && (
           <Typography variant="caption" color="text.secondary">
             Membership for {channelTypeLabel(room.channel_type)} rooms is managed from the messaging platform.
           </Typography>
         )}
       </Box>
 
-      {room.bridge_id && !isFixedMembership && (
+      {room.is_console_chat && !room.bridge_id && (
+        <Box>
+          <Typography variant="body2" gutterBottom>
+            People ({room.connected_user_names.length})
+          </Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
+            {/* Two people may share a name, so a name alone does not key a chip. */}
+            {room.connected_user_names.map((name, index) => (
+              <Chip key={`${index}:${name}`} label={name} size="small" />
+            ))}
+          </Stack>
+          <Typography variant="caption" color="text.secondary">
+            Members of a Switch Console chat are added and removed in Switch Console.
+          </Typography>
+        </Box>
+      )}
+
+      {room.bridge_id && !platformMembership && (
         <Box>
           <Typography variant="body2" gutterBottom>
             Connected users ({room.connected_user_names.length})
@@ -910,7 +882,7 @@ function ParticipantsSection({
               </Typography>
             )}
           </Stack>
-          {canWrite && (
+          {canChangeMembers && (
             <>
               <Button
                 size="small"
@@ -985,22 +957,22 @@ const STATUS_META: Record<
 > = {
   live: {
     label: "Live",
-    color: "var(--hoot-success)",
+    color: "var(--sw-success)",
     description: "Connected and receiving events",
   },
   awaiting_manual_poll: {
     label: "Idle",
-    color: "var(--hoot-warning)",
+    color: "var(--sw-warning)",
     description: "Session open — awaiting manual poll",
   },
   no_session: {
     label: "No session",
-    color: "var(--hoot-muted-foreground)",
+    color: "var(--sw-muted-foreground)",
     description: "Not currently connected to this room",
   },
   disconnected: {
     label: "Disconnected",
-    color: "var(--hoot-destructive)",
+    color: "var(--sw-destructive)",
     description: "Always-on agent is not connected",
   },
 };
@@ -1023,8 +995,8 @@ function AgentRow({
 }) {
   const navigate = useNavigate();
   const meta = (status && STATUS_META[status]) || {
-    label: status ? titleCase(status) : "Unknown",
-    color: "var(--hoot-muted-foreground)",
+    label: status ? sentenceCase(status) : "Unknown",
+    color: "var(--sw-muted-foreground)",
     description: "",
   };
   return (
@@ -1169,7 +1141,7 @@ function ArchiveSection({
       <Typography variant="body2" color="text.secondary">
         {room.archived
           ? "This room is archived: hidden from the active room list but fully intact and retrievable. Unarchive it to restore it to the active list."
-          : "Archiving hides this room from the active room list while keeping it fully intact — the Matrix room, members, and any bridge channel are untouched. It's reversible at any time."}
+          : "Archiving hides this room from the active room list while keeping it fully intact — its messages, who is in it and any linked channel are untouched. It's reversible at any time."}
       </Typography>
       <Box>
         <Button
@@ -1239,8 +1211,8 @@ function DangerSection({
         <DialogContent>
           <DialogContentText>
             Are you sure you want to delete <b>{room.name}</b>? This removes the
-            Matrix room, all client memberships, and any bridge mapping. This
-            cannot be undone.
+            room, takes everyone out of it, and unlinks any messaging app channel.
+            This cannot be undone.
           </DialogContentText>
         </DialogContent>
         <DialogActions>

@@ -30,6 +30,7 @@ import {
   useRoomPackages,
   useRoomReferences,
 } from "../../data/hooks";
+import { LockedMark, OpensMark } from "../../components/RowAccess";
 
 interface Props {
   roomId: string;
@@ -49,6 +50,12 @@ export default function RoomResourcesSection({ roomId, canWrite, canUnlink }: Pr
     for (const p of roomPackages ?? []) m[p.id] = p.name || p.description;
     return m;
   }, [roomPackages]);
+  // A private package attached by its owner is listed to every reader of the
+  // room, but only those the server says may read it get a link to it.
+  const readablePackageIds = useMemo(
+    () => new Set((roomPackages ?? []).filter((p) => p.can_read).map((p) => p.id)),
+    [roomPackages],
+  );
 
   return (
     <Stack spacing={3}>
@@ -60,12 +67,14 @@ export default function RoomResourcesSection({ roomId, canWrite, canUnlink }: Pr
         canWrite={canWrite}
         canUnlink={canUnlink}
         attachedPackageIds={attachedPackageIds}
+        readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomDocuments
         roomId={roomId}
         canWrite={canWrite}
         attachedPackageIds={attachedPackageIds}
+        readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomPackages
@@ -82,10 +91,12 @@ export default function RoomResourcesSection({ roomId, canWrite, canUnlink }: Pr
 function PackageChips({
   packageIds,
   attachedPackageIds,
+  readablePackageIds,
   packageDescriptions,
 }: {
   packageIds: string[];
   attachedPackageIds: Set<string>;
+  readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
   const navigate = useNavigate();
@@ -99,10 +110,14 @@ function PackageChips({
           label={`via ${packageDescriptions[pid] ?? "package"}`}
           size="small"
           variant="outlined"
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/resources/packages/${pid}`);
-          }}
+          onClick={
+            readablePackageIds.has(pid)
+              ? (e) => {
+                  e.stopPropagation();
+                  navigate(`/resources/packages/${pid}`);
+                }
+              : undefined
+          }
         />
       ))}
     </Stack>
@@ -114,12 +129,14 @@ function RoomReferences({
   canWrite,
   canUnlink,
   attachedPackageIds,
+  readablePackageIds,
   packageDescriptions,
 }: {
   roomId: string;
   canWrite: boolean;
   canUnlink: boolean;
   attachedPackageIds: Set<string>;
+  readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
   const {
@@ -201,6 +218,7 @@ function RoomReferences({
               <PackageChips
                 packageIds={ref.packages ?? []}
                 attachedPackageIds={attachedPackageIds}
+                readablePackageIds={readablePackageIds}
                 packageDescriptions={packageDescriptions}
               />
               {canUnlink && (
@@ -234,11 +252,13 @@ function RoomDocuments({
   roomId,
   canWrite,
   attachedPackageIds,
+  readablePackageIds,
   packageDescriptions,
 }: {
   roomId: string;
   canWrite: boolean;
   attachedPackageIds: Set<string>;
+  readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
   const {
@@ -322,6 +342,7 @@ function RoomDocuments({
                   <PackageChips
                     packageIds={doc.packages ?? []}
                     attachedPackageIds={attachedPackageIds}
+                    readablePackageIds={readablePackageIds}
                     packageDescriptions={packageDescriptions}
                   />
                   {doc.can_remove && (
@@ -421,7 +442,7 @@ function RoomPackages({
   roomId: string;
   canWrite: boolean;
   canUnlink: boolean;
-  packages: Array<{ id: string; name: string; description: string }>;
+  packages: Array<{ id: string; name: string; description: string; can_read?: boolean }>;
   refetch: () => void;
 }) {
   const navigate = useNavigate();
@@ -479,14 +500,23 @@ function RoomPackages({
                 px: 1,
                 py: 0.5,
                 borderRadius: 1,
-                cursor: "pointer",
-                "&:hover": { backgroundColor: "action.hover" },
+                ...(p.can_read && {
+                  cursor: "pointer",
+                  "&:hover": { backgroundColor: "action.hover" },
+                }),
               }}
-              onClick={() => navigate(`/resources/packages/${p.id}`)}
+              onClick={p.can_read ? () => navigate(`/resources/packages/${p.id}`) : undefined}
+              data-testid={`room-package-${p.id}`}
             >
-              <Typography variant="body2" sx={{ flexGrow: 1 }}>
+              <Typography
+                variant="body2"
+                color={p.can_read ? undefined : "text.secondary"}
+              >
                 {p.name || p.description}
               </Typography>
+              {!p.can_read && <LockedMark />}
+              <span style={{ flexGrow: 1 }} />
+              {p.can_read && <OpensMark />}
               {canUnlink && (
                 <Button
                   size="small"

@@ -11,6 +11,7 @@ from switch_core.db.models import TENANT_ZERO_ID, OidcIdentity, TenantMember, Us
 from switch_core.db.stores.user_store import (
     OidcIdentityConflictError,
     OidcIdentityRaceError,
+    SignupRefusedError,
     UserStore,
 )
 
@@ -18,6 +19,49 @@ _ISS = "https://idp.example.com"
 
 
 class TestGetOrCreateOidcUser:
+    async def test_without_linking_by_email_a_matching_account_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A shared identity provider's subject is the only link: a verified
+        address matching an existing account joins nothing, and nothing new
+        is written."""
+        store = UserStore()
+        async with session_factory() as session:
+            existing, _ = await store.get_or_create_oidc_user(
+                session,
+                iss="https://password.example",
+                email="kept@example.com",
+                name="Kept",
+                sub="first",
+                email_verified=True,
+                join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            with pytest.raises(OidcIdentityConflictError, match="administrator"):
+                await store.get_or_create_oidc_user(
+                    session,
+                    iss=_ISS,
+                    email="Kept@example.com",
+                    name="Kept",
+                    sub="user_SHARED",
+                    email_verified=True,
+                    join_tenant=True,
+                    link_by_email=False,
+                    create_allowed=True,
+                )
+        async with session_factory() as session:
+            assert (
+                await store.get_by_oidc_identity(session, iss=_ISS, sub="user_SHARED")
+                is None
+            )
+            assert (
+                await store.get_by_email(session, "kept@example.com")
+            ).id == existing.id  # type: ignore[union-attr]
+
     async def test_creates_new_user_as_plain_user(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -31,6 +75,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|9",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
             assert created is True
@@ -49,8 +95,91 @@ class TestGetOrCreateOidcUser:
                 sub="okta|9",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             assert (returning.id, created_again) == (user.id, False)
+
+    async def test_a_refused_creation_writes_no_account(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            with pytest.raises(SignupRefusedError):
+                await store.get_or_create_oidc_user(
+                    session,
+                    iss=_ISS,
+                    email="far.away@example.com",
+                    name="Far",
+                    sub="okta|refused",
+                    email_verified=True,
+                    join_tenant=True,
+                    link_by_email=True,
+                    create_allowed=False,
+                )
+            await session.rollback()
+        async with session_factory() as session:
+            assert await store.get_by_email(session, "far.away@example.com") is None
+            assert (
+                await store.get_by_oidc_identity(session, iss=_ISS, sub="okta|refused")
+                is None
+            )
+
+    async def test_a_refused_creation_still_signs_in_a_known_identity(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            user, _ = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="known@example.com",
+                name="Known",
+                sub="okta|known",
+                email_verified=True,
+                join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
+            )
+            await session.commit()
+            again, created = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="known@example.com",
+                name="Known",
+                sub="okta|known",
+                email_verified=True,
+                join_tenant=True,
+                link_by_email=True,
+                create_allowed=False,
+            )
+            assert (again.id, created) == (user.id, False)
+
+    async def test_a_refused_creation_still_links_a_verified_email(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = UserStore()
+        async with session_factory() as session:
+            existing = User(
+                name="Pat",
+                email="pat.linked@example.com",
+                role="user",
+                password_hash="h",
+            )
+            await store.create(session, existing)
+            await session.commit()
+            linked, created = await store.get_or_create_oidc_user(
+                session,
+                iss=_ISS,
+                email="pat.linked@example.com",
+                name="Pat",
+                sub="okta|linked",
+                email_verified=True,
+                join_tenant=True,
+                link_by_email=True,
+                create_allowed=False,
+            )
+            assert (linked.id, created) == (existing.id, False)
 
     async def test_new_user_email_is_stored_lowercase(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -68,6 +197,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|10",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
             assert user.email == "new.person@example.com"
@@ -85,6 +216,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|1",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
             first.role = "admin"
@@ -98,6 +231,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|1",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             assert again.id == first.id
             assert again.role == "admin"
@@ -127,6 +262,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|42",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -165,6 +302,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|43",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -225,6 +364,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|1",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -236,6 +377,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|2",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -272,6 +415,8 @@ class TestGetOrCreateOidcUser:
                     sub="okta|1",
                     email_verified=False,
                     join_tenant=True,
+                    link_by_email=True,
+                    create_allowed=True,
                 )
 
     async def test_identity_already_bound_elsewhere_is_never_relinked(
@@ -290,6 +435,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|owned",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -310,6 +457,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|owned",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             assert again.id == owner.id
 
@@ -339,6 +488,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|7",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             assert got.id == legacy_user.id
 
@@ -377,6 +528,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|8",
                 email_verified=False,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             assert got.id == legacy_admin.id
             assert got.role == "admin"
@@ -400,6 +553,8 @@ class TestGetOrCreateOidcUser:
                     sub="okta|logged",
                     email_verified=True,
                     join_tenant=True,
+                    link_by_email=True,
+                    create_allowed=True,
                 )
                 await session.commit()
 
@@ -466,6 +621,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|always-races",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await winner_session.commit()
 
@@ -485,6 +642,8 @@ class TestGetOrCreateOidcUser:
                     sub="okta|always-races",
                     email_verified=True,
                     join_tenant=True,
+                    link_by_email=True,
+                    create_allowed=True,
                 )
 
     async def test_concurrent_creation_of_the_same_identity_resolves_to_the_winner(
@@ -505,6 +664,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|race",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await winner_session.commit()
 
@@ -530,6 +691,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|race",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             assert resolved.id == winner.id
 
@@ -551,6 +714,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|first",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             await winner_session.commit()
 
@@ -574,6 +739,8 @@ class TestGetOrCreateOidcUser:
                 sub="okta|second",
                 email_verified=True,
                 join_tenant=True,
+                link_by_email=True,
+                create_allowed=True,
             )
             assert resolved.id == winner.id
 
@@ -608,6 +775,8 @@ class TestProvisioningWithoutJoiningATenant:
                 sub="okta|loose",
                 email_verified=True,
                 join_tenant=False,
+                link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 
@@ -634,6 +803,8 @@ class TestProvisioningWithoutJoiningATenant:
                 sub="okta|prior",
                 email_verified=True,
                 join_tenant=False,
+                link_by_email=True,
+                create_allowed=True,
             )
             await session.commit()
 

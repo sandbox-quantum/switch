@@ -12,7 +12,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import {
   type Member,
@@ -21,7 +21,7 @@ import {
   removeMember,
   updateMemberRole,
 } from "../../data/api";
-import { formatDate, titleCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase } from "../../theme/format";
 import { useLoad } from "./useLoad";
 
 type MemberRow = Member & { id: string };
@@ -29,19 +29,16 @@ type MemberRow = Member & { id: string };
 interface Props {
   tenantId: string;
   selfId: string;
-  canAdmin: boolean;
-  isOwner: boolean;
 }
 
-/** An admin may manage members and admins; only an owner may grant the owner
- * role or touch an existing owner. The server enforces the same, and refuses
- * the last owner — its message is shown as is.
- *
- * An organization admin administers every workspace of the organization, so
- * their row here is read-only: the role comes from the organization, and is
- * changed on its page. One with no membership of their own here is listed
- * "via the organization". */
-export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: Props) {
+/** Each row offers what the server says the caller may do with it: an admin
+ * may change and remove every member, other admins included, but not their
+ * own row (another admin steps them down) and not an organization admin's,
+ * whose role comes from the organization and is changed on its page. One
+ * with no membership of their own here is listed "via the organization". The
+ * server refuses to demote or remove the last admin when asked — its message
+ * is shown as is. */
+export default function MembersSection({ tenantId, selfId }: Props) {
   const load = useCallback(() => fetchMembers(tenantId), [tenantId]);
   const { data: members, error, loading, refetch } = useLoad(load);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -49,11 +46,17 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
   const { refresh } = useAuth();
 
   const act = useCallback(
-    async (userId: string, action: () => Promise<unknown>) => {
+    async (userId: string, action: () => Promise<unknown>, leaving = false) => {
       setBusy(userId);
       setActionError(null);
       try {
         await action();
+        if (leaving) {
+          // The session is on another workspace now, or none, and the page
+          // follows it rather than reading this one's members again.
+          await refresh();
+          return;
+        }
         await refetch();
         // Your own role decides what this page offers you.
         if (userId === selfId) await refresh();
@@ -67,9 +70,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
   );
 
   const columns = useMemo<GridColDef<MemberRow>[]>(() => {
-    const mayManage = (row: MemberRow) =>
-      canAdmin && row.organization_role !== "org_admin" && (isOwner || row.role !== "owner");
-    const roles: TenantRole[] = isOwner ? ["owner", "admin", "member"] : ["admin", "member"];
+    const roles: TenantRole[] = ["admin", "member"];
     return [
       {
         field: "name",
@@ -84,7 +85,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
         headerName: "Role",
         width: 210,
         renderCell: ({ row }) =>
-          mayManage(row) ? (
+          row.can_change_role ? (
             <Select
               size="small"
               value={row.role}
@@ -94,12 +95,13 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
                   updateMemberRole(tenantId, row.user_id, e.target.value as TenantRole),
                 )
               }
-              aria-label={`Role for ${row.email}`}
+              // The name goes on the input: on the Select it labels nothing.
+              inputProps={{ "aria-label": `Role for ${row.email}` }}
               sx={{ fontSize: "0.875rem" }}
             >
               {roles.map((role) => (
                 <MenuItem key={role} value={role}>
-                  {titleCase(role)}
+                  {sentenceCase(role)}
                 </MenuItem>
               ))}
             </Select>
@@ -107,15 +109,15 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
             <Tooltip
               title={
                 row.via_organization
-                  ? "Administers this workspace through the organization. Change it on the Organization page."
-                  : "An organization admin, and so an admin of every workspace in it. Change it on the Organization page."
+                  ? "Administers this workspace through the organization. Change it in the organization's settings."
+                  : "An organization admin, and so an admin of every workspace in it. Change it in the organization's settings."
               }
             >
               <Chip
                 label={
                   row.via_organization
-                    ? "Org Admin, via organization"
-                    : `${titleCase(row.role)} · Org Admin`
+                    ? "Org admin, via organization"
+                    : `${sentenceCase(row.role)} · Org admin`
                 }
                 size="small"
                 color="primary"
@@ -124,7 +126,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
             </Tooltip>
           ) : (
             <Chip
-              label={titleCase(row.role)}
+              label={sentenceCase(row.role)}
               size="small"
               color={row.role === "member" ? "default" : "primary"}
             />
@@ -142,14 +144,20 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
         width: 60,
         sortable: false,
         renderCell: ({ row }) =>
-          mayManage(row) && row.user_id !== selfId ? (
-            <Tooltip title="Remove from workspace">
+          row.can_remove ? (
+            <Tooltip title={row.user_id === selfId ? "Leave workspace" : "Remove from workspace"}>
               <span>
                 <IconButton
                   size="small"
                   disabled={busy !== null}
-                  onClick={() => act(row.user_id, () => removeMember(tenantId, row.user_id))}
-                  aria-label={`Remove ${row.email}`}
+                  onClick={() =>
+                    act(
+                      row.user_id,
+                      () => removeMember(tenantId, row.user_id),
+                      row.user_id === selfId,
+                    )
+                  }
+                  aria-label={row.user_id === selfId ? "Leave this workspace" : `Remove ${row.email}`}
                 >
                   <DeleteOutline fontSize="small" />
                 </IconButton>
@@ -158,11 +166,11 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
           ) : null,
       },
     ];
-  }, [act, busy, canAdmin, isOwner, selfId, tenantId]);
+  }, [act, busy, selfId, tenantId]);
 
   return (
     <Stack spacing={1.5}>
-      <Typography variant="h6">Members</Typography>
+      <Typography variant="h6">Users</Typography>
       {error && <Alert severity="error">{error}</Alert>}
       {actionError && (
         <Alert severity="error" onClose={() => setActionError(null)}>
@@ -175,6 +183,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
         <DataTable
           rows={(members ?? []).map((m) => ({ ...m, id: m.user_id }))}
           columns={columns}
+          emptyState={<TableEmptyState title="No users in this workspace yet" />}
           height={Math.min(520, 108 + (members?.length ?? 0) * 52)}
           pageSize={25}
         />

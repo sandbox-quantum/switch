@@ -71,6 +71,7 @@ export type { Supervision } from './host/launch';
 export { commandLineNames, killProcessTree, processCommandLine } from './host/process-fence';
 export { execProvider, findOnPath, spawnProvider, stopProvider } from './provider-process';
 export { replaceFile } from './host/replace-file';
+export { IS_PROCESS_ALIVE, isProcessAlive, type PidOrigin } from './process-alive';
 export {
   isStopMessage,
   onStopRequest,
@@ -178,7 +179,7 @@ export { codexSourceHome, prepareCodexSessionHome, withManagedCodexSandbox } fro
 export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 
-export { providerReadinessSchema } from './readiness';
+export { loginCommandOf, providerReadinessSchema } from './readiness';
 export {
   cliConversationListSchema,
   deletedCliConversationCopiesSchema,

@@ -1,3 +1,6 @@
+import type { NewRoomChannel, RoomAccess } from '@shared/core/switch-servers/switch-servers';
+import { channelIdProblem, normalizedChannelId } from './room-channel-choices';
+
 /** What the New room dialog asks the server for: a Switch Console chat when no messaging app is chosen, else a room bridged to the chosen one. */
 export type RoomCreateRequest =
   | {
@@ -11,6 +14,12 @@ export type RoomCreateRequest =
         greeting: null;
         /** A room made here is a group even with one agent and nobody else. */
         kind: 'group';
+        /** Empty leaves the description naming who is in the chat. */
+        description: string;
+        instructions: string | undefined;
+        groupId: string | null;
+        /** Null leaves the chat private, as a Switch Console chat is. */
+        access: RoomAccess | null;
       };
     }
   | {
@@ -22,21 +31,47 @@ export type RoomCreateRequest =
         instructions: string | undefined;
         bridgeId: string;
         agentIds: string[];
+        /** The people to add, by their username on the room's messaging app. */
+        userNames: string[];
+        channel: NewRoomChannel;
+        groupId: string | null;
+        /** Null leaves the server's default. */
+        access: RoomAccess | null;
       };
     };
+
+/** The New room dialog's channel and More options; a Switch Console chat takes all but the channel. */
+export type RoomCreateOptions = {
+  channel: NewRoomChannel;
+  groupId: string | null;
+  /** Null leaves the server's default. */
+  access: RoomAccess | null;
+};
+
+export const DEFAULT_ROOM_OPTIONS: RoomCreateOptions = {
+  channel: { kind: 'new', private: false },
+  groupId: null,
+  access: null,
+};
 
 export function roomCreateRequest(form: {
   serverId: string;
   workspaceId: string;
   /** Null for Switch Console. */
   bridgeId: string | null;
+  /** The chosen app's platform, so an existing channel's id is sent as it writes it; null for Switch Console. */
+  bridgeType: string | null;
   name: string;
   description: string;
   instructions: string;
   agentIds: string[];
-  /** The people to add; a bridged room is created without them. */
+  /** The people to add to a Switch Console room, by Switch user id. */
   memberUserIds: string[];
+  /** The people to add to a bridged room, by username on its app. */
+  userNames: string[];
   requestId: string;
+  /** The More options; a Switch Console chat has no channel, so its channel is ignored. */
+  options: RoomCreateOptions;
 }): RoomCreateRequest {
   const name = form.name.trim();
   const agentIds = [...new Set(form.agentIds)];
@@ -51,6 +86,10 @@ export function roomCreateRequest(form: {
         requestId: form.requestId,
         greeting: null,
         kind: 'group',
+        description: form.description.trim(),
+        instructions: form.instructions.trim() || undefined,
+        groupId: form.options.groupId,
+        access: form.options.access,
       },
     };
   return {
@@ -62,11 +101,35 @@ export function roomCreateRequest(form: {
       instructions: form.instructions.trim() || undefined,
       bridgeId: form.bridgeId,
       agentIds,
+      userNames: [...new Set(form.userNames)],
+      ...roomOptionsParams(form.options, form.bridgeType ?? ''),
     },
   };
 }
 
-/** A room needs only a name; a bridged room's description is optional, as its channel topic is. */
+function roomOptionsParams(options: RoomCreateOptions, bridgeType: string) {
+  const channel: NewRoomChannel =
+    options.channel.kind === 'existing'
+      ? {
+          kind: 'existing',
+          externalChannelId: normalizedChannelId(bridgeType, options.channel.externalChannelId),
+        }
+      : options.channel;
+  return {
+    channel,
+    groupId: options.groupId,
+    access: options.access,
+  };
+}
+
+/** Whether the options can be sent: an existing channel has to be named, by an id of its app's shape. */
+export function roomOptionsReady(options: RoomCreateOptions, bridgeType: string): boolean {
+  if (options.channel.kind !== 'existing') return true;
+  const id = options.channel.externalChannelId;
+  return id.trim() !== '' && channelIdProblem(bridgeType, id) === null;
+}
+
+/** A room needs only a name; its description is optional, as a channel topic is. */
 export function canCreate(form: { name: string }) {
   return form.name.trim() !== '';
 }
@@ -88,12 +151,15 @@ export class CreateRequestIds {
     name: string;
     agentIds: string[];
     memberUserIds: string[];
+    /** The room's own settings: the server refuses a retry that changes them under the same id. */
+    settings?: unknown;
   }): string {
     const key = JSON.stringify([
       form.bridgeId,
       form.name.trim(),
       form.agentIds,
       form.memberUserIds,
+      form.settings ?? null,
     ]);
     if (key !== this.key) {
       this.key = key;

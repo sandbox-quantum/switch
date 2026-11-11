@@ -77,9 +77,15 @@ import {
   type AgentRenameOutcome,
   type BridgeConfigField,
   type BridgeDirectoryUser,
+  type BridgePerson,
   type ChannelRetirement,
   type ChatClaim,
   type ConnectedChat,
+  type DecisionBackend,
+  type DecisionSettings,
+  type DecisionSettingsInput,
+  type DecisionTestInput,
+  type DecisionTestOutcome,
   type DeleteBridgeResult,
   type LinkCode,
   type LinkedIdentity,
@@ -96,9 +102,13 @@ import {
   type RemoteRoomRole,
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
+  type RoomRoleInput,
+  type RoomVisibility,
   type RetireOutcome,
   type SwitchApiKey,
+  type ApiKeyLifetime,
   type CreatedRegistrationKey,
+  type RoomAutoRoute,
   type SwitchAuthConfig,
   type SwitchServer,
   type SwitchServerDeclaration,
@@ -108,6 +118,13 @@ import {
   type TrustSettings,
   type UnconfirmedLink,
   type UpdateTrustSettingsParams,
+  type LinkedRoom,
+  type RoomDocumentContent,
+  type RoomResource,
+  type RoomResourceKind,
+  type NewRoomChannel,
+  type RoomAccess,
+  visibilityForAccess,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -121,6 +138,7 @@ import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from '
 import { consoleIdentityHeaders } from './console-identity';
 import { NoManagementApiError } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
+import { noteSessionEnded } from './session-ended';
 
 /** The gateway management API is mounted under `/gateway` on the server. */
 function gatewayUrl(server: SwitchServer, path: string): string {
@@ -411,6 +429,9 @@ export async function gatewayRequest(
   }
 
   if (response.status === 401) {
+    // Only a call that sent a session can say the session is gone; a 401 to an
+    // unauthenticated call is about something else.
+    if (options.authenticated) noteSessionEnded(server.id);
     throw new GatewayError('unauthorized', 'Switch session expired — please sign in again.', 401);
   }
   if (answeredWithPage(response)) {
@@ -540,6 +561,137 @@ export async function clearTrustSettings(server: SwitchServer): Promise<TrustSet
   return mapTrustSettings((await res.json()) as TrustSettingsJson);
 }
 
+type DecisionSettingsJson = {
+  source: 'workspace' | 'server_default';
+  effective: {
+    backend: DecisionBackend;
+    endpoint: string | null;
+    threshold: number | null;
+    available: boolean;
+    reason: string | null;
+  };
+  workspace: {
+    backend: DecisionBackend;
+    endpoint: string | null;
+    threshold: number | null;
+    has_api_key: boolean;
+    api_key_last4: string | null;
+    api_key_unreadable: boolean;
+    updated_at: string;
+  } | null;
+  server_default: { configured: boolean; endpoint: string | null; has_api_key: boolean };
+  options: { haiku_anthropic: boolean; haiku_bedrock: boolean };
+};
+
+function mapDecisionSettings(json: DecisionSettingsJson): DecisionSettings {
+  const { workspace } = json;
+  return {
+    source: json.source,
+    effective: {
+      backend: json.effective.backend,
+      endpoint: json.effective.endpoint,
+      threshold: json.effective.threshold,
+      available: json.effective.available,
+      reason: json.effective.reason,
+    },
+    workspace:
+      workspace === null
+        ? null
+        : {
+            backend: workspace.backend,
+            endpoint: workspace.endpoint,
+            threshold: workspace.threshold,
+            hasApiKey: workspace.has_api_key,
+            apiKeyLast4: workspace.api_key_last4,
+            apiKeyUnreadable: workspace.api_key_unreadable,
+            updatedAt: workspace.updated_at,
+          },
+    serverDefault: {
+      configured: json.server_default.configured,
+      endpoint: json.server_default.endpoint,
+      hasApiKey: json.server_default.has_api_key,
+    },
+    options: {
+      haikuAnthropic: json.options.haiku_anthropic,
+      haikuBedrock: json.options.haiku_bedrock,
+    },
+  };
+}
+
+/** The wire body `PUT /decision-settings` and its test take; a field left
+ * unset is left out, so the stored key survives a save that doesn't name one. */
+function decisionSettingsBody(input: DecisionTestInput): Record<string, unknown> {
+  if (input.backend === 'default') return { backend: 'default' };
+  return {
+    backend: input.backend,
+    ...(input.endpoint !== undefined ? { endpoint: input.endpoint } : {}),
+    ...(input.apiKey !== undefined ? { api_key: input.apiKey } : {}),
+    ...(input.clearApiKey !== undefined ? { clear_api_key: input.clearApiKey } : {}),
+    ...(input.threshold !== undefined ? { threshold: input.threshold } : {}),
+  };
+}
+
+/** The decision routing settings of the workspace the session selects, its
+ * admins only (`GET /decision-settings`). */
+export async function fetchDecisionSettings(server: SwitchServer): Promise<DecisionSettings> {
+  const res = await gatewayFetch(server, '/decision-settings', { authenticated: true });
+  return mapDecisionSettings((await res.json()) as DecisionSettingsJson);
+}
+
+/** Save the selected workspace's decision routing settings (`PUT /decision-settings`). */
+export async function updateDecisionSettings(
+  server: SwitchServer,
+  input: DecisionSettingsInput
+): Promise<DecisionSettings> {
+  const res = await gatewayFetch(server, '/decision-settings', {
+    authenticated: true,
+    method: 'PUT',
+    body: decisionSettingsBody(input),
+  });
+  return mapDecisionSettings((await res.json()) as DecisionSettingsJson);
+}
+
+/** Return the selected workspace to the server default (`DELETE /decision-settings`,
+ * which answers 204), then read the settings back as they now stand. */
+export async function clearDecisionSettings(server: SwitchServer): Promise<DecisionSettings> {
+  await gatewayFetch(server, '/decision-settings', { authenticated: true, method: 'DELETE' });
+  return fetchDecisionSettings(server);
+}
+
+type DecisionTestJson = {
+  ok: boolean;
+  agent: string | null;
+  model_choice: string | null;
+  confidence: number | null;
+  latency_ms: number | null;
+  backend: string | null;
+  error: { code: string; message: string } | null;
+};
+
+/** Run one sample decision against unsaved values, or the server default
+ * (`POST /decision-settings/test`). A failed decision is an answer, not an
+ * error: it comes back with `ok` false. */
+export async function testDecisionSettings(
+  server: SwitchServer,
+  input: DecisionTestInput
+): Promise<DecisionTestOutcome> {
+  const res = await gatewayFetch(server, '/decision-settings/test', {
+    authenticated: true,
+    method: 'POST',
+    body: decisionSettingsBody(input),
+  });
+  const json = (await res.json()) as DecisionTestJson;
+  return {
+    ok: json.ok,
+    agent: json.agent,
+    modelChoice: json.model_choice,
+    confidence: json.confidence,
+    latencyMs: json.latency_ms,
+    backend: json.backend,
+    error: json.error === null ? null : { code: json.error.code, message: json.error.message },
+  };
+}
+
 type ServerDeclarationJson = {
   version: string | null;
   contracts: Record<string, { speaks: number; accepts: number }>;
@@ -592,7 +744,7 @@ export async function fetchFeatureFlags(server: SwitchServer): Promise<RemoteFea
 
 /**
  * Delete the signed-in account on this server, confirmed by its email. A
- * refusal (the only owner of a shared workspace, the server's own admin, …) is
+ * refusal (the only admin of a shared workspace, the server's own admin, …) is
  * raised with the server's own reason, which says what to do first.
  */
 export async function deleteMyAccount(server: SwitchServer, email: string): Promise<void> {
@@ -631,14 +783,23 @@ export async function updateMyName(server: SwitchServer, name: string): Promise<
  * with the server's reason, such as a wrong current password. An account made
  * through single sign-on has no password to change; the server says so on the
  * user (`hasPassword`), and Settings offers no change for one.
+ *
+ * The server ends every session on a password change, the one that made it
+ * included, and answers with a new session cookie for this caller. Keeping it
+ * is what leaves Console signed in: the stored cookie is now refused. A server
+ * that sends none leaves the old one, and the next call finds it signed out.
+ *
+ * Failing to keep the new cookie is not a failed change: the password has
+ * changed by then, so it is reported as what it is, with what to do next.
  */
 export async function changeMyPassword(
   server: SwitchServer,
   currentPassword: string,
   newPassword: string
 ): Promise<void> {
+  let res: Response;
   try {
-    await gatewayFetch(server, '/auth/me/password', {
+    res = await gatewayFetch(server, '/auth/me/password', {
       authenticated: true,
       method: 'PUT',
       body: { current_password: currentPassword, new_password: newPassword },
@@ -646,6 +807,29 @@ export async function changeMyPassword(
   } catch (error) {
     if (error instanceof GatewayError && error.detail) throw new Error(error.detail);
     throw error;
+  }
+  const cookie = extractAuthCookie(res.headers.getSetCookie());
+  if (!cookie) return;
+  try {
+    await setSessionCookie(server.id, cookie);
+  } catch (cause) {
+    throw new PasswordChangedSessionNotSavedError(cause);
+  }
+}
+
+/**
+ * The password changed, but Console could not keep the session the server
+ * answered with. Named, so the window says it as it is rather than leading
+ * with "Could not change your password", which would leave the person
+ * believing the old password still works.
+ */
+export class PasswordChangedSessionNotSavedError extends Error {
+  constructor(cause: unknown) {
+    super(
+      'Your password was changed, but Console couldn’t save its new session. Sign in again with your new password.',
+      { cause }
+    );
+    this.name = 'PasswordChangedSessionNotSavedError';
   }
 }
 
@@ -675,7 +859,9 @@ type TenantJson = {
 };
 
 function mapRole(raw: unknown): WorkspaceRole {
-  if (raw === 'owner' || raw === 'admin' || raw === 'member') return raw;
+  // A server from before `owner` merged into `admin` still reports it.
+  if (raw === 'owner') return 'admin';
+  if (raw === 'admin' || raw === 'member') return raw;
   throw new GatewayError('http', `Switch server reported an unknown workspace role: ${raw}`);
 }
 
@@ -980,7 +1166,7 @@ function joinDomainsPath(tenantId: string): string {
   return `/tenants/${encodeURIComponent(tenantId)}/join-domains`;
 }
 
-/** The domains a workspace is open to. Admins and owners only. */
+/** The domains a workspace is open to. Admins only. */
 export async function fetchJoinDomains(
   server: SwitchServer,
   tenantId: string
@@ -1032,7 +1218,7 @@ function invitationsPath(tenantId: string): string {
   return `/tenants/${encodeURIComponent(tenantId)}/invitations`;
 }
 
-/** Every invitation to a workspace, revoked and spent ones included. Admins and owners only. */
+/** Every invitation to a workspace, revoked and spent ones included. Admins only. */
 export async function fetchInvitations(
   server: SwitchServer,
   tenantId: string
@@ -1623,6 +1809,8 @@ type BridgeJson = {
   display_name: string;
   status: string;
   is_default?: boolean;
+  // Absent on a server predating the flag.
+  preconfigured?: boolean;
   home_url?: string | null;
   // Both absent on a server predating the capability — defaulting each to
   // true reproduces how every bridge behaved before it existed: any platform
@@ -1637,6 +1825,10 @@ type BridgeJson = {
   attention?: string | null;
   team_placement_supported?: boolean;
   channel_ids_refused?: string | null;
+  // Both absent on a server predating them, which could make a private
+  // channel on every platform but Teams; see `RemoteBridge.privateChannels`.
+  private_channels_supported?: boolean;
+  private_channel_needs_linked_account?: boolean;
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
@@ -1651,6 +1843,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     displayName: b.display_name,
     status: b.status,
     isDefault: b.is_default ?? false,
+    preconfigured: b.preconfigured ?? null,
     homeUrl: b.home_url ?? null,
     channelCreationSupported,
     canCreateChannels: channelCreationSupported && channelCreationEnabled,
@@ -1658,6 +1851,8 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     attention: b.attention ?? null,
     teamPlacementSupported: b.team_placement_supported ?? false,
     channelIdsRefused: b.channel_ids_refused ?? null,
+    privateChannels: b.private_channels_supported ?? null,
+    privateChannelNeedsLinkedAccount: b.private_channel_needs_linked_account ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
   };
@@ -2375,9 +2570,9 @@ export async function searchBridgeDirectory(
  * with that status.
  *
  * A current server answers with the link still pending and a code to post from
- * the account (`link_request`); see {@link issueIdentityLinkCode}. It refuses a
- * claim that does not say it can show that code (`expects_confirmation`), since
- * a client that cannot would leave the link pending with no way to finish it.
+ * the account (`link_request`); see {@link issueIdentityLinkCode}. A claim that
+ * does not say it can show that code (`expects_confirmation`) gets it as the
+ * text of a 409 instead, which is all a Console from before then shows.
  */
 export async function claimBridgeIdentity(
   server: SwitchServer,
@@ -3209,18 +3404,75 @@ export async function fetchRoomRoles(
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/roles`, {
     authenticated: true,
   });
-  const json = (await res.json()) as Array<{
-    name: string;
-    instructions: string;
-    exclusive: boolean;
-    held_by?: string[];
-  }>;
-  return json.map((r) => ({
+  return ((await res.json()) as RoomRoleJson[]).map(mapRoomRole);
+}
+
+/** The gateway `RoomRoleDetail` wire shape. */
+type RoomRoleJson = {
+  name: string;
+  instructions: string;
+  exclusive: boolean;
+  held_by?: string[];
+};
+
+function mapRoomRole(r: RoomRoleJson): RemoteRoomRole {
+  return {
     name: r.name,
     instructions: r.instructions,
     exclusive: r.exclusive,
     heldBy: r.held_by ?? [],
-  }));
+  };
+}
+
+/**
+ * Define a role in a room (`POST /rooms/{id}/roles`). Requires write access;
+ * a name already taken in the room is refused. Resolves to the room's roles as
+ * they now stand.
+ */
+export async function createRoomRole(
+  server: SwitchServer,
+  roomId: string,
+  role: RoomRoleInput
+): Promise<RemoteRoomRole[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/roles`, {
+    authenticated: true,
+    method: 'POST',
+    body: role,
+  });
+  return ((await res.json()) as RoomRoleJson[]).map(mapRoomRole);
+}
+
+/**
+ * Change a role's instructions or exclusivity (`PATCH /rooms/{id}/roles/{name}`).
+ * The name cannot change. An agent already holding the role keeps the
+ * instructions it was given until it takes the role again.
+ */
+export async function updateRoomRole(
+  server: SwitchServer,
+  roomId: string,
+  name: string,
+  changes: { instructions?: string; exclusive?: boolean }
+): Promise<RemoteRoomRole[]> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/roles/${encodeURIComponent(name)}`,
+    { authenticated: true, method: 'PATCH', body: changes }
+  );
+  return ((await res.json()) as RoomRoleJson[]).map(mapRoomRole);
+}
+
+/** Remove a role from a room, and any agent's hold on it (`DELETE /rooms/{id}/roles/{name}`). */
+export async function deleteRoomRole(
+  server: SwitchServer,
+  roomId: string,
+  name: string
+): Promise<RemoteRoomRole[]> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/roles/${encodeURIComponent(name)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
+  return ((await res.json()) as RoomRoleJson[]).map(mapRoomRole);
 }
 
 /** The gateway `RoomSummary` wire shape. `RoomDetail` (returned by create) is a
@@ -3231,14 +3483,28 @@ type RoomSummaryJson = {
   description: string;
   channel_type: string | null;
   agent_count: number;
+  bridge_id?: string | null;
   bridge_display_name: string | null;
   bridge_type?: string | null;
   external_channel_url?: string | null;
   owner_id?: string | null;
   viewer_is_member?: boolean;
   is_console_chat?: boolean;
+  /** Its people are its Switch members; absent from a server too old to count them. */
+  people_are_members?: boolean;
   archived: boolean;
   created_at: string;
+  write_visibility?: string;
+  /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
+  can_write?: boolean;
+  can_change_members?: boolean;
+  can_manage?: boolean;
+  can_unlink?: boolean;
+  group_id?: string | null;
+  group_name?: string | null;
+  owner_name?: string | null;
+  read_visibility?: string;
+  connected_user_count?: number;
 };
 
 function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
@@ -3254,8 +3520,28 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     ownerId: r.owner_id ?? null,
     viewerIsMember: r.viewer_is_member ?? false,
     isConsoleChat: r.is_console_chat ?? false,
+    ...(r.people_are_members !== undefined ? { peopleAreMembers: r.people_are_members } : {}),
     archived: r.archived,
     createdAt: r.created_at,
+    // The same reading as a room's detail, so the list and the room page offer the same changes.
+    writeVisibility: visibilityOf(r.write_visibility),
+    ...(r.read_visibility !== undefined ? { readVisibility: visibilityOf(r.read_visibility) } : {}),
+    ...(r.bridge_id !== undefined ? { bridgeId: r.bridge_id } : {}),
+    ...(r.group_id !== undefined ? { groupId: r.group_id, groupName: r.group_name ?? null } : {}),
+    ...(r.owner_name !== undefined ? { ownerName: r.owner_name } : {}),
+    ...(r.connected_user_count !== undefined ? { connectedUserCount: r.connected_user_count } : {}),
+    ...(r.can_write !== undefined && r.can_manage !== undefined
+      ? {
+          serverPermissions: {
+            canWrite: r.can_write,
+            // Who is in a room took write access until the server said otherwise.
+            canChangeMembers: r.can_change_members ?? r.can_write,
+            canManage: r.can_manage,
+            // Detaching took write access until the server said otherwise.
+            canUnlink: r.can_unlink ?? r.can_write,
+          },
+        }
+      : {}),
   };
 }
 
@@ -3275,7 +3561,46 @@ type RoomDetailJson = RoomSummaryJson & {
    * "no channel", so the delete dialog can say it does not know. */
   channel_on_delete?: ChannelRetirement | null;
   linked_channel_name?: string | null;
+  read_visibility?: string;
+  group_id?: string | null;
+  group_name?: string | null;
+  owner_name?: string | null;
+  bridge_id?: string | null;
+  agent_statuses?: Record<string, string>;
+  roles?: RoomRoleJson[];
+  join_event_listeners?: string[];
+  external_channel_id?: string | null;
+  transport_room_id?: string | null;
+  archived_at?: string | null;
+  /** Absent from a server that predates decision routing. */
+  auto_route?: RoomAutoRouteJson;
 };
+
+/** The server's visibility words; anything else reads as private, the narrower of the two. */
+function visibilityOf(value: string | undefined): RoomVisibility {
+  // Absent only from a server that predates the setting, where every room was open.
+  if (value === undefined) return 'public';
+  return value === 'public' ? 'public' : 'private';
+}
+
+type RoomAutoRouteJson = {
+  on: boolean;
+  available: boolean;
+  reason: string | null;
+  fallback_agent: string | null;
+  /** Absent from a server that predates it. */
+  fallback_agent_name?: string | null;
+};
+
+function mapRoomAutoRoute(json: RoomAutoRouteJson): RoomAutoRoute {
+  return {
+    on: json.on,
+    available: json.available,
+    reason: json.reason,
+    fallbackAgent: json.fallback_agent,
+    fallbackAgentName: json.fallback_agent_name ?? null,
+  };
+}
 
 function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
   return {
@@ -3285,6 +3610,19 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     connectedUserNames: r.connected_user_names ?? [],
     channelOnDelete: r.channel_on_delete,
     linkedChannelName: r.linked_channel_name ?? null,
+    readVisibility: visibilityOf(r.read_visibility),
+    writeVisibility: visibilityOf(r.write_visibility),
+    groupId: r.group_id ?? null,
+    groupName: r.group_name ?? null,
+    ownerName: r.owner_name ?? null,
+    bridgeId: r.bridge_id ?? null,
+    agentStatuses: r.agent_statuses ?? {},
+    roles: (r.roles ?? []).map(mapRoomRole),
+    joinEventListeners: r.join_event_listeners ?? [],
+    externalChannelId: r.external_channel_id ?? null,
+    transportRoomId: r.transport_room_id ?? null,
+    archivedAt: r.archived_at ?? null,
+    ...(r.auto_route ? { autoRoute: mapRoomAutoRoute(r.auto_route) } : {}),
   };
 }
 
@@ -3336,14 +3674,171 @@ export async function fetchRoomAgentIds(server: SwitchServer, roomId: string): P
 export async function updateRoom(
   server: SwitchServer,
   roomId: string,
-  changes: { name?: string; description?: string; instructions?: string }
+  changes: {
+    name?: string;
+    description?: string;
+    instructions?: string;
+    readVisibility?: RoomVisibility;
+    writeVisibility?: RoomVisibility;
+  }
 ): Promise<RemoteRoomDetail> {
+  const { readVisibility, writeVisibility, ...fields } = changes;
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
     authenticated: true,
     method: 'PATCH',
-    body: changes,
+    body: {
+      ...fields,
+      ...(readVisibility !== undefined ? { read_visibility: readVisibility } : {}),
+      ...(writeVisibility !== undefined ? { write_visibility: writeVisibility } : {}),
+    },
   });
   return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * File a room under a group, or take it out of one with null
+ * (`PUT /rooms/{id}/group`). Requires write access; a group that does not exist
+ * is refused.
+ */
+export async function setRoomGroup(
+  server: SwitchServer,
+  roomId: string,
+  groupId: string | null
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/group`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { group_id: groupId },
+  });
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * Whether one member agent is told when someone joins the room
+ * (`PATCH /rooms/{id}/agents/{agentId}`). Requires write access; an agent not
+ * in the room is refused.
+ */
+export async function setRoomAgentJoinEvents(
+  server: SwitchServer,
+  roomId: string,
+  agentId: string,
+  receivesJoinEvents: boolean
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}`,
+    { authenticated: true, method: 'PATCH', body: { receives_join_events: receivesJoinEvents } }
+  );
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * Invite people to a bridged room by their messaging-app usernames
+ * (`POST /rooms/{id}/users`). Requires write access, and a room whose bridge is
+ * running. The server does not say who it could not add, so the caller compares
+ * the names it asked for with the room's people afterwards.
+ */
+export async function addRoomUsers(
+  server: SwitchServer,
+  roomId: string,
+  userNames: string[]
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/users`, {
+    authenticated: true,
+    method: 'POST',
+    body: { user_names: userNames },
+  });
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * Archive a room, or bring it back (`POST /rooms/{id}/archive|unarchive`).
+ * Requires write access. An archived room drops out of room lists and agents
+ * can no longer join it; nothing in it is deleted.
+ */
+export async function setRoomArchived(
+  server: SwitchServer,
+  roomId: string,
+  archived: boolean
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/${archived ? 'archive' : 'unarchive'}`,
+    { authenticated: true, method: 'POST' }
+  );
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/** The archived rooms the signed-in user can see (`GET /rooms?include_archived=true`, archived only). */
+export async function fetchArchivedRooms(server: SwitchServer): Promise<RemoteRoomSummary[]> {
+  const res = await gatewayFetch(server, '/rooms?include_archived=true', { authenticated: true });
+  const json = (await res.json()) as RoomSummaryJson[];
+  return json.filter((room) => room.archived).map(mapRoomSummary);
+}
+
+/**
+ * The messaging-app usernames Switch knows on one bridge
+ * (`GET /collaborations/{id}/users`) — the people a bridged room can be given.
+ */
+export async function fetchBridgeUserNames(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<string[]> {
+  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
+    authenticated: true,
+  });
+  const users = (await res.json()) as ExternalUserSummaryJson[];
+  return [...new Set(users.map((user) => user.external_username))].sort((a, b) =>
+    a.localeCompare(b)
+  );
+}
+
+/**
+ * Change a room's auto-route setting (`PUT /rooms/{id}/auto-route`), the same
+ * store `!auto-route` writes; a field left out is left alone. Answers with the
+ * setting as it now stands.
+ */
+export async function setRoomAutoRoute(
+  server: SwitchServer,
+  roomId: string,
+  changes: { on?: boolean; fallbackAgent?: string | null }
+): Promise<RoomAutoRoute> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/auto-route`, {
+    authenticated: true,
+    method: 'PUT',
+    body: {
+      ...(changes.on !== undefined ? { on: changes.on } : {}),
+      ...(changes.fallbackAgent !== undefined ? { fallback_agent: changes.fallbackAgent } : {}),
+    },
+  });
+  return mapRoomAutoRoute((await res.json()) as RoomAutoRouteJson);
+}
+
+/**
+ * The people Switch knows on one bridge (`GET /collaborations/{id}/users`),
+ * with who has linked each account, for the New room dialog to offer them and
+ * to match them to the workspace's people. A link counts only once confirmed;
+ * a server that predates confirming leaves `verified` out, and its links count.
+ */
+export async function fetchBridgePeople(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<BridgePerson[]> {
+  const res = await gatewayFetch(server, `/collaborations/${encodeURIComponent(bridgeId)}/users`, {
+    authenticated: true,
+  });
+  const users = (await res.json()) as ExternalUserSummaryJson[];
+  return users
+    .map((user) => {
+      const linked = (user.claimed_by ?? []).filter((claim) => claim.verified !== false);
+      return {
+        username: user.external_username,
+        externalUserId: user.external_user_id,
+        linkedUserIds: linked.map((claim) => claim.user_id),
+        linkedName: linked[0]?.user_name ?? null,
+      };
+    })
+    .sort((a, b) => a.username.localeCompare(b.username));
 }
 
 /**
@@ -3437,8 +3932,18 @@ export async function createRoom(
     /** Null makes an internal room: no channel, not even on the default app. */
     bridgeId: string | null;
     agentIds: string[];
+    /** Usernames on the bridge's app to add to the channel. */
+    userNames?: string[];
+    /** Null for a new public channel. */
+    channel: NewRoomChannel | null;
+    groupId: string | null;
+    /** The server's default (open to the workspace) when absent. */
+    /** Null for the server's default. */
+    access: RoomAccess | null;
   }
 ): Promise<RemoteRoomSummary> {
+  const channel = params.channel ?? { kind: 'new', private: false };
+  const visibility = params.access ? visibilityForAccess(params.access) : null;
   const res = await gatewayFetch(server, '/rooms', {
     authenticated: true,
     method: 'POST',
@@ -3448,8 +3953,19 @@ export async function createRoom(
       instructions: params.instructions?.trim() ? params.instructions : null,
       bridge_id: params.bridgeId,
       ...(params.bridgeId === null ? { internal_only: true } : {}),
-      channel_type: 'channel_public',
+      // An existing channel's type is the platform's, read by the server.
+      ...(channel.kind === 'existing'
+        ? { external_channel_id: channel.externalChannelId }
+        : { channel_type: channel.private ? 'channel_private' : 'channel_public' }),
+      ...(params.groupId ? { group_id: params.groupId } : {}),
+      ...(visibility
+        ? {
+            read_visibility: visibility.readVisibility,
+            write_visibility: visibility.writeVisibility,
+          }
+        : {}),
       agent_ids: params.agentIds,
+      ...(params.userNames?.length ? { user_names: params.userNames } : {}),
     },
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
@@ -4772,7 +5288,12 @@ export async function deleteManagedAgent(
 }
 
 type ApiKeyJson = { id: string; label: string; type: string };
-type ApiKeyDetailJson = ApiKeyJson & { key_prefix: string; created_at: string };
+// `expires_at` is absent on a server older than key expiry, where no key expires.
+type ApiKeyDetailJson = ApiKeyJson & {
+  key_prefix: string;
+  created_at: string;
+  expires_at?: string | null;
+};
 
 /**
  * The signed-in person's own API keys (`GET /api-keys`): the registration
@@ -4787,21 +5308,38 @@ export async function fetchMyApiKeys(server: SwitchServer): Promise<SwitchApiKey
     type: key.type,
     keyPrefix: key.key_prefix,
     createdAt: key.created_at,
+    expiresAt: key.expires_at ?? null,
   }));
 }
 
-/** Make a registration key (`POST /api-keys`). Its value is in the answer and nowhere else. */
+/**
+ * Make a registration key (`POST /api-keys`) that works for `lifetime`. Its
+ * value is in the answer and nowhere else.
+ */
 export async function createRegistrationKey(
   server: SwitchServer,
-  label: string
+  label: string,
+  lifetime: ApiKeyLifetime
 ): Promise<CreatedRegistrationKey> {
   const res = await gatewayFetch(server, '/api-keys', {
     authenticated: true,
     method: 'POST',
-    body: { label },
+    body: { label, expires_in_days: lifetime },
   });
-  const json = (await res.json()) as { id: string; label: string; key: string; created_at: string };
-  return { id: json.id, label: json.label, key: json.key, createdAt: json.created_at };
+  const json = (await res.json()) as {
+    id: string;
+    label: string;
+    key: string;
+    created_at: string;
+    expires_at?: string | null;
+  };
+  return {
+    id: json.id,
+    label: json.label,
+    key: json.key,
+    createdAt: json.created_at,
+    expiresAt: json.expires_at ?? null,
+  };
 }
 
 /** One of the signed-in person's keys in full (`GET /api-keys/{id}/reveal`). The server audits it. */
@@ -4876,4 +5414,158 @@ export async function revokeManagementController(
     authenticated: true,
     method: 'DELETE',
   });
+}
+
+// ── Room resources ──────────────────────────────────────────────────────────
+
+type ResourceJson = {
+  id: string;
+  name: string;
+  description: string;
+  type?: string;
+  type_display_name?: string | null;
+  value?: { urls?: unknown };
+  packages?: string[];
+  scope?: 'global' | 'room';
+  created_by_agent_name?: string | null;
+  can_remove?: boolean;
+  content?: string;
+  owner_id?: string | null;
+  read_visibility?: string;
+  can_read?: boolean;
+};
+
+function mapResource(kind: RoomResourceKind, r: ResourceJson): RoomResource {
+  const urls = Array.isArray(r.value?.urls)
+    ? r.value.urls.filter((url): url is string => typeof url === 'string')
+    : [];
+  return {
+    id: r.id,
+    kind,
+    name: r.name,
+    description: r.description,
+    typeLabel: kind === 'references' ? (r.type_display_name ?? r.type ?? null) : null,
+    urls,
+    roomScoped: r.scope === 'room',
+    createdByAgentName: r.created_by_agent_name ?? null,
+    packageIds: r.packages ?? [],
+    ...(r.can_remove !== undefined ? { canRemove: r.can_remove } : {}),
+    ...(kind === 'documents' && typeof r.content === 'string' ? { content: r.content } : {}),
+    ownerId: r.owner_id ?? null,
+    readVisibility: r.read_visibility === 'public' ? 'public' : 'private',
+    ...(r.can_read !== undefined ? { canRead: r.can_read } : {}),
+  };
+}
+
+/** What is attached to a room, of one kind (`GET /rooms/{id}/{kind}`). */
+export async function fetchRoomResources(
+  server: SwitchServer,
+  roomId: string,
+  kind: RoomResourceKind
+): Promise<RoomResource[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/${kind}`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as ResourceJson[]).map((r) => mapResource(kind, r));
+}
+
+/** The library items of one kind the signed-in person may read, for attaching (`GET /{kind}`). */
+export async function fetchLibrary(
+  server: SwitchServer,
+  kind: RoomResourceKind
+): Promise<RoomResource[]> {
+  const res = await gatewayFetch(server, `/${kind}`, { authenticated: true });
+  return ((await res.json()) as ResourceJson[])
+    .map((r) => mapResource(kind, r))
+    .filter((r) => !r.roomScoped);
+}
+
+/** Attach a library item to a room, or detach it; detaching a room-scoped document deletes it. */
+export async function setRoomResourceAttached(
+  server: SwitchServer,
+  roomId: string,
+  kind: RoomResourceKind,
+  resourceId: string,
+  attached: boolean
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/${kind}/${encodeURIComponent(resourceId)}`,
+    { authenticated: true, method: attached ? 'POST' : 'DELETE' }
+  );
+}
+
+/** A document read in full through the room it is attached to. */
+export async function fetchRoomDocument(
+  server: SwitchServer,
+  roomId: string,
+  documentId: string
+): Promise<RoomDocumentContent> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/documents/${encodeURIComponent(documentId)}`,
+    { authenticated: true }
+  );
+  const json = (await res.json()) as {
+    id: string;
+    name: string;
+    description: string;
+    content: string;
+  };
+  return { id: json.id, name: json.name, description: json.description, content: json.content };
+}
+
+type LinkedRoomJson = {
+  target_room_id: string;
+  target_room_name: string;
+  target_room_description: string;
+  label: string;
+};
+
+function mapLinkedRoom(r: LinkedRoomJson): LinkedRoom {
+  return {
+    roomId: r.target_room_id,
+    name: r.target_room_name,
+    description: r.target_room_description,
+    label: r.label,
+  };
+}
+
+/** The rooms this room points at (`GET /rooms/{id}/linked-rooms`). */
+export async function fetchLinkedRooms(
+  server: SwitchServer,
+  roomId: string
+): Promise<LinkedRoom[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/linked-rooms`, {
+    authenticated: true,
+  });
+  return ((await res.json()) as LinkedRoomJson[]).map(mapLinkedRoom);
+}
+
+/** Point this room at another, saying why. */
+export async function addLinkedRoom(
+  server: SwitchServer,
+  roomId: string,
+  targetRoomId: string,
+  label: string
+): Promise<LinkedRoom> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/linked-rooms`, {
+    authenticated: true,
+    method: 'POST',
+    body: { target_room_id: targetRoomId, label },
+  });
+  return mapLinkedRoom((await res.json()) as LinkedRoomJson);
+}
+
+/** Stop this room pointing at another. */
+export async function removeLinkedRoom(
+  server: SwitchServer,
+  roomId: string,
+  targetRoomId: string
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/linked-rooms/${encodeURIComponent(targetRoomId)}`,
+    { authenticated: true, method: 'DELETE' }
+  );
 }

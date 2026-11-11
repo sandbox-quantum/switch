@@ -1,4 +1,5 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import ContentCopy from "@mui/icons-material/ContentCopy";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import Download from "@mui/icons-material/Download";
@@ -28,7 +29,7 @@ import {
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
+import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
 import DeleteTemplateDialog from "./DeleteTemplateDialog";
 import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
 import TemplateFindings from "./TemplateFindings";
@@ -98,7 +99,7 @@ export default function TemplateDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate(LIST_URL)} size="small">
+        <IconButton onClick={() => navigate(LIST_URL)} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
@@ -118,6 +119,15 @@ export default function TemplateDetailPage() {
         />
         {canManage && (
           <>
+            <Divider />
+            <TransferOwnershipSection
+              kind="template"
+              resourceId={id}
+              resourceLabel={template.name || id}
+              ownerId={template.owner_id}
+              blockedReason={null}
+              onTransferred={() => navigate(0)}
+            />
             <Divider />
             <DangerSection onDelete={() => setDeleteOpen(true)} />
           </>

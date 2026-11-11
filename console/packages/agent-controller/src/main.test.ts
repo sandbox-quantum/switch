@@ -76,12 +76,12 @@ describe('main', () => {
       'swce_test',
       '--name',
       'build-box',
-      '--secret-store',
-      'file',
       '--description',
       '  The build box in the office ',
       '--data-dir',
       dir,
+      '--secret-store',
+      'file',
     ]);
     vi.unstubAllGlobals();
     expect(code).toBe(EXIT_OK);
@@ -91,7 +91,6 @@ describe('main', () => {
       .join('');
     expect(output).toContain('Enrollment');
     expect(output).toContain('Enrolled as controller controller-1');
-    // Console enrollment on an SSH host extracts this phrase from stdout.
     expect(/Enrolled as controller (\S+)/.exec(output)?.[1]).toBe('controller-1');
     expect(output).toContain('build-box');
     expect(output).toContain('Next steps');

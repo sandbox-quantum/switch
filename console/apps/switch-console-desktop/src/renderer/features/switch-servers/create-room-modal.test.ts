@@ -8,6 +8,7 @@ const flags = vi.hoisted(() => ({ group_chats: true }));
 vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({ useFeatureFlags: () => flags }));
 vi.mock('@renderer/lib/ipc', () => ({ events: { on: vi.fn() }, rpc: {} }));
 vi.mock('@renderer/features/chats/stores/chats', () => ({ chatsStore: {} }));
+vi.mock('./workspace-admin', () => ({ administersWorkspaceById: () => true }));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: {
     workspaces: [{ id: 'ws', tenantId: null }],
@@ -81,7 +82,7 @@ describe('CreateRoomModal', () => {
       ['remote-agents', 'ws'],
       [{ id: 'a1', name: 'agent-one', displayName: null, iconUrl: null, knownAgentType: null }]
     );
-    client.setQueryData(['chat-agent-candidates', 'srv', 'ws', null], ['a1']);
+    client.setQueryData(['chat-agent-candidates', 'srv', 'ws', null, null], ['a1']);
     expect(render(client)).toContain('aria-label="Remove agent-one"');
   });
   it('labels a bridged room’s description and instructions as optional', () => {

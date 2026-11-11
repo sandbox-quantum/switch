@@ -133,7 +133,7 @@ function GroupFormDialog({
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack direction="row" spacing={1} alignItems="flex-end">
             <TextField
               label="Name"
               size="small"
@@ -303,12 +303,15 @@ function MembershipPanel({
   group,
   byId,
   rooms,
+  canAddRooms,
   onChanged,
 }: {
   selectedId: string | null;
   group: RoomGroupDetail | null;
   byId: Map<string, RoomGroupDetail>;
   rooms: RoomSummary[];
+  /** Only a workspace admin may put rooms in a group. */
+  canAddRooms: boolean;
   onChanged: () => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -391,7 +394,7 @@ function MembershipPanel({
         <Typography variant="h6" sx={{ flexGrow: 1 }} noWrap>
           {title}
         </Typography>
-        {!isStandalone && (
+        {!isStandalone && canAddRooms && (
           <Button
             variant="contained"
             size="small"
@@ -407,8 +410,9 @@ function MembershipPanel({
 
       {isStandalone && (
         <Typography variant="body2" color="text.secondary">
-          These rooms aren't in any group. Select a group and use “Add rooms” to
-          organize them.
+          {canAddRooms
+            ? "These rooms aren't in any group. Select a group and use “Add rooms” to organize them."
+            : "These rooms aren't in any group. A workspace admin can file them into one."}
         </Typography>
       )}
 
@@ -461,7 +465,8 @@ function MembershipPanel({
 export default function GroupsPage() {
   const navigate = useNavigate();
   // Groups are shared by the workspace, so only an admin creates, edits or
-  // deletes them; anyone may file rooms they can write into one.
+  // deletes them, or puts rooms in one; anyone who can write to a room may
+  // take it out.
   const { canAdminTenant: canManageGroups } = useAuth();
   const { data: groups, loading, refetch } = useRoomGroups();
   const { data: rooms, refetch: refetchRooms } = useRooms();
@@ -510,7 +515,7 @@ export default function GroupsPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
@@ -564,6 +569,7 @@ export default function GroupsPage() {
               group={selectedGroup}
               byId={byId}
               rooms={roomList}
+              canAddRooms={canManageGroups}
               onChanged={refetchAll}
             />
           </Paper>

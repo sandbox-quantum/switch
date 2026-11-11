@@ -20,15 +20,19 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from switch_core.bridges.agent.protocol import controller_presence
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.presence import agents_present_in
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID, AgentController, SwitchCoreProcess
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
+from switch_core.management import controller_routes
+from switch_core.management.connection_ledger import ControllerConnectionLedger
 from switch_core.process_lease import LEASE_TTL
 from switch_core.user_changes import MACHINE, UserChange
 from tests.db_buffer import say
 from tests.switch_core.management.harness import (
+    ControllerSocket,
     Harness,
     add_member,
     add_room,
@@ -366,13 +370,15 @@ class TestTheConnectionOnAnyProcess:
         assert adopted.resume_cursors[agent_id] == 42
 
     async def test_a_reattach_after_its_holder_died_opens_again_from_its_cursors(
-        self, processes: tuple[Harness, Harness]
+        self, processes: tuple[Harness, Harness], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The process holding the socket dies having written nothing since
         the open, so the row's cursors are the open's: the agent was placed
         after it and its first event confirmed only by a beat there. Taking
-        the connection up elsewhere would resume past what came next; the
-        controller is told to open again, and resumes from its own cursor."""
+        the connection up elsewhere would resume past what came next; once
+        the wait for the holder runs out, the controller is told to open
+        again, and resumes from its own cursor."""
+        monkeypatch.setattr(controller_routes, "LET_GO_WAIT_SECONDS", 0.3)
         here, there = processes
         owner = await add_member(here.session_factory, "ada")
         async with here.client() as client:
@@ -469,6 +475,148 @@ class TestTheConnectionOnAnyProcess:
             )
             is None
         )
+
+
+class TestTheSocketOverTime:
+    """The controller's real socket, pings and pongs included, rather than
+    its stream alone."""
+
+    async def test_a_socket_held_through_the_other_process_outlasts_its_beats(
+        self, processes: tuple[Harness, Harness], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opened through one process, attached through the other, and held
+        there across several lapse windows while both processes re-check
+        their controllers: the pongs keep it live, neither process takes it
+        over, and both read the controller as connected."""
+        monkeypatch.setattr(controller_routes, "PING_INTERVAL_SECONDS", 0.05)
+        monkeypatch.setattr(controller_presence, "HEARTBEAT_TTL_SECONDS", 0.5)
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            opened = await open_connection(client, controller)
+        socket = ControllerSocket(there, controller, opened)
+        await socket.until("connection_state")
+
+        seen: list[str] = []
+        for _ in range(4):
+            seen += await socket.hold(0.5)
+            await here.management.service.signals.recheck()
+            await there.management.service.signals.recheck()
+        await there.management.ledger.flush_all()
+        await _eventually(
+            lambda: (
+                here.protocol.connections.controllers.holder_elsewhere(
+                    controller.controller_id
+                )
+                == there.bus.process_id
+            )
+        )
+        held = there.protocol.connections.controllers.current_connection(
+            controller.controller_id
+        )
+        await socket.go()
+
+        assert "evicted" not in seen
+        assert held is not None
+        assert held.id == opened["connection_id"]
+        assert held.closure is None
+        assert held.beats >= 20
+
+    async def test_a_socket_that_went_reattaches_through_the_other_process_at_once(
+        self, processes: tuple[Harness, Harness], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The socket went, and the controller reattached through the other
+        process a moment later, as its backoff has it. The process that held
+        the socket lets it go as it goes, not at its next ping, so the other
+        process takes the connection up rather than refusing it and making
+        the controller open a new one."""
+        monkeypatch.setattr(controller_routes, "PING_INTERVAL_SECONDS", 30.0)
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            opened = await open_connection(client, controller)
+        first = ControllerSocket(here, controller, opened)
+        await first.until("connection_state")
+
+        await first.go(timeout=2.0)
+        await here.management.ledger.flush_all()
+        second = ControllerSocket(there, controller, opened)
+        state = await second.until("connection_state")
+        await second.go()
+
+        assert state["connection_id"] == opened["connection_id"]
+        assert state["generation"] == opened["generation"]
+
+    async def test_a_reattach_that_comes_before_the_going_is_written_waits_for_it(
+        self, processes: tuple[Harness, Harness], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The controller reattaches through the other process before the
+        process that held the socket has written that it went. The attach
+        waits for that write rather than refusing, and takes the connection
+        up from the cursors written with it."""
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            opened = await open_connection(client, controller)
+        first = ControllerSocket(here, controller, opened)
+        await first.until("connection_state")
+        await here.management.ledger.flush_all()  # the socket attaching
+        written = _hold_writes(here.management.ledger, monkeypatch)
+        await first.go(timeout=2.0)
+
+        second = ControllerSocket(there, controller, opened)
+        await asyncio.sleep(controller_routes.LET_GO_WAIT_SECONDS / 4)
+        written.set()
+        state = await second.until("connection_state")
+        await second.go()
+
+        assert state["connection_id"] == opened["connection_id"]
+        assert state["generation"] == opened["generation"]
+
+    async def test_a_reattach_whose_holder_never_writes_the_going_is_refused(
+        self, processes: tuple[Harness, Harness], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The holder never writes that the socket went (it died, or never
+        saw it go): once the wait runs out the attach is refused as
+        `unknown_connection`, and the controller opens a new connection."""
+        monkeypatch.setattr(controller_routes, "LET_GO_WAIT_SECONDS", 0.3)
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            opened = await open_connection(client, controller)
+        first = ControllerSocket(here, controller, opened)
+        await first.until("connection_state")
+        await here.management.ledger.flush_all()  # the socket attaching
+        written = _hold_writes(here.management.ledger, monkeypatch)
+        await first.go(timeout=2.0)
+
+        second = ControllerSocket(there, controller, opened)
+        try:
+            refused = await second.until("refused", timeout=2.0)
+        finally:
+            written.set()
+
+        assert refused["detail"]["code"] == "unknown_connection"
+
+
+def _hold_writes(
+    ledger: ControllerConnectionLedger, monkeypatch: pytest.MonkeyPatch
+) -> asyncio.Event:
+    """Hold the ledger's writes back until the event returned is set, as a
+    process slow to write would."""
+    release = asyncio.Event()
+    write = ledger._write
+
+    async def held(transitions: Any) -> None:
+        await release.wait()
+        await write(transitions)
+
+    monkeypatch.setattr(ledger, "_write", held)
+    return release
 
 
 class TestTakenOverOnlyByANewerConnection:

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RoomGroupDetail, RoomSummary } from "../../data/api";
+import { ALL_OFF } from "../../data/featureFlags";
 import { useAuth } from "../../data/AuthContext";
 import * as hooks from "../../data/hooks";
 import type { UseQueryResult } from "../../data/hooks";
@@ -24,9 +25,21 @@ function authState(canAdminTenant: boolean) {
     loadError: null,
     isOperator: false,
     canAdminTenant,
+    capabilities: {
+      isOperator: false,
+      administersWorkspace: canAdminTenant,
+      administersOrganization: false,
+      inOrganization: false,
+      canDeleteWorkspace: false,
+      canManageDataProtection: false,
+      features: ALL_OFF,
+    },
+    staleError: null,
+    recheck: vi.fn(),
     refresh: vi.fn(async () => {}),
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),
+    logoutEverywhere: vi.fn(async () => {}),
     switchTo: vi.fn(async () => {}),
   };
 }
@@ -78,18 +91,22 @@ describe("GroupsPage", () => {
     expect(screen.queryByLabelText("Delete Customers")).toBeNull();
   });
 
-  it("files and unfiles only rooms the viewer may write to", async () => {
-    renderAs(false, [
+  it("lets only an admin add rooms, and anyone take out a room they may write to", async () => {
+    const rooms = [
       room("r1", "planning", "g1", true),
       room("r2", "leadership", "g1", false),
       room("r3", "retro", null, true),
       room("r4", "board", null, false),
-    ]);
+    ];
+    renderAs(false, rooms);
     fireEvent.click(screen.getByText("Customers"));
-
     screen.getByRole("button", { name: "Remove planning from group" });
     expect(screen.queryByRole("button", { name: "Remove leadership from group" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /add rooms/i })).toBeNull();
+    cleanup();
 
+    renderAs(true, rooms);
+    fireEvent.click(screen.getByText("Customers"));
     fireEvent.click(screen.getByRole("button", { name: "Add rooms" }));
     await screen.findByText("retro");
     expect(screen.queryByText("board")).toBeNull();

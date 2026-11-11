@@ -18,10 +18,10 @@ export function sessionRunner(session: AgentSessionDetail): SessionRunner | null
     ? "working in this room"
     : "running, with no session working in a room yet";
   return {
-    label: "Run by a machine",
+    label: "Run by a device",
     detail: session.controller_id
-      ? `Run by agent controller ${session.controller_id} on the machine the agent is placed on, ${place}.`
-      : `Run by the agent controller of the machine the agent is placed on, ${place}.`,
+      ? `Run by agent controller ${session.controller_id} on the device the agent is placed on, ${place}.`
+      : `Run by the agent controller of the device the agent is placed on, ${place}.`,
   };
 }
 
