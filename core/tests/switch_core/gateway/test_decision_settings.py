@@ -721,3 +721,78 @@ class TestTheOutboundPolicy:
         assert tried.json()["ok"] is True
         [(url, _, _)] = service.calls
         assert url == "http://10.1.2.3:8230/decide"
+
+
+async def test_an_admin_turns_the_room_default_on_and_off(
+    session_factory: async_sessionmaker[AsyncSession], service: _Service
+) -> None:
+    admin = await _person(session_factory, "ada", role="admin")
+    async with _as(_app(session_factory, service), admin) as client:
+        before = (await client.get("/decision-settings/room-default")).json()
+        on = (
+            await client.put(
+                "/decision-settings/room-default", json={"auto_route_new_rooms": True}
+            )
+        ).json()
+        reread = (await client.get("/decision-settings/room-default")).json()
+        off = (
+            await client.put(
+                "/decision-settings/room-default", json={"auto_route_new_rooms": False}
+            )
+        ).json()
+
+    assert before == {"auto_route_new_rooms": False, "available": True, "reason": None}
+    assert on["auto_route_new_rooms"] is True
+    assert reread["auto_route_new_rooms"] is True
+    assert off["auto_route_new_rooms"] is False
+
+
+async def test_the_room_default_is_kept_without_a_decision_service(
+    session_factory: async_sessionmaker[AsyncSession], service: _Service
+) -> None:
+    admin = await _person(session_factory, "ada", role="admin")
+    app = _app(session_factory, service, server_url=None)
+    async with _as(app, admin) as client:
+        body = (
+            await client.put(
+                "/decision-settings/room-default", json={"auto_route_new_rooms": True}
+            )
+        ).json()
+
+    assert body["auto_route_new_rooms"] is True
+    assert body["available"] is False
+    assert body["reason"]
+
+
+async def test_a_member_cannot_read_or_set_the_room_default(
+    session_factory: async_sessionmaker[AsyncSession], service: _Service
+) -> None:
+    member = await _person(session_factory, "mallory", role="member")
+    async with _as(_app(session_factory, service), member) as client:
+        responses = [
+            await client.get("/decision-settings/room-default"),
+            await client.put(
+                "/decision-settings/room-default", json={"auto_route_new_rooms": True}
+            ),
+        ]
+
+    assert [r.status_code for r in responses] == [403, 403]
+    async with session_factory() as session:
+        tenant = await session.get(Tenant, TENANT_ZERO_ID)
+        assert tenant is not None and tenant.auto_route_new_rooms is False
+
+
+async def test_the_room_default_is_per_workspace(
+    session_factory: async_sessionmaker[AsyncSession], service: _Service
+) -> None:
+    ada = await _person(session_factory, "ada", role="admin")
+    bea = await _person(session_factory, "bea", tenant_id=TENANT_B, role="admin")
+    app = _app(session_factory, service)
+    async with _as(app, ada) as client:
+        await client.put(
+            "/decision-settings/room-default", json={"auto_route_new_rooms": True}
+        )
+    async with _as(app, bea, TENANT_B) as client:
+        body = (await client.get("/decision-settings/room-default")).json()
+
+    assert body["auto_route_new_rooms"] is False

@@ -2180,6 +2180,20 @@ class DecisionSettingsResponse(BaseModel):
     options: DecisionOptions
 
 
+class DecisionRoomDefault(BaseModel):
+    """The workspace's auto-route default for new rooms. `available` and
+    `reason` say whether a room made now could have auto-route on: without a
+    decision service the default is kept but new rooms start off."""
+
+    auto_route_new_rooms: bool
+    available: bool
+    reason: str | None
+
+
+class DecisionRoomDefaultUpdate(BaseModel):
+    auto_route_new_rooms: bool
+
+
 class DecisionSettingsUpdateRequest(BaseModel):
     """`api_key` omitted keeps the stored key when the backend, and for an
     `endpoint` its URL, stay the same; moving a keyed endpoint to another URL

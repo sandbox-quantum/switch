@@ -545,6 +545,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/decision-settings/room-default",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/docs",
       "auth": "none",
       "flags": []
@@ -1629,6 +1634,11 @@
     },
     {
       "route": "PUT /gateway/decision-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/decision-settings/room-default",
       "auth": "session",
       "flags": []
     },

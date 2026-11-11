@@ -203,6 +203,12 @@ class Tenant(Base):
     services_on_by_default: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
+    # Whether a room made in the workspace starts with auto-route on, unless
+    # it is a direct chat or whoever made it said otherwise. Set by a
+    # workspace admin; off until one does.
+    auto_route_new_rooms: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     # Nullable until every process writes it: a release from before
     # organizations creates workspaces without one.
     organization_id: Mapped[str | None] = mapped_column(
