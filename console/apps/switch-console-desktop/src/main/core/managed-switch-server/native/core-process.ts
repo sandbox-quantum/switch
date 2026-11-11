@@ -3,6 +3,7 @@ import { closeSync, openSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { isProcessAlive } from '@switch-console/agent-providers';
 import { log } from '@main/lib/logger';
 import { waitForHealth } from '../health';
 import type { NativeLayout } from './native-paths';
@@ -72,16 +73,6 @@ export function renderEnv(settings: Record<string, string>): string {
   ].join('\n');
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    // ESRCH: gone. EPERM: the pid now belongs to another account's process.
-    return false;
-  }
-}
-
 export async function readCoreRecord(layout: NativeLayout): Promise<CoreProcessRecord | null> {
   try {
     const parsed = JSON.parse(await readFile(path.join(layout.run, PID_FILE), 'utf8')) as unknown;
@@ -110,7 +101,7 @@ export async function runningCore(layout: NativeLayout): Promise<CoreProcessReco
   if (record === null) return null;
   const bootedAt = Date.now() - os.uptime() * 1000;
   if (Date.parse(record.startedAt) < bootedAt) return null;
-  return isAlive(record.pid) ? record : null;
+  return isProcessAlive(record.pid, 'recorded') ? record : null;
 }
 
 /**
@@ -159,13 +150,13 @@ export async function stopCore(layout: NativeLayout): Promise<void> {
   if (record !== null) {
     process.kill(record.pid, 'SIGTERM');
     const deadline = Date.now() + STOP_GRACE_MS;
-    while (isAlive(record.pid) && Date.now() < deadline) await sleep(250);
-    if (isAlive(record.pid)) {
+    while (isProcessAlive(record.pid, 'recorded') && Date.now() < deadline) await sleep(250);
+    if (isProcessAlive(record.pid, 'recorded')) {
       log.warn('local-switch-server: switch-core did not stop in time; killing it', {
         pid: record.pid,
       });
       process.kill(record.pid, 'SIGKILL');
-      while (isAlive(record.pid)) await sleep(250);
+      while (isProcessAlive(record.pid, 'recorded')) await sleep(250);
     }
   }
   await rm(path.join(layout.run, PID_FILE), { force: true });

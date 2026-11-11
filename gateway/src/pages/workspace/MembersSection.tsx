@@ -12,7 +12,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import {
   type Member,
@@ -21,7 +21,7 @@ import {
   removeMember,
   updateMemberRole,
 } from "../../data/api";
-import { formatDate, titleCase } from "../../theme/hootFormat";
+import { formatDate, sentenceCase } from "../../theme/format";
 import { useLoad } from "./useLoad";
 
 type MemberRow = Member & { id: string };
@@ -95,12 +95,13 @@ export default function MembersSection({ tenantId, selfId }: Props) {
                   updateMemberRole(tenantId, row.user_id, e.target.value as TenantRole),
                 )
               }
-              aria-label={`Role for ${row.email}`}
+              // The name goes on the input: on the Select it labels nothing.
+              inputProps={{ "aria-label": `Role for ${row.email}` }}
               sx={{ fontSize: "0.875rem" }}
             >
               {roles.map((role) => (
                 <MenuItem key={role} value={role}>
-                  {titleCase(role)}
+                  {sentenceCase(role)}
                 </MenuItem>
               ))}
             </Select>
@@ -108,15 +109,15 @@ export default function MembersSection({ tenantId, selfId }: Props) {
             <Tooltip
               title={
                 row.via_organization
-                  ? "Administers this workspace through the organization. Change it on the Organization page."
-                  : "An organization admin, and so an admin of every workspace in it. Change it on the Organization page."
+                  ? "Administers this workspace through the organization. Change it in the organization's settings."
+                  : "An organization admin, and so an admin of every workspace in it. Change it in the organization's settings."
               }
             >
               <Chip
                 label={
                   row.via_organization
-                    ? "Org Admin, via organization"
-                    : `${titleCase(row.role)} · Org Admin`
+                    ? "Org admin, via organization"
+                    : `${sentenceCase(row.role)} · Org admin`
                 }
                 size="small"
                 color="primary"
@@ -125,7 +126,7 @@ export default function MembersSection({ tenantId, selfId }: Props) {
             </Tooltip>
           ) : (
             <Chip
-              label={titleCase(row.role)}
+              label={sentenceCase(row.role)}
               size="small"
               color={row.role === "member" ? "default" : "primary"}
             />
@@ -169,7 +170,7 @@ export default function MembersSection({ tenantId, selfId }: Props) {
 
   return (
     <Stack spacing={1.5}>
-      <Typography variant="h6">Members</Typography>
+      <Typography variant="h6">Users</Typography>
       {error && <Alert severity="error">{error}</Alert>}
       {actionError && (
         <Alert severity="error" onClose={() => setActionError(null)}>
@@ -182,6 +183,7 @@ export default function MembersSection({ tenantId, selfId }: Props) {
         <DataTable
           rows={(members ?? []).map((m) => ({ ...m, id: m.user_id }))}
           columns={columns}
+          emptyState={<TableEmptyState title="No users in this workspace yet" />}
           height={Math.min(520, 108 + (members?.length ?? 0) * 52)}
           pageSize={25}
         />

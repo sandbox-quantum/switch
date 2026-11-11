@@ -65,7 +65,7 @@ export default function DeleteConnectionText({ bridge }: { bridge: BridgeDetail 
       &quot;{bridge.display_name}&quot;. Deleting it disconnects{" "}
       {chats === 1 ? "it" : "each of them"} first: the bot leaves, and the
       chat&apos;s room is kept as an internal-only room, reachable only from
-      inside Switch. Then the connection is deleted, which turns Telegram off
+      inside Switch. Then the messaging app is deleted, which turns Telegram off
       for this organisation.
     </DialogContentText>
   );

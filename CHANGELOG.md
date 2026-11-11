@@ -45,6 +45,44 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **switch-core counts controller reconnects.** `switch.controllers.connections`
+  counts agent controller connections opened, adopted from another process,
+  taken over and closed (with the close code as `reason`), so reconnect churn
+  shows as a rate instead of hundreds of thousands of log lines.
+- **New accounts can be refused by country.** `GATEWAY_SIGNUP_REFUSED_HEADER`
+  (chart: `switchCore.signup.refusedHeader`) names a request header that the
+  edge in front of Switch, such as a WAF rule matching on the client's
+  country, adds to requests from countries where new accounts are not
+  offered. A person cannot create their own account from such a request: a
+  first OIDC sign-in and a password sign-up are refused with 403 and a message
+  saying new accounts are not available in that country, reported as
+  `signup_refused` with reason `country`. Existing accounts sign in as before,
+  wherever they are. Accounts that are not sign-ups are unaffected: those an
+  administrator creates (`POST /users`), the seeded admin, and the account
+  bootstrap-registered agents belong to. Accepting an invitation and the WorkOS
+  directory mirror create no accounts. The header counts as present with any
+  value, so the edge must add it only to requests it refuses. Switch only
+  reads the header; where a request comes from is the edge's decision, and a
+  VPN can get around it. Unset or blank, nothing changes.
+- **A message event says which follow-up rule delivered it.** When following
+  the conversation gives an agent a message that tagged nobody, the event's
+  `follow_up` names the rule: `thread_follow_up`, `channel_follow_up` or
+  `main_agent` (the room's assigned agent). It is null for a message that
+  named the agent and for one auto-route sent (`routed`), so an agent's
+  session can tell a message it may leave alone from one that asked it.
+- **A one-screen Datadog board and alerts that say what to do.**
+  `deploy/observability/signal-board.json` shows the four golden signals
+  (latency, traffic, errors, saturation) plus whether agents are connected and
+  messaging apps are up, grey while normal and red only past a limit. The
+  monitors are rewritten to what a user would notice: each says what users see
+  and what to check, posts when it fires, every hour while it stays firing and
+  once on recovery, and error
+  alerts count failures instead of taking a percentage, so low traffic doesn't
+  page on noise. Causes such as slow queries stay on the dashboards.
+  `deploy/observability/apply.sh` creates or updates them in Datadog by name.
+- **switch-core reports which bridge crashed.** `switch.bridges.crashed` is 1
+  per crashed collaboration bridge, tagged with its platform and display name,
+  and 0 once it runs again, so the bridge alert can name it.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
@@ -56,8 +94,83 @@ version of their own to them without also giving them a release of their own.
   `alerted` or `errored`. A message Switch Trust left alone has no `trust`
   field, so its result is as before. Until now an agent whose words were
   redacted had no way to know.
+- **How many users and agents each workspace has.** `GET /gateway/tenants/counts`
+  answers for every workspace the caller may enter, counting people as the
+  workspace's members list shows them: its members, and its organization's
+  admins who are not one. The dashboard's new workspace switcher reads it.
+- **A dev-only role switcher for the dashboard.** `just seed-dev-roles`
+  creates local test accounts for an org admin, a workspace admin and a
+  member, plus a second workspace only the org admin can open, and
+  `just gateway-dev`, on a server with `gateway_v2` on, shows a **Role:**
+  control in the top bar that signs in as any of them, or as the operator from
+  `.env`, so a page can be checked as each role. Switching is an ordinary
+  sign-in, so every check is the server's own. A production build leaves the
+  switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
+- **switch-core's logs keep to what matters.** Successful routine polls (health
+  checks, controller status, assignment and operations polls, Console's
+  controller and agent lists, host observations, session activity) and
+  uvicorn's per-connection WebSocket lines are no longer logged at info;
+  failures on the same routes still are. Controller connection churn moved to
+  debug, behind the new counter. Routine events that were warnings are info:
+  platform rate limits, agents calling a tool wrongly (a 4xx), addressing
+  refusals, attachments over the cap, activity drawn as a plain message, and
+  cleanup of user groups and turns left by deleted agents. The list of other
+  installations' Slack user groups is logged at debug, with only the count at
+  info. A Slack identity that cannot be provisioned (a handle already taken)
+  is a warning the first time a process sees it instead of an error on every
+  bridge start, and "trusting unverified OIDC email" is said once per process.
+  Two bridges connecting the same workspace, which pilot does on purpose, is
+  said once per pair at info rather than as a warning on every start.
+- **The operator dashboard follows the current design.** A field's label sits
+  above it rather than floating inside the box, and the field has a white fill
+  and a firm border and ring when focused; switches are pills, and one that is
+  off can be seen; errors and delete buttons use a softer red, with red and
+  green text kept readable in both themes; captions, section labels and tooltips
+  are 13px; the backdrop behind a dialog is a warm black, and black in dark
+  mode; menus, popovers and dropdown lists have a firm edge and shadow, so they
+  stand out from the page under them; table headers show the cream band they
+  were always meant to, and an empty table has no footer. A status chip
+  ("Active", "device offline", "Archived") looks like a small banner of its
+  colour, with a slightly darker edge, and a warning chip matches the warning
+  banner. Warnings stay amber, so they remain easy to tell from errors. Google
+  Workspace shows Google's full-colour G, and the Atlassian connector the
+  Atlassian logo rather than Jira's.
+- **Every empty table in the operator dashboard says what is missing.** In
+  place of "No rows", a table with nothing in it says what is missing and what
+  to do about it ("No devices yet. Add one to start running agents on it."),
+  and one narrowed by its page's search or filters says nothing matches them.
+  A table whose rows all fit on one page has no footer and is only as tall as
+  its rows.
+- **Every control in the operator dashboard has a name a screen reader can
+  read**, including the back arrows, copy and delete buttons, the role and
+  period selects, and the messaging app switches.
+- **Disabled controls in the operator dashboard look disabled.** A disabled
+  field, its label, and a disabled checkbox or switch looked almost the same
+  as enabled ones; they are now greyed out, so an action you may not take
+  reads as unavailable.
+- **A stopped cloud machine starts on the configured image.** When a machine
+  that was stopped (idle, or put to sleep) starts again and its instance was
+  launched from an older `image_id` or as another instance type, the hosted
+  controller replaces the instance with one launched from the configured image
+  and type, keeping the data volume, instead of starting the old instance. A
+  new image therefore reaches every machine at its next start, without the
+  manual `upgrade` steps; a running machine is not stopped for it. The
+  instance is replaced only once its data volume is set to survive
+  termination; until then it starts as before.
+- **The dashboard no longer claims the system is healthy.** The "System
+  healthy" indicator in its top bar was hard-coded and never checked anything,
+  so it is gone.
+- **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
+  `GATEWAY_PASSWORD_LOGIN_ENABLED=false` the admin account is seeded without a
+  password, and the first OIDC sign-in with `GATEWAY_ADMIN_EMAIL` links to it.
+  A password set anyway is logged as unused at startup. While password login
+  is on it is still required, and the server now says so at startup instead
+  of failing on a missing setting. The Helm chart follows: with
+  `switchCore.oidc.passwordLoginEnabled: false` (and Mattermost off),
+  `secrets.gatewayAdminPassword` may be left empty, and the Secret key becomes
+  optional.
 - **Switch Trust notices about a person's own message reach only that
   person.** When someone's message is blocked, redacted, flagged or not fully
   checked, the notice used to be posted in the channel, where everyone could
@@ -72,6 +185,37 @@ version of their own to them without also giving them a release of their own.
   an app or by Telegram's anonymous group admins. switch-core logs a warning
   each time a notice goes to the channel for want of a private route. Notices
   about an agent's message are still posted for the room.
+
+#### Fixed
+- **A messaging app bridge that cannot start stops being retried at every
+  hand-over, and a retired one stops reading as crashed.** A bridge refused
+  before it runs (its host no longer resolves, say) is logged once as an error
+  with the reason and is not tried again in that process until it is edited
+  or restarted; before, every switch-core process tried it again at each
+  hand-over and logged a stack trace. A bridge whose task died and whose row
+  was then removed or deactivated no longer keeps the bridges health check
+  red until the pods restart.
+  A bridge that crashes on the network or on Switch's own database (its pool
+  briefly out of connections, say) is tried again after a wait instead of
+  staying down until the next deploy.
+- **Renaming a channel on a messaging app renames its room.** Slack,
+  Mattermost, Microsoft Teams and Telegram now pass a channel's new name to
+  Switch, as Discord already did, using what each platform already sends, so
+  no app needs reinstalling or new permissions. A room created in Switch
+  follows its channel's renames too, taking the name as the platform shows it,
+  until someone renames the room in Switch; that name is kept, and the room's
+  settings offer the channel's current one. On Telegram, a title changed while
+  Switch was stopped is picked up with the next message.
+- **Managed agents no longer flip to "Connecting" every few seconds.** A
+  controller from a released Switch Console calls its socket dead after 10
+  seconds without a frame, and since the server pings every 10 seconds it
+  dropped a healthy socket whenever a ping came a moment late. A controller's
+  socket is now pinged every 5 seconds. With two switch-core pods, a
+  controller reattaching through the other pod was also refused and had to
+  open a new connection, because the pod holding the socket noticed it had
+  closed only at its next ping. It now lets the socket go as it closes, and
+  the other pod takes the connection up, waiting up to 2 seconds for the
+  first pod to record the socket going if the controller comes back sooner.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
@@ -140,6 +284,10 @@ version of their own to them without also giving them a release of their own.
   anything past that reaches agents unchecked, and the message carries a note
   saying the rest was not checked. switch-core now depends on `pypdf` to read
   PDFs.
+- **Logs no longer carry email addresses.** Signing up, creating a user,
+  creating or deleting an API key, seeding the admin account and finding two
+  accounts with the same address each logged the person's email. They now log
+  the user id. A test fails if a log call passes an email again.
 - **Counts and replies no longer name private rooms either.** Beyond the
   room listings below, a reference, document or package's attached-rooms count
   took in every room it was attached to, an agent's detail named every room
@@ -219,6 +367,19 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,
+  Templates and Connectors on the rail; Workspace and Organization settings
+  as areas of their own, each with a menu of only the pages you may open,
+  reopening the page you last used; and the operator's pages under Platform.
+  Today's pages move into it, and their old URLs lead there. It is still
+  being built, so turn it on for development and staging only. With it off,
+  the dashboard is laid out as before, and the new URLs lead back to today's
+  pages.
+- **The new layout's Overview counts the workspace's agents, users and
+  rooms.** Each card opens its list, and View graph opens the ecosystem
+  graph, which leaves the new rail. A workspace's admins see its totals; a
+  member sees the agents they own and the rooms they take part in, marked
+  "Yours", and every user. A count that cannot be read shows a dash and why.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
@@ -303,6 +464,22 @@ version of their own to them without also giving them a release of their own.
   of the rooms it is in they may not read. All are decided by the same
   rules the routes enforce, so a client offers a change only where the
   server would allow it.
+- **OAuth catalog entries can opt into MCP identity and unscoped consent.**
+  An entry can name a read-only MCP tool that identifies the account. The
+  tool takes no arguments and must name one account. Otherwise sign-in fails
+  with a fixed reason. Core reads only the input schema's `type` and
+  `required`, and refuses a tool that is not `type: object` or names a
+  required property.
+  It does not check the result against the tool's output schema. If the MCP
+  server refuses with a 4xx other than 401 or 429, the message gives the
+  status. The identity call reaches only what the outbound policy allows
+  (`OUTBOUND_ALLOWED_PRIVATE_HOSTS`). `account_id` can list 2 to 8 paths,
+  joined into one id, so a person in two accounts has two connections. An
+  entry whose vendor has no OAuth scopes can leave out `scope`. Its sign-ins
+  are always read and write, and it has no access profiles. For a discovered
+  server, Core now sends the `resource` that the server advertises. Core
+  accepts it only if it is the server's URL, or a parent path on the same
+  origin, with no query or fragment.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -445,6 +622,20 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **The dashboard, and what Switch tells people, use Switch's own words.** A
+  computer that runs agents is a device, not a machine; an outside service is
+  a connector, and a chat app a messaging app, not a connection; a person is a
+  user, with "member" kept for the role; and nothing calls Switch a server.
+  Dashboard labels are in sentence case. **Register Agent** is now **Add
+  agent**, **Register messaging app** is **Add messaging app**, and the API
+  keys page lists **Keys for adding agents** and **Agent keys**. The same
+  words reach the errors, refusals and status the server sends to the
+  dashboard, Switch Console and chat, and messages that sent people to
+  "Settings, Connections" in Switch Console now point to **Connectors**, where
+  that page is. Text written for agents still names their tools, such as
+  `list_machines`, and Switch Console's own cloud-machine messages are
+  unchanged for now. A dashboard test fails on the old words, naming what to
+  write instead.
 - **Admins step down and leave from their own row.** The workspace and
   organization members pages offer changing your own role and leaving, while
   another admin remains; the last one is refused, as before. Leaving the
@@ -792,6 +983,43 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **A room's detail says whether the caller takes part in it, and whether
+  it is a Switch Console chat.** The gateway's `GET /rooms/{id}`, and the
+  room it returns from a create or change, always answered
+  `viewer_is_member: false` and `is_console_chat: false`, so Console's room
+  settings named a Console chat's messaging app "None". Both now say what
+  the room list says.
+- **`!list-documents` and `!list-references` answer again.** Since they began
+  listing what a room's packages bring, both failed on the admin client that
+  runs them, and the channel got no answer at all.
+- **The dashboard's addressing policy editor judges rules as the server
+  does.** A rule letting in only the agent's owner, or its owner's agents,
+  was taken for one that lets in nobody, and Save was held; the editor now
+  shows both choices, and says why a rule can never let anyone in in the
+  server's own words. A restricted policy with no rules lets anyone address
+  the agent, as documented, though the editor said it let in nobody:
+  choosing Restricted now starts with an owner-only rule, the last rule
+  cannot be removed, and a policy saved with no rules shows as Open.
+- **A dashboard page someone may not open says so instead of loading.**
+  Typing the address of a page they may not open, or one the server does
+  not run, loaded it into a column of refusals; it now says why. A member
+  could open the operator's Users page; it is refused now.
+- **The dashboard offers each action only where the server would allow it.**
+  Every action follows the server's own answer for that thing, rather than
+  the dashboard's guess from someone's role or ownership. An organization
+  admin was offered Delete workspace in a workspace they are not an admin
+  member of, and was refused. Anyone may edit a publicly writable
+  reference, document or package, but only its owner and admins were
+  offered the fields. An agent that cannot be handed over now says why
+  beside a disabled Transfer.
+- **A bridged room's description can be edited.** It was locked, though
+  nothing sets it from the channel; whoever may write to the room can now
+  edit it, as on any other room.
+- **The dashboard reads the server's feature flags instead of guessing.**
+  Agent management, connectors and organization connector apps were taken
+  to be off when a page answered "not found"; they are now read from the
+  server's flags, and if those cannot be read the dashboard says so rather
+  than hiding pages.
 - **Two organization admins demoting or removing each other at once** could
   leave the refused one without their keys and connections in the workspaces
   they reached as an organization admin: those were taken away before the
@@ -981,6 +1209,12 @@ version of their own to them without also giving them a release of their own.
   through. Slack apps that list `/run-cmd` in their manifest keep showing it,
   answering "Unknown command", until an admin deletes it; Discord and Telegram
   drop it from their command lists by themselves (#730).
+- **The agent event stream and `POST /connection/beat`.** Agents connect over
+  the WebSocket at `/agents/{id}/connection/ws`, which Switch Console has used
+  since 0.39.0. A client still asking for the Server-Sent Events stream is
+  refused with 410 `transport_removed` and told to update, and agent-protocol
+  `accepts` rises to 8, so Consoles 0.38.2 and older can no longer connect
+  their agents (#673).
 - **Deleting your account now also clears workspaces you were removed from.**
   Removing a member leaves what they own in that workspace, and deleting their
   account afterwards failed on it. Those rows are now deleted or handed over as
@@ -2645,7 +2879,7 @@ version of their own to them without also giving them a release of their own.
  (#84).
 
 #### Changed
-- Restyle the Switch Gateway web UI onto the Hoot design system — new light/dark
+- Restyle the Switch Gateway web UI onto a new design system — new light/dark
   theme, icon-rail shell, and consistent formatting conventions; nav
   destinations unchanged (#87).
 
@@ -2786,6 +3020,9 @@ version of their own to them without also giving them a release of their own.
   terminal can't be picked. No earlier prompt is sent again.
 
 #### Changed
+- **Google Workspace shows Google's full-colour G** on the Connections grid,
+  in place of a one-colour blue G that Google's guidelines do not offer, and
+  the Atlassian connection shows the Atlassian logo rather than Jira's.
 - **The Switch skill tells agents what to do when their message was
   redacted.** When a send's result says Switch Trust redacted it, the agent
   reads what the room received and, if that no longer makes sense, says what
@@ -2824,6 +3061,28 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **A room hears about a turn that finished without a reply.** When an agent
+  addressed in a room ended its turn without doing anything in the room — it
+  wrote its answer only as its final text, or its provider stopped it at a
+  usage limit — the room saw only "Worked for …" and kept waiting. Its
+  session now posts "I finished without replying." in the message's thread,
+  as it already did for a turn that failed. None of the agent's final text
+  is posted. A turn that finished after the agent used a Switch tool that
+  acts (posting, changing a room, and so on; reading context does not
+  count), a turn
+  someone stopped, a turn for a message that tagged nobody (one Switch routed
+  to the agent, or a follow-up it got by following the conversation or as
+  the room's assigned agent), and a turn started from Console still post
+  nothing. Such a follow-up now reads as one to the agent, naming why it came
+  to it, instead of saying the sender addressed it.
+- **Changing your password no longer signs Console out without a word.** The
+  server ends every session on a password change and hands the one that made
+  it a new session, which Console now keeps, so it stays signed in. The
+  account page says "Password changed successfully" in place of a toast. And
+  whenever a server ends Console's session (it expired, or was signed out from
+  elsewhere), Console re-checks its sign-in and shows the server as signed out
+  with a sign-in prompt, instead of "Chats offline" and a warning that its
+  rooms may be out of date.
 - **Direct and group conversations no longer offer adding or removing
   agents**, in a room's side column, the sidebar or an agent's "Add to rooms",
   where the server refuses it now that their platform decides who is in them.
@@ -2924,6 +3183,12 @@ version of their own to them without also giving them a release of their own.
   which cannot be given to another machine, and gives the workaround for a
   machine whose organization does not enforce the keyring: switch Codex to file
   storage, which keeps the login in plaintext, and sign in again (#1048).
+
+#### Removed
+- **The fallback to the agent event stream.** The agent runtime connects only
+  over the WebSocket, so it can no longer reach a Switch server older than the
+  socket (agent-protocol 7 and older), and it stops sending its own heartbeat
+  requests (#673).
 
 ### [0.40.1] - 2026-10-21
 
@@ -4919,6 +5184,9 @@ tags; see RELEASING.md.
   can run (16 by default).
 
 #### Changed
+- **Points to the dashboard's Devices page.** Its messages, installer and
+  README sent people to the Machines page, which the dashboard now calls
+  Devices.
 - **Agents' operations go to Switch on the controller's socket.** Every
   operation an agent host calls through the relay
   (`POST /agents/{id}/ops/{operation}`) is sent as a call on the socket the
@@ -5048,6 +5316,10 @@ The Switch protocol client and MCP runtime
 ### [0.7.0] - 2026-09-25
 
 #### Changed
+- **The instructions say when the room is told an agent finished without
+  replying.** When a turn for a message that named the agent ends without it
+  doing anything in Switch, its session posts only that, none of its final
+  text. A message event's `follow_up` field is typed too.
 - Reworked for the host-owned session model: the runtime serves the Switch tool
   surface per session host while Console/sidecar own session lifecycle and
   switch-core relays (#543). No longer published on its own tag — ships inside

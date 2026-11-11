@@ -20,6 +20,8 @@ from collections.abc import Awaitable, Callable, Collection
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import validate_alias_format, validate_alias_map
@@ -30,13 +32,23 @@ from switch_core.authz import (
     validate_visibility_pair,
 )
 from switch_core.bridges.collaboration.models import (
+    BridgeOperationError,
     ChannelCreationUnsupported,
+    ChannelInUse,
     ChannelType,
+    CreatedChannel,
+    PrivateChannelOwnerMissing,
     RetireOutcome,
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.db.models import Room, RoomGroup, RoomRole
+from switch_core.db.models import (
+    ExternalUser,
+    ExternalUserClaim,
+    Room,
+    RoomGroup,
+    RoomRole,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -511,18 +523,236 @@ class RoomService:
             return
         raise ChannelCreationUnsupported(
             f"Creating channels is turned off for the '{bridge.display_name}' "
-            "connection. Create the channel on the platform and add the Switch "
+            "messaging app. Create the channel on the platform and add the Switch "
             "app to it — Switch adopts it as a room — or ask an administrator to "
-            "allow channel creation for this connection."
+            "allow channel creation for this messaging app."
         )
+
+    async def _require_channel_unused(
+        self,
+        bridge_id: str,
+        external_channel_id: str,
+        *,
+        except_room_id: str | None = None,
+    ) -> None:
+        """Refuse a channel another room already uses, before anything is made.
+
+        The unique index on (bridge, channel) is the guarantee; this is what
+        lets the common case say so plainly instead of failing on the insert.
+        """
+        async with self._session_factory() as session:
+            existing = await self._room_store.get_by_external_channel(
+                session, bridge_id, external_channel_id
+            )
+        if existing is not None and existing.id != except_room_id:
+            raise ChannelInUse(external_channel_id)
+
+    async def _check_existing_channel(
+        self,
+        collaboration_core: CollaborationCore,
+        bridge_id: str,
+        external_channel_id: str,
+        *,
+        except_room_id: str | None = None,
+    ) -> None:
+        """Everything asked of a channel named by id before a room is bound to
+        it: it is this bridge's to bind, no other room uses it, and the
+        platform says it exists and the Switch app is in it.
+
+        Whose it is comes first. On a connection shared between organisations
+        another organisation's channel id is not this bridge's, and asking
+        whether a room uses it before refusing would tell the caller that one
+        does.
+        """
+        adapter = collaboration_core.adapter
+        await adapter.require_bindable_channel(external_channel_id)
+        await self._require_channel_unused(
+            bridge_id, external_channel_id, except_room_id=except_room_id
+        )
+        await adapter.check_channel_usable(external_channel_id)
+
+    async def _private_channel_creator(
+        self,
+        collaboration_core: CollaborationCore,
+        bridge_id: str,
+        channel_type: ChannelType,
+        owner_user_id: str | None,
+    ) -> ExternalUser | None:
+        """The platform account of the person a new private channel is for;
+        None for any other kind of channel.
+
+        A private channel is open only to the people put in it, so the person
+        the room is for — its owner, which for a room an agent makes is the
+        agent's owner — has to be one of them, or nobody can get in. They are
+        found through an account they linked on this bridge and confirmed from
+        it. Confirmed only: putting someone in a private channel, or making
+        them its owner (Teams), is more than recognising them, so an
+        unconfirmed claim is not enough. Refused before the platform is asked
+        when there is no such account, so nothing is left behind.
+        """
+        if channel_type != "channel_private":
+            return None
+        adapter = collaboration_core.adapter
+        needs_owner = adapter.private_channel_needs_owner
+        platform = adapter.platform_name
+        candidates: list[ExternalUser] = []
+        if owner_user_id is not None:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    select(ExternalUser)
+                    .join(
+                        ExternalUserClaim,
+                        ExternalUserClaim.external_user_id == ExternalUser.id,
+                    )
+                    .where(
+                        ExternalUser.bridge_id == bridge_id,
+                        ExternalUserClaim.user_id == owner_user_id,
+                        ExternalUserClaim.verified_at.is_not(None),
+                    )
+                    .order_by(ExternalUserClaim.verified_at.desc())
+                )
+                candidates = list(result.scalars())
+        for candidate in candidates:
+            if not needs_owner or adapter.can_own_channel(candidate.external_user_id):
+                return candidate
+        if candidates:
+            raise PrivateChannelOwnerMissing(
+                f"A private {platform} channel needs an owner, and the {platform} "
+                f"account linked to you cannot be made one: {platform} accepts "
+                "only an account in your organisation's directory. Link your "
+                "work account instead, or choose a public channel."
+            )
+        if needs_owner:
+            raise PrivateChannelOwnerMissing(
+                f"A private {platform} channel needs an owner, and you have no "
+                f"{platform} account linked to Switch. Link your {platform} "
+                "account first in Switch Console, or choose a public channel."
+            )
+        raise PrivateChannelOwnerMissing(
+            f"Only the people added to a private {platform} channel can see it, "
+            f"and you have no {platform} account linked to Switch to add. Link "
+            f"your {platform} account first in Switch Console, or choose a "
+            "public channel."
+        )
+
+    async def _create_channel(
+        self,
+        collaboration_core: CollaborationCore,
+        bridge_id: str,
+        name: str,
+        topic: str,
+        channel_type: ChannelType,
+        *,
+        owner_user_id: str | None,
+    ) -> tuple[CreatedChannel, ExternalUser | None]:
+        """Make a new channel for a room: the channel, and for a private
+        channel the account of the person it is for.
+
+        Where the platform needs a private channel's owner named (Teams) that
+        person is made its owner here, which also puts them in it. Elsewhere
+        the caller adds them, with `_add_creator_to_channel`, once the room is
+        bound to the channel."""
+        creator = await self._private_channel_creator(
+            collaboration_core, bridge_id, channel_type, owner_user_id
+        )
+        adapter = collaboration_core.adapter
+        if creator is None or not adapter.private_channel_needs_owner:
+            created = await adapter.create_channel(
+                name, topic, channel_type=channel_type
+            )
+        else:
+            created = await adapter.create_channel(
+                name,
+                topic,
+                channel_type=channel_type,
+                owner_external_id=creator.external_user_id,
+            )
+        return created, creator
+
+    @staticmethod
+    async def _add_creator_to_channel(
+        collaboration_core: CollaborationCore,
+        room_id: str,
+        transport_room_id: str,
+        external_channel_id: str,
+        creator: ExternalUser | None,
+    ) -> list[dict[str, Any]]:
+        """Put the person a new private channel is for into it, and into the
+        room; report it, `failed_attachments`-shaped, if the platform would
+        not add them.
+
+        Nothing to do without one, or where they were already put in as the
+        channel's owner when it was made (Teams)."""
+        if creator is None:
+            return []
+        adapter = collaboration_core.adapter
+        failures: list[dict[str, Any]] = []
+        if not adapter.private_channel_needs_owner:
+            failed_ids = await adapter.add_users_to_channel(
+                external_channel_id,
+                [creator.external_username],
+                [creator.external_user_id],
+            )
+            if failed_ids:
+                logger.error(
+                    "Could not add the creator %s to new private channel %s",
+                    creator.external_user_id,
+                    external_channel_id,
+                )
+                failures.append(
+                    {
+                        "kind": "user",
+                        "id": creator.external_username,
+                        "error": "the platform would not add you to the channel",
+                    }
+                )
+        await collaboration_core.ensure_external_users_in_room(
+            room_id, transport_room_id, [creator.external_user_id]
+        )
+        return failures
+
+    @staticmethod
+    def _creator_left_out(collaboration_core: CollaborationCore) -> Exception:
+        """What a room that already existed raises when the platform would not
+        put its owner in its new private channel. Such a room has no
+        `failed_attachments` to report the miss in, and a private channel its
+        owner cannot get into is what was to be avoided. Raised once the room
+        is on the channel, so the error says so, and what to do."""
+        platform = collaboration_core.adapter.platform_name
+        return BridgeOperationError(
+            f"The room is now on a new private {platform} channel, but "
+            f"{platform} would not add its owner to it, so nobody can get "
+            f"in. Add them to the channel in {platform}, or move the room "
+            "to a public channel."
+        )
+
+    @staticmethod
+    def _channel_in_use(
+        error: IntegrityError, external_channel_id: str | None
+    ) -> Exception:
+        """What to raise for a write of a room's channel binding the database
+        refused: `ChannelInUse` when it was the one-room-per-channel index —
+        another room took the channel between the check and the write — and the
+        error itself otherwise."""
+        if (
+            external_channel_id is not None
+            and "uq_rooms_bridge_external_channel" in str(error.orig)
+        ):
+            return ChannelInUse(external_channel_id)
+        return error
 
     @staticmethod
     async def _add_users_to_channel(
         collaboration_core: CollaborationCore,
         external_channel_id: str,
         user_names: list[str],
+        *,
+        already_added: Collection[str] = (),
     ) -> list[dict[str, Any]]:
         """Add the room's people to its channel; report who did not make it.
+
+        ``already_added`` holds the platform ids of anyone put in the channel
+        already (the creator of a private one), who is not asked for twice.
 
         Returns ``failed_attachments``-shaped entries, because that is what this
         is: a post-creation step that can partly fail without the room being
@@ -544,7 +774,9 @@ class RoomService:
         # Paired positionally by contract, so build both from the same mapping
         # rather than passing the caller's full name list beside a shorter list
         # of ids — an adapter that zips them would otherwise mis-attribute.
-        names = list(resolved)
+        names = [name for name in resolved if resolved[name] not in already_added]
+        if not names:
+            return failures
         failed_ids = await collaboration_core.adapter.add_users_to_channel(
             external_channel_id, names, [resolved[name] for name in names]
         )
@@ -609,14 +841,17 @@ class RoomService:
                 raise ValueError(f"Bridge not running: {bridge_id}")
 
         # A channel the platform delivered to this bridge is its own by
-        # construction; one named by the caller has to be shown to be.
+        # construction; one named by the caller has to be shown to be, and to
+        # be free and usable — asked even when the caller also gave its type.
         if (
             collaboration_core
             and external_channel_id is not None
             and config.created_by_kind != "system"
         ):
-            await collaboration_core.adapter.require_bindable_channel(
-                external_channel_id
+            await self._check_existing_channel(
+                collaboration_core,
+                bridge_id,  # type: ignore[arg-type]
+                external_channel_id,
             )
 
         if (
@@ -642,6 +877,11 @@ class RoomService:
             raise ValueError("user_external_id is only for a direct room on a bridge.")
 
         user_external_id = config.user_external_id
+        # The name of a channel made here for the room, which the room then
+        # follows through the channel's renames (`NAME_SOURCE_KEY`).
+        created_channel_name: str | None = None
+        # The person a new private channel is for, put in it below.
+        creator: ExternalUser | None = None
         if collaboration_core and external_channel_id is None:
             await self._require_channel_creation(bridge_id)  # type: ignore[arg-type]
             if is_dm:
@@ -671,11 +911,16 @@ class RoomService:
                     )
                 )
             else:
-                external_channel_id = await collaboration_core.adapter.create_channel(
+                created, creator = await self._create_channel(
+                    collaboration_core,
+                    bridge_id,  # type: ignore[arg-type]
                     config.name,
                     config.description,
-                    channel_type=channel_type,
+                    channel_type,
+                    owner_user_id=config.owner_id,
                 )
+                external_channel_id = created.id
+                created_channel_name = created.name
 
         # Guard the channel from the moment it exists until the room↔channel
         # mapping is registered. Creating the channel makes the bot auto-join
@@ -735,11 +980,22 @@ class RoomService:
                         if config.named_after_channel is not None
                         else {}
                     ),
+                    **(
+                        {
+                            NAME_SOURCE_KEY: "created",
+                            LINKED_CHANNEL_NAME_KEY: created_channel_name,
+                        }
+                        if created_channel_name is not None
+                        else {}
+                    ),
                 },
             )
 
             async with self._session_factory() as session:
-                await self._room_store.create(session, room)
+                try:
+                    await self._room_store.create(session, room)
+                except IntegrityError as error:
+                    raise self._channel_in_use(error, external_channel_id) from error
                 if config.group_id is not None:
                     await self._room_store.set_group(
                         session,
@@ -765,7 +1021,10 @@ class RoomService:
                     )
                 if config.aliases:
                     await self._seed_aliases(session, room.id, agent_ids, config)
-                await session.commit()
+                try:
+                    await session.commit()
+                except IntegrityError as error:
+                    raise self._channel_in_use(error, external_channel_id) from error
 
             if collaboration_core and external_channel_id:
                 collaboration_core.add_room_mapping(
@@ -846,9 +1105,21 @@ class RoomService:
             await collaboration_core.adapter.add_agents_to_channel(
                 external_channel_id, agent_names
             )
+            unreachable_users = await self._add_creator_to_channel(
+                collaboration_core,
+                room.id,
+                transport_room_id,
+                external_channel_id,
+                creator,
+            )
             if config.user_names:
-                unreachable_users = await self._add_users_to_channel(
-                    collaboration_core, external_channel_id, config.user_names
+                unreachable_users += await self._add_users_to_channel(
+                    collaboration_core,
+                    external_channel_id,
+                    config.user_names,
+                    already_added=(
+                        {creator.external_user_id} if creator is not None else ()
+                    ),
                 )
                 await collaboration_core.ensure_users_in_room(
                     room.id, transport_room_id, config.user_names
@@ -1013,7 +1284,7 @@ class RoomService:
         collaboration_core = self._collab_lifecycle.get(bridge_id)
         if collaboration_core is None:
             outcome = RetireOutcome.failed(
-                "The messaging connection is not running, so Switch could not "
+                "The messaging app is not running, so Switch could not "
                 "reach the channel"
             )
         else:
@@ -1263,14 +1534,25 @@ class RoomService:
         self.room_changed(tenant_id, room_id)
 
     async def follow_channel_name(
-        self, room_id: str, name: str, channel_name: str, legacy_name: str
+        self,
+        room_id: str,
+        *,
+        old_name: str,
+        new_name: str,
+        bridge_display_name: str,
+        channel_name_for: Callable[[str], str],
     ) -> bool:
         """Rename a bridged room after its renamed channel when it still follows
         the channel (`RoomStore.follow_channel_name`); False when it does not."""
         tenant_id = await self._room_tenant(room_id)
         async with tenant_session(self._session_factory, tenant_id) as session:
             followed = await self._room_store.follow_channel_name(
-                session, room_id, name, channel_name, legacy_name
+                session,
+                room_id,
+                old_name=old_name,
+                new_name=new_name,
+                bridge_display_name=bridge_display_name,
+                channel_name_for=channel_name_for,
             )
             await session.commit()
         if followed:
@@ -1447,21 +1729,44 @@ class RoomService:
         await self._require_tenant_bridge(bridge_id)
         collaboration_core = self._collab_lifecycle.get(bridge_id)
 
+        created_channel_name: str | None = None
+        creator: ExternalUser | None = None
         if external_channel_id is None and collaboration_core is not None:
             await self._require_channel_creation(bridge_id)
-            external_channel_id = await collaboration_core.adapter.create_channel(
-                room.name, room.description
+            created, creator = await self._create_channel(
+                collaboration_core,
+                bridge_id,
+                room.name,
+                room.description,
+                channel_type,
+                owner_user_id=room.owner_id,
+            )
+            external_channel_id = created.id
+            created_channel_name = created.name
+        elif external_channel_id is not None and collaboration_core is not None:
+            await self._check_existing_channel(
+                collaboration_core,
+                bridge_id,
+                external_channel_id,
+                except_room_id=room_id,
             )
 
         async with tenant_session(self._session_factory, room.tenant_id) as session:
-            await self._room_store.update_bridge(
-                session,
-                room_id,
-                bridge_id=bridge_id,
-                channel_type=channel_type,
-                external_channel_id=external_channel_id,
-            )
-            await session.commit()
+            try:
+                await self._room_store.update_bridge(
+                    session,
+                    room_id,
+                    bridge_id=bridge_id,
+                    channel_type=channel_type,
+                    external_channel_id=external_channel_id,
+                )
+                if created_channel_name is not None:
+                    await self._room_store.set_created_channel_name(
+                        session, room_id, created_channel_name
+                    )
+                await session.commit()
+            except IntegrityError as error:
+                raise self._channel_in_use(error, external_channel_id) from error
 
         if collaboration_core and external_channel_id:
             collaboration_core.add_room_mapping(
@@ -1473,6 +1778,14 @@ class RoomService:
             await self._ensure_channel_capture(
                 collaboration_core, external_channel_id, channel_type
             )
+            if await self._add_creator_to_channel(
+                collaboration_core,
+                room.id,
+                room.transport_room_id,
+                external_channel_id,
+                creator,
+            ):
+                raise self._creator_left_out(collaboration_core)
 
         logger.info("Linked bridge %s to room %s", bridge_id, room_id)
 
@@ -1548,6 +1861,9 @@ class RoomService:
         bridge-specific (a Mattermost account is not the same as a Slack
         account), so there is no reliable cross-bridge mapping — they must be
         re-invited to the new channel manually. A warning is logged saying so.
+        The one exception is a new private channel: the room's owner is put in
+        it through their confirmed account on the target bridge (and the move
+        is refused when they have none), or nobody could get into it.
 
         The old bridge is then detached: its in-memory room mapping is removed
         (so it stops syncing) and its client is kicked from the room.
@@ -1583,15 +1899,25 @@ class RoomService:
             channel_type or room.channel_type or "channel_public"  # type: ignore[assignment]
         )
 
+        created_channel_name: str | None = None
+        creator: ExternalUser | None = None
+        creator_left_out = False
         if external_channel_id is None:
             await self._require_channel_creation(bridge_id)
-            external_channel_id = await new_bridge.adapter.create_channel(
+            created, creator = await self._create_channel(
+                new_bridge,
+                bridge_id,
                 room.name,
                 room.description,
-                channel_type=resolved_channel_type,
+                resolved_channel_type,
+                owner_user_id=room.owner_id,
             )
+            external_channel_id = created.id
+            created_channel_name = created.name
         else:
-            await new_bridge.adapter.require_bindable_channel(external_channel_id)
+            await self._check_existing_channel(
+                new_bridge, bridge_id, external_channel_id, except_room_id=room_id
+            )
 
         # One binding for everything from here on: the bridge-column update,
         # and the invite/kick below, both write rows scoped to this room's
@@ -1602,14 +1928,25 @@ class RoomService:
             new_bridge.begin_provisioning(external_channel_id)
             try:
                 async with self._session_factory() as session:
-                    await self._room_store.update_bridge(
-                        session,
-                        room_id,
-                        bridge_id=bridge_id,
-                        channel_type=resolved_channel_type,
-                        external_channel_id=external_channel_id,
-                    )
-                    await session.commit()
+                    # The commit too: the store writes at once today, but a
+                    # race lost at commit is the same conflict.
+                    try:
+                        await self._room_store.update_bridge(
+                            session,
+                            room_id,
+                            bridge_id=bridge_id,
+                            channel_type=resolved_channel_type,
+                            external_channel_id=external_channel_id,
+                        )
+                        if created_channel_name is not None:
+                            await self._room_store.set_created_channel_name(
+                                session, room_id, created_channel_name
+                            )
+                        await session.commit()
+                    except IntegrityError as error:
+                        raise self._channel_in_use(
+                            error, external_channel_id
+                        ) from error
 
                 new_bridge.add_room_mapping(
                     room_id, transport_room_id, external_channel_id, room.tenant_id
@@ -1629,6 +1966,19 @@ class RoomService:
                 agent_names = await self._resolve_ids_to_names(agent_ids)
                 await new_bridge.adapter.add_agents_to_channel(
                     external_channel_id, agent_names
+                )
+                # The one person who is carried over: the owner of a new
+                # private channel, who could not get in otherwise.
+                # Reported once the old bridge is let go, below: raised here,
+                # the room would be left mapped to both.
+                creator_left_out = bool(
+                    await self._add_creator_to_channel(
+                        new_bridge,
+                        room_id,
+                        transport_room_id,
+                        external_channel_id,
+                        creator,
+                    )
                 )
                 logger.warning(
                     "Room %s moved to bridge %s: re-added %d agent(s) to channel "
@@ -1667,6 +2017,8 @@ class RoomService:
             bridge_id,
             external_channel_id,
         )
+        if creator_left_out:
+            raise self._creator_left_out(new_bridge)
 
     def _resolve_agent_clients(self, agent_ids: list[str]) -> dict[str, str]:
         """Returns {client_id: transport_user_id} for the given agent IDs."""

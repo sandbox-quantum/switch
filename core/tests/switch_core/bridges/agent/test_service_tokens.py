@@ -206,7 +206,7 @@ class TestRefusals:
 
         response = await _fetch(harness, agent_id, bearer(key))
         assert code(response) == (409, "connector_revoked")
-        assert "Settings, Connections" in response.json()["error"]["message"]
+        assert "Switch Console, under Connectors" in response.json()["error"]["message"]
 
     async def test_another_owners_controller_bound_to_the_agent(
         self, harness: Harness
@@ -307,7 +307,7 @@ class TestAccessChanges:
 
         response = await _fetch(harness, agent_id, bearer(key))
         assert code(response) == (403, "grant_missing")
-        assert "Connections" in response.json()["error"]["message"]
+        assert "from the agent's page" in response.json()["error"]["message"]
         assert vendor.revoked == [issued]
 
     async def test_relinking_another_account_needs_a_new_grant_and_the_same_does_not(

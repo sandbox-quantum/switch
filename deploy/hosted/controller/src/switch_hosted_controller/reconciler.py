@@ -143,12 +143,15 @@ class Reconciler:
             return self._store.replace_terminated(terminated, unexpected=unexpected)
         if state == "stopped":
             if _bundle_ready(machine) and self._unchanged(claim, DesiredState.RUNNING):
-                if machine.bundle is not None and needs_new_user_data(
-                    machine.instance_bundle, machine.bundle
-                ):
-                    # An instance's user data is set when it launches, so it
-                    # makes way for one launched with the new bundle; the data
-                    # volume is kept. A running instance is stopped first.
+                if (
+                    machine.bundle is not None
+                    and needs_new_user_data(machine.instance_bundle, machine.bundle)
+                ) or self._outdated_launch_spec(machine, instance):
+                    # An instance's user data, image and type are set when it
+                    # launches, so it makes way for one launched with the new
+                    # bundle or onto the configured image and type; the data
+                    # volume is kept. A running instance is stopped first for a
+                    # new bundle; an outdated image waits for the machine to stop.
                     machine = self._store.mark_instance_terminate_issued(claim)
                     if not self._same_claim(claim, machine):
                         return machine
@@ -335,6 +338,22 @@ class Reconciler:
             )
         self._store.mark_instance_terminal_observed(machine.machine_id, instance["InstanceId"])
         return None
+
+    def _outdated_launch_spec(self, machine: Machine, instance: dict[str, Any]) -> bool:
+        """Whether a stopped instance should be replaced by one launched from the
+        configured image and instance type as it starts.
+
+        Only when its data volume is known to survive the termination: until
+        `enforce_data_retention` has run, the instance is started as it is and
+        moves at a later stop.
+        """
+        if machine.data_volume_id is None:
+            return False
+        mapping = _volume_mapping(instance, machine.data_volume_id)
+        if mapping is None or mapping.get("DeleteOnTermination") is not False:
+            return False
+        instance_type = self._instance_type or machine.instance_type
+        return machine.image_id != self._cloud.image_id or machine.instance_type != instance_type
 
     def _retention_expired(self, claim: Machine) -> bool:
         retain_until = self._store.get(claim.machine_id).retain_until

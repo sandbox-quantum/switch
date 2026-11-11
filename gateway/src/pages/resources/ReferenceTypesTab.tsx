@@ -18,7 +18,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useEffect, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import {
@@ -28,12 +28,13 @@ import {
 } from "../../data/api";
 import { useOwnedReferenceTypes, useReferenceTypes } from "../../data/hooks";
 import {
+  ACCESS_HELPERS_FOR_OTHERS,
   type AccessLevel,
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
 import { INSTRUCTIONS_DISCLOSURE } from "./CreateReferenceTypeDialog";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 interface Props {
   refreshKey: number;
@@ -156,27 +157,33 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
         renderCell: ({ row }) =>
           row.detail ? (
             <>
-              <IconButton
-                size="small"
-                onClick={() => setEditing(row.detail)}
-                aria-label={`Edit ${row.display_name}`}
-              >
-                <EditOutlined fontSize="small" />
-              </IconButton>
-              <IconButton
-                size="small"
-                onClick={() => setTransferring(row.detail)}
-                aria-label={`Transfer ${row.display_name}`}
-              >
-                <SwapHoriz fontSize="small" />
-              </IconButton>
-              <IconButton
-                size="small"
-                onClick={() => setDeleting(row.detail)}
-                aria-label={`Delete ${row.display_name}`}
-              >
-                <DeleteOutline fontSize="small" />
-              </IconButton>
+              {row.detail.can_edit && (
+                <IconButton
+                  size="small"
+                  onClick={() => setEditing(row.detail)}
+                  aria-label={`Edit ${row.display_name}`}
+                >
+                  <EditOutlined fontSize="small" />
+                </IconButton>
+              )}
+              {row.detail.can_manage && (
+                <>
+                  <IconButton
+                    size="small"
+                    onClick={() => setTransferring(row.detail)}
+                    aria-label={`Transfer ${row.display_name}`}
+                  >
+                    <SwapHoriz fontSize="small" />
+                  </IconButton>
+                  <IconButton
+                    size="small"
+                    onClick={() => setDeleting(row.detail)}
+                    aria-label={`Delete ${row.display_name}`}
+                  >
+                    <DeleteOutline fontSize="small" />
+                  </IconButton>
+                </>
+              )}
             </>
           ) : null,
       },
@@ -197,7 +204,16 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
       {visibleLoading || ownedLoading ? (
         <CircularProgress />
       ) : (
-        <DataTable rows={rows} columns={columns} fillHeight />
+        <DataTable
+          rows={rows}
+          columns={columns}
+          fillHeight
+          emptyState={
+            <TableEmptyState title="No reference types yet">
+              Create one to describe a new kind of reference.
+            </TableEmptyState>
+          }
+        />
       )}
 
       {editing && (
@@ -266,7 +282,8 @@ function EditReferenceTypeDialog({
         display_name: displayName,
         instructions,
         value_hint: valueHint,
-        ...fromAccessLevel(access),
+        // Changing who may see or change it is the manager's alone.
+        ...(access !== toAccessLevel(referenceType) ? fromAccessLevel(access) : {}),
       });
       onSaved();
     } catch (e) {
@@ -317,7 +334,12 @@ function EditReferenceTypeDialog({
             disabled={submitting}
             helperText="Shown under the URL box when someone creates a reference of this type — say what those URLs should point at."
           />
-          <AccessSelect value={access} onChange={setAccess} disabled={submitting} />
+          <AccessSelect
+            value={access}
+            onChange={setAccess}
+            disabled={submitting || !referenceType.can_manage}
+            helpers={referenceType.can_manage ? undefined : ACCESS_HELPERS_FOR_OTHERS}
+          />
           {referenceType.shadowed_by_builtin && (
             <Alert severity="warning">
               A built-in type now uses this slug, and the built-in wins: agents
