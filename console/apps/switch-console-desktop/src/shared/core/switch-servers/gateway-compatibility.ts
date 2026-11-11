@@ -31,7 +31,9 @@ function isRevision(value: unknown): value is number {
 }
 
 function serverRange(declaration: SwitchServerDeclaration | null): ContractRange | null {
-  const declared: unknown = declaration?.contracts['gateway-api'];
+  const contracts: unknown = declaration?.contracts;
+  if (contracts === null || typeof contracts !== 'object') return null;
+  const declared: unknown = (contracts as Record<string, unknown>)['gateway-api'];
   if (declared === null || typeof declared !== 'object') return null;
   const { speaks, accepts } = declared as Partial<ContractRange>;
   if (!isRevision(speaks) || !isRevision(accepts) || accepts > speaks) return null;

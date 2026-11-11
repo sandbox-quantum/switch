@@ -51,6 +51,8 @@ describe('gatewayCompatibility', () => {
 
   it.each([
     ['no declaration', null],
+    ['no contracts at all', { version: '0.30.0' }],
+    ['contracts that are not an object', { version: '0.30.0', contracts: 'gateway-api' }],
     ['no gateway-api range', { version: '0.30.0', contracts: {} }],
     [
       'a range that is not numbers',
