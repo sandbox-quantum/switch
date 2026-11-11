@@ -1,7 +1,7 @@
 # @switch-console/agent-providers
 
 Provider adapters that drive coding agents over their native SDKs and
-protocols. These five adapters are the only Console session runtime.
+protocols. These adapters are the only Console session runtime.
 
 ## Shape
 
@@ -29,6 +29,8 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `deepseek-harness` | `dsh --profile acp`, ACP over stdio, on the generic ACP adapter | Persistent sessions resumed with `session/resume`, model routes through a `model` config option, MCP registration, cancel, and approvals through a dsh plugin Switch mounts on its `tools/pre-execute` gate. |
+| `pi` | `pi --mode rpc`, Pi's own JSONL protocol over stdio, with a Switch extension loaded by `-e` for the session alone | Pi does not speak ACP, and `pi-acp` does not pass MCP servers on to Pi, while Pi itself never asks before a tool runs. The extension registers the session's MCP servers and asks the adapter about every tool call through an extension dialog, so the runtime mode is enforced in the adapter. It asks with the call's input as Pi gives it to the first `tool_call` handler: the user's own extensions load after it and may still change that input. If nothing in Pi connects the session's MCP servers (its built-in MCP support turned off or replaced), the session does not start. Nothing is written to Pi's own configuration. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -67,12 +69,15 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
+| copilot (ACP) | 1.0.105 | 9/10 (2026-11-05, Mistral's `mistral-medium-latest` through `COPILOT_PROVIDER_BASE_URL`) | `user-input` is skipped: `ask_user` is not among the tools Copilot gives the model over ACP, even when the client declares form elicitation. Copilot takes MCP servers over HTTP and SSE only, and drops a stdio one with a warning in its log; Switch serves its tools over HTTP. Mistral needs `COPILOT_PROVIDER_WIRE_API=responses` (on chat completions it refuses Copilot's sampling) and `copilot config effortLevel high` (without reasoning, the model wrote the `approval-declined` command out as text instead of running it). |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| deepseek-harness (ACP) | dsh 0.2.1-rc.5 | 8/10 (2026-11-05), not on DeepSeek's API | **Run without a DeepSeek API key:** dsh 0.2.1-rc.5 ran deepseek-v4-1-flash through an OpenAI-compatible gateway, from a custom `$DSH_HOME` profile adding a pi-ai route and turning off `deepseek-llm-api-extensions`; dsh's built-in `deepseek-official` route was not exercised. `interrupt` is skipped: the harness sends a message only once it is committed, so the counting turn's first text arrives as the turn ends; a separate real-CLI test interrupts a running command. `user-input` is skipped: no ask-the-user tool over ACP. `approval-required` and `approval-declined` passed in the recorded run but timed out in some earlier full runs: outside full access every command asks, and when the model runs a second command to check its work, that one asks too while the scenario answers only the first. Outside full access a subagent's gated calls are refused, with that reason (dsh pins a subagent's approval policy to `never`). Run with `DEEPSEEK_API_KEY` (and `DEEPSEEK_BASE_URL`, `DSH_HOME` if used) in the shell; the test passes them through. |
+| pi | 1.5.0 | 8/10 (2026-11-05) | Run with `mistral/devstral-medium-latest`: set a provider's API key in the shell (the test passes `*_API_KEY` through), `SWITCH_PI_MODEL` to a `provider/model` that `pi --list-models` shows, and `SWITCH_PI_BIN` to run a `pi` other than the one on the PATH. Pi has no tool that asks the user (its `question` tool is an example extension, which errors outside the TUI) and no subagent tool, so `user-input` and `subagent` are skipped. Pi never asks before a tool runs: the Switch extension asks the adapter about every call, and auto mode approves edits and asks before commands, as Pi has no automatic review. A mid-turn message queues as its own turn. Without a credential Pi still starts, on a placeholder model that refuses every prompt, so the adapter reads the model from `get_state` and asks for a sign-in. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and DeepSeek Harness run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -86,7 +91,8 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/deepseek-harness/deepseek-harness-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -95,7 +101,9 @@ Permission requests follow one policy for every ACP agent. A tool on an MCP
 server the session registered is allowed once without asking, as is
 everything in `full-access` and edits in `auto-accept-edits`. Otherwise the
 person is offered allow once, allow for this session and reject; options
-naming a permanent or future policy are never offered.
+naming a permanent or future policy are never offered. A request whose tool
+call names only its id is described and decided by the call the agent
+announced: its title, and whether it runs a command or edits a file.
 
 **Cursor** extensions: `cursor/ask_question` (several questions, multi-select),
 `cursor/create_plan` (an approval with the plan as its detail),
@@ -127,3 +135,31 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+**DeepSeek Harness** (`dsh --profile acp`) reports every tool call as kind
+`other` titled with the tool's name, so its hooks type `bash`/`pwsh` as
+commands, `write`/`edit` as file changes and `subagent` as a subagent, title
+them by their command or file, and read the MCP server from an
+`mcp__<server>__<tool>` name. By itself it asks only to widen its sandbox, so a
+command that writes no file would run unasked. Outside full access its launch
+therefore mounts a small dsh plugin (`--patch`) on the harness's documented
+`tools/pre-execute` gate, which makes every tool ask through dsh's approval
+service except a short list that only reads or searches files or manages the
+agent's own notes and subagents (`workflow`, `web_fetch`, `web_search`, MCP and
+unknown tools all ask). The ACP bridge waits for a service the gate provides,
+so dsh refuses to start if it does not load, and a gated launch refuses a dsh
+version the gate was not verified with. A widened command asks twice: at the
+gate, then for dsh's own widening. The runtime mode decides each request, as
+for any ACP agent. Outside full access a subagent's gated calls are refused,
+saying why (dsh pins its approvals to `never`), and auto-accept-edits refuses to
+start in a directory holding dsh's own settings. Background commands are off (`tool-bash` `enableRunInBackground: false`), since an
+interrupt (`session/cancel`) does not stop a background job; a foreground command
+that outlives its timeout still becomes one. Every session is created in dsh's own `workspace-write` mode,
+because dsh fixes a conversation's mode when it creates it and keeps it on
+resume; a call beyond the workspace asks to be widened, and a write widened past
+the workspace is not an edit auto-accept-edits allows. Its sign-in check reads
+where the harness finds `DEEPSEEK_API_KEY` (its saved credentials, the
+environment, the project's `.env`, then `$DSH_HOME/.env`) without starting it,
+since `initialize` offers no auth methods either way, and reports a credentials
+file dsh would refuse. Model choices are its `[provider, model]` route pairs.
+It is not offered on Windows until verified there.

@@ -51,6 +51,9 @@ _PROVIDER_OF_KNOWN_AGENT_TYPE = {
     "opencode": "opencode",
     "antigravity": "antigravity",
     "cursor": "cursor",
+    "deepseek-harness": "deepseek-harness",
+    "pi": "pi",
+    "copilot": "copilot",
 }
 
 
