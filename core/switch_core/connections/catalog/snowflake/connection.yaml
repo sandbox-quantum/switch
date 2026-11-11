@@ -1,0 +1,58 @@
+slug: snowflake
+name: Snowflake
+category: Analytics
+description: Query Snowflake data through Cortex agents and SQL, with your keys.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: account
+        label: Account
+        secret: false
+        help: Your Snowflake account identifier (the host label before .snowflakecomputing.com).
+        pattern: "^[a-zA-Z0-9]+([-_][a-zA-Z0-9]+)*$"
+      - name: database
+        label: Database
+        secret: false
+        help: The database containing the MCP server.
+        pattern: "^[A-Za-z0-9_]{1,128}$"
+      - name: schema
+        label: Schema
+        secret: false
+        help: The schema containing the MCP server.
+        pattern: "^[A-Za-z0-9_]{1,128}$"
+      - name: server
+        label: MCP server
+        secret: false
+        help: The name of the administrator-created MCP server object.
+        pattern: "^[A-Za-z0-9_]{1,128}$"
+      - name: pat
+        label: Personal access token
+        secret: true
+        help: A Snowflake programmatic access token created for an authorized role.
+    identity:
+      method: GET
+      url: "https://{account}.snowflakecomputing.com/api/v2/databases/{database}/schemas/{schema}"
+      headers:
+        Authorization: "Bearer {pat}"
+        X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN
+    help_url: https://docs.snowflake.com/en/user-guide/security-authentication
+# A Snowflake PAT can live for up to a year, and only Snowflake can revoke it.
+# To keep non-expiring credentials from reaching the agent, the key is never
+# handed to an agent: token.max_lifetime is null. The broker reports
+# key_never_expires and Console renders the connection as unavailable.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    # Snowflake-managed MCP server object endpoint created by an administrator.
+    # Authenticates using the PAT bearer token and optional token-type header.
+    # Note that PAT usage requires an active network policy permitting client access.
+    - name: snowflake
+      url: "https://{account}.snowflakecomputing.com/api/v2/databases/{database}/schemas/{schema}/mcp-servers/{server}"
+      headers:
+        Authorization: "Bearer {pat}"
+        X-Snowflake-Authorization-Token-Type: PROGRAMMATIC_ACCESS_TOKEN
+tools: { mode: pass_through }
