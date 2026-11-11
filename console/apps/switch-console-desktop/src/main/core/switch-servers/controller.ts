@@ -714,7 +714,7 @@ export const switchServersController = createRPCController({
   ensureCloudMachine: (serverId: string) =>
     withReachableServerWorkspaceSession(serverId, async (server) => {
       if (!(await hostedAgentsOn(server))) {
-        throw new Error(`${server.name} does not have cloud machines turned on.`);
+        throw new Error(`${server.name} does not have cloud devices turned on.`);
       }
       return ensureCloudMachine(server);
     }),

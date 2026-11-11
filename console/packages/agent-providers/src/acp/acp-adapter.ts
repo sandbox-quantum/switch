@@ -106,7 +106,7 @@ export async function checkAcpSignIn(
     await handshake();
     return readiness(
       'unknown',
-      `${hooks.label} started but has no sign-in check. If its sessions fail, sign in on the execution machine with ${loginCommandOf(hooks, input.binaryPath)}.`
+      `${hooks.label} started but has no sign-in check. If its sessions fail, sign in on the device the agent runs on with ${loginCommandOf(hooks, input.binaryPath)}.`
     );
   } finally {
     await client?.dispose();

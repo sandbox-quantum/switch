@@ -69,7 +69,7 @@ export function paramLabel(param: ParamSpec): string {
     case 'location':
       return 'Runs on';
     case 'machine':
-      return 'Machine';
+      return 'Device';
     case 'directory':
       return 'Directory';
     case 'room':
@@ -192,7 +192,7 @@ export function unsaidMessage(unsaid: UnsaidRuntime): string {
     unsaid.field === 'provider'
       ? `which coding agent runs ${unsaid.label}`
       : unsaid.field === 'location'
-        ? `which machine ${unsaid.label} runs on`
+        ? `which device ${unsaid.label} runs on`
         : `which directory ${unsaid.label} works in`;
   const fields = unsaid.field === 'location' ? ['location', 'machine'] : [unsaid.field];
   const said = fields.map((f) => `\`${f}:\``).join(' or ');

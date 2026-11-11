@@ -156,7 +156,7 @@ function CreateRegistrationKey({
       <div className="flex flex-wrap items-center gap-2">
         <Input
           aria-label="New key's label"
-          placeholder="Label, such as the agent or machine it is for"
+          placeholder="Label, such as the agent or device it is for"
           value={label}
           maxLength={255}
           onChange={(event) => setLabel(event.target.value)}

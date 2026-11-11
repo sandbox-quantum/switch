@@ -120,7 +120,7 @@ describe('where a new agent runs', () => {
         null
       )
     );
-    expect(el.textContent).toMatch(/Runs as a managed agent on This computer \(machine “laptop”\)/);
+    expect(el.textContent).toMatch(/Runs as a managed agent on This computer \(device “laptop”\)/);
     expect(el.querySelector('button')).toBeNull();
   });
 
@@ -145,7 +145,7 @@ describe('where a new agent runs', () => {
   it('sets an SSH host up as a machine as soon as it is chosen', async () => {
     await render(
       notice(
-        { management: true, target: null, blocker: 'Make it a machine.', canEnable: true },
+        { management: true, target: null, blocker: 'Make it a device.', canEnable: true },
         'box'
       )
     );
@@ -267,7 +267,7 @@ describe('can manage agents, set as the agent is created', () => {
     expect(toggle.getAttribute('aria-checked')).toBe('false');
     await act(async () => toggle.click());
     expect(onChange).toHaveBeenCalledWith(true, expect.anything());
-    expect(el.textContent).toMatch(/Let this agent create agents on your machines\./);
+    expect(el.textContent).toMatch(/Let this agent create agents on your devices\./);
     expect(el.querySelector('[aria-label="More info about managing agents"]')).not.toBeNull();
   });
 });

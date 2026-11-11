@@ -52,7 +52,7 @@ const MachinePanel = observer(function MachinePanel() {
               </ServerTableEmpty>
             ) : (
               <p role="alert" className="text-sm text-destructive">
-                {failureText(machines.error, 'Could not load this machine.')}
+                {failureText(machines.error, 'Could not load this device.')}
               </p>
             )
           ) : machines.data === undefined ? (

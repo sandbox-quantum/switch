@@ -88,7 +88,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         ))}
       {machines.error && (
         <p role="alert" className="mb-3 text-sm text-destructive">
-          {failureText(machines.error, 'Could not load the cloud machine.')}
+          {failureText(machines.error, 'Could not load the cloud device.')}
         </p>
       )}
       {/* The add tile leads the grid rather than sitting as a button in the
@@ -166,7 +166,7 @@ function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-foreground">{label}</div>
           <div className="truncate text-xs text-foreground-muted">
-            {provider} · {machine ?? 'no machine'}
+            {provider} · {machine ?? 'no device'}
           </div>
         </div>
       </div>

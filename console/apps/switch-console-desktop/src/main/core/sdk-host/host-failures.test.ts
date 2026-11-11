@@ -38,10 +38,13 @@ it('shows a session the watcher started as failed once its local host stops on a
 });
 
 it('shows the failure the sidecar pushed for a remote session until a host comes up again', () => {
-  recordRemoteHostFailure('remote-session', 'Sign in on the execution machine with codex login.');
+  recordRemoteHostFailure(
+    'remote-session',
+    'Sign in on the device the agent runs on with codex login.'
+  );
   expect(sessionStartupStatus('remote-session')).toEqual({
     status: 'error',
-    message: 'Shared SDK host failed: Sign in on the execution machine with codex login.',
+    message: 'Shared SDK host failed: Sign in on the device the agent runs on with codex login.',
   });
   recordRemoteHostFailure('remote-session', null);
   expect(sessionStartupStatus('remote-session')).toBeNull();

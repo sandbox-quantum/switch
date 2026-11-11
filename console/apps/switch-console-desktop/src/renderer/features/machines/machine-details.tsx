@@ -367,7 +367,7 @@ function CloudMachineSection({ serverId, machine }: { serverId: string; machine:
   if (cloud.error)
     return (
       <p role="alert" className="text-sm text-destructive">
-        {failureText(cloud.error, 'Could not read the cloud machine.')}
+        {failureText(cloud.error, 'Could not read the cloud device.')}
       </p>
     );
   if (!hosted) return null;

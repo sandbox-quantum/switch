@@ -134,7 +134,9 @@ it('starts a parked session again and then sends the command', async () => {
 
 it('starts a session whose host failed again when the user sends it something', async () => {
   mocks.local.request
-    .mockRejectedValueOnce(new Failed('Sign in on the execution machine with claude auth login.'))
+    .mockRejectedValueOnce(
+      new Failed('Sign in on the device the agent runs on with claude auth login.')
+    )
     .mockResolvedValueOnce(applied);
   expect(await submitSessionCommand('agent', command)).toEqual(applied);
   expect(mocks.hydrate).toHaveBeenCalledWith('session');

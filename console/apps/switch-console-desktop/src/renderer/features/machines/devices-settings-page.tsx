@@ -149,7 +149,7 @@ function DevicesBody({
       {live.length === 0 ? (
         <p className="text-sm text-foreground-muted">
           {machines.data.length === 0
-            ? 'No devices yet. This computer joins when you run a managed agent on it, and so does an SSH host; a standalone machine joins once it is enrolled.'
+            ? 'No devices yet. This computer joins when you run a managed agent on it, and so does an SSH host; a standalone device joins once it is enrolled.'
             : filter === 'all'
               ? 'No devices.'
               : emptyCategoryText(filter, server)}

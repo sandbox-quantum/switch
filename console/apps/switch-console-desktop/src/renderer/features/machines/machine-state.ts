@@ -84,7 +84,7 @@ export function machineKindLabel(machine: Pick<MachineDetail, 'local' | 'cloud' 
   if (machine.local?.kind === 'ssh-host') return 'SSH host';
   if (machine.cloud) return 'Switch cloud';
   if (machine.kind === 'console') return 'Computer';
-  return 'Standalone machine';
+  return 'Standalone device';
 }
 
 const OS_NAMES: Record<string, string> = {
@@ -121,7 +121,7 @@ export function controllerRelease(machine: MachineDetail): {
           ? `Runs ${release.wanted}, the release Switch names.`
           : machine.kind === 'console' || machine.updatedBy === 'console'
             ? 'Updates with Switch Console, which runs it.'
-            : 'Switch names no controller release for this machine.',
+            : 'Switch names no controller release for this device.',
       badge: null,
     };
   const names = `Runs ${machine.version ?? 'an unknown version'}; Switch names ${release.wanted}.`;

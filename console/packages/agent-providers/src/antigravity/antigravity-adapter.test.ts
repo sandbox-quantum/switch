@@ -346,7 +346,7 @@ it('tells a signed-out agy session how to sign in', async () => {
       mcpServers: {},
       connectorMcpServers: [],
     })
-  ).rejects.toThrow('Sign in on the execution machine with agy acp --login.');
+  ).rejects.toThrow('Sign in on the device the agent runs on with agy acp --login.');
 });
 it('does not send someone to sign in for an MCP server’s or tool’s authorization failing', async () => {
   acp.signedOut = true;
@@ -360,7 +360,7 @@ it('does not send someone to sign in for an MCP server’s or tool’s authoriza
     connectorMcpServers: [],
   });
   await expect(start).rejects.toThrow('authorization denied for MCP server github');
-  await expect(start).rejects.not.toThrow('Sign in on the execution machine');
+  await expect(start).rejects.not.toThrow('Sign in on the device the agent runs on');
 });
 it('points a signed-out legacy session at the legacy sign-in command', async () => {
   acp.signedOut = true;
@@ -373,7 +373,7 @@ it('points a signed-out legacy session at the legacy sign-in command', async () 
       mcpServers: {},
       connectorMcpServers: [],
     })
-  ).rejects.toThrow('Sign in on the execution machine with antigravity-acp --login.');
+  ).rejects.toThrow('Sign in on the device the agent runs on with antigravity-acp --login.');
 });
 it('refuses legacy CLI conversation IDs before starting a process', async () => {
   await expect(

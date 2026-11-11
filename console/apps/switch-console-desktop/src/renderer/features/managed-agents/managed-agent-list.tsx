@@ -110,7 +110,7 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
                 ? machineDown
                   ? `${agent.machine.name} is ${agent.machine.state}. The agent resumes when it reconnects.`
                   : `Runs on ${agent.machine.name}${agent.definition.directory ? ` · ${agent.definition.directory}` : ''}`
-                : 'It has no machine to run on.'}
+                : 'It has no device to run on.'}
             </TooltipContent>
           </Tooltip>
         )

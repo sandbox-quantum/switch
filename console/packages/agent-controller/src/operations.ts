@@ -86,7 +86,7 @@ export async function executeOperation(
       if (status.auth === 'ok') return { outcome: 'succeeded', output: { provider: status } };
       return failed(
         problem?.code ?? status.reason ?? 'provider_login_missing',
-        problem?.message ?? `The ${provider} login given to this machine is not used.`
+        problem?.message ?? `The ${provider} login given to this device is not used.`
       );
     }
     default:

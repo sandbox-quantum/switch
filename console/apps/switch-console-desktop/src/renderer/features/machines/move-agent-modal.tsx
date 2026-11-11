@@ -97,7 +97,7 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
         </p>
         {machines.error ? (
           <p role="alert" className="text-sm text-destructive">
-            {failureText(machines.error, 'Could not read your machines.')}
+            {failureText(machines.error, 'Could not read your devices.')}
           </p>
         ) : machines.data === undefined ? (
           <Spinner />

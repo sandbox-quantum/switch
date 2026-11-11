@@ -39,7 +39,7 @@ export function CloudMachineCard({
       await queryClient.invalidateQueries({ queryKey: [CLOUD_MACHINES_KEY] });
       setConfirmStop(false);
     } catch (error) {
-      setActionError(failureText(error, 'Machine operation failed.'));
+      setActionError(failureText(error, 'Device operation failed.'));
       void queryClient.invalidateQueries({ queryKey: [CLOUD_MACHINES_KEY] });
     } finally {
       setPending(false);
@@ -48,7 +48,7 @@ export function CloudMachineCard({
   const agentCount = machine.agents.length;
   return (
     <div className="mb-[14px] rounded-[11px] bg-[var(--surface-2)] p-[14px]">
-      <div className="text-sm font-medium">Cloud machine</div>
+      <div className="text-sm font-medium">Cloud device</div>
       <div className="text-xs text-foreground-muted">
         {shown.label}
         {machine.instance_type && ` · ${machine.instance_type}`} · {agentCount}{' '}
@@ -92,7 +92,7 @@ export function CloudMachineCard({
               disabled={pending}
               onClick={() => void run('start')}
             >
-              Start machine
+              Start device
             </Button>
           )}
           {shown.actions.includes('stop') && !confirmStop && (
@@ -102,7 +102,7 @@ export function CloudMachineCard({
               disabled={pending}
               onClick={() => setConfirmStop(true)}
             >
-              Stop machine
+              Stop device
             </Button>
           )}
           {shown.actions.includes('retry') && (
@@ -120,11 +120,11 @@ export function CloudMachineCard({
       {confirmStop && shown.actions.includes('stop') && (
         <div className="mt-2 text-xs">
           <p>
-            Stop the machine? Every agent on it stops, and mentions will not wake it. Start it again
+            Stop the device? Every agent on it stops, and mentions will not wake it. Start it again
             here.
           </p>
           <Button size="sm" disabled={pending} onClick={() => void run('stop')}>
-            Stop machine
+            Stop device
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setConfirmStop(false)}>
             Cancel

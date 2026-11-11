@@ -49,7 +49,7 @@ export function selfUpdateTurnedOff(flag: boolean, env: NodeJS.ProcessEnv): bool
 }
 
 /** What a controller with self-update turned off reports when Switch names another release. */
-export const SELF_UPDATE_OFF = `Self-update is turned off on this machine (${SELF_UPDATE_ENV}=off or --no-self-update); install releases by hand (switch-agent-controller update), or turn it back on.`;
+export const SELF_UPDATE_OFF = `Self-update is turned off on this device (${SELF_UPDATE_ENV}=off or --no-self-update); install releases by hand (switch-agent-controller update), or turn it back on.`;
 
 /** The release Switch names for this controller. */
 export type ControllerReleaseTarget = { version: string; url: string; sha256: string };

@@ -536,7 +536,7 @@ function fakeApi(snapshots: RoomActivity[], messages: ChatMessage[] = []) {
     resolve: async () => ({
       kind: 'unavailable',
       reason: 'not-on-this-machine',
-      message: 'Activity not available on this machine.',
+      message: 'Activity not available on this computer.',
     }),
     reasoning: async () => null,
     watchPlacements: () => () => {},

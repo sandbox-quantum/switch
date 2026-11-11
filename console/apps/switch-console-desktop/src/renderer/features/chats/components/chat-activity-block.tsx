@@ -346,7 +346,7 @@ const RetryTurn = observer(function RetryTurn({
       )}
       {unanswered && (
         <span role="status" className="text-xs text-foreground-muted">
-          The agent did not pick up the retry. Its machine may need a newer Switch Console.
+          The agent did not pick up the retry. Its device may need a newer Switch Console.
         </span>
       )}
     </div>

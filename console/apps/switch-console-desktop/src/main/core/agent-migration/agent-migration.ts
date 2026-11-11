@@ -178,7 +178,7 @@ async function resolveThisComputer(
   const remote = overview.remote;
   if (remote?.kind === 'unavailable')
     return refuse(
-      'This server does not have agent management turned on, so it cannot run agents on machines.'
+      'This server does not have agent management turned on, so it cannot run agents on devices.'
     );
   if (!overview.enrollment)
     return refuse(
@@ -246,15 +246,15 @@ async function resolveSshHost(
   const remote = overview.remote;
   if (remote?.kind === 'unavailable')
     return refuse(
-      'This server does not have agent management turned on, so it cannot run agents on machines.'
+      'This server does not have agent management turned on, so it cannot run agents on devices.'
     );
   if (!overview.enrollment)
     return refuse(
-      `Make ${sshHost} a machine for this server first: managed agents run on the agent controller Console installs there.`,
+      `Make ${sshHost} a device for this server first: managed agents run on the agent controller Console installs there.`,
       remote?.kind === 'ok'
     );
   if (overview.phase.kind === 'installing' || overview.phase.kind === 'removing')
-    return refuse(`${sshHost} is being set up or removed as a machine.`);
+    return refuse(`${sshHost} is being set up or removed as a device.`);
   if (overview.process?.kind !== 'running')
     return refuse(
       overview.process?.kind === 'unknown'
@@ -324,7 +324,7 @@ const management: MigrationManagementPort = {
         setManagedAgentDesiredState(server, switchAgentId, desiredState)
       );
     } catch (error) {
-      throw managementFailure('Switch did not start the agent on its machine', error);
+      throw managementFailure('Switch did not start the agent on its device', error);
     }
   },
   place: async (workspaceId, switchAgentId, controllerId) => {
@@ -334,7 +334,7 @@ const management: MigrationManagementPort = {
       );
     } catch (error) {
       throw managementFailure(
-        'Switch did not place the agent on its machine’s new controller',
+        'Switch did not place the agent on its device’s new controller',
         error
       );
     }
@@ -362,7 +362,7 @@ const management: MigrationManagementPort = {
 
 /** What a room is told when a move cuts the agent's turn there off. */
 const TURN_CUT_NOTE =
-  'Moved to a managed machine mid-task, so this request was cut off. Please send it again.';
+  'Moved to a managed device mid-task, so this request was cut off. Please send it again.';
 
 const machine: MigrationMachinePort = {
   roomsMidTurn: async (agent) => {

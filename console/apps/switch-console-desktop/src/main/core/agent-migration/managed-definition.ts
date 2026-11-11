@@ -151,7 +151,7 @@ export function buildManagedDefinition(source: DefinitionSource): BuiltDefinitio
     notCarried.push('The location’s shell setup: managed sessions start without running it first.');
   if (source.chosenBinary)
     notCarried.push(
-      `The provider CLI chosen in Console (${source.chosenBinary}): the managed agent uses the one on the machine's PATH.`
+      `The provider CLI chosen in Console (${source.chosenBinary}): the managed agent uses the one on the device's PATH.`
     );
   const instructions = specialization.instructions ?? '';
   assertInstructionsFit(instructions);

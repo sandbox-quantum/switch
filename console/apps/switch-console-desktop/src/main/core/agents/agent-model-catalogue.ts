@@ -117,10 +117,10 @@ export async function getAgentModelCatalogue(params: {
  */
 function describe(error: unknown, providerName: string, sshHost: string | null): string {
   if (isTransportFailure(error)) {
-    return `Couldn't reach ${sshHost ?? 'this machine'}.`;
+    return `Couldn't reach ${sshHost ?? 'this computer'}.`;
   }
   const detail = error instanceof Error ? error.message : String(error);
-  return `Couldn't ask ${providerName} on ${sshHost ?? 'this machine'} for its models: ${detail}`;
+  return `Couldn't ask ${providerName} on ${sshHost ?? 'this computer'} for its models: ${detail}`;
 }
 
 /** An execution context on the machine a location lives on, local or remote. */
@@ -185,7 +185,7 @@ export async function getProviderReadiness(
       return {
         installed: true,
         status: 'unknown' as const,
-        message: `Switch is not set up on ${params.sshHost ?? 'this machine'} yet, so ${plugin.metadata.name} cannot be checked there. Start an agent on it, or press Update on one's Room watcher.`,
+        message: `Switch is not set up on ${params.sshHost ?? 'this computer'} yet, so ${plugin.metadata.name} cannot be checked there. Start an agent on it, or press Update on one's Room watcher.`,
         models: [],
       };
     try {
@@ -202,7 +202,7 @@ export async function getProviderReadiness(
     return {
       installed,
       status: 'unknown' as const,
-      message: 'Could not check this execution machine. Check provider setup and retry.',
+      message: 'Could not check the device it runs on. Check provider setup and retry.',
       models: [],
     };
   } finally {

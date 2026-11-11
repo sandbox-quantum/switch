@@ -85,7 +85,7 @@ describe('machinePresentation problem', () => {
     const shown = present(
       machine({ state: 'error', error_code: 'machine_needs_attention', error: 'raw' })
     );
-    expect(shown.problem).toBe('The machine needs attention. Contact your server administrator.');
+    expect(shown.problem).toBe('The device needs attention. Contact your server administrator.');
   });
 
   it('names a connect timeout', () => {
@@ -98,13 +98,13 @@ describe('machinePresentation problem', () => {
       'boom'
     );
     expect(present(machine({ state: 'error', error_code: 'other' })).problem).toBe(
-      'The machine could not start.'
+      'The device could not start.'
     );
   });
 
   it('shows a full disk on a ready machine', () => {
     const shown = present(machine({ ...running, state: 'ready', error_code: 'disk_full' }));
-    expect(shown.problem).toBe('The machine’s disk is full.');
+    expect(shown.problem).toBe('The device’s disk is full.');
     expect(shown.label).toBe('Ready');
   });
 
@@ -140,7 +140,7 @@ describe('machinePresentation problem', () => {
   ])('names the machine that needs attention while %s', (_name, input) => {
     const shown = present(input);
     expect(shown.label).toBe('Error');
-    expect(shown.problem).toBe('The machine needs attention. Contact your server administrator.');
+    expect(shown.problem).toBe('The device needs attention. Contact your server administrator.');
     expect(shown.actions).toEqual([]);
   });
 

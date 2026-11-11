@@ -24,17 +24,17 @@ export function newAgentMachineNotice(
       enable: machine.canEnable
         ? {
             label: location.sshHost
-              ? `Make ${location.label} a machine`
+              ? `Make ${location.label} a device`
               : 'Run managed agents on this computer',
           }
         : null,
     };
   const name = machine.target?.machineName;
   const where =
-    name && name !== location.label ? `${location.label} (machine “${name}”)` : location.label;
+    name && name !== location.label ? `${location.label} (device “${name}”)` : location.label;
   return {
     kind: 'managed',
-    text: `Runs as a managed agent on ${where}: Switch places it on the machine’s agent controller, which runs it. You can bring it back to this Console later from its settings.`,
+    text: `Runs as a managed agent on ${where}: Switch places it on the device’s agent controller, which runs it. You can bring it back to this Console later from its settings.`,
   };
 }
 

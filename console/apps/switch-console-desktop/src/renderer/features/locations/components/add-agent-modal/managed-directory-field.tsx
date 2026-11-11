@@ -65,7 +65,7 @@ export function ManagedDirectoryField({
             Directory
             <InfoTooltip
               label="More info about the directory"
-              content={`The agent's working directory, a full path on ${machineLabel}. It starts as a folder named after the agent in the machine's workspaces; choose another to run it in an existing project.`}
+              content={`The agent's working directory, a full path on ${machineLabel}. It starts as a folder named after the agent in the device's workspaces; choose another to run it in an existing project.`}
             />
           </span>
           <span className="text-xs text-foreground-muted">

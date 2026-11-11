@@ -879,14 +879,14 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       if (says('location') && setup.machine === null)
         slotProblems.push(
           setup.machineText !== null
-            ? `${setup.machineText} is not one of your machines on this server.`
+            ? `${setup.machineText} is not one of your devices on this server.`
             : setup.location !== null
-              ? `None of your machines on this server can run ${name} now. ${
+              ? `None of your devices on this server can run ${name} now. ${
                   (machines ?? [])
                     .map((m) => machineProblem(m, setup.provider, name) ?? '')
-                    .join(' ') || 'You have no machine there yet.'
+                    .join(' ') || 'You have no device there yet.'
                 }`
-              : `Choose which machine ${name} runs on.`
+              : `Choose which device ${name} runs on.`
         );
       else if (setup.machine !== null) {
         const problem = machineProblem(setup.machine, setup.provider, name);
@@ -903,16 +903,16 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     } else {
       if (setup.machineText !== null || slot.entry.connections.length > 0)
         slotProblems.push(
-          `This server does not run agent management, so ${name} cannot be placed on a machine${slot.entry.connections.length > 0 ? ' or granted connections' : ''}.`
+          `This server does not run agent management, so ${name} cannot be placed on a device${slot.entry.connections.length > 0 ? ' or granted connections' : ''}.`
         );
       if (says('location') && setup.location === null)
-        slotProblems.push(`Choose which machine ${name} runs on.`);
+        slotProblems.push(`Choose which device ${name} runs on.`);
       else if (
         setup.location !== null &&
         setup.location !== LOCAL_RUN_LOCATION &&
         !allowedHosts.some((h) => h.sshHost === setup.location)
       )
-        slotProblems.push(`${setup.location} is not a machine this Console can run agents on.`);
+        slotProblems.push(`${setup.location} is not a device this Console can run agents on.`);
       if (says('directory') && setup.directory.trim() === '')
         slotProblems.push(`Choose a directory for ${name}.`);
     }
@@ -939,10 +939,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
               : newSlots.length > 0 && machinesQuery.isError
                 ? failureText(
                     machinesQuery.error,
-                    'Your machines on this server could not be listed.'
+                    'Your devices on this server could not be listed.'
                   )
                 : newSlots.length > 0 && machinesQuery.data === undefined
-                  ? 'Checking your machines on this server…'
+                  ? 'Checking your devices on this server…'
                   : slotProblems.length > 0
                     ? slotProblems[0]
                     : newSlots.length > 0 && !hostReachable
@@ -1077,7 +1077,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       .filter(({ slot, setup }) => setup.existing === null && slot.status !== 'created');
     const agentsToCreate = pending.map(({ slot, setup }) => {
       if (setup.machine === null || setup.provider === null)
-        throw new Error(`${setup.name} has no machine or provider.`);
+        throw new Error(`${setup.name} has no device or provider.`);
       return runAgent({
         slot: setup.name,
         name: setup.name,

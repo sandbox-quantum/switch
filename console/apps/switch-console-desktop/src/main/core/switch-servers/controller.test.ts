@@ -966,7 +966,7 @@ describe('cloud machines', () => {
   it('refuses to claim one when the server turns them off', async () => {
     serverFlags['hosted_agents'] = false;
     await expect(switchServersController.ensureCloudMachine('srv')).rejects.toThrow(
-      'does not have cloud machines turned on'
+      'does not have cloud devices turned on'
     );
     expect(ensureCloudMachine).not.toHaveBeenCalled();
   });

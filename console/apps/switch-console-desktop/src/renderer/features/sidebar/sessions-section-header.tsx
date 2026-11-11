@@ -393,7 +393,7 @@ function LegacyTag() {
       />
       <TooltipContent className="max-w-60">
         Agents this Console still runs itself, with their sessions. Console moves each one to a
-        managed machine; once it has moved it shows under Agents above.
+        managed device; once it has moved it shows under Agents above.
       </TooltipContent>
     </Tooltip>
   );
