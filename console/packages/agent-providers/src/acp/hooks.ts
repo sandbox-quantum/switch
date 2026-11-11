@@ -139,6 +139,12 @@ export interface AcpProviderHooks {
    */
   alreadySignedIn?(input: AcpSignedInQuery): Promise<boolean>;
   /**
+   * The agent takes MCP servers over HTTP in `session/new` without declaring
+   * `mcpCapabilities.http` in `initialize`. What it declares wins, a `false`
+   * included. Prefer fixing the advertisement upstream.
+   */
+  httpMcp?: boolean;
+  /**
    * Prompt content the agent accepts whether or not it advertises it. What it
    * advertises in `initialize` is always honoured as well.
    */
