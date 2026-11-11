@@ -53,6 +53,7 @@ _PROVIDER_OF_KNOWN_AGENT_TYPE = {
     "cursor": "cursor",
     "deepseek-harness": "deepseek-harness",
     "pi": "pi",
+    "copilot": "copilot",
 }
 
 

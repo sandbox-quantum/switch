@@ -183,6 +183,21 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="write", description="Writes files"),
         ),
     ),
+    AgentProvider(
+        id="copilot",
+        label="GitHub Copilot",
+        sign_in_command="copilot login",
+        connector_type="GitHub Copilot CLI",
+        tools=(
+            ToolSpec(name="bash", description="Executes shell commands"),
+            ToolSpec(name="view", description="Reads files and directories"),
+            ToolSpec(name="create", description="Creates files"),
+            ToolSpec(name="edit", description="Edits existing files"),
+            ToolSpec(name="grep", description="Searches file contents"),
+            ToolSpec(name="glob", description="Finds files by pattern"),
+            ToolSpec(name="task", description="Delegates to a subagent"),
+        ),
+    ),
 )
 
 
