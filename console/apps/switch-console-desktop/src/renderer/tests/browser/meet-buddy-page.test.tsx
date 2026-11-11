@@ -124,31 +124,31 @@ function buttons(): string[] {
 describe('MeetBuddyPage', () => {
   it('waits while the providers are being checked', async () => {
     await render();
-    expect(container!.textContent).toContain('Checking AI providers');
+    expect(container!.textContent).toContain('Checking agent providers');
   });
 
   it('settles on the providers first found ready, and keeps them as later checks come back', async () => {
     // Claude ready and Codex known: decided, without waiting for the others.
     state.computer = machine(ready('claude'), signedOut('codex'));
     await render();
-    expect(buttons()).toEqual(['Claude CodeSigned in locally', 'use other providers']);
+    expect(buttons()).toEqual(['Claude CodeSigned in locally', 'use other agent providers']);
 
     // Codex signs in afterwards: the row stays as it first was.
     state.computer = machine(ready('claude'), ready('codex'));
     await render();
-    expect(buttons()).toEqual(['Claude CodeSigned in locally', 'use other providers']);
+    expect(buttons()).toEqual(['Claude CodeSigned in locally', 'use other agent providers']);
   });
 
   it('offers to set one up, or skip, when none is ready', async () => {
     state.computer = machine(...agentProviders().map((provider) => signedOut(provider.id)));
     await render();
-    expect(buttons()).toEqual(['Set up AI provider', 'Skip']);
+    expect(buttons()).toEqual(['Set up agent provider', 'Skip']);
   });
 
   it("goes by Console's own early check until this computer reports", async () => {
     state.early = [ready('codex'), signedOut('claude')];
     await render();
-    expect(buttons()).toEqual(['OpenAI CodexSigned in locally', 'use other providers']);
+    expect(buttons()).toEqual(['OpenAI CodexSigned in locally', 'use other agent providers']);
   });
 
   it('starts a provider chosen before this computer is ready, once it is', async () => {
@@ -178,7 +178,7 @@ describe('MeetBuddyPage', () => {
 
     await act(async () =>
       [...container!.querySelectorAll('button')]
-        .find((b) => b.textContent === 'use other providers')!
+        .find((b) => b.textContent === 'use other agent providers')!
         .click()
     );
 

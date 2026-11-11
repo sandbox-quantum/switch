@@ -222,7 +222,7 @@ export default function ManagedAgentDialog({
           </TextField>
           <TextField
             select
-            label="Provider"
+            label="Agent provider"
             value={form.provider}
             onChange={(e) => set("provider", e.target.value as Provider)}
             helperText={providers.length === 0 ? "Loading providers…" : undefined}

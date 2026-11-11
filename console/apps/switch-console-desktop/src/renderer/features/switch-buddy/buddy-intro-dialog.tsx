@@ -18,7 +18,7 @@ import { reportBuddyStep } from './buddy-telemetry';
  * switch-buddy, introduced over the app to someone who set Switch up before it
  * existed: on a server that offers it, in a workspace where they have none.
  * It looks like the first run's Meet switch-buddy page, and asks once per
- * workspace: "Meet switch-buddy" opens the buddy's page, where an AI provider
+ * workspace: "Meet switch-buddy" opens the buddy's page, where an agent provider
  * is connected to start it, and "Not now" leaves it to the sidebar's entry.
  */
 export const BuddyIntroDialog = observer(function BuddyIntroDialog() {

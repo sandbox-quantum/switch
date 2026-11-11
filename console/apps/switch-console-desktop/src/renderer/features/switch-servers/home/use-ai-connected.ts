@@ -21,7 +21,7 @@ export type AiConnection = {
 
 /**
  * Whether switch-buddy can chat: it exists, the machine it runs on is
- * reachable, and that machine has an AI provider installed and signed in, as
+ * reachable, and that machine has an agent provider installed and signed in, as
  * it last reported to Switch — what the buddy's setup goes by.
  *
  * Read afresh each time Home mounts, and for each workspace: what is cached

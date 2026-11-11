@@ -94,7 +94,7 @@ export const SignedOutPanel = observer(function SignedOutPanel({ serverId }: { s
   );
 });
 
-/** Signed in, and switch-buddy has no AI provider to run on yet. */
+/** Signed in, and switch-buddy has no agent provider to run on yet. */
 export function ConnectAiPanel({
   serverId,
   workspaceId,
@@ -122,7 +122,7 @@ export function ConnectAiPanel({
         className="flex w-full items-center justify-between gap-4 rounded-2xl px-5 py-4"
         style={{ background: CONNECT_AI_BACKGROUND }}
       >
-        <p className="text-sm text-foreground">Connect to an AI provider to get started</p>
+        <p className="text-sm text-foreground">Connect to an agent provider to get started</p>
         {/* The title sits on a wrapper: a disabled button shows no tooltip. */}
         <span
           className="shrink-0"
