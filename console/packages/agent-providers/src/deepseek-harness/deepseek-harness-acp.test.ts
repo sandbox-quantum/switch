@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import type * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { FakeAppServer } from '../codex/fake-app-server';
@@ -197,8 +197,10 @@ it('keeps its state private, quotes the plugin path, and leaves no older gate be
   expect(await gatePlugin(patch)).toContain("it's");
   const launched = (await launch(home)).args;
   const fresh = launched.at(-1)!;
-  expect(((await stat(state)).mode & 0o777).toString(8)).toBe('700');
-  expect(((await stat(fresh)).mode & 0o777).toString(8)).toBe('600');
+  if (process.platform !== 'win32') {
+    expect(((await stat(state)).mode & 0o777).toString(8)).toBe('700');
+    expect(((await stat(fresh)).mode & 0o777).toString(8)).toBe('600');
+  }
   expect((await readdir(state)).sort()).toEqual(
     [basename(await gatePlugin(fresh)), basename(fresh), basename(launched[3]!)].sort()
   );
@@ -296,9 +298,9 @@ it('finds its home where the harness does', () => {
   expect(dshHome(homed('/h'), '/work')).toBe(join('/h', '.dsh'));
   expect(dshHome({ ...homed('/h'), DSH_HOME: '  ' }, '/work')).toBe(join('/h', '.dsh'));
   expect(dshHome({ ...homed('/h'), DSH_HOME: '~/harness' }, '/work')).toBe(join('/h', 'harness'));
-  expect(dshHome({ ...homed('/h'), DSH_HOME: '/srv/dsh' }, '/work')).toBe('/srv/dsh');
+  expect(dshHome({ ...homed('/h'), DSH_HOME: '/srv/dsh' }, '/work')).toBe(resolve('/srv/dsh'));
   expect(dshHome({ ...homed('/h'), DSH_HOME: 'state/dsh' }, '/work')).toBe(
-    join('/work', 'state/dsh')
+    resolve('/work', 'state/dsh')
   );
 });
 
@@ -373,12 +375,14 @@ it('says so when the harness would refuse its saved credentials, rather than sig
     expect(result.status).toBe('unknown');
     expect(result.message).toContain(reason);
   }
-  const shared = await dir({ '.dsh/.credentials.yaml': `refs:\n  DEEPSEEK_API_KEY: ${KEY}\n` });
-  await chmod(join(shared, '.dsh', '.credentials.yaml'), 0o644);
-  expect(await checkDshSignIn({ cwd: await dir(), env: homed(shared) })).toMatchObject({
-    status: 'unknown',
-    message: expect.stringContaining('Run chmod 600 on it.'),
-  });
+  if (process.platform !== 'win32') {
+    const shared = await dir({ '.dsh/.credentials.yaml': `refs:\n  DEEPSEEK_API_KEY: ${KEY}\n` });
+    await chmod(join(shared, '.dsh', '.credentials.yaml'), 0o644);
+    expect(await checkDshSignIn({ cwd: await dir(), env: homed(shared) })).toMatchObject({
+      status: 'unknown',
+      message: expect.stringContaining('Run chmod 600 on it.'),
+    });
+  }
 });
 
 it('cannot vouch for a DeepSeek account sign-in alone, which the default route does not use', async () => {
