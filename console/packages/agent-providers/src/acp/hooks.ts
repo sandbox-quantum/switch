@@ -48,7 +48,7 @@ export interface AcpLaunchInput {
    * `mcpServersAtLaunch` uses them here: every other agent is given them in
    * `session/new`.
    */
-  mcpServers: Record<string, McpServerSpec>;
+  mcpServers?: Record<string, McpServerSpec>;
 }
 
 /**
@@ -202,6 +202,7 @@ export interface AcpProviderHooks {
    * agent's title.
    */
   toolTitle?(toolCall: AcpToolCall): string | undefined;
+  /**
    * The ACP `kind` of a tool call, for an agent that doesn't label its tools
    * (Cline marks every one `other`). Consulted before the call's own `kind`;
    * it decides which approval a call needs and the card it shows as.

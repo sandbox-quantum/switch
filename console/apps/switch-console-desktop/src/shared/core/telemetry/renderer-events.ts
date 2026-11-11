@@ -100,6 +100,7 @@ export type RendererTelemetryEvents = {
       | 'goose'
       | 'qwen'
       | 'droid'
+      | 'cline'
       | 'none';
   };
   /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */

@@ -79,7 +79,7 @@ export async function checkAcpSignIn(
   let client: StdioJsonRpcClient | undefined;
   let cleanup: (() => Promise<void>) | undefined;
   const handshake = async () => {
-    const { cleanup: tidy, ...launch } = await hooks.launch({ ...input, mcpServers: {} });
+    const { cleanup: tidy, ...launch } = await hooks.launch(input);
     cleanup = tidy;
     client = new StdioJsonRpcClient({
       ...launch,
@@ -102,7 +102,11 @@ export async function checkAcpSignIn(
     );
   } finally {
     await client?.dispose();
-    await cleanup?.();
+    try {
+      await cleanup?.();
+    } catch {
+      // The check's answer stands; a failed removal must not replace it.
+    }
   }
 }
 
@@ -557,7 +561,7 @@ export class AcpAdapter implements ProviderAdapter {
     // nothing but its id: what it leaves out is the announced call's.
     const announced = state.items.get(toolCall.toolCallId);
     const kind =
-      this.hooks.toolKind?.(toolCall) ??
+      this.hooks.toolKind?.(toolCall.title ? toolCall : { ...toolCall, title: announced?.title }) ??
       toolCall.kind ??
       (announced?.type === 'command_execution'
         ? 'execute'

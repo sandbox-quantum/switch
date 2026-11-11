@@ -126,8 +126,13 @@ it('starts `cline --acp` and hands it the session MCP servers through its own se
   await adapter.stopSession('s');
   await flush();
   await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
-  // This fake never started a daemon, so there was none to stop.
-  expect(execProvider).not.toHaveBeenCalled();
+  // A daemon killed before it wrote its discovery file would still be running,
+  // so the stop is asked for whether or not that file exists.
+  expect(execProvider).toHaveBeenCalledWith(
+    expect.any(String),
+    ['hub', 'stop'],
+    expect.objectContaining({ env: expect.objectContaining({ CLINE_HUB_DISCOVERY_PATH: expect.any(String) }) })
+  );
 });
 
 it("stops the session's own Cline hub daemon when the session ends", async () => {
@@ -142,6 +147,14 @@ it("stops the session's own Cline hub daemon when the session ends", async () =>
     expect.objectContaining({ env: expect.objectContaining({ CLINE_HUB_DISCOVERY_PATH: hub }) })
   );
   await expect(stat(dirname(hub))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('still removes its files when `hub stop` fails', async () => {
+  vi.mocked(execProvider).mockRejectedValueOnce(new Error('no hub'));
+  const { adapter, env } = await setup();
+  const dir = dirname(env.CLINE_MCP_SETTINGS_PATH!);
+  await adapter.stopSession('s');
+  await expect(stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('fails a signed-out start without opening a sign-in, and removes the settings file', async () => {

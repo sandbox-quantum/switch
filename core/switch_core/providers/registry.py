@@ -241,6 +241,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         sign_in_command="droid",
         connector_type="Droid CLI",
     ),
+    AgentProvider(
         id="cline",
         label="Cline CLI",
         sign_in_command="cline auth",

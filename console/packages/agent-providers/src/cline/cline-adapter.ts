@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
@@ -114,7 +114,7 @@ export function clineMcpSettings(
 export async function clineLaunch({
   binaryPath,
   env,
-  mcpServers,
+  mcpServers = {},
 }: AcpLaunchInput): Promise<AcpLaunch> {
   const dir = await mkdtemp(join(tmpdir(), 'switch-cline-'));
   const settings = join(dir, 'cline_mcp_settings.json');
@@ -132,20 +132,18 @@ export async function clineLaunch({
     env: launchEnv,
     cleanup: async () => {
       try {
-        if (await exists(hub))
-          await execProvider(binaryPath, ['hub', 'stop'], { env: launchEnv, timeout: 30_000 });
+        // Always ask: a daemon killed before it wrote its discovery file is
+        // still running, and "no hub" is the answer when there is nothing to stop.
+        await execProvider(binaryPath, ['hub', 'stop'], { env: launchEnv, timeout: 30_000 });
+      } catch {
+        // Nothing to stop, or `cline` could not be run: either way the
+        // directory below still goes.
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
     },
   };
 }
-
-const exists = (path: string) =>
-  access(path).then(
-    () => true,
-    () => false
-  );
 
 /** The ACP kind of Cline's own tools, which it reports as `other`. */
 const CLINE_TOOL_KINDS = new Map([
