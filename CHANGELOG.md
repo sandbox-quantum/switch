@@ -4272,6 +4272,14 @@ version of their own to them without also giving them a release of their own.
   that has no setup steps of its own, such as GitLab. The warning before
   switching apps says tokens already handed to agents stay valid until they
   expire, no longer "up to an hour". GitLab's tokens live two hours.
+- **The Connectors page no longer hides the rest of the catalog behind
+  Yours.** Yours now ends with a card saying how many more services Discover
+  offers ("Browse 3 more
+  connectors"), leaving out ones marked coming soon. A search there that
+  matches nothing connected says how many match on Discover, with a Show button
+  that keeps the search, instead of "No connector matches". Cards on Yours no
+  longer carry the green connected tick, which said nothing there and made a
+  single card read as the whole set; Discover keeps it.
 - **Google Workspace shows Google's full-colour G** on the Connections grid,
   in place of a one-colour blue G that Google's guidelines do not offer, and
   the Atlassian connection shows the Atlassian logo rather than Jira's.

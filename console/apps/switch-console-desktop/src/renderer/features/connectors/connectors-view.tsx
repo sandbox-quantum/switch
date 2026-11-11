@@ -1,4 +1,4 @@
-import { ArrowRight, Check, Plug, Plus } from 'lucide-react';
+import { ArrowRight, Check, Compass, Plug, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -35,9 +35,12 @@ import { ConnectorProfile } from './connector-profile';
 import { ConnectorTile } from './connector-tile';
 import {
   type ConnectorsTab,
+  beyondYours,
+  browseMoreText,
   cardQuickAction,
   connectorsInTab,
   connectorsPageAccess,
+  yoursSearchEmptyText,
 } from './connectors-catalog';
 import {
   useConnectorCatalog,
@@ -255,8 +258,10 @@ function Connectors({
       ) : (
         <ConnectorGrid
           entries={connectorsInTab(catalog.data, tab, query)}
+          beyond={tab === 'yours' ? beyondYours(catalog.data, query).length : 0}
           tab={tab}
           query={query}
+          onBrowse={() => setTab('discover')}
           viewer={viewer}
           turningOn={turningOn}
           onOpen={openProfile}
@@ -290,8 +295,10 @@ function CatalogError({ error, onRetry }: { error: unknown; onRetry: () => void 
 
 function ConnectorGrid({
   entries,
+  beyond,
   tab,
   query,
+  onBrowse,
   viewer,
   turningOn,
   onOpen,
@@ -300,8 +307,12 @@ function ConnectorGrid({
   onConnect,
 }: {
   entries: ConnectionCatalogEntry[];
+  /** On Yours, how many services Discover lists for the search that Yours does not. */
+  beyond: number;
   tab: ConnectorsTab;
   query: string;
+  /** Switches to Discover, keeping the search. */
+  onBrowse: () => void;
   viewer: ConnectorViewer;
   /** The services being turned on for the workspace from their card. */
   turningOn: ReadonlySet<string>;
@@ -310,6 +321,15 @@ function ConnectorGrid({
   onTurnOn: (entry: ConnectionCatalogEntry) => void;
   onConnect: (entry: ConnectionCatalogEntry) => void;
 }) {
+  if (entries.length === 0 && query.trim() && beyond > 0)
+    return (
+      <p className="flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
+        {yoursSearchEmptyText(query, beyond)}
+        <Button size="sm" variant="outline" onClick={onBrowse}>
+          Show
+        </Button>
+      </p>
+    );
   if (entries.length === 0)
     return (
       <p className="text-sm text-foreground-muted">
@@ -330,6 +350,7 @@ function ConnectorGrid({
         <ConnectorCard
           key={entry.slug}
           entry={entry}
+          tab={tab}
           viewer={viewer}
           turningOn={turningOn.has(entry.slug)}
           onOpen={() => onOpen(entry.slug)}
@@ -338,6 +359,18 @@ function ConnectorGrid({
           onConnect={() => onConnect(entry)}
         />
       ))}
+      {beyond > 0 && (
+        // Inside the grid, where the eye already is: the tabs alone did not
+        // tell people that Yours is not the whole catalog.
+        <button
+          type="button"
+          onClick={onBrowse}
+          className="focus-visible:ring-ring flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border p-4 text-left text-sm font-medium text-foreground transition-colors hover:bg-background-tertiary-2 focus-visible:ring-2 focus-visible:outline-none"
+        >
+          <Compass className="size-5 shrink-0 text-foreground-muted" />
+          {browseMoreText(beyond, query)}
+        </button>
+      )}
     </div>
   );
 }
@@ -351,6 +384,7 @@ function ConnectorGrid({
  */
 function ConnectorCard({
   entry,
+  tab,
   viewer,
   turningOn,
   onOpen,
@@ -359,6 +393,7 @@ function ConnectorCard({
   onConnect,
 }: {
   entry: ConnectionCatalogEntry;
+  tab: ConnectorsTab;
   viewer: ConnectorViewer;
   turningOn: boolean;
   onOpen: () => void;
@@ -395,7 +430,9 @@ function ConnectorCard({
           >
             <Plus className="size-4" />
           </Button>
-        ) : quick === 'connected' ? (
+        ) : quick === 'connected' && tab === 'discover' ? (
+          // On Yours every card is connected, so a tick there says nothing
+          // and makes a lone card read as the whole set.
           <span
             role="img"
             aria-label={`${entry.name} connected`}
