@@ -118,7 +118,7 @@ DD_API_KEY=... DD_APP_KEY=... SWITCH_URL=... SWITCH_AGENT_ID=... \
 ```
 
 Without the `SWITCH_*` settings it only prints the report. The application key
-needs read access to metrics, and to logs for the reason bridges fail. Its verdict, the choice of graph and the comments are tested in
+needs read access to metrics, and to logs for the reason bridges fail. Its verdict, the choice of graph, the comments and the drawing are tested in
 `test_daily_report.py`.
 
 ## Importing

@@ -79,11 +79,28 @@ def test_a_quiet_week_walks_through_every_graph():
     assert picked == {graph.key for graph in GRAPHS}
 
 
-def test_every_graph_definition_is_valid_json():
-    import json
-
+def test_every_graph_is_drawn_with_a_title_axes_and_a_caption():
+    start = 1_700_000_000
+    points = [(start + 60 * i, 50.0 + i % 7) for i in range(0, 24 * 60, 5)]
     for graph in GRAPHS:
-        assert json.loads(r.graph_def(graph))["requests"]
+        assert graph.axis, graph.key
+        drawn = [r.Drawn("pod abcde", points), r.Drawn("pod fghij", points)]
+        png = r.figure(graph, drawn, "switch-core", start, start + r.DAY)
+        assert png.startswith(b"\x89PNG")
+
+
+def test_the_caption_says_how_to_read_the_graph_and_its_limit():
+    pool = next(g for g in GRAPHS if g.key == "pool")
+    text = r.caption(pool)
+    assert text.startswith("Figure 1. Each pod keeps a fixed set")
+    assert "Dashed red: the alert's limit, 100%." in text
+
+
+def test_a_graph_with_no_data_is_not_drawn():
+    import pytest
+
+    with pytest.raises(ValueError):
+        r.figure(GRAPHS[0], [r.Drawn("", [])], "switch-core", 0, r.DAY)
 
 
 BY_KEY = {graph.key: graph for graph in GRAPHS}
