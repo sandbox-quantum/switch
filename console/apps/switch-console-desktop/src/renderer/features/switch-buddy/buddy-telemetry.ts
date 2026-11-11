@@ -15,6 +15,7 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'deepseek-harness',
   'pi',
   'copilot',
+  'kiro',
 ];
 
 /** A provider id as telemetry may carry it: one of these, else `none`. */

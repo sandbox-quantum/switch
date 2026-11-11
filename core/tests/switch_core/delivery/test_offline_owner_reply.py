@@ -204,6 +204,7 @@ class TestUnavailableReplyRouting:
             "deepseek-harness": "dsh web",
             "pi": "pi",
             "copilot": "copilot login",
+            "kiro": "kiro-cli login",
         }
         for agent_type, command in sign_in.items():
             agent = _agent(

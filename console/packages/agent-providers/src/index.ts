@@ -58,6 +58,7 @@ export {
   createDeepseekHarnessAdapter,
   deepseekHarnessAcp,
 } from './deepseek-harness/deepseek-harness-acp';
+export { kiroAcp, createKiroAdapter } from './kiro/kiro-acp';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';
