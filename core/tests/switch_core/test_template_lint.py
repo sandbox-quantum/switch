@@ -592,3 +592,29 @@ room:
     result = lint_template(text)
     (warning,) = [w for w in result.warnings if "'{agent}'" in w.message]
     assert "ambiguous" in warning.message
+
+
+def test_an_unknown_room_key_is_an_error_naming_the_room() -> None:
+    result = lint_template("room:\n  name: ops\n  description: d\n  instrctions: hi\n")
+    assert [(f.code, f.subject) for f in result.errors] == [
+        ("unknown_room_key", "instrctions")
+    ]
+    assert "Room 'ops'" in result.errors[0].message
+
+
+def test_an_unknown_key_on_a_version_2_room_is_an_error() -> None:
+    result = lint_template(
+        "version: 2\nresources:\n  ops:\n    type: room\n    description: d\n"
+        "    colour: red\n"
+    )
+    assert [(f.code, f.subject) for f in result.errors] == [
+        ("unknown_room_key", "colour")
+    ]
+
+
+def test_version_2_room_keys_are_not_unknown() -> None:
+    result = lint_template(
+        "version: 2\nresources:\n  g:\n    type: group\n  ops:\n    type: room\n"
+        "    description: d\n    group: g\n    kickoff: go\n"
+    )
+    assert not [f for f in result.errors if f.code == "unknown_room_key"]

@@ -57,6 +57,8 @@ _MAX_SLUG_INPUT = 128
 
 _AGENT_ONLY = ("type", "if")
 _ROOM_ONLY = ("type", "if", "kickoff", "group")
+# Keys a version 2 room resource takes besides a version 1 room block's.
+ROOM_RESOURCE_KEYS = _ROOM_ONLY
 _GROUP_ONLY = ("type", "if", "links")
 
 

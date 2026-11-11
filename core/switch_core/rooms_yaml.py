@@ -451,6 +451,7 @@ class DocSpec(BaseModel):
 
 
 class RoomSpec(BaseModel):
+    model_config = {"extra": "forbid"}
     name: str
     description: str
     instructions: str | None = None

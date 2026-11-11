@@ -2650,3 +2650,16 @@ async def test_an_agent_may_name_a_private_room_it_is_in(env):
     await svc.check_entity_params(
         parsed, reader=RoomReader(Principal(env["user_id"], False), agent_id=agent.id)
     )
+
+
+def test_parse_refuses_a_room_key_a_room_does_not_take(env):
+    with pytest.raises(ValueError, match="instrctions"):
+        _svc(env).parse("room:\n  name: ops\n  description: d\n  instrctions: hi\n")
+
+
+def test_parse_refuses_an_unknown_key_on_a_group_room(env):
+    text = (
+        "group:\n  name: g\nrooms:\n  - name: a\n    description: d\n    colour: red\n"
+    )
+    with pytest.raises(ValueError, match="colour"):
+        _svc(env).parse(text)
