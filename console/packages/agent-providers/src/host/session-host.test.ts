@@ -2337,3 +2337,37 @@ it('keeps cancelled turns terminal across restart and replays the cancellation r
       )
   ).toHaveLength(1);
 });
+
+it('recovers a durably cancelled queued turn when publication was interrupted', async () => {
+  const { root, host } = await start('codex');
+  await host.command(message('active'));
+  await host.command(message('withdrawn'));
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'withdrawn')?.status).toBe(
+    'queued'
+  );
+  await host.shutdown();
+
+  // Simulate a crash after the cancel command and target's durable inbox
+  // settlement, but before the cancelled turn.upsert could be published.
+  const request = cancel('cancel-before-crash', 'withdrawn');
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    [
+      { type: 'accepted', command: request },
+      { type: 'finished', commandId: 'withdrawn' },
+    ]
+      .map((record) => JSON.stringify(record))
+      .join('\n') + '\n'
+  );
+
+  const fixture = setup('codex');
+  const recovered = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(recovered);
+  expect(recovered.snapshot().turns.find((turn) => turn.turnId === 'withdrawn')?.status).toBe(
+    'cancelled'
+  );
+  expect(fixture.adapter.sendTurn).not.toHaveBeenCalled();
+  // The cancel receipt is uncertain because publishing its command status
+  // was also cut short. Recovery must never falsely acknowledge success.
+  expect((await recovered.command(request)).status).toBe('unknown');
+});

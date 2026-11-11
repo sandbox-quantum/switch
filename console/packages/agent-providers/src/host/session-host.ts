@@ -271,7 +271,18 @@ export class HostedSession {
             });
         for (const turn of snapshot.turns)
           if (turn.status === 'running' || turn.status === 'queued')
-            await host.publish({ ...turn, status: 'interrupted' });
+            await host.publish({
+              ...turn,
+              // A cancellation may have reached the durable inbox before its
+              // turn.upsert was published. A finished, never-dispatched queued
+              // turn was withdrawn, not interrupted by the restart.
+              status:
+                turn.status === 'queued' &&
+                host.finished.has(turn.turnId) &&
+                !host.dispatched.has(turn.turnId)
+                  ? 'cancelled'
+                  : 'interrupted',
+            });
         for (const command of host.commands.values()) {
           const status = host
             .snapshot()
