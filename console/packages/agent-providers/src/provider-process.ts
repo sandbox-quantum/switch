@@ -103,7 +103,16 @@ export function stopProvider(child: ChildProcess, signal: NodeJS.Signals): void 
   }
   const pid = child.pid;
   killProcessTree(pid).catch((error: unknown) => {
+    // The PowerShell query the tree walk needs can fail or stall; taskkill
+    // walks the tree itself, so the CLI under `cmd.exe` is not left running
+    // holding the pipes of the process waiting on it.
     console.error(`Could not stop the provider process (pid ${pid}): ${String(error)}`);
-    child.kill(signal);
+    execFile('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true }, (failure) => {
+      if (!failure) return;
+      console.error(
+        `taskkill could not stop the provider process (pid ${pid}): ${String(failure)}`
+      );
+      child.kill(signal);
+    });
   });
 }

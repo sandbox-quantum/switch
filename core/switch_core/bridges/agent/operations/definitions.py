@@ -1417,7 +1417,8 @@ async def list_bridges() -> list[dict[str, Any]]:
 
     Returns:
         List of `{id, type, display_name, status, is_default,
-        can_create_channels}` dicts. Only `status` == "active" bridges are
+        can_create_channels, can_create_private_channels,
+        private_channel_needs_linked_account}` dicts. Only `status` == "active" bridges are
         usable for new rooms; others are shown for context. `is_default`
         marks the bridge that `create_room` uses when no `bridge_id` is given
         (at most one).
@@ -1427,6 +1428,14 @@ async def list_bridges() -> list[dict[str, Any]]:
         operator has withheld it. Creating a room on one of those fails, so
         offer an existing channel instead: the chat is made on the platform,
         the Switch app is added to it, and the room is adopted from that.
+
+        `can_create_private_channels` says whether `channel_type`
+        "channel_private" can be asked for there. Where
+        `private_channel_needs_linked_account` is true, the room's owner,
+        your owner when you create it, must have linked and confirmed their
+        account on that platform: Switch puts them in the private channel
+        through it (on Teams, as its owner), and refuses the room when they
+        have not, since nobody could get into it otherwise.
     """
     protocol = get_protocol()
     return await protocol.list_bridges()
@@ -1437,6 +1446,9 @@ async def invite_agent_to_room(
     room_id: str, agent_name: str, include_subagents: bool = False
 ) -> dict[str, bool]:
     """Invite an agent into an existing room by name.
+
+    A direct or group conversation is refused: its platform fixes who is in
+    it, and the people in it add agents with `!invite-agent` there.
 
     Args:
         room_id: The Switch room id (UUID string).
@@ -1464,8 +1476,10 @@ async def remove_agent_from_room(room_id: str, agent_name: str) -> dict[str, boo
     connected there is disconnected from it. You need not be in the room.
 
     Allowed when you may address that agent (its addressing policy admits
-    you), or when you can manage agents and it belongs to your owner. Anything
-    else is refused with the reason — relay it rather than retrying.
+    you), or when you can manage agents and it belongs to your owner. A direct
+    or group conversation is refused: its platform fixes who is in it, and the
+    people in it use `!remove-agent` there. Anything else is refused with the
+    reason — relay it rather than retrying.
 
     Args:
         room_id: The Switch room id (UUID string).
@@ -1491,7 +1505,8 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
     be a user already known to that bridge — e.g. someone who has signed into
     the workspace — otherwise the bridge cannot resolve them. Use this after a
     bridge change to re-invite the humans who were dropped, since their
-    identities are bridge-specific and are not carried across.
+    identities are bridge-specific and are not carried across. A direct or
+    group conversation is refused: its platform fixes who is in it.
 
     Args:
         room_id: The Switch room id (UUID string).

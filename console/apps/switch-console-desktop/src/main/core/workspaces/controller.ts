@@ -15,6 +15,7 @@ import {
   createRoomRole,
   deleteRoomRole,
   fetchArchivedRooms,
+  fetchBridgePeople,
   fetchBridgeUserNames,
   setRoomAgentJoinEvents,
   setRoomArchived,
@@ -78,6 +79,7 @@ import {
   connectServiceWithKey,
   disconnectGitHub,
   disconnectService,
+  setRoomAutoRoute,
   setServiceGrant,
   setWorkspaceService,
   removeServiceGrant,
@@ -178,6 +180,7 @@ import type {
   BridgeDirectorySearchResult,
   CancelLinkRequestResult,
   ChatClaim,
+  BridgePerson,
   ClaimIdentityParams,
   ConnectedChat,
   ClaimIdentityResult,
@@ -199,6 +202,8 @@ import type {
   RemoteBridgeType,
   RemoteExternalUser,
   RemoteRoomDetail,
+  RoomAutoRoute,
+  SetRoomAutoRouteParams,
   RemoteRoomGroup,
   RemoteRoomRole,
   RemoteRoomSummary,
@@ -809,6 +814,7 @@ export const workspacesController = createRPCController({
           instructions: params.instructions,
           bridgeId: params.bridgeId,
           agentIds: params.agentIds,
+          userNames: params.userNames,
           channel: params.channel,
           groupId: params.groupId,
           access: params.access,
@@ -1254,10 +1260,30 @@ export const workspacesController = createRPCController({
       removeLinkedRoom(server, params.roomId, params.targetRoomId)
     ),
 
+  /** The people Switch knows on one bridge, with who linked each, for the New room dialog. */
+  listBridgePeople: (params: { workspaceId: string; bridgeId: string }): Promise<BridgePerson[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchBridgePeople(server, params.bridgeId)
+    ),
+
   /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
   listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchBridgeUserNames(server, params.bridgeId)
+    ),
+
+  /**
+   * Turn auto-route on or off in a room, or name its triage agent, through the
+   * same store `!auto-route` writes. Answers with the setting as it now stands;
+   * a refusal propagates, so the toggle never shows a state the server didn't take.
+   */
+  setRoomAutoRoute: ({
+    workspaceId,
+    roomId,
+    ...changes
+  }: SetRoomAutoRouteParams): Promise<RoomAutoRoute> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      setRoomAutoRoute(server, roomId, changes)
     ),
 
   /**

@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import jwt
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
@@ -39,12 +40,18 @@ from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Agent,
     ApiKey,
+    AuditEvent,
     Client,
+    CollaborationBridge,
+    ExternalUser,
     Invitation,
+    Message,
     Organization,
     OrganizationMember,
+    Room,
     ServiceTokenIssuance,
     SignInFlow,
     Tenant,
@@ -56,23 +63,31 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
+from switch_core.db.stores.erasure_store import ErasureStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.retention_store import RetentionStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.auth import (
+    JWT_ALGORITHM,
+    SESSION_MAX_AGE,
+    create_jwt,
+    decode_jwt,
+)
 from switch_core.gateway.invite_mail import (
     InviteEmail,
     InviteEmailFailed,
     InviteMailer,
 )
 from switch_core.gateway.tenants import router as tenants_router
-from switch_core.keys import Keyring
+from switch_core.keys import Keyring, Purpose
 from switch_core.organization_directory import LocalDirectory
 from tests.ownership import NeverOwned
 from tests.switch_core.statement_counts import StatementCounts
@@ -171,6 +186,8 @@ def _app(
     )
     app.dependency_overrides[gw_deps.get_usage_store] = lambda: UsageStore()
     app.dependency_overrides[gw_deps.get_budget_store] = lambda: BudgetStore()
+    app.dependency_overrides[gw_deps.get_retention_store] = lambda: RetentionStore()
+    app.dependency_overrides[gw_deps.get_erasure_store] = lambda: ErasureStore()
     app.dependency_overrides[gw_deps.get_protocol] = lambda: _fake_protocol()
     app.dependency_overrides[gw_deps.get_invite_mailer] = lambda: mailer
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
@@ -243,7 +260,15 @@ async def _make_member(
 
 
 def _token(user_id: str, email: str, tenant_id: str | None) -> str:
-    return create_jwt(user_id, email, "user", _KEYRING, tenant_id)
+    return create_jwt(
+        user_id,
+        email,
+        "user",
+        _KEYRING,
+        tenant_id,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
 
 
 def _tenant_claim(response: httpx.Response) -> str | None:
@@ -452,7 +477,15 @@ class TestCreateTenant:
         user_id = await _make_unaffiliated_user(
             session_factory, name="operator", role="admin"
         )
-        token = create_jwt(user_id, "operator@example.invalid", "admin", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "operator@example.invalid",
+            "admin",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
 
         app = _app(session_factory, signup_mode="invite_only")
         async with _client(app, token) as client:
@@ -469,7 +502,15 @@ class TestCreateTenant:
         user_id = await _make_unaffiliated_user(
             session_factory, name="operator", role="admin"
         )
-        token = create_jwt(user_id, "operator@example.invalid", "admin", _KEYRING, None)
+        token = create_jwt(
+            user_id,
+            "operator@example.invalid",
+            "admin",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
         lifecycle = ClientLifecycleService(
             provisioning=MagicMock(),
             client_store=MagicMock(),
@@ -761,7 +802,13 @@ class TestWorkspaceCreationLimit:
             session_factory, name="demoted", tenant_id=TENANT_A, role="member"
         )
         stale_operator_token = create_jwt(
-            user_id, "demoted@example.invalid", "admin", _KEYRING, TENANT_A
+            user_id,
+            "demoted@example.invalid",
+            "admin",
+            _KEYRING,
+            TENANT_A,
+            session_version=0,
+            auth_time=datetime.now(UTC),
         )
 
         async with _client(
@@ -1454,26 +1501,33 @@ class TestMemberRoutes:
         flags = {row["name"]: row["service_account"] for row in response.json()}
         assert flags == {"Agent Bootstrap": False, "robot": True}
 
-    async def test_the_last_admin_cannot_be_demoted(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("another_admin", [True, False])
+    async def test_an_admin_steps_down_while_another_admin_remains(
+        self, session_factory: async_sessionmaker[AsyncSession], another_admin: bool
     ) -> None:
+        """Their own row is theirs to change; the last admin of all stays."""
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="sole-admin", tenant_id=TENANT_A, role="admin"
+            session_factory, name="stepping-down", tenant_id=TENANT_A, role="admin"
         )
-        token = _token(admin_id, "sole-admin@example.invalid", TENANT_A)
+        await _make_member(
+            session_factory,
+            name="other",
+            tenant_id=TENANT_A,
+            role="admin" if another_admin else "member",
+        )
+        token = _token(admin_id, "stepping-down@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             response = await client.patch(
                 f"/tenants/{TENANT_A}/members/{admin_id}", json={"role": "member"}
             )
 
-        assert response.status_code == 409
-
+        assert response.status_code == (200 if another_admin else 409), response.text
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, admin_id))
             assert membership is not None
-            assert membership.role == "admin"
+            assert membership.role == ("member" if another_admin else "admin")
 
     async def test_an_admin_can_be_demoted_when_another_admin_remains(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1496,22 +1550,32 @@ class TestMemberRoutes:
         assert response.status_code == 200, response.text
         assert response.json()["role"] == "member"
 
-    async def test_the_last_admin_cannot_be_removed(
-        self, session_factory: async_sessionmaker[AsyncSession]
+    @pytest.mark.parametrize("another_admin", [True, False])
+    async def test_an_admin_leaves_while_another_admin_remains(
+        self, session_factory: async_sessionmaker[AsyncSession], another_admin: bool
     ) -> None:
+        """As with their own role. Having left, the session no longer names
+        the workspace: it is re-minted onto none, their only one gone."""
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="undeletable-admin", tenant_id=TENANT_A, role="admin"
+            session_factory, name="leaving", tenant_id=TENANT_A, role="admin"
         )
-        token = _token(admin_id, "undeletable-admin@example.invalid", TENANT_A)
+        await _make_member(
+            session_factory,
+            name="other",
+            tenant_id=TENANT_A,
+            role="admin" if another_admin else "member",
+        )
+        token = _token(admin_id, "leaving@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{admin_id}")
 
-        assert response.status_code == 409
-
+        assert response.status_code == (200 if another_admin else 409), response.text
         async with session_factory() as session:
-            assert await session.get(TenantMember, (TENANT_A, admin_id)) is not None
+            left = await session.get(TenantMember, (TENANT_A, admin_id)) is None
+        assert left is another_admin
+        assert ("set-cookie" in response.headers) is another_admin
 
     async def test_removing_a_member_deletes_their_membership(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1779,6 +1843,8 @@ class TestCurrentTenantRoute:
             "organization_role": None,
             "organization_id": None,
             "administers": False,
+            "can_delete": False,
+            "can_manage_data_protection": False,
         }
 
     @pytest.mark.parametrize(
@@ -1867,6 +1933,11 @@ class TestOrganizationAdmins:
             "organization_role": "org_admin",
             "organization_id": organization_id,
             "administers": True,
+            # An organization admin administers it, but deletes it, erases
+            # people and sets messages to be deleted only by an admin
+            # membership of their own.
+            "can_delete": False,
+            "can_manage_data_protection": False,
         }
 
     async def test_an_org_admin_is_offered_and_may_switch_to_every_workspace_of_it(
@@ -1893,6 +1964,48 @@ class TestOrganizationAdmins:
         }
         assert switched.status_code == 200, switched.text
         assert _tenant_claim(switched) == TENANT_B
+
+    @pytest.mark.parametrize(
+        ("signed_in_days_ago", "status"), [(3, 200), (SESSION_MAX_AGE.days + 1, 401)]
+    )
+    async def test_switching_keeps_when_the_session_signed_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        signed_in_days_ago: int,
+        status: int,
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, TENANT_B, members={admin_id: "org_admin"}
+        )
+        signed_in = datetime.now(UTC) - timedelta(days=signed_in_days_ago)
+        token = create_jwt(
+            admin_id,
+            "org-admin@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
+        claims = decode_jwt(token, _KEYRING)
+        claims["auth_time"] = int(signed_in.timestamp())
+        forged = jwt.encode(
+            claims,
+            _KEYRING.derive(Purpose.SESSION),
+            algorithm=JWT_ALGORITHM,
+            headers={"kid": _KEYRING.current.id},
+        )
+
+        async with _client(_app(session_factory), forged) as client:
+            switched = await client.post(f"/tenants/{TENANT_B}/switch")
+
+        assert switched.status_code == status, switched.text
+        if status == 200:
+            minted = decode_jwt(switched.cookies["switch_auth"], _KEYRING)
+            assert minted["auth_time"] == int(signed_in.timestamp())
 
     async def test_an_org_admin_may_not_bind_another_organizations_workspace(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1962,6 +2075,28 @@ class TestOrganizationAdmins:
         assert last.status_code == 409, last.text
         assert last.json()["detail"] == "Cannot demote the last admin"
 
+    async def test_an_org_admin_cannot_remove_the_workspaces_last_admin(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, members={admin_id: "org_admin"}
+        )
+        last_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.delete(f"/tenants/{TENANT_A}/members/{last_id}")
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "Cannot remove the last admin"
+        async with session_factory() as session:
+            assert await session.get(TenantMember, (TENANT_A, last_id)) is not None
+
     @pytest.mark.parametrize("method", ["patch", "delete"])
     async def test_a_workspace_cannot_demote_or_remove_an_org_admin(
         self, session_factory: async_sessionmaker[AsyncSession], method: str
@@ -2001,6 +2136,263 @@ class TestOrganizationAdmins:
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, admin_id))
         assert membership is not None and membership.role == "admin"
+
+    @pytest.mark.parametrize("caller", ["ws-admin", "member", "org-admin"])
+    async def test_each_member_row_says_what_the_caller_may_do_with_it(
+        self, session_factory: async_sessionmaker[AsyncSession], caller: str
+    ) -> None:
+        """An admin may change and remove anyone, themselves included, but an
+        organization admin, whose standing comes from the organization; a
+        transfer may go to anyone with a membership here but the caller."""
+        org_admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        org_admin_member_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin-member", role="user"
+        )
+        await self._organization_of(
+            session_factory,
+            TENANT_A,
+            members={org_admin_id: "org_admin", org_admin_member_id: "org_admin"},
+        )
+        async with session_factory() as session:
+            session.add(
+                TenantMember(
+                    tenant_id=TENANT_A, user_id=org_admin_member_id, role="member"
+                )
+            )
+            await session.commit()
+        ids = {
+            "ws-admin": await _make_member(
+                session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+            ),
+            "member": await _make_member(
+                session_factory, name="member", tenant_id=TENANT_A, role="member"
+            ),
+            "org-admin": org_admin_id,
+            "org-admin-member": org_admin_member_id,
+        }
+        token = _token(ids[caller], f"{caller}@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(f"/tenants/{TENANT_A}/members")
+
+        assert response.status_code == 200, response.text
+        rows = {
+            row["name"]: (
+                row["can_change_role"],
+                row["can_remove"],
+                row["can_receive_transfer"],
+            )
+            for row in response.json()
+        }
+        administers = caller != "member"
+        expected = {
+            "ws-admin": (administers, administers, True),
+            "member": (administers, administers, True),
+            # Listed through the organization, with no membership here.
+            "org-admin": (False, False, False),
+            "org-admin-member": (False, False, True),
+        }
+        # An admin's own row is theirs to change too; nobody hands themselves
+        # anything.
+        change, remove, _ = expected[caller]
+        expected[caller] = (change, remove, False)
+        assert rows == expected
+
+
+class TestWorkspaceDeletionFlag:
+    async def test_an_admin_member_is_told_they_may_delete_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "ws-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/current")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["can_delete"] is True
+
+    async def test_nobody_is_told_they_may_delete_the_default_workspace(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_member(
+            session_factory, name="zero-admin", tenant_id=TENANT_ZERO_ID, role="admin"
+        )
+        token = _token(admin_id, "zero-admin@example.invalid", TENANT_ZERO_ID)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/current")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["administers"] is True
+        assert response.json()["can_delete"] is False
+
+
+class TestWorkspaceCountsRoute:
+    """`GET /tenants/counts`: people and agents for each workspace the caller
+    may enter, for the dashboard's workspace switcher."""
+
+    async def _organization_of(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *tenant_ids: str,
+        members: dict[str, str],
+    ) -> None:
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(
+                Organization(id=organization_id, slug=organization_id, name="Acme")
+            )
+            await session.flush()
+            for tenant_id in tenant_ids:
+                session.add(
+                    Tenant(
+                        id=tenant_id,
+                        slug=tenant_id,
+                        name=tenant_id,
+                        organization_id=organization_id,
+                    )
+                )
+            for user_id, role in members.items():
+                session.add(
+                    OrganizationMember(
+                        organization_id=organization_id, user_id=user_id, role=role
+                    )
+                )
+            await session.commit()
+
+    async def test_counts_each_workspace_of_a_member_on_its_own(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        await _make_tenant(session_factory, TENANT_B)
+        member_id = await _make_member(
+            session_factory, name="both", tenant_id=TENANT_A, role="member"
+        )
+        async with session_factory() as session:
+            session.add(
+                TenantMember(tenant_id=TENANT_B, user_id=member_id, role="admin")
+            )
+            await session.commit()
+        other_id = await _make_member(
+            session_factory, name="a-only", tenant_id=TENANT_A, role="admin"
+        )
+        for _ in range(2):
+            await _make_agent_with_key(
+                session_factory, tenant_id=TENANT_A, owner_id=other_id
+            )
+        await _make_agent_with_key(
+            session_factory, tenant_id=TENANT_B, owner_id=member_id
+        )
+        token = _token(member_id, "both@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/counts")
+
+        assert response.status_code == 200, response.text
+        assert sorted(response.json(), key=lambda row: row["id"]) == [
+            {"id": TENANT_A, "users": 2, "agents": 2},
+            {"id": TENANT_B, "users": 1, "agents": 1},
+        ]
+
+    async def test_counts_an_org_admin_once_whether_or_not_they_are_a_member(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, TENANT_B, members={admin_id: "org_admin"}
+        )
+        async with session_factory() as session:
+            session.add(
+                TenantMember(tenant_id=TENANT_A, user_id=admin_id, role="admin")
+            )
+            await session.commit()
+        await _make_member(
+            session_factory, name="b-member", tenant_id=TENANT_B, role="member"
+        )
+        token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/counts")
+
+        assert response.status_code == 200, response.text
+        assert sorted(response.json(), key=lambda row: row["id"]) == [
+            {"id": TENANT_A, "users": 1, "agents": 0},
+            {"id": TENANT_B, "users": 2, "agents": 0},
+        ]
+
+    async def test_an_org_member_who_is_no_admin_counts_only_where_they_are_a_member(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member_id = await _make_unaffiliated_user(
+            session_factory, name="org-member", role="user"
+        )
+        bystander_id = await _make_unaffiliated_user(
+            session_factory, name="bystander", role="user"
+        )
+        await self._organization_of(
+            session_factory,
+            TENANT_A,
+            members={member_id: "member", bystander_id: "member"},
+        )
+        async with session_factory() as session:
+            session.add(
+                TenantMember(tenant_id=TENANT_A, user_id=member_id, role="member")
+            )
+            await session.commit()
+        token = _token(member_id, "org-member@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/counts")
+
+        assert response.status_code == 200, response.text
+        assert response.json() == [{"id": TENANT_A, "users": 1, "agents": 0}]
+
+    async def test_the_operator_is_told_about_a_workspace_they_entered(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        await _make_member(
+            session_factory, name="a-admin", tenant_id=TENANT_A, role="admin"
+        )
+        operator_id = await _make_member(
+            session_factory,
+            name="operator",
+            tenant_id=TENANT_ZERO_ID,
+            role="admin",
+            user_role="admin",
+        )
+        token = _token(operator_id, "operator@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/counts")
+
+        assert response.status_code == 200, response.text
+        assert {row["id"] for row in response.json()} == {TENANT_ZERO_ID, TENANT_A}
+        assert {row["id"]: row["users"] for row in response.json()}[TENANT_A] == 1
+
+    async def test_a_workspace_named_by_someone_elses_claim_is_left_out(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        await _make_tenant(session_factory, TENANT_B)
+        member_id = await _make_member(
+            session_factory, name="member", tenant_id=TENANT_A, role="member"
+        )
+        token = _token(member_id, "member@example.invalid", TENANT_B)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/counts")
+
+        assert response.status_code == 200, response.text
+        assert [row["id"] for row in response.json()] == [TENANT_A]
 
 
 class TestUsageRoute:
@@ -2678,3 +3070,434 @@ class TestJoiningByDomain:
         assert missing.status_code == 404
         assert offered.json() == []
         assert joined.status_code == 404
+
+
+class TestRetentionRoutes:
+    async def _member(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        name: str,
+        role: str,
+    ) -> tuple[str, str]:
+        await _make_tenant(session_factory, TENANT_A)
+        user_id = await _make_member(
+            session_factory, name=name, tenant_id=TENANT_A, role=role
+        )
+        return user_id, _token(user_id, f"{name}@example.invalid", TENANT_A)
+
+    async def _audit_actions(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> list[tuple[str, dict | None]]:
+        async with tenant_session(session_factory, TENANT_A) as session:
+            rows = await session.execute(
+                select(AuditEvent.action, AuditEvent.details)
+                .where(AuditEvent.tenant_id == TENANT_A)
+                .order_by(AuditEvent.occurred_at)
+            )
+            return [(action, details) for action, details in rows.all()]
+
+    async def test_a_new_workspace_keeps_messages_forever(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, token = await self._member(session_factory, "keep-forever", "admin")
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(f"/tenants/{TENANT_A}/retention")
+
+        assert response.status_code == 200
+        assert response.json()["message_retention_days"] is None
+
+    async def test_an_admin_sets_changes_and_clears_the_window_and_each_is_audited(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        user_id, token = await self._member(session_factory, "retention-admin", "admin")
+
+        async with _client(_app(session_factory), token) as client:
+            first = await client.put(
+                f"/tenants/{TENANT_A}/retention", json={"message_retention_days": 90}
+            )
+            second = await client.put(
+                f"/tenants/{TENANT_A}/retention", json={"message_retention_days": 30}
+            )
+            read = await client.get(f"/tenants/{TENANT_A}/retention")
+            cleared = await client.delete(f"/tenants/{TENANT_A}/retention")
+            cleared_again = await client.delete(f"/tenants/{TENANT_A}/retention")
+
+        assert first.status_code == 200
+        assert first.json()["message_retention_days"] == 90
+        assert read.json()["message_retention_days"] == 30
+        assert read.json()["updated_by_user_id"] == user_id
+        assert (
+            second.status_code
+            == cleared.status_code
+            == cleared_again.status_code
+            == 200
+        )
+        assert cleared.json()["message_retention_days"] is None
+        assert await self._audit_actions(session_factory) == [
+            (
+                "retention_policy.set",
+                {"message_retention_days": 90, "previous_message_retention_days": None},
+            ),
+            (
+                "retention_policy.set",
+                {"message_retention_days": 30, "previous_message_retention_days": 90},
+            ),
+            ("retention_policy.cleared", {"previous_message_retention_days": 30}),
+        ]
+
+    async def test_a_member_can_neither_read_nor_change_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, token = await self._member(session_factory, "retention-member", "member")
+
+        async with _client(_app(session_factory), token) as client:
+            read = await client.get(f"/tenants/{TENANT_A}/retention")
+            written = await client.put(
+                f"/tenants/{TENANT_A}/retention", json={"message_retention_days": 30}
+            )
+
+        assert read.status_code == 403
+        assert written.status_code == 403
+
+    async def test_an_operator_without_admin_membership_cannot_set_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        operator_id = await _make_member(
+            session_factory,
+            name="retention-operator",
+            tenant_id=TENANT_A,
+            role="member",
+            user_role="admin",
+        )
+        operator = create_jwt(
+            operator_id,
+            "retention-operator@example.invalid",
+            "admin",
+            _KEYRING,
+            TENANT_A,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
+
+        async with _client(_app(session_factory), operator) as client:
+            read = await client.get(f"/tenants/{TENANT_A}/retention")
+            written = await client.put(
+                f"/tenants/{TENANT_A}/retention", json={"message_retention_days": 30}
+            )
+
+        assert read.status_code == 200
+        assert written.status_code == 403
+        assert written.json()["detail"] == (
+            "Only a workspace admin may set when messages are deleted"
+        )
+
+    @pytest.mark.parametrize("days", [0, 3651])
+    async def test_a_window_out_of_range_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession], days: int
+    ) -> None:
+        _, token = await self._member(
+            session_factory, f"retention-range-{days}", "admin"
+        )
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.put(
+                f"/tenants/{TENANT_A}/retention", json={"message_retention_days": days}
+            )
+
+        assert response.status_code == 422
+
+    async def test_another_workspace_in_the_path_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, token = await self._member(session_factory, "retention-cross", "admin")
+        await _make_tenant(session_factory, TENANT_B)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.put(
+                f"/tenants/{TENANT_B}/retention", json={"message_retention_days": 30}
+            )
+
+        assert response.status_code == 403
+
+    async def test_the_preview_counts_only_messages_older_than_the_window(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, token = await self._member(session_factory, "retention-preview", "admin")
+        now = datetime.now(UTC)
+        async with tenant_session(session_factory, TENANT_A) as session:
+            room = Room(
+                transport_room_id=f"!preview-{uuid.uuid4().hex[:8]}:test",
+                name="preview",
+                description="preview",
+            )
+            session.add(room)
+            await session.flush()
+            for index, age in enumerate((100, 40, 1)):
+                await MessageStore().create(
+                    session,
+                    Message(
+                        room_id=room.id,
+                        transport_event_id=f"$preview-{index}",
+                        sender_id="@sender:test",
+                        event_type="m.room.message",
+                        msgtype="m.text",
+                        body="hello",
+                        content={"msgtype": "m.text", "body": "hello"},
+                        sent_at=now - timedelta(days=age),
+                    ),
+                    [],
+                )
+            await session.commit()
+
+        async with _client(_app(session_factory), token) as client:
+            ninety = await client.get(f"/tenants/{TENANT_A}/retention/preview?days=90")
+            thirty = await client.get(f"/tenants/{TENANT_A}/retention/preview?days=30")
+
+        assert ninety.json() == {"message_retention_days": 90, "messages_to_delete": 1}
+        assert thirty.json() == {"message_retention_days": 30, "messages_to_delete": 2}
+
+
+class TestErasureRoutes:
+    async def _member(
+        self, session_factory: async_sessionmaker[AsyncSession], name: str, role: str
+    ) -> str:
+        user_id = await _make_member(
+            session_factory, name=name, tenant_id=TENANT_A, role=role
+        )
+        return _token(user_id, f"{name}@example.invalid", TENANT_A)
+
+    async def _person(
+        self, session_factory: async_sessionmaker[AsyncSession], username: str
+    ) -> str:
+        async with tenant_session(session_factory, TENANT_A) as session:
+            bridge_client = Client(
+                transport_user_id=f"@bridge-{uuid.uuid4().hex[:8]}:test",
+                display_name="bridge",
+                type="bridge",
+            )
+            person_client = Client(
+                transport_user_id=f"@{username}-{uuid.uuid4().hex[:8]}:test",
+                display_name=username,
+                type="user",
+            )
+            session.add_all([bridge_client, person_client])
+            await session.flush()
+            bridge = CollaborationBridge(
+                type="slack",
+                display_name="Acme Slack",
+                client_id=bridge_client.id,
+                status="active",
+            )
+            session.add(bridge)
+            await session.flush()
+            person = ExternalUser(
+                bridge_id=bridge.id,
+                external_user_id=f"U-{username}",
+                external_username=username,
+                client_id=person_client.id,
+            )
+            session.add(person)
+            await session.commit()
+            return person.id
+
+    async def test_an_admin_lists_people_queues_an_erasure_and_sees_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        token = await self._member(session_factory, "erase-admin", "admin")
+        person_id = await self._person(session_factory, "ana")
+
+        async with _client(_app(session_factory), token) as client:
+            people = await client.get(f"/tenants/{TENANT_A}/people")
+            queued = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"external_user_ids": [person_id]},
+            )
+            again = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"external_user_ids": [person_id]},
+            )
+            listed = await client.get(f"/tenants/{TENANT_A}/erasures")
+
+        assert people.status_code == 200
+        assert [
+            (p["username"], p["platform"], p["message_count"]) for p in people.json()
+        ] == [("ana", "slack", 0)]
+        assert queued.status_code == 202
+        assert queued.json()["state"] == "queued"
+        assert queued.json()["identities"] == 1
+        assert again.status_code == 409
+        assert [e["id"] for e in listed.json()] == [queued.json()["id"]]
+        async with tenant_session(session_factory, TENANT_A) as session:
+            actions = (
+                await session.execute(
+                    select(AuditEvent.action, AuditEvent.details).where(
+                        AuditEvent.tenant_id == TENANT_A
+                    )
+                )
+            ).all()
+        assert actions == [
+            (
+                "person_erasure.requested",
+                {
+                    "external_user_ids": [person_id],
+                    "former_participants": 0,
+                    "member_client_ids": [],
+                },
+            )
+        ]
+
+    async def test_a_former_participant_is_listed_and_erased(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        token = await self._member(session_factory, "erase-former", "admin")
+        sender_id = f"@switch-slack-{uuid.uuid4()}-dee:test"
+        async with tenant_session(session_factory, TENANT_A) as session:
+            room = Room(
+                transport_room_id=f"!r-{uuid.uuid4().hex[:8]}:test",
+                name="r",
+                description="r",
+            )
+            session.add(room)
+            await session.flush()
+            await MessageStore().create(
+                session,
+                Message(
+                    room_id=room.id,
+                    transport_event_id="$dee",
+                    sender_id=sender_id,
+                    sender_name="dee",
+                    event_type="m.room.message",
+                    msgtype="m.text",
+                    body="hi",
+                    content={"msgtype": "m.text", "body": "hi"},
+                ),
+                [],
+            )
+            await session.commit()
+
+        async with _client(_app(session_factory), token) as client:
+            people = await client.get(f"/tenants/{TENANT_A}/people")
+            empty = await client.post(f"/tenants/{TENANT_A}/erasures", json={})
+            queued = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"former_sender_ids": [sender_id]},
+            )
+
+        assert [
+            (p["id"], p["kind"], p["username"], p["bridge_name"], p["message_count"])
+            for p in people.json()
+        ] == [(sender_id, "former", "dee", None, 1)]
+        assert empty.status_code == 422
+        assert queued.status_code == 202
+        assert queued.json()["identities"] == 1
+
+    async def test_a_switch_console_member_is_listed_and_erased(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        token = await self._member(session_factory, "erase-console", "admin")
+        async with tenant_session(session_factory, TENANT_A) as session:
+            member = Client(
+                transport_user_id=f"@switch-member-{uuid.uuid4()}:test",
+                display_name="Former member",
+                type="member",
+            )
+            session.add(member)
+            await session.commit()
+            member_id = member.id
+
+        async with _client(_app(session_factory), token) as client:
+            people = await client.get(f"/tenants/{TENANT_A}/people")
+            queued = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"member_client_ids": [member_id]},
+            )
+
+        assert [
+            (p["id"], p["kind"], p["username"], p["platform"], p["message_count"])
+            for p in people.json()
+        ] == [(member_id, "member", "Former member", "switch", 0)]
+        assert queued.status_code == 202
+        assert queued.json()["identities"] == 1
+
+    async def test_a_member_or_an_operator_without_admin_membership_cannot_erase(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        member = await self._member(session_factory, "erase-member", "member")
+        operator_id = await _make_member(
+            session_factory,
+            name="erase-operator",
+            tenant_id=TENANT_A,
+            role="member",
+            user_role="admin",
+        )
+        operator = create_jwt(
+            operator_id,
+            "erase-operator@example.invalid",
+            "admin",
+            _KEYRING,
+            TENANT_A,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
+        person_id = await self._person(session_factory, "ana")
+
+        for token in (member, operator):
+            async with _client(_app(session_factory), token) as client:
+                people = await client.get(f"/tenants/{TENANT_A}/people")
+                queued = await client.post(
+                    f"/tenants/{TENANT_A}/erasures",
+                    json={"external_user_ids": [person_id]},
+                )
+            assert people.status_code == 403
+            assert queued.status_code == 403
+
+    async def test_a_person_from_another_workspace_is_not_found(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        await _make_tenant(session_factory, TENANT_B)
+        token = await self._member(session_factory, "erase-cross", "admin")
+        async with tenant_session(session_factory, TENANT_B) as session:
+            other_client = Client(
+                transport_user_id=f"@b-{uuid.uuid4().hex[:8]}:test",
+                display_name="b",
+                type="bridge",
+            )
+            person_client = Client(
+                transport_user_id=f"@p-{uuid.uuid4().hex[:8]}:test",
+                display_name="p",
+                type="user",
+            )
+            session.add_all([other_client, person_client])
+            await session.flush()
+            bridge = CollaborationBridge(
+                type="slack",
+                display_name="B",
+                client_id=other_client.id,
+                status="active",
+            )
+            session.add(bridge)
+            await session.flush()
+            person = ExternalUser(
+                bridge_id=bridge.id,
+                external_user_id="U-b",
+                external_username="b",
+                client_id=person_client.id,
+            )
+            session.add(person)
+            await session.commit()
+            other_person = person.id
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/erasures",
+                json={"external_user_ids": [other_person]},
+            )
+
+        assert response.status_code == 404

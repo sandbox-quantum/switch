@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentDetail, AgentSummary } from "../../data/api";
 import * as api from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import { ALL_OFF } from "../../data/featureFlags";
 import * as hooks from "../../data/hooks";
 import AgentDetailPage, { labelFromName } from "./AgentDetailPage";
 
@@ -67,6 +68,12 @@ const agent: AgentDetail = {
   addressing_policy: null,
   can_manage_agents: false,
   can_manage: true,
+  can_rename: true,
+  can_edit_options: true,
+  can_transfer: true,
+  transfer_blocked_reason: null,
+  can_change_manage_agents: true,
+  can_grant_services: true,
 };
 
 function showPage(detail: AgentDetail) {
@@ -94,6 +101,7 @@ describe("RenameAgentDialog", () => {
   beforeEach(() => {
     vi.mocked(useAuth).mockReturnValue({
       user: { id: "u1" },
+      capabilities: { features: ALL_OFF },
     } as unknown as ReturnType<typeof useAuth>);
     vi.stubGlobal(
       "fetch",

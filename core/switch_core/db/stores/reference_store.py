@@ -1,4 +1,6 @@
-from sqlalchemy import delete, func, or_, select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -157,10 +159,11 @@ class ReferenceStore:
 
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, reference_id: str
-    ) -> None:
-        """Attach a reference to a room. Idempotent: attaching one that is
-        already attached is a no-op, not a primary-key violation."""
-        await session.execute(
+    ) -> bool:
+        """Attach a reference to a room, saying whether it was attached now.
+        Idempotent: attaching one that is already attached is a no-op, not a
+        primary-key violation."""
+        result = await session.execute(
             pg_insert(room_references)
             .values(room_id=room_id, reference_id=reference_id)
             .on_conflict_do_nothing(
@@ -171,6 +174,7 @@ class ReferenceStore:
             )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, reference_id: str

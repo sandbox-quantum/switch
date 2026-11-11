@@ -11,6 +11,7 @@ what crosses between the two.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -25,13 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.api.handlers import (
-    connection_beat,
     connection_placements,
     connection_subscribe,
 )
 from switch_core.bridges.agent.api.operations import resolve_caller
 from switch_core.bridges.agent.api.schemas import (
-    ConnectionBeatRequest,
     ConnectionPlacementsRequest,
     ConnectionSubscribeRequest,
 )
@@ -339,6 +338,54 @@ class TestPresence:
 
         assert not b.registry.is_live(AGENT)
 
+    async def test_a_process_that_shut_down_is_not_a_warning(
+        self,
+        processes: tuple[Process, Process],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Every deploy shuts the old processes down; the lease alert is for
+        one that crashed or lost the database, not for that."""
+        a, b = processes
+        await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+        a.run.cancel()  # type: ignore[union-attr]
+        await a.lease.stop()
+        caplog.set_level(logging.INFO)
+
+        await b.shared.check_leases()
+
+        assert not b.registry.is_live(AGENT)
+        said = [r for r in caplog.records if a.lease.process_id in r.getMessage()]
+        assert [r.levelname for r in said] == ["INFO"]
+        assert "shut down" in said[0].getMessage()
+
+    async def test_a_process_that_stopped_renewing_is_a_warning(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        a, b = processes
+        await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+        a.run.cancel()  # type: ignore[union-attr]
+        async with session_factory() as session:
+            await session.execute(
+                update(SwitchCoreProcess)
+                .where(SwitchCoreProcess.id == a.lease.process_id)
+                .values(
+                    beat_at=SwitchCoreProcess.beat_at - LEASE_TTL - timedelta(seconds=1)
+                )
+            )
+            await session.commit()
+        caplog.set_level(logging.INFO)
+
+        await b.shared.check_leases()
+
+        said = [r for r in caplog.records if a.lease.process_id in r.getMessage()]
+        assert [r.levelname for r in said] == ["WARNING"]
+        assert "stopped holding their lease" in said[0].getMessage()
+
     async def test_the_runtime_state_sweep_sees_a_session_placed_elsewhere(
         self, processes: tuple[Process, Process]
     ) -> None:
@@ -581,28 +628,6 @@ class TestServedAnywhere:
             )
         assert claimant == "conn-2"
 
-    async def test_an_old_clients_beat_on_the_other_process_reaches_the_holder(
-        self, processes: tuple[Process, Process]
-    ) -> None:
-        a, b = processes
-        conn = await _open(a)
-        conn.last_beat = time.monotonic() - 4
-        stale = conn.last_beat
-
-        with tenant_scope(TENANT_ZERO_ID):
-            answer = await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(
-                    connection_id=CONN, generation=conn.stream_generation
-                ),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=b.protocol,
-            )
-
-        assert answer["ok"] is True
-        await _eventually(lambda: conn.last_beat > stale)
-        assert conn.beats == 1
-
     async def test_a_session_command_relayed_on_the_other_process_reaches_the_watcher(
         self, processes: tuple[Process, Process]
     ) -> None:
@@ -630,17 +655,6 @@ class TestTakeover:
         await _eventually(lambda: loser.closure is not None)
         assert loser.closure is not None
         assert loser.closure.code == "taken_over"
-        # The loser's late beat on the process it was on is refused as taken
-        # over, on the recorded row rather than on that process's memory.
-        with tenant_scope(TENANT_ZERO_ID), pytest.raises(HTTPException) as refused:
-            await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(connection_id=CONN, generation=held),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=a.protocol,
-            )
-        assert refused.value.status_code == 409
-        assert refused.value.detail["code"] == "taken_over"
         # And its reattach naming what it held is refused without moving
         # anything, wherever it lands.
         with pytest.raises(SupersededReattachError):
@@ -709,18 +723,8 @@ class TestTakeover:
             agent=_Agent(),  # type: ignore[arg-type]
             protocol=a.protocol,
         )
-        with tenant_scope(TENANT_ZERO_ID):
-            beat = await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(
-                    connection_id=CONN, generation=second.stream_generation
-                ),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=a.protocol,
-            )
 
         assert answer["placements"] == {"session-1": ROOM}
-        assert beat["ok"] is True
         assert first.closure is not None
         assert first.closure.code == "taken_over"
         assert second.closure is None

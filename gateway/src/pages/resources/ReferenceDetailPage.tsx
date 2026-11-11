@@ -20,15 +20,15 @@ import {
   fetchReference,
   updateReference,
 } from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import {
+  ACCESS_HELPERS_FOR_OTHERS,
   type AccessLevel,
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
 import { usePackages, useReferenceTypes } from "../../data/hooks";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
+import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
 import JsonValueForm from "./value_forms/JsonValueForm";
@@ -37,7 +37,6 @@ import UrlsValueForm from "./value_forms/UrlsValueForm";
 export default function ReferenceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, canAdminTenant } = useAuth();
   const { data: types } = useReferenceTypes();
   const [ref, setRef] = useState<ReferenceDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -83,15 +82,13 @@ export default function ReferenceDetailPage() {
   // Visibility-filtered, so it may miss a type this reference legitimately
   // has. Its only job is the value hint; every label comes from the server.
   const visibleTypeSpec = (types ?? []).find((t) => t.type === ref.type);
-  const canMutate =
-    !!user && (user.id === ref.owner_id || canAdminTenant);
-
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
         <IconButton
           onClick={() => navigate("/resources?tab=references")}
           size="small"
+          aria-label="Back"
         >
           <ArrowBack />
         </IconButton>
@@ -110,7 +107,8 @@ export default function ReferenceDetailPage() {
         <Divider />
         <EditFieldsSection
           ref_={ref}
-          canMutate={canMutate}
+          canEdit={ref.can_edit}
+          canChangeAccess={ref.can_manage}
           valueHint={visibleTypeSpec?.value_hint}
           onSaved={(updated) => setRef(updated)}
         />
@@ -122,7 +120,7 @@ export default function ReferenceDetailPage() {
           resourceId={id}
           hiddenRoomsCount={ref.hidden_rooms_count}
         />
-        {canMutate && (
+        {ref.can_manage && (
           <>
             <Divider />
             <TransferOwnershipSection
@@ -130,8 +128,13 @@ export default function ReferenceDetailPage() {
               resourceId={id}
               resourceLabel={ref.name || id}
               ownerId={ref.owner_id}
+              blockedReason={null}
               onTransferred={() => navigate(0)}
             />
+          </>
+        )}
+        {ref.can_manage && (
+          <>
             <Divider />
             <DangerSection onDelete={() => setDeleteOpen(true)} />
           </>
@@ -198,12 +201,14 @@ function InfoLine({
 
 function EditFieldsSection({
   ref_,
-  canMutate,
+  canEdit,
+  canChangeAccess,
   valueHint,
   onSaved,
 }: {
   ref_: ReferenceDetail;
-  canMutate: boolean;
+  canEdit: boolean;
+  canChangeAccess: boolean;
   valueHint: string | undefined;
   onSaved: (updated: ReferenceDetail) => void;
 }) {
@@ -234,7 +239,8 @@ function EditFieldsSection({
         name,
         description,
         instructions,
-        ...fromAccessLevel(access),
+        // Changing who may see or change it is the manager's alone.
+        ...(access !== toAccessLevel(ref_) ? fromAccessLevel(access) : {}),
         value,
       });
       onSaved(updated);
@@ -260,13 +266,13 @@ function EditFieldsSection({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
       />
       <TextField
         label="Description"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={2}
         helperText="Short, human-readable summary. Shown in lists."
@@ -275,7 +281,7 @@ function EditFieldsSection({
         label="Instructions"
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={6}
         helperText="Sent to agents on connect. Not shown in lists."
@@ -284,7 +290,7 @@ function EditFieldsSection({
         <UrlsValueForm
           value={value}
           onChange={setValue}
-          disabled={!canMutate || saving}
+          disabled={!canEdit || saving}
           helperText={
             valueHint ??
             "This reference's type is not visible to you. Enter one URL per line."
@@ -294,14 +300,15 @@ function EditFieldsSection({
         <JsonValueForm
           value={value}
           onChange={setValue}
-          disabled={!canMutate || saving}
+          disabled={!canEdit || saving}
           onValidityChange={setValueValid}
         />
       )}
       <AccessSelect
         value={access}
         onChange={setAccess}
-        disabled={!canMutate || saving}
+        disabled={!canChangeAccess || saving}
+        helpers={canChangeAccess ? undefined : ACCESS_HELPERS_FOR_OTHERS}
         sx={{ maxWidth: 320 }}
       />
       {error && <Alert severity="error">{error}</Alert>}
@@ -309,7 +316,7 @@ function EditFieldsSection({
         <Button
           variant="contained"
           onClick={handleSave}
-          disabled={!canMutate || !dirty || saving || !valueValid}
+          disabled={!(canEdit || canChangeAccess) || !dirty || saving || !valueValid}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
           Save

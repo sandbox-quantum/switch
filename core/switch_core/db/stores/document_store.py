@@ -1,4 +1,7 @@
-from sqlalchemy import and_, delete, func, insert, or_, select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, and_, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Document, Room, package_documents, room_documents
@@ -109,11 +112,18 @@ class DocumentStore:
 
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, document_id: str
-    ) -> None:
-        await session.execute(
-            insert(room_documents).values(room_id=room_id, document_id=document_id)
+    ) -> bool:
+        """Attach a document to a room, saying whether it was attached now.
+        Idempotent, as attaching a reference is."""
+        result = await session.execute(
+            pg_insert(room_documents)
+            .values(room_id=room_id, document_id=document_id)
+            .on_conflict_do_nothing(
+                index_elements=[room_documents.c.room_id, room_documents.c.document_id]
+            )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, document_id: str

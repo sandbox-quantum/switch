@@ -45,7 +45,13 @@ from switch_core.session_activity.service import (
 from switch_core.sessions.contract import Answer, QuestionsResult
 from switch_core.tenant_context import current_tenant_id
 
-from .bridge_fixtures import BridgedRoom, RecordingPlatform, make_bridged_room
+from .bridge_fixtures import (
+    BridgedRoom,
+    RecordingPlatform,
+    RefusedForGood,
+    RefusedForNow,
+    make_bridged_room,
+)
 from .conftest import AGENT, make_room, pick
 
 SESSION = "session-demo"
@@ -454,6 +460,70 @@ async def test_a_refused_post_releases_its_handle(
         assert (await db.execute(select(ApprovalRequestPost))).first() is None
 
 
+async def test_a_card_refused_for_good_is_posted_once_and_dropped(
+    service, publisher, platform, bridged, monkeypatch
+):
+    """A post too large for the platform used to be retried for as long as
+    the process ran."""
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.post_error = RefusedForGood("Content too large", text="")
+    await _open(service, bridged.room_id)
+    await platform.wait_until(lambda: platform.post_attempts >= 1)
+    await asyncio.sleep(0.5)
+
+    assert platform.post_attempts == 1
+    assert publisher._retries.waits == {}
+
+
+async def test_a_card_refused_a_bounded_number_of_times_is_then_dropped(
+    service, publisher, platform, bridged, monkeypatch, caplog
+):
+    """A 403 for a bot not yet in the channel can clear, so it gets a few
+    attempts; one that never clears stops being sent."""
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.post_error = RefusedForNow("forbidden", text="")
+    await _open(service, bridged.room_id)
+    await platform.wait_until(
+        lambda: platform.post_attempts >= publisher_module._MAX_REFUSALS
+    )
+    await asyncio.sleep(1.0)
+
+    assert platform.post_attempts == publisher_module._MAX_REFUSALS
+    assert publisher._retries.waits == {}
+    assert publisher._retries.refusals == {}
+    assert "refused it 5 times in a row; dropping it: forbidden" in caplog.text
+
+
+async def test_a_card_whose_bounded_refusal_clears_is_posted(
+    service, publisher, platform, bridged, monkeypatch
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.post_error = RefusedForNow("forbidden", text="")
+    await _open(service, bridged.room_id)
+    await platform.wait_until(lambda: platform.post_attempts >= 2)
+
+    platform.post_error = None
+    [posted] = await platform.wait_for(1)
+    assert posted.call == "post_rich"
+    assert publisher._retries.refusals == {}
+
+
+async def test_a_card_failing_transiently_is_tried_past_the_refusal_cap(
+    service, publisher, platform, bridged, monkeypatch
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    monkeypatch.setattr(publisher_module, "_RETRY_MAX_SECONDS", 0.1)
+    platform.post_error = RichContentFailed("refused", text="")
+    await _open(service, bridged.room_id)
+    await platform.wait_until(
+        lambda: platform.post_attempts > publisher_module._MAX_REFUSALS + 1
+    )
+
+    platform.post_error = None
+    [posted] = await platform.wait_for(1)
+    assert posted.call == "post_rich"
+
+
 async def test_open_requests_are_posted_on_start(
     service, session_factory, bridged, listener, platform, online
 ):
@@ -848,6 +918,47 @@ async def test_an_ended_turn_whose_card_could_not_be_drawn_backs_off_as_usual(
     await platform.wait_until(lambda: len(platform.of("opened")) == 1)
 
     assert publisher._retries.waits[_key("turn-1")] == 10.0
+
+
+async def test_an_ended_turn_refused_for_good_is_not_tried_again(
+    service, publisher, platform, bridged, monkeypatch
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.turn_post_errors["turn-1"] = RefusedForGood("Content too large", text="")
+    await _turn(service, bridged.room_id, "completed", 1)
+    await platform.wait_until(lambda: platform.post_attempts >= 1)
+    await asyncio.sleep(0.5)
+
+    assert platform.post_attempts == 1
+    assert _key("turn-1") not in publisher._retries.waits
+
+
+async def test_an_ended_turn_refused_for_now_is_tried_again(
+    service, publisher, platform, bridged, monkeypatch
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.turn_post_errors["turn-1"] = RichContentFailed("refused", text="")
+    await _turn(service, bridged.room_id, "completed", 1)
+    await platform.wait_until(lambda: platform.post_attempts >= 3)
+
+    del platform.turn_post_errors["turn-1"]
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+
+
+async def test_an_ended_turn_refused_a_bounded_number_of_times_is_then_dropped(
+    service, publisher, platform, bridged, monkeypatch, caplog
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.turn_post_errors["turn-1"] = RefusedForNow("not found", text="")
+    await _turn(service, bridged.room_id, "completed", 1)
+    await platform.wait_until(
+        lambda: platform.post_attempts >= publisher_module._MAX_REFUSALS
+    )
+    await asyncio.sleep(1.0)
+
+    assert platform.post_attempts == publisher_module._MAX_REFUSALS
+    assert _key("turn-1") not in publisher._retries.refusals
+    assert "refused it 5 times in a row; dropping it." in caplog.text
 
 
 async def test_the_asking_message_is_marked_once_on_a_turns_first_draw(

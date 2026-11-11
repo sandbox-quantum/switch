@@ -72,7 +72,7 @@ def calls() -> _Calls:
 @pytest.fixture
 def client(calls: _Calls, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     # Pings every 50 ms rather than every heartbeat interval.
-    monkeypatch.setattr(controller_routes, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(controller_routes, "PING_INTERVAL_SECONDS", 0.05)
 
     async def attach_stream(**kwargs: Any) -> AsyncGenerator[dict[str, Any]]:
         if calls.attach_refusal is not None:
