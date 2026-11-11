@@ -1,7 +1,50 @@
 slug: new-relic
 name: New Relic
 category: Observability
-description: Query New Relic telemetry and alerts.
-enabled: false
+description: Query New Relic telemetry, alerts and entities with your own user key, read-only.
+enabled: true
+adapter: api_key
 auth:
   type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: user_key
+        label: User key
+        secret: true
+        help: API keys, then Create key, then User. It starts with NRAK-.
+      - name: region
+        label: New Relic region
+        secret: false
+        help: The region your account is in. A key from one region is refused by another.
+        choices:
+          - newrelic.com
+          - eu.newrelic.com
+          - jp.newrelic.com
+    # NerdGraph names the user a user key belongs to. The key is sent to the
+    # region the person picked, so a key from the wrong region fails here
+    # rather than at the first tool call.
+    identity:
+      method: POST
+      url: "https://api.{region}/graphql"
+      headers:
+        API-Key: "{user_key}"
+        Content-Type: application/json
+      body:
+        query: "{ actor { user { id email } } }"
+      account_id: data.actor.user.id
+      label: data.actor.user.email
+    help_url: https://docs.newrelic.com/docs/apis/intro-apis/new-relic-api-keys/
+# A user key does not expire, and only New Relic can revoke it, so it is never
+# handed to an agent: whatever runs beside the agent could keep it for good.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    # New Relic's own MCP server takes the user key in an `api-key` header,
+    # named differently from the `API-Key` its GraphQL API reads. Region is
+    # part of the host, so one choice drives both calls.
+    - name: new-relic
+      url: "https://mcp.{region}/mcp/"
+      headers:
+        api-key: "{user_key}"
+tools: { mode: pass_through }
