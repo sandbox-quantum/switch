@@ -3,7 +3,11 @@
 #
 #   DD_API_KEY=... DD_APP_KEY=... NOTIFY=@slack-<workspace>-<channel> ./apply.sh
 #
-# Optional: DD_SITE (default datadoghq.com), DRY_RUN=1 to print what would change.
+# Optional: DD_SITE (default datadoghq.com), DRY_RUN=1 to print what would change,
+# WORKOS_DIRECTORY=1 to include the monitors tagged requires:workos-directory.
+# Those read the WorkOS mirror's gauges, which only a server running with
+# ORGANIZATION_DIRECTORY=workos reports; anywhere else they would sit in "no
+# data" and fire for ever.
 #
 # Monitors are matched by name and dashboards by title, so running it again
 # updates them in place instead of making copies. NOTIFY replaces the
@@ -32,7 +36,12 @@ dd() {
 }
 
 existing_monitors=$(dd GET "/monitor?monitor_tags=service:switch-core")
-jq -c '.[]' monitors.json | while read -r monitor; do
+if [[ -n "${WORKOS_DIRECTORY:-}" ]]; then
+  selected='.[]'
+else
+  selected='.[] | select((.tags | index("requires:workos-directory")) | not)'
+fi
+jq -c "$selected" monitors.json | while read -r monitor; do
   monitor=${monitor//@REPLACE-WITH-NOTIFICATION-HANDLE/$NOTIFY}
   name=$(jq -r .name <<<"$monitor")
   id=$(jq -r --arg n "$name" '[.[] | select(.name == $n) | .id][0] // empty' <<<"$existing_monitors")

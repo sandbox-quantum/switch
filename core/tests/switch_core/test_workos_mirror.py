@@ -4,7 +4,9 @@ WorkOS; `owner` only arranges fixtures and reads results."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -59,6 +61,8 @@ class _WorkOS:
         self.asked: list[dict[str, Any]] = []
         self.fail_role_for: str | None = None
         self.reject_cursor = False
+        self.fail_events = False
+        self.fail_members = False
 
     def change(self, subject: str, organization: str, role: str | None) -> None:
         if role is None:
@@ -84,6 +88,8 @@ class _WorkOS:
     ) -> list[dict[str, Any]]:
         assert types == EVENT_TYPES
         self.asked.append({"after": after, "range_start": range_start})
+        if self.fail_events:
+            raise DirectoryUnavailable("WorkOS answered 503 for /events.")
         if self.reject_cursor:
             raise EventCursorRejected("WorkOS answered 400 for /events.")
         start = 0
@@ -97,6 +103,8 @@ class _WorkOS:
         return self.memberships.get((subject, organization))
 
     async def organization_members(self, organization: str) -> dict[str, str]:
+        if self.fail_members:
+            raise DirectoryUnavailable("WorkOS answered 500.")
         return {
             subject: role
             for (subject, org), role in self.memberships.items()
@@ -171,7 +179,11 @@ class _Running:
         await self.mirror.check_once(self.fence)
 
 
-async def _mirror(rls_harness: RLSHarness, workos: _WorkOS) -> _Running:
+async def _mirror(
+    rls_harness: RLSHarness,
+    workos: _WorkOS,
+    clock: Callable[[], float] = lambda: 0.0,
+) -> _Running:
     process_id = _id("process")
     async with rls_harness.owner() as session:
         session.add(SwitchCoreProcess(id=process_id))
@@ -188,6 +200,7 @@ async def _mirror(rls_harness: RLSHarness, workos: _WorkOS) -> _Running:
         _dependencies(rls_harness.restricted),
         OwnershipLeaseStore(),
         ISSUER,
+        clock,
     )
     return _Running(
         mirror, Fence(kind=MIRROR_KIND, key=MIRROR_KEY, process_id=process_id, token=1)
@@ -538,3 +551,100 @@ class TestDailyCheckFailures:
         monkeypatch.setattr(workos_mirror, "apply_from_directory", real)
         await mirror.poll_once()
         assert await _roles(owner, organization_id) == {ada: "member", bea: "member"}
+
+
+class _Clock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _gauges(mirror: WorkOSMirror) -> dict[str, float]:
+    return {reading.spec.name: reading.value for reading in mirror.readings()}
+
+
+async def _until(condition: Callable[[], bool]) -> None:
+    async with asyncio.timeout(5):
+        while not condition():
+            await asyncio.sleep(0.01)
+
+
+class TestReporting:
+    """The gauges the alerts read: while the mirror runs here, how long since
+    a pass read the events through, how long the oldest organization has
+    waited in the recheck, and how long since the last full check."""
+
+    @pytest.fixture(autouse=True)
+    def _passes_back_to_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(workos_mirror, "POLL_INTERVAL_SECONDS", 0.01)
+
+    async def test_a_process_not_running_the_mirror_reports_nothing(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        mirror = await _mirror(rls_harness, _WorkOS())
+
+        assert _gauges(mirror.mirror) == {}
+
+    async def test_the_cursor_ages_from_the_start_until_a_pass_reads_through(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        workos = _WorkOS()
+        workos.fail_events = True
+        clock = _Clock(100.0)
+        running = await _mirror(rls_harness, workos, clock)
+        task = asyncio.create_task(running.mirror.run(running.fence))
+        try:
+            await _until(lambda: len(workos.asked) >= 2)
+            clock.now = 160.0
+            assert _gauges(running.mirror) == {
+                "switch.workos.cursor_age": 60.0,
+                "switch.workos.recheck.oldest_age": 0.0,
+                "switch.workos.full_check.age": 60.0,
+            }
+
+            workos.fail_events = False
+            asked = len(workos.asked)
+            await _until(lambda: len(workos.asked) > asked + 1)
+            clock.now = 190.0
+            assert _gauges(running.mirror)["switch.workos.cursor_age"] == 30.0
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert _gauges(running.mirror) == {}
+
+    async def test_an_organization_waiting_in_the_recheck_keeps_when_it_started(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        _, workos_id = await _linked(owner)
+        await _person(owner, "user_ADA")
+        workos = _WorkOS()
+        clock = _Clock(100.0)
+        running = await _mirror(rls_harness, workos, clock)
+        await running.poll_once()
+        workos.change("user_ADA", workos_id, "member")
+        workos.fail_role_for = "user_ADA"
+        workos.fail_members = True
+        task = asyncio.create_task(running.mirror.run(running.fence))
+        try:
+            await _until(lambda: len(workos.asked) > MAX_EVENT_ATTEMPTS + 1)
+            assert _gauges(running.mirror)["switch.workos.recheck.oldest_age"] == 0.0
+            clock.now = 400.0
+            await _until(lambda: len(workos.asked) > MAX_EVENT_ATTEMPTS + 3)
+            assert _gauges(running.mirror)["switch.workos.recheck.oldest_age"] == 300.0
+
+            workos.fail_role_for = None
+            workos.fail_members = False
+            await _until(
+                lambda: (
+                    _gauges(running.mirror)["switch.workos.recheck.oldest_age"] == 0.0
+                )
+            )
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
