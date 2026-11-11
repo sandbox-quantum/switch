@@ -1,0 +1,7 @@
+slug: zendesk
+name: Zendesk
+category: Customer support
+description: Read and update Zendesk tickets.
+enabled: false
+auth:
+  type: oauth
