@@ -187,6 +187,17 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **Removing someone from a workspace, or leaving it, says who receives what
+  they owned.** Their rooms, packages, references, reference types, library
+  documents and templates pass to another admin, and until now nothing said
+  so. The dashboard now asks before removing anyone, naming the admin who will
+  receive what they own, and afterwards reports how many of each passed and to
+  whom, along with any sign-in Switch could not revoke at a vendor, which it
+  used to discard. `DELETE /gateway/tenants/{tenant_id}/members/{user_id}`
+  returns `handed_over_to` (the recipient, or null when there is no other
+  admin) and `handed_over` (counts per kind), and the new
+  `GET /gateway/tenants/{tenant_id}/members/{user_id}/removal` names the
+  recipient beforehand.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error

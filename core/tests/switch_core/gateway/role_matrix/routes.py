@@ -245,6 +245,9 @@ ROUTES: dict[str, Case] = {
     "PATCH /gateway/tenants/{tenant_id}/members/{user_id}": patch(
         f"{W}/members/{{member_target}}", admins(), json={"role": "member"}
     ),
+    "GET /gateway/tenants/{tenant_id}/members/{user_id}/removal": get(
+        f"{W}/members/{{member_target}}/removal", admins()
+    ),
     "DELETE /gateway/tenants/{tenant_id}/members/{user_id}": delete(
         f"{W}/members/{{member_target}}", admins()
     ),
