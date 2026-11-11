@@ -2252,3 +2252,175 @@ describe('retrying a room message', () => {
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
 });
+
+describe('cancelling a queued turn', () => {
+  const asked = (commandId: string, actorId = 'user'): Command => ({
+    ...message(commandId),
+    origin: { actorId, surface: 'slack', roomId: 'room', threadId: null, messageId: commandId },
+  });
+  const cancel = (commandId: string, turnId: string, actorId = 'user'): Command => ({
+    ...message(commandId),
+    origin: { actorId, surface: 'slack', roomId: 'room', threadId: null, messageId: commandId },
+    body: { type: 'turn.cancel', turnId },
+  });
+  const statuses = (host: HostedSession) =>
+    Object.fromEntries(host.snapshot().turns.map((turn) => [turn.turnId, turn.status]));
+  const complete = (emit: (event: Record<string, unknown>) => void, turnId: string) =>
+    emit({ type: 'turn.completed', turnId, outcome: 'completed', usage: [] });
+
+  async function withQueue() {
+    const fixture = await start('codex');
+    for (const id of ['active', 'second', 'third', 'fourth']) await fixture.host.command(asked(id));
+    await until(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledOnce());
+    return fixture;
+  }
+
+  it('takes a queued turn out and keeps the rest in order', async () => {
+    const { host, adapter, emit } = await withQueue();
+    expect((await host.command(cancel('c1', 'third'))).status).toBe('applied');
+    expect(statuses(host)).toEqual({
+      active: 'running',
+      second: 'queued',
+      third: 'cancelled',
+      fourth: 'queued',
+    });
+
+    complete(emit, 'active');
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    complete(emit, 'second');
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+    complete(emit, 'fourth');
+    await until(() => expect(statuses(host).fourth).toBe('completed'));
+    expect(vi.mocked(adapter.sendTurn).mock.calls.map(([input]) => input.turnId)).toEqual([
+      'active',
+      'second',
+      'fourth',
+    ]);
+    expect(statuses(host).third).toBe('cancelled');
+  });
+
+  it('keeps the message in the transcript', async () => {
+    const { host } = await withQueue();
+    await host.command(cancel('c1', 'third'));
+    const items = host.snapshot().items.filter((item) => item.turnId === 'third');
+    expect(items.map((item) => item.kind)).toEqual(['user-message']);
+  });
+
+  it('refuses a turn that has started, pointing to an interrupt', async () => {
+    const { host, adapter } = await withQueue();
+    const refused = await host.command(cancel('c1', 'active'));
+    expect(refused.status).toBe('rejected');
+    expect(refused.message).toContain('This message has already started; use !interrupt');
+    expect(statuses(host).active).toBe('running');
+    expect(adapter.interruptTurn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a turn the host has claimed since the card was drawn', async () => {
+    const { host, adapter, emit } = await withQueue();
+    complete(emit, 'active');
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    const refused = await host.command(cancel('c1', 'second'));
+    expect(refused.status).toBe('rejected');
+    expect(refused.message).toContain('!interrupt');
+    expect(statuses(host).second).toBe('running');
+  });
+
+  it('refuses a turn that is staging its attachments, which has started', async () => {
+    const fixture = setup('codex');
+    fixture.config.session.capabilities.attachmentMimeTypes = ['text/plain'];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+    roots.push(root);
+    const host = await startHost(
+      root,
+      { ...fixture.config, stageAttachments: async () => (await gate, []) },
+      fixture.adapter
+    );
+    hosts.push(host);
+    await until(() => expect(host.snapshot().session.status).toBe('ready'));
+    const staged = asked('staged');
+    await host.command({
+      ...staged,
+      body: {
+        type: 'message.send',
+        delivery: 'queue',
+        text: 'Hello',
+        attachments: [
+          { attachmentId: 'a', name: 'a.txt', mimeType: 'text/plain', bytes: 1, sha256: null },
+        ],
+      },
+    });
+    const refused = await host.command(cancel('c1', 'staged'));
+    expect(refused.status).toBe('rejected');
+    expect(refused.message).toContain('!interrupt');
+    release();
+    await until(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledOnce());
+  });
+
+  it('lets only whoever sent the message cancel it, from the room it was sent in', async () => {
+    const { host } = await withQueue();
+    const stranger = await host.command(cancel('c1', 'third', 'someone-else'));
+    expect(stranger.status).toBe('rejected');
+    expect(stranger.message).toContain('FORBIDDEN');
+    const elsewhere = await host.command({
+      ...cancel('c2', 'third'),
+      origin: {
+        actorId: 'user',
+        surface: 'slack',
+        roomId: 'other-room',
+        threadId: null,
+        messageId: 'c2',
+      },
+    });
+    expect(elsewhere.status).toBe('rejected');
+    expect(statuses(host).third).toBe('queued');
+    expect((await host.command(cancel('c3', 'third'))).status).toBe('applied');
+  });
+
+  it('answers a repeated command as it did, and a second cancel of the turn clearly', async () => {
+    const { host } = await withQueue();
+    expect((await host.command(cancel('c1', 'third'))).status).toBe('applied');
+    expect((await host.command(cancel('c1', 'third'))).status).toBe('applied');
+    const again = await host.command(cancel('c2', 'third'));
+    expect(again.status).toBe('rejected');
+    expect(again.message).toContain('already cancelled');
+  });
+
+  it('refuses a turn it never had', async () => {
+    const { host } = await withQueue();
+    const refused = await host.command(cancel('c1', 'nothing'));
+    expect(refused.status).toBe('rejected');
+    expect(refused.message).toContain('NOT_FOUND');
+  });
+
+  it('journals the cancellation so a restart neither re-queues the turn nor calls it interrupted', async () => {
+    const { host, root } = await withQueue();
+    await host.command(cancel('c1', 'third'));
+    await host.shutdown();
+    const inbox = (await readFile(join(root, 'inbox.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; commandId?: string });
+    expect(inbox).toContainEqual({ type: 'finished', commandId: 'third' });
+    expect(inbox).toContainEqual({ type: 'dispatched', commandId: 'c1' });
+
+    const recovered = setup('codex');
+    const next = await startHost(root, recovered.config, recovered.adapter);
+    hosts.push(next);
+    await until(() => expect(next.snapshot().session.status).toBe('ready'));
+    expect(statuses(next)).toEqual({
+      active: 'interrupted',
+      second: 'interrupted',
+      third: 'cancelled',
+      fourth: 'interrupted',
+    });
+    expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
+    const warnings = next
+      .replay(0)
+      .events.filter(
+        (event) => event.body.type === 'notice' && event.body.code === 'TURN_INTERRUPTED'
+      );
+    expect(warnings).toHaveLength(3);
+  });
+});

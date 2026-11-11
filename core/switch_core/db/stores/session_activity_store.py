@@ -344,6 +344,22 @@ class AgentSessionActivityStore:
         )
         return result.scalar_one_or_none()
 
+    async def open_turns_in_room(
+        self, session: AsyncSession, agent_id: str, room_id: str
+    ) -> list[AgentSessionActivityItem]:
+        """The agent's queued and running turn rows in `room_id`, oldest first."""
+        result = await session.execute(
+            select(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                AgentSessionActivityItem.status.in_(("queued", "running")),
+            )
+            .order_by(AgentSessionActivityItem.created_at)
+        )
+        return list(result.scalars())
+
     async def newest_running_turn(
         self, session: AsyncSession, agent_id: str
     ) -> AgentSessionActivityItem | None:

@@ -406,6 +406,7 @@ class TestLiveChanges:
             requester_name="Ada",
             direct=False,
             target_message_id=None,
+            target_turn_id=None,
         )
         assert harness.protocol.connections.relay_session_command(agent_id, command)
         (frame,) = await take(stream, 1)

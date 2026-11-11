@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Item, Origin, ServerEvent } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it } from 'vitest';
-import { ActivityReporter, type Report } from './activity-reporter';
+import { ActivityReporter, asInterrupted, type Report } from './activity-reporter';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -56,7 +56,9 @@ function item(overrides: Partial<Item>): ServerEvent['body'] {
   };
 }
 
-const turn = (status: 'queued' | 'running' | 'completed' | 'error'): ServerEvent['body'] => ({
+const turn = (
+  status: 'queued' | 'running' | 'completed' | 'error' | 'cancelled'
+): ServerEvent['body'] => ({
   type: 'turn.upsert',
   turnId: 'turn',
   status,
@@ -352,4 +354,34 @@ it('remembers how far it reported across a restart', async () => {
   const again = await ActivityReporter.load(root);
   expect(again.fresh).toBe(false);
   expect(again.cursor).toBe(7);
+});
+
+it('reports a cancelled turn as its own row, and none of its usage', async () => {
+  const lines = await reporter();
+  const spent = [
+    { model: 'big', inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 },
+  ];
+  const [row] = rows(lines.reports(event(2, turn('cancelled')), originOf, () => spent));
+  expect(row).toMatchObject({ item_id: 'turn', status: 'cancelled', ...placed });
+});
+
+it('treats a cancelled turn as ended, so a notice right after it is drawn in it', async () => {
+  const lines = await reporter();
+  lines.reports(event(1, turn('queued')), originOf, noUsage);
+  lines.reports(event(2, turn('cancelled')), originOf, noUsage);
+  expect(rows(lines.reports(event(3, notice('Withdrawn')), originOf, noUsage))[0]).toMatchObject({
+    turn_id: 'turn',
+  });
+});
+
+it('offers an older server a cancelled turn as interrupted, and no other report', async () => {
+  const lines = await reporter();
+  const [cancelled] = lines.reports(event(2, turn('cancelled')), originOf, noUsage);
+  const retold = asInterrupted(cancelled!);
+  expect(retold).toEqual({
+    kind: 'activity',
+    row: { ...rows([cancelled!])[0], status: 'interrupted' },
+  });
+  for (const body of [turn('queued'), turn('error'), item({})])
+    expect(asInterrupted(lines.reports(event(3, body), originOf, noUsage)[0]!)).toBeNull();
 });

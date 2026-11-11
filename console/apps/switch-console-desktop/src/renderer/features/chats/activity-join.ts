@@ -15,7 +15,7 @@ import { switchTool } from './tool-presentation';
  * requests show with it.
  */
 
-export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
+export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'error' | 'cancelled';
 
 export type TurnActivity = {
   sessionId: string;
@@ -172,7 +172,9 @@ export function placeRequests(
  * the agent's first message after the previous turn, so a turn that ended
  * without a reply pushes the next turn under its own reply. A turn also shows
  * after the agent's own messages sent before its first step, such as an
- * acknowledgement posted while the session started.
+ * acknowledgement posted while the session started. A cancelled turn never ran,
+ * so it shows under its own message and leaves where the next turn follows from
+ * untouched.
  */
 export function placeTurns(
   messages: readonly ChatMessage[],
@@ -185,6 +187,10 @@ export function placeTurns(
   messages.forEach((message, at) => {
     const turn = bound.get(message.messageId);
     if (!turn) return;
+    if (turn.status === 'cancelled') {
+      placed.set(message.messageId, [...(placed.get(message.messageId) ?? []), turn]);
+      return;
+    }
     let anchor = at;
     if (previous !== null) {
       const after = previous;

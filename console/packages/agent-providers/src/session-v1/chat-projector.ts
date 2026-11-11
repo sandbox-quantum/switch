@@ -48,6 +48,21 @@ export class ChatProjector {
     this.turns.set(turnId, structuredClone(context));
   }
 
+  /**
+   * A turn withdrawn from the queue before the host took it up. It ran
+   * nothing, so unlike `turn.completed` there is nothing buffered to flush.
+   */
+  cancel(turnId: string): HostBody[] {
+    return [
+      {
+        type: 'turn.upsert',
+        turnId,
+        status: 'cancelled',
+        commandId: this.context(turnId).commandId,
+      },
+    ];
+  }
+
   ingest(event: ProviderRuntimeEvent, now: number): HostBody[] {
     if (event.sessionId !== this.session.sessionId || event.provider !== this.session.provider)
       throw new Error('Provider event identity mismatch.');

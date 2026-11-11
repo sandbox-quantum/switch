@@ -424,6 +424,7 @@ class TestStreamFrames:
                     requester_name="Ada",
                     direct=False,
                     target_message_id=None,
+                    target_turn_id=None,
                 ),
             )
             provoked += await take(stream, 1)

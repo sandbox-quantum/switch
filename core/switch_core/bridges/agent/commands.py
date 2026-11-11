@@ -178,8 +178,12 @@ async def _check_control_target(
             room,
             event,
             f"`!{event.command}` needs a target — e.g. `!{event.command} @agent-name` "
-            f"or `!{event.command} @role`. To act on every agent in the room, use "
-            f"`!{event.command}-all-agents`.",
+            f"or `!{event.command} @role`."
+            + (
+                f" To act on every agent in the room, use `!{event.command}-all-agents`."
+                if any(each.name == f"{event.command}-all-agents" for each in COMMANDS)
+                else ""
+            ),
         )
         return
 
@@ -287,7 +291,8 @@ _CONTROL_BODIES: dict[str, dict[str, str]] = {
 
 
 def retry_target(args: str) -> str | None:
-    """The message a `!retry @agent <message id>` names: the token after the target."""
+    """What `!retry @agent <message id>` or `!cancel @agent <turn id>` names:
+    the token after the target."""
     tokens = args.split()
     return tokens[1] if len(tokens) > 1 and tokens[0].startswith("@") else None
 
@@ -305,6 +310,7 @@ def room_control_frame(
     requester_name: str,
     direct: bool,
     target_message_id: str | None,
+    target_turn_id: str | None,
 ) -> dict[str, object]:
     """The `session_command` frame a room control is relayed as.
 
@@ -314,7 +320,8 @@ def room_control_frame(
     session with none of the conversation.
     `session_id` is None for a controller-backed agent, whose controller
     picks the session from the room. `target_message_id` is the message a
-    `retry` runs again, and None for every other control.
+    `retry` runs again, `target_turn_id` the queued turn a `cancel` withdraws,
+    and each is None for every other control.
     """
     if action == "retry":
         if target_message_id is None:
@@ -323,6 +330,10 @@ def room_control_frame(
             "type": "message.retry",
             "messageId": target_message_id,
         }
+    elif action == "cancel":
+        if target_turn_id is None:
+            raise ValueError("a cancel names the queued turn to withdraw")
+        body = {"type": "turn.cancel", "turnId": target_turn_id}
     else:
         body = _CONTROL_BODIES.get(action)
     if body is None:
@@ -524,6 +535,69 @@ async def _retry_refusal(
     return None
 
 
+async def _cancel_target(
+    client: AgentRecipient, room_id: str, event: CommandEvent, agent: Agent
+) -> tuple[str | None, str | None]:
+    """The queued turn a typed `!cancel @agent <turn id>` names, or why none.
+
+    The id is matched, ignoring case, as a prefix of this agent's queued turns
+    in this room and no others, so it cannot reach another room's turn or
+    another agent's. A prefix matching none or several is refused, saying which.
+    Only whoever sent the message the turn is answering may cancel it, so
+    unlike a retry a room manager has no say; a turn whose sender cannot be
+    established is refused rather than assumed to be the asker's.
+    """
+    prefix = retry_target(event.args)
+    if prefix is None:
+        return None, (
+            "Could not cancel: the command names no turn. Copy the command "
+            f"from the queued message: `!cancel @{agent.name} <turn id>`."
+        )
+    wanted = prefix.lower()
+    async with client.session_factory() as session:
+        open_turns = await AgentSessionActivityStore().open_turns_in_room(
+            session, agent.id, room_id
+        )
+        matching = [
+            turn for turn in open_turns if turn.turn_id.lower().startswith(wanted)
+        ]
+        queued = [turn for turn in matching if turn.status == "queued"]
+        if len(queued) > 1:
+            exact = [turn for turn in queued if turn.turn_id.lower() == wanted]
+            queued = exact or queued
+        if not queued:
+            if matching:
+                return None, (
+                    "Could not cancel: that message has already started. Use "
+                    f"`!interrupt @{agent.name}` to stop it."
+                )
+            return None, (
+                f"Could not cancel: {agent.name} has no queued turn in this room "
+                f"whose id starts with `{prefix}`."
+            )
+        if len(queued) > 1:
+            return None, (
+                f"Could not cancel: `{prefix}` matches {len(queued)} of "
+                f"{agent.name}'s queued turns. Give more of the turn id."
+            )
+        [turn] = queued
+        message = (
+            (
+                await session.execute(
+                    select(Message).where(
+                        Message.room_id == room_id,
+                        Message.transport_event_id == turn.message_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if turn.message_id is not None
+            else None
+        )
+    if message is None or message.sender_id != event.user_id:
+        return None, "Could not cancel: only whoever sent that message can cancel it."
+    return turn.turn_id, None
+
+
 async def _manages_room(
     client: AgentRecipient,
     session: AsyncSession,
@@ -604,12 +678,17 @@ async def _decide_control_command(
                 f"Could not send {command}: the room command has no stable message ID."
             )
         target = retry_target(event.args) if command == "retry" else None
+        turn_id: str | None = None
         if command == "retry":
             if target is None:
                 return say(
                     "Could not retry: the command names no message to run again."
                 )
             refusal = await _retry_refusal(client, meta.room_id, event, agent, target)
+            if refusal is not None:
+                return say(refusal)
+        if command == "cancel":
+            turn_id, refusal = await _cancel_target(client, meta.room_id, event, agent)
             if refusal is not None:
                 return say(refusal)
         frame = room_control_frame(
@@ -624,6 +703,7 @@ async def _decide_control_command(
             requester_name=event.user_name,
             direct=meta.channel_type == "direct",
             target_message_id=target,
+            target_turn_id=turn_id,
         )
 
         async def relay() -> None:
@@ -774,6 +854,31 @@ _RETRY = ControlTexts(
         "from Switch Console."
     ),
 )
+
+
+_CANCEL = ControlTexts(
+    ack="Cancelling that queued message.",
+    unsupported="I can't cancel a queued message — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so there's nothing to cancel."
+    ),
+    no_session=(
+        "I can't cancel a queued message from here — my session wasn't "
+        "started from Switch Console."
+    ),
+)
+
+
+async def _cmd_cancel(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    await _dispatch_control_command(client, room, event, "cancel", _CANCEL)
+
+
+async def _decide_cancel(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "cancel", _CANCEL)
 
 
 async def _cmd_retry(
@@ -2420,6 +2525,27 @@ COMMANDS: list[Command] = [
         ),
         addressed=_addressed_by_required_first_mention,
         hidden=True,
+    ),
+    Command(
+        "cancel",
+        "Cancel a queued message before the agent starts it. "
+        "Usage: `!cancel @agent-name <turn id>`, with the command copied from "
+        "the queued message. Only whoever sent the message can cancel it; "
+        "use `!interrupt` once it has started.",
+        _cmd_cancel,
+        decide=_decide_cancel,
+        args_spec=(
+            CommandArg(
+                "target", "Agent name, alias, or role to cancel on", required=True
+            ),
+            CommandArg(
+                "turn",
+                "The turn id, or its first 8 characters, shown on the queued message",
+                required=True,
+            ),
+        ),
+        addressed=_addressed_by_required_first_mention,
+        admin_check=_check_control_target,
     ),
     Command(
         "interrupt-all-agents",

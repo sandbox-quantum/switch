@@ -89,6 +89,14 @@ function turnOf(items: ChatActivityItem[], status: TurnActivity['status']): Turn
   };
 }
 
+describe('groupTurns', () => {
+  it('reads a cancelled turn row as a cancelled turn that shows under its message', () => {
+    const [turn] = groupTurns([row('t1', 'turn', { status: 'cancelled' })], []);
+    expect(turn).toMatchObject({ turnId: 't1', status: 'cancelled', messageId: 'm-t1' });
+    expect(isThinking(turn!)).toBe(false);
+  });
+});
+
 describe('placeRequests', () => {
   const at = (minute: number) => `2026-01-01T00:0${minute}:00Z`;
   const said = (messageId: string, agentId: string | null, minute: number): ChatMessage =>
@@ -192,6 +200,26 @@ describe('placeTurns', () => {
       q1: ['t1'],
       r1: ['t2'],
       r2: ['t3'],
+    });
+  });
+
+  it('keeps a cancelled turn under its own message, and the turn after it where it would have been', () => {
+    const messages = [
+      said('q1', null),
+      said('q2', null),
+      said('q3', null),
+      said('r1', 'helper'),
+      said('r3', 'helper'),
+    ];
+    const bound = new Map([
+      ['q1', turn('t1')],
+      ['q2', turn('t2', 'cancelled')],
+      ['q3', turn('t3', 'running')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({
+      q1: ['t1'],
+      q2: ['t2'],
+      r1: ['t3'],
     });
   });
 

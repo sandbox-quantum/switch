@@ -66,7 +66,10 @@ from switch_core.bridges.collaboration.adapter import (
     ThreadUnavailable,
     TurnActivity,
 )
-from switch_core.bridges.collaboration.session.renderers import RUNNING_CLOCK_SECONDS
+from switch_core.bridges.collaboration.session.renderers import (
+    RUNNING_CLOCK_SECONDS,
+    cancel_command,
+)
 from switch_core.db.models import (
     Agent,
     AgentSessionActivityItem,
@@ -1189,6 +1192,9 @@ class AgentSessionActivityPublisher:
             view.turn,
             elapsed,
             interrupt_turn_id=interrupt_turn_id,
+            cancel_command=cancel_command(target.agent_name, view.turn.turn_id)
+            if view.turn.status == "queued"
+            else None,
         )
         state = status_state(
             view,

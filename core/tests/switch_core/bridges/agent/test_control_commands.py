@@ -9,6 +9,7 @@ import pytest
 import switch_core.bridges.agent.commands as commands
 from switch_core.bridges.agent.commands import (
     _check_control_target,
+    _cmd_cancel,
     _cmd_reset,
     _cmd_retry,
 )
@@ -460,6 +461,7 @@ def test_an_interrupt_names_the_current_turn() -> None:
         requester_name="louisa",
         direct=False,
         target_message_id=None,
+        target_turn_id=None,
     )
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
 
@@ -480,6 +482,7 @@ def test_a_retry_runs_again_the_message_it_names() -> None:
         requester_name="louisa",
         direct=False,
         target_message_id="$m1",
+        target_turn_id=None,
     )
     assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
     with pytest.raises(ValueError):
@@ -495,6 +498,7 @@ def test_a_retry_runs_again_the_message_it_names() -> None:
             requester_name="louisa",
             direct=False,
             target_message_id=None,
+            target_turn_id=None,
         )
 
 
@@ -538,3 +542,137 @@ async def test_a_controller_backed_agent_is_relayed_a_retry_of_the_message(
     assert agent_id == "agent-1"
     assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
     assert reply.bodies[-1] == "Trying that message again."
+
+
+def test_a_cancel_names_the_queued_turn_it_withdraws() -> None:
+    frame = commands.room_control_frame(
+        agent_id="a",
+        session_id=None,
+        room_id="r",
+        action="cancel",
+        actor_id="@u:s",
+        message_id="$cancel-command",
+        thread_id=None,
+        surface="slack",
+        requester_name="louisa",
+        target_message_id=None,
+        target_turn_id="1a2b3c4d-0000-4000-8000-000000000001",
+    )
+    assert frame["body"] == {
+        "type": "turn.cancel",
+        "turnId": "1a2b3c4d-0000-4000-8000-000000000001",
+    }
+    assert frame["origin"]["actorId"] == "@u:s"
+    with pytest.raises(ValueError):
+        commands.room_control_frame(
+            agent_id="a",
+            session_id=None,
+            room_id="r",
+            action="cancel",
+            actor_id="@u:s",
+            message_id="$cancel-command",
+            thread_id=None,
+            surface="slack",
+            requester_name="louisa",
+            target_message_id=None,
+            target_turn_id=None,
+        )
+
+
+def test_cancel_is_a_command_that_needs_a_target_and_a_turn() -> None:
+    command = commands.COMMANDS_BY_NAME["cancel"]
+    assert command.decide is not None
+    assert [arg.name for arg in command.args_spec] == ["target", "turn"]
+    assert all(arg.required for arg in command.args_spec)
+    assert commands.retry_target("@helper 1a2b3c4d") == "1a2b3c4d"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live", [True, False])
+async def test_a_controller_backed_agent_is_relayed_a_cancel_of_the_turn(
+    monkeypatch: pytest.MonkeyPatch, live: bool
+) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    async def _surface(*_a: Any) -> str:
+        return "slack"
+
+    async def _resolved(*_a: Any) -> tuple[str | None, str | None]:
+        return "1a2b3c4d-0000-4000-8000-000000000001", None
+
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+    monkeypatch.setattr(commands, "_cancel_target", _resolved)
+    registry = AgentConnectionRegistry()
+    registry.controllers.bind(
+        Binding(
+            agent_id="agent-1",
+            controller_id="controller-1",
+            tenant_id="tenant",
+            controller_name="machine",
+            running=True,
+        )
+    )
+    conn = registry.controllers.open(
+        controller_id="controller-1", tenant_id="tenant", resume_cursors={}
+    )
+    if live:
+        registry.controllers.attach_stream(conn)
+    client = _client(reply, command_level="unsupported", enqueue=[])
+    client._connections = registry
+    event = _event("cancel")
+    event.args = "@cc 1a2b3c4d"
+
+    await _cmd_cancel(client, SimpleNamespace(room_id="!m:server"), event, False)
+
+    if live:
+        [(agent_id, frame)] = conn.session_commands
+        assert agent_id == "agent-1"
+        assert frame["body"] == {
+            "type": "turn.cancel",
+            "turnId": "1a2b3c4d-0000-4000-8000-000000000001",
+        }
+        assert reply.bodies[-1] == "Cancelling that queued message."
+    else:
+        assert conn.session_commands == []
+        assert "controller is not connected" in reply.bodies[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_cancel_is_answered_and_relays_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+    relayed: list[Any] = []
+
+    async def _refused(*_a: Any) -> tuple[str | None, str | None]:
+        return None, "Could not cancel: that message has already started."
+
+    monkeypatch.setattr(commands, "_cancel_target", _refused)
+    client = _client(
+        reply, command_level="unsupported", enqueue=[], placed="s1", relayed=relayed
+    )
+    event = _event("cancel")
+    event.args = "@cc 1a2b3c4d"
+
+    await _cmd_cancel(client, SimpleNamespace(room_id="!m:server"), event, False)
+
+    assert relayed == []
+    assert reply.bodies == ["Could not cancel: that message has already started."]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_without_a_target_is_told_how_to_name_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+    host = _admin_host(agent_names=["worker"], aliases={}, role_names=[])
+    event = _event("cancel")
+
+    await _check_control_target(host, SimpleNamespace(room_id="!m"), event, _meta())
+
+    assert len(reply.bodies) == 1
+    assert "`!cancel` needs a target" in reply.bodies[0]
+    assert "all-agents" not in reply.bodies[0]
