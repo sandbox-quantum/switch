@@ -187,6 +187,17 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A messaging app bridge that cannot start stops being retried at every
+  hand-over, and a retired one stops reading as crashed.** A bridge refused
+  before it runs (its host no longer resolves, say) is logged once as an error
+  with the reason and is not tried again in that process until it is edited
+  or restarted; before, every switch-core process tried it again at each
+  hand-over and logged a stack trace. A bridge whose task died and whose row
+  was then removed or deactivated no longer keeps the bridges health check
+  red until the pods restart.
+  A bridge that crashes on the network or on Switch's own database (its pool
+  briefly out of connections, say) is tried again after a wait instead of
+  staying down until the next deploy.
 - **Renaming a channel on a messaging app renames its room.** Slack,
   Mattermost, Microsoft Teams and Telegram now pass a channel's new name to
   Switch, as Discord already did, using what each platform already sends, so
