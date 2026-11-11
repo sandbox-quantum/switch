@@ -310,7 +310,20 @@ jobs:
       # The desktop app's `browser` vitest project drives a real Chromium via
       # @vitest/browser-playwright, so the browser binary must be present.
       - name: Install Playwright Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        # The browser comes from Playwright's own download servers. Its system
+        # packages (fonts, a few libraries) come from Ubuntu's archive through
+        # apt, which GitHub's runners sometimes cannot reach for hours. The
+        # runner image already carries Chrome's libraries, so an unreachable
+        # archive is a warning, not a failure: if a library really is missing,
+        # the browser tests fail loudly when Chromium will not launch.
+        run: |
+          pnpm exec playwright install chromium
+          for attempt in 1 2 3; do
+            if pnpm exec playwright install-deps chromium; then exit 0; fi
+            echo "install-deps attempt $attempt failed; retrying in 20s"
+            sleep 20
+          done
+          echo "::warning title=Playwright system packages::Could not install Chromium's system packages from Ubuntu's archive; running with the runner image's own."
 
       # The bundled compose is a generated copy of deploy/local's, and until now
       # nothing verified the sync had run — the two could drift with only a
