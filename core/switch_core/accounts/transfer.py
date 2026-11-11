@@ -16,9 +16,7 @@ first:
 - an agent with sub-agents, or a sub-agent, is one of a family registered
   together from one session;
 - an agent that signs in with an OAuth client of its own holds a credential
-  this module does not rotate;
-- an agent a server-side connector runs is registered again by that
-  connector, under its own owner, whenever the server starts.
+  this module does not rotate.
 
 What is left is the agent's API key, which its owner can reveal. It is
 re-issued to the new owner, so a copy the previous owner holds stops working.
