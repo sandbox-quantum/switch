@@ -1380,7 +1380,7 @@ class SlackAdapter(PlatformAdapter):
         )
         if missing is None:
             return True
-        logger.warning(
+        logger.info(
             "Not streaming the activity for turn %s (%s); drawing it as an "
             "ordinary message, which collapses an expanded plan on each redraw.",
             content.turn.turn_id,
@@ -1671,7 +1671,7 @@ class SlackAdapter(PlatformAdapter):
         code = error.response.get("error")
         if code in _STREAM_CLOSED_ERRORS:
             self._streams.pop(message_ref, None)
-            logger.warning(
+            logger.info(
                 "The activity stream %s is no longer accepting appends (%s); "
                 "the turn is drawn as an ordinary message from here.",
                 message_ref,
@@ -2705,7 +2705,7 @@ class SlackAdapter(PlatformAdapter):
             label, handle = group.name, group.handle
             try:
                 await self._retire_agent_group(group.group_id, label)
-                logger.warning(
+                logger.info(
                     "Retired Slack user group @%s (%s): its agent no longer exists",
                     handle,
                     group.group_id,
@@ -2719,11 +2719,16 @@ class SlackAdapter(PlatformAdapter):
             if group.ours and not group.disabled and group.agent_id is None
         ]
         if unclaimed:
-            logger.warning(
+            # Said on every bridge start, and the list grows with every agent
+            # ever deleted elsewhere: the count at info, the handles at debug.
+            logger.info(
                 "%d Slack user group(s) marked as Switch agents belong to no agent "
                 "here and were left alone, as they may belong to another Switch "
-                "installation: %s. Disable them in Slack if they are not needed.",
+                "installation. Disable them in Slack if they are not needed.",
                 len(unclaimed),
+            )
+            logger.debug(
+                "Slack user groups belonging to no agent here: %s",
                 ", ".join(f"@{group.handle}" for group in unclaimed),
             )
         return failures
@@ -3852,7 +3857,7 @@ class SlackAdapter(PlatformAdapter):
                 continue
             size = file.get("size")
             if isinstance(size, int) and size > self._max_attachment_bytes:
-                logger.warning(
+                logger.info(
                     "Slack attachment %s is %d bytes, over the %d cap",
                     filename,
                     size,

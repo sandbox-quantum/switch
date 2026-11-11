@@ -45,6 +45,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **switch-core counts controller reconnects.** `switch.controllers.connections`
+  counts agent controller connections opened, adopted from another process,
+  taken over and closed (with the close code as `reason`), so reconnect churn
+  shows as a rate instead of hundreds of thousands of log lines.
 - **New accounts can be refused by country.** `GATEWAY_SIGNUP_REFUSED_HEADER`
   (chart: `switchCore.signup.refusedHeader`) names a request header that the
   edge in front of Switch, such as a WAF rule matching on the client's
@@ -104,6 +108,21 @@ version of their own to them without also giving them a release of their own.
   switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
+- **switch-core's logs keep to what matters.** Successful routine polls (health
+  checks, controller status, assignment and operations polls, Console's
+  controller and agent lists, host observations, session activity) and
+  uvicorn's per-connection WebSocket lines are no longer logged at info;
+  failures on the same routes still are. Controller connection churn moved to
+  debug, behind the new counter. Routine events that were warnings are info:
+  platform rate limits, agents calling a tool wrongly (a 4xx), addressing
+  refusals, attachments over the cap, activity drawn as a plain message, and
+  cleanup of user groups and turns left by deleted agents. The list of other
+  installations' Slack user groups is logged at debug, with only the count at
+  info. A Slack identity that cannot be provisioned (a handle already taken)
+  is a warning the first time a process sees it instead of an error on every
+  bridge start, and "trusting unverified OIDC email" is said once per process.
+  Two bridges connecting the same workspace, which pilot does on purpose, is
+  said once per pair at info rather than as a warning on every start.
 - **The operator dashboard follows the current design.** A field's label sits
   above it rather than floating inside the box, and the field has a white fill
   and a firm border and ring when focused; switches are pills, and one that is
@@ -186,7 +205,8 @@ version of their own to them without also giving them a release of their own.
   controller reattaching through the other pod was also refused and had to
   open a new connection, because the pod holding the socket noticed it had
   closed only at its next ping. It now lets the socket go as it closes, and
-  the other pod takes the connection up.
+  the other pod takes the connection up, waiting up to 2 seconds for the
+  first pod to record the socket going if the controller comes back sooner.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**

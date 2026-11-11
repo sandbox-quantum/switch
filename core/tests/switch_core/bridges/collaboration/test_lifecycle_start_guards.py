@@ -246,3 +246,34 @@ async def test_a_restart_elsewhere_tries_a_bridge_refused_here_again(
     await elsewhere.restarted_elsewhere(bridge_id)
     assert asked == [bridge_id, bridge_id]
     await here.stop(bridge_id)
+
+
+class _SharedWorkspaceAdapter(_StubAdapter):
+    @classmethod
+    def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
+        return "T-shared"
+
+
+async def test_bridges_sharing_a_workspace_are_reported_once_and_not_as_a_warning(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pilot runs several tenants on one Slack workspace on purpose."""
+    _, first = await _bridge(session_factory)
+    _, second = await _bridge(session_factory)
+    service = _service(session_factory)
+    service.register_adapter("mattermost", _SharedWorkspaceAdapter, _StubConfig)
+
+    async def _run(*_: object) -> None: ...
+
+    service._run_bridge = _run  # type: ignore[method-assign]
+    caplog.set_level("DEBUG", logger="switch_core.bridges.collaboration")
+
+    await service.start(first)
+    await service.start(second)
+    await service.stop(second)
+    await service.start(second)
+
+    shared = [r for r in caplog.records if "also connects" in r.getMessage()]
+    assert [r.levelname for r in shared] == ["INFO"]
+    await service.stop_all()
