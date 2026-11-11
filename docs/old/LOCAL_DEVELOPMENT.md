@@ -20,7 +20,7 @@ gateway frontend.
 
 ```bash
 just init-env            # first-time setup — generate .env with random secrets
-uv sync                  # install Python dependencies (core/)
+uv sync --project core   # install Python dependencies (core/)
 just gateway-install     # install gateway frontend deps (first time only)
 ```
 
@@ -81,8 +81,7 @@ boot instead, as a standing reminder that tenant isolation is not active.
 
 ```bash
 just up      # start the supporting services (Docker Compose)
-just migrate # apply database migrations
-just run     # run switch-core (:8000)
+just run     # run switch-core (:8000); applies database migrations on start
 just gateway-dev   # run the gateway frontend, in a separate terminal (:5173)
 ```
 
@@ -101,10 +100,10 @@ setting existed lacks it, and
 the Mattermost bridge then refuses to start with a message naming the variable:
 add the line from `.env.example`.
 
-`just migrate` runs `alembic upgrade head` against the Postgres started by
-`just up`. Run it once after the stack is up and again after pulling any
-change that adds a migration — `just run` does not apply migrations itself
-and will fail against a database that's behind.
+switch-core applies pending database migrations when it starts, so `just run`
+brings a database that's behind up to date. Set `DB_MIGRATE_ON_BOOT=false` to
+turn that off. `just migrate` runs `alembic upgrade head` against the
+Postgres started by `just up` without starting the server.
 
 `just run` starts switch-core (`python -m switch_core.main`) on
 `SERVER_PORT` (`8000` by default). This one process is both the Agent Bridge

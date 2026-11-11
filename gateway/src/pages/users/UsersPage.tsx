@@ -12,10 +12,10 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import type { ListedUser } from "../../data/api";
 import { useUsers } from "../../data/hooks";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 import CreateUserDialog from "./CreateUserDialog";
 import DeleteUserDialog from "./DeleteUserDialog";
 
@@ -90,6 +90,7 @@ export default function UsersPage() {
         <DataTable
           rows={users ?? []}
           columns={columns}
+          emptyState={<TableEmptyState title="No users yet" />}
           height={Math.min(600, 108 + (users?.length ?? 0) * 52)}
           pageSize={25}
         />

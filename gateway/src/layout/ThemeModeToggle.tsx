@@ -47,10 +47,10 @@ export default function ThemeModeToggle() {
                 cursor: "pointer",
                 borderRadius: "9999px",
                 transition: "color 150ms, background-color 150ms",
-                backgroundColor: selected ? "var(--hoot-muted)" : "transparent",
+                backgroundColor: selected ? "var(--sw-muted)" : "transparent",
                 color: selected ? "text.primary" : "text.secondary",
                 "&:hover": { color: "text.primary" },
-                "&:focus-visible": { outline: "2px solid var(--hoot-ring)", outlineOffset: 1 },
+                "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 1 },
               }}
             >
               <option.icon sx={{ fontSize: 14 }} />

@@ -21,10 +21,10 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { type ApiKeyDetail, deleteApiKey, revealApiKey } from "../../data/api";
 import { useApiKeys } from "../../data/hooks";
-import { MONO_SX, formatDate } from "../../theme/hootFormat";
+import { MONO_SX, formatDate } from "../../theme/format";
 import CreateKeyDialog from "./CreateKeyDialog";
 import { formatKeyExpiry } from "./keyExpiry";
 
@@ -235,7 +235,7 @@ export default function RegistrationKeysPage() {
             flexShrink: 0,
             display: "flex",
             flexDirection: "column",
-            height: Math.min(400, 108 + registrationKeys.length * 52),
+            height: Math.min(400, 108 + Math.max(1, registrationKeys.length) * 52),
           }}
         >
           <DataTable
@@ -243,6 +243,11 @@ export default function RegistrationKeysPage() {
             columns={regColumns}
             fillHeight
             pageSize={10}
+            emptyState={
+              <TableEmptyState title="No keys for adding agents yet">
+                Create one to let an agent join this workspace.
+              </TableEmptyState>
+            }
           />
         </Box>
       )}
@@ -276,7 +281,19 @@ export default function RegistrationKeysPage() {
       {loading ? (
         <CircularProgress />
       ) : (
-        <DataTable rows={agentKeys} columns={agentColumns} fillHeight pageSize={25} />
+        <DataTable
+          rows={agentKeys}
+          columns={agentColumns}
+          fillHeight
+          pageSize={25}
+          emptyState={
+            agentSearch.trim() ? (
+              <TableEmptyState title="No agent keys match that search" />
+            ) : (
+              <TableEmptyState title="No agent keys yet">An agent gets its own key when it joins.</TableEmptyState>
+            )
+          }
+        />
       )}
 
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>

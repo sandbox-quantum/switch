@@ -15,7 +15,7 @@ opening an issue.
 
 ```bash
 just init-env            # first-time setup — generate .env with random secrets
-uv sync                  # install Python dependencies
+uv sync --project core   # install Python dependencies
 just gateway-install     # install gateway frontend deps (first time only)
 just up                  # start the supporting stack (Docker Compose)
 just run                 # run switch-core locally (:8000)

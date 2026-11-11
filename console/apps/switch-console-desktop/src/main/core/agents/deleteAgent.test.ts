@@ -144,7 +144,7 @@ describe('deleteAgent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.state.repoAgents = { removeLocal: h.removeLocal };
-    h.state.agent = { id: 'agent-1', name: 'cc-hoot', providerId: 'claude', locationId: 'loc' };
+    h.state.agent = { id: 'agent-1', name: 'cc-agent', providerId: 'claude', locationId: 'loc' };
     h.state.sessionRows = [];
     h.state.sshHost = null;
   });
@@ -185,8 +185,8 @@ describe('deleteAgent', () => {
     // a provider without `removeLocal` would otherwise leave a live token on disk
     // with no UI path left to revoke it.
     h.state.repoAgents = null;
-    h.state.agent = { id: 'agent-1', name: 'codex-hoot', providerId: 'codex', locationId: 'loc' };
-    const fs = fakeFs({ [agentSettingsRelativePath('codex-hoot')]: CREDS });
+    h.state.agent = { id: 'agent-1', name: 'codex-agent', providerId: 'codex', locationId: 'loc' };
+    const fs = fakeFs({ [agentSettingsRelativePath('codex-agent')]: CREDS });
     h.state.fs = fs;
 
     await deleteAgent('agent-1', {
@@ -195,13 +195,13 @@ describe('deleteAgent', () => {
       trigger: 'user',
     });
 
-    expect(await fs.exists(agentSettingsRelativePath('codex-hoot'))).toBe(false);
+    expect(await fs.exists(agentSettingsRelativePath('codex-agent'))).toBe(false);
   });
 
   it('strips the shared settings file only of this agent’s own credentials', async () => {
     h.state.agent = {
       id: 'agent-1',
-      name: 'cc-hoot',
+      name: 'cc-agent',
       providerId: 'claude-code',
       locationId: 'loc',
       switchAgentId: 'sw-1',
@@ -219,8 +219,8 @@ describe('deleteAgent', () => {
 
   it('removes both the credentials and the definition for a repo-agents provider', async () => {
     const fs = fakeFs({
-      [agentSettingsRelativePath('cc-hoot')]: CREDS,
-      '.claude/agents/cc-hoot.md': '# cc-hoot',
+      [agentSettingsRelativePath('cc-agent')]: CREDS,
+      '.claude/agents/cc-agent.md': '# cc-agent',
     });
     h.state.fs = fs;
 
@@ -230,17 +230,17 @@ describe('deleteAgent', () => {
       trigger: 'user',
     });
 
-    expect(await fs.exists(agentSettingsRelativePath('cc-hoot'))).toBe(false);
-    expect(await fs.exists('.claude/agents/cc-hoot.md')).toBe(false);
+    expect(await fs.exists(agentSettingsRelativePath('cc-agent'))).toBe(false);
+    expect(await fs.exists('.claude/agents/cc-agent.md')).toBe(false);
   });
 
   it('leaves the working directory untouched on a plain remove (CHOO-2560)', async () => {
     // An agent loaded from a shared host has credentials another install owns;
     // a remove without removeProvisionedFiles must not reach into the directory.
-    h.state.agent = { id: 'agent-1', name: 'cc-hoot', providerId: 'claude', locationId: 'loc' };
+    h.state.agent = { id: 'agent-1', name: 'cc-agent', providerId: 'claude', locationId: 'loc' };
     const fs = fakeFs({
-      [agentSettingsRelativePath('cc-hoot')]: CREDS,
-      '.claude/agents/cc-hoot.md': '# cc-hoot',
+      [agentSettingsRelativePath('cc-agent')]: CREDS,
+      '.claude/agents/cc-agent.md': '# cc-agent',
     });
     h.state.fs = fs;
 
@@ -250,15 +250,15 @@ describe('deleteAgent', () => {
       trigger: 'user',
     });
 
-    expect(await fs.exists(agentSettingsRelativePath('cc-hoot'))).toBe(true);
-    expect(await fs.exists('.claude/agents/cc-hoot.md')).toBe(true);
+    expect(await fs.exists(agentSettingsRelativePath('cc-agent'))).toBe(true);
+    expect(await fs.exists('.claude/agents/cc-agent.md')).toBe(true);
     expect(h.removeLocal).not.toHaveBeenCalled();
     expect(h.removeSwitchCredentials).not.toHaveBeenCalled();
   });
 
   it('leaves a sibling agent sharing the directory untouched', async () => {
     const fs = fakeFs({
-      [agentSettingsRelativePath('cc-hoot')]: CREDS,
+      [agentSettingsRelativePath('cc-agent')]: CREDS,
       [agentSettingsRelativePath('cc-sibling')]: CREDS,
     });
     h.state.fs = fs;
@@ -304,7 +304,7 @@ describe('deleteAgent', () => {
       h.state.sshHost = 'vm-1';
       h.state.agent = {
         id: 'agent-1',
-        name: 'cc-hoot',
+        name: 'cc-agent',
         providerId: 'claude',
         locationId: 'loc',
         serverId: 'srv-1',
@@ -312,8 +312,8 @@ describe('deleteAgent', () => {
         switchAgentId: 'sw-1',
       };
       const fs = fakeFs({
-        [agentSettingsRelativePath('cc-hoot')]: CREDS,
-        '.claude/agents/cc-hoot.md': '# cc-hoot',
+        [agentSettingsRelativePath('cc-agent')]: CREDS,
+        '.claude/agents/cc-agent.md': '# cc-agent',
       });
       h.state.fs = fs;
 
@@ -326,8 +326,8 @@ describe('deleteAgent', () => {
       expect(gatewayDeleteAgent).toHaveBeenCalledOnce();
       expect(stopRemoteWatcher).toHaveBeenCalledExactlyOnceWith('agent-1');
       expect(stopSharedAgentSessions).toHaveBeenCalledOnce();
-      expect(await fs.exists(agentSettingsRelativePath('cc-hoot'))).toBe(false);
-      expect(await fs.exists('.claude/agents/cc-hoot.md')).toBe(false);
+      expect(await fs.exists(agentSettingsRelativePath('cc-agent'))).toBe(false);
+      expect(await fs.exists('.claude/agents/cc-agent.md')).toBe(false);
     });
 
     it('stops a local agent’s watcher, which is this Console’s own child, on any remove', async () => {
@@ -477,7 +477,7 @@ describe('deleteAgent', () => {
       vi.mocked(gatewayDeleteAgent).mockRejectedValue(new Error('boom'));
       h.state.agent = {
         id: 'agent-1',
-        name: 'cc-hoot',
+        name: 'cc-agent',
         providerId: 'claude',
         locationId: 'loc',
         serverId: 'srv-1',
@@ -502,7 +502,7 @@ describe('deleteAgent', () => {
     it('reports an agent with no identity to delete as exactly that', async () => {
       h.state.agent = {
         id: 'agent-1',
-        name: 'cc-hoot',
+        name: 'cc-agent',
         providerId: 'claude',
         locationId: 'loc',
         serverId: null,
@@ -529,7 +529,7 @@ describe('deleteAgent', () => {
     // `.claude/switch-subagents/` file.
     const legacyAgent = {
       id: 'agent-1',
-      name: 'cc-hoot',
+      name: 'cc-agent',
       providerId: 'claude',
       locationId: 'loc',
       workspaceId: 'ws-1',
@@ -539,7 +539,7 @@ describe('deleteAgent', () => {
 
     beforeEach(() => {
       h.state.agent = legacyAgent;
-      h.state.fs = fakeFs({ '.claude/switch-subagents/cc-hoot.settings.json': CREDS });
+      h.state.fs = fakeFs({ '.claude/switch-subagents/cc-agent.settings.json': CREDS });
       h.state.repoAgents = {
         removeLocal: async (fs: PluginFs, name: string) =>
           fs.delete(`.claude/switch-subagents/${name}.settings.json`),
@@ -553,7 +553,9 @@ describe('deleteAgent', () => {
       expect(gatewayDeleteAgent).toHaveBeenCalledWith({ id: 'srv-1' }, 'sw-1');
       expect(h.deleteRow).toHaveBeenCalledTimes(1);
       expect(forgetManagedAgent).toHaveBeenCalledWith('agent-1');
-      expect(await h.state.fs.exists('.claude/switch-subagents/cc-hoot.settings.json')).toBe(false);
+      expect(await h.state.fs.exists('.claude/switch-subagents/cc-agent.settings.json')).toBe(
+        false
+      );
     });
 
     it('still removes the agent here when its Switch identity is already gone', async () => {
@@ -563,7 +565,9 @@ describe('deleteAgent', () => {
       await deleteAgent('agent-1', full);
 
       expect(h.deleteRow).toHaveBeenCalledTimes(1);
-      expect(await h.state.fs.exists('.claude/switch-subagents/cc-hoot.settings.json')).toBe(false);
+      expect(await h.state.fs.exists('.claude/switch-subagents/cc-agent.settings.json')).toBe(
+        false
+      );
     });
 
     it('does not take a 404 from reaching the workspace for the agent being gone', async () => {
@@ -575,7 +579,7 @@ describe('deleteAgent', () => {
       expect(gatewayDeleteAgent).not.toHaveBeenCalled();
       expect(autoSessionWatcher.stopForAgent).not.toHaveBeenCalled();
       expect(h.deleteRow).not.toHaveBeenCalled();
-      expect(await h.state.fs.exists('.claude/switch-subagents/cc-hoot.settings.json')).toBe(true);
+      expect(await h.state.fs.exists('.claude/switch-subagents/cc-agent.settings.json')).toBe(true);
     });
 
     it('surfaces any other refusal and leaves the agent, and its controller, untouched', async () => {
@@ -588,7 +592,7 @@ describe('deleteAgent', () => {
       expect(stopSharedAgentSessions).not.toHaveBeenCalled();
       expect(h.discardControllerState).not.toHaveBeenCalled();
       expect(h.deleteRow).not.toHaveBeenCalled();
-      expect(await h.state.fs.exists('.claude/switch-subagents/cc-hoot.settings.json')).toBe(true);
+      expect(await h.state.fs.exists('.claude/switch-subagents/cc-agent.settings.json')).toBe(true);
     });
   });
 });

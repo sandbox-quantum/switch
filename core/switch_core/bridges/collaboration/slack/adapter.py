@@ -44,7 +44,10 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
+    ChannelNotUsable,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -2362,7 +2365,8 @@ class SlackAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         if not self._web_client:
             raise RuntimeError("Slack client not connected")
 
@@ -2372,19 +2376,20 @@ class SlackAdapter(PlatformAdapter):
             )
 
         is_private = channel_type == "channel_private"
-        channel_name = re.sub(r"[^a-z0-9_-]", "-", name.lower()).strip("-")[:80]
+        channel_name = self.channel_name_for(name)
 
         try:
             result = await self._web_client.conversations_create(
                 name=channel_name, is_private=is_private
             )
-            channel_id: str = result["channel"]["id"]
         except SlackApiError:
-            unique_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
+            channel_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
             result = await self._web_client.conversations_create(
-                name=unique_name, is_private=is_private
+                name=channel_name, is_private=is_private
             )
-            channel_id = result["channel"]["id"]
+        channel_id: str = result["channel"]["id"]
+        created_name: str = result["channel"].get("name") or channel_name
+        self._channel_name_cache[channel_id] = created_name
 
         try:
             await self._web_client.conversations_setTopic(
@@ -2395,7 +2400,11 @@ class SlackAdapter(PlatformAdapter):
                 "Failed to set topic for Slack channel %s: %s", channel_name, e
             )
 
-        return channel_id
+        return CreatedChannel(id=channel_id, name=created_name)
+
+    @classmethod
+    def channel_name_for(cls, room_name: str) -> str:
+        return re.sub(r"[^a-z0-9_-]", "-", room_name.lower()).strip("-")[:80]
 
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         if not self._web_client:
@@ -2466,6 +2475,42 @@ class SlackAdapter(PlatformAdapter):
         if not self._config.workspace_id:
             return None
         return f"slack://open?team={self._config.workspace_id}"
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists, Slack lets the app see it, and the app is in it.
+
+        Slack reports a private channel the app is not in as not found, so
+        the two are said together.
+
+        A public channel the app is not in is refused too, not joined: the
+        app has neither `channels:join` nor `chat:write.public`, so in such a
+        channel it could not post and Slack would send it no events. Binding
+        it would make a room that looks set up and never works."""
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        try:
+            result = await self._web_client.conversations_info(channel=channel_id)
+        except SlackApiError as error:
+            reason = str(error.response.get("error") or error)
+            if reason == "channel_not_found":
+                raise ChannelNotUsable(
+                    f"Slack cannot find channel {channel_id} (channel_not_found). "
+                    "Check the id, and for a private channel add the Switch app "
+                    "to it first."
+                ) from error
+            raise BridgeOperationError(
+                f"Slack would not describe channel {channel_id}: {reason}."
+            ) from error
+        channel = result["channel"]
+        if channel.get("is_im") or channel.get("is_mpim"):
+            return
+        if not channel.get("is_member"):
+            raise ChannelNotUsable(
+                f"The Switch app is not in Slack channel {channel_id} "
+                "(not_in_channel), so it could not post or read there. Add it "
+                "to the channel (/invite @Switch, public or private), then "
+                "try again."
+            )
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         if not self._web_client:
@@ -3430,6 +3475,8 @@ class SlackAdapter(PlatformAdapter):
         if event_type == "message":
             if event_subtype == "channel_join":
                 await self._handle_member_joined_channel(event)
+            elif event_subtype in self._RENAME_SUBTYPES:
+                await self._handle_channel_renamed(event)
             else:
                 await self._handle_message_event(event)
         elif event_type == "member_joined_channel":
@@ -3543,6 +3590,28 @@ class SlackAdapter(PlatformAdapter):
     # bot_message is a post from a third-party Slack app (e.g. Datadog alerts).
     # Everything else (edits, deletes, channel-join system messages, …) is skipped.
     _ALLOWED_SUBTYPES = frozenset({"file_share", "thread_broadcast", "bot_message"})
+
+    # The system line Slack posts into a channel when someone renames it,
+    # carrying `old_name` and `name`: "channel_name" for a channel, public or
+    # private, and "group_name" for a private channel from before Slack made
+    # them channels. Read off the message subscriptions the app already has,
+    # where the `channel_rename` event would need one more and a reinstall.
+    _RENAME_SUBTYPES = frozenset({"channel_name", "group_name"})
+
+    async def _handle_channel_renamed(self, event: dict[str, object]) -> None:
+        channel_id = str(event.get("channel") or "")
+        name = str(event.get("name") or "")
+        if not channel_id or not name:
+            logger.warning(
+                "Slack rename event without a channel or a new name, skipping: %s",
+                {key: event.get(key) for key in ("channel", "subtype", "ts")},
+            )
+            return
+        self._channel_name_cache[channel_id] = name
+        if self._on_channel_named is not None:
+            await self._on_channel_named(
+                channel_id, str(event.get("old_name") or ""), name
+            )
 
     async def _handle_message_event(self, event: dict[str, object]) -> None:
         # Skip only our own posts (loop prevention). Messages from third-party

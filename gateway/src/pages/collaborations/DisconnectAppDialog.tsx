@@ -10,7 +10,7 @@ import {
 } from "@mui/material";
 import { useState } from "react";
 import { type InstalledApp, disconnectApp } from "../../data/api";
-import { platformLabel } from "../../theme/hootFormat";
+import { platformLabel } from "../../theme/format";
 
 /**
  * Disconnecting is the only way an install-created connection can be removed,

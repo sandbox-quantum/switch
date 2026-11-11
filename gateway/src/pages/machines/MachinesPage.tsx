@@ -24,7 +24,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import {
   type Controller,
   type ControllerState,
@@ -42,7 +42,7 @@ import {
   unmanageAgent,
   updateManagedAgent,
 } from "../../data/management";
-import { EM_DASH, absoluteTitle, formatRelative } from "../../theme/hootFormat";
+import { EM_DASH, absoluteTitle, formatRelative } from "../../theme/format";
 import AddMachineDialog from "./AddMachineDialog";
 import EditMachineDialog from "./EditMachineDialog";
 import ManagedAgentDialog from "./ManagedAgentDialog";
@@ -701,7 +701,15 @@ export default function MachinesPage() {
             Add device
           </Button>
         </Stack>
-        <DataTable rows={controllers ?? []} columns={machineColumns} height={320} pageSize={10} />
+        <DataTable
+          rows={controllers ?? []}
+          columns={machineColumns}
+          height={320}
+          pageSize={10}
+          emptyState={
+            <TableEmptyState title="No devices yet">Add one to start running agents on it.</TableEmptyState>
+          }
+        />
       </Box>
 
       <Box>
@@ -726,6 +734,11 @@ export default function MachinesPage() {
           columns={agentColumns as GridColDef<ManagedAgent & { id: string }>[]}
           height={360}
           pageSize={10}
+          emptyState={
+            <TableEmptyState title="No managed agents yet">
+              Create one, then place it on a device to run it.
+            </TableEmptyState>
+          }
         />
       </Box>
 
@@ -733,7 +746,17 @@ export default function MachinesPage() {
         <Typography variant="h6" mb={1}>
           Recent operations
         </Typography>
-        <DataTable rows={recentOperations} columns={operationColumns} height={300} pageSize={10} />
+        <DataTable
+          rows={recentOperations}
+          columns={operationColumns}
+          height={300}
+          pageSize={10}
+          emptyState={
+            <TableEmptyState title="Nothing sent to your devices yet">
+              Changes Switch asks a device to make are listed here.
+            </TableEmptyState>
+          }
+        />
       </Box>
 
       <AddMachineDialog open={addOpen} onClose={() => setAddOpen(false)} />
