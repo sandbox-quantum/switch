@@ -14,6 +14,7 @@ vi.mock('node:fs/promises', async (original) => {
 });
 const servers: FakeAppServer[] = [];
 const spawned: Array<{ command: string; args: string[]; env: Record<string, string> }> = [];
+const homed = (home: string) => ({ HOME: home, USERPROFILE: home });
 const MODEL = '["deepseek-official","deepseek-v4-flash"]';
 const PRO = '["deepseek-official","deepseek-v4-pro"]';
 vi.mock('node:child_process', () => ({
@@ -106,7 +107,7 @@ async function start(input: { runtimeMode?: Mode; model?: string; resume?: strin
     sessionId: 's',
     cwd: '/work',
     runtimeMode: input.runtimeMode ?? 'approval-required',
-    env: { HOME: await dir() },
+    env: homed(await dir()),
     mcpServers: {},
     connectorMcpServers: [],
     ...(input.model ? { model: { id: input.model } } : {}),
@@ -139,13 +140,17 @@ const permission = (id: number, toolCallId: string) => ({
   },
 });
 const launch = (home: string, runtimeMode?: Mode, cwd = '/work') =>
-  deepseekHarnessAcp.launch({ binaryPath: '/bin/dsh', cwd, env: { HOME: home }, runtimeMode });
+  deepseekHarnessAcp.launch({ binaryPath: '/bin/dsh', cwd, env: homed(home), runtimeMode });
 const gatePlugin = async (patch: string) =>
   fileURLToPath(JSON.parse(/name: (".+")/.exec(await readFile(patch, 'utf8'))![1]!) as string);
 
 it('launches the ACP profile in workspace-write, gated unless the session is in full access', async () => {
   const home = await dir();
-  const env = { HOME: home, DSH_PERMISSION_MODE: 'workspace-write', DSH_TELEMETRY_DISABLED: '1' };
+  const env = {
+    ...homed(home),
+    DSH_PERMISSION_MODE: 'workspace-write',
+    DSH_TELEMETRY_DISABLED: '1',
+  };
   const full = await launch(home, 'full-access');
   expect({ ...full, args: full.args.slice(0, 3) }).toEqual({
     command: '/bin/dsh',
@@ -288,16 +293,18 @@ it('asks for every tool but those that only read, telling a subagent why it cann
 });
 
 it('finds its home where the harness does', () => {
-  expect(dshHome({ HOME: '/h' }, '/work')).toBe(join('/h', '.dsh'));
-  expect(dshHome({ HOME: '/h', DSH_HOME: '  ' }, '/work')).toBe(join('/h', '.dsh'));
-  expect(dshHome({ HOME: '/h', DSH_HOME: '~/harness' }, '/work')).toBe(join('/h', 'harness'));
-  expect(dshHome({ HOME: '/h', DSH_HOME: '/srv/dsh' }, '/work')).toBe('/srv/dsh');
-  expect(dshHome({ HOME: '/h', DSH_HOME: 'state/dsh' }, '/work')).toBe(join('/work', 'state/dsh'));
+  expect(dshHome(homed('/h'), '/work')).toBe(join('/h', '.dsh'));
+  expect(dshHome({ ...homed('/h'), DSH_HOME: '  ' }, '/work')).toBe(join('/h', '.dsh'));
+  expect(dshHome({ ...homed('/h'), DSH_HOME: '~/harness' }, '/work')).toBe(join('/h', 'harness'));
+  expect(dshHome({ ...homed('/h'), DSH_HOME: '/srv/dsh' }, '/work')).toBe('/srv/dsh');
+  expect(dshHome({ ...homed('/h'), DSH_HOME: 'state/dsh' }, '/work')).toBe(
+    join('/work', 'state/dsh')
+  );
 });
 
 it('is signed out with no key anywhere, saying how to sign in', async () => {
   const home = await dir({ '.dsh/.credentials.yaml': 'version: 1\nrefs:\n  OPENAI_API_KEY: x\n' });
-  expect(await checkDshSignIn({ cwd: await dir(), env: { HOME: home } })).toEqual({
+  expect(await checkDshSignIn({ cwd: await dir(), env: homed(home) })).toEqual({
     status: 'unauthenticated',
     message:
       'DeepSeek Harness has no DeepSeek API key. Sign in on the execution machine with dsh web. Save a DeepSeek API key under its Models settings, or set DEEPSEEK_API_KEY.',
@@ -317,13 +324,13 @@ it('is signed in with a key from each place the harness reads one, never reading
   const project = await dir({ '.env': `OTHER=1\nDEEPSEEK_API_KEY="${KEY}"\n` });
   const empty = await dir();
   for (const [cwd, env, where] of [
-    [empty, { HOME: saved }, 'its saved credentials'],
-    [empty, { HOME: flow }, 'its saved credentials'],
-    [empty, { HOME: block }, 'its saved credentials'],
-    [empty, { HOME: empty, DEEPSEEK_API_KEY: KEY }, 'DEEPSEEK_API_KEY'],
-    [project, { HOME: empty }, "the project's .env"],
-    [empty, { HOME: homeEnv }, "the harness home's .env"],
-    [empty, { HOME: '/nowhere', DSH_HOME: join(saved, '.dsh') }, 'its saved credentials'],
+    [empty, homed(saved), 'its saved credentials'],
+    [empty, homed(flow), 'its saved credentials'],
+    [empty, homed(block), 'its saved credentials'],
+    [empty, { ...homed(empty), DEEPSEEK_API_KEY: KEY }, 'DEEPSEEK_API_KEY'],
+    [project, homed(empty), "the project's .env"],
+    [empty, homed(homeEnv), "the harness home's .env"],
+    [empty, { ...homed('/nowhere'), DSH_HOME: join(saved, '.dsh') }, 'its saved credentials'],
   ] as const) {
     const result = await checkDshSignIn({ cwd, env });
     expect(result).toMatchObject({
@@ -339,10 +346,12 @@ it('takes no empty key, nor one outside refs, for a sign-in', async () => {
     await checkDshSignIn({
       cwd: await dir({ '.env': 'DEEPSEEK_API_KEY=\nDEEPSEEK_API_KEY=""\n' }),
       env: {
-        HOME: await dir({
-          '.dsh/.credentials.yaml':
-            'records:\n  llm-pi-ai/x:\n    kind: api-key\n    env:\n      DEEPSEEK_API_KEY: sk-x\n',
-        }),
+        ...homed(
+          await dir({
+            '.dsh/.credentials.yaml':
+              'records:\n  llm-pi-ai/x:\n    kind: api-key\n    env:\n      DEEPSEEK_API_KEY: sk-x\n',
+          })
+        ),
         DEEPSEEK_API_KEY: ' ',
       },
     })
@@ -359,14 +368,14 @@ it('says so when the harness would refuse its saved credentials, rather than sig
   ] as const) {
     const result = await checkDshSignIn({
       cwd: await dir(),
-      env: { HOME: await dir({ '.dsh/.credentials.yaml': text }) },
+      env: homed(await dir({ '.dsh/.credentials.yaml': text })),
     });
     expect(result.status).toBe('unknown');
     expect(result.message).toContain(reason);
   }
   const shared = await dir({ '.dsh/.credentials.yaml': `refs:\n  DEEPSEEK_API_KEY: ${KEY}\n` });
   await chmod(join(shared, '.dsh', '.credentials.yaml'), 0o644);
-  expect(await checkDshSignIn({ cwd: await dir(), env: { HOME: shared } })).toMatchObject({
+  expect(await checkDshSignIn({ cwd: await dir(), env: homed(shared) })).toMatchObject({
     status: 'unknown',
     message: expect.stringContaining('Run chmod 600 on it.'),
   });
@@ -377,7 +386,7 @@ it('cannot vouch for a DeepSeek account sign-in alone, which the default route d
     '.dsh/.credentials.yaml':
       'version: 1\nrecords:\n  deepseek-account-platform/default:\n    kind: grant\n    payload: {}\n',
   });
-  expect(await checkDshSignIn({ cwd: await dir(), env: { HOME: home } })).toMatchObject({
+  expect(await checkDshSignIn({ cwd: await dir(), env: homed(home) })).toMatchObject({
     status: 'unknown',
   });
 });
@@ -385,7 +394,7 @@ it('cannot vouch for a DeepSeek account sign-in alone, which the default route d
 it('reports saved credentials it cannot read rather than calling the CLI signed out', async () => {
   const home = await dir();
   await mkdir(join(home, '.dsh', '.credentials.yaml'), { recursive: true });
-  await expect(checkDshSignIn({ cwd: await dir(), env: { HOME: home } })).rejects.toThrow('EISDIR');
+  await expect(checkDshSignIn({ cwd: await dir(), env: homed(home) })).rejects.toThrow('EISDIR');
 });
 
 it('checks sign-in without starting the agent, which would create its profile', async () => {
@@ -393,7 +402,7 @@ it('checks sign-in without starting the agent, which would create its profile', 
   await runtime.checkSignIn({
     binaryPath: '/bin/dsh',
     cwd: await dir(),
-    env: { HOME: await dir() },
+    env: homed(await dir()),
   });
   expect(spawned).toEqual([]);
 });
@@ -537,7 +546,7 @@ it("allows Switch's own MCP tools unasked, and asks for a connector's", async ()
     sessionId: 's',
     cwd: '/work',
     runtimeMode: 'auto',
-    env: { HOME: await dir() },
+    env: homed(await dir()),
     mcpServers: { switch: http, github: http },
     connectorMcpServers: ['github'],
   });
