@@ -66,6 +66,7 @@ HTTP_PUBLIC = "http://switch.example.com"
 APPS = "/gateway/connector-apps"
 GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
+BOX = "box"
 AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
 AIRTABLE_SECRET = "example-airtable-secret-0000"
 GITHUB_CLIENT_ID = "example-github-client-id"
@@ -367,7 +368,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, BOX}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -391,6 +392,12 @@ class TestOnlyTheOperator:
             "data.records:write",
             "data.recordComments:write",
         ]
+        # Box too, with the read scope before the write one: a Box admin ticks
+        # both on the integration, and each sign-in asks for one.
+        box = f"{PUBLIC}/gateway/service-connections/{BOX}/flows/callback"
+        assert apps[BOX]["redirect_uris"] == [box]
+        assert apps[BOX]["needs_public_url"] is True
+        assert apps[BOX]["scopes"] == ["root_readonly", "root_readwrite"]
         assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
 
     async def test_an_unknown_service_is_not_found(
