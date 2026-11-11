@@ -1297,3 +1297,30 @@ class TestIncarnationsDrawnAtOnce:
 
         generations = [conn.stream_generation for conn in opened]
         assert len(set(generations)) == 2
+
+    async def test_agents_opening_a_stream_per_room_at_once_all_open(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """Agents each opening one stream per room, all at the same moment,
+        as hosted agents and Console do on start: every open succeeds, each
+        on a number of its own."""
+        a, _ = processes
+        agents = [AGENT, "agent-2", "agent-3"]
+        for agent_id in agents[1:]:
+            await seed_agent(session_factory, agent_id)
+
+        opened = await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    _open(a, agent_id=agent_id, connection_id=f"{agent_id}-{room}")
+                    for agent_id in agents
+                    for room in range(3)
+                )
+            ),
+            WAIT_SECONDS,
+        )
+
+        generations = [conn.stream_generation for conn in opened]
+        assert len(set(generations)) == len(agents) * 3
