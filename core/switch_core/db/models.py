@@ -3915,6 +3915,10 @@ class AgentSessionActivityItem(TenantScoped, Base):
             "'tool-activity', 'notice')",
             name="ck_session_activity_items_kind",
         ),
+        CheckConstraint(
+            "subagent IS NULL OR kind = 'tool-activity'",
+            name="ck_session_activity_items_subagent_kind",
+        ),
         Index("ix_session_activity_items_updated_at", "updated_at"),
     )
 
@@ -3935,6 +3939,9 @@ class AgentSessionActivityItem(TenantScoped, Base):
     message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+    subagent: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

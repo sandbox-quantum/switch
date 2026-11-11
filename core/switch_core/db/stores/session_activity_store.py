@@ -278,6 +278,7 @@ class AgentSessionActivityStore:
                 "thread_id",
                 "message_id",
                 "occurred_at",
+                "subagent",
             )
         }
         result = await session.execute(

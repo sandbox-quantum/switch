@@ -66,6 +66,7 @@ describe('mapCodexItem', () => {
       type: 'subagent',
       status: 'completed',
       title: '/root/read_readme',
+      nativeChildId: 'child',
     });
   });
 

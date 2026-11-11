@@ -34,6 +34,7 @@ export type Attachment = {
   bytes: number;
   sha256?: string | null;
 };
+export type Subagent = { agent: string; taskId: string | null };
 export type Item = {
   itemId: Id;
   turnId: Id;
@@ -44,6 +45,7 @@ export type Item = {
   text: string;
   attachments: Attachment[];
   origin: Origin | null;
+  subagent?: Subagent;
 };
 export type ApprovalOption = {
   optionId: Id;

@@ -1672,6 +1672,8 @@ def _plan_task(item: Item) -> dict[str, Any]:
             "details": _rich_text(_truncate_prose(item.text, _MAX_SAID_DETAILS)),
         }
     title = plain_text(item.title) if item.title else ""
+    if item.subagent:
+        title = f"{item.subagent.agent}: {title}"
     if item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()
     task: dict[str, Any] = {

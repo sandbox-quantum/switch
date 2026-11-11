@@ -1015,6 +1015,41 @@ it('reports what an ended turn spent on its row, and the row alone to a server t
   }
 }, 20000);
 
+it('retries a subagent activity row without optional metadata on a 422', async () => {
+  const host = await start({ rooms: true });
+  const itemCalls = () =>
+    host.switchCore.calls.filter(
+      (call) =>
+        call.path.endsWith('/activity') &&
+        (call.body as { item_id?: string }).item_id ===
+          JSON.stringify([host.turns[0]?.turnId, 'agent-tool'])
+    );
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Delegate') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    host.switchCore.state.refusesSubagent = true;
+    host.emit({
+      type: 'item.started',
+      turnId: host.turns[0]!.turnId,
+      item: {
+        id: 'agent-tool',
+        type: 'subagent',
+        status: 'in_progress',
+        title: 'Find the config',
+        toolName: 'Explore',
+        nativeChildId: 'task-42',
+      },
+    });
+    await until(() => expect(itemCalls()).toHaveLength(2));
+    expect(itemCalls()[0]!.body).toMatchObject({
+      subagent: { agent: 'Explore', taskId: 'task-42' },
+    });
+    expect(itemCalls()[1]!.body).not.toHaveProperty('subagent');
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
 it('tells the session to rejoin its room once a reset asked for there has applied', async () => {
   const host = await start({ resettable: true });
   try {

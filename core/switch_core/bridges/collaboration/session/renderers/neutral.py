@@ -398,7 +398,10 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"
-    title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
+    title = item.title or _LOG_UNTITLED
+    if item.subagent:
+        title = f"{item.subagent.agent}: {title}"
+    title = _fit(title, _LOG_TITLE, escape=escape)
     line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
     if item.text:
         line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"

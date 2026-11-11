@@ -14,6 +14,7 @@ export type AgentSessionsCall = { method: string; path: string; body: unknown };
  * Setting `state.unavailable` answers every such call with 503, as an
  * unreachable Switch would, and `state.refusesUsage` refuses an activity row
  * carrying usage with 422, as a server that predates it does.
+ * `state.refusesSubagent` does the same for subagent metadata.
  * `state.startUnknown` answers a session start report with a bare 404, as a
  * server that predates that route does, and `state.startRefused` refuses one
  * with 422.
@@ -24,6 +25,7 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
     outcomes,
     unavailable: false,
     refusesUsage: false,
+    refusesSubagent: false,
     startUnknown: false,
     startRefused: false,
   };
@@ -51,6 +53,8 @@ export function stubSwitchFetch(server: Fetch, outcomes: unknown[] = []) {
     if (path.endsWith('/activity')) {
       const body = calls.at(-1)!.body as Record<string, unknown>;
       if (state.refusesUsage && 'usage' in body)
+        return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
+      if (state.refusesSubagent && 'subagent' in body)
         return Response.json({ detail: [{ type: 'extra_forbidden' }] }, { status: 422 });
       return Response.json({ recorded: true });
     }

@@ -524,16 +524,33 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
-      const { usage: _usage, ...row } = item.row;
-      console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
-      );
-      await send({ kind: 'activity', row });
-      return true;
+    // Older servers reject optional fields. Retry the row after removing one
+    // field at a time, preserving the activity the platform draws.
+    const sendWithFallback = async (item: Report, initialError: RequestError): Promise<boolean> => {
+      if (item.kind !== 'activity' || initialError.status !== 422) return false;
+      let row = item.row;
+      let error: unknown = initialError;
+      for (const field of ['subagent', 'usage'] as const) {
+        if (row[field] === undefined) continue;
+        if (field === 'subagent') {
+          const { subagent: _subagent, ...compatible } = row;
+          row = compatible;
+        } else {
+          const { usage: _usage, ...compatible } = row;
+          row = compatible;
+        }
+        console.warn(
+          `Switch refused optional ${field} activity data for turn ${row.turn_id}; retrying without it: ${error instanceof Error ? error.message : String(error)}`
+        );
+        try {
+          await send({ kind: 'activity', row });
+          return true;
+        } catch (retryError) {
+          if (!(retryError instanceof RequestError) || retryError.status !== 422) throw retryError;
+          error = retryError;
+        }
+      }
+      throw error;
     };
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
@@ -554,7 +571,7 @@ export async function runSharedHost(
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            if (await sentWithoutUsage(item, error)) continue;
+            if (await sendWithFallback(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;

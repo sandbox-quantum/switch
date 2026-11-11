@@ -72,6 +72,7 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
             text=step.text,
             attachments=[],
             origin=None,
+            subagent=step.subagent,
         )
         for step in steps
     ]

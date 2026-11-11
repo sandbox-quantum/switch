@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { Origin, ServerEvent } from '@switch-console/shared/session-v1';
+import type { Origin, ServerEvent, Subagent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { TokenUsage } from '../events';
 import { Journal } from './journal';
@@ -36,6 +36,7 @@ export type ActivityRow = {
    * there is nothing to say, so a server that predates it takes the row.
    */
   usage?: UsageRow[];
+  subagent?: Subagent;
 };
 
 export type UsageRow = {
@@ -167,6 +168,7 @@ export class ActivityReporter {
               command_id: null,
               ...place(item.turnId),
               occurred_at: event.occurredAt,
+              ...(item.subagent ? { subagent: item.subagent } : {}),
             },
           },
         ];

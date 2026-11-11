@@ -223,7 +223,9 @@ interface SessionState {
    * the background. A background one outlives the turn that started it, so
    * the session is still at work after the turn ends.
    */
-  subagentTasks: Map<string, { backgrounded: boolean }>;
+  subagentTasks: Map<string, { backgrounded: boolean; toolUseId?: string; turnId?: string }>;
+  /** Task to originating Agent tool call, retained until its notification. */
+  subagentActivities: Map<string, { toolUseId: string; turnId: string }>;
 }
 
 /** Task types that are agents doing work, rather than shells or tool calls. */
@@ -553,6 +555,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       usage: new CumulativeUsage(),
       unreportedUsage: [],
       subagentTasks: new Map(),
+      subagentActivities: new Map(),
     };
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
@@ -890,20 +893,43 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (message.type !== 'system') return;
     switch (message.subtype) {
       case 'task_started':
-        if (isSubagentTask(message))
-          tasks.set(message.task_id, { backgrounded: message.is_backgrounded !== false });
+        if (isSubagentTask(message)) {
+          const task = {
+            backgrounded: message.is_backgrounded !== false,
+            ...(message.tool_use_id ? { toolUseId: message.tool_use_id } : {}),
+            ...(session.turn ? { turnId: session.turn.turnId } : {}),
+          };
+          tasks.set(message.task_id, task);
+          if (task.toolUseId && session.turn) {
+            session.subagentActivities.set(message.task_id, {
+              toolUseId: task.toolUseId,
+              turnId: session.turn.turnId,
+            });
+            this.updateSubagentItem(session, message.task_id, 'in_progress');
+          }
+        }
         return;
       case 'task_updated': {
         const task = tasks.get(message.task_id);
         if (!task) return;
-        const status = message.patch.status;
-        if (status === 'completed' || status === 'failed' || status === 'killed')
-          tasks.delete(message.task_id);
+        if (
+          message.patch.status === 'completed' ||
+          message.patch.status === 'failed' ||
+          message.patch.status === 'killed'
+        )
+          task.backgrounded = false;
         else if (message.patch.is_backgrounded !== undefined)
           task.backgrounded = message.patch.is_backgrounded;
         return;
       }
       case 'task_notification':
+        this.updateSubagentItem(
+          session,
+          message.task_id,
+          message.status === 'completed' ? 'completed' : 'failed',
+          message.tool_use_id
+        );
+        session.subagentActivities.delete(message.task_id);
         tasks.delete(message.task_id);
         return;
       case 'background_tasks_changed': {
@@ -917,6 +943,32 @@ export class ClaudeAdapter implements ProviderAdapter {
       default:
         return;
     }
+  }
+
+  private updateSubagentItem(
+    session: SessionState,
+    taskId: string,
+    status: ItemStatus,
+    toolUseId?: string
+  ): void {
+    const activity = session.subagentActivities.get(taskId);
+    const id = toolUseId ?? activity?.toolUseId;
+    if (!id) return;
+    const started = session.toolItems.get(id);
+    if (!started || started.type !== 'subagent') return;
+    const item: ProviderItem = {
+      ...started,
+      status,
+      nativeChildId: taskId,
+    };
+    session.toolItems.set(id, item);
+    const turnId = activity?.turnId ?? session.turn?.turnId;
+    if (turnId === undefined) return;
+    this.emit(session, {
+      type: status === 'in_progress' ? 'item.updated' : 'item.completed',
+      turnId,
+      item,
+    });
   }
 
   private handleStreamEvent(
@@ -1039,6 +1091,15 @@ export class ClaudeAdapter implements ProviderAdapter {
         toolName: toolNameForItem(name, toolInput),
         payload: toolInput,
       };
+      if (item.type === 'subagent') {
+        const task = [...session.subagentActivities.entries()].find(
+          ([, value]) => value.toolUseId === id
+        );
+        if (task) item.nativeChildId = task[0];
+        // A task event can arrive before its matching tool-use block.
+        const tracked = task?.[1];
+        if (tracked && !tracked.turnId) tracked.turnId = turnId;
+      }
       session.toolItems.set(id, item);
       this.emit(session, {
         type: 'item.started',
@@ -1059,6 +1120,11 @@ export class ClaudeAdapter implements ProviderAdapter {
       if (typeof toolUseId !== 'string') continue;
       const started = session.toolItems.get(toolUseId);
       if (!started) continue;
+      if (
+        started.type === 'subagent' &&
+        [...session.subagentActivities.values()].some((task) => task.toolUseId === toolUseId)
+      )
+        continue;
       session.toolItems.delete(toolUseId);
       const status: ItemStatus = block.is_error === true ? 'failed' : 'completed';
       const text = textFromToolResultContent(block.content);

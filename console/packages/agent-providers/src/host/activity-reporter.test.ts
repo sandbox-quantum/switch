@@ -172,6 +172,26 @@ it('reports every message and tool item, streamed parts included, as its own row
   expect(reported[0]).toMatchObject({ turn_id: 'turn', command_id: null, ...placed });
 });
 
+it('preserves a subagent label and native child id on its tool row', async () => {
+  const lines = await reporter();
+  const [row] = rows(
+    lines.reports(
+      event(
+        1,
+        item({
+          subagent: { agent: 'Explore', taskId: 'task-42' },
+        })
+      ),
+      originOf,
+      noUsage
+    )
+  );
+  expect(row).toMatchObject({
+    kind: 'tool-activity',
+    subagent: { agent: 'Explore', taskId: 'task-42' },
+  });
+});
+
 it('truncates long titles and texts', async () => {
   const lines = await reporter();
   const [row] = rows(
