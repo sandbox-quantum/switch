@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "supabase",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "supabase",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["supabase"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1036,6 +1039,59 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     assert definition.token is not None
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_supabase_entry_keeps_its_scopes_minimal():
+    definition = CATALOG["supabase"].definition
+    assert definition.name == "Supabase"
+    assert definition.category == "Database"
+    assert definition.adapter == "oauth"
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert oauth.registration == "dynamic"
+    assert oauth.redirect == ["loopback"]
+    assert oauth.loopback_ports == [39241, 39242, 39243, 39244, 39245]
+    assert oauth.prompt == "consent"
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("supabase", "https://mcp.supabase.com/mcp")
+    ]
+    assert definition.access is not None
+    assert definition.access.read.scopes == [
+        "organizations:read",
+        "projects:read",
+        "database:read",
+        "analytics:read",
+        "storage:read",
+        "edge_functions:read",
+        "environment:read",
+    ]
+    assert definition.access.write is not None
+    assert definition.access.write.scopes == [
+        "organizations:read",
+        "projects:read",
+        "projects:write",
+        "database:read",
+        "database:write",
+        "analytics:read",
+        "storage:read",
+        "storage:write",
+        "edge_functions:read",
+        "edge_functions:write",
+        "environment:read",
+        "environment:write",
+    ]
+    identity = definition.auth.identity
+    assert identity is not None
+    assert identity.url == "https://api.supabase.com/v1/profile"
+    assert identity.account_id == "gotrue_id"
+    assert identity.label == "primary_email"
 
 
 def test_loads_an_api_key_entry(catalog_copy):
