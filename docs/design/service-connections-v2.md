@@ -414,6 +414,48 @@ may not read the current user. A Datadog administrator turns MCP access on for
 the organization (Organization Settings, Preferences), and the application key
 needs `mcp_read`, and `mcp_write` for changes.
 
+### New Relic
+
+New Relic uses the existing `api_key` shape, with one secret User API key and
+one fixed choice of US (`newrelic.com`), EU (`eu.newrelic.com`) or JP
+(`jp.newrelic.com`). That choice selects both
+`https://mcp.<region>/mcp/` and `https://api.<region>/graphql`; it cannot name
+an arbitrary destination. The official remote MCP service takes the
+`api-key` header. The identity check is a NerdGraph POST with `API-Key` and
+JSON `{"query":"{ requestContext { userId } }"}`. It reads
+`data.requestContext.userId`, accepting a numeric or string id, and uses the
+service name and selected region as the display label. The documented
+example also requests `apiKey`; Switch deliberately omits that secret and
+does not request personal information for the label.
+
+An organization administrator must enable **New Relic MCP Server** and its
+**API Keys** sub-toggle in **Feature Control Manager**. The owner needs an
+organization role with permission to read MCP. A successful NerdGraph identity
+check does not validate MCP entitlements or these toggles. Select a user with
+the least New Relic account access needed: permissions follow that user's
+RBAC, with no Switch read-only tier. Some tools require OAuth, including the
+AI analysis, gap analysis and preview tools listed in the shipped skill.
+
+The vendor recommends OAuth, but the maintainer requested OAuth POST identity
+support as a separate follow-up in
+[issue #823](https://github.com/sandbox-quantum/switch/issues/823#issuecomment-6518046175).
+This entry therefore follows Datadog without changing the OAuth loader.
+User keys have no documented expiry and are not refreshed. `max_lifetime: null`
+preserves the existing broker policy: **the catalog entry is enabled, but
+Switch currently marks it `key_never_expires` and refuses connecting, granting
+or issuing it to agents**. A supported server-side key execution path or the
+OAuth follow-up is needed before a room can use it. Disconnecting an existing
+connection forgets its key; the owner must revoke it in New Relic. A one-hour
+Switch lifetime would not bound the life of the underlying vendor key.
+
+Sources: New Relic's [MCP setup](https://docs.newrelic.com/docs/agentic-ai/mcp/setup/),
+[organization prerequisites](https://docs.newrelic.com/docs/agentic-ai/mcp/overview/),
+[tool reference](https://docs.newrelic.com/docs/agentic-ai/mcp/tool-reference/),
+[NerdGraph introduction](https://docs.newrelic.com/docs/apis/nerdgraph/get-started/introduction-new-relic-nerdgraph/)
+and [API key management](https://docs.newrelic.com/docs/apis/intro-apis/new-relic-api-keys/).
+These are documentation-backed contracts; automated tests use synthetic keys
+and mocked responses, not a live New Relic account.
+
 ## Adding a connector
 
 A connector is a catalog entry and a skill, with no code, when the vendor fits
