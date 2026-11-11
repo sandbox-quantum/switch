@@ -17,7 +17,14 @@ import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { Redactions } from './redaction';
 import { ServiceNotices } from './service-notices';
 import { connectParent, type ParentChannel } from './session-channel';
-import { parkAfterMs, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
+import {
+  actedInSwitch,
+  parkAfterMs,
+  READ_ONLY_SWITCH_TOOLS,
+  RESET_HOLD_MS,
+  runSharedHost,
+  sessionBusy,
+} from './shared-host';
 import { hostParked } from './shared-state';
 
 // Every step here writes the session journal and flushes it to disk, and
@@ -137,6 +144,8 @@ async function start(
     /** The provider reports work, such as subagents, still running outside any turn. */
     backgroundWork?: { running: boolean };
     resettable?: boolean;
+    /** The provider compacts its conversation natively. */
+    compactable?: boolean;
     /**
      * Stopping a conversation reports it stopped and exited, as every provider
      * adapter does, and returns only after the host has had time to look.
@@ -273,6 +282,7 @@ async function start(
       };
     },
   };
+  if (opts.compactable) adapter.compactSession = vi.fn(async () => {});
   const continuing = opts.continuing;
   if (continuing) adapter.conversationHistory = vi.fn(async () => structuredClone(continuing));
   if (opts.conversationLost)
@@ -1031,12 +1041,76 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     expect(host.turns[0]!.text).toContain('The requested reset completed successfully.');
     expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
     expect(host.turns[0]!.text).toContain('in thread "thread"');
-    expect(host.turns[0]!.text).toContain('targeted message to "louisa"');
+    expect(host.turns[0]!.text).toContain(
+      'post_message a short note in the room in thread "thread"'
+    );
+    expect(host.turns[0]!.text).toContain('mention "louisa" only if list_participants lists them');
+    expect(host.turns[0]!.text).toContain('Do not use send_targeted_message');
     expect(host.turns[0]!.text).toContain('your session has been reset');
     // Asked again (a relay retried), the follow-up is not sent twice.
     await host.parent.ask({ type: 'command', command: reset, requesterName: 'louisa' });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(host.turns).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('owes no follow-up for a reset asked for in a direct chat', async () => {
+  const host = await start({ resettable: true });
+  try {
+    const reset: Command = {
+      ...relayed('current', 'room-reset', { type: 'session.reset' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'console',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: reset,
+      requesterName: 'louisa',
+      direct: true,
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-reset', status: 'applied' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(host.turns).toHaveLength(0);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);
+
+it('still owes the follow-up for a compaction asked for in a direct chat', async () => {
+  const host = await start({ compactable: true });
+  try {
+    const compact: Command = {
+      ...relayed('current', 'room-compact', { type: 'session.compact' }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'console',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'message-9',
+      },
+    };
+    const answer = await host.parent.ask({
+      type: 'command',
+      command: compact,
+      requesterName: 'louisa',
+      direct: true,
+    });
+    expect(answer).toMatchObject({
+      ok: true,
+      value: { commandId: 'room-compact', status: 'applied' },
+    });
+    await until(() => expect(host.turns).toHaveLength(1));
+    expect(host.turns[0]!.text).toContain('Connect to Switch room "room"');
   } finally {
     expect(await host.stop()).toBeNull();
   }
@@ -1376,208 +1450,6 @@ it('keeps the session running when the start record cannot even be removed', asy
   }
 }, 20000);
 
-it('posts for a room turn that ended without the agent posting, and not for one that posted', async () => {
-  const host = await start({ rooms: true });
-  const asks = () =>
-    host.parent.sent.filter(
-      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
-        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
-    );
-  const answer = (id: number, value: unknown) =>
-    host.parent.port.emit('message', { kind: 'answer', id, ok: true, value });
-  const turn = async (sequence: number) => {
-    const before = host.turns.length;
-    expect(
-      await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, 'hi') })
-    ).toMatchObject({ ok: true });
-    await until(() => expect(host.turns).toHaveLength(before + 1));
-    return host.turns.at(-1)!.turnId;
-  };
-  try {
-    const silent = await turn(1);
-    host.emit({
-      type: 'turn.completed',
-      turnId: silent,
-      outcome: 'error',
-      message: 'Not signed in.',
-      usage: [],
-    });
-    await until(() => expect(asks()).toHaveLength(1));
-    expect(asks()[0]!.ask).toEqual({
-      type: 'room-reply',
-      roomId: 'room',
-      threadId: null,
-      body: 'I finished without replying. The turn failed: Not signed in.',
-    });
-    answer(asks()[0]!.id, null);
-
-    const answered = await turn(2);
-    // The provider's Switch tool call, as the session's MCP server makes it.
-    const posting = host.channel.ask({
-      type: 'tool',
-      name: 'post_message',
-      arguments: { body: 'Hi!' },
-    });
-    await until(() => expect(asks()).toHaveLength(2));
-    answer(asks()[1]!.id, { content: [{ type: 'text', text: '{"event_id":"e"}' }] });
-    await posting;
-    host.emit({ type: 'turn.completed', turnId: answered, outcome: 'completed', usage: [] });
-    await until(() =>
-      expect(
-        host.parent.sent.some((message) => {
-          const body = (message.event as { body?: Record<string, unknown> } | undefined)?.body;
-          return (
-            body?.type === 'turn.upsert' && body.turnId === answered && body.status === 'completed'
-          );
-        })
-      ).toBe(true)
-    );
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(asks()).toHaveLength(2);
-  } finally {
-    expect(await host.stop()).toBeNull();
-  }
-});
-
-it('reports the turn a fault ended, and the fault, before it stops', async () => {
-  const host = await start({ rooms: true });
-  await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') });
-  await until(() => expect(host.turns).toHaveLength(1));
-  const turnId = host.turns[0]!.turnId;
-  // Switch is unreachable while the provider fails: nothing goes out until it is back.
-  host.switchCore.state.unavailable = true;
-  host.emit({
-    type: 'turn.completed',
-    turnId,
-    outcome: 'error',
-    message: 'model not supported',
-    usage: [],
-  });
-  host.emit({ type: 'session.state.changed', status: 'error' });
-  await new Promise((resolve) => setTimeout(resolve, 600));
-  host.switchCore.state.unavailable = false;
-
-  const reported = (kind: string, status: string) =>
-    host.switchCore.calls.some((c) => {
-      const row = c.body as { kind: string; status: string; turn_id: string };
-      return (
-        c.path.endsWith('/activity') &&
-        row.kind === kind &&
-        row.status === status &&
-        row.turn_id === turnId
-      );
-    });
-  await until(() => expect(reported('turn', 'error')).toBe(true));
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-  // The host stopped on its own, faulted, once the reports were out.
-  expect(String(await host.stop())).toContain('HOST_FAULTED');
-});
-
-it('runs a room message again on a retry asked for there, and says so when it cannot', async () => {
-  const host = await start({ rooms: true });
-  const asks = () =>
-    host.parent.sent.filter(
-      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
-        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
-    );
-  const retry = (commandId: string): Command => ({
-    ...relayed('current', commandId, { type: 'message.retry', messageId: 'message-1' }),
-    origin: {
-      actorId: '@person:test',
-      surface: 'switch-web',
-      roomId: 'room',
-      threadId: 'thread',
-      messageId: 'retry-command',
-    },
-  });
-  try {
-    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'work on it') });
-    await until(() => expect(host.turns).toHaveLength(1));
-    // Still running: refused, and the room is told once, however often it is relayed.
-    expect(
-      await host.parent.ask({ type: 'command', command: retry('early'), requesterName: null })
-    ).toMatchObject({ ok: true, value: { status: 'rejected' } });
-    await until(() => expect(asks()).toHaveLength(1));
-    expect(asks()[0]!.ask).toMatchObject({
-      type: 'room-reply',
-      roomId: 'room',
-      threadId: 'thread',
-    });
-    await host.parent.ask({ type: 'command', command: retry('early'), requesterName: null });
-
-    host.emit({
-      type: 'turn.completed',
-      turnId: host.turns[0]!.turnId,
-      outcome: 'error',
-      message: 'model not supported',
-      usage: [],
-    });
-    await until(() => expect(asks()).toHaveLength(2)); // the host's "the turn failed" post
-    expect(
-      await host.parent.ask({ type: 'command', command: retry('again'), requesterName: null })
-    ).toMatchObject({ ok: true, value: { status: 'applied' } });
-    await until(() => expect(host.turns).toHaveLength(2));
-    expect(host.turns[1]!.text).toBe(host.turns[0]!.text);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(asks()).toHaveLength(2);
-  } finally {
-    await host.stop();
-  }
-}, 20000);
-
-it('tells the room once when every post of a turn was refused, and not when one landed', async () => {
-  const host = await start({ rooms: true });
-  const asks = () =>
-    host.parent.sent.filter(
-      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
-        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
-    );
-  const answer = (id: number, value: unknown) =>
-    host.parent.port.emit('message', { kind: 'answer', id, ok: true, value });
-  const refused = {
-    isError: true,
-    content: [{ type: 'text', text: 'Not connected to a room. Call connect_to_room first.' }],
-  };
-  const turn = async (sequence: number) => {
-    const before = host.turns.length;
-    await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, 'reply please') });
-    await until(() => expect(host.turns).toHaveLength(before + 1));
-    return host.turns.at(-1)!.turnId;
-  };
-  const post = async (result: unknown) => {
-    const before = asks().length;
-    const posting = host.channel.ask({
-      type: 'tool',
-      name: 'post_message',
-      arguments: { body: 'x' },
-    });
-    await until(() => expect(asks()).toHaveLength(before + 1));
-    answer(asks().at(-1)!.id, result);
-    await posting.catch(() => {});
-  };
-  try {
-    const silent = await turn(1);
-    await post(refused);
-    await post(refused);
-    host.emit({ type: 'turn.completed', turnId: silent, outcome: 'completed', usage: [] });
-    await until(() => expect(asks().filter((m) => m.ask.type === 'room-reply')).toHaveLength(1));
-    expect(asks().find((m) => m.ask.type === 'room-reply')!.ask).toMatchObject({
-      roomId: 'room',
-      body: "I couldn't post my reply here: Not connected to a room. Call connect_to_room first.",
-    });
-    answer(asks().find((m) => m.ask.type === 'room-reply')!.id, null);
-
-    const landed = await turn(2);
-    await post(refused);
-    await post({ content: [{ type: 'text', text: '{"event_id":"e"}' }] });
-    host.emit({ type: 'turn.completed', turnId: landed, outcome: 'completed', usage: [] });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(asks().filter((m) => m.ask.type === 'room-reply')).toHaveLength(1);
-  } finally {
-    expect(await host.stop()).toBeNull();
-  }
-}, 20000);
-
 it.each([200, 422, 400])(
   'reports cancelled rows and only downgrades a 422 (server returns %i)',
   async (httpStatus) => {
@@ -1737,3 +1609,329 @@ it.each(['queued', 'active'])(
     }
   }
 );
+
+it('posts for a room turn that ended without the agent posting, and not for one that posted', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+    );
+  const answer = (id: number, value: unknown) =>
+    host.parent.port.emit('message', { kind: 'answer', id, ok: true, value });
+  const turn = async (sequence: number) => {
+    const before = host.turns.length;
+    expect(
+      await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, 'hi') })
+    ).toMatchObject({ ok: true });
+    await until(() => expect(host.turns).toHaveLength(before + 1));
+    return host.turns.at(-1)!.turnId;
+  };
+  try {
+    const silent = await turn(1);
+    host.emit({
+      type: 'turn.completed',
+      turnId: silent,
+      outcome: 'error',
+      message: 'Not signed in.',
+      usage: [],
+    });
+    await until(() => expect(asks()).toHaveLength(1));
+    expect(asks()[0]!.ask).toEqual({
+      type: 'room-reply',
+      roomId: 'room',
+      threadId: null,
+      body: 'I finished without replying. The turn failed: Not signed in.',
+    });
+    answer(asks()[0]!.id, null);
+
+    const answered = await turn(2);
+    // The provider's Switch tool call, as the session's MCP server makes it.
+    const posting = host.channel.ask({
+      type: 'tool',
+      name: 'post_message',
+      arguments: { body: 'Hi!' },
+    });
+    await until(() => expect(asks()).toHaveLength(2));
+    answer(asks()[1]!.id, { content: [{ type: 'text', text: '{"event_id":"e"}' }] });
+    await posting;
+    host.emit({ type: 'turn.completed', turnId: answered, outcome: 'completed', usage: [] });
+    await until(() =>
+      expect(
+        host.parent.sent.some((message) => {
+          const body = (message.event as { body?: Record<string, unknown> } | undefined)?.body;
+          return (
+            body?.type === 'turn.upsert' && body.turnId === answered && body.status === 'completed'
+          );
+        })
+      ).toBe(true)
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks()).toHaveLength(2);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('posts for a silent room turn that named the agent, not for a routed message or a follow-up', async () => {
+  const host = await start({ rooms: true });
+  const replies = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type === 'room-reply'
+    );
+  const turn = async (handoff: object) => {
+    const before = host.turns.length;
+    expect(await host.parent.ask({ type: 'room', handoff })).toMatchObject({ ok: true });
+    await until(() => expect(host.turns).toHaveLength(before + 1));
+    return host.turns.at(-1)!.turnId;
+  };
+  const untagged = (sequence: number, fields: Record<string, unknown>) => {
+    const message = roomMessage(sequence, 'anyone?');
+    return {
+      ...message,
+      event: { ...message.event, payload: { ...message.event.payload, ...fields } },
+    };
+  };
+  try {
+    for (const [sequence, fields] of [
+      [1, { routed: true }],
+      [2, { follow_up: 'thread_follow_up' }],
+      [3, { follow_up: 'channel_follow_up' }],
+      [4, { follow_up: 'main_agent' }],
+    ] as const) {
+      const silent = await turn(untagged(sequence, fields));
+      host.emit({ type: 'turn.completed', turnId: silent, outcome: 'completed', usage: [] });
+    }
+
+    const addressed = await turn(roomMessage(5, 'hi'));
+    host.emit({ type: 'turn.completed', turnId: addressed, outcome: 'completed', usage: [] });
+    await until(() => expect(replies().length).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(replies().map((message) => message.ask)).toEqual([
+      { type: 'room-reply', roomId: 'room', threadId: null, body: 'I finished without replying.' },
+    ]);
+    host.parent.port.emit('message', {
+      kind: 'answer',
+      id: replies()[0]!.id,
+      ok: true,
+      value: null,
+    });
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('posts for a silent room turn that only read, not for one that acted through a Switch tool', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+    );
+  const replies = () => asks().filter((message) => message.ask.type === 'room-reply');
+  const turn = async (sequence: number) => {
+    const before = host.turns.length;
+    expect(
+      await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, 'hi') })
+    ).toMatchObject({ ok: true });
+    await until(() => expect(host.turns).toHaveLength(before + 1));
+    return host.turns.at(-1)!.turnId;
+  };
+  // The provider's Switch tool call, answered by the parent as Switch would.
+  const call = async (name: string, isError: boolean) => {
+    const before = asks().length;
+    const calling = host.channel.ask({ type: 'tool', name, arguments: {} });
+    await until(() => expect(asks()).toHaveLength(before + 1));
+    host.parent.port.emit('message', {
+      kind: 'answer',
+      id: asks().at(-1)!.id,
+      ok: true,
+      value: { content: [{ type: 'text', text: '{}' }], ...(isError ? { isError: true } : {}) },
+    });
+    await calling;
+  };
+  try {
+    const acted = await turn(1);
+    await call('read_context', false);
+    await call('update_room', false);
+    host.emit({ type: 'turn.completed', turnId: acted, outcome: 'completed', usage: [] });
+
+    const refused = await turn(2);
+    await call('archive_room', true);
+    host.emit({ type: 'turn.completed', turnId: refused, outcome: 'completed', usage: [] });
+    await until(() => expect(replies()).toHaveLength(1));
+
+    const read = await turn(3);
+    await call('read_context', false);
+    await call('list_participants', false);
+    host.emit({ type: 'turn.completed', turnId: read, outcome: 'completed', usage: [] });
+    await until(() => expect(replies()).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(replies().map((message) => message.ask)).toEqual([
+      { type: 'room-reply', roomId: 'room', threadId: null, body: 'I finished without replying.' },
+      { type: 'room-reply', roomId: 'room', threadId: null, body: 'I finished without replying.' },
+    ]);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+});
+
+it('counts any Switch tool that succeeded as acting, except one that only reads', () => {
+  const ok = { content: [{ type: 'text', text: '{}' }] };
+  expect(actedInSwitch('post_message', ok)).toBe(true);
+  expect(actedInSwitch('update_room', ok)).toBe(true);
+  // A tool this host has never heard of acts: the list names only what reads.
+  expect(actedInSwitch('finalise_task', ok)).toBe(true);
+  expect(actedInSwitch('update_room', { ...ok, isError: true })).toBe(false);
+  expect(actedInSwitch('read_context', ok)).toBe(false);
+  expect(actedInSwitch('download_attachment', ok)).toBe(false);
+});
+
+it('names as read-only only tools in the Switch skill tool index', async () => {
+  const skill = await readFile(
+    new URL('../../../plugins/src/switch-skill/SKILL.md', import.meta.url),
+    'utf8'
+  );
+  const index = skill.slice(skill.indexOf('## Tool index'));
+  for (const name of READ_ONLY_SWITCH_TOOLS) expect(index).toContain(`\`${name}\``);
+});
+
+it('reports the turn a fault ended, and the fault, before it stops', async () => {
+  const host = await start({ rooms: true });
+  await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') });
+  await until(() => expect(host.turns).toHaveLength(1));
+  const turnId = host.turns[0]!.turnId;
+  // Switch is unreachable while the provider fails: nothing goes out until it is back.
+  host.switchCore.state.unavailable = true;
+  host.emit({
+    type: 'turn.completed',
+    turnId,
+    outcome: 'error',
+    message: 'model not supported',
+    usage: [],
+  });
+  host.emit({ type: 'session.state.changed', status: 'error' });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  host.switchCore.state.unavailable = false;
+
+  const reported = (kind: string, status: string) =>
+    host.switchCore.calls.some((c) => {
+      const row = c.body as { kind: string; status: string; turn_id: string };
+      return (
+        c.path.endsWith('/activity') &&
+        row.kind === kind &&
+        row.status === status &&
+        row.turn_id === turnId
+      );
+    });
+  await until(() => expect(reported('turn', 'error')).toBe(true));
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  // The host stopped on its own, faulted, once the reports were out.
+  expect(String(await host.stop())).toContain('HOST_FAULTED');
+});
+
+it('runs a room message again on a retry asked for there, and says so when it cannot', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+    );
+  const retry = (commandId: string): Command => ({
+    ...relayed('current', commandId, { type: 'message.retry', messageId: 'message-1' }),
+    origin: {
+      actorId: '@person:test',
+      surface: 'switch-web',
+      roomId: 'room',
+      threadId: 'thread',
+      messageId: 'retry-command',
+    },
+  });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'work on it') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    // Still running: refused, and the room is told once, however often it is relayed.
+    expect(
+      await host.parent.ask({ type: 'command', command: retry('early'), requesterName: null })
+    ).toMatchObject({ ok: true, value: { status: 'rejected' } });
+    await until(() => expect(asks()).toHaveLength(1));
+    expect(asks()[0]!.ask).toMatchObject({
+      type: 'room-reply',
+      roomId: 'room',
+      threadId: 'thread',
+    });
+    await host.parent.ask({ type: 'command', command: retry('early'), requesterName: null });
+
+    host.emit({
+      type: 'turn.completed',
+      turnId: host.turns[0]!.turnId,
+      outcome: 'error',
+      message: 'model not supported',
+      usage: [],
+    });
+    await until(() => expect(asks()).toHaveLength(2)); // the host's "the turn failed" post
+    expect(
+      await host.parent.ask({ type: 'command', command: retry('again'), requesterName: null })
+    ).toMatchObject({ ok: true, value: { status: 'applied' } });
+    await until(() => expect(host.turns).toHaveLength(2));
+    expect(host.turns[1]!.text).toBe(host.turns[0]!.text);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks()).toHaveLength(2);
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+it('tells the room once when every post of a turn was refused, and not when one landed', async () => {
+  const host = await start({ rooms: true });
+  const asks = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
+    );
+  const answer = (id: number, value: unknown) =>
+    host.parent.port.emit('message', { kind: 'answer', id, ok: true, value });
+  const refused = {
+    isError: true,
+    content: [{ type: 'text', text: 'Not connected to a room. Call connect_to_room first.' }],
+  };
+  const turn = async (sequence: number) => {
+    const before = host.turns.length;
+    await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, 'reply please') });
+    await until(() => expect(host.turns).toHaveLength(before + 1));
+    return host.turns.at(-1)!.turnId;
+  };
+  const post = async (result: unknown) => {
+    const before = asks().length;
+    const posting = host.channel.ask({
+      type: 'tool',
+      name: 'post_message',
+      arguments: { body: 'x' },
+    });
+    await until(() => expect(asks()).toHaveLength(before + 1));
+    answer(asks().at(-1)!.id, result);
+    await posting.catch(() => {});
+  };
+  try {
+    const silent = await turn(1);
+    await post(refused);
+    await post(refused);
+    host.emit({ type: 'turn.completed', turnId: silent, outcome: 'completed', usage: [] });
+    await until(() => expect(asks().filter((m) => m.ask.type === 'room-reply')).toHaveLength(1));
+    expect(asks().find((m) => m.ask.type === 'room-reply')!.ask).toMatchObject({
+      roomId: 'room',
+      body: "I couldn't post my reply here: Not connected to a room. Call connect_to_room first.",
+    });
+    answer(asks().find((m) => m.ask.type === 'room-reply')!.id, null);
+
+    const landed = await turn(2);
+    await post(refused);
+    await post({ content: [{ type: 'text', text: '{"event_id":"e"}' }] });
+    host.emit({ type: 'turn.completed', turnId: landed, outcome: 'completed', usage: [] });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(asks().filter((m) => m.ask.type === 'room-reply')).toHaveLength(1);
+  } finally {
+    expect(await host.stop()).toBeNull();
+  }
+}, 20000);

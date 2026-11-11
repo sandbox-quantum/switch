@@ -48,6 +48,19 @@ class RetireOutcome(BaseModel):
         return cls(outcome="failed", reason=reason)
 
 
+class CreatedChannel(BaseModel):
+    """A channel a bridge provisioned for a room.
+
+    `name` is the name the platform shows for it, in the form the bridge
+    reports when the channel is renamed. It can differ from what was asked
+    for: the platform's naming rules applied, and a suffix where the name was
+    taken.
+    """
+
+    id: str
+    name: str
+
+
 class ChannelCreationUnsupported(ValueError):
     """Raised when a bridge will not create a channel for a new room.
 
@@ -58,6 +71,36 @@ class ChannelCreationUnsupported(ValueError):
     where an unexpected exception becomes an opaque 500 and the explanation
     never leaves the server.
     """
+
+
+class ChannelNotUsable(ValueError):
+    """A room was asked to use an existing channel the platform says it cannot.
+
+    Not found, or the Switch app is not in it. The message carries the
+    platform's own reason, since that is what tells the person what to fix.
+    """
+
+
+class ChannelInUse(ValueError):
+    """A room was asked to use a channel another room already uses.
+
+    A channel maps to at most one room. A `ValueError` so that paths without
+    a status of their own still answer it as the caller's mistake; the gateway
+    answers it with a 409.
+    """
+
+    def __init__(self, external_channel_id: str) -> None:
+        super().__init__(
+            f"Channel {external_channel_id} is already used by a room. A "
+            "channel can belong to only one room: choose another channel, or "
+            "move that room off it first."
+        )
+        self.external_channel_id = external_channel_id
+
+
+class PrivateChannelOwnerMissing(ValueError):
+    """A private channel was asked for on a platform that needs a person to own
+    it, and the person asking has no linked account there to name."""
 
 
 class WebhookDeliveryUnsupported(RuntimeError):

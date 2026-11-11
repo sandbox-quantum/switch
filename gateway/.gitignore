@@ -1,2 +1,5 @@
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# The dev role switcher's local logins, written by `just seed-dev-roles`
+.dev-role-accounts.json
