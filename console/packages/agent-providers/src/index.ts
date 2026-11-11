@@ -58,6 +58,7 @@ export {
   createDeepseekHarnessAdapter,
   deepseekHarnessAcp,
 } from './deepseek-harness/deepseek-harness-acp';
+export { droidAcp, createDroidAdapter } from './droid/droid-adapter';
 export { gooseAcp, createGooseAdapter } from './goose/goose-adapter';
 export { kiroAcp, createKiroAdapter } from './kiro/kiro-acp';
 export { qwenAcp, createQwenAdapter } from './qwen/qwen-acp';

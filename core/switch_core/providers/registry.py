@@ -235,6 +235,12 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="agent", description="Delegates a task to a subagent"),
         ),
     ),
+    AgentProvider(
+        id="droid",
+        label="Factory Droid",
+        sign_in_command="droid",
+        connector_type="Droid CLI",
+    ),
 )
 
 
