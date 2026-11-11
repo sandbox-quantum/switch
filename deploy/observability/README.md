@@ -203,11 +203,11 @@ deployment really sends: a wrong one leaves every monitor silent at once,
 apart from the no-data canary, which fires and says so. The dashboard's
 `$flint_env` variable is a convenience filter only; pick by `$service`.
 
-**`flint_env`** is the deployment's `TELEMETRY_ENVIRONMENT` (`prod`, `staging`,
-`dev` or `local`), the same value product telemetry sends. Core puts it on the
-resource of every metric and log batch, and the relay keeps it as a tag where
-it replaces `env`. It groups deployments by kind; `service` still tells two
-`dev` deployments apart.
+**`flint_env`** is the deployment's `ENVIRONMENT`, when it's a short plain
+name (a lowercase letter or digit, then up to 31 more or `-`), and is left off
+otherwise. Core puts it on the resource of every metric and log batch, and a
+collector in front of Datadog keeps it as a tag. `service` still tells
+deployments apart.
 
 ## The odd-looking first monitor
 
@@ -347,6 +347,8 @@ is the kind of machine (`vm` for every machine this server makes today).
 - `switch.hosted.machine_events` counts cloud machine changes once committed,
   at the same points as the product telemetry events of the same names, so it
   counts whether or not product telemetry is on.
+  An idle machine with no agents left is released with its disk kept rather
+  than stopped, and counts as `event:stopped` with `reason:retained`.
 - `switch.hosted.reconciler_silence` is per process, counted from the
   process's start until it first hears from the hosted controller service, so
   a reconciler that is down when Core restarts still shows as silent. Read the

@@ -196,9 +196,13 @@ async def _sweep(
         and machine.desired_state == "running"
         and controller_machine_idle(machine, timedelta(minutes=idle_minutes), now)
     ):
-        if not await store.release_if_empty(
+        if await store.release_if_empty(
             machine, workspaces, retention_days=retention_days, now=now
         ):
+            # Idle with no agents left: released with its disk kept rather
+            # than stopped. Still the machine going quiet, so it's counted.
+            record_machine_event(session, "stopped", "retained")
+        else:
             store.stop(machine, "idle", now)
             emit_after_commit(
                 session,

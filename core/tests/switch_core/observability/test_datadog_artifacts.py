@@ -147,8 +147,8 @@ def test_the_dashboard_filters_by_service_not_env() -> None:
     assert "$env" not in json.dumps(board)
     names = [v["name"] for v in board["template_variables"]]  # type: ignore[index]
     assert "service" in names and "env" not in names
-    # `flint_env`, which the relay keeps as a tag, is the per-deployment
-    # filter beside `service`.
+    # `flint_env`, which a collector in front of Datadog keeps as a tag, is the
+    # per-deployment filter beside `service`.
     assert "flint_env" in names
     assert "{$service}" not in json.dumps(board)
 
@@ -189,7 +189,7 @@ def test_no_monitor_names_one_deployment() -> None:
 # multiply the reading by the number of pods.
 # Gauges whose every series carries the same reading: server-wide values every
 # pod reports, and the hosted gauges, which one process reports but which can
-# reach Datadog as one series per relay instance they passed through. `sum:`
+# reach Datadog as one series per path through a collector in front of it. `sum:`
 # would add the copies together; only `max:` gives the real reading.
 _READ_WITH_MAX = (
     "switch.decision.pending",

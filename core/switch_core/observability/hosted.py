@@ -128,7 +128,7 @@ MACHINE_EVENTS: dict[str, frozenset[str]] = {
         }
     ),
     "woken": frozenset({"message", "agent_placed", "owner"}),
-    "stopped": frozenset({"idle", "owner"}),
+    "stopped": frozenset({"idle", "owner", "retained"}),
 }
 
 # A report older than this counts as gone, so a silent machine's agents drop

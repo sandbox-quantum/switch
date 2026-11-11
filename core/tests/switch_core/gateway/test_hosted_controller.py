@@ -1151,6 +1151,27 @@ async def test_idle_machine_whose_agents_were_removed_keeps_its_disk(controller_
     assert retain_until <= datetime.now(UTC) + timedelta(days=7)
 
 
+@pytest.mark.parametrize(
+    ("agents", "reason"), [(1, "idle"), (0, "retained")], ids=["stopped", "released"]
+)
+async def test_an_idle_machine_going_quiet_is_counted_either_way(
+    controller_app, machine_metrics, agents, reason
+):
+    """Idle with agents, it's stopped; idle with none, it's released with its
+    disk kept. Both are the machine going quiet, counted apart by reason."""
+    app = controller_app
+    await _idle_ready(app, minutes=30, agents=agents)
+    await list_machines(app.client)
+    stopped = [
+        dict(point.attributes)["reason"]
+        for payload in machine_metrics.collect()
+        if payload.name == "switch.hosted.machine_events"
+        for point in payload.numbers
+        if dict(point.attributes)["event"] == "stopped"
+    ]
+    assert stopped == [reason]
+
+
 async def test_a_machine_asleep_with_agents_stays_asleep(controller_app):
     app = controller_app
     await enrolled(app, agents=1)

@@ -11,7 +11,7 @@ boots the real thing, so any failure on the way to serving shows up here.
 It also pins the exit status. uvicorn's `Server.serve()` returns normally when
 the app's startup fails, so Core used to exit 0 after that crash: a clean stop
 to `restart: on-failure`, Kubernetes or any supervisor, which would leave it
-down unnoticed (security, QA). A failed startup now exits non-zero.
+down unnoticed. A failed startup now exits non-zero.
 """
 
 from __future__ import annotations

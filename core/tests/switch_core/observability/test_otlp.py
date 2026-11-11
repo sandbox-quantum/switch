@@ -518,7 +518,8 @@ def _log_record() -> LogRecord:
 
 
 def test_metrics_and_logs_carry_flint_env_on_the_resource():
-    """The relay replaces `env` and drops `deployment.environment`, but keeps
+    """A collector in front of Datadog may rewrite `env` and drop
+    `deployment.environment`, but keeps
     the allow-listed resource attribute `flint_env` as a tag, so it says which
     deployment metrics and logs came from. Points are left as they were, and
     the resource's own `environment` field plays no part in it."""

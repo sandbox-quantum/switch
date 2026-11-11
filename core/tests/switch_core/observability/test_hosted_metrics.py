@@ -193,7 +193,7 @@ class TestSnapshot:
         assert snap.boxes_reporting == {"vm": 1}
 
     def test_a_woken_machine_is_not_expected_until_it_reports(self) -> None:
-        """Review point 3: waking a ready machine makes it prove itself again
+        """Waking a ready machine makes it prove itself again
         (`provisioning`), and it turns ready only when a report arrives, so a
         booting machine never counts as expected but silent."""
         from switch_core.db.models import CloudMachine
@@ -357,7 +357,7 @@ class TestReconcilerWatch:
     def test_a_process_started_with_the_reconciler_down_shows_rising_silence(
         self, registry: MetricsRegistry
     ) -> None:
-        """Review point 1: started at boot, so a reconciler that never calls
+        """Started at boot, so a reconciler that never calls
         still reads as silent, and the alert can fire."""
         now = [100.0]
         watch = ReconcilerWatch(clock=lambda: now[0])

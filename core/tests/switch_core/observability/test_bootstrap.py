@@ -453,7 +453,7 @@ async def test_the_hosted_sampler_starts_with_hosted_agents(monkeypatch):
         names = {task.get_name() for task in observability._tasks}
         assert "db-server-sampler" in names
         assert "hosted-sampler" in names
-        # The reconciler watch counts from boot (review point 1).
+        # The reconciler watch counts from boot.
         from switch_core.observability.hosted import reconciler_watch
 
         assert list(reconciler_watch().readings())
