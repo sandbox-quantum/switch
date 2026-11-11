@@ -11,6 +11,7 @@ what crosses between the two.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -336,6 +337,54 @@ class TestPresence:
         await b.shared.reload_all()
 
         assert not b.registry.is_live(AGENT)
+
+    async def test_a_process_that_shut_down_is_not_a_warning(
+        self,
+        processes: tuple[Process, Process],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Every deploy shuts the old processes down; the lease alert is for
+        one that crashed or lost the database, not for that."""
+        a, b = processes
+        await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+        a.run.cancel()  # type: ignore[union-attr]
+        await a.lease.stop()
+        caplog.set_level(logging.INFO)
+
+        await b.shared.check_leases()
+
+        assert not b.registry.is_live(AGENT)
+        said = [r for r in caplog.records if a.lease.process_id in r.getMessage()]
+        assert [r.levelname for r in said] == ["INFO"]
+        assert "shut down" in said[0].getMessage()
+
+    async def test_a_process_that_stopped_renewing_is_a_warning(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        a, b = processes
+        await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+        a.run.cancel()  # type: ignore[union-attr]
+        async with session_factory() as session:
+            await session.execute(
+                update(SwitchCoreProcess)
+                .where(SwitchCoreProcess.id == a.lease.process_id)
+                .values(
+                    beat_at=SwitchCoreProcess.beat_at - LEASE_TTL - timedelta(seconds=1)
+                )
+            )
+            await session.commit()
+        caplog.set_level(logging.INFO)
+
+        await b.shared.check_leases()
+
+        said = [r for r in caplog.records if a.lease.process_id in r.getMessage()]
+        assert [r.levelname for r in said] == ["WARNING"]
+        assert "stopped holding their lease" in said[0].getMessage()
 
     async def test_the_runtime_state_sweep_sees_a_session_placed_elsewhere(
         self, processes: tuple[Process, Process]

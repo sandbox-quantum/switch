@@ -64,7 +64,9 @@ trusted.
 
 Four more alerts read logs rather than metrics, for failures that only show
 up there: a request failing with an unhandled error (`Exception in ASGI
-application`), a pod losing the lease on its agents' connections, a bridge
+application`), a pod losing the lease on its agents' connections without
+shutting down (a pod shut down in a deploy is logged at info and does not
+fire it), a bridge
 failing to post for 10 minutes (more
 than 10 `Could not publish` lines, so one message retrying briefly stays
 quiet), and a burst of more than 25 errors in 15 minutes. Before this change the
@@ -75,8 +77,10 @@ Slack identity error now logged as a warning; without it the worst was 7. Log al
 "Agent controllers keep reconnecting" watches `switch.controllers.connections`
 with `event:opened`, for the reconnect storm seen on pilot in November (about
 7,500 controller connections opened every six hours, so around 625 every 30
-minutes): more than 450 in 30 minutes fires. A rollout reconnects each
-controller once or twice, which stays below that. `event:taken_over` on the
+minutes, about 570 when this was written): more than 900 in 30 minutes fires,
+so it is quiet at today's level and says when the storm gets worse. Lower it
+to 450 once the reconnect loop is fixed. A rollout reconnects each controller
+once or twice, which stays below either. `event:taken_over` on the
 same metric is the churn's signature; the signal board shows every event.
 
 Priority follows what a user loses: P1 when Switch is down or messages are
