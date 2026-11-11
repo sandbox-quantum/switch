@@ -296,7 +296,7 @@ const ServerMainPanel = observer(function ServerMainPanel() {
                     <span className="text-foreground-muted">Not signed in</span>
                   </div>
                 </div>
-                <LoginPanel serverId={serverId} />
+                <LoginPanel serverId={serverId} key={serverId} />
               </>
             )}
 
