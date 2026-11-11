@@ -414,7 +414,7 @@ describe('createDroidAdapter ACP session flow', () => {
 
     const session = await adapter.startSession({
       sessionId: 'test-s1',
-      cwd: '/tmp',
+      cwd: tmpdir(),
       runtimeMode: 'approval-required',
       env: { FACTORY_API_KEY: 'test-key' },
       mcpServers: {
