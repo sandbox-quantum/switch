@@ -8,10 +8,11 @@ import { provider as claude } from './impl/claude';
 import { provider as codex } from './impl/codex';
 import { provider as cursor } from './impl/cursor';
 import { provider as opencode } from './impl/opencode';
+import { provider as openhands } from './impl/openhands';
 
 export const pluginRegistry = createPluginRegistry<CLIAgentPluginProvider>();
 
 // Registration order is the order the desktop app lists providers in.
-for (const p of [codex, claude, antigravity, cursor, opencode]) {
+for (const p of [codex, claude, antigravity, cursor, opencode, openhands]) {
   pluginRegistry.register(p);
 }
