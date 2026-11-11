@@ -1,0 +1,14 @@
+slug: clickup
+name: ClickUp
+category: Project management
+description: ClickUp tasks and lists. Unavailable pending compatible OAuth token expiry and renewal.
+# Disabled outcome approved in #836:
+# https://github.com/sandbox-quantum/switch/issues/836#issuecomment-6650763832
+# API docs describe non-expiring tokens; MCP metadata advertises no refresh grant.
+# https://developer.clickup.com/docs/faq
+# https://mcp.clickup.com/.well-known/oauth-authorization-server
+# Enable only after real MCP expiry/renewal and identity are verified; no fake cap.
+# Evidence and limits: docs/connections/clickup.md.
+enabled: false
+auth:
+  type: oauth

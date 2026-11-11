@@ -308,15 +308,18 @@ class TestGrants:
         assert response.status_code == 422
         assert "nothing would start" in response.json()["detail"]
 
-    async def test_a_service_this_server_cannot_issue(self, harness: Harness) -> None:
+    @pytest.mark.parametrize("service", ["asana", "clickup"])
+    async def test_a_service_this_server_cannot_issue(
+        self, harness: Harness, service: str
+    ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
 
-        asana = await _put(harness, owner, agent_id, {"resources": {}}, "asana")
+        unavailable = await _put(harness, owner, agent_id, {"resources": {}}, service)
         unknown = await _put(harness, owner, agent_id, {"resources": {}}, "nowhere")
 
-        assert asana.status_code == 422
-        assert asana.json()["detail"] == "Not available yet."
+        assert unavailable.status_code == 422
+        assert unavailable.json()["detail"] == "Not available yet."
         assert unknown.status_code == 404
 
     async def test_tools_and_resources_outside_the_grant(
@@ -659,7 +662,7 @@ class TestYourAgents:
         response = await _agents(harness, member)
         assert (response.status_code, response.json()) == (200, [])
 
-    @pytest.mark.parametrize("service", ["nowhere", "asana"])
+    @pytest.mark.parametrize("service", ["nowhere", "asana", "clickup"])
     async def test_an_unknown_or_placeholder_service_is_not_found(
         self, harness: Harness, service: str
     ) -> None:
