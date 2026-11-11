@@ -93,6 +93,8 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'deepseek-harness',
       'pi',
       'copilot',
+      'kiro',
+      'mistral-vibe',
       'kimi',
       'none',
     ]),

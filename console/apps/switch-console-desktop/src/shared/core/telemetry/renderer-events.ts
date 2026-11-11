@@ -95,6 +95,8 @@ export type RendererTelemetryEvents = {
       | 'deepseek-harness'
       | 'pi'
       | 'copilot'
+      | 'kiro'
+      | 'mistral-vibe'
       | 'kimi'
       | 'none';
   };

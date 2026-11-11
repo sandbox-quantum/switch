@@ -204,6 +204,8 @@ class TestUnavailableReplyRouting:
             "deepseek-harness": "dsh web",
             "pi": "pi",
             "copilot": "copilot login",
+            "kiro": "kiro-cli login",
+            "mistral-vibe": "vibe-acp --setup",
             "kimi": "kimi login",
         }
         for agent_type, command in sign_in.items():

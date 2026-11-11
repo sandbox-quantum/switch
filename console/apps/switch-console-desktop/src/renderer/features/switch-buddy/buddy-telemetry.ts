@@ -15,6 +15,8 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'deepseek-harness',
   'pi',
   'copilot',
+  'kiro',
+  'mistral-vibe',
   'kimi',
 ];
 

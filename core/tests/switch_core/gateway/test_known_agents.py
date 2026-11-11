@@ -397,6 +397,7 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ["bash", "view", "create", "edit", "grep", "glob", "task"],
             [],
         ),
+        ("kiro", "Kiro CLI", [], []),
         (
             "kimi",
             "Kimi Code CLI",
