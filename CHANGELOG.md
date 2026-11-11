@@ -187,6 +187,13 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **Kubernetes no longer restarts a switch-core pod that is still booting or
+  only busy.** The chart's liveness probe began 30 seconds after a pod started
+  and gave up after three answers slower than a second, so a pod whose boot
+  waited for others starting at the same time, or whose event loop was busy
+  taking over another pod's agents during a roll, was restarted and handed its
+  work over again. A startup probe now gives a booting pod up to five minutes,
+  and liveness waits five seconds for an answer.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error
