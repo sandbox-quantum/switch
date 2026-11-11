@@ -940,7 +940,8 @@ export async function runSharedHost(
                 surface: 'switch-web',
                 text,
               }),
-              null
+              null,
+              false
             );
           await inbox.acknowledge(event);
           continue;
