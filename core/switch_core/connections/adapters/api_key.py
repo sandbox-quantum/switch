@@ -35,10 +35,14 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import (
+    HOST_LABEL_RE,
+    PATH_SEGMENT_RE,
     TEMPLATE_FIELD_RE,
     AccessLevel,
     ApiKeySignIn,
     ConnectionDefinition,
+    matches_pattern,
+    pattern_placements,
 )
 
 # A key may carry any printable character but a space, which keeps it a
@@ -90,6 +94,17 @@ class ApiKeyAdapter:
         self._name = definition.name
         self._sign_in = sign_in
         self._http = http
+        urls = [sign_in.identity.url]
+        if definition.mcp is not None:
+            urls += [server.url for server in definition.mcp.servers]
+        patterned = {
+            field.name for field in sign_in.fields if field.pattern is not None
+        }
+        self._placements = {
+            placement
+            for url in urls
+            for placement in pattern_placements(url, patterned)
+        }
 
     def current_client_id(self) -> str | None:
         return None
@@ -99,12 +114,12 @@ class ApiKeyAdapter:
         expected = {field.name: field for field in self._sign_in.fields}
         unknown = sorted(set(submitted) - set(expected))
         if unknown:
-            raise InvalidKeyError(
-                f"{self._name} takes no field named {', '.join(unknown)}."
-            )
+            raise InvalidKeyError(f"{self._name} received an unknown field.")
         values: dict[str, str] = {}
         for name, field in expected.items():
-            value = submitted.get(name, "").strip()
+            value = submitted.get(name, "")
+            if field.pattern is None:
+                value = value.strip()
             if not value:
                 raise InvalidKeyError(f"{field.label} is required.")
             if field.choices is not None:
@@ -117,7 +132,15 @@ class ApiKeyAdapter:
                     f"{field.label} must be one line of printable characters, "
                     "without spaces."
                 )
+            if field.pattern is not None and not matches_pattern(field.pattern, value):
+                raise InvalidKeyError(f"{field.label} is not in the required format.")
             values[name] = value
+        for name, placement in self._placements:
+            allowed = HOST_LABEL_RE if placement == "host" else PATH_SEGMENT_RE
+            if not allowed.fullmatch(values[name]) or (
+                placement == "host" and values[name].lower().startswith("xn--")
+            ):
+                raise InvalidKeyError("An account field is not a valid URL component.")
         return values
 
     async def identify(self, values: dict[str, str]) -> KeyIdentity:
@@ -126,7 +149,16 @@ class ApiKeyAdapter:
         The answer is read only for the account's id and label; a refusal is
         the person's to fix, so it says which fields to check.
         """
+        values = self.checked_fields(values)
         identity = self._sign_in.identity
+        auth = None
+        if identity.basic is not None:
+            username = render(identity.basic.username, values)
+            if ":" in username or any(
+                ord(char) < 32 or ord(char) == 127 for char in username
+            ):
+                raise InvalidKeyError("Invalid Basic username.")
+            auth = httpx.BasicAuth(username, render(identity.basic.password, values))
         request = self._http.build_request(
             identity.method,
             render(identity.url, values),
@@ -140,7 +172,12 @@ class ApiKeyAdapter:
             json=identity.body,
         )
         try:
-            response = await self._http.send(request, follow_redirects=False)
+            if auth is None:
+                response = await self._http.send(request, follow_redirects=False)
+            else:
+                response = await self._http.send(
+                    request, auth=auth, follow_redirects=False
+                )
         except httpx.HTTPError:
             raise ServiceUnavailableError(
                 f"{self._name} could not be reached to check the key. Please try again."
@@ -186,6 +223,10 @@ class ApiKeyAdapter:
                 found = str(found)
             if not isinstance(found, str) or not found:
                 raise InvalidKeyError(f"{self._name} did not name the key's account.")
+            if identity.account_id_positive and not re.fullmatch(r"[1-9][0-9]*", found):
+                raise InvalidKeyError(
+                    f"{self._name} did not name an authenticated account."
+                )
             account_id = found
         label: Any = (
             None if identity.label is None else _path_value(body, identity.label)

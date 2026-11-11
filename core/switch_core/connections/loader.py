@@ -28,11 +28,21 @@ the skill file sessions are then given.
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
+from pydantic_core import SchemaError
 
 CATALOG_ROOT = Path(__file__).parent / "catalog"
 MAX_SKILL_BYTES = 32 * 1024
@@ -223,12 +233,86 @@ def template_fields(template: str) -> list[str]:
     return names
 
 
+HOST_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9_$-]{1,255}")
+
+
+def pattern_placements(
+    url: str, names: set[str]
+) -> set[tuple[str, Literal["host", "path"]]]:
+    """Typed URL fields occupy whole components under a fixed HTTPS domain."""
+    used = set(template_fields(url)) & names
+    if not used:
+        return set()
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        raise ValueError("a patterned URL needs a fixed HTTPS domain") from None
+    labels = parts.netloc.split(".")
+    if (
+        parts.scheme != "https"
+        or "@" in parts.netloc
+        or ":" in parts.netloc
+        or len(labels) < 2
+        or not all(HOST_LABEL_RE.fullmatch(label) for label in labels[-2:])
+        or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*", labels[-1])
+        or any(
+            not HOST_LABEL_RE.fullmatch(label)
+            and label not in {"{" + name + "}" for name in used}
+            for label in labels[:-2]
+        )
+    ):
+        raise ValueError(
+            "a patterned URL needs a fixed HTTPS domain without userinfo or ports"
+        )
+    placements: set[tuple[str, Literal["host", "path"]]] = set()
+    segments = parts.path.split("/")
+    for name in used:
+        marker = "{" + name + "}"
+        if (
+            marker in parts.query
+            or marker in parts.fragment
+            or url.count(marker) != labels.count(marker) + segments.count(marker)
+        ):
+            raise ValueError(
+                "a pattern field must fill a whole host label or path segment"
+            )
+        if marker in labels:
+            placements.add((name, "host"))
+        if marker in segments:
+            placements.add((name, "path"))
+    return placements
+
+
+@lru_cache(maxsize=64)
+def _compile_field_pattern(pattern: str) -> TypeAdapter[str]:
+    if not (pattern.startswith("^") and pattern.endswith("$")):
+        raise ValueError("a field pattern must be anchored")
+    try:
+        # Compile the source first, then require a full match, including across
+        # alternation. Pydantic's Rust engine avoids backtracking on user input.
+        TypeAdapter(Annotated[str, Field(pattern=pattern)])
+        return TypeAdapter(Annotated[str, Field(pattern=r"\A(?:" + pattern + r")\z")])
+    except SchemaError:
+        raise ValueError(
+            "a field pattern must be a valid linear-time expression"
+        ) from None
+
+
+def matches_pattern(pattern: str, value: str) -> bool:
+    try:
+        _compile_field_pattern(pattern).validate_python(value, strict=True)
+    except ValidationError:
+        return False
+    return True
+
+
 class ApiKeyField(BaseModel):
     """One value a person pastes, or picks, to connect.
 
     A `secret` field is the key itself, typed freely and never shown again.
-    Any other field is a choice among `choices` (a site, a region), which
-    templates may put in a URL: never free text.
+    Public fields are fixed `choices` or checked by a `pattern`. Patterned
+    URL values must also fit a whole host label or path segment.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -242,17 +326,37 @@ class ApiKeyField(BaseModel):
         default=None, min_length=1, max_length=20
     )
 
+    pattern: str | None = Field(default=None, min_length=3, max_length=256)
+
     @model_validator(mode="after")
-    def _secret_or_choice(self) -> "ApiKeyField":
+    def _one_field_kind(self) -> "ApiKeyField":
         if self.name == TOKEN_PLACEHOLDER:
             raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
-        if self.secret == (self.choices is not None):
+        if sum((self.secret, self.choices is not None, self.pattern is not None)) != 1:
             raise ValueError(
                 f"field {self.name} is a secret typed freely, or a choice among "
-                "choices: one of the two"
+                "choices or a non-secret pattern: exactly one"
             )
         if self.choices is not None and len(set(self.choices)) != len(self.choices):
             raise ValueError(f"field {self.name} lists a choice twice")
+        if self.pattern is not None:
+            _compile_field_pattern(self.pattern)
+        return self
+
+
+class BasicCredentials(BaseModel):
+    """HTTP Basic user/password templates; never a pre-encoded header."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    username: str = Field(min_length=1, max_length=1024)
+    password: str = Field(min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def _username(self) -> "BasicCredentials":
+        if ":" in self.username or any(
+            ord(char) < 32 or ord(char) == 127 for char in self.username
+        ):
+            raise ValueError("invalid Basic username")
         return self
 
 
@@ -261,22 +365,35 @@ class ApiKeyIdentity(BaseModel):
     `url`, with `headers` (and a JSON `body`, for a POST), each a template of
     the fields. `account_id` and `label` are dotted paths in its JSON answer;
     without `account_id` the account is the key itself (its SHA-256), and
-    without `label` the connection is named by the service and its choices."""
+    without `label` the connection is named by the service and its public fields.
+    `basic` supplies HTTP Basic credentials instead of an Authorization header.
+    `account_id_positive` rejects anonymous or malformed numeric account ids.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     method: Literal["GET", "POST"]
     url: str = Field(pattern=HTTPS_URL_PATTERN)
     headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] = Field(
-        min_length=1
+        default_factory=dict
     )
+    basic: BasicCredentials | None = None
     body: dict[str, object] | None = None
     account_id: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
+    account_id_positive: bool = False
     label: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
 
     @model_validator(mode="after")
     def _body_for_post(self) -> "ApiKeyIdentity":
         if (self.body is not None) != (self.method == "POST"):
             raise ValueError("a POST identity call sends a body, and only one does")
+        if not self.headers and self.basic is None:
+            raise ValueError("an identity call needs headers or Basic credentials")
+        if self.basic is not None and any(
+            name.lower() == "authorization" for name in self.headers
+        ):
+            raise ValueError("Basic credentials conflict with an Authorization header")
+        if self.account_id_positive and self.account_id is None:
+            raise ValueError("positive account validation needs an account_id path")
         return self
 
 
@@ -299,7 +416,12 @@ class ApiKeySignIn(BaseModel):
         check_templates(
             self,
             urls=[self.identity.url],
-            values=list(self.identity.headers.values()),
+            values=list(self.identity.headers.values())
+            + (
+                []
+                if self.identity.basic is None
+                else [self.identity.basic.username, self.identity.basic.password]
+            ),
             where="the identity call",
         )
         return self
@@ -308,21 +430,23 @@ class ApiKeySignIn(BaseModel):
         return {field.name for field in self.fields}
 
     def choice_names(self) -> set[str]:
-        return {field.name for field in self.fields if not field.secret}
+        return {field.name for field in self.fields if field.choices is not None}
 
 
 def check_templates(
     sign_in: "ApiKeySignIn", *, urls: list[str], values: list[str], where: str
 ) -> None:
-    """Templates name only the sign-in's fields, and a URL only its choices."""
+    """URLs name public choices or safely placed pattern fields, never secrets."""
     known = sign_in.field_names()
     choices = sign_in.choice_names()
+    patterned = {field.name for field in sign_in.fields if field.pattern is not None}
     for url in urls:
         for name in template_fields(url):
-            if name not in choices:
+            if name not in choices | patterned:
                 raise ValueError(
-                    f"{where}'s URL may name only a choice field, not {name!r}"
+                    f"{where}'s URL may name only a choice field or a pattern field, not {name!r}"
                 )
+        pattern_placements(url, patterned)
     for value in values:
         for name in template_fields(value):
             if name not in known:
