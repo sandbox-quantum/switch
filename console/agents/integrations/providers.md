@@ -1,7 +1,8 @@
 # Providers
 
-The supported provider IDs are `claude`, `codex`, `opencode`, `antigravity`, and
-`cursor`. Every session runs through its adapter in `packages/agent-providers`.
+The supported provider IDs are `claude`, `codex`, `opencode`, `antigravity`,
+`cursor`, `deepseek-harness`, `pi` and `kiro`. Every session runs through its adapter in
+`packages/agent-providers`.
 Local and SSH locations use the same persistent SDK host.
 
 ## Source of truth
@@ -23,7 +24,8 @@ Local and SSH locations use the same persistent SDK host.
 ## Native transports
 
 Claude uses the Claude Agent SDK; Codex uses app-server JSON-RPC; OpenCode uses
-its HTTP/SSE SDK; Antigravity and Cursor use ACP.
+its HTTP/SSE SDK; Antigravity, Cursor, DeepSeek Harness and Kiro use ACP; Pi uses its own
+RPC mode, with a Switch extension for MCP servers and approvals.
 Cursor ACP is the native adapter transport. Native capability limits must be
 reported explicitly rather than replaced with synthetic prompts.
 

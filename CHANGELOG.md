@@ -187,6 +187,22 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **Removing someone from a workspace, or leaving it, says who receives what
+  they owned.** Their rooms, packages, references, reference types, library
+  documents and templates pass to another admin, and until now nothing said
+  so. The dashboard now asks before removing anyone, naming the admin who will
+  receive what they own, and afterwards reports how many of each passed and to
+  whom, along with any sign-in Switch could not revoke at a vendor, which it
+  used to discard. `DELETE /gateway/tenants/{tenant_id}/members/{user_id}`
+  returns `handed_over_to` (the recipient, or null when there is no other
+  admin) and `handed_over` (counts per kind), and the new
+  `GET /gateway/tenants/{tenant_id}/members/{user_id}/removal` names the
+  recipient beforehand.
+- **The server declares gateway API revision 2.** switch-core 0.31.0 changed
+  the API Switch Console uses (an agent's definition gained `auto_mode`, and a
+  service sign-in lost its `confirm` route) but kept declaring revision 1. It
+  now declares `speaks: 2, accepts: 2`, so a Switch Console can tell it apart
+  from a server too old for it.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error
@@ -455,6 +471,9 @@ version of their own to them without also giving them a release of their own.
   history is kept, and the deletion is recorded in the server audit log. The
   server's default workspace can't be deleted. Deleting your account now also
   deletes a workspace you leave empty.
+- **Pi is a provider.** Agent definitions, the gateway's provider list and
+  advanced configuration accept `pi`, whose owner is told to sign it in by
+  running `pi`.
 - **The gateway says what the caller may change in a room.** Rooms, in the
   list (`GET /rooms`) and in a room's detail, carry `can_write`,
   `can_manage` and `can_unlink`. Each room a reference, document or package
@@ -480,6 +499,11 @@ version of their own to them without also giving them a release of their own.
   server, Core now sends the `resource` that the server advertises. Core
   accepts it only if it is the server's URL, or a parent path on the same
   origin, with no query or fragment.
+- **Kiro CLI is a provider.** Definitions, the gateway's provider list and
+  known-agent registration accept `kiro`, and an offline Kiro agent tells its
+  owner to run `kiro-cli login`. A chat now names the provider of any agent
+  registered through a provider's known-agent spec, read from the provider
+  table rather than a list of its own.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -565,6 +589,22 @@ version of their own to them without also giving them a release of their own.
   Workspace token. With Helm, set `switchCore.serviceAccessProfiles` (and
   `switchCore.disabledServices` for `DISABLED_SERVICES`). Without the setting
   nothing changes.
+- **Rooms have schedules.** A schedule posts a message in a room, addressed to
+  some of its agents, once or on a cron rule read in a timezone, on behalf of
+  whoever last set what it says. It fires whether or not anyone has Switch
+  Console open, and each run is posted once however many server processes are
+  running; a run missed while the server was down is sent once, late, saying
+  when it was for. A schedule whose agents have all left the room is paused
+  and the room told. Managed under `/rooms/{room_id}/schedules`, with read
+  access to see them and the right to manage the room (its owner or a
+  workspace admin) to change them, asked again at each run. Deleting an
+  account deletes the schedules it wrote. See `docs/room-schedules.md` (#771).
+- **Agents can schedule messages too.** `list_room_schedules`,
+  `create_room_schedule`, `update_room_schedule`, `pause_room_schedule` and
+  `delete_room_schedule`. One an agent sets up is posted as that agent; the
+  agent has to be in the room and its owner allowed to manage it, and it
+  changes only the schedules it set up. If it leaves the room they are paused
+  and the room told (#771).
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -2980,11 +3020,43 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Pi as an agent CLI.** Agents can run on Pi (`pi --mode rpc`, 1.5.0), on
+  any model provider Pi is signed in to, with the model chosen in Switch.
+  Each session loads a Switch extension with `-e`, written to a directory of
+  the session's own: it registers the session's MCP servers and asks the
+  session host before every tool call, which Pi itself never does, so
+  approvals follow the runtime mode (auto mode approves edits and asks before
+  commands). Nothing is written to Pi's own configuration. A session is
+  refused when the user's Pi `mcp.json` defines a server Pi would take for one
+  of the session's, or when nothing in Pi connects MCP servers (its built-in
+  MCP support turned off or replaced). On Linux, Console installs Pi under
+  `$HOME/.local`, which needs no root.
+- **A server too old for this Console, or the other way round, says so.**
+  Switch Console compares the gateway API revision the server declares with
+  its own when it reads the session, and shows a banner across the workspace
+  naming both versions and which one to update, instead of failing later with
+  a schema error. System status repeats it, and says so when a server declares
+  no revision at all.
+- **GitHub Copilot CLI as an agent provider.** Agents can run on Copilot CLI
+  (`copilot --acp --stdio`) through the generic ACP adapter, on the models of a
+  Copilot plan or on a model provider of its own (`COPILOT_PROVIDER_BASE_URL`
+  and `COPILOT_MODEL`). Its sign-in check starts nothing, and Switch answers
+  its permission requests by the runtime mode.
+- **Kiro CLI is an agent provider.** Agents can run on `kiro-cli acp`:
+  created in Console with a model from Kiro's own list, talking in rooms,
+  asking for approvals from the chat, and resuming their conversation after a
+  restart. Console says whether Kiro is installed and signed in without
+  starting a sign-in, and tells you to run `kiro-cli login` (or
+  `kiro-cli login --use-device-flow` on a machine without a browser) when it
+  is not. A `KIRO_API_KEY` on the machine is passed through.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
   keeps its rooms. Offered on connections to your own bot, not on ones that
   came from installing Switch's app.
+- **Room settings list a room's schedules.** Add, edit, pause, resume and
+  delete them, with the next run shown, using the cron picker for repeating
+  ones (#771).
 - **Airtable's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks
@@ -3018,6 +3090,16 @@ version of their own to them without also giving them a release of their own.
   copy of the one picked, so the terminal's own is never written to, and its
   transcript starts with what was said in it. A conversation still open in a
   terminal can't be picked. No earlier prompt is sent again.
+- **Mistral Vibe agents.** An agent can run Mistral Vibe (`vibe-acp`, tested
+  with 3.1.0) over ACP, in Console or on a headless agent controller, with
+  approvals, questions, model choice and resumable conversations, and
+  switch-core accepts `mistral-vibe` wherever it takes a provider. Its sign-in
+  is read from Vibe's own status call, which never opens a browser: sign in on
+  the execution machine with `vibe-acp --setup`, or set `MISTRAL_API_KEY`. On
+  Linux a key only the desktop keyring holds reads as signed out, as sessions
+  cannot reach it. Auto mode uses Vibe's Smart Approve where Vibe offers it,
+  and otherwise lets edits run and asks before commands and connector calls.
+  A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
 - **Google Workspace shows Google's full-colour G** on the Connections grid,
@@ -5155,6 +5237,9 @@ tags; see RELEASING.md.
   computer passes the session's provider and how it started to Console over
   its IPC channel, for Console's usage data. A controller with no parent
   listening, on an SSH host or run as a service, sends nothing.
+- **Runs Kiro CLI agents.** `kiro-cli` on `PATH`, signed in as the user the
+  controller runs as or with `KIRO_API_KEY` in its `--env-file`, is reported
+  and run like the other providers.
 - **Waits its turn when Switch is busy opening connections.** An open or an
   attach refused as `busy` comes with when to try again, the controller's
   place in the server's queue, and the controller now waits that long

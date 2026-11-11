@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 from switch_core.agent_refusals import AgentRefused, record_refusal
@@ -1405,6 +1406,144 @@ async def unlink_rooms(source_room_id: str, target_room_id: str) -> dict[str, bo
     agent_id = get_agent_id()
     protocol = get_protocol()
     await protocol.unlink_rooms(agent_id, source_room_id, target_room_id)
+    return {"ok": True}
+
+
+@operation
+async def list_room_schedules(room_id: str) -> list[dict[str, Any]]:
+    """List a room's schedules: the messages Switch posts to its agents on a timer.
+
+    Args:
+        room_id: The Switch room id.
+
+    Returns:
+        One `{id, agents, text, cron, run_at, timezone, paused, next_run_at,
+        last_run_at, set_up_by_you}` per schedule, oldest first. `next_run_at`
+        is null once a one-off has been sent; `set_up_by_you` marks the ones
+        you may change.
+    """
+    return await get_protocol().list_room_schedules(get_agent_id(), room_id)
+
+
+def _moment(run_at: str | None) -> datetime | None:
+    if run_at is None:
+        return None
+    try:
+        return datetime.fromisoformat(run_at)
+    except ValueError as e:
+        raise ValueError(
+            f"run_at must be an ISO 8601 time with its offset, such as "
+            f"2026-11-20T09:00:00+00:00, not {run_at!r}."
+        ) from e
+
+
+@operation
+async def create_room_schedule(
+    room_id: str,
+    agents: list[str],
+    text: str,
+    timezone: str,
+    cron: str | None = None,
+    run_at: str | None = None,
+) -> dict[str, Any]:
+    """Set up a message Switch posts in a room, addressed to some of its agents,
+    once or on a repeating rule.
+
+    It is posted as you, so each agent answers it as it would answer you, and
+    it stops (paused, the room told) if you leave the room. You need to be in
+    the room, and your owner needs to be allowed to manage it (its owner or a
+    workspace admin). Give exactly one of `cron` and `run_at`.
+
+    Args:
+        room_id: The Switch room id.
+        agents: Names of the agents in the room it is for. You may name
+            yourself, for a reminder of your own.
+        text: What to post, up to 4000 characters.
+        timezone: An IANA zone, such as `Europe/London`, that `cron` is read
+            in.
+        cron: A five-field cron rule, such as `0 9 * * 1-5` for weekdays at
+            09:00.
+        run_at: For a one-off: an ISO 8601 time with its offset, in the
+            future.
+
+    Returns:
+        The schedule, shaped as `list_room_schedules` lists it.
+    """
+    return await get_protocol().create_room_schedule(
+        get_agent_id(),
+        room_id,
+        agents=agents,
+        text=text,
+        cron=cron,
+        run_at=_moment(run_at),
+        timezone=timezone,
+    )
+
+
+@operation
+async def update_room_schedule(
+    room_id: str,
+    schedule_id: str,
+    agents: list[str],
+    text: str,
+    timezone: str,
+    cron: str | None = None,
+    run_at: str | None = None,
+) -> dict[str, Any]:
+    """Replace what one of your own schedules says, to whom and when.
+
+    Only a schedule you set up yourself can be changed this way; one a person
+    set up is theirs to change. Arguments as for `create_room_schedule`.
+
+    Returns:
+        The schedule as it now stands.
+    """
+    return await get_protocol().update_room_schedule(
+        get_agent_id(),
+        room_id,
+        schedule_id,
+        agents=agents,
+        text=text,
+        cron=cron,
+        run_at=_moment(run_at),
+        timezone=timezone,
+    )
+
+
+@operation
+async def pause_room_schedule(
+    room_id: str, schedule_id: str, paused: bool
+) -> dict[str, Any]:
+    """Pause one of your own schedules, or resume it.
+
+    Resuming starts again from now: runs that fell due while it was paused are
+    not sent.
+
+    Args:
+        room_id: The Switch room id.
+        schedule_id: The schedule's id, from `list_room_schedules`.
+        paused: True to pause it, false to resume it.
+
+    Returns:
+        The schedule as it now stands.
+    """
+    return await get_protocol().pause_room_schedule(
+        get_agent_id(), room_id, schedule_id, paused=paused
+    )
+
+
+@operation
+async def delete_room_schedule(room_id: str, schedule_id: str) -> dict[str, bool]:
+    """Delete one of your own schedules.
+
+    Args:
+        room_id: The Switch room id.
+        schedule_id: The schedule's id, from `list_room_schedules`.
+
+    Returns:
+        `{"ok": true}`.
+    """
+    await get_protocol().delete_room_schedule(get_agent_id(), room_id, schedule_id)
     return {"ok": True}
 
 

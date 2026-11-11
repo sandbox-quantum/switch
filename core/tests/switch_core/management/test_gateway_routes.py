@@ -488,8 +488,15 @@ class TestManagedAgents:
             "opencode",
             "cursor",
             "antigravity",
+            "deepseek-harness",
+            "pi",
+            "copilot",
+            "kiro",
+            "mistral-vibe",
+            "goose",
         }
         assert providers["cursor"] == {"fields": []}
+        assert providers["kiro"] == {"fields": []}
         effort = next(
             field for field in providers["claude"]["fields"] if field["key"] == "effort"
         )
@@ -514,6 +521,12 @@ class TestManagedAgents:
             "opencode",
             "antigravity",
             "cursor",
+            "deepseek-harness",
+            "pi",
+            "copilot",
+            "kiro",
+            "mistral-vibe",
+            "goose",
         ]
         assert providers[0]["label"] == "Claude Code"
         for entry in providers:
