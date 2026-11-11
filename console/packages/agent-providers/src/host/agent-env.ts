@@ -1,6 +1,6 @@
 import { PROVIDER_RUNTIMES } from '../providers/registry';
 
-export const AGENT_ENV_VARS = [
+const COMMON_AGENT_ENV_VARS = [
   'ALL_PROXY',
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
@@ -64,6 +64,14 @@ export const AGENT_ENV_VARS = [
   'XAI_API_KEY',
 ] as const;
 
+/** Provider settings shared by process hosts and separate-user controllers. */
+export const AGENT_ENV_VARS: readonly string[] = [
+  ...new Set([
+    ...COMMON_AGENT_ENV_VARS,
+    ...PROVIDER_RUNTIMES.flatMap((runtime) => runtime.inheritEnv),
+  ]),
+];
+
 /**
  * What Windows itself, Node and the provider CLIs need there to find the
  * user's profile, the system and a temporary directory. None is set on macOS
@@ -101,7 +109,7 @@ const WINDOWS_ENV = [
  * Console and the headless agent controller both launch hosts with it.
  */
 export const EXECUTION_INHERIT_ENV: readonly string[] = [
-  ...new Set([...AGENT_ENV_VARS, ...PROVIDER_RUNTIMES.flatMap((runtime) => runtime.inheritEnv)]),
+  ...AGENT_ENV_VARS,
   'PATH',
   'HOME',
   'USER',
