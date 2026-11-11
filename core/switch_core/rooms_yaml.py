@@ -541,6 +541,29 @@ class ParsedTemplate:
     values: dict[str, str | int | float | bool]
 
 
+def _room_spec(raw: Any, failure: str) -> RoomSpec:
+    """A room block validated, refusing a key a room does not take by naming
+    it and the room, rather than in the validator's own words."""
+    try:
+        return RoomSpec.model_validate(raw)
+    except ValidationError as e:
+        unknown = sorted(
+            str(d["loc"][-1])
+            for d in e.errors()
+            # The room's own keys; a nested block's say where they are below.
+            if d["type"] == "extra_forbidden" and len(d["loc"]) == 1
+        )
+        if unknown:
+            name = raw.get("name") if isinstance(raw, dict) else None
+            keys = ", ".join(f"'{k}'" for k in unknown)
+            raise ValueError(
+                f"Room '{name}' has {keys}, which "
+                f"{'is not a key' if len(unknown) == 1 else 'are not keys'} a room "
+                f"takes. A room takes: {', '.join(sorted(RoomSpec.model_fields))}."
+            ) from e
+        raise ValueError(f"{failure}: {e}") from e
+
+
 class ProvisionResult(BaseModel):
     room_id: str
     room_name: str
@@ -708,10 +731,7 @@ class RoomYamlService:
             spec: RoomSpec | GroupSpec = self._group_spec(body)
             kickoff = None
         else:
-            try:
-                spec = RoomSpec.model_validate(body["room"])
-            except ValidationError as e:
-                raise ValueError(f"Invalid room spec: {e}") from e
+            spec = _room_spec(body["room"], "Invalid room spec")
             if spec.kickoff is not None:
                 raise ValueError(
                     "a single-room template's kickoff goes at the top level, "
@@ -742,10 +762,7 @@ class RoomYamlService:
             raise ValueError("'rooms:' must be a non-empty list")
         rooms: list[RoomSpec] = []
         for i, entry in enumerate(raw_rooms):
-            try:
-                rooms.append(RoomSpec.model_validate(entry))
-            except ValidationError as e:
-                raise ValueError(f"Invalid room spec at index {i}: {e}") from e
+            rooms.append(_room_spec(entry, f"Invalid room spec at index {i}"))
         raw_links = body.get("links") or []
         if not isinstance(raw_links, list):
             raise ValueError("'links:' must be a list")
