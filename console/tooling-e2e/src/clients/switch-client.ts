@@ -21,6 +21,13 @@ import type { IssuedSecrets } from "../core/secrets.ts";
  * modelled here; see README.md for the verified request/response shapes.
  */
 
+/** Who receives what a removed workspace member owned there. */
+export interface WorkspaceMemberHeir {
+  user_id: string;
+  name: string;
+  email: string;
+}
+
 export interface AgentRef {
   id: string;
   name: string;
@@ -1085,9 +1092,34 @@ export class SwitchClient {
     return this.gateway("GET", `/tenants/${encodeURIComponent(tenantId)}/members`);
   }
 
-  /** `DELETE /gateway/tenants/{tenant_id}/members/{user_id}` — remove someone from a workspace. */
-  async removeWorkspaceMember(tenantId: string, userId: string): Promise<void> {
-    await this.gateway<unknown>(
+  /**
+   * `GET /gateway/tenants/{tenant_id}/members/{user_id}/removal` — who would
+   * receive what someone owns in a workspace if this client removed them now.
+   */
+  async previewWorkspaceMemberRemoval(
+    tenantId: string,
+    userId: string,
+  ): Promise<{ handed_over_to: WorkspaceMemberHeir | null }> {
+    return this.gateway(
+      "GET",
+      `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}/removal`,
+    );
+  }
+
+  /**
+   * `DELETE /gateway/tenants/{tenant_id}/members/{user_id}` — remove someone
+   * from a workspace. Says who received what they owned there, and how many
+   * of each kind.
+   */
+  async removeWorkspaceMember(
+    tenantId: string,
+    userId: string,
+  ): Promise<{
+    warning: string | null;
+    handed_over_to: WorkspaceMemberHeir | null;
+    handed_over: Record<string, number>;
+  }> {
+    return this.gateway(
       "DELETE",
       `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
     );
