@@ -135,6 +135,7 @@ _TICK_SECONDS = 5.0
 _AFTER_PLATFORM_CLOSE = timedelta(seconds=2)
 _RETRY_MIN_SECONDS = 5.0
 _RETRY_MAX_SECONDS = 600.0
+_MAX_RETRY_ATTEMPTS = 5
 # How many turns' drawn state one bridge remembers. Forgetting one costs a
 # redraw nobody needed if that turn changes again, not a wrong one.
 _MAX_REMEMBERED_TURNS = 4096
@@ -201,14 +202,21 @@ class _Backoff:
     """A key's waits between failed attempts: doubling, capped, cleared on success."""
 
     waits: dict[tuple[str, ...], float] = field(default_factory=dict)
+    attempts: dict[tuple[str, ...], int] = field(default_factory=dict)
 
-    def next(self, key: tuple[str, ...]) -> float:
+    def next(self, key: tuple[str, ...]) -> float | None:
+        count = self.attempts.get(key, 0) + 1
+        self.attempts[key] = count
+        if count > _MAX_RETRY_ATTEMPTS:
+            self.clear(key)
+            return None
         wait = self.waits.get(key, _RETRY_MIN_SECONDS)
         self.waits[key] = min(wait * 2, _RETRY_MAX_SECONDS)
         return wait
 
     def clear(self, key: tuple[str, ...]) -> None:
         self.waits.pop(key, None)
+        self.attempts.pop(key, None)
 
 
 class _ThreadNotMappedYet(Exception):
@@ -341,7 +349,16 @@ class AgentSessionActivityPublisher:
         asyncio.get_running_loop().call_later(delay, self._enqueue, key, lane)
 
     def _retry_later(self, key: _Key) -> None:
-        self._enqueue_later(key, self._retries.next(key), _SOON)
+        delay = self._retries.next(key)
+        if delay is not None:
+            self._enqueue_later(key, delay, _SOON)
+        else:
+            logger.warning(
+                "Giving up retrying publication for %s on bridge %s after %d attempts.",
+                key,
+                self._bridge_id,
+                _MAX_RETRY_ATTEMPTS,
+            )
 
     async def _next(self) -> tuple[_Key, int]:
         """The first key in the most urgent lane holding one, and that lane.
@@ -384,13 +401,21 @@ class AgentSessionActivityPublisher:
             except Exception:
                 # The delivery loop: one key failing must not stop the rest.
                 delay = self._retries.next(key)
-                logger.exception(
-                    "Could not publish %s on bridge %s; trying again in %.0fs.",
-                    key,
-                    self._bridge_id,
-                    delay,
-                )
-                self._enqueue_later(key, delay, _SOON)
+                if delay is not None:
+                    logger.exception(
+                        "Could not publish %s on bridge %s; trying again in %.0fs.",
+                        key,
+                        self._bridge_id,
+                        delay,
+                    )
+                    self._enqueue_later(key, delay, _SOON)
+                else:
+                    logger.exception(
+                        "Could not publish %s on bridge %s; giving up after %d attempts.",
+                        key,
+                        self._bridge_id,
+                        _MAX_RETRY_ATTEMPTS,
+                    )
 
     async def _tick_forever(self) -> None:
         while True:
@@ -897,18 +922,28 @@ class AgentSessionActivityPublisher:
             raise
         except RemovalFailed as refusal:
             delay = self._retries.next(key)
+            if delay is not None:
+                logger.warning(
+                    "Card %s for request %s was answered but %s would not take it "
+                    "back: %s. It stays in channel %s showing the decision; trying "
+                    "again in %.0fs.",
+                    post.handle,
+                    post.request_id,
+                    self._adapter.platform_name,
+                    refusal,
+                    post.external_channel_id,
+                    delay,
+                )
+                self._enqueue_later(key, delay, _SOON)
+                return False
             logger.warning(
-                "Card %s for request %s was answered but %s would not take it "
-                "back: %s. It stays in channel %s showing the decision; trying "
-                "again in %.0fs.",
+                "Card %s for request %s was answered but %s refused removal after %d attempts: %s. Giving up.",
                 post.handle,
                 post.request_id,
                 self._adapter.platform_name,
+                _MAX_RETRY_ATTEMPTS,
                 refusal,
-                post.external_channel_id,
-                delay,
             )
-            self._enqueue_later(key, delay, _SOON)
             return False
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             stored = await self._card_posts.get(
@@ -1015,17 +1050,27 @@ class AgentSessionActivityPublisher:
         )
         if ref is None:
             delay = self._retries.next(key)
+            if delay is not None:
+                logger.warning(
+                    "Card %s for request %s in channel %s was never confirmed and is "
+                    "not on %s yet. It is not posted again, to avoid asking twice; "
+                    "looking again in %.0fs.",
+                    post.handle,
+                    post.request_id,
+                    post.external_channel_id,
+                    self._adapter.platform_name,
+                    delay,
+                )
+                self._enqueue_later(key, delay, _SOON)
+                return None
             logger.warning(
-                "Card %s for request %s in channel %s was never confirmed and is "
-                "not on %s yet. It is not posted again, to avoid asking twice; "
-                "looking again in %.0fs.",
+                "Card %s for request %s in channel %s was never confirmed on %s after %d attempts; giving up.",
                 post.handle,
                 post.request_id,
                 post.external_channel_id,
                 self._adapter.platform_name,
-                delay,
+                _MAX_RETRY_ATTEMPTS,
             )
-            self._enqueue_later(key, delay, _SOON)
             return None
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             stored = await self._card_posts.get(
