@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "sentry",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "sentry",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["sentry"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -311,6 +314,49 @@ def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
 def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
     with pytest.raises(CatalogError, match=message):
         with_access_profiles(CATALOG, chosen)
+
+
+def test_the_shipped_sentry_entry_configures_oauth_and_mcp_servers():
+    definition = CATALOG["sentry"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports == [39251, 39252, 39253, 39254, 39255]
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("sentry", "https://mcp.sentry.dev/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == [
+        "org:read",
+        "project:read",
+        "team:read",
+        "event:read",
+    ]
+    assert definition.access.write.scopes == [
+        "org:read",
+        "project:read",
+        "project:write",
+        "team:read",
+        "event:read",
+        "event:write",
+    ]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://sentry.io/api/0/users/me/"
+    assert definition.auth.identity.account_id == "id"
+    assert definition.auth.identity.label == "email"
 
 
 @pytest.fixture
