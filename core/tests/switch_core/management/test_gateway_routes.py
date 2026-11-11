@@ -493,6 +493,7 @@ class TestManagedAgents:
             "copilot",
             "kiro",
             "mistral-vibe",
+            "goose",
         }
         assert providers["cursor"] == {"fields": []}
         assert providers["kiro"] == {"fields": []}
@@ -525,6 +526,7 @@ class TestManagedAgents:
             "copilot",
             "kiro",
             "mistral-vibe",
+            "goose",
         ]
         assert providers[0]["label"] == "Claude Code"
         for entry in providers:
