@@ -31,12 +31,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "github",
         "airtable",
         "atlassian",
+        "azure-devops",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "azure-devops",
         "datadog",
         "github",
         "google-workspace",
@@ -646,6 +648,16 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    registration: dynamic\n    client_settings: EXAMPLE\n",
             "client_settings",
         ),
+        (
+            "    registration: dynamic\n",
+            "    registration: dynamic\n    public_client: true\n",
+            "public_client names a static client",
+        ),
+        (
+            "    registration: dynamic\n",
+            "    registration: dynamic\n    public_client: often\n",
+            "public_client",
+        ),
         ("redirect: [loopback, core]", "redirect: [core, core]", "listed twice"),
         (
             "    redirect: [loopback, core]\n",
@@ -1137,6 +1149,16 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
         load_catalog(catalog_copy)
+
+
+def test_azure_devops_uses_a_public_client_without_an_operator_secret():
+    oauth = CATALOG["azure-devops"].definition.auth.oauth
+    assert oauth is not None
+    assert (oauth.registration, oauth.client_settings, oauth.public_client) == (
+        "static",
+        "AZURE_DEVOPS",
+        True,
+    )
 
 
 def _rewrite_google(catalog_copy, old, new):
