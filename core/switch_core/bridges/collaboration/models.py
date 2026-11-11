@@ -214,6 +214,42 @@ class InboundCommand(BaseModel):
     channel_name: str | None = None
 
 
+class InboundMessageEdit(BaseModel):
+    """An edit to a previously sent message from the platform.
+
+    The platform edited a message it had sent, and the bridge is notifying
+    Switch. The edited content replaces the original in the room history.
+    """
+
+    channel_id: str
+    # The platform's id for the edited message, matching the `message_ref`
+    # from the original InboundMessage.
+    message_ref: str
+    # The new content after the edit. Plain text; markdown and formatting have
+    # been converted to plain text by the adapter.
+    new_content: str
+    # External platform's thread root id, for messages in threads. None for
+    # top-level messages. Must match the thread of the original message.
+    root_id: str | None = None
+
+
+class InboundMessageDelete(BaseModel):
+    """A deletion of a previously sent message from the platform.
+
+    The platform deleted or recalled a message, and the bridge is notifying
+    Switch. The message is removed from the room history or replaced with a
+    tombstone depending on Switch's delete handling policy.
+    """
+
+    channel_id: str
+    # The platform's id for the deleted message, matching the `message_ref`
+    # from the original InboundMessage.
+    message_ref: str
+    # External platform's thread root id, for messages in threads. None for
+    # top-level messages. Must match the thread of the original message.
+    root_id: str | None = None
+
+
 class InboundInteraction(BaseModel):
     """Someone operated a control the bridge put on one of its own messages.
 

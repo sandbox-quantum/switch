@@ -39,6 +39,8 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageDelete,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
     PrivateNoticeDelivery,
@@ -708,6 +710,8 @@ class PlatformAdapter(ABC):
         self._listening = True
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
+        self._on_edit: Callable[[InboundMessageEdit], Awaitable[None]] | None = None
+        self._on_delete: Callable[[InboundMessageDelete], Awaitable[None]] | None = None
         self._on_agent_joined: Callable[[InboundAgentJoin], Awaitable[None]] | None = (
             None
         )
