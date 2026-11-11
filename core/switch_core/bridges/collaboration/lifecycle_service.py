@@ -1166,7 +1166,8 @@ class CollaborationBridgeLifecycleService:
                 for other_id, held in self._running_workspaces.items():
                     if held != workspace or other_id == bridge_id:
                         continue
-                    pair = (workspace, *sorted((bridge_id, other_id)))
+                    low, high = sorted((bridge_id, other_id))
+                    pair = (workspace, low, high)
                     if pair in self._shared_workspaces_said:
                         continue
                     self._shared_workspaces_said.add(pair)
@@ -2133,6 +2134,22 @@ class CollaborationBridgeLifecycleService:
                 )
             )
         return down
+
+    def started_names(self) -> list[tuple[str, str]]:
+        """(platform, display name) of each bridge started here, running or not.
+
+        Lets this process report 0 for a bridge it runs, so a crash seen by a
+        process that has since gone does not leave its alert firing.
+        """
+        return [
+            (
+                normalise_platform(
+                    self._bridge_facts.get(bridge_id, ("none", None))[0]
+                ),
+                self._bridge_names.get(bridge_id, bridge_id),
+            )
+            for bridge_id in sorted(self._started)
+        ]
 
     def bridges_for_tenant(self, tenant_id: str) -> list[CollaborationCore]:
         """Running bridges belonging to `tenant_id`, and none other.

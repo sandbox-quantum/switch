@@ -194,7 +194,8 @@
       "include_tags": true,
       "thresholds": {
         "critical": 1
-      }
+      },
+      "timeout_h": 1
     },
     "priority": 2
   },
