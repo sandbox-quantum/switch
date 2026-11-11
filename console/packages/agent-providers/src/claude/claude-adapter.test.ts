@@ -805,6 +805,52 @@ describe('ClaudeAdapter turn attribution', () => {
     expect(done.usageLimit).toEqual({ resetsAt: null });
   });
 
+  it('fails a throttled 429 the way any rejected request fails, not as the usage limit', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    const throttle = 'API Error: 429 {"type":"rate_limit_error","message":"Too many requests"}';
+    query.emit({
+      ...assistantMessage('msg-throttle', [{ type: 'text', text: throttle }]),
+      error: 'rate_limit',
+    });
+    query.emit(
+      resultMessage([String(sent?.uuid)], {
+        is_error: true,
+        api_error_status: 429,
+        result: throttle,
+      })
+    );
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe(throttle);
+    expect(done.usageLimit).toBeUndefined();
+  });
+
+  it('takes a 429 for the usage limit when the CLI reported the limit rejected', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    const text = 'API Error: 429 {"type":"rate_limit_error"}';
+    query.emit({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'rejected', resetsAt: 1_800_000_000 },
+      uuid: 'rate-1',
+      session_id: 'native-1',
+    });
+    query.emit({
+      ...assistantMessage('msg-limit', [{ type: 'text', text }]),
+      error: 'rate_limit',
+    });
+    query.emit(resultMessage([String(sent?.uuid)], { result: text }));
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe(text);
+    expect(done.usageLimit).toEqual({ resetsAt: 1_800_000_000_000 });
+  });
+
   it('keeps a turn that only saw a usage warning or an overage switch completed', async () => {
     const { sdk, adapter, recorder } = await startSession();
     await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });

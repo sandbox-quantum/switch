@@ -59,7 +59,8 @@ import {
   outcomeForResult,
   parseAskUserQuestionInput,
   PERMISSION_MODE_BY_RUNTIME_MODE,
-  rejectedLimitResetsAt,
+  rateLimitErrorText,
+  rejectedLimit,
   requestTypeForTool,
   resultHitUsageLimit,
   resultMessageText,
@@ -183,10 +184,12 @@ interface ActiveTurn {
   turnId: string;
   /** Message uuids this turn is still waiting on a `result` for. */
   outstanding: Set<string>;
-  /** The CLI's notice when it stopped this turn at a usage or rate limit. */
+  /** The CLI's notice, in its usage-limit wording, when it stopped this turn at the limit. */
   usageLimitNotice: string | null;
-  /** When the limit the CLI last reported as rejected lifts, in epoch ms. */
-  limitResetsAt: number | null;
+  /** The text of a message the CLI flagged `rate_limit` in this turn. */
+  rateLimitText: string | null;
+  /** The limit the CLI last reported as rejected in this turn. */
+  rejectedLimit: UsageLimit | null;
 }
 
 interface TextBlockState {
@@ -612,7 +615,8 @@ export class ClaudeAdapter implements ProviderAdapter {
         turnId: input.turnId,
         outstanding: new Set([uuid]),
         usageLimitNotice: null,
-        limitResetsAt: null,
+        rateLimitText: null,
+        rejectedLimit: null,
       };
       this.emit(session, { type: 'session.state.changed', status: 'running' });
       this.emit(session, { type: 'turn.started', turnId: input.turnId });
@@ -875,14 +879,17 @@ export class ClaudeAdapter implements ProviderAdapter {
         this.handleStreamEvent(session, message.event, message.parent_tool_use_id);
         return;
       case 'assistant': {
-        const notice = message.parent_tool_use_id === null ? usageLimitNotice(message) : undefined;
-        if (notice !== undefined && session.turn) session.turn.usageLimitNotice = notice;
+        const turn = session.turn;
+        if (turn && message.parent_tool_use_id === null) {
+          turn.usageLimitNotice = usageLimitNotice(message) ?? turn.usageLimitNotice;
+          turn.rateLimitText = rateLimitErrorText(message) ?? turn.rateLimitText;
+        }
         this.handleAssistantMessage(session, message.message, message.parent_tool_use_id);
         return;
       }
       case 'rate_limit_event': {
-        const resetsAt = rejectedLimitResetsAt(message.rate_limit_info);
-        if (resetsAt !== null && session.turn) session.turn.limitResetsAt = resetsAt;
+        const limit = rejectedLimit(message.rate_limit_info);
+        if (limit !== null && session.turn) session.turn.rejectedLimit = limit;
         return;
       }
       case 'user':
@@ -1122,9 +1129,14 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (consumed.length === 0 && single !== undefined) consumed.push(single);
 
     const resultOutcome = outcomeForResult(result);
+    const rejected = turn.rejectedLimit !== null;
+    const notice =
+      turn.usageLimitNotice ??
+      (rejected && turn.rateLimitText !== null
+        ? turn.rateLimitText || 'The provider usage limit was reached.'
+        : null);
     const limited =
-      resultOutcome !== 'interrupted' &&
-      (turn.usageLimitNotice !== null || resultHitUsageLimit(result));
+      resultOutcome !== 'interrupted' && (notice !== null || resultHitUsageLimit(result, rejected));
     const outcome: TurnOutcome = limited ? 'error' : resultOutcome;
     if (consumed.length === 0) {
       turn.outstanding.clear();
@@ -1141,8 +1153,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.textBlocks.clear();
     session.streamedMessageIds.clear();
     session.streamMessageId = null;
-    const usageLimit: UsageLimit | null = limited ? { resetsAt: turn.limitResetsAt } : null;
-    const message = (limited ? turn.usageLimitNotice : null) ?? turnStatusMessage(result, outcome);
+    const usageLimit: UsageLimit | null = limited
+      ? { resetsAt: turn.rejectedLimit?.resetsAt ?? null }
+      : null;
+    const message = (limited ? notice : null) ?? turnStatusMessage(result, outcome);
     if (outcome === 'error') {
       this.emit(session, { type: 'runtime.error', message: message ?? 'Claude turn failed.' });
     }

@@ -7,7 +7,7 @@ import type {
   SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { McpServerSpec, RuntimeMode } from '../adapter';
-import type { ItemType, RequestType, TurnOutcome, UserInputQuestion } from '../events';
+import type { ItemType, RequestType, TurnOutcome, UsageLimit, UserInputQuestion } from '../events';
 import { mcpApprovalContent } from '../mcp-approval';
 
 const COMMAND_TOOLS = new Set(['Bash', 'BashOutput', 'KillShell', 'KillBash']);
@@ -183,32 +183,51 @@ export function isUsageLimitText(text: string): boolean {
 
 /**
  * The text of an assistant message the CLI wrote in place of a reply because
- * the account's usage or rate limit was reached, or undefined when it is not
- * one. The CLI marks such a message with `error`; its text is the notice.
+ * the account's usage limit was reached, or undefined when it is not one. The
+ * CLI marks such a message with `error`; its text is the notice.
  */
 export function usageLimitNotice(message: SDKAssistantMessage): string | undefined {
   if (message.error === undefined) return undefined;
   const text = assistantText(message);
-  if (message.error === 'rate_limit') return text || 'The provider rate limit was reached.';
   return isUsageLimitText(text) ? text : undefined;
 }
 
-/** Whether a result reports a turn the provider refused for the account's usage limit. */
-export function resultHitUsageLimit(result: SDKResultMessage): boolean {
+/**
+ * The text of an assistant message the CLI flagged `rate_limit`. On its own
+ * that is also what a short per-minute throttle looks like; it means the
+ * usage limit only beside a rejected `rate_limit_event`.
+ */
+export function rateLimitErrorText(message: SDKAssistantMessage): string | undefined {
+  return message.error === 'rate_limit' ? assistantText(message) : undefined;
+}
+
+/**
+ * Whether a result reports a turn the provider refused for the account's
+ * usage limit. A 429 counts only when the CLI reported the limit rejected
+ * (`limitRejected`): a bare 429 is as likely a throttle that clears in seconds.
+ */
+export function resultHitUsageLimit(result: SDKResultMessage, limitRejected: boolean): boolean {
   if (result.subtype === 'success')
-    return result.is_error && (result.api_error_status === 429 || isUsageLimitText(result.result));
+    return (
+      result.is_error &&
+      (isUsageLimitText(result.result) || (limitRejected && result.api_error_status === 429))
+    );
   return resultErrors(result).some(isUsageLimitText);
 }
 
 /**
- * When a rejected limit lifts, in epoch ms, or null for a request that is
- * still allowed or draws on overage. The CLI gives `resetsAt` in epoch seconds.
+ * The limit a `rate_limit_event` reports as rejected, with when it lifts in
+ * epoch ms if the CLI says; null for a request that is still allowed or draws
+ * on overage. The CLI gives `resetsAt` in epoch seconds.
  */
-export function rejectedLimitResetsAt(info: SDKRateLimitInfo): number | null {
+export function rejectedLimit(info: SDKRateLimitInfo): UsageLimit | null {
   if (info.status !== 'rejected' || info.isUsingOverage === true) return null;
-  return typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt)
-    ? info.resetsAt * 1000
-    : null;
+  return {
+    resetsAt:
+      typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt)
+        ? info.resetsAt * 1000
+        : null,
+  };
 }
 
 function assistantText(message: SDKAssistantMessage): string {
