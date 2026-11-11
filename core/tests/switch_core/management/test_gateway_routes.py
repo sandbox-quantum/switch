@@ -495,10 +495,13 @@ class TestManagedAgents:
             "mistral-vibe",
             "goose",
             "qwen",
+            "droid",
             "kimi",
         }
         assert providers["cursor"] == {"fields": []}
         assert providers["kiro"] == {"fields": []}
+        assert providers["droid"] == {"fields": []}
+        assert providers["kimi"] == {"fields": []}
         effort = next(
             field for field in providers["claude"]["fields"] if field["key"] == "effort"
         )
@@ -530,6 +533,7 @@ class TestManagedAgents:
             "mistral-vibe",
             "goose",
             "qwen",
+            "droid",
             "kimi",
         ]
         assert providers[0]["label"] == "Claude Code"

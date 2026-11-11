@@ -79,6 +79,7 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "mistral-vibe": ("mistral-vibe", "Mistral Vibe"),
         "goose": ("goose", "Goose CLI"),
         "qwen": ("qwen", "Qwen Code"),
+        "droid": ("droid", "Droid CLI"),
         "kimi": ("kimi", "Kimi Code CLI"),
     }
 
@@ -107,6 +108,7 @@ _CONSOLE_SIGN_IN = {
     ),
     "goose": ("goose/goose-adapter.ts", r"GOOSE_LOGIN = '([^']+)'"),
     "qwen": ("qwen/qwen-acp.ts", r"QWEN_LOGIN = '([^']+)'"),
+    "droid": ("droid/droid-adapter.ts", r"DROID_LOGIN = '([^']+)'"),
     "kimi": ("kimi/kimi-acp.ts", r"KIMI_LOGIN = '([^']+)'"),
 }
 
@@ -127,7 +129,7 @@ def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
         agent_provider("gemini")
     assert str(raised.value) == (
         "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
-        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, kimi"
+        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, kimi"
     )
 
 

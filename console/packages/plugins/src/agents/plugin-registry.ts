@@ -9,6 +9,7 @@ import { provider as codex } from './impl/codex';
 import { provider as copilot } from './impl/copilot';
 import { provider as cursor } from './impl/cursor';
 import { provider as deepseekHarness } from './impl/deepseek-harness';
+import { provider as droid } from './impl/droid';
 import { provider as goose } from './impl/goose';
 import { provider as kimi } from './impl/kimi';
 import { provider as kiro } from './impl/kiro';
@@ -33,6 +34,7 @@ for (const p of [
   mistralVibe,
   goose,
   qwen,
+  droid,
   kimi,
 ]) {
   pluginRegistry.register(p);

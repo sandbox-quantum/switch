@@ -98,6 +98,8 @@ export type RendererTelemetryEvents = {
       | 'kiro'
       | 'mistral-vibe'
       | 'goose'
+      | 'qwen'
+      | 'droid'
       | 'kimi'
       | 'none';
   };

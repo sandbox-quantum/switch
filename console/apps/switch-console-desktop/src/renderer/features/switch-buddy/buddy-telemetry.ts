@@ -18,6 +18,8 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'kiro',
   'mistral-vibe',
   'goose',
+  'qwen',
+  'droid',
   'kimi',
 ];
 

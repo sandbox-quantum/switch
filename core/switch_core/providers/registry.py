@@ -236,6 +236,12 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         ),
     ),
     AgentProvider(
+        id="droid",
+        label="Factory Droid",
+        sign_in_command="droid",
+        connector_type="Droid CLI",
+    ),
+    AgentProvider(
         id="kimi",
         label="Kimi Code",
         sign_in_command="kimi login",
