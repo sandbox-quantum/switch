@@ -209,8 +209,8 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           key={child.itemId}
           icon={<ToolKindIcon kind="agent" />}
           label={`Subagent: ${child.title}`}
-          trailing={<span className="shrink-0 text-xs">{subagentStatus(child, turn.status)}</span>}
-          active={subagentStatus(child, turn.status) === 'running'}
+          trailing={<span className="shrink-0 text-xs">{subagentStatus(child)}</span>}
+          active={subagentStatus(child) === 'running'}
           tone={child.status === 'failed' ? 'failed' : 'default'}
         />
       ))}

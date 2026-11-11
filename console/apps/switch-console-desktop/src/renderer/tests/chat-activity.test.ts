@@ -5,6 +5,7 @@ import {
   groupTurns,
   isThinking,
   placeRequests,
+  ORPHANED_SUBAGENT_TEXT,
   subagentStatus,
   turnSubagents,
   placeTurns,
@@ -1102,9 +1103,13 @@ describe('child activity', () => {
     expect(turnSubagents(turn).map((item) => item.itemId)).toEqual(['child-b', 'child-a']);
     expect(turnTools(turn)).toEqual([]);
     expect(isThinking(turn)).toBe(false);
-    expect(subagentStatus(done, 'completed')).toBe('done');
-    expect(subagentStatus(live, 'running')).toBe('running');
-    expect(subagentStatus(live, 'completed')).toBe('not confirmed finished');
-    expect(subagentStatus(live, 'interrupted')).toBe('not confirmed finished');
+    expect(subagentStatus(done)).toBe('done');
+    // A background subagent outlives its turn: still at work is still running.
+    expect(subagentStatus(live)).toBe('running');
+    expect(subagentStatus({ ...live, status: 'declined' })).toBe('stopped');
+    expect(subagentStatus({ ...live, status: 'failed' })).toBe('failed');
+    expect(subagentStatus({ ...live, status: 'failed', text: ORPHANED_SUBAGENT_TEXT })).toBe(
+      'not confirmed finished'
+    );
   });
 });

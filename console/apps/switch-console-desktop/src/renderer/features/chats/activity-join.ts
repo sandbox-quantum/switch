@@ -273,10 +273,23 @@ export function turnSubagents(turn: TurnActivity): ChatActivityItem[] {
     .sort((a, b) => Number(b.status === 'in-progress') - Number(a.status === 'in-progress'));
 }
 
-export function subagentStatus(item: ChatActivityItem, turn: TurnStatus): string {
+/**
+ * The text Switch gives a subagent it settles because the agent's session went
+ * away while it was running. The same words as `ORPHANED_SUBAGENT_TEXT` in
+ * switch-core's `sessions/contract.py`.
+ */
+export const ORPHANED_SUBAGENT_TEXT =
+  "Ended by Switch: the agent's session went away before this subagent finished.";
+
+/**
+ * How a subagent stands, in the words the chat platforms use too. A subagent can
+ * outlive its turn, so one still at work is running whatever the turn says.
+ */
+export function subagentStatus(item: ChatActivityItem): string {
+  if (item.status === 'in-progress') return 'running';
   if (item.status === 'completed') return 'done';
-  if (item.status === 'failed' || item.status === 'declined') return item.status;
-  return turn === 'running' || turn === 'queued' ? 'running' : 'not confirmed finished';
+  if (item.status === 'declined') return 'stopped';
+  return item.text === ORPHANED_SUBAGENT_TEXT ? 'not confirmed finished' : 'failed';
 }
 
 /** Whether the turn is running with no visible tool currently running. */
