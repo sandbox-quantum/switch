@@ -782,12 +782,17 @@ Built from sign-ins against sentry.io with a test organization:
   upstream: a refresh re-issues a token that lives as long as the person's
   30-day Sentry token has left (`tokenExchangeCallback` in getsentry/sentry-mcp).
   That outlives the entry's `max_lifetime`, and a pass-through token may be
-  capped at 7 days at most, so the broker withholds it (503, retryable) until
-  it is within an hour of expiring. Agents have Sentry for the hour after each
-  sign-in. The cap stays: raised for one vendor, a grant turned off would
-  leave an agent's copy valid for weeks. The entry's `token.note` says so,
-  and Switch Console shows it on Sentry's page and before connecting, so
-  nobody expects more.
+  capped at 7 days at most, so the broker withholds it (503, retryable) and
+  hands it out only in its last hour (about day 30). The broker refreshes a
+  pass-through token 15 minutes before it expires, so a request after about
+  minute 45 gets the refusal; a token an agent already holds works until it
+  expires. Agents have Sentry for up to an hour after each sign-in. The cap
+  stays: raised for one vendor, a grant turned off would leave an agent's
+  copy valid for weeks. The entry's `token.note` says so, and Switch Console
+  shows it on Sentry's page and before connecting, so nobody expects more.
+- For another hour, the owner disconnects and connects again. A disconnect
+  deletes every agent's Sentry grant, so the owner then turns Sentry on again
+  for each agent.
 - Sentry's consent screen asks which skills to allow: Inspect Issues & Events
   (read-only tools), Seer, Triage Issues, and Manage Projects & Teams. The
   token's scopes are the same four (`org:read`, `project:write`,

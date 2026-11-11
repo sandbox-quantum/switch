@@ -364,7 +364,7 @@ class TokenPolicy(BaseModel):
 
     `note` is shown to people beside how long agent access lasts, for a
     vendor that limits it further (Sentry's renewed tokens outlive the cap,
-    so agents have Sentry only for the hour after each sign-in).
+    so agents have Sentry for up to an hour after each sign-in).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)

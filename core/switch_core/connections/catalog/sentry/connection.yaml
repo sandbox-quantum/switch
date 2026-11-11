@@ -1,7 +1,7 @@
 slug: sentry
 name: Sentry
 category: Observability
-description: Look up Sentry issues, events, stack traces and releases, and triage issues, as you, for the hour after each sign-in.
+description: Look up Sentry issues, events, stack traces and releases, and change issues, projects and teams, as you, for up to an hour after each sign-in.
 enabled: true
 adapter: oauth
 auth:
@@ -27,17 +27,21 @@ auth:
     mcp_tool: whoami
     account_id: user.id
     label: user.email
-# Agents have Sentry for the hour after each sign-in. The first access token
-# lives 3600 s, as measured. Sentry's MCP server never refreshes upstream:
-# its tokenExchangeCallback re-issues a refreshed token with the remaining
-# lifetime of the person's 30-day Sentry token, so the broker withholds it
-# from agents (it outlives this cap) until it is within an hour of expiring.
+# Agents have Sentry for up to an hour after each sign-in. The first access
+# token lives 3600 s, as measured. Sentry's MCP server never refreshes
+# upstream: its tokenExchangeCallback re-issues a refreshed token with the
+# remaining lifetime of the person's 30-day Sentry token, which outlives this
+# cap. The broker refreshes a pass-through token 15 minutes before it expires
+# (PASS_THROUGH_REFRESH_BEFORE), so a request after about minute 45 renews it,
+# and the broker withholds the renewed token. A token that an agent already
+# holds works until it expires. The broker hands out the renewed token only
+# in its last hour (about day 30).
 # The pass-through cap stays at 7 days at most: a grant turned off would
 # otherwise leave an agent's copy valid for weeks.
 token:
   kind: pass_through
   max_lifetime: 3600
-  note: "Agents can use Sentry for the hour after each sign-in. Sentry renews a sign-in with a token that lasts as long as your 30-day Sentry sign-in has left, longer than Switch lets an agent hold one, so a renewed one is never handed to an agent. Disconnect and connect again for another hour."
+  note: "Agents can use Sentry for up to an hour after each sign-in. For another hour, disconnect and connect again, then turn Sentry on again for each agent."
 mcp:
   servers:
     - { name: sentry, url: "https://mcp.sentry.dev/mcp" }

@@ -80,7 +80,7 @@ export const connectionCatalogEntrySchema = z.object({
   token_lifetime: z.number().nullable(),
   /**
    * What limits agent access beyond that lifetime, for people to read (Sentry:
-   * agents have it for the hour after each sign-in); null for most services.
+   * agents have it for up to an hour after each sign-in); null for most services.
    */
   agent_access_note: z.string().nullable(),
   /**

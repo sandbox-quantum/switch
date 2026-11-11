@@ -6,21 +6,22 @@ description: How to work with Sentry through the Sentry connection your owner gr
 # Sentry
 
 Your owner granted this agent their Sentry connection. Its tools are on the
-`sentry` MCP server; there is nothing to set up or renew.
+`sentry` MCP server; there is nothing to set up.
 
 ## What the grant reaches
 
 - **You act as your owner.** You see the organizations and projects they can
   see in Sentry, and anything you change shows there as done by them.
 - **Sentry.io only.** A self-hosted Sentry is not part of this connection.
-- **You have Sentry for the hour after your owner signs in.** Sentry renews
-  a sign-in with a token that lasts as long as their 30-day Sentry sign-in
-  has left (its server's `tokenExchangeCallback` re-issues with the
-  remaining time), longer than Switch lets an agent hold one, so a renewed
-  one is not handed to you. When Switch says Sentry is unavailable because
-  its token lasts too long, tell the user that your owner gets another hour
-  by disconnecting Sentry in Switch Console and connecting it again. Do not
-  look for another way in.
+- **You have Sentry for up to an hour after your owner signs in.** Sentry
+  renews a sign-in with a token that lasts as long as their 30-day Sentry
+  sign-in has left (its server's `tokenExchangeCallback` re-issues with the
+  remaining time). That is longer than Switch lets an agent hold a token, so
+  Switch does not hand the renewed token to you until its last hour. When
+  Switch says Sentry is unavailable because its token lasts too long, tell
+  the user that your owner can disconnect Sentry in Switch Console, connect
+  it again, and then turn Sentry on again for this agent. Do not look for
+  another way in.
 - **This connection can write.** Switch connects Sentry at one level, read
   and write; Sentry's scopes cannot make it read-only.
 - **Which tools you have was your owner's choice, made when they connected.**
@@ -29,8 +30,8 @@ Your owner granted this agent their Sentry connection. Its tools are on the
   Triage (resolve, assign and update issues) and Manage Projects & Teams
   (create and change projects, teams, DSNs, monitors and alert rules).
   If a tool you need is not listed, it was not allowed: tell the user, rather
-  than looking for another way. Your owner can connect Sentry again and allow
-  more.
+  than looking for another way. To allow more, your owner disconnects Sentry,
+  connects it again, and turns Sentry on again for this agent.
 - When a tool is refused, tell the user what you could not do. If Switch says
   the grant was removed or the connection must be reconnected, your owner has
   to do that.
