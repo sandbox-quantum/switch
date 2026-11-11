@@ -8,7 +8,7 @@ until a workspace admin turns it on.
 Expand only: a release from before this revision never reads the column.
 
 Revision ID: 5caa3883fed3
-Revises: 689d7d8ff913
+Revises: 95b5d17f4519
 Create Date: 2026-11-11 12:00:00.000000
 
 """
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "5caa3883fed3"
-down_revision: str | None = "689d7d8ff913"
+down_revision: str | None = "95b5d17f4519"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
