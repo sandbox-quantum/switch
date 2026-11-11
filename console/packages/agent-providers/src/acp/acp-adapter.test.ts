@@ -274,6 +274,144 @@ it('approves without asking in full access, approves only edits in auto-accept-e
   }
 });
 
+const announce = (toolCallId: string, title: string, rawInput?: Record<string, unknown>) => ({
+  method: 'session/update',
+  params: {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId,
+      title,
+      kind: 'other',
+      status: 'in_progress',
+      ...(rawInput ? { rawInput } : {}),
+    },
+  },
+});
+const askFor = (id: number, toolCallId: string) => ({
+  id,
+  method: 'session/request_permission',
+  params: {
+    sessionId: 'native',
+    toolCall: { toolCallId },
+    options: [
+      { optionId: 'once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+    ],
+  },
+});
+const typed: AcpProviderHooks = {
+  ...dummy,
+  itemType: (call) =>
+    call.title === 'bash'
+      ? 'command_execution'
+      : call.title === 'write'
+        ? 'file_change'
+        : undefined,
+};
+
+it('describes and decides a permission request naming only its tool call by the call announced', async () => {
+  const { adapter, events, server } = await start(typed);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send(announce('a', 'bash'));
+  server.send(askFor(90, 'a'));
+  await flush();
+  const opened = events.find((e) => e.type === 'request.opened');
+  if (opened?.type !== 'request.opened') throw new Error('No approval');
+  expect(opened.requestType).toBe('command_execution_approval');
+  expect(opened.title).toBe('bash');
+
+  for (const [title, prompted] of [
+    ['write', 0],
+    ['bash', 1],
+  ] as const) {
+    const edits = await start(typed, { runtimeMode: 'auto-accept-edits' });
+    await edits.adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+    edits.server.send(announce('b', title));
+    edits.server.send(askFor(91, 'b'));
+    await flush();
+    expect(edits.events.filter((e) => e.type === 'request.opened')).toHaveLength(prompted);
+  }
+});
+
+it('titles tool calls and their approvals with the hooks, keeping the title on later updates', async () => {
+  const titled: AcpProviderHooks = {
+    ...typed,
+    toolTitle: (call) =>
+      typeof call.rawInput?.command === 'string' ? call.rawInput.command : undefined,
+  };
+  const { adapter, events, server } = await start(titled);
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send(announce('a', 'bash', { command: 'npm test' }));
+  server.send(askFor(92, 'a'));
+  await flush();
+  expect(events.find((e) => e.type === 'request.opened')).toMatchObject({ title: 'npm test' });
+  server.send({
+    method: 'session/update',
+    params: {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call_update', toolCallId: 'a', status: 'completed' },
+    },
+  });
+  await flush();
+  expect(events.find((e) => e.type === 'item.completed')).toMatchObject({
+    item: { id: 'a', type: 'command_execution', title: 'npm test', status: 'completed' },
+  });
+  // An update repeating the bare tool name does not undo the hook's title.
+  server.send(announce('b', 'bash', { command: 'npm run build' }));
+  server.send({
+    method: 'session/update',
+    params: {
+      sessionId: 'native',
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'b',
+        title: 'bash',
+        status: 'completed',
+      },
+    },
+  });
+  await flush();
+  expect(events.filter((e) => e.type === 'item.completed').at(-1)).toMatchObject({
+    item: { id: 'b', title: 'npm run build' },
+  });
+});
+
+it("keeps a permission request's own kind and title over the announced call's", async () => {
+  const { adapter, events, server } = await start(typed, { runtimeMode: 'auto-accept-edits' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.send(announce('a', 'write'));
+  server.send({
+    id: 93,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'a', kind: 'execute', title: 'Run the migration' },
+      options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }],
+    },
+  });
+  await flush();
+  expect(events.find((e) => e.type === 'request.opened')).toMatchObject({
+    requestType: 'command_execution_approval',
+    title: 'Run the migration',
+  });
+});
+
+it('tells the launch hook the runtime mode, and nothing during a sign-in check', async () => {
+  const seen: Array<string | undefined> = [];
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    launch: ({ binaryPath, env, runtimeMode }) => {
+      seen.push(runtimeMode);
+      return { command: binaryPath, args: [], env };
+    },
+  };
+  await start(hooks, { runtimeMode: 'auto' });
+  const { checkAcpSignIn } = await import('./acp-adapter');
+  await checkAcpSignIn(hooks, { binaryPath: 'dummy-acp', cwd: '/work', env: {} });
+  expect(seen).toEqual(['auto', undefined]);
+});
+
 it('lets vendor extensions ask questions and add items, and cancels them outside a turn', async () => {
   const hooks: AcpProviderHooks = {
     ...dummy,

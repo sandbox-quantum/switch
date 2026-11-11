@@ -372,6 +372,24 @@ _SESSION_DEPENDENT = CommandCapabilities(
             ["shell", "read_file", "write", "str_replace", "grep", "glob"],
             [],
         ),
+        (
+            "deepseek-harness",
+            "DeepSeek Harness",
+            [
+                "bash",
+                "pwsh",
+                "read",
+                "write",
+                "edit",
+                "grep",
+                "glob",
+                "web_fetch",
+                "web_search",
+                "todo_write",
+                "subagent",
+            ],
+            [],
+        ),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(
