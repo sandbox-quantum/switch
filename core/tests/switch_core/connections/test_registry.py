@@ -217,8 +217,8 @@ async def test_an_app_not_set_up_here_says_who_sets_it_up(
 ) -> None:
     broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, None)
     reason = (
-        "{} is not set up on this server. Whoever runs your Switch server can "
-        "set it up in Switch Console, under Admin → Connector apps."
+        "{} is not set up here. Whoever runs Switch can set it up in "
+        "Switch Console, under Admin → Connector apps."
     )
     assert await availability(broker, "example") == reason.format("Example")
     assert await availability(broker, "github") == reason.format("GitHub")
@@ -238,8 +238,8 @@ async def test_a_service_signing_in_only_through_the_server_needs_its_public_url
     assert example is not None
     assert example.code == "needs_public_url"
     assert example.reason == (
-        "Example can't be connected on this server: it needs the server's "
-        "public address (GATEWAY_PUBLIC_URL)."
+        "Example can't be connected here: it needs Switch's public address "
+        "(GATEWAY_PUBLIC_URL)."
     )
     assert (await standing(broker, "example")).server_setup_needed is False
     # GitHub's App names its own callback, so it isn't held up the same way.
@@ -264,8 +264,7 @@ async def test_github_cannot_work_on_a_server_without_an_https_address(
     assert github is not None
     assert github.code == "needs_https"
     assert github.reason == (
-        "GitHub can't be used on this server: it needs the server to have an "
-        "https address."
+        "GitHub can't be used here: it needs Switch to have an https address."
     )
     assert (await standing(broker, "github")).server_setup_needed is False
     # Google and the like take an http address back, so their app still can be.
@@ -285,7 +284,7 @@ async def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
     assert atlassian is not None
     assert (atlassian.code, atlassian.reason) == (
         "not_set_up",
-        "Atlassian is not set up on this server.",
+        "Atlassian is not set up here.",
     )
     assert (await standing(broker, "atlassian")).server_setup_needed is False
     asana = (await standing(broker, "asana")).unavailable

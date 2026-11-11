@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from contextlib import AbstractContextManager, nullcontext
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -24,9 +25,15 @@ from switch_core.db.models import TENANT_ZERO_ID, User
 from switch_core.db.stores.user_store import (
     OidcIdentityConflictError,
     OidcIdentityRaceError,
+    SignupRefusedError,
     UserStore,
 )
-from switch_core.gateway.auth import initial_tenant_claim, set_session_cookie
+from switch_core.gateway.auth import (
+    SIGNUP_REFUSED_DETAIL,
+    initial_tenant_claim,
+    set_session_cookie,
+    signup_refused_by_edge,
+)
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_config,
@@ -382,7 +389,7 @@ async def oidc_callback(
             status_code=503,
             detail=(
                 "Sign-in is misconfigured: the identity provider's issuer "
-                "does not match this server's configuration"
+                "does not match Switch's configuration"
             ),
         )
     # A first sign-in provisions the account just in time. Where it lands is
@@ -407,7 +414,17 @@ async def oidc_callback(
                 email_verified=verified,
                 join_tenant=join_tenant,
                 link_by_email=config.organization_directory == "local",
+                create_allowed=not signup_refused_by_edge(request, config),
             )
+        except SignupRefusedError as exc:
+            await session.rollback()
+            logger.warning(
+                "OIDC first sign-in refused (sub %s): the request is marked as "
+                "from a country without sign-up",
+                sub,
+            )
+            emit_safely(current_telemetry(), "signup_refused", {"reason": "country"})
+            raise HTTPException(status_code=403, detail=SIGNUP_REFUSED_DETAIL) from exc
         except OidcIdentityConflictError as exc:
             logger.warning("OIDC identity conflict: %s", exc)
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -455,6 +472,7 @@ async def oidc_callback(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return response
 
@@ -499,5 +517,6 @@ async def oidc_exchange(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return response

@@ -56,7 +56,7 @@ class ServiceConnectionStore:
         except DBAPIError as error:
             if getattr(error.orig, "sqlstate", None) == "55P03":
                 raise ServiceConnectionBusy(
-                    "The connection is busy. Please retry."
+                    "The connector is busy. Please retry."
                 ) from None
             raise
 
@@ -164,7 +164,7 @@ class ServiceConnectionStore:
         )
         if updated is None:
             raise ServiceConnectionChanged(
-                f"The {service} connection changed while its secret was refreshed."
+                f"The {service} connector changed while its secret was refreshed."
             )
         return updated
 

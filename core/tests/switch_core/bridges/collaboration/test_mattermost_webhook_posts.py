@@ -161,10 +161,16 @@ def test_a_post_mattermost_marks_from_a_bot_is_an_apps() -> None:
 def test_an_edit_is_a_message_and_keeps_its_sender_identity(from_webhook: bool) -> None:
     adapter, received = _adapter()
     post = _post("!status corrected", from_webhook=str(from_webhook).lower())
+    original = {**post, "message": "original request"}
+    _deliver(adapter, original)
+    _deliver(adapter, original)
+    assert len(received) == 1
     post["edit_at"] = 123456
     _deliver(adapter, post, event_type="post_edited")
 
-    [message] = received
+    [original_message, message] = received
+    assert original_message.content == "original request"
+    assert original_message.edit_revision is None
     assert isinstance(message, InboundMessage)
     assert message.message_ref == post["id"]
     assert message.content == "!status corrected"

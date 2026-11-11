@@ -54,7 +54,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 )
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
-from switch_core.bridges.agent.protocol.types import IntegrationProfile
+from switch_core.bridges.agent.protocol.types import IntegrationProfile, TrustFeedback
 from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
@@ -785,7 +785,7 @@ async def list_participants() -> list[dict[str, Any]]:
 
 
 @operation
-async def post_message(body: str, thread_id: str | None = None) -> dict[str, str]:
+async def post_message(body: str, thread_id: str | None = None) -> dict[str, Any]:
     """Send a message to the connected room (broadcast, no specific recipient).
 
     Args:
@@ -801,14 +801,26 @@ async def post_message(body: str, thread_id: str | None = None) -> dict[str, str
             thread_id.
 
     Returns:
-        {"event_id": "<event id>"} for the posted message.
+        {"event_id": "<event id>"} for the posted message, plus `trust` when
+        Switch Trust changed or flagged it (see below). No `trust` means the
+        room received exactly what you sent.
+
+        `trust` is {"outcome": "redacted", "delivered": "<the text the room
+        received>"} when parts of your message were redacted before anyone
+        saw them; {"outcome": "alerted", "note": "<the notice>"} when it was
+        delivered as sent but flagged, with that notice posted under it; or
+        {"outcome": "errored", "note": "<the notice>"} when it was delivered
+        without being fully checked. `note` is there only when the notice was
+        posted in the room; when it could not be, `note` is absent and
+        `notice_error` says why, and the room was not warned. A blocked
+        message is not delivered at all, and the call fails instead.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
 
     protocol = get_protocol()
-    event_id = await protocol.send_message(agent_id, room_id, body, thread_id=thread_id)
-    return {"event_id": event_id}
+    sent = await protocol.send_message(agent_id, room_id, body, thread_id=thread_id)
+    return _with_trust({"event_id": sent.event_id}, sent.trust)
 
 
 @operation
@@ -871,6 +883,9 @@ async def send_targeted_message(
         (its bridge is down or has no channel for the room, so the message
         never reaches the platform). It says what Switch sent, not what the
         platform confirmed.
+
+        `trust` is present, as for post_message, when Switch Trust changed or
+        flagged the message.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
@@ -884,10 +899,21 @@ async def send_targeted_message(
         thread_id=thread_id,
         target_roles=target_roles or [],
     )
-    return {
-        "event_id": result.event_id,
-        "target_statuses": {n: s.value for n, s in result.target_statuses.items()},
-    }
+    return _with_trust(
+        {
+            "event_id": result.event_id,
+            "target_statuses": {n: s.value for n, s in result.target_statuses.items()},
+        },
+        result.trust,
+    )
+
+
+def _with_trust(result: dict[str, Any], trust: TrustFeedback | None) -> dict[str, Any]:
+    """A send's result, with `trust` only when Switch Trust did something:
+    a message it left alone reports nothing about it."""
+    if trust is not None:
+        result["trust"] = trust.to_result()
+    return result
 
 
 # ── Moderation ───────────────────────────────────────────────────────────────
@@ -1391,7 +1417,8 @@ async def list_bridges() -> list[dict[str, Any]]:
 
     Returns:
         List of `{id, type, display_name, status, is_default,
-        can_create_channels}` dicts. Only `status` == "active" bridges are
+        can_create_channels, can_create_private_channels,
+        private_channel_needs_linked_account}` dicts. Only `status` == "active" bridges are
         usable for new rooms; others are shown for context. `is_default`
         marks the bridge that `create_room` uses when no `bridge_id` is given
         (at most one).
@@ -1401,6 +1428,14 @@ async def list_bridges() -> list[dict[str, Any]]:
         operator has withheld it. Creating a room on one of those fails, so
         offer an existing channel instead: the chat is made on the platform,
         the Switch app is added to it, and the room is adopted from that.
+
+        `can_create_private_channels` says whether `channel_type`
+        "channel_private" can be asked for there. Where
+        `private_channel_needs_linked_account` is true, the room's owner,
+        your owner when you create it, must have linked and confirmed their
+        account on that platform: Switch puts them in the private channel
+        through it (on Teams, as its owner), and refuses the room when they
+        have not, since nobody could get into it otherwise.
     """
     protocol = get_protocol()
     return await protocol.list_bridges()
@@ -1411,6 +1446,9 @@ async def invite_agent_to_room(
     room_id: str, agent_name: str, include_subagents: bool = False
 ) -> dict[str, bool]:
     """Invite an agent into an existing room by name.
+
+    A direct or group conversation is refused: its platform fixes who is in
+    it, and the people in it add agents with `!invite-agent` there.
 
     Args:
         room_id: The Switch room id (UUID string).
@@ -1438,8 +1476,10 @@ async def remove_agent_from_room(room_id: str, agent_name: str) -> dict[str, boo
     connected there is disconnected from it. You need not be in the room.
 
     Allowed when you may address that agent (its addressing policy admits
-    you), or when you can manage agents and it belongs to your owner. Anything
-    else is refused with the reason — relay it rather than retrying.
+    you), or when you can manage agents and it belongs to your owner. A direct
+    or group conversation is refused: its platform fixes who is in it, and the
+    people in it use `!remove-agent` there. Anything else is refused with the
+    reason — relay it rather than retrying.
 
     Args:
         room_id: The Switch room id (UUID string).
@@ -1465,7 +1505,8 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
     be a user already known to that bridge — e.g. someone who has signed into
     the workspace — otherwise the bridge cannot resolve them. Use this after a
     bridge change to re-invite the humans who were dropped, since their
-    identities are bridge-specific and are not carried across.
+    identities are bridge-specific and are not carried across. A direct or
+    group conversation is refused: its platform fixes who is in it.
 
     Args:
         room_id: The Switch room id (UUID string).

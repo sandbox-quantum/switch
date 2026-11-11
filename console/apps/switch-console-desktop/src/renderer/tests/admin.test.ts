@@ -49,17 +49,22 @@ describe('the Admin page’s sections', () => {
     serviceConnections: true,
   };
 
-  it('gives workspace admins its messaging apps and connector switches', () => {
+  it('gives workspace admins its messaging apps, connector switches and decision routing', () => {
     expect(adminGroups({ ...person, administers: true })).toEqual([
-      { scope: 'workspace', items: ['messaging-apps', 'connectors'] },
+      { scope: 'workspace', items: ['messaging-apps', 'connectors', 'decision'] },
     ]);
     expect(adminGroups(person)).toEqual([]);
+  });
+
+  it('hides decision routing from a member who is not the workspace’s admin', () => {
+    const member = adminGroups({ ...person, serviceConnections: false });
+    expect(member.flatMap((group) => group.items)).not.toContain('decision');
   });
 
   it('gives the server’s operator Switch Trust, and connector apps only on a Switch with no gateway', () => {
     const operator = { ...person, administers: true, operator: true };
     expect(adminGroups(operator)).toEqual([
-      { scope: 'workspace', items: ['messaging-apps', 'connectors'] },
+      { scope: 'workspace', items: ['messaging-apps', 'connectors', 'decision'] },
       { scope: 'server', items: ['switch-trust'] },
     ]);
     expect(adminGroups({ ...operator, operatesGatewaylessServer: true })[1]).toEqual({
@@ -68,7 +73,7 @@ describe('the Admin page’s sections', () => {
     });
   });
 
-  it('keeps only the connector sections behind service connections', () => {
+  it('keeps only the connector sections behind service connections, not decision routing', () => {
     expect(
       adminGroups({
         administers: true,
@@ -77,7 +82,7 @@ describe('the Admin page’s sections', () => {
         serviceConnections: false,
       })
     ).toEqual([
-      { scope: 'workspace', items: ['messaging-apps'] },
+      { scope: 'workspace', items: ['messaging-apps', 'decision'] },
       { scope: 'server', items: ['switch-trust'] },
     ]);
   });
@@ -93,7 +98,10 @@ describe('the Admin page’s sections', () => {
     expect(shownAdminSection(operator, 'apps')).toBe('apps');
     expect(shownAdminSection(admin, 'apps')).toBe('messaging-apps');
     expect(shownAdminSection(admin, 'connectors')).toBe('connectors');
+    expect(shownAdminSection(admin, 'decision')).toBe('decision');
     expect(shownAdminSection([], 'connectors')).toBeNull();
+    const off = adminGroups({ ...person, administers: true, serviceConnections: false });
+    expect(shownAdminSection(off, 'connectors')).toBe('messaging-apps');
   });
 });
 

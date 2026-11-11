@@ -14,6 +14,7 @@ from switch_core.accounts.deletion import (
     AccountDeletionIncomplete,
     AccountDeletionRefused,
     Workspace,
+    is_server_administrator,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
@@ -36,18 +37,22 @@ from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import (
+    SIGNUP_REFUSED_DETAIL,
     AuthenticatedCaller,
     AuthenticatedSession,
     describe_session_state,
     get_authenticated_caller,
     get_authenticated_session,
+    get_authenticated_user_id,
     get_current_user,
     hash_password_off_loop,
     initial_tenant_claim,
     list_tenant_memberships,
     operator_entered_workspace,
     require_admin,
+    session_auth_time,
     set_session_cookie,
+    signup_refused_by_edge,
     tenants_bindable_by,
     verify_password_off_loop,
 )
@@ -82,6 +87,7 @@ from switch_core.gateway.schemas import (
     LinkedIdentity,
     LoginRequest,
     OidcLoginOptionView,
+    OperatorUserResponse,
     PendingIdentity,
     ServerDeclaration,
     SessionStateResponse,
@@ -90,7 +96,6 @@ from switch_core.gateway.schemas import (
     SignupRequest,
     SignupResponse,
     UpdateMeRequest,
-    UserResponse,
 )
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
@@ -177,6 +182,7 @@ async def login(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return _session_response(user)
 
@@ -223,7 +229,7 @@ async def _refuse_signup(
         emit_safely(current_telemetry(), "signup_refused", {"reason": "rate_limited"})
         raise HTTPException(
             status_code=429,
-            detail="Too many sign-ups on this server in the last hour. Try again later.",
+            detail="Too many sign-ups in the last hour. Try again later.",
             headers={"Retry-After": str(retry_after)},
         )
     if await user_store.get_by_email(session, email) is not None:
@@ -235,6 +241,7 @@ async def _refuse_signup(
 @router.post("/auth/signup", status_code=201)
 async def signup(
     req: SignupRequest,
+    request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
@@ -253,9 +260,13 @@ async def signup(
     """
     if not config.gateway_signup_open:
         emit_safely(current_telemetry(), "signup_refused", {"reason": "disabled"})
-        raise HTTPException(
-            status_code=403, detail="Sign-up is disabled on this server"
+        raise HTTPException(status_code=403, detail="Sign-up is turned off here")
+    if signup_refused_by_edge(request, config):
+        logger.warning(
+            "Refused sign-up: the request is marked as from a country without sign-up"
         )
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "country"})
+        raise HTTPException(status_code=403, detail=SIGNUP_REFUSED_DETAIL)
 
     with tenant_scope(TENANT_ZERO_ID):
         # Checked before the hash so a refusal stays cheap, and again under the
@@ -289,7 +300,7 @@ async def signup(
                 status_code=409, detail="Email already registered"
             ) from None
         await session.commit()
-        logger.info("Signed up user: %s (%s)", user.email, user.id)
+        logger.info("Signed up user %s", user.id)
         emit_safely(current_telemetry(), "account_created", {"method": "signup"})
 
         set_session_cookie(
@@ -298,6 +309,7 @@ async def signup(
             config.keyring,
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
+            datetime.now(UTC),
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, session_factory, user.id, config, settings)
@@ -327,12 +339,42 @@ async def refresh(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
+        session_auth_time(request),
     )
     return _session_response(user)
 
 
 @router.post("/auth/logout")
 async def logout(response: Response) -> dict[str, bool]:
+    response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+@router.post("/auth/sessions/revoke")
+async def end_my_sessions(
+    response: Response,
+    user_id: Annotated[str, Depends(get_authenticated_user_id)],
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> dict[str, bool]:
+    """Sign out of all devices, this one included.
+
+    `/auth/logout` clears only this browser's cookie, so a copy of it, or a
+    session left open elsewhere, stays valid until it expires. This moves the
+    account's session version on, which every cookie minted before it fails
+    against. Needs no workspace selected, like `/tenants/{id}/switch`, so a
+    person with several can always reach it.
+    """
+    await user_store.end_sessions(session, user_id)
+    await record_server_audit_event(
+        session,
+        actor_user_id=user_id,
+        action=ServerAuditAction.USER_SESSIONS_ENDED,
+        target_type="user",
+        target_id=user_id,
+        details=None,
+    )
+    await session.commit()
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
@@ -620,14 +662,34 @@ async def update_me(
 @router.put("/auth/me/password")
 async def change_password(
     req: ChangePasswordRequest,
+    request: Request,
+    response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
     user: Annotated[User, Depends(get_current_user)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
+    """Change the signed-in person's password, signing them out everywhere
+    else.
+
+    The database ends every session on a password change
+    (`db/session_version_ddl.py`), this one included, so the cookie is
+    minted again from the row as it now stands: whoever changed the password
+    stays signed in here, and every other copy of the old cookie is refused.
+    """
     if not await verify_password_off_loop(req.current_password, user.password_hash):
         raise HTTPException(status_code=403, detail="Current password is incorrect")
 
     user.password_hash = await hash_password_off_loop(req.new_password)
     await session.commit()
+    await session.refresh(user)
+    set_session_cookie(
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        request.state.tenant_id,
+        session_auth_time(request),
+    )
     return {"ok": True}
 
 
@@ -635,16 +697,20 @@ async def change_password(
 async def list_users(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _admin: Annotated[User, Depends(require_admin)],
-) -> list[UserResponse]:
+    admin: Annotated[User, Depends(require_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> list[OperatorUserResponse]:
+    admin_id = admin.id
     users = await user_store.get_all(session)
     return [
-        UserResponse(
+        OperatorUserResponse(
             id=u.id,
             name=u.name,
             email=u.email,
             role=u.role,
             created_at=str(u.created_at),
+            can_delete=u.id != admin_id
+            and not is_server_administrator(u, config.gateway_admin_email),
         )
         for u in users
     ]
@@ -656,7 +722,8 @@ async def create_user(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     _admin: Annotated[User, Depends(require_admin)],
-) -> UserResponse:
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> OperatorUserResponse:
     existing = await user_store.get_by_email(session, req.email)
     if existing is not None:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -684,14 +751,15 @@ async def create_user(
         ) from None
     await session.commit()
 
-    logger.info("Created user: %s (%s)", user.email, user.id)
+    logger.info("Created user %s", user.id)
     emit_safely(current_telemetry(), "account_created", {"method": "admin"})
-    return UserResponse(
+    return OperatorUserResponse(
         id=user.id,
         name=user.name,
         email=user.email,
         role=user.role,
         created_at=str(user.created_at),
+        can_delete=not is_server_administrator(user, config.gateway_admin_email),
     )
 
 
@@ -801,6 +869,34 @@ async def delete_user(
         await session.commit()
         raise
     logger.info("Operator %s deleted the account of user %s", operator_id, target_id)
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/sessions/revoke")
+async def end_user_sessions(
+    user_id: str,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> dict[str, bool]:
+    """The deployment operator signs someone out of all their devices, for a
+    lost laptop or an account that looks taken over. Recorded in the server's
+    audit log, like the operator deleting an account."""
+    if await user_store.session_version(session, user_id) is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await user_store.end_sessions(session, user_id)
+    await record_server_audit_event(
+        session,
+        actor_user_id=admin.id,
+        action=ServerAuditAction.USER_SESSIONS_ENDED,
+        target_type="user",
+        target_id=user_id,
+        details=None,
+    )
+    await session.commit()
+    if user_id == admin.id:
+        response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
 

@@ -356,6 +356,13 @@ export class SwitchRoomsStore {
         ...this.unreachableWorkspaceIds.filter((id) => !askedIds.has(id)),
         ...asked.filter((w) => !switchServersStore.isConnected(w.serverId)).map((w) => w.id),
       ];
+      // A load that failed because the session had ended is the same fact as
+      // being signed out, which is said on its own; a retry cannot fix it.
+      for (const workspace of asked) {
+        if (serverAvailability(workspace.serverId) === 'signed-out') {
+          this.roomListErrors.delete(workspace.id);
+        }
+      }
     });
     await Promise.all(
       connected.map(async (workspace) => {
