@@ -37,6 +37,7 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackConnectionConfig,
 )
 from switch_core.db.models import Client, CollaborationBridge, Tenant
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
@@ -292,12 +293,8 @@ class TestAnEditIsHeldToTheSameRules:
             bridge_type="discord",
             connection_config=_DISCORD,
         )
-        async with session_factory() as session:
-            [bridge] = [
-                b
-                for b in await CollaborationBridgeStore().get_all(session)
-                if b.tenant_id == tenant
-            ]
+        async with tenant_session(session_factory, tenant) as session:
+            [bridge] = await CollaborationBridgeStore().get_all(session)
 
         with (
             tenant_scope(tenant),

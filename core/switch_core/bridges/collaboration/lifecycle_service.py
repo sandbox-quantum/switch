@@ -827,15 +827,7 @@ class CollaborationBridgeLifecycleService:
         bridges: list[CollaborationBridge] = []
         for tenant_id in await all_tenant_ids(self._session_factory):
             async with tenant_session(self._session_factory, tenant_id) as session:
-                # Filtered on the row's own tenant, not left to the policy: on an
-                # owner connection no policy narrows this read, and the fan-out
-                # would act on every tenant's rows once per tenant. See
-                # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
-                bridges.extend(
-                    bridge
-                    for bridge in await self._bridge_store.get_active(session)
-                    if bridge.tenant_id == tenant_id
-                )
+                bridges.extend(await self._bridge_store.get_active(session))
 
         logger.info("Wanting %d collaboration bridges", len(bridges))
         for bridge in bridges:
@@ -922,15 +914,7 @@ class CollaborationBridgeLifecycleService:
         existing: list[CollaborationBridge] = []
         for tenant_id in await all_tenant_ids(self._session_factory):
             async with tenant_session(self._session_factory, tenant_id) as session:
-                # Filtered on the row's own tenant, not left to the policy: on an
-                # owner connection no policy narrows this read, and the fan-out
-                # would act on every tenant's rows once per tenant. See
-                # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
-                existing.extend(
-                    bridge
-                    for bridge in await self._bridge_store.get_all(session)
-                    if bridge.tenant_id == tenant_id
-                )
+                existing.extend(await self._bridge_store.get_all(session))
         for other in existing:
             # Guard the None case explicitly: an unflushed row has no id yet, and
             # `other.id == exclude_bridge_id` would then be None == None and skip
@@ -2012,7 +1996,6 @@ class CollaborationBridgeLifecycleService:
                 rows.update(
                     (bridge.id, bridge)
                     for bridge in await self._bridge_store.get_active(session)
-                    if bridge.tenant_id == tenant_id
                 )
         # `_started` too: a bridge that crashed is out of `_bridges` but still
         # counted as expected (`crashed`, `running_count`), so once its row is
