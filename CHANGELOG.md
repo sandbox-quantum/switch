@@ -66,6 +66,18 @@ version of their own to them without also giving them a release of their own.
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn
   shows as a rate instead of hundreds of thousands of log lines.
+- **New rooms can start with auto-route on.** A workspace admin turns on
+  "Auto-route new rooms" in Switch Console → Admin → Decision routing (or
+  `PUT /gateway/decision-settings/room-default`), and every room made in the
+  workspace from then on starts with auto-route on: rooms made in Console, by
+  templates, by agents and through the API, channels Switch picks up on a
+  messaging platform, and group chats. Direct chats and existing rooms keep
+  theirs. It is off by default, and held off while the workspace has no
+  decision service. A room can also say for itself as it is made:
+  `auto_route` and a triage agent on templates (`triage:` in version 2,
+  `triage_agent:` in version 1), the `create_room` tool and `POST /rooms`.
+  An `auto_route: true` that cannot apply still makes the room, with
+  auto-route off, and says why.
 - **New accounts can be refused by country.** `GATEWAY_SIGNUP_REFUSED_HEADER`
   (chart: `switchCore.signup.refusedHeader`) names a request header that the
   edge in front of Switch, such as a WAF rule matching on the client's
@@ -152,6 +164,12 @@ version of their own to them without also giving them a release of their own.
   bridge start, and "trusting unverified OIDC email" is said once per process.
   Two bridges connecting the same workspace, which pilot does on purpose, is
   said once per pair at info rather than as a warning on every start.
+- **Breaking: a template room with a key it does not take is refused.** A
+  room block (version 1 `room:` or a group's `rooms:`, or a version 2 room
+  resource) with an unknown key, such as a misspelt `instrctions:`, used to
+  have it dropped silently; lint now reports it as an error naming the key
+  and the room, and running the template refuses it. Correct or remove the
+  key.
 - **The operator dashboard follows the current design.** A field's label sits
   above it rather than floating inside the box, and the field has a white fill
   and a firm border and ring when focused; switches are pills, and one that is
@@ -258,6 +276,10 @@ version of their own to them without also giving them a release of their own.
   A bridge that crashes on the network or on Switch's own database (its pool
   briefly out of connections, say) is tried again after a wait instead of
   staying down until the next deploy.
+- **Removing a room's triage agent clears it.** Taking the agent named as a
+  room's auto-route triage agent out of the room (`!remove-agent`, Console or
+  the API) now also clears the triage setting, which went on naming an agent
+  no longer in the room.
 - **Renaming a channel on a messaging app renames its room.** Slack,
   Mattermost, Microsoft Teams and Telegram now pass a channel's new name to
   Switch, as Discord already did, using what each platform already sends, so
@@ -3106,6 +3128,11 @@ version of their own to them without also giving them a release of their own.
   is not offered. A provider whose permission level is a session config option
   can now say so in its hooks, and a sign-in check can ask the agent more than
   `initialize`.
+- **"Auto-route new rooms" in Admin → Decision routing.** Workspace admins
+  get a switch under the decision service that makes every new room in the
+  workspace start with auto-route on (not direct chats, not existing rooms).
+  It is disabled, saying to choose a decision service first, while the
+  workspace has none, and members don't see it.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

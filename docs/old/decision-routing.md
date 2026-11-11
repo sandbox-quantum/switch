@@ -105,6 +105,40 @@ The same settings are served by the gateway API, for that workspace's admins
 only: `GET`, `PUT` and `DELETE /gateway/decision-settings`, and
 `POST /gateway/decision-settings/test`.
 
+### Auto-route new rooms
+
+Under the decision backend, "Auto-route new rooms" makes every room created in
+the workspace from then on start with auto-route on. It covers every way a
+room is made: in Console, by a template, by an agent's `create_room`, through
+`POST /gateway/rooms`, a channel Switch picks up when its app is added on a
+messaging platform, and a group chat in Console. It leaves alone direct
+chats (a one-to-one room never starts with it on) and rooms that already exist;
+any room can still turn it off. It is off until an admin turns it on.
+
+- **Who**: the workspace's admins, the same as the backend.
+  `GET` and `PUT /gateway/decision-settings/room-default`
+  (`{"auto_route_new_rooms": true}`) read and set it; anyone else gets 403.
+- **Without a backend**: the switch is disabled in Console ("Choose a decision
+  service first") while the workspace resolves to no backend. A stored "on"
+  waits: rooms made meanwhile start off, and it applies again to rooms made
+  once a backend is chosen.
+
+A room can also say for itself as it is made, which wins over the default:
+
+- a template room's `auto_route: true|false`, and its triage agent as
+  `triage: <agent key>` (version 2) or `triage_agent: <agent name>`
+  (version 1);
+- `auto_route` and `triage_agent` on the `create_room` tool and on
+  `POST /gateway/rooms`.
+
+The triage agent must be one of the room's agents, or the room is not made
+(the template lints with an error, the tool fails, the gateway answers 422);
+it is set even when the room starts off, ready for when auto-route is turned
+on. An explicit `auto_route: true` where the workspace has no backend still
+makes the room, with auto-route off, and says why: per room in a template
+run's result, in `create_room`'s `warnings`, and as the created room's
+`auto_route.reason`.
+
 ## In a room
 
 `!auto-route on` and the auto-route toggle on the room page (Console and the
