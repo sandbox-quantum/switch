@@ -25,7 +25,7 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_notion():
+def test_shipped_catalog_enables_its_live_connectors():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_worksp
         "datadog",
         "google-workspace",
         "notion",
+        "sentry",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -41,6 +42,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_worksp
         "github",
         "google-workspace",
         "notion",
+        "sentry",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
@@ -48,6 +50,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_worksp
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
+    assert "SKILL.md" in CATALOG["sentry"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -178,6 +181,38 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_sentry_entry_signs_in_as_its_mcp_server_requires():
+    definition = CATALOG["sentry"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("sentry", "https://mcp.sentry.dev/mcp")
+    ]
+    # Sentry's REST API refuses an MCP token, so the account comes from the
+    # MCP server's whoami tool.
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.mcp_tool) == (None, "whoami")
+    assert (identity.account_id, identity.label) == ("user.id", "user.email")
+    # Sentry grants the same scopes whatever is chosen at consent.
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == definition.access.write.scopes
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
