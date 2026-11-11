@@ -1,7 +1,43 @@
 slug: bitbucket
 name: Bitbucket
 category: Source control
-description: Work with Bitbucket repositories and pull requests.
-enabled: false
+description: Read and update Bitbucket Cloud repositories, pull requests and code, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # Bitbucket Cloud is hosted under Atlassian's remote MCP server with dynamic registration.
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39251, 39252, 39253, 39254, 39255]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.atlassian.com/me
+    account_id: account_id
+    label: email
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: bitbucket, url: "https://mcp.atlassian.com/v2/mcp" }
+access:
+  read:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+      - search:bitbucket:agent-interface
+  write:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+      - search:bitbucket:agent-interface
+      - write:bitbucket:agent-interface
+tools: { mode: pass_through }
