@@ -398,8 +398,8 @@ class AccountDeletion:
         )
         if machine is not None:
             return (
-                "Your account has a cloud machine. Deleting an account with a "
-                "cloud machine isn't supported yet."
+                "Your account has a cloud device. Deleting an account with a "
+                "cloud device isn't supported yet."
             )
         return None
 

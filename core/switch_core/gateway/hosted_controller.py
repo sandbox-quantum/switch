@@ -151,19 +151,19 @@ async def _sweep(
     if machine.state == "queued" and now - machine.updated_at > QUEUED_TIMEOUT:
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
-        machine.error = "The cloud machine was not scheduled within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
+        machine.error = "The cloud device was not scheduled within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
         _report_failure(session, "not_scheduled")
     elif _connect_timed_out(machine, now):
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
-        machine.error = "The cloud machine started but did not connect to Switch within 10 minutes. Retry it in Switch Console, or ask your administrator to check the machine's startup logs."
+        machine.error = "The cloud device started but did not connect to Switch within 10 minutes. Retry it in Switch Console, or ask your administrator to check the device's startup logs."
         machine.updated_at = now
         _report_failure(session, "never_connected")
     elif _start_timed_out(machine, now):
         machine.state = "error"
         machine.error_code = "machine_connect_timeout"
-        machine.error = "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
+        machine.error = "The cloud device did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
         machine.updated_at = now
         _report_failure(session, "never_started")
     elif machine.state in {"retained", "error"} and retention_expired(machine, now):
@@ -329,7 +329,9 @@ async def prepare(
         if machine.state != "error":
             _report_failure(session, "owner_left")
         machine.state = "error"
-        machine.error = "The cloud machine's owner is no longer a member of any workspace it serves."
+        machine.error = (
+            "The cloud device's owner is no longer a member of any workspace it serves."
+        )
         machine.updated_at = now
         await session.commit()
         raise HTTPException(409, machine.error)
@@ -371,7 +373,7 @@ ERROR_REPLACING_STATES = {"error", "retained", "deleting", "deleted"}
 
 STALE_ERROR_IGNORED_STATES = {"deleted", "queued", "provisioning"}
 
-OBSERVED_ERROR = "The cloud machine could not start. Retry it in Switch Console, or contact your administrator if it keeps failing."
+OBSERVED_ERROR = "The cloud device could not start. Retry it in Switch Console, or contact your administrator if it keeps failing."
 
 
 @router.post("/machines/{machine_id}/observation")

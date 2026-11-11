@@ -19,23 +19,23 @@ from switch_core.tenant_context import tenant_scope
 
 MACHINE_CONNECT_TIMEOUT = timedelta(minutes=10)
 MACHINE_NEEDS_ATTENTION = (
-    "Your cloud machine needs attention. Retry it in Switch Console."
+    "Your cloud device needs attention. Retry it in Switch Console."
 )
 MACHINE_NEEDS_ADMIN = (
-    "Your cloud machine needs attention. Contact your server administrator."
+    "Your cloud device needs attention. Contact your server administrator."
 )
-MACHINES_FULL = "Every Switch cloud machine on this server is in use. Try again later."
+MACHINES_FULL = "Every Switch cloud device on this server is in use. Try again later."
 MACHINE_STOPPED_BY_ADMIN = (
-    "Your cloud machine was stopped by a server administrator. Contact them to "
+    "Your cloud device was stopped by a server administrator. Contact them to "
     "have it released."
 )
 MACHINE_BEING_REMOVED = (
-    "Your previous cloud machine is being removed. Try again in a minute."
+    "Your previous cloud device is being removed. Try again in a minute."
 )
 #: How many workspaces one machine serves: each runs its own agent controller.
 MAX_MACHINE_WORKSPACES = 8
 MACHINE_WORKSPACES_FULL = (
-    f"Your cloud machine already serves {MAX_MACHINE_WORKSPACES} workspaces, the most "
+    f"Your cloud device already serves {MAX_MACHINE_WORKSPACES} workspaces, the most "
     "it can. Contact your server administrator."
 )
 

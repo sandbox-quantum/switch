@@ -456,7 +456,7 @@ async def test_provisioning_machine_never_observed_running_times_out(controller_
     assert saved.error_code == "machine_connect_timeout"
     assert (
         saved.error
-        == "The cloud machine did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
+        == "The cloud device did not start within 10 minutes. Retry it in Switch Console, or contact your administrator if it still cannot start."
     )
     assert saved.updated_at >= before
 

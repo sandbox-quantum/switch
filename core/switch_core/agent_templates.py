@@ -604,7 +604,7 @@ class _Planner:
 
     def unready_text(self) -> str:
         if self.machines == []:
-            return " (your owner has no machines)"
+            return " (your owner has no devices)"
         return f" ({'; '.join(self.unready)})" if self.unready else ""
 
     def problem(self, slot: str, code: str, message: str) -> None:
@@ -645,21 +645,21 @@ class _Planner:
                     self.problem(
                         slot,
                         "machine_unresolved",
-                        f"none of the machines its '{ref.group(1)}' input "
-                        "offers is one of your owner's machines that can take it"
-                        f"{self.unready_text()}; give a machine in inputs.",
+                        f"none of the devices its '{ref.group(1)}' input "
+                        "offers is one of your owner's devices that can take it"
+                        f"{self.unready_text()}; give a device in inputs.",
                     )
             else:
-                machine = str(self.text(slot, machine_field, values, "machine"))
+                machine = str(self.text(slot, machine_field, values, "device"))
         elif (shared := self.for_all("machine")) is not None:
             machine = self.resolve_machine_param(shared)
             if machine is None:
                 self.problem(
                     slot,
                     "machine_unresolved",
-                    f"none of the machines the '{shared}' input offers is one "
-                    f"of your owner's machines that can take it{self.unready_text()}; "
-                    "give a machine in inputs.",
+                    f"none of the devices the '{shared}' input offers is one "
+                    f"of your owner's devices that can take it{self.unready_text()}; "
+                    "give a device in inputs.",
                 )
         elif entry.get("location") is not None or self.for_all("location"):
             # A location (this computer, an SSH host) is something a Console
@@ -681,13 +681,13 @@ class _Planner:
                 self.problem(
                     slot,
                     "machine_unresolved",
-                    f"none of your owner's machines can take it{self.unready_text()}.",
+                    f"none of your owner's devices can take it{self.unready_text()}.",
                 )
         else:
             self.problem(
                 slot,
                 "machine_unsaid",
-                "the template never says which machine it runs on. Give it a "
+                "the template never says which device it runs on. Give it a "
                 "'machine:' or declare a 'machine' param.",
             )
 
@@ -712,7 +712,7 @@ class _Planner:
                 slot,
                 "provider_unresolved",
                 "none of the coding agents its provider input offers is ready "
-                "on its machine; give a provider in inputs.",
+                "on its device; give a provider in inputs.",
             )
 
         directory: str | None = None
@@ -725,7 +725,7 @@ class _Planner:
                 "directory_unsaid",
                 "the template never says which directory it works in. Give it "
                 f"a 'directory:' ({AGENTS_DIR}/{{agent}} is its own folder on "
-                "the machine) or declare a 'directory' param.",
+                "the device) or declare a 'directory' param.",
             )
         else:
             directory = str(self.text(slot, directory_field, values, "directory"))

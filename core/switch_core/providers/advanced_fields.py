@@ -239,7 +239,7 @@ OPENCODE_FIELDS: tuple[AdvancedField, ...] = (
         "Utility model",
         "text",
         placeholder="e.g. ollama/gemma4:latest — blank uses your OpenCode default",
-        help="The cheaper model OpenCode uses for background work like naming the conversation. Worth setting to match the model above when the point is to keep everything on one machine — otherwise that background work goes wherever your own config sends it.",
+        help="The cheaper model OpenCode uses for background work like naming the conversation. Worth setting to match the model above when the point is to keep everything on one device — otherwise that background work goes wherever your own config sends it.",
         catalogue=Catalogue(kind="model", model_field=None),
     ),
 )

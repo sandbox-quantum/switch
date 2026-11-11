@@ -108,7 +108,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-MACHINE_OWNER_STOPPED = "Your cloud machine is stopped. Start it in Switch Console."
+MACHINE_OWNER_STOPPED = "Your cloud device is stopped. Start it in Switch Console."
 
 
 def _gateway_declaration() -> ServerDeclaration:

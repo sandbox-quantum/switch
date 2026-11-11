@@ -83,7 +83,7 @@ class FakeManagement:
                 return machine
         raise AgentManagementRefused(
             "not_found",
-            f"Nothing was created: your owner has no machine with the id or name '{ref}'.",
+            f"Nothing was created: your owner has no device with the id or name '{ref}'.",
         )
 
     async def list_machines(self, tenant_id: str, owner_id: str) -> list[dict]:
@@ -96,7 +96,7 @@ class FakeManagement:
         if machine["state"] != "online":
             raise AgentManagementRefused(
                 "controller_offline",
-                f"Nothing was created: machine '{machine['name']}' is not connected "
+                f"Nothing was created: device '{machine['name']}' is not connected "
                 "to Switch (controller_offline).",
             )
         entry = next(
@@ -105,13 +105,13 @@ class FakeManagement:
         if entry is None:
             raise AgentManagementRefused(
                 "provider_not_installed",
-                f"Nothing was created: {spec.provider} is not installed on machine "
+                f"Nothing was created: {spec.provider} is not installed on device "
                 f"'{machine['name']}' (provider_not_installed).",
             )
         if entry["auth"] == "expired":
             raise AgentManagementRefused(
                 "provider_login_expired",
-                f"Nothing was created: the {spec.provider} login on machine "
+                f"Nothing was created: the {spec.provider} login on device "
                 f"'{machine['name']}' has expired (provider_login_expired).",
             )
         return CheckedPlacement(
@@ -126,7 +126,7 @@ class FakeManagement:
         if spec.name in self.fail_create:
             raise AgentManagementRefused(
                 "controller_offline",
-                f"Nothing was created: machine '{spec.machine}' went offline.",
+                f"Nothing was created: device '{spec.machine}' went offline.",
             )
         self.created.append(spec)
         async with self._env["session_factory"]() as session:
@@ -330,7 +330,7 @@ async def test_a_refusal_names_the_agent_and_nothing_is_created(managed):
     assert {(p.slot, p.code) for p in e.value.problems} == {
         ("red-helper", "provider_not_installed")
     }
-    assert "codex is not installed on machine 'laptop'" in str(e.value)
+    assert "codex is not installed on device 'laptop'" in str(e.value)
     assert str(e.value).count("Nothing was created") == 1
     assert e.value.reason == "agents_not_created"
     assert managed["management"].created == []

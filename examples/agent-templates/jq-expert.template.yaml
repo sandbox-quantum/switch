@@ -13,7 +13,7 @@ params:
     input: advanced
   location:
     type: location
-    description: The machine it runs on.
+    description: The device it runs on.
     default: local
     input: advanced
   directory:

@@ -52,7 +52,7 @@ A condition reads one param: "{param}" (true when it has a value) or
 
   instructions: text             # REQUIRED. The agent's brief.
   provider: claude | codex | opencode | antigravity | cursor | deepseek-harness | pi | copilot | mistral-vibe | junie | "{param}"   # REQUIRED
-  machine: machine name or id | "{param}"           # REQUIRED: where it runs
+  machine: device name or id | "{param}"            # REQUIRED: the device it runs on
   directory: path | "{param}"                       # REQUIRED
   name: identifier               # optional; else derived from display_name.
                                  # Lowercase letters, digits, . - _
@@ -67,7 +67,7 @@ A condition reads one param: "{param}" (true when it has a value) or
   auto_approve: true | false     # optional; default false. Bypass: no
                                  # permission checks at all; overrides auto_mode
   can_manage_agents: true | false  # optional; default false. It may create
-                                 # agents on the deployer's machines
+                                 # agents on the deployer's devices
   addressing: owner | owner-agents | anyone | {anyone_in: [room keys]}
                                  # optional; default owner-agents (the deployer
                                  # and the deployer's agents)
@@ -81,17 +81,18 @@ A condition reads one param: "{param}" (true when it has a value) or
   allow_existing: true | false   # optional; an existing agent may stand in
 
 Each agent is created as a managed agent of the deployer (your owner, when
-you run it) on the machine it names, before the rooms. That needs agent
+you run it) on the device it names, before the rooms. That needs agent
 management on the server and, for you, the "can manage agents" capability;
-the machine must be online with the provider installed and signed in. The
+the device must be online with the provider installed and signed in. The
 whole run is checked before anything is created; every problem comes back
 with its reason code, and agents made before a later failure are deleted.
 
 provider, machine and directory are never filled in for you: say each on the
 agent, as a value or "{param}". A param offers a choice with a default:
-machine default [$first] is the first online machine that can run the agents'
-providers; provider default [claude, codex] the first ready on its machine;
-directory "{$agents_dir}/{lead.name}" the agent's own folder on its machine.
+machine default [$first] is the first online device that can run the agents'
+providers; provider default [claude, codex] the first ready on its device;
+directory "{$agents_dir}/{lead.name}" the agent's own folder on its device.
+The field is called machine, but to people it is a device: say "device".
 
 connections are the deployer's own, granted to the new agent: they must have
 connected each, with write access to grant write. anyone_in admits anyone in
@@ -101,7 +102,7 @@ allow_existing: true lets run_template(agents={key: existing agent name}) put
 an agent that exists in the slot instead; leave it out unless asked.
 
 Before saving an agent template, settle with the person who asked: which
-coding agent runs each agent, on which machine, in which directory, what it
+coding agent runs each agent, on which device, in which directory, what it
 may reach (connections), who may talk to it (addressing), and whether an
 existing agent may stand in for it.
 
@@ -190,7 +191,7 @@ is refused with its name.
 placeholder keeps the value's type. {key.name} is a resource's name. Built
 in: {$creator} (the deployer, as the messaging app knows them),
 {$creator_email}, {$date} (YYYY-MM-DD), {$timestamp}, and {$agents_dir} (the
-folder an agent's machine keeps agents in). A {word} that names nothing is
+folder an agent's device keeps agents in). A {word} that names nothing is
 left as written.
 
 ## Kickoff

@@ -2130,11 +2130,12 @@ async def get_template(template_id: str) -> dict[str, Any]:
     the inputs (``required`` is as the template writes it; a param with no
     default usually needs a value). ``agent_slots`` lists the agents an agent
     or team template would create, as managed agents of your owner: each
-    slot's ``machine`` (or a ``machine`` param) says where it runs, and
-    ``provider``, ``model``, ``directory`` and ``connections`` what it is.
-    A slot with only a ``location`` (this computer or an SSH host) runs on
-    the machine of that name, or else the first online machine of your
-    owner's that can run it. ``allow_existing`` says whether an
+    slot's ``machine`` (or a ``machine`` param) names the device it runs on,
+    and ``provider``, ``model``, ``directory`` and ``connections`` what it
+    is. A slot with only a ``location`` (this computer or an SSH host) runs
+    on the device of that name, or else the first online device of your
+    owner's that can run it. Say "device" to people; ``machine`` is only the
+    field's name. ``allow_existing`` says whether an
     existing agent may stand in for it instead (``run_template``'s
     ``agents``).
 
@@ -2171,14 +2172,14 @@ async def run_template(
     Switch Console.
 
     An agent or team template creates its agents as managed agents of your
-    owner, each on the machine its entry names (``machine:`` or a ``machine``
+    owner, each on the device its entry names (``machine:`` or a ``machine``
     param), before the rooms. That needs agent management on this server and
-    the "can manage agents" capability, and each machine online with the
+    the "can manage agents" capability, and each device online with the
     provider installed and logged in. Everything is checked first: when
     anything would fail, nothing is created and the refusal lists every
     problem with its reason code. If the rooms then fail, the agents created
     are deleted again. Confirm what will be created with the person asking
-    first: it starts real agents on their machines.
+    first: it starts real agents on their devices.
 
     Args:
         template_id: The id from ``list_templates``.
@@ -2193,7 +2194,8 @@ async def run_template(
         As ``create_room_from_yaml``: for a room ``{room_id, room_name, ...}``,
         for a group ``{group_id, group_name, rooms, errors}``; plus, when it
         created agents, ``created_agents``: each ``{slot, agent_id, name,
-        machine, listening}``, ``listening`` false when the agent was not
+        machine, listening}``, ``machine`` being the device it runs on,
+        ``listening`` false when the agent was not
         taking events before its rooms were made, so the kickoff may not have
         reached it. Check them with ``list_managed_agents`` as after
         ``create_agent``. A template with no room returns only
@@ -2465,7 +2467,7 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
         null when the agent has no display name set; fall back to `name`.
         Address agents by `name`; `display_name` routes nothing.
         `can_manage_agents` is whether the agent's owner lets it list their
-        machines and create agents on them, where agent management runs.
+        devices and create agents on them, where agent management runs.
         `addressing` is who may address the agent, and so who may answer
         its questions and approvals in a room (outside one, only its owner):
         {policy} for another agent, {policy, rules} when you look yourself
@@ -2588,14 +2590,15 @@ async def update_agent_detail(
         auto_approve: Bypass mode: run every tool without any permission
             check; overrides `auto_mode`. Unsafe; turn it on only when the
             person explicitly asks.
-        directory: Working directory on its machine; "" for the machine's
+        directory: Working directory on its device; "" for the device's
             own workspace for the agent, whose path Switch fills in.
-        isolation: "shared" (inside the machine's controller) or "isolated"
+        isolation: "shared" (inside the device's controller) or "isolated"
             (a process of its own).
-        machine: Move it to this machine (`id` or exact `name` from
-            `list_machines`).
+        machine: The device to move it to: a device's `id` or exact `name`
+            from `list_machines`. Say "device" to people; `machine` is only
+            the field's name.
         desired_state: "running" or "stopped".
-    The machine must be online with the provider installed and logged in;
+    The device must be online with the provider installed and logged in;
     otherwise nothing is changed and the error gives a reason code to relay.
     Changes reach the agent's running sessions on their own, with no reset:
     a session mid-turn picks them up when the turn ends, and a running
@@ -2604,8 +2607,8 @@ async def update_agent_detail(
     Returns:
         The `get_agent_detail` shape plus `managed`: for a managed agent, the
         entry `list_managed_agents` shows for it (provider, model,
-        advanced_config, auto_mode, auto_approve, machine, desired_state,
-        actual, revision); null when
+        advanced_config, auto_mode, auto_approve, machine (its device),
+        desired_state, actual, revision); null when
         the agent is not managed or you cannot manage agents. Plus `renamed`
         when `name` changed it: `{old_name, bridge_failures,
         templates_mentioning_old_name}` — each chat platform that could not be
@@ -2659,7 +2662,7 @@ async def update_agent_detail(
         if port is None:
             raise ValueError(
                 "Nothing was changed: agent management is not enabled on this "
-                "Switch server, so no agent has a provider, model, machine or "
+                "Switch server, so no agent has a provider, model, device or "
                 "run state Switch can set."
             )
         permitted = await permitted_to_manage()

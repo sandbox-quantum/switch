@@ -741,7 +741,7 @@ async def test_an_account_with_a_cloud_machine_is_refused(
         )
         await session.commit()
         reason = await deletion.refusal(session, user, [])
-    assert reason is not None and "cloud machine" in reason
+    assert reason is not None and "cloud device" in reason
 
 
 async def test_a_messaging_app_left_in_a_workspace_since_emptied_does_not_refuse(
