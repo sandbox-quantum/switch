@@ -1,3 +1,4 @@
+import json
 import shutil
 
 import pytest
@@ -947,6 +948,27 @@ def test_introspection_needs_a_discovered_authorization_server(catalog_copy, wit
     _write_example(catalog_copy, entry.replace(GET_IDENTITY, INTROSPECTION_IDENTITY))
     with pytest.raises(CatalogError, match="introspection asks the authorization"):
         load_catalog(catalog_copy)
+
+
+def _with_note(note: str) -> str:
+    # JSON is YAML, so the note reaches the loader exactly as given.
+    return OAUTH_ENTRY.replace(
+        "token: { kind: pass_through, max_lifetime: 3600 }",
+        f"token: {{ kind: pass_through, max_lifetime: 3600, note: {json.dumps(note)} }}",
+    )
+
+
+@pytest.mark.parametrize("note", ["", "x" * 401, "a\nb"])
+def test_rejects_a_token_note_that_is_empty_too_long_or_multiline(catalog_copy, note):
+    _write_example(catalog_copy, _with_note(note))
+    with pytest.raises(CatalogError, match="(?s)example is invalid.*note"):
+        load_catalog(catalog_copy)
+
+
+def test_takes_a_token_note_of_400_characters(catalog_copy):
+    _write_example(catalog_copy, _with_note("x" * 400))
+    token = load_catalog(catalog_copy)["example"].definition.token
+    assert token is not None and token.note == "x" * 400
 
 
 def test_placeholders_keep_their_short_form():
