@@ -2016,3 +2016,40 @@ async def test_child_progress_updates_the_same_stream_without_another_message() 
     assert card["status"] == "complete"
     assert len(client.started) == 1
     assert client.posted == []
+
+
+async def test_a_subagent_finishing_after_its_turn_edits_the_closed_stream() -> None:
+    """A background subagent outlives its turn. The turn's end closes the
+    stream with the subagent still running; when it finishes, the same message
+    is edited to say so rather than left spinning or posted again."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    child = _tool("child-a", "Find the retry setting").model_copy(
+        update={"kind": "tool-activity", "subagent": True}
+    )
+    ref = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([child], _turn()), THREAD
+    )
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([child], _turn("completed")), THREAD
+    )
+    assert ref not in adapter._streams
+    assert client.updated == []
+
+    done = child.model_copy(update={"revision": 2, "status": "completed"})
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([done], _turn("completed")), THREAD
+    )
+    [edit] = client.updated
+    assert edit["ts"] == "1.0"
+    tasks = [
+        task
+        for block in edit["blocks"]
+        for task in block.get("tasks", [])
+        if task["title"].startswith("Subagent:")
+    ]
+    assert [(task["status"], task["icon"]["name"]) for task in tasks] == [
+        ("complete", "bot")
+    ]
+    assert len(client.started) == 1
+    assert client.posted == []
