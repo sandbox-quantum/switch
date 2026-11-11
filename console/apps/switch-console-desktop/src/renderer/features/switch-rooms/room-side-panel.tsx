@@ -110,7 +110,8 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   const room = detail.data ?? null;
   const bridgeId = consoleChat ? null : (room?.bridgeId ?? null);
   // Who linked each username, to name them beside it. Shares the Add people
-  // panel's cache; if it cannot be read the usernames are shown alone.
+  // panel's cache. Only a label, so it is kept a while rather than fetched on
+  // every open, and a failure is not retried: the usernames are shown alone.
   const bridgePeople = useQuery({
     queryKey: ['bridge-people', workspaceId, bridgeId],
     queryFn: () =>
@@ -119,6 +120,8 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         bridgeId: bridgeId as string,
       }),
     enabled: workspaceId !== null && bridgeId !== null,
+    staleTime: 5 * 60_000,
+    retry: false,
   });
   const linkedNames = linkedNamesByUsername(bridgePeople.data ?? []);
   // A room that could not be read is not an empty one: say so, rather than "no agents yet".
