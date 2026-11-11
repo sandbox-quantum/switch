@@ -83,20 +83,24 @@ it('refuses a waiting request as soon as the host stops on a failure it recorded
     const answer = links.request(root, { type: 'snapshot' }, 60000);
     await writeFile(
       join(root, 'supervisor', 'failure.json'),
-      JSON.stringify({ message: 'Sign in on the execution machine with claude auth login.' })
+      JSON.stringify({ message: 'Sign in on the device the agent runs on with claude auth login.' })
     );
     child.emit('exit', 1, null);
     await expect(answer).rejects.toThrow(SessionHostFailedError);
     await expect(answer).rejects.toMatchObject({
-      failure: 'Sign in on the execution machine with claude auth login.',
+      failure: 'Sign in on the device the agent runs on with claude auth login.',
     });
     expect(Date.now() - started).toBeLessThan(5000);
-    expect(failures).toEqual(['true:Sign in on the execution machine with claude auth login.']);
+    expect(failures).toEqual([
+      'true:Sign in on the device the agent runs on with claude auth login.',
+    ]);
     // Asked again, it is refused at once rather than after the wait.
     await expect(links.request(root, { type: 'snapshot' }, 60000)).rejects.toThrow(
       SessionHostFailedError
     );
-    expect(links.failure(root)).toBe('Sign in on the execution machine with claude auth login.');
+    expect(links.failure(root)).toBe(
+      'Sign in on the device the agent runs on with claude auth login.'
+    );
 
     // Cleared once something starts it again, and by the next host.
     links.clearFailure(root);
@@ -104,7 +108,9 @@ it('refuses a waiting request as soon as the host stops on a failure it recorded
     const again = fakeChild();
     links.attach(root, again as unknown as ChildProcess);
     again.emit('exit', 3, null);
-    expect(links.failure(root)).toBe('Sign in on the execution machine with claude auth login.');
+    expect(links.failure(root)).toBe(
+      'Sign in on the device the agent runs on with claude auth login.'
+    );
     links.attach(root, fakeChild() as unknown as ChildProcess);
     expect(links.failure(root)).toBeNull();
   } finally {

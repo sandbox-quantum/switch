@@ -45,7 +45,7 @@ export function ManagedMachinePill({
               ? 'on this computer'
               : agent.machine
                 ? `on ${agent.machine.name}`
-                : 'on no machine'}
+                : 'on no device'}
             <ChevronDown className="size-3" />
           </button>
         }
@@ -99,7 +99,7 @@ function MachineCard({
         </span>
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="truncate font-mono font-semibold">
-            {agent.machine?.name ?? 'No machine'}
+            {agent.machine?.name ?? 'No device'}
           </span>
           {subtitle && <span className="text-xs text-foreground-muted">{subtitle}</span>}
         </div>
@@ -120,11 +120,11 @@ function MachineCard({
         <dt className="text-foreground-muted">Providers</dt>
         <dd className="min-w-0">
           {machinesError
-            ? failureText(machinesError, 'Your machines could not be listed.')
+            ? failureText(machinesError, 'Your devices could not be listed.')
             : machinesLoading
               ? 'Loading…'
               : !machine
-                ? 'Not listed among your machines'
+                ? 'Not listed among your devices'
                 : machine.providers.length === 0
                   ? 'Not reported yet'
                   : `${readyProviders} of ${machine.providers.length} providers ready`}

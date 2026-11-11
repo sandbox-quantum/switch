@@ -62,7 +62,7 @@ function hint(provider: AgentProviderId, kind: LoginKind, source: VertexSource):
   if (kind === 'setup-token')
     return 'Run `claude setup-token` on any computer signed in to Claude, and paste the token it prints.';
   if (kind === 'this-computer')
-    return `The ${displayName(provider)} sign-in on this computer is sent, sealed for the machine.`;
+    return `The ${displayName(provider)} sign-in on this computer is sent, sealed for the device.`;
   return `Paste a ${displayName(provider)} API key.`;
 }
 

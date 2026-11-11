@@ -361,7 +361,7 @@ export class ProviderStatuses {
         } else {
           problem = {
             code: 'provider_login_expired',
-            message: `The ${provider} login given to this machine does not sign in${signedIn?.message ? `: ${signedIn.message}` : '.'}`,
+            message: `The ${provider} login given to this device does not sign in${signedIn?.message ? `: ${signedIn.message}` : '.'}`,
           };
           status = {
             ...status,

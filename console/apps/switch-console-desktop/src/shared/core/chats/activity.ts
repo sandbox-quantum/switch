@@ -34,7 +34,7 @@ export type ChatActivityTarget =
     };
 
 export const ACTIVITY_UNAVAILABLE_TEXT: Record<ChatActivityUnavailableReason, string> = {
-  'not-on-this-machine': 'Activity not available on this machine.',
+  'not-on-this-machine': 'Activity not available on this computer.',
   'not-placed': 'The agent has no session in this chat yet.',
   'watcher-unreachable': "The agent's room watcher cannot be reached.",
 };

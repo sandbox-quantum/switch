@@ -55,7 +55,7 @@ export const MigrationSettingsPage = observer(function MigrationSettingsPage() {
       <PageHeader
         sticky
         title="Managed agents"
-        description="Switch Console provisions and runs your agents on dedicated machines - either locally or on your SSH hosts. This page tracks each agent’s deployment status."
+        description="Switch Console provisions and runs your agents on dedicated devices - either locally or on your SSH hosts. This page tracks each agent’s deployment status."
       />
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-foreground-muted">

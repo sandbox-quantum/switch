@@ -86,7 +86,7 @@ export function ParamField({
       />
     ) : (
       <p className="text-xs text-foreground-muted">
-        Choose a machine first: the providers offered are the ones it has ready.
+        Choose a device first: the providers offered are the ones it has ready.
       </p>
     );
   } else if (param.type === 'provider') {

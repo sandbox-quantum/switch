@@ -75,9 +75,9 @@ export function CanManageAgentsRow({
       info={{
         label: 'More info about managing agents',
         content:
-          'The agent can see your machines and managed agents, and create new agents that run on your machines and belong to you. Agents it creates do not get this permission.',
+          'The agent can see your devices and managed agents, and create new agents that run on your devices and belong to you. Agents it creates do not get this permission.',
       }}
-      description="Let this agent create agents on your machines."
+      description="Let this agent create agents on your devices."
       control={
         <Switch
           aria-label="Can manage agents"

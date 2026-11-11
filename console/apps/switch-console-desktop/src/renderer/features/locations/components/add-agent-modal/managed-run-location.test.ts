@@ -22,7 +22,7 @@ describe('newAgentMachineNotice', () => {
       THIS_COMPUTER
     );
     expect(notice.kind).toBe('managed');
-    expect(notice.text).toMatch(/^Runs as a managed agent on This computer \(machine “laptop”\)/);
+    expect(notice.text).toMatch(/^Runs as a managed agent on This computer \(device “laptop”\)/);
   });
 
   it('offers to turn this computer on when Console can', () => {
@@ -40,12 +40,12 @@ describe('newAgentMachineNotice', () => {
 
   it('offers to make an SSH host a machine, by its name', () => {
     const notice = newAgentMachineNotice(
-      { management: true, target: null, blocker: 'Make it a machine.', canEnable: true },
+      { management: true, target: null, blocker: 'Make it a device.', canEnable: true },
       { label: 'build box', sshHost: 'box' }
     );
     expect(notice).toMatchObject({
       kind: 'blocked',
-      enable: { label: 'Make build box a machine' },
+      enable: { label: 'Make build box a device' },
     });
   });
 

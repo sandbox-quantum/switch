@@ -1432,7 +1432,7 @@ function MachineUnavailableNotice({ reason }: { reason: string }) {
     <div className="shrink-0 px-6 pt-6">
       <Alert>
         <TriangleAlert className="size-4" />
-        <AlertTitle>Your cloud machine is not starting</AlertTitle>
+        <AlertTitle>Your cloud device is not starting</AlertTitle>
         <AlertDescription>{reason}</AlertDescription>
       </Alert>
     </div>

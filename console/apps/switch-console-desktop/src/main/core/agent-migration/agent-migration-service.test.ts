@@ -374,7 +374,7 @@ describe('moving an agent onto its controller', () => {
     expect((await service.state(PARENT.id)).managed?.machine).toEqual({
       kind: 'unknown',
       reason:
-        'Console could not look at the machine: ssh: connect to host build-box port 22: Connection refused',
+        'Console could not look at the device: ssh: connect to host build-box port 22: Connection refused',
     });
   });
 

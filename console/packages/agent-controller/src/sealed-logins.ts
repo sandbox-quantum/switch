@@ -96,7 +96,7 @@ export class SealedLogins {
       return {
         problem: {
           code: 'provider_login_missing',
-          message: `No ${provider} login has been given to this machine.`,
+          message: `No ${provider} login has been given to this device.`,
         },
       };
     try {
@@ -115,7 +115,7 @@ export class SealedLogins {
       });
       if (!login.success || login.data.status !== 'connected')
         throw new Error(
-          `The ${provider} login given to this machine cannot be used: ${login.error?.issues[0]?.message ?? 'it is not a connected login'}`
+          `The ${provider} login given to this device cannot be used: ${login.error?.issues[0]?.message ?? 'it is not a connected login'}`
         );
       return { login: login.data };
     } catch (error) {

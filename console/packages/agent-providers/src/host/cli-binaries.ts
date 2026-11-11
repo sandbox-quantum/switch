@@ -154,7 +154,7 @@ export function pinnedBinary(deps: {
         checked_at: now(),
       });
       throw new Error(
-        `\`${tool.binary}\` ${tool.release.version} has no build for this machine (${target}).`
+        `\`${tool.binary}\` ${tool.release.version} has no build for this device (${target}).`
       );
     }
     const binary = join(deps.base, tool.binary, build.sha256, ...build.path.split('/'));

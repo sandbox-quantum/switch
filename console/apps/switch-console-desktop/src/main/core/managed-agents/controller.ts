@@ -206,7 +206,7 @@ export const managedAgentsController = createRPCController({
       const controller = (await fetchManagementControllers(server)).find(
         (candidate) => candidate.id === params.machineId
       );
-      if (!controller) throw new Error('That machine is not one of yours on this server.');
+      if (!controller) throw new Error('That device is not one of yours on this server.');
       if (!controller.sealingKey)
         throw new Error(
           `${controller.name} cannot be given a login: its controller has no key for one. Update the controller on it.`
@@ -395,14 +395,14 @@ async function loginToGive(
   }
   if (input.source === 'typed') {
     const credential = input.credential.trim();
-    if (!credential) throw new Error('Enter the key or token to give the machine.');
+    if (!credential) throw new Error('Enter the key or token to give the device.');
     if (input.kind === 'setup-token' && provider !== 'claude')
       throw new Error('Only Claude takes a setup token.');
     return { kind: input.kind, credential };
   }
   if (provider !== 'codex' && provider !== 'opencode' && provider !== 'antigravity')
     throw new Error(
-      `This computer's ${provider} sign-in cannot be given to another machine; give it an API key or token.`
+      `This computer's ${provider} sign-in cannot be given to another device; give it an API key or token.`
     );
   const credential = await readLocalProviderSignIn(provider, localProviderAuthPath(provider));
   if (!credential)
@@ -410,11 +410,11 @@ async function loginToGive(
       provider === 'codex'
         ? 'This computer is not signed in to codex. Sign in here first. If Codex says you are ' +
             'already signed in, its login is likely in the OS keyring, which cannot be given to ' +
-            'another machine: unless your organization enforces the keyring, set ' +
+            'another device: unless your organization enforces the keyring, set ' +
             'cli_auth_credentials_store = "file" in the Codex config.toml and sign in again.'
         : provider === 'antigravity'
           ? 'This computer has no Antigravity sign-in to give. Google’s agy keeps its sign-in ' +
-            'in the OS keychain, which cannot be given to another machine: sign in there with ' +
+            'in the OS keychain, which cannot be given to another device: sign in there with ' +
             'agy acp --login instead.'
           : `This computer is not signed in to ${provider}. Sign in here first.`
     );
@@ -442,7 +442,7 @@ async function machineOperationOutcome(
     message:
       operation.error?.message ??
       (operation.state === 'expired'
-        ? `The machine did not ${what} in time; is it online?`
-        : `The machine did not ${what} (${operation.state}).`),
+        ? `The device did not ${what} in time; is it online?`
+        : `The device did not ${what} (${operation.state}).`),
   };
 }

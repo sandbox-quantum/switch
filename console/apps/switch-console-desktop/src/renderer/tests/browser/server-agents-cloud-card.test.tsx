@@ -130,11 +130,11 @@ it.each([
   switchServers.cloudMachines.mockResolvedValue([machine]);
   const el = await render();
 
-  expect(el.textContent).toMatch(/Cloud machine/);
+  expect(el.textContent).toMatch(/Cloud device/);
   expect(el.textContent).toMatch(/Sleeping · c7i\.2xlarge · 1 agent/);
   expect(el.textContent).toMatch(/190\.0 GB free of 200\.0 GB/);
-  expect(button(el, /start machine/i)).toBeDefined();
-  expect(button(el, /stop machine/i)).toBeDefined();
+  expect(button(el, /start device/i)).toBeDefined();
+  expect(button(el, /stop device/i)).toBeDefined();
 });
 
 it('stops a ready machine once confirmed', async () => {
@@ -150,12 +150,12 @@ it('stops a ready machine once confirmed', async () => {
   const el = await render();
 
   expect(el.textContent).toMatch(/Ready · c7i\.2xlarge · 1 agent/);
-  expect(button(el, /start machine/i)).toBeUndefined();
+  expect(button(el, /start device/i)).toBeUndefined();
 
-  await act(async () => button(el, /stop machine/i)!.click());
+  await act(async () => button(el, /stop device/i)!.click());
   expect(el.textContent).toMatch(/mentions will not wake it/);
   expect(switchServers.cloudMachineLifecycle).not.toHaveBeenCalled();
-  await act(async () => button(el, /stop machine/i)!.click());
+  await act(async () => button(el, /stop device/i)!.click());
   expect(switchServers.cloudMachineLifecycle).toHaveBeenCalledWith(
     'server',
     machine.machine_id,

@@ -60,7 +60,7 @@ export const SignedOutPanel = observer(function SignedOutPanel({ serverId }: { s
     void loadSwitchCloudOrigin().then(() => {
       if (serverId !== managedCloudServerId()) return;
       const reason = machineUnavailableReason(signedIn);
-      if (reason) toast({ title: 'Your cloud machine is not starting', description: reason });
+      if (reason) toast({ title: 'Your cloud device is not starting', description: reason });
     });
   };
 

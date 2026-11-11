@@ -39,7 +39,7 @@ export function MigrationProblemIndicator({ agentId, label }: { agentId: string;
         render={
           <SidebarItemMiniButton
             type="button"
-            aria-label={`Could not move ${label} to a managed machine. Retry`}
+            aria-label={`Could not move ${label} to a managed device. Retry`}
             disabled={retry.isPending}
             onClick={(event) => {
               event.stopPropagation();
@@ -53,8 +53,8 @@ export function MigrationProblemIndicator({ agentId, label }: { agentId: string;
       <TooltipContent className="max-w-xs">
         <p>
           {retry.isPending
-            ? 'Moving this agent to a managed machine…'
-            : `Couldn’t move this agent to a managed machine on ${problem.machine}. Click to retry.`}
+            ? 'Moving this agent to a managed device…'
+            : `Couldn’t move this agent to a managed device on ${problem.machine}. Click to retry.`}
         </p>
         <p className="mt-1 text-foreground-muted">{problem.message}</p>
       </TooltipContent>

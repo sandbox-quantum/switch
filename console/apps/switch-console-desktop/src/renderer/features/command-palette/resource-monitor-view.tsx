@@ -52,7 +52,7 @@ export const ResourceMonitorView = observer(function ResourceMonitorView({
         )}
 
         <p className="px-2 py-3 text-xs text-foreground/50">
-          SDK host resources are managed on the execution machine.
+          SDK host resources are managed on the device they run on.
         </p>
       </div>
     </>
