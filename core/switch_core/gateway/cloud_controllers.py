@@ -40,6 +40,7 @@ from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.observability.hosted import (
     box_summary,
     record_box_report,
+    record_controller_restart,
     record_machine_event,
     record_provisioned,
     reports_memory,
@@ -218,12 +219,21 @@ def _log_new_login_problems(
         )
 
 
+def _restarted(before: Any, started: str | None) -> bool:
+    """Whether this workspace's controller names a new start time: the same
+    seat reported one before, and this one differs. The first report with a
+    start time, or a report without one, is not a restart."""
+    previous = before.get("started_at") if isinstance(before, dict) else None
+    return previous is not None and started is not None and started != previous
+
+
 async def record_controller_status(
     session: AsyncSession,
     controller_id: str,
     machine_reading: dict[str, Any],
     agents: list[Any] | None = None,
     providers: list[Any] | None = None,
+    started_at: datetime | None = None,
 ) -> None:
     """A status report from a cloud machine's controller is its heartbeat: it
     records the machine's disk and memory, and makes a machine that started
@@ -242,10 +252,19 @@ async def record_controller_status(
     before = reports.get(workspace.id)
     summary = box_summary(machine_reading, agents or [], providers or [])
     _log_new_login_problems(machine.id, before, summary)
+    started = None
+    if started_at is not None:
+        aware = started_at if started_at.tzinfo else started_at.replace(tzinfo=UTC)
+        started = aware.astimezone(UTC).isoformat()
+    if _restarted(before, started):
+        record_controller_restart()
     reports[workspace.id] = {
         "at": now.isoformat(),
         "sessions_running": sessions if isinstance(sessions, int) else None,
         "metrics": summary,
+        # Kept so the next report can tell a restart; a controller older
+        # than the field sends none, and then nothing is counted.
+        "started_at": started,
     }
     if reports_memory(reports, workspace.id, now):
         record_box_report(machine_reading)

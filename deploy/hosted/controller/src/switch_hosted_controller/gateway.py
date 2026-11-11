@@ -14,6 +14,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .config import ConfigError, ControllerConfig
+from .error_report import ErrorReport
 from .model import DesiredState, Machine, ObservedState
 from .store import MachineStore
 
@@ -50,6 +51,10 @@ def bundle_token(machine_id: str, bundle_revision: int) -> str:
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise GatewayError(code)
+
+
+# How long the error counts are left off after an older Core refuses them.
+ERROR_COUNTS_RETRY_SECONDS = 3600
 
 
 class GatewayError(RuntimeError):
@@ -133,12 +138,18 @@ class Gateway:
         settings: GatewayConfig,
         config: ControllerConfig,
         store: MachineStore,
+        errors: ErrorReport | None = None,
     ):
         if settings.instance_type not in config.allowed_instance_types:
             raise ConfigError("Cloud gateway instance type is not allowed.")
         self.settings = settings
         self.config = config
         self.store = store
+        # What the reconciler's errors tell Core, sent on its observations.
+        self.errors = errors
+        # When an older Core last refused the error counts: they're left off
+        # for an hour after, so each observation isn't posted twice meanwhile.
+        self.error_counts_refused_at: float | None = None
         self.prepare_failures: dict[str, float] = {}
 
     def request(
@@ -193,6 +204,8 @@ class Gateway:
                 self._record_failure(core, error)
 
     def _record_failure(self, core: CoreMachine, error: Exception) -> None:
+        if self.errors is not None:
+            self.errors.record(error)
         logger.error(
             "Cloud machine preparation failed for %s: %s", core.machine_id, type(error).__name__
         )
@@ -350,21 +363,55 @@ class Gateway:
                 state = machine.observed_state.value
             if state == "error":
                 logger.error("Cloud machine %s needs repair: %s", core.machine_id, machine.error)
+            extra = (
+                self.errors.fields()
+                if self.errors is not None and not self._error_counts_resting()
+                else {}
+            )
+            path = f"/machines/{core.machine_id}/observation"
+            body = self.observation(
+                machine,
+                state,
+                machine.core_revision,
+                NEEDS_ATTENTION_MESSAGE if state == "error" else None,
+                NEEDS_ATTENTION_CODE if state == "error" else None,
+            )
             try:
-                self.request(
-                    f"/machines/{core.machine_id}/observation",
-                    self.observation(
-                        machine,
-                        state,
-                        machine.core_revision,
-                        NEEDS_ATTENTION_MESSAGE if state == "error" else None,
-                        NEEDS_ATTENTION_CODE if state == "error" else None,
-                    ),
-                )
+                taken = self._observe(path, body, extra)
             except Exception as error:
+                if self.errors is not None:
+                    self.errors.record(error)
                 logger.error(
                     "Could not report machine %s: %s", core.machine_id, type(error).__name__
                 )
+            else:
+                if taken and self.errors is not None:
+                    self.errors.sent(extra)
+
+    def _observe(self, path: str, body: dict, extra: dict) -> bool:
+        """Post an observation with the error counts, and say whether Core
+        took them. A Core older than those fields refuses them as invalid:
+        the observation goes again without them, so machines are still
+        observed, and the counts wait for a Core that takes them."""
+        try:
+            self.request(path, {**body, **extra})
+            return True
+        except GatewayError as refused:
+            if refused.status != 422 or not extra:
+                raise
+        self.request(path, body)
+        if self.error_counts_refused_at is None:
+            logger.warning(
+                "Core does not accept the reconciler's error counts yet; "
+                "observations are sent without them, trying again hourly."
+            )
+        self.error_counts_refused_at = monotonic()
+        return False
+
+    def _error_counts_resting(self) -> bool:
+        """Whether an older Core refused the error counts within the hour."""
+        refused = self.error_counts_refused_at
+        return refused is not None and monotonic() - refused < ERROR_COUNTS_RETRY_SECONDS
 
     def observation(
         self,

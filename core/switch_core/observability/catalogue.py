@@ -915,6 +915,34 @@ OBSERVABILITY_SAMPLE_FAILURES = _spec(
     "are kept out of the export), so this is what shows a broken sampler.",
     "sampler",
 )
+HOSTED_CLOUD_ERRORS = _spec(
+    "switch.hosted.cloud_errors",
+    "sum",
+    "{error}",
+    "Cloud calls the hosted controller service saw fail, by call "
+    "(`launch`, `start`, `stop`, `terminate`, `volume`, `describe` or `other`) "
+    "and kind (`capacity`, `throttled`, `permission` or `other`). Never the "
+    "cloud's own code or message.",
+    "call",
+    "kind",
+    "backend",
+)
+HOSTED_CONTROLLER_ERRORS = _spec(
+    "switch.hosted.controller_errors",
+    "sum",
+    "{error}",
+    "Errors the hosted controller service hit while it kept running, by kind "
+    "(`cloud`, `core_api`, `state` or `other`), as it reports them to Core.",
+    "kind",
+)
+HOSTED_CONTROLLER_RESTARTS = _spec(
+    "switch.hosted.controller_restarts",
+    "sum",
+    "{restart}",
+    "Agent controllers on cloud machines that restarted: a status report "
+    "naming a new start time for the same controller.",
+    "backend",
+)
 AUTH_SIGN_IN_FAILURES = _spec(
     "switch.auth.sign_in_failures",
     "sum",
@@ -1030,6 +1058,9 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_PROVISION_SECONDS,
         HOSTED_DISK_USED,
         OBSERVABILITY_SAMPLE_FAILURES,
+        HOSTED_CLOUD_ERRORS,
+        HOSTED_CONTROLLER_ERRORS,
+        HOSTED_CONTROLLER_RESTARTS,
         AUTH_SIGN_IN_FAILURES,
         CONTROLLER_CREDENTIAL_REFUSALS,
         RUNTIME_UNHANDLED_EXCEPTIONS,

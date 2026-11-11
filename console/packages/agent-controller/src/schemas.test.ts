@@ -233,6 +233,13 @@ describe('status report', () => {
     expect(statusReportSchema.safeParse(report).success).toBe(true);
   });
 
+  it('carries the controller’s start time when it has one', () => {
+    const started = { ...report.controller, started_at: '2026-01-01T00:00:00.000Z' };
+    expect(statusReportSchema.safeParse({ ...report, controller: started }).success).toBe(true);
+    const empty = { ...report.controller, started_at: '' };
+    expect(statusReportSchema.safeParse({ ...report, controller: empty }).success).toBe(false);
+  });
+
   it('requires the workspaces directory and each agent’s directory', () => {
     const { workspaces_dir: _dir, ...machine } = report.machine;
     expect(statusReportSchema.safeParse({ ...report, machine }).success).toBe(false);

@@ -1795,6 +1795,63 @@
         "width": 6,
         "height": 4
       }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Cloud calls that failed for hosted machines, by call and kind",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.cloud_errors{$service,$flint_env} by {call,kind}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 173,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted controller service errors, by kind",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.controller_errors{$service,$flint_env} by {kind}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 173,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agent controller restarts on cloud machines",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.controller_restarts{$service,$flint_env}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 177,
+        "width": 6,
+        "height": 4
+      }
     }
   ]
 }

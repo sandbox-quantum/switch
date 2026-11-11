@@ -38,7 +38,10 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.hosted_machines import controller_settings
 from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.observability.hosted import (
+    after_commit,
     reconciler_heard,
+    record_cloud_error,
+    record_controller_errors,
     record_credential_refusal,
     record_machine_event,
 )
@@ -437,10 +440,9 @@ class Observation(BaseModel):
     data_volume_id: str | None = Field(default=None, max_length=256)
     instance_id: str | None = Field(default=None, max_length=256)
     instance_type: str | None = Field(default=None, max_length=256)
-    # For the follow-up after the observability PR (AWS errors and the
-    # reconciler's own errors). Accepted and not read or stored yet: declared
-    # now, with strict types (fixed words, capped counts, no free text), so a
-    # reconciler that sends them works against this Core.
+    # The reconciler's errors, as strict types (fixed words, capped counts, no
+    # free text): its failed cloud calls by call and kind, and its own errors
+    # by kind, since it last reported. Counted, never stored.
     cloud_errors: list[CloudErrorCount] | None = Field(default=None, max_length=28)
     reconciler_errors: (
         dict[ReconcilerErrorKind, Annotated[int, Field(ge=0, le=1_000_000)]] | None
@@ -462,6 +464,20 @@ async def observe(
 ) -> dict:
     reconciler_heard()
     machine = await _locked_machine(session, machine_id)
+    # Counted once this answer's transaction commits. Every answer from here
+    # is a 200 and commits, so the reconciler forgets only what was counted;
+    # a batch counts twice only if Core's answer is lost after the commit.
+    cloud_errors = [(e.call, e.kind, e.count) for e in body.cloud_errors or []]
+    reconciler_errors = dict(body.reconciler_errors or {})
+    if cloud_errors or reconciler_errors:
+
+        def count() -> None:
+            for call, kind, number in cloud_errors:
+                record_cloud_error(call, kind, number)
+            if reconciler_errors:
+                record_controller_errors(reconciler_errors)
+
+        after_commit(session, count)
     now = datetime.now(UTC)
     if body.revision != machine.revision:
         if body.revision > machine.revision:
@@ -485,11 +501,13 @@ async def observe(
             machine.error = body.error or OBSERVED_ERROR
             machine.error_code = body.error_code
             machine.updated_at = now
-            await session.commit()
+        # Commits even with nothing changed, so the error counts above count.
+        await session.commit()
         return machine_item(machine)
     if machine.state == "deleted" or (
         machine.state == "error" and body.state not in ERROR_REPLACING_STATES
     ):
+        await session.commit()
         return machine_item(machine)
     for field in ("data_volume_id", "instance_id", "instance_type"):
         if (value := getattr(body, field)) is not None:

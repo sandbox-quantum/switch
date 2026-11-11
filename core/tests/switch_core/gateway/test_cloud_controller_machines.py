@@ -69,9 +69,12 @@ from tests.switch_core.management.harness import (
     build_harness,
     cookies_for,
     create_managed_agent,
+    enroll_console,
+    ensure_connected,
     platform,
     provider,
     report_status,
+    status_report,
 )
 from tests.telemetry_records import RecordingSink, recording_telemetry
 
@@ -861,6 +864,83 @@ class TestControllerMachines:
                 }
             }
         ]
+
+    async def test_a_new_controller_start_time_counts_as_a_restart(
+        self, harness: Harness, hosted_metrics: MetricsRegistry
+    ) -> None:
+        """The first report with a start time is not a restart, the same
+        start time again is not either, and a new one is. A report without one
+        (an older controller) counts nothing and forgets the last."""
+        owner = await add_member(harness.session_factory, "ada")
+        machine = await _claim(harness.session_factory, owner)
+        async with _hosted_app(harness.session_factory, owner) as hosted:
+            code = (await _prepare(hosted, machine.id))["controllers"][0][
+                "enrollment_code"
+            ]
+            async with harness.client() as client:
+                enrolled = await _enroll(client, code)
+                token = await client.post(
+                    f"/v1/management/controllers/{enrolled['controller_id']}/token",
+                    json={"credential": enrolled["credential"]},
+                )
+                assert token.status_code == 200, token.text
+                controller = SimpleNamespace(
+                    controller_id=enrolled["controller_id"],
+                    credential=enrolled["credential"],
+                    access_token=token.json()["access_token"],
+                    owner=owner,
+                    harness=harness,
+                    headers=bearer(token.json()["access_token"]),
+                )
+                await ensure_connected(client, controller)  # type: ignore[arg-type]
+                starts = [
+                    "2026-01-01T11:00:00Z",
+                    "2026-01-01T11:00:00+00:00",
+                    "2026-01-01T12:30:00Z",
+                    None,
+                    "2026-01-01T13:00:00Z",
+                ]
+                for seq, started_at in enumerate(starts, start=1):
+                    report = status_report(seq)
+                    if started_at is None:
+                        del report["controller"]["started_at"]
+                    else:
+                        report["controller"]["started_at"] = started_at
+                    response = await client.put(
+                        f"/v1/management/controllers/{enrolled['controller_id']}/status",
+                        json=report,
+                        headers=controller.headers,
+                    )
+                    assert response.status_code == 200, response.text
+        assert _metric_points(hosted_metrics, "switch.hosted.controller_restarts") == [
+            ({"backend": "vm"}, 1.0)
+        ]
+        row = await _machine(harness.session_factory, machine.id)
+        assert row.heartbeat is not None
+        (kept,) = row.heartbeat["controllers"].values()
+        assert kept["started_at"] == "2026-01-01T13:00:00+00:00"
+
+    async def test_a_controller_off_the_cloud_restarting_counts_nothing(
+        self, harness: Harness, hosted_metrics: MetricsRegistry
+    ) -> None:
+        """Every controller sends its start time, laptops included. Only a
+        cloud machine's counts: from any other it's accepted and ignored."""
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            laptop = await enroll_console(harness, client, owner)
+            await ensure_connected(client, laptop)
+            for seq, started_at in enumerate(
+                ["2026-01-01T11:00:00Z", "2026-01-01T12:30:00Z"], start=1
+            ):
+                report = status_report(seq)
+                report["controller"]["started_at"] = started_at
+                response = await client.put(
+                    f"/v1/management/controllers/{laptop.controller_id}/status",
+                    json=report,
+                    headers=laptop.headers,
+                )
+                assert response.status_code == 200, response.text
+        assert _metric_points(hosted_metrics, "switch.hosted.controller_restarts") == []
 
     async def test_placing_an_agent_on_a_sleeping_machine_wakes_it(
         self, harness: Harness, reported: RecordingSink

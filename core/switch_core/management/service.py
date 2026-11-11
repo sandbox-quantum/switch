@@ -512,6 +512,7 @@ class ManagementService:
                 report.machine.model_dump(mode="json"),
                 new_status.get("agents", []),
                 new_status.get("providers", []),
+                report.controller.started_at,
             )
         await session.commit()
         if stored and _status_signature(new_status) != before:

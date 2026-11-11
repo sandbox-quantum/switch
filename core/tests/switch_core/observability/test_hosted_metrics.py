@@ -575,3 +575,40 @@ class TestCatalogueAdditions:
             a["reason"] for a, _ in _points(registry)["switch.hosted.machine_events"]
         )
         assert reasons == ["stop_failed", "wake_failed"]
+
+
+class TestControllerErrorCounts:
+    """The controller error and restart counts: fixed words only, whatever Core is
+    handed."""
+
+    def test_a_cloud_error_outside_the_fixed_words_counts_as_other(
+        self, registry: MetricsRegistry
+    ) -> None:
+        from switch_core.observability.hosted import record_cloud_error
+
+        record_cloud_error("launch", "capacity", 4)
+        record_cloud_error("RunInstances", "InsufficientInstanceCapacity")
+        record_cloud_error("stop", "throttled", 0)
+        assert sorted(
+            (attrs["call"], attrs["kind"], value)
+            for attrs, value in _points(registry)["switch.hosted.cloud_errors"]
+        ) == [("launch", "capacity", 4.0), ("other", "other", 1.0)]
+
+    def test_controller_errors_count_by_kind_and_skip_zeros(
+        self, registry: MetricsRegistry
+    ) -> None:
+        from switch_core.observability.hosted import record_controller_errors
+
+        record_controller_errors({"cloud": 3, "core_api": 0, "surprise": 2})
+        assert sorted(
+            (attrs["kind"], value)
+            for attrs, value in _points(registry)["switch.hosted.controller_errors"]
+        ) == [("cloud", 3.0), ("other", 2.0)]
+
+    def test_a_restart_is_counted_by_backend(self, registry: MetricsRegistry) -> None:
+        from switch_core.observability.hosted import record_controller_restart
+
+        record_controller_restart()
+        assert _points(registry)["switch.hosted.controller_restarts"] == [
+            ({"backend": "vm"}, 1.0)
+        ]
