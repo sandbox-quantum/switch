@@ -758,7 +758,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 101,
+        "y": 105,
         "width": 6,
         "height": 4
       }
@@ -1038,6 +1038,37 @@
     {
       "definition": {
         "type": "timeseries",
+        "title": "Controller connections per second, by event (opened, adopted, taken_over, closed): a steady stream of taken_over is the reconnect storm",
+        "show_legend": true,
+        "requests": [
+          {
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q1",
+                "query": "sum:switch.controllers.connections{$service,$flint_env} by {event}.as_rate()"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q1"
+              }
+            ],
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 91,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
         "title": "Process starts (deploys and restarts)",
         "show_legend": false,
         "requests": [
@@ -1069,7 +1100,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 91,
+        "y": 95,
         "width": 12,
         "height": 2
       }
@@ -1088,7 +1119,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 93,
+        "y": 97,
         "width": 6,
         "height": 4
       }
@@ -1115,7 +1146,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 93,
+        "y": 97,
         "width": 6,
         "height": 4
       }
@@ -1138,7 +1169,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 97,
+        "y": 101,
         "width": 6,
         "height": 4
       }
@@ -1157,7 +1188,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 97,
+        "y": 101,
         "width": 6,
         "height": 4
       }
@@ -1176,7 +1207,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 97,
+        "y": 109,
         "width": 12,
         "height": 4
       }

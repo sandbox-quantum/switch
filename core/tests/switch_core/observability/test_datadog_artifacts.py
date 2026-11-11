@@ -89,6 +89,15 @@ def test_monitors_are_individually_importable() -> None:
         ]
 
 
+def test_only_the_default_service_loads_the_shared_signal_board() -> None:
+    """The signal board is one board under a fixed title. A run for any other
+    deployment stops before it, so a test deployment can't overwrite it."""
+    script = (_ARTIFACTS / "apply.sh").read_text()
+    guard = script.index('if [[ "$SERVICE" != "switch-core" ]]; then')
+    assert script.index("exit 0", guard) < script.index("file=signal-board.json")
+    assert guard < script.index('existing_dashboards=$(dd GET "/dashboard")')
+
+
 def test_every_monitor_watches_one_deployment_only() -> None:
     """Scoped to one deployment's `service`, the one tag Core sets that
     Datadog keeps, so a test slot or staging reporting into the same org can
@@ -99,14 +108,23 @@ def test_every_monitor_watches_one_deployment_only() -> None:
         query, name = monitor["query"], monitor["name"]
         assert "service:switch-core" not in query, name
         assert "env:" not in query, name
-        scopes = [
-            scope.split(",")
-            for scope in re.findall(r"\{([^}]*)\}", query)
-            if "service:" in scope
-        ]
-        assert scopes, name
-        for scope in scopes:
-            assert "service:REPLACE-WITH-SERVICE" in scope, (name, scope)
+        if monitor["type"] == "log alert":
+            # A log search is scoped inside `logs("...")`, by a leading term.
+            search = re.match(r'logs\("(.*?)"\)\.index', query)
+            assert search, name
+            assert search.group(1).startswith("service:REPLACE-WITH-SERVICE "), (
+                name,
+                search.group(1),
+            )
+        else:
+            scopes = [
+                scope.split(",")
+                for scope in re.findall(r"\{([^}]*)\}", query)
+                if "service:" in scope
+            ]
+            assert scopes, name
+            for scope in scopes:
+                assert "service:REPLACE-WITH-SERVICE" in scope, (name, scope)
         assert "REPLACE-WITH-ENV" in name, name
         assert {"service:REPLACE-WITH-SERVICE", "env:REPLACE-WITH-ENV"} <= set(
             monitor["tags"]

@@ -72,6 +72,13 @@ jq -c '.[]' monitors.json | while read -r monitor; do
   fi
 done
 
+# The signal board is one shared board under a fixed title, written for the
+# deployment that keeps the default service. Any other deployment leaves it
+# alone, so loading a test deployment's alerts never overwrites it.
+if [[ "$SERVICE" != "switch-core" ]]; then
+  echo "skipped dashboard: the signal board belongs to the default service"
+  exit 0
+fi
 existing_dashboards=$(dd GET "/dashboard")
 # Only the board this script was written for; the older dashboards were
 # imported by hand and may have drifted from their files.

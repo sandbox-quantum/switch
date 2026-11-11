@@ -45,6 +45,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **switch-core counts controller reconnects.** `switch.controllers.connections`
+  counts agent controller connections opened, adopted from another process,
+  taken over and closed (with the close code as `reason`), so reconnect churn
+  shows as a rate instead of hundreds of thousands of log lines.
 - **New accounts can be refused by country.** `GATEWAY_SIGNUP_REFUSED_HEADER`
   (chart: `switchCore.signup.refusedHeader`) names a request header that the
   edge in front of Switch, such as a WAF rule matching on the client's
@@ -104,6 +108,21 @@ version of their own to them without also giving them a release of their own.
   switcher out, and `npm run build` now fails if it gets in.
 
 #### Changed
+- **switch-core's logs keep to what matters.** Successful routine polls (health
+  checks, controller status, assignment and operations polls, Console's
+  controller and agent lists, host observations, session activity) and
+  uvicorn's per-connection WebSocket lines are no longer logged at info;
+  failures on the same routes still are. Controller connection churn moved to
+  debug, behind the new counter. Routine events that were warnings are info:
+  platform rate limits, agents calling a tool wrongly (a 4xx), addressing
+  refusals, attachments over the cap, activity drawn as a plain message, and
+  cleanup of user groups and turns left by deleted agents. The list of other
+  installations' Slack user groups is logged at debug, with only the count at
+  info. A Slack identity that cannot be provisioned (a handle already taken)
+  is a warning the first time a process sees it instead of an error on every
+  bridge start, and "trusting unverified OIDC email" is said once per process.
+  Two bridges connecting the same workspace, which pilot does on purpose, is
+  said once per pair at info rather than as a warning on every start.
 - **The operator dashboard follows the current design.** A field's label sits
   above it rather than floating inside the box, and the field has a white fill
   and a firm border and ring when focused; switches are pills, and one that is
@@ -131,6 +150,15 @@ version of their own to them without also giving them a release of their own.
   field, its label, and a disabled checkbox or switch looked almost the same
   as enabled ones; they are now greyed out, so an action you may not take
   reads as unavailable.
+- **A stopped cloud machine starts on the configured image.** When a machine
+  that was stopped (idle, or put to sleep) starts again and its instance was
+  launched from an older `image_id` or as another instance type, the hosted
+  controller replaces the instance with one launched from the configured image
+  and type, keeping the data volume, instead of starting the old instance. A
+  new image therefore reaches every machine at its next start, without the
+  manual `upgrade` steps; a running machine is not stopped for it. The
+  instance is replaced only once its data volume is set to survive
+  termination; until then it starts as before.
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.
@@ -159,6 +187,17 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A messaging app bridge that cannot start stops being retried at every
+  hand-over, and a retired one stops reading as crashed.** A bridge refused
+  before it runs (its host no longer resolves, say) is logged once as an error
+  with the reason and is not tried again in that process until it is edited
+  or restarted; before, every switch-core process tried it again at each
+  hand-over and logged a stack trace. A bridge whose task died and whose row
+  was then removed or deactivated no longer keeps the bridges health check
+  red until the pods restart.
+  A bridge that crashes on the network or on Switch's own database (its pool
+  briefly out of connections, say) is tried again after a wait instead of
+  staying down until the next deploy.
 - **Renaming a channel on a messaging app renames its room.** Slack,
   Mattermost, Microsoft Teams and Telegram now pass a channel's new name to
   Switch, as Discord already did, using what each platform already sends, so
@@ -175,7 +214,8 @@ version of their own to them without also giving them a release of their own.
   controller reattaching through the other pod was also refused and had to
   open a new connection, because the pod holding the socket noticed it had
   closed only at its next ping. It now lets the socket go as it closes, and
-  the other pod takes the connection up.
+  the other pod takes the connection up, waiting up to 2 seconds for the
+  first pod to record the socket going if the controller comes back sooner.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
