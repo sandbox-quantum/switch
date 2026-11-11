@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type {
-  LinkedIdentity,
-  PendingIdentity,
-  RemoteBridge,
-} from '@shared/core/switch-servers/switch-servers';
+import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import {
-  accountLinkPrompts,
   hasUnlinkedMessagingApp,
   identityLinkOrderingNote,
   linkedIdentityOn,
@@ -45,19 +40,6 @@ function identity(bridgeId: string, verified = true): LinkedIdentity {
     externalUserId: 'U1',
     externalUsername: 'me',
     verified,
-  };
-}
-
-function pendingLink(bridgeId: string): PendingIdentity {
-  return {
-    id: `pending-${bridgeId}`,
-    bridgeId,
-    bridgeDisplayName: bridgeId,
-    bridgeType: 'slack',
-    externalUserId: 'U1',
-    externalUsername: 'me',
-    requestedByName: null,
-    codeExpiresAt: null,
   };
 }
 
@@ -222,68 +204,12 @@ describe('what is said instead, where the link step is withheld', () => {
   });
 });
 
-describe('accountLinkPrompts', () => {
-  const slack = bridge('b-slack', 'Slack');
-  const discord = bridge('b-discord', 'Discord');
-
-  it('asks to link every active app with nothing linked or waiting', () => {
-    expect(accountLinkPrompts([slack, discord], [identity('b-discord')], [])).toEqual([
-      { kind: 'link', bridge: slack },
-    ]);
-  });
-
-  it('asks nothing once every app is linked and confirmed', () => {
-    expect(accountLinkPrompts([slack], [identity('b-slack')], [])).toEqual([]);
-  });
-
-  it('asks nothing while the linked accounts are unknown', () => {
-    expect(accountLinkPrompts([slack], null, [])).toEqual([]);
-  });
-
-  it('leaves out a connection that is down', () => {
-    expect(accountLinkPrompts([{ ...slack, status: 'error' }], [], [])).toEqual([]);
-  });
-
-  it('says a link is waiting for its code rather than asking for it again', () => {
-    const waiting = pendingLink('b-slack');
-
-    expect(accountLinkPrompts([slack], [], [waiting])).toEqual([
-      { kind: 'pending', bridge: slack, link: waiting },
-    ]);
-  });
-
-  it('still asks to link when the pending links are unknown or failed to load', () => {
-    // Withholding the prompt until the pending list arrives would withhold it
-    // for good on a server where that read fails.
-    expect(accountLinkPrompts([slack], [], null)).toEqual([{ kind: 'link', bridge: slack }]);
-  });
-
-  it('asks to confirm a link made before links had to be confirmed', () => {
-    const old = identity('b-slack', false);
-
-    expect(accountLinkPrompts([slack], [old], null)).toEqual([
-      { kind: 'unverified', bridge: slack, identity: old },
-    ]);
-  });
-
-  it('asks nothing of an app with one confirmed link, whatever else is there', () => {
-    expect(
-      accountLinkPrompts(
-        [slack],
-        [identity('b-slack', false), { ...identity('b-slack'), id: 'other' }],
-        [pendingLink('b-slack')]
-      )
-    ).toEqual([]);
-  });
-});
-
 describe('linkedIdentityOn', () => {
   const unconfirmed = { ...identity('b-slack', false), id: 'old', externalUsername: 'old' };
   const confirmed = { ...identity('b-slack'), id: 'new', externalUsername: 'new' };
 
   it('shows a confirmed account over an unconfirmed one, in either order', () => {
-    // Otherwise the row would say "Not confirmed" under a prompt that is
-    // satisfied, since the prompt asks whether any link is confirmed.
+    // Otherwise the row would say "Not confirmed" while a confirmed link exists.
     expect(linkedIdentityOn('b-slack', [unconfirmed, confirmed])).toBe(confirmed);
     expect(linkedIdentityOn('b-slack', [confirmed, unconfirmed])).toBe(confirmed);
   });
