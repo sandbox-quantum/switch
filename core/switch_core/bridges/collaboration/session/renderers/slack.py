@@ -1680,12 +1680,9 @@ def _plan_task(item: Item) -> dict[str, Any]:
         }
     title = plain_text(item.title) if item.title else ""
     if is_subagent(item):
-        title = f"Subagent: {title}".strip()
-        state = subagent_state(item)
-        if state in ("stopped", "not confirmed finished"):
-            title = f"{state.capitalize()}: {title}"
-        elif state == "failed":
-            title = f"{_ACTIVITY['failed']} {title}"
+        # A card with an icon shows the icon in place of its status, so a
+        # subagent's status is said in words.
+        title = f"Subagent: {title or 'untitled'} — {subagent_state(item)}"
     elif item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()
     task: dict[str, Any] = {

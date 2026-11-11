@@ -75,15 +75,18 @@ def test_slack_draws_each_child_once_as_a_bot_card_with_its_outcome(render):
         block.get("block_id") == "switch-subagents" for block in result.blocks
     )
     tasks = _tasks(result)
-    children = [task for task in tasks if task["title"].endswith("Review changes")]
+    children = [
+        task for task in tasks if task["title"].startswith("Subagent: Review changes")
+    ]
     assert len(children) == 4
     assert {task["icon"]["name"] for task in children} == {"bot"}
     tools = [task for task in tasks if "Read file" in task["title"]]
     assert [task["icon"]["name"] for task in tools] == ["code"]
     titles = [task["title"] for task in children]
-    assert "Subagent: Review changes" in titles
-    assert "✗ Subagent: Review changes" in titles
-    assert "Stopped: Subagent: Review changes" in titles
+    assert "Subagent: Review changes — running" in titles
+    assert "Subagent: Review changes — done" in titles
+    assert "Subagent: Review changes — failed" in titles
+    assert "Subagent: Review changes — stopped" in titles
 
 
 def test_slack_keeps_a_child_running_after_its_turn_ends():
@@ -91,7 +94,7 @@ def test_slack_keeps_a_child_running_after_its_turn_ends():
     [task] = _tasks(result)
     assert task["status"] == "in_progress"
     assert "Unfinished" not in task["title"]
-    assert task["title"] == "Subagent: Review changes"
+    assert task["title"] == "Subagent: Review changes — running"
 
 
 def test_slack_text_fallback_lists_children_once_apart_from_calls():
@@ -144,7 +147,7 @@ def test_a_child_switch_settled_after_its_session_went_away_is_not_confirmed():
     orphan = _child(status="failed").model_copy(update={"text": ORPHANED_SUBAGENT_TEXT})
     assert "Review changes — not confirmed finished" in _text([orphan], "completed")
     [task] = _tasks(render_activity_plan([orphan], _turn("completed")))
-    assert task["title"] == "Not confirmed finished: Subagent: Review changes"
+    assert task["title"] == "Subagent: Review changes — not confirmed finished"
 
 
 def test_a_stopped_child_reads_stopped_not_failed():
