@@ -18,19 +18,20 @@ leaves its contracts alone.
 - **switch-core** — the backend service (`core/`). Released by tagging
   `switch-v<version>`; the version lives in `core/pyproject.toml`. See
   [RELEASING.md](RELEASING.md).
-- **switch-console** — the desktop app (`dash/`). Released by tagging
+- **switch-console** — the desktop app (`console/`). Released by tagging
   `switch-console-v<version>`; the version lives in
-  `dash/apps/switch-console-desktop/package.json`.
+  `console/apps/switch-console-desktop/package.json`.
 - **agent-runtime** — the Switch protocol client and MCP runtime
-  (`dash/packages/switch-agent-runtime/`), published to a package registry.
-- **sidecar** — the remote runtime Switch Console deploys to an agent host
-  (`dash/apps/switch-console-desktop/src/sidecar/`). Versioned in
-  `sidecar-version.ts` and deployed by Switch Console, not published separately.
-- **switch-connector** / **switch-connector-codex** / **switch-connector-opencode**
-  — the three connectors (`connectors/`), versioned in their respective
-  manifests. The first two are installed from the plugin marketplace; the
-  OpenCode one is written by Switch Console, which has no marketplace to install
-  from, so its version identifies the source rather than an install.
+  (`console/packages/switch-agent-runtime/`), published to a package registry.
+- **sidecar** — the remote runtime Switch Console deploys to an agent host.
+  Versioned in [`artifacts.yaml`](artifacts.yaml) and deployed by Switch
+  Console, not published separately.
+
+The **switch-connector**, **switch-connector-codex** and
+**switch-connector-opencode** connectors have been retired: there is no plugin
+to install, and every session gets the Switch tools from its own host and the
+Switch skill pushed by Console. Their sections below record the releases they
+shipped.
 
 Three things are **not** separately versioned, and ship under the switch-core
 release so a single tag pins the whole stack: the **operator dashboard**
