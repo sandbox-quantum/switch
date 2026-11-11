@@ -14,6 +14,7 @@ import type {
   DecisionTestOutcome,
   UpdateDecisionSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
+import { AutoRouteNewRooms } from './auto-route-new-rooms';
 import {
   CHOICE_LABELS,
   choiceFields,
@@ -322,6 +323,11 @@ export function DecisionRoutingSection({ workspaceId }: { workspaceId: string })
       </div>
 
       <TestResult state={test} />
+
+      <AutoRouteNewRooms
+        workspaceId={workspaceId}
+        decisionsAvailable={settings.effective.available}
+      />
     </div>
   );
 }

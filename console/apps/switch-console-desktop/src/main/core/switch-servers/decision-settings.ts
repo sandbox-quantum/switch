@@ -1,17 +1,21 @@
 import {
   clearDecisionSettings,
+  fetchDecisionRoomDefault,
   fetchDecisionSettings,
   GatewayError,
   testDecisionSettings,
+  updateDecisionRoomDefault,
   updateDecisionSettings,
 } from '@main/core/switch-servers/gateway-client';
 import type {
   ClearDecisionSettingsResult,
   DecisionSettingsInput,
   DecisionTestInput,
+  FetchDecisionRoomDefaultResult,
   FetchDecisionSettingsResult,
   SwitchServer,
   TestDecisionSettingsResult,
+  UpdateDecisionRoomDefaultResult,
   UpdateDecisionSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
 
@@ -67,6 +71,39 @@ export async function clearDecisionSettingsOnServer(
 ): Promise<ClearDecisionSettingsResult> {
   try {
     return { kind: 'cleared', settings: await clearDecisionSettings(server) };
+  } catch (cause) {
+    const result = recoverableResult(cause);
+    if (result) return result;
+    throw cause;
+  }
+}
+
+/** Whether the selected workspace's new rooms start with auto-route on. */
+export async function fetchDecisionRoomDefaultFromServer(
+  server: SwitchServer
+): Promise<FetchDecisionRoomDefaultResult> {
+  try {
+    return { kind: 'loaded', roomDefault: await fetchDecisionRoomDefault(server) };
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.kind === 'http' && cause.status === 404) {
+      return { kind: 'unsupported' };
+    }
+    const result = recoverableResult(cause);
+    if (result) return result;
+    throw cause;
+  }
+}
+
+/** Turn the selected workspace's auto-route default for new rooms on or off. */
+export async function updateDecisionRoomDefaultOnServer(
+  server: SwitchServer,
+  autoRouteNewRooms: boolean
+): Promise<UpdateDecisionRoomDefaultResult> {
+  try {
+    return {
+      kind: 'saved',
+      roomDefault: await updateDecisionRoomDefault(server, autoRouteNewRooms),
+    };
   } catch (cause) {
     const result = recoverableResult(cause);
     if (result) return result;

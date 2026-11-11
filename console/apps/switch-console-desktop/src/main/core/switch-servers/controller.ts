@@ -42,6 +42,7 @@ import {
   type ClearDecisionSettingsResult,
   type ClearTrustSettingsResult,
   type CreatedRegistrationKey,
+  type FetchDecisionRoomDefaultResult,
   type FetchDecisionSettingsResult,
   type FetchTrustSettingsResult,
   type PasswordLoginParams,
@@ -57,6 +58,8 @@ import {
   type UpdateServerResult,
   type TestDecisionSettingsParams,
   type TestDecisionSettingsResult,
+  type UpdateDecisionRoomDefaultParams,
+  type UpdateDecisionRoomDefaultResult,
   type UpdateDecisionSettingsParams,
   type UpdateDecisionSettingsResult,
   type UpdateTrustSettingsParams,
@@ -76,8 +79,10 @@ import {
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import {
   clearDecisionSettingsOnServer,
+  fetchDecisionRoomDefaultFromServer,
   fetchDecisionSettingsFromServer,
   testDecisionSettingsOnServer,
+  updateDecisionRoomDefaultOnServer,
   updateDecisionSettingsOnServer,
 } from './decision-settings';
 import {
@@ -605,6 +610,18 @@ export const switchServersController = createRPCController({
   }: UpdateDecisionSettingsParams): Promise<UpdateDecisionSettingsResult> =>
     withReachableWorkspaceSession(workspaceId, (server) =>
       updateDecisionSettingsOnServer(server, input)
+    ),
+
+  /** Whether the workspace's new rooms start with auto-route on, its admins only. */
+  getDecisionRoomDefault: (workspaceId: string): Promise<FetchDecisionRoomDefaultResult> =>
+    withReachableWorkspaceSession(workspaceId, fetchDecisionRoomDefaultFromServer),
+
+  updateDecisionRoomDefault: ({
+    workspaceId,
+    autoRouteNewRooms,
+  }: UpdateDecisionRoomDefaultParams): Promise<UpdateDecisionRoomDefaultResult> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      updateDecisionRoomDefaultOnServer(server, autoRouteNewRooms)
     ),
 
   /** Return the workspace to the server's default decision backend. */

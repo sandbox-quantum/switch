@@ -82,6 +82,7 @@ import {
   type ChatClaim,
   type ConnectedChat,
   type DecisionBackend,
+  type DecisionRoomDefault,
   type DecisionSettings,
   type DecisionSettingsInput,
   type DecisionTestInput,
@@ -651,6 +652,43 @@ export async function updateDecisionSettings(
     body: decisionSettingsBody(input),
   });
   return mapDecisionSettings((await res.json()) as DecisionSettingsJson);
+}
+
+type DecisionRoomDefaultJson = {
+  auto_route_new_rooms: boolean;
+  available: boolean;
+  reason: string | null;
+};
+
+function mapDecisionRoomDefault(json: DecisionRoomDefaultJson): DecisionRoomDefault {
+  return {
+    autoRouteNewRooms: json.auto_route_new_rooms,
+    available: json.available,
+    reason: json.reason,
+  };
+}
+
+/** Whether new rooms in the selected workspace start with auto-route on
+ * (`GET /decision-settings/room-default`), its admins only. */
+export async function fetchDecisionRoomDefault(server: SwitchServer): Promise<DecisionRoomDefault> {
+  const res = await gatewayFetch(server, '/decision-settings/room-default', {
+    authenticated: true,
+  });
+  return mapDecisionRoomDefault((await res.json()) as DecisionRoomDefaultJson);
+}
+
+/** Turn the selected workspace's auto-route default for new rooms on or off
+ * (`PUT /decision-settings/room-default`). */
+export async function updateDecisionRoomDefault(
+  server: SwitchServer,
+  autoRouteNewRooms: boolean
+): Promise<DecisionRoomDefault> {
+  const res = await gatewayFetch(server, '/decision-settings/room-default', {
+    authenticated: true,
+    method: 'PUT',
+    body: { auto_route_new_rooms: autoRouteNewRooms },
+  });
+  return mapDecisionRoomDefault((await res.json()) as DecisionRoomDefaultJson);
 }
 
 /** Return the selected workspace to the server default (`DELETE /decision-settings`,
