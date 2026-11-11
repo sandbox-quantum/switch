@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 import type { AfterPackContext, Configuration } from 'electron-builder';
 import {
   APP_ID,
@@ -98,6 +99,55 @@ const hasDeveloperIdCert = Boolean(process.env.CSC_LINK);
 // install (CHOO-1468).
 const hasAzureSigning = Boolean(process.env.AZURE_CLIENT_ID);
 
+const LOCAL_SERVER_DIR = resolve('dist-local-server');
+const LOCAL_SERVER_RESOURCE = 'local-server';
+const MACHO_MAGICS = new Set([
+  0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca,
+]);
+
+function isMachO(file: string): boolean {
+  const fd = openSync(file, 'r');
+  try {
+    const head = Buffer.alloc(4);
+    return readSync(fd, head, 0, 4, 0) === 4 && MACHO_MAGICS.has(head.readUInt32BE(0));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Paths (relative to the bundle, following symlinks as @electron/osx-sign does)
+// of every Mach-O in the local-server bundle.
+function localServerMachOs(dir: string): string[] {
+  const found: string[] = [];
+  const walk = (current: string): void => {
+    for (const name of readdirSync(current)) {
+      const path = join(current, name);
+      const stat = statSync(path);
+      if (stat.isDirectory()) walk(path);
+      else if (stat.isFile() && isMachO(path)) found.push(relative(dir, path));
+    }
+  };
+  walk(dir);
+  return found;
+}
+
+// @electron/osx-sign codesigns every file it considers binary, which in the
+// local-server bundle means hundreds of data files (PostgreSQL's timezone
+// tables, fonts, wheels) on top of its few dozen executables and libraries.
+// Each signature makes a round trip to Apple's timestamp server, and a single
+// dropped one fails the whole build. Only Mach-O needs a signature for
+// notarization, so everything else under the resource is left out of signing
+// (it is still sealed by the app's own signature). The exceptions are found by
+// file magic, not by path, so a binary added to the bundle later is signed
+// without anyone updating a list. Without a bundle on disk nothing is skipped.
+function localServerSignIgnore(): string[] {
+  if (!existsSync(LOCAL_SERVER_DIR)) return [];
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const keep = localServerMachOs(LOCAL_SERVER_DIR).map(escape).join('|');
+  const prefix = escape(`/Contents/Resources/${LOCAL_SERVER_RESOURCE}/`);
+  return [keep ? `${prefix}(?!(?:${keep})$)` : prefix];
+}
+
 const config: Configuration = {
   // Must run AFTER electron-builder applies @electron/fuses (which rewrites the
   // Electron Framework binary and would invalidate an earlier signature). afterSign
@@ -154,7 +204,7 @@ const config: Configuration = {
   // running them, so a running server never holds the app's own files.
   extraResources: [
     { from: 'dist-sidecar', to: 'dist-sidecar' },
-    { from: 'dist-local-server', to: 'local-server' },
+    { from: 'dist-local-server', to: LOCAL_SERVER_RESOURCE },
   ],
   asarUnpack: ['node_modules/better-sqlite3/**', 'node_modules/@parcel/watcher/**', '**/*.node'],
   mac: {
@@ -162,6 +212,7 @@ const config: Configuration = {
     hardenedRuntime: true,
     entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.plist',
+    signIgnore: localServerSignIgnore(),
     // No `arch` here, for the same reason as `linux` below: naming an arch makes
     // every invocation build it and ignore the `--x64` / `--arm64` flag, and
     // `npmRebuild: false` means the package carries whatever native modules the
