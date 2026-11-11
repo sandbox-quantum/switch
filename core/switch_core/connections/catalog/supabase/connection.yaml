@@ -1,0 +1,50 @@
+slug: supabase
+name: Supabase
+category: Developer tools
+description: Inspect and manage Supabase projects, databases and logs, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # The server rotates the refresh token on each use; the old one stops working
+  # immediately, so Switch must store the new one and never retry the old.
+  refresh: rotating
+  oauth:
+    # Supabase supports dynamic client registration (RFC 7591): Core registers
+    # its own client on first use and reuses it across connections.
+    registration: dynamic
+    # Supabase matches a loopback redirect's port exactly, so the ports are
+    # fixed and registered with the dynamic client.
+    redirect: [loopback]
+    loopback_ports: [39241, 39242, 39243, 39244, 39245]
+    # Ask for a fresh consent screen so the token always carries the scopes
+    # Switch requested; without it a reconnect can silently drop new scopes.
+    prompt: consent
+    # Supabase supports discovery and revocation per RFC 8414 / RFC 7009.
+    revocation_discovered: true
+  identity:
+    url: https://api.supabase.com/v1/profile
+    account_id: id
+    label: email
+# Supabase OAuth access tokens live one hour; Switch renews before that.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # Scoping to a project_ref is per-connection, not catalog-level: the MCP
+    # server lists every project the owner can reach and lets tools pick one,
+    # or an agent can append ?project_ref=<ref> to scope a session itself.
+    - { name: supabase, url: "https://mcp.supabase.com/mcp" }
+access:
+  # Database writes and schema changes are powerful; default to read-only.
+  # A read-only connection still lists write tools but the server refuses them.
+  read:
+    scopes:
+      - openid
+      - email
+      - offline_access
+  write:
+    scopes:
+      - openid
+      - email
+      - offline_access
+tools: { mode: pass_through }
