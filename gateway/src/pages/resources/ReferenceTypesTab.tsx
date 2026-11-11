@@ -18,7 +18,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useEffect, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import {
@@ -34,7 +34,7 @@ import {
   toAccessLevel,
 } from "../../data/visibility";
 import { INSTRUCTIONS_DISCLOSURE } from "./CreateReferenceTypeDialog";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 interface Props {
   refreshKey: number;
@@ -204,7 +204,16 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
       {visibleLoading || ownedLoading ? (
         <CircularProgress />
       ) : (
-        <DataTable rows={rows} columns={columns} fillHeight />
+        <DataTable
+          rows={rows}
+          columns={columns}
+          fillHeight
+          emptyState={
+            <TableEmptyState title="No reference types yet">
+              Create one to describe a new kind of reference.
+            </TableEmptyState>
+          }
+        />
       )}
 
       {editing && (

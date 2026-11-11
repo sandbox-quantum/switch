@@ -22,12 +22,14 @@ from switch_core.bridges.agent.commands import link_account_reply, stop_control_
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
+    MessagePartlySent,
     PlatformAdapter,
     PrivateNoticeRefused,
     SupportsSharedConnection,
     agent_identity,
 )
 from switch_core.bridges.collaboration.models import (
+    ChannelInUse,
     ChannelType,
     InboundAgentJoin,
     InboundAppJoin,
@@ -935,13 +937,12 @@ class CollaborationCore:
         self, channel_id: str, old_name: str, new_name: str
     ) -> None:
         """The platform reports this channel's name (renamed from `old_name`,
-        or unchanged). The room linked to it follows when it is named after
-        the channel (`NAME_SOURCE_KEY` "channel"), or, from before that was
-        kept, when its name is exactly the one it was made with from the old
-        channel name. Any other room keeps its name, and the channel's is
-        recorded for whoever wants to take it (`/rooms/{id}/sync-name`)."""
-        bridge_name = self._bridge_display_name
-        name = f"{bridge_name}: {new_name}"
+        empty when the platform did not say, or unchanged). The room linked to
+        it follows when it is named after the channel (`NAME_SOURCE_KEY`
+        "channel" or "created"), or, from before that was kept, while its name
+        still matches the channel's old one (`RoomStore.follow_channel_name`).
+        Any other room keeps its name, and the channel's is recorded for
+        whoever wants to take it (`/rooms/{id}/sync-name`)."""
         with tenant_scope(self._bridge_tenant_id):
             async with tenant_session(
                 self._session_factory, self._bridge_tenant_id
@@ -951,12 +952,15 @@ class CollaborationCore:
                 )
             if room is None:
                 return
-            metadata = room.metadata_ or {}
-            if room.name != name and await self._room_service.follow_channel_name(
-                room.id, name, new_name, f"{bridge_name}: {old_name}"
+            if await self._room_service.follow_channel_name(
+                room.id,
+                old_name=old_name,
+                new_name=new_name,
+                bridge_display_name=self._bridge_display_name,
+                channel_name_for=self._adapter.channel_name_for,
             ):
                 return
-            if metadata.get(LINKED_CHANNEL_NAME_KEY) != new_name:
+            if (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY) != new_name:
                 await self._room_service.record_channel_name(room.id, new_name)
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
@@ -1821,9 +1825,10 @@ class CollaborationCore:
 
         try:
             result = await self._room_service.create_room(config)
-        except IntegrityError:
+        except (IntegrityError, ChannelInUse):
             # Backstop: the (bridge_id, external_channel_id) unique index
-            # rejected a concurrent duplicate. Adopt the room that won the race.
+            # rejected a concurrent duplicate (room creation reports that as
+            # `ChannelInUse`). Adopt the room that won the race.
             logger.warning(
                 "Duplicate room creation for channel %s rejected by unique "
                 "constraint; adopting existing room",
@@ -2713,6 +2718,8 @@ class CollaborationCore:
                 admin_marker=admin_marker if is_system else None,
                 is_system=is_system,
             )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(event.event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -2953,6 +2960,8 @@ class CollaborationCore:
                     caption=caption,
                     thread_root_id=thread_root_ref,
                 )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(event.event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -3083,6 +3092,8 @@ class CollaborationCore:
                 caption=pending.caption,
                 thread_root_id=thread_root_ref,
             )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(claim_event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(claim_event_id))
             raise
@@ -3195,6 +3206,25 @@ class CollaborationCore:
                 channel_id,
             )
         return claimed
+
+    @staticmethod
+    def _partly_posted(
+        transport_event_id: str, channel_id: str, partial: MessagePartlySent
+    ) -> str:
+        """The ref to settle a message's claim with when only some of its parts
+        reached the platform.
+
+        Settled rather than let go: a claim let go is posted again by the next
+        delivery, and the parts already in the channel would show twice. What
+        is missing has been said in the channel by the adapter."""
+        logger.error(
+            "[BRIDGE-OUT] %s reached channel %s only in part, and is not posted "
+            "again: %s",
+            transport_event_id,
+            channel_id,
+            partial,
+        )
+        return partial.first_ref
 
     async def _settle_outbound(
         self, transport_event_id: str, external_post_id: str | None

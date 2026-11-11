@@ -83,6 +83,12 @@ class OidcIdentityRaceError(Exception):
     """
 
 
+class SignupRefusedError(Exception):
+    """An OIDC sign-in would have created a new account, and the caller said
+    new accounts may not be created for this request. Existing accounts are
+    still found and linked; only provisioning a new one is refused."""
+
+
 class UserStore:
     async def create(self, session: AsyncSession, user: User) -> None:
         """Create the user, and the membership that lets them ever sign in.
@@ -314,6 +320,7 @@ class UserStore:
         email_verified: bool,
         join_tenant: bool,
         link_by_email: bool,
+        create_allowed: bool,
     ) -> OidcUser:
         """Resolve an OIDC identity to a gateway user, provisioning on first
         login (JIT). `created` says whether this call made the account.
@@ -351,6 +358,10 @@ class UserStore:
         consulting email, ``email_verified``, or even the issuer on the
         incoming claim — exactly as it did before this identity had its own
         table.
+
+        ``create_allowed`` false refuses to provision a new account, with
+        ``SignupRefusedError``, and changes nothing else: a known identity is
+        still returned and a verified email still linked.
 
         Two logins racing to provision or link the same identity or the same
         new email hit a unique-constraint conflict inside a savepoint rather
@@ -390,6 +401,10 @@ class UserStore:
                     continue
                 return OidcUser(existing, created=False)
 
+            if not create_allowed:
+                raise SignupRefusedError(
+                    "A new account may not be created for this sign-in"
+                )
             user = User(name=name, email=email.lower(), role="user", password_hash=None)
             try:
                 async with session.begin_nested():

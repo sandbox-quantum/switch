@@ -49,6 +49,7 @@ from switch_core.bridges.agent.protocol.presence import (
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
     CommandPayload,
+    FollowUp,
 )
 from switch_core.budgets import BudgetExceeded, BudgetGuard
 from switch_core.clients.admin_messages import (
@@ -79,6 +80,7 @@ from switch_core.delivery.addressing import (
     AddressingResolver,
     IncomingMessage,
 )
+from switch_core.delivery.conversation import ConversationRoute
 from switch_core.events import (
     CommandEvent,
 )
@@ -643,6 +645,7 @@ class AgentRecipient:
             await self._sender_owns_agent(session, event.sender, event.content),
             self._mid_turn_delivery(),
             routed_reason=None,
+            follow_up=None,
         )
 
         async def after(row: InboundEvent) -> None:
@@ -701,6 +704,7 @@ class AgentRecipient:
                 await self._sender_owns_agent(session, event.sender, event.content),
                 self._mid_turn_delivery(),
                 routed_reason=None,
+                follow_up=_follow_up(decision),
             ),
             after=after,
         )
@@ -768,7 +772,8 @@ class AgentRecipient:
         agent = await self._fresh_agent(session)
         gate = await self._gate_addressed(session, agent, event, meta)
         if not gate.addressed:
-            logger.info(
+            # The router's decision record says so (`dropped_not_allowed`).
+            logger.debug(
                 "Decision routing: room=%s message=%s agent=%s routed_reason=%s "
                 "outcome=dropped_not_permitted reason=the sender may not "
                 "instruct this agent, or it is over budget",
@@ -796,6 +801,7 @@ class AgentRecipient:
                 await self._sender_owns_agent(session, event.sender, event.content),
                 self._mid_turn_delivery(),
                 routed_reason=reason,
+                follow_up=None,
             ),
             after=after,
         )
@@ -951,11 +957,14 @@ class AgentRecipient:
         anchor = post_anchor(files, lead)
         gate = _GateOutcome(addressed=False, refusal=None)
         followed = False
+        follow_up: FollowUp | None = None
         if named:
             agent = await self._fresh_agent(session)
             gate = await self._gate_addressed(session, agent, anchor, meta)
         elif follow is not None:
             followed = await self._follows(session, anchor, follow)
+            if followed:
+                follow_up = _follow_up(follow)
         delivered = gate.addressed or followed
 
         sender_name = lead.sender_name
@@ -1019,6 +1028,7 @@ class AgentRecipient:
                 sender_owns_agent=sender_owns_agent,
                 mid_turn_delivery=self._mid_turn_delivery(),
                 switch_notice=switch_notice,
+                follow_up=follow_up,
             )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1984,6 +1994,20 @@ def opening_message_for(meta: RoomMeta, agent_id: str) -> str | None:
     return written.get("body")
 
 
+_FOLLOW_UPS: dict[ConversationRoute, FollowUp] = {
+    ConversationRoute.THREAD_FOLLOW_UP: "thread_follow_up",
+    ConversationRoute.CHANNEL_FOLLOW_UP: "channel_follow_up",
+    ConversationRoute.MAIN_AGENT: "main_agent",
+}
+
+
+def _follow_up(decision: ConversationDecision) -> FollowUp:
+    """The rule a follow-up was delivered by, as the agent's event names it."""
+    if decision.route is None:
+        raise ValueError(f"No rule delivered this follow-up: {decision.reason}")
+    return _FOLLOW_UPS[decision.route]
+
+
 def _message_own_event(
     meta: RoomMeta,
     event: InboundMessage,
@@ -1995,10 +2019,12 @@ def _message_own_event(
     mid_turn_delivery: Literal["queue", "steer"],
     *,
     routed_reason: Literal["decided", "fallback"] | None,
+    follow_up: FollowUp | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
     written. `routed_reason` marks a message Switch routed to the agent after
-    it tagged nobody (`delivery/decision.py`)."""
+    it tagged nobody (`delivery/decision.py`), and `follow_up` one that
+    following the conversation delivered (`delivery/conversation.py`)."""
     sender_name = event.sender_name
     if not sender_name:
         sender_name = event.sender
@@ -2024,6 +2050,7 @@ def _message_own_event(
             mid_turn_delivery=mid_turn_delivery,
             switch_notice=switch_notice,
             routed_reason=routed_reason,
+            follow_up=follow_up,
         )
         # Serialising runs once per agent per message, so only when it will
         # be seen.

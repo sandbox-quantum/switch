@@ -116,10 +116,20 @@ def _capabilities(reader: Principal, doc: Document) -> dict[str, Any]:
     library = doc.room_id is None
     manage = library and can_manage(reader, doc.owner_id)
     return {
+        # The library's own rule, whatever the scope: its read route asks it.
+        "can_read": can(reader, "read", doc),
         "can_edit": library and can(reader, "write", doc),
         "can_manage": manage,
         "can_transfer": manage,
     }
+
+
+def _room_can_read(reader: Principal, doc: Document) -> bool:
+    """`can_read` on a room's own routes, whose caller may already read the
+    room: a room's own document opens through the room for everyone there,
+    whoever wrote it. An attached library document keeps the library's rule,
+    since what it gates is opening the document's own page."""
+    return doc.room_id is not None or can(reader, "read", doc)
 
 
 def _can_remove(
@@ -438,7 +448,7 @@ async def list_room_documents(
     )
     return [
         RoomDocumentSummary(
-            **summary.model_dump(),
+            **{**summary.model_dump(), "can_read": _room_can_read(principal, doc)},
             can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
         )
         for summary, doc in zip(summaries, docs, strict=True)
@@ -552,6 +562,6 @@ async def get_room_document(
     )
     takes_part = await takes_part_in_room(session, room_store, room.id, user.id)
     return RoomDocumentDetail(
-        **detail.model_dump(),
+        **{**detail.model_dump(), "can_read": _room_can_read(principal, doc)},
         can_remove=_can_remove(principal, room, doc, takes_part=takes_part),
     )
