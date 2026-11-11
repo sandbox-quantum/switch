@@ -406,10 +406,12 @@ describe('the providers a server machine offers', () => {
     );
     expect(el.textContent).toMatch(/Give build-box a login for/);
     const offered = [...el.querySelectorAll('button')].filter((button) =>
-      ['Codex', 'Cursor', 'OpenCode', 'Kimi Code'].includes(button.textContent ?? '')
+      ['Codex', 'Cursor', 'OpenCode', 'Pi', 'Mistral Vibe', 'Kimi Code'].includes(
+        button.textContent ?? ''
+      )
     );
     // Not OpenCode: it is not installed there, and no login would change that.
-    // Not Kimi Code: Console has no login it can give it.
+    // Not Pi, Mistral Vibe or Kimi Code: Console has no login it can give them.
     expect(offered.map((button) => button.textContent)).toEqual(['Codex', 'Cursor']);
     await act(async () => offered[0]!.click());
     const input = el.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;

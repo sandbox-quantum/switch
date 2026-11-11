@@ -10,7 +10,7 @@ import {
 } from "@mui/material";
 import { useState } from "react";
 import { type InstalledApp, disconnectApp } from "../../data/api";
-import { platformLabel } from "../../theme/hootFormat";
+import { platformLabel } from "../../theme/format";
 
 /**
  * Disconnecting is the only way an install-created connection can be removed,
@@ -46,16 +46,16 @@ interface Copy {
 }
 
 const CONNECTION_ROOMS = (noun: string) =>
-  "Rooms that used this connection are kept, but become internal-only: they " +
-  `stop mirroring to the ${noun}, and installing again creates a new ` +
-  "connection rather than reattaching them.";
+  "Rooms that used it are kept, but become internal-only: they " +
+  `stop mirroring to the ${noun}, and installing again does not ` +
+  "reattach them.";
 
 const PLATFORM_COPY: Record<string, Copy> = {
   discord: {
     noun: "server",
     effect:
       "Switch will stop mirroring messages to and from it. The bot stays in " +
-      "the server until you remove it in Discord — disconnecting here does " +
+      "the Discord server until you remove it there — disconnecting here does " +
       "not remove it.",
     rooms: CONNECTION_ROOMS("server"),
   },
@@ -86,8 +86,8 @@ const PLATFORM_COPY: Record<string, Copy> = {
 const DEFAULT_COPY: Copy = {
   noun: "workspace",
   effect:
-    "Switch's access token is revoked at the platform and the connection it " +
-    "created is removed.",
+    "Switch's access token is revoked at the platform and the messaging app " +
+    "it added is removed.",
   rooms: CONNECTION_ROOMS("workspace"),
 };
 

@@ -49,7 +49,7 @@ export function MachineProviderPicker({
     () => options.filter((option) => option.ready).map((option) => option.id),
     [options]
   );
-  // Installed there but not signed in, with a login Console can give the machine.
+  // Installed there but not signed in, with a login the machine can be given.
   const givable = machine.acceptsLogins
     ? options.filter(
         (option) =>

@@ -86,7 +86,20 @@ export type RendererTelemetryEvents = {
       | 'opened_existing'
       | 'intro_opened'
       | 'intro_dismissed';
-    provider: 'claude' | 'codex' | 'opencode' | 'cursor' | 'antigravity' | 'kimi-code' | 'none';
+    provider:
+      | 'claude'
+      | 'codex'
+      | 'opencode'
+      | 'cursor'
+      | 'antigravity'
+      | 'deepseek-harness'
+      | 'pi'
+      | 'copilot'
+      | 'kiro'
+      | 'mistral-vibe'
+      | 'goose'
+      | 'kimi-code'
+      | 'none';
   };
   /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */
   buddy_message_sent: { nth: '1' | '2' | '3' | '4' | '5' | '6+' };

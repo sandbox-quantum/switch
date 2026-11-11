@@ -4,12 +4,19 @@ import type { RoomVisibility } from '@shared/core/switch-servers/switch-servers'
  * What someone may do with a room. `canManage` is the owner's and the
  * workspace admins' alone: deleting the room, changing who may see it, naming
  * it after its channel. `canWrite` also covers anyone at all when the room's
- * write access is public: its description and instructions, who is in it, its
- * roles, its group, archiving it. `canUnlink` is detaching what is attached
- * to it: the server now keeps that for those taking part in the room and
+ * write access is public: its description and instructions, its roles, its
+ * group, archiving it. `canChangeMembers` is adding and removing its agents
+ * and people: `canWrite`, except in a direct or group conversation, whose
+ * platform fixes who is in it. `canUnlink` is detaching what is attached to
+ * it: the server now keeps that for those taking part in the room and
  * workspace admins, whatever its write access.
  */
-export type RoomPermissions = { canWrite: boolean; canManage: boolean; canUnlink: boolean };
+export type RoomPermissions = {
+  canWrite: boolean;
+  canChangeMembers: boolean;
+  canManage: boolean;
+  canUnlink: boolean;
+};
 
 /**
  * What one viewer may do with a room: the server's own answer when it gives
@@ -28,8 +35,10 @@ export function roomPermissionsFor(
   viewer: { userId: string | null; isAdmin: boolean }
 ): RoomPermissions {
   if (room.serverPermissions) return room.serverPermissions;
-  if (viewer.userId === null) return { canWrite: false, canManage: false, canUnlink: false };
+  if (viewer.userId === null) {
+    return { canWrite: false, canChangeMembers: false, canManage: false, canUnlink: false };
+  }
   const canManage = viewer.isAdmin || (room.ownerId !== null && room.ownerId === viewer.userId);
   const canWrite = canManage || room.writeVisibility === 'public';
-  return { canWrite, canManage, canUnlink: canWrite };
+  return { canWrite, canChangeMembers: canWrite, canManage, canUnlink: canWrite };
 }

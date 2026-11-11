@@ -12,10 +12,16 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'opencode',
   'cursor',
   'antigravity',
+  'deepseek-harness',
+  'pi',
+  'copilot',
+  'kiro',
+  'mistral-vibe',
+  'goose',
   'kimi-code',
 ];
 
-/** A provider id as telemetry may carry it: one of the six, else `none`. */
+/** A provider id as telemetry may carry it: one of these, else `none`. */
 function asTelemetryProvider(provider: string | null): TelemetryProvider {
   return PROVIDERS.find((known) => known === provider) ?? 'none';
 }

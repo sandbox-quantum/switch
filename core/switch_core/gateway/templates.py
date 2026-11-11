@@ -237,7 +237,7 @@ def _require_within_size_limit(content: str, config: SwitchConfig) -> None:
             status_code=413,
             detail=(
                 f"Template is {size} bytes, over the {config.template_max_bytes}-byte "
-                "limit for this server."
+                "limit."
             ),
         )
 

@@ -25,7 +25,9 @@ from switch_core.bridges.collaboration.adapter import (
     ActivitySnapshot,
     AgentIdentity,
     ChannelNotBindable,
+    MessagePartlySent,
     PlatformAdapter,
+    PrivateNoticeRefused,
     RemovalFailed,
     RequestCard,
     RichContent,
@@ -52,7 +54,10 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
+    ChannelNotUsable,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -61,6 +66,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -589,6 +595,10 @@ class DiscordAdapter(PlatformAdapter):
     # nobody.
     notifies_only_by_mention: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "@everyone"
+    #: Discord shows a bot's message to one member of a channel only in answer
+    #: to an interaction, and a posted message is not one, so a notice about
+    #: it goes to them as a direct message from the bot.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "direct_message"
 
     # The status is the turn's one post, so the clock rides along with the next
     # real change rather than rewriting a message somebody is reading. See the
@@ -962,9 +972,10 @@ class DiscordAdapter(PlatformAdapter):
         said rather than its tail, and a thread created from it opens where the
         message begins.
 
-        A part failing mid-sequence leaves the message *visibly* truncated
-        rather than silently so: what was posted stays, and a short notice says
-        the rest did not make it.
+        `None` when not even the first part was taken. A later part failing
+        leaves the message *visibly* truncated rather than silently so: what
+        was posted stays, a short notice says the rest did not make it, and
+        `MessagePartlySent` is raised.
         """
         chunks = chunk_message(content)
         first_ref: str | None = None
@@ -980,8 +991,15 @@ class DiscordAdapter(PlatformAdapter):
                     where,
                     e,
                 )
+                if first_ref is None:
+                    return None
                 await self._note_truncation(send, index, len(chunks))
-                return first_ref
+                raise MessagePartlySent(
+                    platform="Discord",
+                    first_ref=first_ref,
+                    delivered=index,
+                    total=len(chunks),
+                ) from e
             if first_ref is None:
                 first_ref = f"{sent.channel.id}:{sent.id}"
 
@@ -997,7 +1015,11 @@ class DiscordAdapter(PlatformAdapter):
                 "delivered — the rest was rejected by Discord."
             )
         except discord.HTTPException:
-            logger.exception("Failed to post Discord truncation notice")
+            logger.exception(
+                "Failed to post the Discord notice that a message is missing its "
+                "last %d parts; nothing in the channel says it is cut short",
+                total - delivered,
+            )
 
     async def send_attachment(
         self,
@@ -1186,6 +1208,36 @@ class DiscordAdapter(PlatformAdapter):
             ),
             where=f"channel {channel_id}",
         )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """A direct message from the bot, naming the channel the message was
+        posted in, split over several if it is past Discord's length cap.
+        Discord refuses it when the person does not accept direct messages
+        from members of the server, and that refusal is raised as
+        `PrivateNoticeRefused`."""
+        client = self._require_client()
+        user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+        body = (
+            f"About your message in <#{channel_id}>:\n"
+            f"{self.translate_outbound(content)}"
+        )
+        try:
+            for chunk in chunk_message(body):
+                await user.send(
+                    chunk,
+                    suppress_embeds=True,
+                    allowed_mentions=NO_MASS_MENTIONS,
+                )
+        except discord.Forbidden as refused:
+            raise PrivateNoticeRefused(str(refused)) from refused
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
@@ -2379,7 +2431,8 @@ class DiscordAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         if channel_type in ("group", "direct"):
             raise ValueError(
                 f"Cannot create {channel_type} channels — they are initiated from the messaging platform"
@@ -2387,7 +2440,7 @@ class DiscordAdapter(PlatformAdapter):
 
         guild = await self._get_guild()
         channel = await guild.create_text_channel(
-            name=self._sanitize_channel_name(name),
+            name=self.channel_name_for(name),
             topic=topic,
             overwrites=(
                 self._private_channel_overwrites(guild)
@@ -2395,7 +2448,11 @@ class DiscordAdapter(PlatformAdapter):
                 else {}
             ),
         )
-        return str(channel.id)
+        return CreatedChannel(id=str(channel.id), name=channel.name)
+
+    @classmethod
+    def channel_name_for(cls, room_name: str) -> str:
+        return cls._sanitize_channel_name(room_name)
 
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         try:
@@ -2558,14 +2615,76 @@ class DiscordAdapter(PlatformAdapter):
         which shared delivery does not carry, so on the shared connection one
         is not this bridge's either.
         """
-        target = await self._get_channel(int(channel_id))
+        target = await self._channel_to_bind(channel_id)
         if (
             getattr(target, "guild", None) is None
             and self._config.event_delivery == "shared"
         ):
             raise ChannelNotBindable(
                 f"Discord channel {channel_id} is a direct message, which this "
-                "connection does not carry."
+                "messaging app does not carry."
+            )
+
+    async def _channel_to_bind(self, channel_id: str) -> Any:
+        """The channel a room was asked to bind to, with Discord's reason when
+        it cannot be read: missing or hidden from the bot is the caller's to
+        fix (`ChannelNotUsable`), any other refusal is Discord's
+        (`BridgeOperationError`)."""
+        try:
+            numeric_id = int(channel_id)
+        except ValueError as error:
+            raise ChannelNotUsable(
+                f"{channel_id!r} is not a Discord channel id: those are numbers."
+            ) from error
+        try:
+            return await self._get_channel(numeric_id)
+        except discord.NotFound as error:
+            raise ChannelNotUsable(
+                f"Discord cannot find channel {channel_id}: {error.text or error}"
+            ) from error
+        except discord.Forbidden as error:
+            raise ChannelNotUsable(
+                f"Discord will not let the Switch bot see channel {channel_id} "
+                f"({error.text or error}). Give it access to the channel, then "
+                "try again."
+            ) from error
+        except discord.HTTPException as error:
+            raise BridgeOperationError(
+                f"Discord would not describe channel {channel_id} "
+                f"({error.status}): {error.text or error}"
+            ) from error
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists and the bot can read and post in it.
+
+        In a thread, posting is `send_messages_in_threads`: discord.py's
+        `Thread.permissions_for` returns the parent's permissions without
+        mapping one onto the other."""
+        channel = await self._channel_to_bind(channel_id)
+        guild = getattr(channel, "guild", None)
+        if guild is None:
+            # A DM or group DM: the bot is in it by definition.
+            return
+        me = getattr(guild, "me", None)
+        if me is None:
+            # The bot's own member is not in the guild cache, so its
+            # permissions cannot be read. Say so rather than pass unchecked.
+            raise BridgeOperationError(
+                f"Discord has not told the Switch bot its own permissions in "
+                f"the server of channel {channel_id}, so it cannot check that "
+                "it may post there. Try again in a moment."
+            )
+        permissions = channel.permissions_for(me)
+        is_thread = getattr(channel, "parent_id", None) is not None
+        may_post = (
+            permissions.send_messages_in_threads
+            if is_thread
+            else permissions.send_messages
+        )
+        if not permissions.view_channel or not may_post:
+            raise ChannelNotUsable(
+                f"The Switch bot cannot read and post in Discord channel "
+                f"{channel_id}. Give it access to the channel, then try again."
             )
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
@@ -3609,7 +3728,7 @@ class DiscordAdapter(PlatformAdapter):
             filename = str(getattr(file, "filename", "") or "file")
             size = getattr(file, "size", None)
             if isinstance(size, int) and size > self._max_attachment_bytes:
-                logger.warning(
+                logger.info(
                     "Discord attachment %s is %d bytes, over the %d cap",
                     filename,
                     size,
@@ -3661,7 +3780,7 @@ class DiscordAdapter(PlatformAdapter):
         guild = getattr(channel, "guild", None)
         if guild is not None and guild.id != self._guild_id:
             raise ChannelNotBindable(
-                f"Discord channel {channel_id} is not in this connection's server."
+                f"Discord channel {channel_id} is not in this messaging app's server."
             )
         return channel
 

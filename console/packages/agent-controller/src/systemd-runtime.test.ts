@@ -158,7 +158,20 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     );
   });
 
-  it("gives an agent the settings a provider's runtime asks for, but none naming the controller's home", async () => {
+  it("gives an agent the variables a provider's runtime asks for, but a path in the controller's home", async () => {
+    env = {
+      ...env,
+      COPILOT_GITHUB_TOKEN: 'token-placeholder',
+      COPILOT_HOME: '/home/controller/.copilot',
+    };
+    runtime = makeRuntime();
+    await start('agent-1');
+    expect(readFileSync(join(config.dataDir, 'units', '01', 'environment'), 'utf8')).toBe(
+      "ANTHROPIC_API_KEY='sk-placeholder'\nCOPILOT_GITHUB_TOKEN='token-placeholder'\n"
+    );
+  });
+
+  it("gives an agent Kimi Code's model variables, but not its home in the controller's", async () => {
     env = { ...env, KIMI_MODEL_NAME: 'kimi-k2', KIMI_CODE_HOME: '/home/controller/.kimi-code' };
     runtime = makeRuntime();
     await start('agent-1');

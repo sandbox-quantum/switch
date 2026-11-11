@@ -1,5 +1,6 @@
 import type { UserInputQuestion } from '../events';
-import type { AcpSelectedAnswer } from './hooks';
+import type { AcpExtensionRegistrar, AcpSelectedAnswer, AcpSessionContext } from './hooks';
+import { ACP_CANCELLED } from './protocol';
 
 interface ElicitationChoice {
   const: string | number;
@@ -14,11 +15,7 @@ interface ElicitationProperty {
   anyOf?: ElicitationChoice[];
   items?: ElicitationProperty;
 }
-/**
- * `elicitation/create`, which an agent sends to ask questions as a form when
- * the client announces it can answer one: `agy acp` for its `ask_question`
- * tool, Kimi Code for its AskUserQuestion tool.
- */
+/** `elicitation/create`: how an agent asks the user questions as a form. */
 export interface AcpElicitationRequest {
   sessionId?: string;
   toolCallId?: string;
@@ -62,6 +59,8 @@ interface ElicitationField {
  * question, choosing one of them or (an array field) several; the free-text
  * "Other" agy adds beside it as `<field>_other` becomes that question's own
  * typed answer. Any other free-text field is a question answered by typing.
+ * A field with both a title and a description (Vibe's header and question)
+ * asks the description under the title as its header.
  */
 function elicitationFields(request: AcpElicitationRequest): ElicitationField[] {
   if (request.mode !== undefined && request.mode !== 'form') return [];
@@ -80,12 +79,16 @@ function elicitationFields(request: AcpElicitationRequest): ElicitationField[] {
       : freeText(other)
         ? { id: `${id}_other`, property: other }
         : undefined;
+    const header = property.title && property.description ? property.title : undefined;
     return [
       {
         question: {
           id,
+          ...(header ? { header } : {}),
           question:
-            property.title ?? property.description ?? request.message ?? 'Choose an option.',
+            (header ? property.description : (property.title ?? property.description)) ??
+            request.message ??
+            'Choose an option.',
           options: offered.map((choice) => ({ value: String(choice.value), label: choice.label })),
           multiSelect: property.type === 'array' && offered.length > 0,
           allowCustomAnswer: Boolean(textField),
@@ -134,4 +137,30 @@ export function elicitationAnswer(
       content[field.textField.id] = typedValue(custom, field.textField.property);
   }
   return { action: 'accept', content };
+}
+
+/**
+ * What a client that answers form elicitations announces in `initialize`.
+ * Pair it with {@link answerFormElicitations} as the provider's `extensions`.
+ */
+export const FORM_ELICITATION_CAPABILITIES = { elicitation: { form: {} } } as const;
+
+/**
+ * Answers `elicitation/create` by asking the user the form's questions. A
+ * form with no fields, or a mode other than a form (a URL to open), is
+ * declined; a turn that ends before the answer cancels it.
+ */
+export function answerFormElicitations(
+  context: AcpSessionContext,
+  on: AcpExtensionRegistrar
+): void {
+  on.request('elicitation/create', async (params) => {
+    const request = params as AcpElicitationRequest;
+    const questions = elicitationQuestions(request);
+    if (!questions.length) return { action: 'decline' };
+    const result = await context.askQuestions(questions, (selected) =>
+      elicitationAnswer(request, selected)
+    );
+    return result === ACP_CANCELLED ? { action: 'cancel' } : result;
+  });
 }

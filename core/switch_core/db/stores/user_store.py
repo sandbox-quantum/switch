@@ -5,12 +5,13 @@ from collections.abc import Collection
 from datetime import timedelta
 from typing import NamedTuple
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import (
+    ORGANIZATION_ADMIN_ROLE,
     TENANT_ADMIN_ROLES,
     administers_tenant,
     effective_tenant_role,
@@ -80,6 +81,12 @@ class OidcIdentityRaceError(Exception):
     ``OidcIdentityConflictError`` so the two can be told apart in logs and
     given different HTTP treatment at the callback.
     """
+
+
+class SignupRefusedError(Exception):
+    """An OIDC sign-in would have created a new account, and the caller said
+    new accounts may not be created for this request. Existing accounts are
+    still found and linked; only provisioning a new one is refused."""
 
 
 class UserStore:
@@ -184,6 +191,25 @@ class UserStore:
         result = await session.execute(select(User.id).where(User.id == user_id))
         return result.first() is not None
 
+    async def session_version(self, session: AsyncSession, user_id: str) -> int | None:
+        """The account's current session version, or None if there is no
+        such account. Read without loading the row, for the reason `exists`
+        gives."""
+        result = await session.execute(
+            select(User.session_version).where(User.id == user_id)
+        )
+        version: int | None = result.scalar_one_or_none()
+        return version
+
+    async def end_sessions(self, session: AsyncSession, user_id: str) -> None:
+        """Invalidate every session cookie the account holds by moving its
+        session version on. Lands when the caller commits."""
+        await session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(session_version=User.session_version + 1)
+        )
+
     async def created_in_last_hour(self, session: AsyncSession) -> tuple[int, int]:
         """Users created in the last hour, and whole seconds until the oldest
         of them leaves that window (0 when there are none).
@@ -230,11 +256,10 @@ class UserStore:
         users = result.scalars().all()
         if len(users) > 1:
             logger.error(
-                "Multiple users share email %r case-insensitively (ids: %s); "
-                "returning %s (lowest id, an arbitrary but stable pick). This "
-                "is pre-existing duplicate data, not something this login "
-                "caused — merge or rename the extra account(s).",
-                email,
+                "Multiple users share an email address case-insensitively "
+                "(ids: %s); returning %s (lowest id, an arbitrary but stable "
+                "pick). This is pre-existing duplicate data, not something "
+                "this login caused — merge or rename the extra account(s).",
                 [u.id for u in users],
                 users[0].id,
             )
@@ -295,6 +320,7 @@ class UserStore:
         email_verified: bool,
         join_tenant: bool,
         link_by_email: bool,
+        create_allowed: bool,
     ) -> OidcUser:
         """Resolve an OIDC identity to a gateway user, provisioning on first
         login (JIT). `created` says whether this call made the account.
@@ -332,6 +358,10 @@ class UserStore:
         consulting email, ``email_verified``, or even the issuer on the
         incoming claim — exactly as it did before this identity had its own
         table.
+
+        ``create_allowed`` false refuses to provision a new account, with
+        ``SignupRefusedError``, and changes nothing else: a known identity is
+        still returned and a verified email still linked.
 
         Two logins racing to provision or link the same identity or the same
         new email hit a unique-constraint conflict inside a savepoint rather
@@ -371,6 +401,10 @@ class UserStore:
                     continue
                 return OidcUser(existing, created=False)
 
+            if not create_allowed:
+                raise SignupRefusedError(
+                    "A new account may not be created for this sign-in"
+                )
             user = User(name=name, email=email.lower(), role="user", password_hash=None)
             try:
                 async with session.begin_nested():
@@ -629,6 +663,26 @@ class UserStore:
             )
         )
         return [(row[0], row[1]) for row in result.all()]
+
+    async def count_people(self, session: AsyncSession, tenant: Tenant) -> int:
+        """How many people `tenant`'s roster lists: its members, and the
+        `org_admin`s of its organization who are not one, each once."""
+        members = select(TenantMember.user_id).where(
+            TenantMember.tenant_id == tenant.id
+        )
+        people = (
+            members
+            if tenant.organization_id is None
+            else members.union(
+                select(OrganizationMember.user_id).where(
+                    OrganizationMember.organization_id == tenant.organization_id,
+                    OrganizationMember.role == ORGANIZATION_ADMIN_ROLE,
+                )
+            )
+        )
+        return (
+            await session.scalar(select(func.count()).select_from(people.subquery()))
+        ) or 0
 
     async def count_admins(self, session: AsyncSession) -> int:
         """How many `admin` memberships the session's bound tenant has, locking

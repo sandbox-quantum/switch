@@ -93,7 +93,7 @@ const WINDOWS_ENV = [
   'WINDIR',
 ];
 
-/** The provider variables above, and those each registered provider's runtime asks for. */
+/** The provider variables above and those each registered provider's runtime asks for. */
 export const PROVIDER_ENV_VARS: readonly string[] = [
   ...new Set([...AGENT_ENV_VARS, ...PROVIDER_RUNTIMES.flatMap((runtime) => runtime.inheritEnv)]),
 ];
@@ -102,8 +102,7 @@ export const PROVIDER_ENV_VARS: readonly string[] = [
  * What a session host's `execution.inheritEnv` names: the provider variables
  * and the basics a CLI needs to find itself, its home and its terminal.
  * Matched without regard to case on Windows, where `Path` and `PATH` are one
- * variable. Console and the headless agent controller both launch hosts with
- * it.
+ * variable. Console and the headless agent controller both launch hosts with it.
  */
 export const EXECUTION_INHERIT_ENV: readonly string[] = [
   ...PROVIDER_ENV_VARS,

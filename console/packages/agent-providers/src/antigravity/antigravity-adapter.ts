@@ -1,11 +1,7 @@
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
-import {
-  elicitationAnswer,
-  elicitationQuestions,
-  type AcpElicitationRequest,
-} from '../acp/elicitation';
+import { answerFormElicitations, FORM_ELICITATION_CAPABILITIES } from '../acp/elicitation';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
-import { ACP_CANCELLED, type AcpSessionModes } from '../acp/protocol';
+import type { AcpSessionModes } from '../acp/protocol';
 import type { RuntimeMode } from '../adapter';
 import { readiness, SIGNED_OUT_ERROR } from '../readiness';
 import {
@@ -145,19 +141,8 @@ export const antigravityAcp: AcpProviderHooks = {
   },
   // `agy acp` asks its questions as form elicitations when the client says
   // it can answer them; otherwise it ends the turn on an unanswered question.
-  clientCapabilities: { elicitation: { form: {} } },
-  extensions: (context, on) => {
-    on.request('elicitation/create', async (params) => {
-      const request = params as AcpElicitationRequest;
-      const questions = elicitationQuestions(request);
-      // A form with no fields, or a mode other than a form (a URL to open).
-      if (!questions.length) return { action: 'decline' };
-      const result = await context.askQuestions(questions, (selected) =>
-        elicitationAnswer(request, selected)
-      );
-      return result === ACP_CANCELLED ? { action: 'cancel' } : result;
-    });
-  },
+  clientCapabilities: FORM_ELICITATION_CAPABILITIES,
+  extensions: answerFormElicitations,
   permission: (context, { toolCall, options }) => {
     if (!toolCall.toolCallId.startsWith('interaction_')) return undefined;
     if (!options.length) return Promise.resolve({ outcome: { outcome: 'cancelled' } });

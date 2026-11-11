@@ -6,6 +6,7 @@ import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import {
   elicitationAnswer,
   elicitationQuestions,
+  FORM_ELICITATION_CAPABILITIES,
   type AcpElicitationRequest,
 } from '../acp/elicitation';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
@@ -161,7 +162,7 @@ export const kimiCodeAcp: AcpProviderHooks = {
   itemType: (toolCall) => (SUBAGENT_TITLE.test(toolCall.title ?? '') ? 'subagent' : undefined),
   // Kimi asks its questions as a form when the client says it can answer one:
   // all of them at once, with several choices where a question takes them.
-  clientCapabilities: { elicitation: { form: {} } },
+  clientCapabilities: FORM_ELICITATION_CAPABILITIES,
   extensions: (context, on) => {
     on.request('elicitation/create', async (params) => {
       const request = params as AcpElicitationRequest;

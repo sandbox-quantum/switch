@@ -46,6 +46,7 @@ class _FakeGraph:
         display_name: str,
         description: str,
         membership_type: str,
+        owner_aad_id: str | None = None,
     ) -> dict[str, Any]:
         self.created_channels.append(
             {
@@ -53,6 +54,7 @@ class _FakeGraph:
                 "display_name": display_name,
                 "description": description,
                 "membership_type": membership_type,
+                "owner_aad_id": owner_aad_id,
             }
         )
         return {"id": "19:new@thread.tacv2", "membershipType": membership_type}
@@ -80,9 +82,9 @@ def test_create_standard_channel() -> None:
     fake = _FakeGraph()
     adapter._graph = fake  # type: ignore[assignment]
 
-    channel_id = _run(adapter.create_channel("My Room", "the topic"))
+    created = _run(adapter.create_channel("My Room", "the topic"))
 
-    assert channel_id == "19:new@thread.tacv2"
+    assert (created.id, created.name) == ("19:new@thread.tacv2", "My Room")
     assert len(fake.created_channels) == 1
     created = fake.created_channels[0]
     assert created["team_id"] == "team-7"
@@ -92,14 +94,61 @@ def test_create_standard_channel() -> None:
     assert adapter._team_of_channel["19:new@thread.tacv2"] == "team-7"
 
 
-def test_create_private_channel_uses_private_membership() -> None:
+OWNER = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+
+
+def test_create_private_channel_names_its_owner() -> None:
     adapter = _adapter()
     fake = _FakeGraph()
     adapter._graph = fake  # type: ignore[assignment]
 
-    _run(adapter.create_channel("Secret", "x", channel_type="channel_private"))
+    _run(
+        adapter.create_channel(
+            "Secret", "x", channel_type="channel_private", owner_external_id=OWNER
+        )
+    )
 
     assert fake.created_channels[0]["membership_type"] == "private"
+    assert fake.created_channels[0]["owner_aad_id"] == OWNER
+
+
+def test_a_standard_channel_names_no_owner() -> None:
+    adapter = _adapter()
+    fake = _FakeGraph()
+    adapter._graph = fake  # type: ignore[assignment]
+
+    _run(adapter.create_channel("Open", "x", owner_external_id=OWNER))
+
+    assert fake.created_channels[0]["owner_aad_id"] is None
+
+
+def test_a_private_channel_without_an_owner_is_refused_before_graph() -> None:
+    adapter = _adapter()
+    fake = _FakeGraph()
+    adapter._graph = fake  # type: ignore[assignment]
+
+    for owner in (None, "29:1a2b3c-channel-account"):
+        try:
+            _run(
+                adapter.create_channel(
+                    "Secret",
+                    "x",
+                    channel_type="channel_private",
+                    owner_external_id=owner,
+                )
+            )
+            raised = False
+        except ValueError:
+            raised = True
+        assert raised, owner
+    assert fake.created_channels == []
+
+
+def test_only_a_directory_account_can_own_a_channel() -> None:
+    adapter = _adapter()
+    assert adapter.can_own_channel(OWNER)
+    assert not adapter.can_own_channel("29:1a2b3c-channel-account")
+    assert TeamsAdapter.private_channel_needs_owner
 
 
 def test_create_channel_rejects_group_and_direct() -> None:
@@ -116,11 +165,11 @@ def test_create_channel_rejects_group_and_direct() -> None:
 
 
 def test_channel_name_is_sanitized() -> None:
-    assert TeamsAdapter._sanitize_channel_name("bug/fix #42: urgent!") == (
+    assert TeamsAdapter.channel_name_for("bug/fix #42: urgent!") == (
         "bug-fix -42- urgent!"
     )
-    assert TeamsAdapter._sanitize_channel_name("  ...  ") == "switch"
-    assert len(TeamsAdapter._sanitize_channel_name("x" * 80)) == 50
+    assert TeamsAdapter.channel_name_for("  ...  ") == "switch"
+    assert len(TeamsAdapter.channel_name_for("x" * 80)) == 50
 
 
 # ── get_channel_type ─────────────────────────────────────────────────────────

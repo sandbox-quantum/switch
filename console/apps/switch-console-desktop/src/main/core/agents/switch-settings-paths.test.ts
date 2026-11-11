@@ -30,6 +30,6 @@ describe('relative Switch settings paths', () => {
     expect(SWITCH_SUBAGENTS_DIR_RELATIVE).toBe('.claude/switch-subagents');
     expect(SWITCH_AGENTS_DIR_RELATIVE).toBe('.switch/agents');
     expect(SWITCH_AGENTS_GITIGNORE_RELATIVE).toBe('.switch/agents/.gitignore');
-    expect(agentSettingsRelativePath('cc-hoot-main')).toBe('.switch/agents/cc-hoot-main.json');
+    expect(agentSettingsRelativePath('cc-agent-main')).toBe('.switch/agents/cc-agent-main.json');
   });
 });

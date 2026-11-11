@@ -1,8 +1,16 @@
-from sqlalchemy import delete, func, or_, select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Reference, Room, User, room_references
+from switch_core.db.models import (
+    Reference,
+    Room,
+    User,
+    package_references,
+    room_references,
+)
 from switch_core.db.stores.room_store import AttachedRooms, readable_by
 
 _LIKE_ESCAPE = "\\"
@@ -122,7 +130,16 @@ class ReferenceStore:
         return ref
 
     async def delete(self, session: AsyncSession, reference_id: str) -> list[str]:
-        """Delete a reference. Returns the list of room_ids it was attached to."""
+        """Delete a reference, taking it out of every room and package it is
+        in. Returns the list of room_ids it was attached to.
+
+        Package membership has no cascade, so it is removed here: without it a
+        packaged reference cannot be deleted at all."""
+        await session.execute(
+            delete(package_references).where(
+                package_references.c.reference_id == reference_id
+            )
+        )
         room_id_result = await session.execute(
             select(room_references.c.room_id).where(
                 room_references.c.reference_id == reference_id
@@ -142,10 +159,11 @@ class ReferenceStore:
 
     async def attach_to_room(
         self, session: AsyncSession, room_id: str, reference_id: str
-    ) -> None:
-        """Attach a reference to a room. Idempotent: attaching one that is
-        already attached is a no-op, not a primary-key violation."""
-        await session.execute(
+    ) -> bool:
+        """Attach a reference to a room, saying whether it was attached now.
+        Idempotent: attaching one that is already attached is a no-op, not a
+        primary-key violation."""
+        result = await session.execute(
             pg_insert(room_references)
             .values(room_id=room_id, reference_id=reference_id)
             .on_conflict_do_nothing(
@@ -156,6 +174,7 @@ class ReferenceStore:
             )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, reference_id: str
