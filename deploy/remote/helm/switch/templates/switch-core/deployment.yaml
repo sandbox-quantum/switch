@@ -141,11 +141,14 @@ spec:
             httpGet:
               path: /health/ready
               port: 8000
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            # Six failures at ten seconds: long enough to ride out a database
-            # failover, short enough that a real outage stops being served.
-            failureThreshold: 6
+            # Often, so a new pod takes traffic within seconds of being able
+            # to: during a roll the pods left serve alone until it does.
+            initialDelaySeconds: 5
+            periodSeconds: 2
+            # Thirty failures at two seconds: long enough to ride out a
+            # database failover, short enough that a real outage stops being
+            # served.
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /health

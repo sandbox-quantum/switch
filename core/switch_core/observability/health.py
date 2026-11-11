@@ -44,6 +44,12 @@ DATABASE_TIMEOUT_SECONDS = 5.0
 # the answer flap, few enough to catch a refresher that has stopped.
 _STALENESS_MULTIPLIER = 4
 
+# How soon an answer of "not ready" is checked again, instead of a full
+# interval. A process starting up reads not ready until its listeners
+# connect, a moment after the first check, and during a roll the pods left
+# serve alone until it reads ready.
+NOT_READY_RECHECK_SECONDS = 1.0
+
 
 @dataclass(frozen=True)
 class CheckOutcome:
@@ -379,15 +385,20 @@ class HealthMonitor:
 
     async def run_forever(self) -> None:
         while True:
+            ready = False
             try:
-                await self.refresh()
+                ready = (await self.refresh()).ready
             except asyncio.CancelledError:
                 raise
             except Exception:
                 # `refresh` handles a failing check; reaching here means the
                 # monitor itself is broken, and it must not stop looping.
                 logger.exception("Health monitor refresh raised; continuing.")
-            await asyncio.sleep(self._interval_seconds)
+            await asyncio.sleep(
+                self._interval_seconds
+                if ready
+                else min(self._interval_seconds, NOT_READY_RECHECK_SECONDS)
+            )
 
     def install(self, registry: MetricsRegistry) -> None:
         registry.register_observer(self._readings)

@@ -187,6 +187,14 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **A new switch-core pod takes traffic as soon as it can serve, so a rolling
+  update leaves the other pods carrying everything for less time.** With
+  more than one replica, a starting pod read not ready until the health
+  check after its listeners connected, ten seconds later, and the chart's
+  readiness probe looked every ten seconds, so pods became ready 11 to 19
+  seconds after they could serve. A not-ready answer is now checked again
+  after a second, and the chart probes readiness every two seconds. A pod is
+  still taken out of service only after a minute of failures.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error
