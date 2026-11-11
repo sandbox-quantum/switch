@@ -29,6 +29,7 @@ const MARK_COLOR: Record<string, string> = {
   github: 'text-foreground',
   notion: 'text-foreground',
   vercel: 'text-foreground',
+  stripe: 'text-[#635BFF]',
   linear: 'text-[#5E6AD2]',
   asana: 'text-[#F06A6A]',
   gitlab: 'text-[#FC6D26]',
