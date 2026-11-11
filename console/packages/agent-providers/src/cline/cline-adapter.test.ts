@@ -131,7 +131,9 @@ it('starts `cline --acp` and hands it the session MCP servers through its own se
   expect(execProvider).toHaveBeenCalledWith(
     expect.any(String),
     ['hub', 'stop'],
-    expect.objectContaining({ env: expect.objectContaining({ CLINE_HUB_DISCOVERY_PATH: expect.any(String) }) })
+    expect.objectContaining({
+      env: expect.objectContaining({ CLINE_HUB_DISCOVERY_PATH: expect.any(String) }),
+    })
   );
 });
 
