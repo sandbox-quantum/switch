@@ -634,6 +634,42 @@ back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
+## GitLab
+
+Built from sign-in runs against a free GitLab.com account; the operator's
+setup is in [`docs/old/gitlab-setup.md`](../old/gitlab-setup.md).
+
+- Each server's operator registers a confidential GitLab OAuth application
+  with the scopes `mcp` and `read_user` and saves it under Connector apps, or
+  names it in `GITLAB_CLIENT_CONFIG_PATH`. The browser comes back to Core's
+  own callback, so the server needs `GATEWAY_PUBLIC_URL`. GitLab offers
+  dynamic registration, but gives such a client `mcp` alone and no refresh
+  grant whatever it asks for: Core could not read the account, and every
+  sign-in would end after two hours.
+- The endpoints are named in the entry (`gitlab.com/oauth/authorize`,
+  `/oauth/token`, `/oauth/revoke`), not discovered from the MCP server. An
+  authorization request whose `resource` is GitLab's MCP server gets a token
+  for `mcp` alone, whatever scopes it asked for, and `GET /api/v4/user`
+  answers that token 403. With named endpoints no `resource` is sent, and the
+  token carries both scopes. GitLab's metadata publishes no
+  `resource_indicators_supported`, so its tokens carry no audience either
+  way.
+- The account is read from `GET /api/v4/user` (`id`, labelled by
+  `username`), which needs `read_user`.
+- GitLab's consent page lists the scopes with nothing to untick, so every
+  connection is granted the write level. The MCP server works within the
+  person's own project permissions. Not asked for: `api`, which opens the
+  whole REST API, beyond the MCP server's tools.
+- Access tokens live two hours (`expires_in` 7200). Each refresh returns a
+  new refresh token and ends the previous one (`refresh: rotating`).
+- The owner of a top-level group must allow MCP for it (group settings,
+  MCP client access); until then GitLab refuses its projects. The skill says
+  so, and that the server is GitLab.com only.
+
+To connect: Connectors in Switch Console, then Connect GitLab. To roll back,
+add `gitlab` to `DISABLED_SERVICES`, remove its client under Connector apps
+or unset `GITLAB_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false`.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP

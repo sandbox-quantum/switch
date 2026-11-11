@@ -360,6 +360,41 @@ describe("Airtable, and an app that sends people back to Switch Console", () => 
   });
 });
 
+const GITLAB_CALLBACK = `${PUBLIC_URL}/gateway/service-connections/gitlab/flows/callback`;
+
+const GITLAB = app({
+  ...AIRTABLE,
+  slug: "gitlab",
+  name: "GitLab",
+  configuration_variables: ["GITLAB_CLIENT_CONFIG_PATH"],
+  redirect_uri: GITLAB_CALLBACK,
+  redirect_uris: [GITLAB_CALLBACK],
+  scopes: ["mcp", "read_user"],
+});
+
+describe("GitLab", () => {
+  it("walks GitLab's Applications page, with its redirect to paste and the scopes to tick", () => {
+    const steps = setupInstructions(GITLAB, "internal", null);
+    expect(steps[0]!.link).toEqual({
+      label: "Open Applications",
+      href: "https://gitlab.com/-/user_settings/applications",
+    });
+    expect(steps[0]!.text).toMatch(/account or group your organization owns/);
+    expect(steps.flatMap((s) => s.copy)).toEqual([GITLAB_CALLBACK]);
+    expect(new Set(steps.map((s) => s.text)).size).toBe(steps.length);
+    expect(steps.find((s) => s.text === "Under Scopes, tick exactly these:")?.items).toEqual(["mcp", "read_user"]);
+    expect(steps.some((s) => /Keep Confidential ticked/.test(s.text))).toBe(true);
+    expect(confirmBeforeCheck(GITLAB)).toBeNull();
+  });
+
+  it("names GitLab's Helm value when moving off configuration", () => {
+    const steps = moveChecklist(app({ ...GITLAB, source: "configuration" }));
+    expect(steps[1]!.text).toBe(
+      "Remove GITLAB_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.gitlabClientSecret.",
+    );
+  });
+});
+
 describe("moving off configuration", () => {
   it("ticks copying in once the saved app matches, and names the Helm value", () => {
     const before = moveChecklist(CONFIGURED);
