@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Room
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.room_service import RoomCreateConfig, RoomService
 
 
@@ -31,6 +32,7 @@ def _service(session_factory: async_sessionmaker[AsyncSession]) -> RoomService:
         resource_service=never,
         session_factory=session_factory,
         room_cache=never,
+        decisions=DecisionAvailability.off(),
     )
 
 

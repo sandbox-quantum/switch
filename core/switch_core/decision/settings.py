@@ -180,6 +180,19 @@ class DecisionAvailability:
             store=DecisionSettingsStore(),
         )
 
+    @classmethod
+    def off(cls) -> DecisionAvailability:
+        """Decision routing switched off, with no server default: auto-route
+        can act nowhere. For tests and tooling that build services without a
+        configuration."""
+        return cls(
+            enabled=False,
+            server=ServerDefault(
+                endpoint_url=None, api_key=None, bedrock_enabled=False
+            ),
+            store=DecisionSettingsStore(),
+        )
+
     async def settings(self, session: AsyncSession, tenant_id: str) -> ResolvedSettings:
         return resolve(await self.store.get(session, tenant_id), self.server)
 

@@ -63,6 +63,7 @@ from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import MessageRouter
@@ -625,6 +626,7 @@ async def _serve(
         resource_service=resource_service,
         session_factory=session_factory,
         room_cache=room_cache,
+        decisions=DecisionAvailability.off(),
     )
 
     app, protocol = create_agent_bridge_app(

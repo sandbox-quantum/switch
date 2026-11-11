@@ -91,6 +91,7 @@ from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessSto
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import MessageRouter
@@ -761,6 +762,7 @@ async def harness(
             resource_service=resource_service,
             session_factory=session_factory,
             room_cache=room_cache,
+            decisions=DecisionAvailability.off(),
         )
         if isinstance(collab_lifecycle, CollaborationBridgeLifecycleService):
             collab_lifecycle._room_service = room_service

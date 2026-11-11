@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core import room_changes as room_changes_module
@@ -21,8 +21,18 @@ from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_OWNER_MARKER_META_KEY,
 )
 from switch_core.chats.service import ChatError, ChatService
-from switch_core.db.models import Agent, Client, Message, Room, User, room_agents
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.models import (
+    Agent,
+    Client,
+    Message,
+    Room,
+    Tenant,
+    User,
+    room_agents,
+)
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
+from switch_core.db.stores.room_store import RoomStore, auto_route_on_in
+from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.gateway import chats as chats_module
 from switch_core.gateway import rooms as rooms_module
 from switch_core.gateway.schemas import RoomUpdateRequest
@@ -1464,3 +1474,40 @@ async def test_two_processes_creating_one_persons_identity_share_it(
         other.member_actor(tenant, chats.bob),
     )
     assert first.id == second.id
+
+
+@pytest.mark.parametrize(("kind", "on"), [("group", True), ("direct", False)])
+async def test_a_new_chat_follows_the_workspace_auto_route_default(
+    chats: _Harness, kind: str, on: bool
+) -> None:
+    """Chats ask nothing of auto-route: room creation applies the workspace's
+    default to a group chat, and leaves a direct chat off."""
+    chats.room_service._decisions = DecisionAvailability(
+        enabled=True,
+        server=ServerDefault(
+            endpoint_url="http://decisions.example.invalid",
+            api_key=None,
+            bedrock_enabled=False,
+        ),
+        store=DecisionSettingsStore(),
+    )
+    async with chats.factory() as session:
+        await session.execute(
+            update(Tenant).where(Tenant.id == TENANT).values(auto_route_new_rooms=True)
+        )
+        await session.commit()
+    agent = await chats.agent("helper", owner=chats.alice)
+    created = await chats.client.post(
+        "/chats",
+        json={
+            "agentId": agent.id,
+            "requestId": "c1",
+            **({"kind": "group"} if kind == "group" else {}),
+        },
+        headers=chats.as_user(chats.alice),
+    )
+    assert created.status_code == 200, created.text
+    async with chats.factory() as session:
+        room = await session.get(Room, created.json()["chat"]["roomId"])
+    assert room is not None
+    assert auto_route_on_in(room.metadata_) is on

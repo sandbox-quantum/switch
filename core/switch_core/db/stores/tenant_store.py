@@ -64,10 +64,12 @@ class TenantStore:
             raise
         return tenant
 
-    async def auto_route_new_rooms(self, session: AsyncSession) -> bool:
-        """Whether rooms made in the session's workspace start with auto-route
-        on (`Tenant.auto_route_new_rooms`)."""
-        tenant_id = require_tenant_id()
+    async def auto_route_new_rooms(
+        self, session: AsyncSession, tenant_id: str | None = None
+    ) -> bool:
+        """Whether rooms made in the workspace, the session's unless named,
+        start with auto-route on (`Tenant.auto_route_new_rooms`)."""
+        tenant_id = tenant_id or require_tenant_id()
         on = await session.scalar(
             select(Tenant.auto_route_new_rooms).where(Tenant.id == tenant_id)
         )

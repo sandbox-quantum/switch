@@ -43,6 +43,7 @@ from switch_core.bridges.collaboration.models import (
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.db.models import (
+    Agent,
     ExternalUser,
     ExternalUserClaim,
     Room,
@@ -58,7 +59,14 @@ from switch_core.db.stores.room_store import (
     NAME_SOURCE_KEY,
     RoomStore,
 )
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.decision.room import (
+    AutoRouteRefused,
+    set_auto_route_fallback,
+    set_auto_route_on,
+)
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -84,6 +92,8 @@ SYSTEM_CLIENT_TYPES = ("observe", "admin")
 # Rooms whose memberships `reconcile_room_clients` reads in one query, kept
 # well under Postgres' limit on bound parameters.
 RECONCILE_BATCH_SIZE = 1000
+
+_TENANTS = TenantStore()
 
 
 class LinkedRoomSpec(BaseModel):
@@ -175,6 +185,13 @@ class RoomCreateConfig(BaseModel):
     # The linked channel's name when the room is named after it (a bridge's
     # own room), so it follows the channel's renames (`NAME_SOURCE_KEY`).
     named_after_channel: str | None = None
+    # Auto-route for the new room: None leaves it to the workspace's default
+    # for new rooms (never for a direct room), True or False says so outright.
+    auto_route: bool | None = None
+    # The room's triage agent for auto-route, by name, or by id when the room's
+    # agents are given by id. It must be one of the room's agents, and is set
+    # even when auto-route ends up off, ready for when someone turns it on.
+    triage_agent: str | None = None
 
 
 class RoomCreateResult(BaseModel):
@@ -188,6 +205,9 @@ class RoomCreateResult(BaseModel):
 
     room: Room
     failed_attachments: list[dict[str, Any]] = []
+    # Why an explicit `auto_route=True` could not be applied: the room was
+    # made with auto-route off, since no decision service can act here.
+    auto_route_refused: str | None = None
 
 
 ROOM_NAME_MAX = 200
@@ -226,6 +246,8 @@ class RoomService:
     _telemetry: TelemetryService | None = None
     _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
     _room_listeners: tuple[Callable[[str, str, list[str]], None], ...] = ()
+    # Auto-route can act nowhere, for an instance built without `__init__`.
+    _decisions: DecisionAvailability = DecisionAvailability.off()
 
     def __init__(
         self,
@@ -239,6 +261,7 @@ class RoomService:
         resource_service: ResourceService,
         session_factory: async_sessionmaker[AsyncSession],
         room_cache: RoomDeliveryCache,
+        decisions: DecisionAvailability,
         telemetry: TelemetryService | None = None,
     ) -> None:
         self._provisioning = provisioning
@@ -254,6 +277,8 @@ class RoomService:
         self._telemetry = telemetry
         # The shared delivery read; told when a room goes.
         self._room_cache = room_cache
+        # Whether auto-route can act, asked before a new room starts with it.
+        self._decisions = decisions
 
     def on_room_changed(self, listener: Callable[[str, str, list[str]], None]) -> None:
         """Call `listener(tenant_id, room_id, [])` once a room is created,
@@ -319,6 +344,64 @@ class RoomService:
         if config.agent_ids is not None:
             return set(listeners)
         return set(await self._resolve_names_to_ids(listeners))
+
+    async def _resolve_triage_agent(
+        self, config: RoomCreateConfig, agent_ids: list[str]
+    ) -> str | None:
+        """The id of the room's triage agent, refused before anything is made
+        when it is not one of the room's agents. Named the way the room's
+        agents are: by id when they are given by id, else by name."""
+        triage = config.triage_agent
+        if triage is None:
+            return None
+        if triage in agent_ids:
+            return triage
+        if config.agent_ids is None:
+            async with self._session_factory() as session:
+                agents = await self._agent_store.get_by_names(session, [triage])
+            if agents and agents[0].id in agent_ids:
+                return agents[0].id
+        raise ValueError(
+            f"The triage agent {triage} is not one of this room's agents; "
+            "add it to the room's agents, or name one of them."
+        )
+
+    async def _apply_auto_route(
+        self,
+        session: AsyncSession,
+        room: Room,
+        explicit: bool | None,
+        triage_agent_id: str | None,
+    ) -> str | None:
+        """Start the new room with auto-route on or off, in the session that
+        creates it: an explicit value, else off for a direct room, else the
+        workspace's default for new rooms. Where no decision service can act
+        the room stays off; for an explicit True the reason is returned, for
+        the caller to pass on, rather than failing the room."""
+        if triage_agent_id is not None:
+            triage = await session.get(Agent, triage_agent_id)
+            await set_auto_route_fallback(session, self._room_store, room, triage)
+        wanted = explicit
+        if wanted is None:
+            wanted = room.channel_type != "direct" and await self._new_rooms_default(
+                session, room.tenant_id
+            )
+        if not wanted:
+            return None
+        try:
+            await set_auto_route_on(
+                session, self._decisions, self._room_store, room, True
+            )
+        except AutoRouteRefused as refused:
+            return str(refused) if explicit else None
+        return None
+
+    async def _new_rooms_default(self, session: AsyncSession, tenant_id: str) -> bool:
+        """The workspace's "auto-route new rooms", off where it has no row."""
+        try:
+            return await _TENANTS.auto_route_new_rooms(session, tenant_id)
+        except LookupError:
+            return False
 
     async def _expand_with_children(
         self, agent_ids: list[str], parent_ids: list[str]
@@ -868,6 +951,7 @@ class RoomService:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
         join_event_listeners = await self._resolve_join_event_listeners(config)
+        triage_agent_id = await self._resolve_triage_agent(config, agent_ids)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
         bridge_id = await self._resolve_bridge_id(config)
@@ -1059,6 +1143,9 @@ class RoomService:
                     )
                 if config.aliases:
                     await self._seed_aliases(session, room.id, agent_ids, config)
+                auto_route_refused = await self._apply_auto_route(
+                    session, room, config.auto_route, triage_agent_id
+                )
                 try:
                     await session.commit()
                 except IntegrityError as error:
@@ -1203,7 +1290,11 @@ class RoomService:
             )
 
         self.room_changed(room.tenant_id, room.id)
-        return RoomCreateResult(room=room, failed_attachments=failed_attachments)
+        return RoomCreateResult(
+            room=room,
+            failed_attachments=failed_attachments,
+            auto_route_refused=auto_route_refused,
+        )
 
     async def _seed_aliases(
         self,

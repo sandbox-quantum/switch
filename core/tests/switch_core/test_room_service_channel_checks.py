@@ -39,6 +39,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.room_service import RoomCreateConfig, RoomService
 
 DIRECTORY_ID = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
@@ -135,6 +136,7 @@ def _service(
         resource_service=never,
         session_factory=session_factory,
         room_cache=never,
+        decisions=DecisionAvailability.off(),
     )
 
 
