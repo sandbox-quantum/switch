@@ -177,7 +177,7 @@ class RoutineAccessFilter(logging.Filter):
         if not (isinstance(record.args, tuple) and len(record.args) == 5):
             return True
         _client, _method, target, _version, status = record.args
-        if not isinstance(target, str):
+        if not isinstance(target, str) or not isinstance(status, int | str):
             return True
         try:
             code = int(status)
