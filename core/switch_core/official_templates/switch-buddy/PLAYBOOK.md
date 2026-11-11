@@ -23,23 +23,23 @@ other chat app's private channel: `create_room` with the chat's `bridge_id`,
 chat or channel and send `!invite-agent @<agent-name>` and
 `!invite-agent @<your-name>` there.
 
-## The cloud machine
+## The cloud device
 
-On Switch Cloud they usually have two machines: their own computer and their
-cloud machine (`kind` "ec2" in `list_machines`).
+On Switch Cloud they usually have two devices: their own computer and their
+cloud device (`kind` "ec2" in `list_machines`).
 
-- **The cloud machine shows `offline`:** it sleeps when unused. You can still create the
+- **The cloud device shows `offline`:** it sleeps when unused. You can still create the
   agent there: that wakes it, and the agent starts once it is up, in a few minutes. Say so
   in the proposal, and give it up to ten minutes before saying it did not come up. If creating it is refused as offline,
-  they stopped the machine themselves: ask them to press **Start** on its card under
+  they stopped the device themselves: ask them to press **Start device** on its card under
   [your agents](switchdash://open/agents), then try again.
-- **No cloud machine is listed:** a workspace that never used one has none yet. Ask them to
+- **No cloud device is listed:** a workspace that never used one has none yet. Ask them to
   open [Add a new agent](switchdash://open/agents/new) and choose **Switch cloud** under
   where it runs, which sets it up. Then ask again, and create the agent once `list_machines`
   shows it.
-- **Only their computer is listed and they're on Switch Cloud:** say the cloud machine is
+- **Only their computer is listed and they're on Switch Cloud:** say the cloud device is
   an option before proposing their computer.
-- On a server Switch Console runs, or one with no cloud machines, their computers are the
+- On a server Switch Console runs, or one with no cloud devices, their computers are the
   only choice: don't mention the cloud.
 
 ## Finding their folder
@@ -148,14 +148,14 @@ Confluence (Atlassian), GitHub, Google (Gmail, Drive, Calendar) and the like.
   it once it's "active". Don't create the agent expecting it to find its own way
   in, and don't let it guess.
 - **Needs their choice** (such as which GitHub repositories): link the agent's
-  Connections, `switchdash://open/agent/<agent-id>?tab=connections`, once it
+  Connectors, `switchdash://open/agent/<agent-id>?tab=connections`, once it
   exists.
-- **Not offered as a connector:** the machine's own access may cover it; see
-  "Access the machine already has".
+- **Not offered as a connector:** the device's own access may cover it; see
+  "Access the device already has".
 
-## Access the machine already has
+## Access the device already has
 
-An agent also gets what is set up on its machine, with no Switch connector:
+An agent also gets what is set up on its device, with no Switch connector:
 
 - **The AI provider's own tools.** If Claude Code on their computer is connected
   to Gmail (a claude.ai connector, or an MCP server added with `claude mcp add`),
@@ -170,13 +170,13 @@ reach something nobody granted it in Switch.
 
 Be clear about what that means:
 
-- **Every agent on that machine gets it** (for a provider's tools, every agent
+- **Every agent on that device gets it** (for a provider's tools, every agent
   on that provider). It is not granted per agent, and Switch cannot limit or
   revoke it; they change it on the computer or in the provider.
 - **It is their own account.** The agent acts as them there.
-- **Only on that machine.** An agent on a cloud machine or another computer
+- **Only on that device.** An agent on a cloud device or another computer
   does not get it.
-- It does not show on the agent's Connections tab.
+- It does not show on the agent's Connectors tab.
 
 ## Connectors on a server Switch Console runs
 
@@ -186,14 +186,14 @@ the vendor app: on the web gateway's Connectors page, or, for a Switch running
 without Docker, "Set up" on its card in
 [Connector apps](switchdash://open/admin?tab=apps). GitHub does not: GitHub Apps
 require an https address. For GitHub, the computer's own access (see "Access the
-machine already has") is the way.
+device already has") is the way.
 
 ## Which server they're on
 
 It changes the advice:
 
 - **Switch Cloud:** messaging apps usually have the official app, and their
-  agents can run on a cloud machine or their computer.
+  agents can run on a cloud device or their computer.
 - **A server Switch Console runs:** it comes with a built-in chat app. Their
   agents run on their computer, and Console must be open for them to answer.
   Usually it runs on their own computer, which nobody else can reach, so don't

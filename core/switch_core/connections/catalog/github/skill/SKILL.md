@@ -24,7 +24,7 @@ nothing to set up or renew.
 - If `git` or `gh` says GitHub refused its credentials, Switch replaces them:
   run the command once more.
 - If `git` or `gh` says Switch gave no token (the repository is not in the
-  grant, or Switch could not give one), it tried this machine's own GitHub
+  grant, or Switch could not give one), it tried this device's own GitHub
   sign-in instead, if there is one. If the command then succeeded, tell the
   user it acted as your owner's own account, not the Switch GitHub App, and
   outside the grant. If it failed, there was nothing to fall back to: tell the

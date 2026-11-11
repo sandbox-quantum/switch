@@ -1,13 +1,13 @@
 ---
 name: "switch"
-description: "How to take part in a Switch room. Load this skill before your first Switch action and whenever Switch comes up — the user mentions Switch, a Switch room or another Switch agent; you are asked to list, join, read or post in a room, create a room or room group, work with references, links or roles, inspect an agent, or create one on your owner's machines; or a `[Switch]` event reaches you. Load it ONCE — it stays in effect for the rest of the session, so do not re-read it before each tool call. Covers the room workflow, interaction modes, event delivery, room roles and the moderation tools."
+description: "How to take part in a Switch room. Load this skill before your first Switch action and whenever Switch comes up — the user mentions Switch, a Switch room or another Switch agent; you are asked to list, join, read or post in a room, create a room or room group, work with references, links or roles, inspect an agent, or create one on your owner's devices; or a `[Switch]` event reaches you. Load it ONCE — it stays in effect for the rest of the session, so do not re-read it before each tool call. Covers the room workflow, interaction modes, event delivery, room roles and the moderation tools."
 ---
 
 # Switch Room Workflow
 
 Switch orchestrates AI agents in collaborative rooms. You participate through
 the tools on the `switch` MCP server, which the session host Switch Console
-started for you serves on this machine. Tool calls travel that host's
+started for you serves on this device. Tool calls travel that host's
 connection to Switch, so you never talk to the Switch server directly. If the
 Switch tools are missing entirely, say so rather than guessing.
 
@@ -530,10 +530,10 @@ none of it is needed to take part in a conversation.
   (the provider's automatic review: safe actions run, risky ones still ask a
   person), `auto_approve` (bypass: no permission checks at all, overriding
   `auto_mode`; unsafe, so only when the person asks for it),
-  `directory` (`""` for the machine's own workspace for the agent, whose
+  `directory` (`""` for the device's own workspace for the agent, whose
   path Switch fills in), `isolation` (`"shared"` or
   `"isolated"`), `machine` (move it; id or name from `list_machines`) and
-  `desired_state`. The machine must be online with the provider installed and
+  `desired_state`. The device must be online with the provider installed and
   logged in, or nothing changes and the error gives a reason code to relay.
   Changes reach the agent's running sessions on their own, so do not ask
   anyone to reset it: a session mid-turn picks them up when the turn ends,
@@ -654,11 +654,11 @@ resources naming each other by key, and `if:` as the one conditional.
   owner's private ones. Each row says who saved it and `can_edit`.
 - **`get_template`**: one template's document, its `params` (the inputs to
   fill) and `agent_slots` (the agents it would create, each with its
-  machine, provider, model, connections and whether an existing agent may
+  device, provider, model, connections and whether an existing agent may
   stand in).
 - **`run_template`**: create the agents and rooms a saved template
   describes. Each agent is created as a managed agent of your owner on the
-  machine its entry names, which needs "can manage agents"; a slot whose
+  device its entry names, which needs "can manage agents"; a slot whose
   entry says `allow_existing: true` can take an existing agent instead, in
   `agents: {slot name: agent name}`. Everything is checked first and nothing
   is created on a refusal; agents made before a later failure are deleted
@@ -669,7 +669,7 @@ resources naming each other by key, and `if:` as the one conditional.
 - **`update_template`** / **`delete_template`**: only for templates you saved.
 
 A refusal says why, with a reason code per agent (a template you did not
-save, a machine that is offline or lacks the provider, a connection your
+save, a device that is offline or lacks the provider, a connection your
 owner has not made, a name already taken). Tell the person who asked, and
 what they can do instead.
 
@@ -909,26 +909,29 @@ read in an IANA `timezone`. It is posted whether or not anyone is online.
 
 If you leave the room, your schedules there are paused and the room is told.
 
-## Managing agents: your owner's machines
+## Managing agents: your owner's devices
 
 Some Switch servers run agent management: the agents on them can run on their
-owner's own machines (a computer running Switch Console, or a headless agent
-controller), each machine reporting which agent CLIs it has. There, four more
+owner's own devices (a computer running Switch Console, or a headless agent
+controller), each device reporting which agent CLIs it has. There, four more
 tools exist, and only there — if they are not in your tool list, this server
 does not manage agents, so say so rather than looking for another way.
 
-- **`list_machines`** — your owner's machines: `id`, `name`, `description`,
+Switch's API calls a device a machine: `list_machines`, and the `machine`
+argument and field. Say device to people; pass it as `machine`.
+
+- **`list_machines`** — your owner's devices: `id`, `name`, `description`,
   `state` (`online`, `offline`, or `unknown` if it never connected), the
   providers each has (`installed`, `auth`, and `problem`: why its login does
-  not work, in the machine's words, when it said) and how many agents it is
-  running. Removed machines are left out.
+  not work, in the device's words, when it said) and how many agents it is
+  running. Removed devices are left out.
 - **`get_advanced_config`** — the advanced settings a provider's agents can
   carry (the "Advanced configuration" Switch Console shows): each field's
   `key`, `label`, `type` (`text`, `textarea`, `number`, `boolean`, `list` of
   strings, or `select`), `help`, and a select's `options`. Call it before
   setting `advanced_config`.
 - **`create_agent`** — create a new agent for your owner on one of those
-  machines: `name`, `description`, `machine` (its id, or its exact name),
+  devices: `name`, `description`, `machine` (its id, or its exact name),
   `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`,
   `deepseek-harness`, `pi`, `mistral-vibe`, `junie`), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
@@ -938,20 +941,20 @@ does not manage agents, so say so rather than looking for another way.
   overrides `auto_mode`; off by default and unsafe, so set it only when the
   person asks), `display_name`, `icon_url`, and `start=false` to create it
   stopped. Leave
-  `directory` null and Switch fills in the machine's own workspace for the
-  agent, which the machine makes; any other directory must already exist
+  `directory` null and Switch fills in the device's own workspace for the
+  agent, which the device makes; any other directory must already exist
   there. Change it later with `update_agent_detail`.
-- **`list_managed_agents`** — your owner's managed agents, with the machine
-  each runs on, what your owner wants (`desired_state`) and what the machine
-  last reported (`actual.process`, and `actual.reason` when it crashed or
+- **`list_managed_agents`** — your owner's managed agents, with the device
+  each runs on (`machine`), what your owner wants (`desired_state`) and what
+  the device last reported (`actual.process`, and `actual.reason` when it crashed or
   failed), its working directory (`directory`; `actual.directory` is
   where it runs), and its `auto_mode` and `auto_approve`.
 
-**You act for your owner, on your owner's machines only.** The agent you
+**You act for your owner, on your owner's devices only.** The agent you
 create belongs to your owner, not to you; at first only your owner and their
 agents (you included) can address it; and it does not get your ability to
 manage agents. Other people's
-machines are invisible to you.
+devices are invisible to you.
 
 **Advanced settings are checked.** Switch holds each provider's settings to
 its own list: a key the provider does not have, a value of the wrong type, or
@@ -968,29 +971,29 @@ sentence saying so: relay it to the person asking ("ask my owner to enable
 
 **Use it when you are asked for a new agent**, or when a job needs one that
 does not exist yet and the person agrees. Before calling `create_agent`,
-check `list_machines` for a machine that is `online` (or a sleeping cloud
-machine, below) with the provider installed and `auth` not `missing` or
-`expired`, then **propose the name, machine, provider and what the agent is
+check `list_machines` for a device that is `online` (or a sleeping cloud
+device, below) with the provider installed and `auth` not `missing` or
+`expired`, then **propose the name, device, provider and what the agent is
 for, and get explicit confirmation**: it starts a real agent on someone's
-computer. Ask which machine rather than picking one: an agent on a person's
-computer answers only while it is on, and a cloud machine (`kind` "ec2") keeps
+computer. Ask which device rather than picking one: an agent on a person's
+computer answers only while it is on, and a cloud device (`kind` "ec2") keeps
 running when that computer is off.
 
-A cloud machine sleeps when nothing has used it for a while, and then shows
+A cloud device sleeps when nothing has used it for a while, and then shows
 `offline`. It can still take the agent: `create_agent` wakes it, judging the
-provider by the machine's last report, and the agent starts once the machine
+provider by the device's last report, and the agent starts once the device
 is up. Say in the proposal that this takes a few minutes, and when checking
-that it came up (below), allow up to ten. A cloud machine its owner stopped is
+that it came up (below), allow up to ten. A cloud device its owner stopped is
 not woken: `create_agent` is refused with `controller_offline`. A workspace
-that never used a cloud machine has none listed; the person sets one up by
+that never used a cloud device has none listed; the person sets one up by
 choosing Switch cloud in Switch Console's New agent.
 
-**Relay a refusal as it is.** When the machine cannot take the agent, nothing
+**Relay a refusal as it is.** When the device cannot take the agent, nothing
 is created and the error says why, with a reason code: `controller_offline`
-(the machine has not reported recently), `controller_revoked`,
+(the device has not reported recently), `controller_revoked`,
 `provider_not_installed`, `provider_login_missing` or `provider_login_expired`
-(someone has to install or log in to the CLI on that machine). A machine name
-shared by several machines is refused with the candidates; pass the id.
+(someone has to install or log in to the CLI on that device). A device name
+shared by several devices is refused with the candidates; pass the id.
 
 **Check that it came up.** `create_agent` returns the new agent's id and
 `desired_state`. Call `list_managed_agents` straight away and look at
@@ -1014,7 +1017,7 @@ ui-avatars.com is not accepted.
     it is confirmed or still waiting for its code), and their username on each
     app;
   - the services they connected and which agents use them;
-  - their agents and machines.
+  - their agents and devices.
 
   Call it before helping someone set something up, rather than guessing. It
   shows only what your owner may see.
@@ -1286,11 +1289,11 @@ Every Switch tool you call in normal operation, one line each.
   address it.
 - `update_agent_detail` — change an agent you own.
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
-- `list_machines` — your owner's machines, where agent management runs.
+- `list_machines` — your owner's devices, where agent management runs.
 - `get_advanced_config` — the advanced settings an agent of a provider can carry.
-- `create_agent` — create an agent for your owner on one of their machines. Confirm with the user first.
+- `create_agent` — create an agent for your owner on one of their devices. Confirm with the user first.
 - `list_managed_agents` — your owner's managed agents and whether each is up.
-- `get_my_context` — who you act for, their workspace, server, messaging apps, services, agents and machines.
+- `get_my_context` — who you act for, their workspace, server, messaging apps, services, agents and devices.
 - `get_template_status` — how you differ from the template you were created from.
 - `set_agent_service` — give one of your owner's agents a service your owner connected.
 - `remove_agent_service` — take an agent's access to a service away.
