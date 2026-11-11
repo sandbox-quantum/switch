@@ -230,6 +230,14 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity.account_id == "id"
 
 
+def test_linear_stays_disabled_until_identity_can_pass_the_shared_guard():
+    definition = CATALOG["linear"].definition
+    assert definition.enabled is False
+    assert definition.auth.identity is None
+    assert definition.adapter is None
+    assert not CATALOG["linear"].skill_files
+
+
 RESTRICTED_DRIVE = {
     "drive",
     "drive.readonly",
