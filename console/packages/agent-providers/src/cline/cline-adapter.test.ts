@@ -337,7 +337,7 @@ it('counts only the sign-ins Cline uses over ACP', () => {
   const path = '/x/providers.json';
   expect(parseClineSignIn(undefined, path)).toMatchObject({
     status: 'unauthenticated',
-    message: 'Sign in on the execution machine with cline auth.',
+    message: 'Sign in on the device the agent runs on with cline auth.',
   });
   for (const [id, settings] of [
     ['cline', { auth: { accessToken: 'workos:synthetic' } }],

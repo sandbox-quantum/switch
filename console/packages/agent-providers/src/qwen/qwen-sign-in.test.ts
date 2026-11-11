@@ -41,7 +41,7 @@ describe('parseQwenSessionNew', () => {
       parseQwenSessionNew(new JsonRpcError(SIGNED_OUT.code, SIGNED_OUT.message, SIGNED_OUT.data))
     ).toEqual({
       status: 'unauthenticated',
-      message: 'Sign in on the execution machine with qwen.',
+      message: 'Sign in on the device the agent runs on with qwen.',
       models: [],
     });
   });
@@ -49,7 +49,7 @@ describe('parseQwenSessionNew', () => {
     expect(parseQwenSessionNew(new JsonRpcError(EXPIRED.code, EXPIRED.message))).toEqual({
       status: 'unauthenticated',
       message:
-        'Sign in on the execution machine with qwen. Qwen Code said: Qwen OAuth credentials expired. Please use /auth to re-authenticate with qwen-oauth.',
+        'Sign in on the device the agent runs on with qwen. Qwen Code said: Qwen OAuth credentials expired. Please use /auth to re-authenticate with qwen-oauth.',
       models: [],
     });
   });
