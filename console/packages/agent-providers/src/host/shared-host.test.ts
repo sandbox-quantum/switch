@@ -353,6 +353,18 @@ async function start(
       )
     ).toBe(true)
   );
+  // The host works out which attachments the session takes once its models are listed,
+  // after it reports ready; a room message sent before then is planned against the stub's.
+  if (opts.rooms)
+    await until(async () =>
+      expect(
+        (await journal()).some(
+          (event) =>
+            event.body.type === 'session.upsert' &&
+            event.body.session.capabilities.attachmentMimeTypes.includes('image/png')
+        )
+      ).toBe(true)
+    );
   // A request sent before the host listens for them would go unheard.
   await until(() => expect(parent.sent.some((m) => m.kind === 'ready')).toBe(true));
   return {

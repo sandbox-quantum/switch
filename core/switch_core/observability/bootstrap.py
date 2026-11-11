@@ -95,6 +95,9 @@ class RuntimeProbes:
     bridges_configured: Callable[[], int]
     # (platform, display name) per bridge whose task has died.
     bridges_crashed: Callable[[], Sequence[tuple[str, str]]]
+    # (platform, display name) per bridge this process has started, running
+    # or not.
+    bridges_started: Callable[[], Sequence[tuple[str, str]]]
     consumers_running: Callable[[], int]
     # Agents per (transport, client); see
     # `AgentConnectionRegistry.live_agents_by_transport`.
@@ -141,8 +144,9 @@ def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading
     # Every (transport, client) pair reported so far: one that empties out is
     # reported as 0, or the dashboard would keep showing its last count.
     seen: set[tuple[str, str]] = {("websocket", "unknown")}
-    # Every bridge reported down so far: once it runs again it reads 0, so its
-    # alert recovers instead of going quiet.
+    # Every bridge reported down so far, and every bridge this process runs:
+    # each reads 0 while it runs, so its alert recovers instead of going
+    # quiet, even when the process that saw the crash is gone.
     crashed_seen: set[tuple[str, str]] = set()
 
     def readings() -> Iterator[GaugeReading]:
@@ -163,6 +167,7 @@ def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading
             )
         crashed = set(probes.bridges_crashed())
         crashed_seen.update(crashed)
+        crashed_seen.update(probes.bridges_started())
         for platform, name in sorted(crashed_seen):
             yield GaugeReading(
                 BRIDGES_CRASHED,

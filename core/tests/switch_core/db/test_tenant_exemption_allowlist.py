@@ -61,6 +61,10 @@ _ALLOWED_MODULES = {
     # old activity lines in every tenant: enumerate, then bind each tenant and
     # work under its own policy, the same shape as the runtime-state sweep.
     "switch_core.session_activity.maintenance",
+    # Room schedules fire from every tenant: enumerate, then bind each tenant
+    # and claim its due schedules under its own policy, the same shape as
+    # session-activity upkeep above.
+    "switch_core.room_schedules",
     # Service-token upkeep revokes tokens whose grant or owner is gone and
     # prunes issuance records past retention, in every tenant: enumerate,
     # then bind each tenant and work under its own policy, the same shape as
