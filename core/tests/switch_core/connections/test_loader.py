@@ -33,6 +33,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "supabase",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -40,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "supabase",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["supabase"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -176,6 +179,31 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_supabase_entry_is_read_only_through_an_operators_client():
+    definition = CATALOG["supabase"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Supabase offers only confidential OAuth clients, so the operator
+    # registers one and Switch does not dynamically register a public client.
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "SUPABASE",
+    )
+    assert oauth.revocation_discovered is False
+    assert oauth.remove_access is not None
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    # Pinned read-only: write tools are deliberately not reachable.
+    assert server.url == "https://mcp.supabase.com/mcp?read_only=true"
+    assert definition.access is not None
+    assert definition.access.write is None
+    assert "database:read" in definition.access.read.scopes
+    assert not any(":write" in s for s in definition.access.read.scopes)
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.supabase.com/v1/profile"
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
