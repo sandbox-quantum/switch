@@ -800,6 +800,9 @@ Built from sign-ins against sentry.io with a test organization:
   on Sentry's side, and Sentry remembers it for the next sign-in. A read level
   cannot be asked for by scope, so every connection is granted the write
   level, and a person who wants a read-only agent allows Inspect alone.
+  `alerts:write` is not asked for, but `project:write` still lets tools
+  create, change and delete alert rules. No admin scope is asked for, so
+  Sentry refuses to delete projects and teams.
 - Tools pass through unchanged.
 - Sentry.io only: a self-hosted Sentry is not part of this entry.
 

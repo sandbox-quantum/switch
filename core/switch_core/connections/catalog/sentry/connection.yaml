@@ -48,13 +48,24 @@ mcp:
 access:
   # One level, read and write. Sentry grants these four scopes to every
   # sign-in, whatever the person picks on its consent screen, so its scopes
-  # cannot make a connection read-only. The loader needs a read level, so it
-  # lists the same scopes: Switch asks for the write scopes, every connection
-  # is granted the write level, and Console labels it "Read and write". What
-  # the person picks on Sentry's consent screen limits the tools:
+  # cannot make a connection read-only. Switch asks for the write scopes,
+  # every connection is granted the write level, and Console labels it
+  # "Read and write". What the person picks on Sentry's consent screen
+  # limits the tools:
   # "Inspect Issues & Events" alone gives read-only tools, and Seer,
   # "Triage Issues" and "Manage Projects & Teams" add their own. Sentry
-  # remembers the choice for the next sign-in. Not asked for: alerts:write.
+  # remembers the choice for the next sign-in. project:write and team:write
+  # let tools change projects and teams, and event:write lets them triage
+  # issues. Not asked for: alerts:write or any admin scope. project:write
+  # still lets tools create, change and delete alert rules
+  # (ProjectAlertRulePermission in getsentry/sentry
+  # src/sentry/api/bases/project.py). Without an admin scope, Sentry refuses
+  # to delete projects and teams.
+  #
+  # `read` and `write` are the same on purpose. Every entry must have a read
+  # level (the loader requires it, for connectors whose scopes can be
+  # read-only). Sentry has no read-only scopes, so `read` repeats the write
+  # scopes and is never used: a Sentry connection is always "Read and write".
   read:
     scopes: [org:read, project:write, team:write, event:write]
   write:
