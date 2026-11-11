@@ -12,7 +12,9 @@ import type { FastScenario } from './scenario.ts';
  *    nothing is configured;
  * 3. choosing "none" turns auto-route off for the workspace, so a room can't
  *    turn it on and says why;
- * 4. resetting goes back to the server default.
+ * 4. the workspace's default for new rooms is kept while there is no
+ *    decision service, and a room made then starts with auto-route off;
+ * 5. resetting goes back to the server default.
  *
  * It changes the workspace's setting while it runs, so it stays off shared
  * environments.
@@ -26,6 +28,8 @@ export const decisionSettings: FastScenario = {
       'DELETE /gateway/decision-settings',
       'POST /gateway/decision-settings/test',
       'PUT /gateway/rooms/{room_id}/auto-route',
+      'GET /gateway/decision-settings/room-default',
+      'PUT /gateway/decision-settings/room-default',
     ],
     lane: 'fast',
     environments: ['ephemeral', 'local'],
@@ -72,6 +76,24 @@ export const decisionSettings: FastScenario = {
       expect(refused).toBeInstanceOf(SwitchHttpError);
       expect((refused as SwitchHttpError).status).toBe(409);
       log("auto-route can't be turned on in a workspace that chose none");
+
+      // ── the default for new rooms is kept, and new rooms start off ───────────
+      const defaultBefore = await switchClient.decisionRoomDefault();
+      expect(defaultBefore.auto_route_new_rooms).toBe(false);
+      try {
+        const kept = await switchClient.saveDecisionRoomDefault(true);
+        expect(kept.auto_route_new_rooms).toBe(true);
+        expect(kept.available).toBe(false);
+        expect((await switchClient.decisionRoomDefault()).auto_route_new_rooms).toBe(true);
+        const fresh = await fixtures.internalRoom('drfresh', [agent]);
+        const freshDetail = (await switchClient.getRoom(fresh.id)) as unknown as {
+          auto_route: { on: boolean };
+        };
+        expect(freshDetail.auto_route.on).toBe(false);
+        log('with no decision service the default is kept and a new room starts off');
+      } finally {
+        await switchClient.saveDecisionRoomDefault(false);
+      }
     } finally {
       // ── back to the server default ────────────────────────────────────────
       await switchClient.resetDecisionSettings();
