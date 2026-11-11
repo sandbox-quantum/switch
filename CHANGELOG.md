@@ -51,6 +51,9 @@ version of their own to them without also giving them a release of their own.
   needs its own Meta app, and Switch checks the token's app and permissions
   when you save it. Replies more than 24 hours after the person's last message
   are refused by WhatsApp; Switch doesn't send template messages.
+- **Agents can use their owner's Sentry, through the Sentry connection.** Core
+  signs in through Sentry's MCP server and reads the account from its `whoami`
+  tool. Agents have Sentry for up to an hour after each sign-in.
 - **switch-core counts controller reconnects.** `switch.controllers.connections`
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn
@@ -3040,6 +3043,8 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A service's note on agent access.** The connector page and the connect
+  step show it where a service sets one (Sentry).
 - **Pi as an agent CLI.** Agents can run on Pi (`pi --mode rpc`, 1.5.0), on
   any model provider Pi is signed in to, with the model chosen in Switch.
   Each session loads a Switch extension with `-e`, written to a directory of
