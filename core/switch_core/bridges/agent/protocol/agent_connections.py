@@ -1211,18 +1211,35 @@ class AgentConnectionRegistry:
         """Each of the agent's sessions that connected to a room, and the room."""
         return dict(self._session_rooms.get(agent_id, {}))
 
-    def live_placed_rooms(self, agent_id: str) -> set[str]:
-        """The rooms of the agent's sessions placed over a connection that is
-        still live. A placement outlives the connection it arrived on, so the
-        session has its room back when that connection reattaches, but
-        nothing is in the room in the meantime."""
+    def _live_placements(self, agent_id: str) -> dict[str, str]:
+        """The agent's sessions placed over a connection that is still live,
+        and their rooms. A placement outlives the connection it arrived on, so
+        the session has its room back when that connection reattaches or the
+        watcher restates its placements on a new one, but nothing is in the
+        room in the meantime."""
+        placed = self._session_rooms.get(agent_id)
+        if not placed:
+            return {}
         live = {conn.id for conn in self.for_agent(agent_id)}
         owners = self._placement_owners.get(agent_id, {})
         return {
-            room_id
-            for session_id, room_id in self._session_rooms.get(agent_id, {}).items()
+            session_id: room_id
+            for session_id, room_id in placed.items()
             if owners.get(session_id) in live
         }
+
+    def live_placed_rooms(self, agent_id: str) -> set[str]:
+        return set(self._live_placements(agent_id).values())
+
+    def live_session_in_room(self, agent_id: str, room_id: str) -> str | None:
+        return next(
+            (
+                session_id
+                for session_id, room in self._live_placements(agent_id).items()
+                if room == room_id
+            ),
+            None,
+        )
 
     def session_in_room(self, agent_id: str, room_id: str) -> str | None:
         return next(
