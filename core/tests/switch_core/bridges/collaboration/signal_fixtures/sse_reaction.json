@@ -1,0 +1,35 @@
+{
+  "sse_id": "285-18",
+  "event": "receive",
+  "data": {
+    "envelope": {
+      "source": "+15555550200",
+      "sourceNumber": "+15555550200",
+      "sourceUuid": "00000000-0000-4000-8000-000000000002",
+      "sourceName": "Alex",
+      "sourceDevice": 1,
+      "timestamp": 1076096,
+      "serverReceivedTimestamp": 1076234,
+      "serverDeliveredTimestamp": 1076267,
+      "dataMessage": {
+        "timestamp": 1076096,
+        "message": null,
+        "expiresInSeconds": 0,
+        "isExpirationUpdate": false,
+        "viewOnce": false,
+        "isEndSession": false,
+        "isProfileKeyUpdate": false,
+        "hasProfileKey": true,
+        "reaction": {
+          "emoji": "\ud83d\ude02",
+          "targetAuthor": "+15555550100",
+          "targetAuthorNumber": "+15555550100",
+          "targetAuthorUuid": "00000000-0000-4000-8000-000000000001",
+          "targetSentTimestamp": 990700,
+          "isRemove": false
+        }
+      }
+    },
+    "account": "+15555550100"
+  }
+}

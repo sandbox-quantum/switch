@@ -1,0 +1,21 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 31,
+    "method": "listAccounts",
+    "params": {
+      "account": "+15555550100"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "number": "+15555550100",
+        "aci": "00000000-0000-4000-8000-000000000001"
+      }
+    ],
+    "id": 31
+  },
+  "note": "a paramless method still accepts the account param, so the client can attach it uniformly"
+}

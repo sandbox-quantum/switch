@@ -1,0 +1,41 @@
+{
+  "sse_id": "285-14",
+  "event": "receive",
+  "data": {
+    "envelope": {
+      "source": "+15555550200",
+      "sourceNumber": "+15555550200",
+      "sourceUuid": "00000000-0000-4000-8000-000000000002",
+      "sourceName": "Alex",
+      "sourceDevice": 1,
+      "timestamp": 1035928,
+      "serverReceivedTimestamp": 1036076,
+      "serverDeliveredTimestamp": 1036101,
+      "dataMessage": {
+        "timestamp": 1035928,
+        "message": "probe quote in",
+        "expiresInSeconds": 0,
+        "isExpirationUpdate": false,
+        "viewOnce": false,
+        "isEndSession": false,
+        "isProfileKeyUpdate": false,
+        "hasProfileKey": true,
+        "quote": {
+          "id": 1021875,
+          "author": "+15555550200",
+          "authorNumber": "+15555550200",
+          "authorUuid": "00000000-0000-4000-8000-000000000002",
+          "text": "probe group in",
+          "attachments": []
+        },
+        "groupInfo": {
+          "groupId": "c3dpdGNoLWdyb3VwLTE=",
+          "groupName": "Switch test",
+          "revision": 0,
+          "type": "DELIVER"
+        }
+      }
+    },
+    "account": "+15555550100"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 26,
+    "method": "send",
+    "params": {
+      "account": "+15555550100",
+      "groupId": "QU5Fdy0wMDAwMDA0MDc=",
+      "message": "x"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -1,
+      "message": "Invalid group id: Failed to decode groupId (must be base64) \"QU5Fdy0wMDAwMDA0MDc=\": Invalid group id of size 14",
+      "data": null
+    },
+    "id": 26
+  }
+}

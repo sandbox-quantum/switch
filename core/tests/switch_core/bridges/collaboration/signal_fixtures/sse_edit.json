@@ -1,0 +1,30 @@
+{
+  "sse_id": "285-20",
+  "event": "receive",
+  "data": {
+    "envelope": {
+      "source": "+15555550200",
+      "sourceNumber": "+15555550200",
+      "sourceUuid": "00000000-0000-4000-8000-000000000002",
+      "sourceName": "Alex",
+      "sourceDevice": 1,
+      "timestamp": 1087315,
+      "serverReceivedTimestamp": 1087460,
+      "serverDeliveredTimestamp": 1087483,
+      "editMessage": {
+        "targetSentTimestamp": 1013746,
+        "dataMessage": {
+          "timestamp": 1087315,
+          "message": "probe dm in edit 1",
+          "expiresInSeconds": 0,
+          "isExpirationUpdate": false,
+          "viewOnce": false,
+          "isEndSession": false,
+          "isProfileKeyUpdate": false,
+          "hasProfileKey": false
+        }
+      }
+    },
+    "account": "+15555550100"
+  }
+}

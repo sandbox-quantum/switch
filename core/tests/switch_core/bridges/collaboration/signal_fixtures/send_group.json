@@ -1,0 +1,30 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "send",
+    "params": {
+      "account": "+15555550100",
+      "groupId": "c3dpdGNoLWdyb3VwLTE=",
+      "message": "probe group plain"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "results": [
+        {
+          "recipientAddress": {
+            "uuid": "00000000-0000-4000-8000-000000000002",
+            "number": "+15555550200",
+            "username": null
+          },
+          "groupId": "c3dpdGNoLWdyb3VwLTE=",
+          "type": "SUCCESS"
+        }
+      ],
+      "timestamp": 995363
+    },
+    "id": 9
+  }
+}

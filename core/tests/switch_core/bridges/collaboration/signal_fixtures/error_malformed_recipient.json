@@ -1,0 +1,23 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 24,
+    "method": "send",
+    "params": {
+      "account": "+15555550100",
+      "recipient": [
+        "notanumber"
+      ],
+      "message": "x"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -1,
+      "message": "Invalid phone number 'notanumber': No valid characters found.",
+      "data": null
+    },
+    "id": 24
+  }
+}

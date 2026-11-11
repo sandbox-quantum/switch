@@ -1,0 +1,20 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 20,
+    "method": "listGroups",
+    "params": {
+      "account": "+15555559999"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32602,
+      "message": "Specified account does not exist",
+      "data": null
+    },
+    "id": 20
+  },
+  "note": "JSON-RPC error -32602 'Specified account does not exist' \u2014 same code for send (id 22) and remoteDelete (id 23) probes."
+}

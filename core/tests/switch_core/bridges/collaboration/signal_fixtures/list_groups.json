@@ -1,0 +1,84 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "listGroups",
+    "params": {
+      "account": "+15555550100"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "id": "c3dpdGNoLWdyb3VwLTI=",
+        "name": "Switch",
+        "description": "",
+        "isMember": false,
+        "isBlocked": false,
+        "messageExpirationTime": 0,
+        "members": [
+          {
+            "number": "+15555550200",
+            "uuid": "00000000-0000-4000-8000-000000000002",
+            "isAdmin": true
+          }
+        ],
+        "pendingMembers": [
+          {
+            "number": "+15555550100",
+            "uuid": "00000000-0000-4000-8000-000000000001"
+          }
+        ],
+        "requestingMembers": [],
+        "admins": [
+          {
+            "number": "+15555550200",
+            "uuid": "00000000-0000-4000-8000-000000000002"
+          }
+        ],
+        "banned": [],
+        "permissionAddMember": "EVERY_MEMBER",
+        "permissionEditDetails": "EVERY_MEMBER",
+        "permissionSendMessage": "EVERY_MEMBER",
+        "groupInviteLink": null,
+        "isTerminated": false
+      },
+      {
+        "id": "c3dpdGNoLWdyb3VwLTE=",
+        "name": "Switch test",
+        "description": "",
+        "isMember": true,
+        "isBlocked": false,
+        "messageExpirationTime": 0,
+        "members": [
+          {
+            "number": "+15555550100",
+            "uuid": "00000000-0000-4000-8000-000000000001",
+            "isAdmin": true
+          },
+          {
+            "number": "+15555550200",
+            "uuid": "00000000-0000-4000-8000-000000000002",
+            "isAdmin": false
+          }
+        ],
+        "pendingMembers": [],
+        "requestingMembers": [],
+        "admins": [
+          {
+            "number": "+15555550100",
+            "uuid": "00000000-0000-4000-8000-000000000001"
+          }
+        ],
+        "banned": [],
+        "permissionAddMember": "EVERY_MEMBER",
+        "permissionEditDetails": "EVERY_MEMBER",
+        "permissionSendMessage": "EVERY_MEMBER",
+        "groupInviteLink": null,
+        "isTerminated": false
+      }
+    ],
+    "id": 3
+  }
+}

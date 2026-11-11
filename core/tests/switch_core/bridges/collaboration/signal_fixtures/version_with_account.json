@@ -1,0 +1,18 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 32,
+    "method": "version",
+    "params": {
+      "account": "+15555550100"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "version": "0.14.9"
+    },
+    "id": 32
+  },
+  "note": "same as list_accounts_with_account.json: the account param rides every call"
+}

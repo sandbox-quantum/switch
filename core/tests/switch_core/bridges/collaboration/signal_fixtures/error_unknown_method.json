@@ -1,0 +1,20 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 33,
+    "method": "noSuchMethod",
+    "params": {
+      "account": "+15555550100"
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32601,
+      "message": "Method not implemented",
+      "data": null
+    },
+    "id": 33
+  },
+  "note": "a method the daemon does not know is a client bug, in the same class as -32600"
+}

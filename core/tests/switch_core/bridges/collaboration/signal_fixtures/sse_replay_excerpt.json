@@ -1,0 +1,87 @@
+{
+  "note": "daemon replay of all kept events when Last-Event-ID is unknown (here '0'); the live stream replayed 21 events, ids strictly increasing. First three shown; the rest follow the same shape as sse_receipt.json.",
+  "events": [
+    {
+      "id": "285-1",
+      "event": "receive",
+      "data": {
+        "envelope": {
+          "source": "+15555550200",
+          "sourceNumber": "+15555550200",
+          "sourceUuid": "00000000-0000-4000-8000-000000000002",
+          "sourceName": "Alex",
+          "sourceDevice": 1,
+          "timestamp": 381341,
+          "serverReceivedTimestamp": 381460,
+          "serverDeliveredTimestamp": 381509,
+          "receiptMessage": {
+            "when": 381341,
+            "isDelivery": true,
+            "isRead": false,
+            "isViewed": false,
+            "timestamps": [
+              376752
+            ]
+          }
+        },
+        "account": "+15555550100"
+      }
+    },
+    {
+      "id": "285-2",
+      "event": "receive",
+      "data": {
+        "envelope": {
+          "source": "+15555550200",
+          "sourceNumber": "+15555550200",
+          "sourceUuid": "00000000-0000-4000-8000-000000000002",
+          "sourceName": "Alex",
+          "sourceDevice": 1,
+          "timestamp": 384599,
+          "serverReceivedTimestamp": 384732,
+          "serverDeliveredTimestamp": 384751,
+          "receiptMessage": {
+            "when": 384599,
+            "isDelivery": true,
+            "isRead": false,
+            "isViewed": false,
+            "timestamps": [
+              381327,
+              381550,
+              381077
+            ]
+          }
+        },
+        "account": "+15555550100"
+      }
+    },
+    {
+      "id": "285-3",
+      "event": "receive",
+      "data": {
+        "envelope": {
+          "source": "+15555550200",
+          "sourceNumber": "+15555550200",
+          "sourceUuid": "00000000-0000-4000-8000-000000000002",
+          "sourceName": "Alex",
+          "sourceDevice": 1,
+          "timestamp": 387906,
+          "serverReceivedTimestamp": 388036,
+          "serverDeliveredTimestamp": 388061,
+          "receiptMessage": {
+            "when": 387906,
+            "isDelivery": true,
+            "isRead": false,
+            "isViewed": false,
+            "timestamps": [
+              385057,
+              384347,
+              384825
+            ]
+          }
+        },
+        "account": "+15555550100"
+      }
+    }
+  ]
+}

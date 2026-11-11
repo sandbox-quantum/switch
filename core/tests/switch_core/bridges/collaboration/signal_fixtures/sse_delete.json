@@ -1,0 +1,31 @@
+{
+  "sse_id": "285-21",
+  "event": "receive",
+  "data": {
+    "envelope": {
+      "source": "+15555550200",
+      "sourceNumber": "+15555550200",
+      "sourceUuid": "00000000-0000-4000-8000-000000000002",
+      "sourceName": "Alex",
+      "sourceDevice": 1,
+      "timestamp": 1094023,
+      "serverReceivedTimestamp": 1094166,
+      "serverDeliveredTimestamp": 1094189,
+      "dataMessage": {
+        "timestamp": 1094023,
+        "message": null,
+        "expiresInSeconds": 0,
+        "isExpirationUpdate": false,
+        "viewOnce": false,
+        "isEndSession": false,
+        "isProfileKeyUpdate": false,
+        "hasProfileKey": true,
+        "remoteDelete": {
+          "targetTimestamp": 1053070,
+          "timestamp": 1053070
+        }
+      }
+    },
+    "account": "+15555550100"
+  }
+}
