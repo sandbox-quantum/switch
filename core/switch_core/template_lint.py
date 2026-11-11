@@ -278,7 +278,7 @@ def _check_agent_runtime(document: dict[str, Any], warnings: list[Finding]) -> N
             if not said and not applies_to_all(kinds):
                 what = {
                     "provider": f"which coding agent runs {label}",
-                    "location": f"which machine {label} runs on",
+                    "location": f"which device {label} runs on",
                     "directory": f"which directory {label} works in",
                 }[setting]
                 ways = " or ".join(f"'{kind}:'" for kind in kinds)

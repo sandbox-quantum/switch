@@ -524,7 +524,7 @@ class TestCreateAgent:
         assert by_id.json()["detail"] == missing.json()["detail"].replace(
             "nowhere", theirs.controller_id
         )
-        assert "no machine with the id or name" in by_name.json()["detail"]
+        assert "no device with the id or name" in by_name.json()["detail"]
         assert await _agent_row(harness, "builder") is None
 
     async def test_an_ambiguous_name_lists_the_candidates(
@@ -543,7 +543,7 @@ class TestCreateAgent:
 
         assert response.status_code == 400
         detail = response.json()["detail"]
-        assert "2 machines named 'laptop'" in detail
+        assert "2 devices named 'laptop'" in detail
         assert first.controller_id in detail
         assert second.controller_id in detail
         assert await _agent_row(harness, "builder") is None
@@ -577,17 +577,17 @@ class TestCreateAgent:
             (
                 [provider("claude", installed=False)],
                 "provider_not_installed",
-                "claude is not installed on machine 'laptop'",
+                "claude is not installed on device 'laptop'",
             ),
             (
                 [provider("claude", auth="missing")],
                 "provider_login_missing",
-                "claude is not logged in on machine 'laptop'",
+                "claude is not logged in on device 'laptop'",
             ),
             (
                 [provider("claude", auth="expired")],
                 "provider_login_expired",
-                "the claude login on machine 'laptop' has expired",
+                "the claude login on device 'laptop' has expired",
             ),
             (
                 [
@@ -598,7 +598,7 @@ class TestCreateAgent:
                     )
                 ],
                 "provider_login_missing",
-                "claude cannot be used on machine 'laptop'; your owner needs to fix "
+                "claude cannot be used on device 'laptop'; your owner needs to fix "
                 "this there: An administrator pins where it keeps logins.",
             ),
         ],
