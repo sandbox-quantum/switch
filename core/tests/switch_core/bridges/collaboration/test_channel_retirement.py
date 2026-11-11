@@ -36,6 +36,10 @@ from switch_core.bridges.collaboration.telegram.adapter import (
     TelegramAdapter,
     TelegramConnectionConfig,
 )
+from switch_core.bridges.collaboration.zulip.adapter import (
+    ZulipAdapter,
+    ZulipConnectionConfig,
+)
 
 ARCHIVED = RetireOutcome(outcome="archived")
 
@@ -47,6 +51,7 @@ def test_every_platform_declares_what_deleting_a_room_does() -> None:
         "discord": "deleted",
         "telegram": "left",
         "teams": "kept",
+        "zulip": "left",
     }
 
 
@@ -288,4 +293,80 @@ async def test_teams_leaves_the_channel_in_place() -> None:
 
     assert await adapter.retire_channel("19:abc@thread.tacv2") == RetireOutcome(
         outcome="kept"
+    )
+
+
+# ── Zulip ────────────────────────────────────────────────────────────────────
+
+
+class _ZulipRetireClient:
+    def __init__(
+        self, *, streams: list[dict[str, Any]], error: Exception | None = None
+    ) -> None:
+        self._streams = streams
+        self._error = error
+        self.unsubscribed: list[str] = []
+
+    async def get_streams(self) -> list[dict[str, Any]]:
+        return self._streams
+
+    async def stream_name_by_id(self, stream_id: int) -> str | None:
+        for stream in self._streams:
+            if stream["stream_id"] == stream_id:
+                return stream["name"]
+        return None
+
+    async def unsubscribe(self, stream_name: str) -> None:
+        if self._error is not None:
+            raise self._error
+        self.unsubscribed.append(stream_name)
+
+
+def _zulip(client: _ZulipRetireClient) -> ZulipAdapter:
+    adapter = ZulipAdapter(
+        config=ZulipConnectionConfig(
+            site="https://example.zulipchat.com",
+            bot_email="bot@example.com",
+            api_key="k",
+        )
+    )
+    adapter._client = client  # type: ignore[assignment]
+    return adapter
+
+
+async def test_zulip_unsubscribes_from_the_stream() -> None:
+    client = _ZulipRetireClient(streams=[{"stream_id": 7, "name": "general"}])
+
+    assert await _zulip(client).retire_channel("stream:7") == RetireOutcome(
+        outcome="left"
+    )
+    assert client.unsubscribed == ["general"]
+
+
+async def test_zulip_counts_a_stream_already_gone_as_left() -> None:
+    client = _ZulipRetireClient(streams=[])
+
+    assert await _zulip(client).retire_channel("stream:7") == RetireOutcome(
+        outcome="left"
+    )
+    assert client.unsubscribed == []
+
+
+async def test_zulip_reports_a_refusal() -> None:
+    client = _ZulipRetireClient(
+        streams=[{"stream_id": 7, "name": "general"}],
+        error=RuntimeError("not an administrator"),
+    )
+
+    outcome = await _zulip(client).retire_channel("stream:7")
+
+    assert outcome.outcome == "failed"
+    assert outcome.reason == "not an administrator"
+
+
+async def test_zulip_a_direct_message_channel_has_nothing_to_retire() -> None:
+    client = _ZulipRetireClient(streams=[])
+
+    assert await _zulip(client).retire_channel("dm:2,3") == RetireOutcome(
+        outcome="left"
     )
