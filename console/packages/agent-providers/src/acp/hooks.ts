@@ -10,6 +10,7 @@ import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 import type {
   AcpInitializeResult,
+  AcpPermissionOption,
   AcpPermissionRequest,
   AcpPromptCapabilities,
   AcpSessionModes,
@@ -155,8 +156,23 @@ export interface AcpProviderHooks {
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
-  /** The MCP server a tool call belongs to, when the agent says so. */
-  mcpServerOf?(toolCall: AcpToolCall): string | undefined;
+  /**
+   * The MCP server a tool call belongs to. Return null for an explicitly
+   * malformed identity and undefined when none was supplied.
+   */
+  mcpServerOf?(toolCall: AcpToolCall): string | null | undefined;
+  /**
+   * A server identity carried by the permission request itself. Return null
+   * for an explicit but invalid identity to prevent fallback to cached data;
+   * undefined means no request-level identity was supplied.
+   */
+  permissionMcpServerOf?(request: AcpPermissionRequest): string | null | undefined;
+  /** Exclude vendor choices whose effects exceed the session UI's promise. */
+  allowPermissionOption?(option: AcpPermissionOption): boolean;
+  /** Show bounded file-path metadata on approvals without forwarding arbitrary input. */
+  showApprovalFilePaths?: boolean;
+  /** Whether vendor metadata rules out treating a call as a file approval. */
+  nonFileApprovalMetadata?(meta: unknown): boolean;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**

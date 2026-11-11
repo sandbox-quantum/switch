@@ -2,6 +2,7 @@ import type { ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent, ProviderRuntimeEventType } from '../events';
 
 type EventOf<T extends ProviderRuntimeEventType> = Extract<ProviderRuntimeEvent, { type: T }>;
+type Waiter = { notify: (event: ProviderRuntimeEvent) => void; cancel: () => void };
 
 /**
  * Collects an adapter's events and lets a test wait for the next one matching
@@ -10,19 +11,22 @@ type EventOf<T extends ProviderRuntimeEventType> = Extract<ProviderRuntimeEvent,
  */
 export class EventRecorder {
   readonly events: ProviderRuntimeEvent[] = [];
-  private readonly waiters = new Set<(event: ProviderRuntimeEvent) => void>();
+  private readonly waiters = new Set<Waiter>();
   private readonly unsubscribe: () => void;
+  private disposed = false;
 
   constructor(adapter: ProviderAdapter) {
     this.unsubscribe = adapter.subscribe((event) => {
       this.events.push(event);
-      for (const waiter of [...this.waiters]) waiter(event);
+      for (const waiter of [...this.waiters]) waiter.notify(event);
     });
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.unsubscribe();
-    this.waiters.clear();
+    for (const waiter of [...this.waiters]) waiter.cancel();
   }
 
   ofType<T extends ProviderRuntimeEventType>(type: T): EventOf<T>[] {
@@ -35,6 +39,7 @@ export class EventRecorder {
     predicate: (event: EventOf<T>) => boolean = () => true,
     timeoutMs = 60_000
   ): Promise<EventOf<T>> {
+    if (this.disposed) return Promise.reject(new Error('Event recorder disposed'));
     const existing = this.ofType(type).find(predicate);
     if (existing) return Promise.resolve(existing);
     return new Promise((resolve, reject) => {
@@ -44,13 +49,20 @@ export class EventRecorder {
           new Error(`Timed out after ${timeoutMs}ms waiting for ${type}. Seen: ${this.summary()}`)
         );
       }, timeoutMs);
-      const waiter = (event: ProviderRuntimeEvent) => {
-        if (event.type !== type) return;
-        const typed = event as EventOf<T>;
-        if (!predicate(typed)) return;
-        clearTimeout(timer);
-        this.waiters.delete(waiter);
-        resolve(typed);
+      const waiter: Waiter = {
+        notify: (event) => {
+          if (event.type !== type) return;
+          const typed = event as EventOf<T>;
+          if (!predicate(typed)) return;
+          clearTimeout(timer);
+          this.waiters.delete(waiter);
+          resolve(typed);
+        },
+        cancel: () => {
+          clearTimeout(timer);
+          this.waiters.delete(waiter);
+          reject(new Error('Event recorder disposed'));
+        },
       };
       this.waiters.add(waiter);
     });

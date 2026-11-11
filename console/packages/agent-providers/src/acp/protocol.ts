@@ -77,6 +77,7 @@ export interface AcpToolCall {
   status?: string;
   content?: AcpToolCallContent[];
   rawInput?: Record<string, unknown>;
+  locations?: Array<{ path: string; line?: number | null }> | null;
   rawOutput?: Record<string, unknown>;
   _meta?: Record<string, unknown>;
 }
@@ -92,6 +93,7 @@ export interface AcpPermissionRequest {
   sessionId: string;
   toolCall: AcpToolCall;
   options: AcpPermissionOption[];
+  _meta?: Record<string, unknown>;
 }
 
 export const ACP_CANCELLED = { outcome: { outcome: 'cancelled' } } as const;
