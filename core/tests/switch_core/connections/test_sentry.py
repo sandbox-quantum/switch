@@ -6,18 +6,30 @@ import json
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
 
-from switch_core.connections.adapters import ServiceAdapterError, oauth
+from switch_core import outbound
+from switch_core.connections.adapters import (
+    ConnectionSecret,
+    ServiceAdapterError,
+    oauth,
+)
 from switch_core.connections.adapters.oauth import (
+    Identity,
     OAuthAdapter,
     OAuthClientCredentials,
+    SignIn,
     StaticClient,
+    s256,
 )
 from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.flows import Exchange, FlowError, ServiceFlows
 from switch_core.connections.loader import CATALOG
+from switch_core.connections.sign_in_flows import SignInFlows
+from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.outbound import OutboundPolicy, guarded_async_client
 from tests.conftest import TEST_KEYRING
@@ -32,6 +44,7 @@ from tests.switch_core.connections.test_broker import (
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 SENTRY = CATALOG["sentry"].definition
+MCP_URL = "https://mcp.sentry.dev/mcp"
 SCOPES = ["org:read", "project:write", "team:write", "event:write"]
 
 # Sentry's whoami as its tools/list shows it: zod's empty object, as the MCP
@@ -275,3 +288,156 @@ async def test_a_renewed_sentry_token_is_withheld_and_not_renewed_again(
     assert again.status_code == 503
     assert vendor.refreshes == 1
     assert await _issuances(session_factory) == []
+
+
+# ── Signing in ───────────────────────────────────────────────────────────────
+
+
+async def test_a_sentry_flow_cannot_fall_back_to_read_consent(session_factory):
+    async with session_factory() as session:
+        owner = await _user(session, "sentry-owner")
+        await session.commit()
+    flows = ServiceFlows(None, SignInFlows(session_factory, TEST_KEYRING))
+    flow = await flows.start(
+        definition=SENTRY,
+        tenant_id=TENANT_ZERO_ID,
+        user_id=owner.id,
+        state="synthetic-sentry-state",
+        port=39231,
+        completion_secret="synthetic-completion",
+        owner_label="sentry-owner",
+    )
+    details = flow.stored.details
+    assert (details["consent"], details["scopes"]) == ("write", SCOPES)
+
+    def consent(scopes: list[str]) -> str:
+        return flows.consent(
+            Exchange(
+                flow.stored,
+                SignIn(ConnectionSecret({}), scopes, "synthetic-client"),
+                Identity("123", "ada@example.test"),
+            )
+        )
+
+    assert consent(SCOPES) == "write"
+    # The read level lists the same scopes, so a partial grant is refused
+    # rather than kept as a read connection whose token can still write.
+    for partial in ([], ["org:read"], SCOPES[:-1]):
+        with pytest.raises(FlowError, match="granted less"):
+            consent(partial)
+
+
+async def test_sentry_discovery_sign_in_identity_refresh_and_revocation(
+    monkeypatch,
+):
+    """The shipped entry through a whole sign-in, against Sentry's MCP server
+    and its OAuth endpoints."""
+    origin = "https://mcp.sentry.dev"
+    metadata = {
+        "issuer": origin,
+        "authorization_endpoint": f"{origin}/oauth/authorize",
+        "token_endpoint": f"{origin}/oauth/token",
+        "registration_endpoint": f"{origin}/oauth/register",
+        "revocation_endpoint": f"{origin}/oauth/token",
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    }
+    challenge = s256("synthetic-verifier")
+    mcp = _SentryMcp(
+        WHOAMI_TOOL, _whoami({"id": "123", "name": None, "email": "ada@example.test"})
+    )
+    token_requests: list[dict[str, str]] = []
+    bearers: set[str] = set()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == MCP_URL and "authorization" not in request.headers:
+            return httpx.Response(
+                401,
+                headers={
+                    "WWW-Authenticate": f'Bearer resource_metadata="{origin}/.well-known/oauth-protected-resource/mcp"'
+                },
+            )
+        if url == MCP_URL:
+            bearers.add(request.headers["authorization"])
+            return mcp(request)
+        if url == f"{origin}/.well-known/oauth-protected-resource/mcp":
+            return httpx.Response(
+                200, json={"resource": MCP_URL, "authorization_servers": [origin]}
+            )
+        if url == f"{origin}/.well-known/oauth-authorization-server":
+            return httpx.Response(200, json=metadata)
+        assert url == f"{origin}/oauth/token"
+        form = {
+            key: values[0] for key, values in parse_qs(request.content.decode()).items()
+        }
+        token_requests.append(form)
+        if "token" in form:
+            return httpx.Response(200)
+        assert form["resource"] == MCP_URL
+        if form["grant_type"] == "authorization_code":
+            assert s256(form["code_verifier"]) == challenge
+            access, refresh, expires_in = "SYNTHETIC", "SYNTHETIC-REFRESH-1", 3600
+        else:
+            assert form["refresh_token"] == "SYNTHETIC-REFRESH-1"
+            # tokenExchangeCallback: what is left of the 30-day Sentry token.
+            access, refresh = "SYNTHETIC-RENEWED", "SYNTHETIC-REFRESH-2"
+            expires_in = int(timedelta(days=29, hours=23).total_seconds())
+        return httpx.Response(
+            200,
+            json={
+                "access_token": access,
+                "refresh_token": refresh,
+                "expires_in": expires_in,
+                "token_type": "Bearer",
+                "scope": " ".join(SCOPES),
+            },
+        )
+
+    def transport(policy, **kw):
+        return httpx.MockTransport(handle)
+
+    # The adapter's own client, and the client its MCP identity call opens.
+    monkeypatch.setattr(outbound, "guarded_transport", transport)
+    monkeypatch.setattr(oauth, "guarded_transport", transport)
+    redirect = "http://127.0.0.1:39231/switch-services/callback"
+    async with guarded_async_client(OutboundPolicy.parse("")) as http:
+        adapter = _adapter(http)
+        authorization = await adapter.authorization_url(
+            redirect_uri=redirect,
+            state="synthetic-state",
+            code_challenge=challenge,
+            scopes=SCOPES,
+        )
+        query = parse_qs(urlsplit(authorization).query)
+        assert query["scope"] == [" ".join(SCOPES)]
+        assert query["code_challenge_method"] == ["S256"]
+        assert query["resource"] == [MCP_URL]
+        signed_in = await adapter.exchange_code(
+            code="synthetic-code",
+            verifier="synthetic-verifier",
+            redirect_uri=redirect,
+            scopes=SCOPES,
+        )
+        assert signed_in.granted_scopes == SCOPES
+        identity = await adapter.identify(signed_in.secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("123", "ada@example.test")
+        renewed = await adapter.refresh(signed_in.secret)
+        assert renewed.access_token == "SYNTHETIC-RENEWED"
+        assert renewed.values["refresh_token"] == "SYNTHETIC-REFRESH-2"
+        # The renewed token lasts about 30 days: why the broker withholds it.
+        assert (
+            renewed.values["expires_at"] - time.time()
+            > timedelta(days=29).total_seconds()
+        )
+        await adapter.revoke_connection(renewed)
+    assert bearers == {"Bearer SYNTHETIC"}
+    assert [form.get("grant_type") for form in token_requests] == [
+        "authorization_code",
+        "refresh_token",
+        None,
+    ]
+    assert (token_requests[-1]["token"], token_requests[-1]["token_type_hint"]) == (
+        "SYNTHETIC-REFRESH-2",
+        "refresh_token",
+    )
