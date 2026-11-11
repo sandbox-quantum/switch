@@ -1,14 +1,14 @@
 """Mark tool activity as subagent progress without adding an item kind.
 
 Revision ID: ab802e19c401
-Revises: f3a8d1c6b927
+Revises: 95b5d17f4519
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "ab802e19c401"
-down_revision = "f3a8d1c6b927"
+down_revision = "95b5d17f4519"
 branch_labels = None
 depends_on = None
 expand_only: bool = True
