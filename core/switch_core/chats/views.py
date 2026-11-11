@@ -51,6 +51,7 @@ _PROVIDER_OF_KNOWN_AGENT_TYPE = {
     "opencode": "opencode",
     "antigravity": "antigravity",
     "cursor": "cursor",
+    "junie": "junie",
 }
 
 
