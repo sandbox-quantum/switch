@@ -22,6 +22,7 @@ PLACEHOLDERS = {
     "salesforce",
     "box",
     "canva",
+    "monday",
     "vercel",
 }
 
@@ -46,6 +47,29 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+
+
+def test_monday_candidate_stays_disabled_without_a_guessed_token_policy():
+    entry = CATALOG["monday"]
+    definition = entry.definition
+    assert definition.enabled is False
+    assert definition.adapter == "oauth" and definition.auth.type == "oauth"
+    assert definition.token is None and definition.auth.refresh is None
+    assert definition.auth.identity is None
+    assert definition.access is None
+    assert not entry.skill_files
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert oauth.registration == "dynamic" and oauth.client_settings is None
+    assert oauth.redirect == ["loopback"]
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.authorization_url is None and oauth.token_url is None
+    assert oauth.revocation_discovered is True
+    assert definition.mcp is not None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("monday", "https://mcp.monday.com/mcp")
+    ]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 GOOGLE = "https://www.googleapis.com/auth/"

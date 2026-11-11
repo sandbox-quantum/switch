@@ -34,6 +34,12 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and
 Simple Icons' CC0 dedication covers the drawings; it does not grant any
 trademark rights, which remain with the owners.
 
+- **Monday.com** (`monday.svg`): vendor mark from
+  https://dapulse-res.cloudinary.com/image/upload/remote_mondaycom_static/img/monday-logo-2.svg,
+  fetched 2026-11-07. The background rectangle and fixed size were removed;
+  the viewBox is cropped to the three original paths. Paths and fills are
+  unchanged. Trademark of monday.com; vendor permission has not been verified.
+
 ## Vendor-supplied logos
 
 These are the owners' own files rather than Simple Icons drawings: Simple Icons
