@@ -40,6 +40,7 @@ from switch_core.db.models import (
     RoomGroup,
     RoomLink,
     RoomRole,
+    RoomSchedule,
     Template,
     TenantMember,
     UsageMetric,
@@ -430,6 +431,29 @@ class World:
             return room_id
 
         return str(await self._once("room_role", make))
+
+    async def room_schedule(self) -> str:
+        """A daily schedule in the room, addressed to the agent in it."""
+        room_id = await self.room_agent()
+        agent_id = await self.agent()
+
+        async def make(session: AsyncSession) -> str:
+            schedule = RoomSchedule(
+                room_id=room_id,
+                author_id=self.owner_id,
+                agent_ids=[agent_id],
+                text="Summarise the new issues.",
+                cron="0 9 * * *",
+                run_at=None,
+                timezone="UTC",
+                paused=False,
+                next_run_at=datetime.now(UTC) + timedelta(days=1),
+            )
+            session.add(schedule)
+            await session.flush()
+            return schedule.id
+
+        return str(await self._once("room_schedule", make))
 
     async def room_agent(self) -> str:
         """The room, with the agent in it."""

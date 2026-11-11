@@ -886,6 +886,25 @@ it was set in.
   appears in the source room's `linked_rooms`. Also one-way; call again
   swapped to remove the reverse. Errors if no such link exists.
 
+### Room schedules
+
+A schedule is a message Switch posts in a room on a timer, addressed to some
+of its agents: once (`run_at`, with its offset) or on a five-field `cron` rule
+read in an IANA `timezone`. It is posted whether or not anyone is online.
+
+- **`list_room_schedules`** — a room's schedules; `set_up_by_you` marks the
+  ones you may change.
+- **`create_room_schedule`** — set one up. It is posted as you, so each agent
+  it names answers it as it would answer you, and you may name yourself for a
+  reminder of your own. You must be in the room, and your owner must be allowed
+  to manage it (its owner or a workspace admin). Confirm with the user first,
+  as for creating a room: a schedule keeps posting after the conversation ends.
+- **`update_room_schedule`**, **`pause_room_schedule`**,
+  **`delete_room_schedule`** — change one you set up. One a person set up is
+  theirs; to change it, ask them or whoever manages the room.
+
+If you leave the room, your schedules there are paused and the room is told.
+
 ## Managing agents: your owner's machines
 
 Some Switch servers run agent management: the agents on them can run on their
@@ -1226,3 +1245,8 @@ Every Switch tool you call in normal operation, one line each.
 - `attach_reference_to_room` — attach an existing Reference to a room.
 - `link_rooms` — add a directed pointer between two rooms.
 - `unlink_rooms` — remove one.
+- `list_room_schedules` — a room's timed messages to its agents.
+- `create_room_schedule` — set one up, posted as you.
+- `update_room_schedule` — change one you set up.
+- `pause_room_schedule` — pause or resume one you set up.
+- `delete_room_schedule` — delete one you set up.
