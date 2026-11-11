@@ -17,6 +17,7 @@ import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
 import { openhandsAcp } from '../openhands/openhands-acp';
 import { createPiAdapter } from '../pi/pi-adapter';
 import { checkPiSignIn, PI_INHERIT_ENV, PI_LOGIN } from '../pi/sign-in';
+import { qwenAcp } from '../qwen/qwen-acp';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 
@@ -134,6 +135,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
     checkSignIn: checkPiSignIn,
   },
   acpProviderRuntime(gooseAcp),
+  acpProviderRuntime(qwenAcp),
   acpProviderRuntime(openhandsAcp),
 ];
 

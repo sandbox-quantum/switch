@@ -15,6 +15,7 @@ import { provider as mistralVibe } from './impl/mistral-vibe';
 import { provider as opencode } from './impl/opencode';
 import { provider as openhands } from './impl/openhands';
 import { provider as pi } from './impl/pi';
+import { provider as qwen } from './impl/qwen';
 
 export const pluginRegistry = createPluginRegistry<CLIAgentPluginProvider>();
 
@@ -31,6 +32,7 @@ for (const p of [
   pi,
   mistralVibe,
   goose,
+  qwen,
   openhands,
 ]) {
   pluginRegistry.register(p);

@@ -494,6 +494,7 @@ class TestManagedAgents:
             "kiro",
             "mistral-vibe",
             "goose",
+            "qwen",
             "openhands",
         }
         assert providers["cursor"] == {"fields": []}
@@ -528,6 +529,7 @@ class TestManagedAgents:
             "kiro",
             "mistral-vibe",
             "goose",
+            "qwen",
             "openhands",
         ]
         assert providers[0]["label"] == "Claude Code"
