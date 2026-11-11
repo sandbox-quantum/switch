@@ -472,6 +472,7 @@ const RoomsSection = observer(function RoomsSection({
                       variant="ghost"
                       size="xs"
                       aria-label={`Detach from ${room.roomName}`}
+                      title={`Detach from ${room.roomName}`}
                       disabled={busy === room.roomId}
                       onClick={() => void detach(room.roomId, room.roomName)}
                     >

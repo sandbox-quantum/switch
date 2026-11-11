@@ -383,6 +383,7 @@ function ResourceRow({
           variant="ghost"
           size="xs"
           aria-label={remove.label}
+          title={remove.label}
           disabled={busy}
           onClick={confirm ? () => setArmed(true) : onRemove}
         >
