@@ -213,6 +213,7 @@ _READ_WITH_MAX = (
     "switch.hosted.agents",
     "switch.hosted.sessions",
     "switch.hosted.provider_login_problems",
+    "switch.workos.",
 )
 
 
@@ -375,3 +376,16 @@ def test_the_hosted_board_carries_placeholders_not_a_deployment() -> None:
     assert '"id"' not in text
     assert "@" not in text
     assert "$env" not in text
+
+
+def test_monitors_on_the_workos_mirror_are_imported_only_where_it_runs() -> None:
+    """Only a server with ORGANIZATION_DIRECTORY=workos reports the mirror's
+    gauges, and these monitors fire on no data. `apply.sh` imports a monitor
+    tagged requires:workos-directory only with WORKOS_DIRECTORY set, so one
+    left untagged would fire for ever on every other server."""
+    monitors = _load("monitors.json")
+    assert isinstance(monitors, list)
+    for monitor in monitors:
+        reads_mirror = "switch.workos." in monitor["query"]
+        tagged = "requires:workos-directory" in monitor["tags"]
+        assert reads_mirror == tagged, monitor["name"]
