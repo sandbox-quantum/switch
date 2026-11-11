@@ -703,11 +703,15 @@ export class AcpAdapter implements ProviderAdapter {
       ...(toolText || old?.text ? { text: toolText || old?.text } : {}),
     };
     state.items.set(item.id, item);
+    // An item whose real type is learned only from a later update (Qwen names a
+    // deferred `tool_call` as `agent` one update after announcing it) starts
+    // again under that type, so a subagent is seen starting as a subagent.
+    // Consumers key items by id, so the second start replaces the first.
     this.emit(state, {
       type:
         item.status === 'completed' || item.status === 'failed'
           ? 'item.completed'
-          : old
+          : old && old.type === item.type
             ? 'item.updated'
             : 'item.started',
       turnId,

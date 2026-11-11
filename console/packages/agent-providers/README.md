@@ -33,6 +33,8 @@ protocols. These adapters are the only Console session runtime.
 | `pi` | `pi --mode rpc`, Pi's own JSONL protocol over stdio, with a Switch extension loaded by `-e` for the session alone | Pi does not speak ACP, and `pi-acp` does not pass MCP servers on to Pi, while Pi itself never asks before a tool runs. The extension registers the session's MCP servers and asks the adapter about every tool call through an extension dialog, so the runtime mode is enforced in the adapter. It asks with the call's input as Pi gives it to the first `tool_call` handler: the user's own extensions load after it and may still change that input. If nothing in Pi connects the session's MCP servers (its built-in MCP support turned off or replaced), the session does not start. Nothing is written to Pi's own configuration. |
 | `kiro` | `kiro-cli acp`, ACP over stdio, on the generic ACP adapter | Native sessions and `session/load`, model selection through a `model` config option, MCP registration, approvals, and questions asked as permission requests. |
 | `mistral-vibe` | `vibe-acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume through `session/load`, model selection through a `model` config option, MCP registration, approvals, and questions as ACP form elicitations. |
+| `qwen` | `qwen --acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model selection through a `model` config option, MCP registration, approvals and questions; hooks for its modes, sign-in check, tool metadata and question requests. |
+| `droid` | `droid exec --output-format acp` (Factory Droid), ACP over stdio, on the generic ACP adapter | Native sessions, resume, MCP registration, and approvals; the runtime modes map to Droid's autonomy levels. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -72,6 +74,10 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | antigravity (ACP) | agy 1.5.1 | 9/10 (2026-11-05) | `subagent` is skipped: it runs past the 300 s deadline, as it did on antigravity-acp 1.1.1. |
 | antigravity (legacy `antigravity-acp`) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | copilot (ACP) | 1.0.105 | 9/10 (2026-11-05, Mistral's `mistral-medium-latest` through `COPILOT_PROVIDER_BASE_URL`) | `user-input` is skipped: `ask_user` is not among the tools Copilot gives the model over ACP, even when the client declares form elicitation. Copilot takes MCP servers over HTTP and SSE only, and drops a stdio one with a warning in its log; Switch serves its tools over HTTP. Mistral needs `COPILOT_PROVIDER_WIRE_API=responses` (on chat completions it refuses Copilot's sampling) and `copilot config effortLevel high` (without reasoning, the model wrote the `approval-declined` command out as text instead of running it). |
+| qwen (ACP) | qwen-code 0.26.1 | not recorded (2026-10-27) | No model account was signed in, so no real model turn ran. Against the real CLI with a scripted local OpenAI-compatible model in place of one, the suite passed 10/10. `subagent` passes only when the model calls `agent` directly: called through Qwen's deferred `tool_call` tool, the item starts as a tool call and is named `agent` only in a later update, so no `item.started` of type `subagent` arrives. |
+| qwen (ACP) | qwen-code 0.26.1 | 7/10 (2026-10-27) | Run on Google's free Gemini API (gemini-flash-lite-latest) as an OpenAI-compatible provider, through a local endpoint. Passed: `simple-turn`, `file-write-full-access`, `interrupt`, `steer-mid-turn`, `resume`, `user-input`, `mcp-registered`. `approval-required`, `approval-declined` and `subagent` did not pass, and Qwen's own chat history shows why: the model said it would run the command and stopped, answered "declined" without trying, and called `agent` without its required `description`. None of them reached a permission request. They are not skipped, because a stronger model is expected to pass them. |
+| qwen (ACP) | qwen-code 0.26.1 | 9/10 (2026-11-02) | Run on Google's free Gemini API as an OpenAI-compatible provider, through a local endpoint. Passed on 2026-10-27 with gemini-flash-lite-latest: `simple-turn`, `file-write-full-access`, `interrupt`, `steer-mid-turn`, `resume`, `user-input`, `mcp-registered`. Passed on 2026-11-02: `approval-required` and `approval-declined` (gemini-3.8-flash was asked for, but every answer came from gemini-3.6-flash after the endpoint fell back on busy errors). In `subagent` the model delegated correctly through Qwen's deferred `tool_call` and the subagent returned its answer, but the check timed out: the adapter emitted no `item.started` for a subagent that is named only in a later update. The generic ACP adapter now starts such an item again under its real type. With the real CLI and a scripted model replaying that run, `subagent` passes with the fix and times out without it. It has not been rerun on a real model since the fix. |
+| qwen (ACP) | qwen-code 0.26.1 | 9/10 (2026-11-02) | Run on Google's free Gemini API as an OpenAI-compatible provider, through a local endpoint. Passed on 2026-10-27 with gemini-flash-lite-latest: `simple-turn`, `file-write-full-access`, `interrupt`, `steer-mid-turn`, `resume`, `user-input`, `mcp-registered`. Passed on 2026-11-02: `approval-required` and `approval-declined` (gemini-3.8-flash was asked for, but every answer came from gemini-3.6-flash after the endpoint fell back on busy errors). In `subagent` the model delegated correctly through Qwen's deferred `tool_call` and the subagent returned its answer, but the check timed out: the adapter emitted no `item.started` for a subagent that is named only in a later update. The generic ACP adapter now starts such an item again under its real type. With the real CLI and a scripted model replaying that run, `subagent` passes with the fix and times out without it. A real-model rerun after the fix passed both approval checks again (gemini-3.8-flash and gemini-3.7-flash answering), but its `subagent` call did not take the deferred path: with the free quota used up, the fallback model called `agent` without its required `description` and Qwen refused it. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
 | deepseek-harness (ACP) | dsh 0.2.1-rc.5 | 8/10 (2026-11-05), not on DeepSeek's API | **Run without a DeepSeek API key:** dsh 0.2.1-rc.5 ran deepseek-v4-1-flash through an OpenAI-compatible gateway, from a custom `$DSH_HOME` profile adding a pi-ai route and turning off `deepseek-llm-api-extensions`; dsh's built-in `deepseek-official` route was not exercised. `interrupt` is skipped: the harness sends a message only once it is committed, so the counting turn's first text arrives as the turn ends; a separate real-CLI test interrupts a running command. `user-input` is skipped: no ask-the-user tool over ACP. `approval-required` and `approval-declined` passed in the recorded run but timed out in some earlier full runs: outside full access every command asks, and when the model runs a second command to check its work, that one asks too while the scenario answers only the first. Outside full access a subagent's gated calls are refused, with that reason (dsh pins a subagent's approval policy to `never`). Run with `DEEPSEEK_API_KEY` (and `DEEPSEEK_BASE_URL`, `DSH_HOME` if used) in the shell; the test passes them through. |
 | pi | 1.5.0 | 8/10 (2026-11-05) | Run with `mistral/devstral-medium-latest`: set a provider's API key in the shell (the test passes `*_API_KEY` through), `SWITCH_PI_MODEL` to a `provider/model` that `pi --list-models` shows, and `SWITCH_PI_BIN` to run a `pi` other than the one on the PATH. Pi has no tool that asks the user (its `question` tool is an example extension, which errors outside the TUI) and no subagent tool, so `user-input` and `subagent` are skipped. Pi never asks before a tool runs: the Switch extension asks the adapter about every call, and auto mode approves edits and asks before commands, as Pi has no automatic review. A mid-turn message queues as its own turn. Without a credential Pi still starts, on a placeholder model that refuses every prompt, so the adapter reads the model from `get_state` and asks for a sign-in. |
@@ -82,7 +88,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 
 ## ACP providers
 
-Cursor, Antigravity, DeepSeek Harness, Kiro and Mistral Vibe run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity, DeepSeek Harness, Kiro, Mistral Vibe and Qwen Code run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -97,7 +103,7 @@ covers the protocol and chooses behaviour from what the agent advertises in
 
 Everything else that differs between CLIs is in its hooks file
 (`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
-`src/deepseek-harness/deepseek-harness-acp.ts`, `src/kiro/kiro-acp.ts`, `src/mistral-vibe/mistral-vibe-acp.ts`):
+`src/deepseek-harness/deepseek-harness-acp.ts`, `src/kiro/kiro-acp.ts`, `src/mistral-vibe/mistral-vibe-acp.ts`, `src/qwen/qwen-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -225,3 +231,22 @@ it can name, and a call it cannot place asks a person. Choosing a model also
 saves it as Vibe's `active_model` in `$VIBE_HOME/config.toml`, which a later
 Vibe session given no model starts with. Its permission requests name only the
 tool call, which the `tool_call` announced before them describes.
+
+**Qwen Code** runs `qwen --acp`. A new session starts in Qwen's `auto` mode,
+where its own classifier approves actions without asking. That is how
+QwenLM/qwen-code#11887 saw tools run with no permission request. So every
+runtime mode sets a Qwen mode explicitly: approval-required is `default`,
+auto-accept-edits is `auto-edit`, auto is `auto` (its classifier) and
+full-access is `yolo`. In `default`, 0.26.1 asks before shell commands and
+file writes, and a declined command does not run. Its "Always Allow in
+project / for user" options write a rule to Qwen's settings, so they are never
+offered. "Allow All Edits" lasts for the session, so it is offered as allow for
+this session. `ask_user_question` arrives as a permission request with the
+questions in `_meta.qwenQuestions`, and the answers go back beside the
+outcome, keyed by question index. MCP tools are called through its deferred
+`tool_call` tool, and the request names only `mcp__<server>__<tool>`, which is
+where the server is read from. Its `authMethods` are the same signed in or
+out, so the sign-in check starts a session instead: `session/new` loads the
+configured provider's credentials, runs no model call and stores nothing
+until a prompt. It never sends `authenticate`, which in Qwen clears the
+cached credentials first.

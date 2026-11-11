@@ -9,6 +9,7 @@ import { checkCodexSignIn, CODEX_LOGIN } from '../codex/sign-in';
 import { copilotAcp } from '../copilot/copilot-acp';
 import { cursorAcp } from '../cursor/cursor-adapter';
 import { deepseekHarnessAcp } from '../deepseek-harness/deepseek-harness-acp';
+import { droidAcp } from '../droid/droid-adapter';
 import { gooseAcp } from '../goose/goose-adapter';
 import { kiroAcp } from '../kiro/kiro-acp';
 import { mistralVibeAcp } from '../mistral-vibe/mistral-vibe-acp';
@@ -16,6 +17,7 @@ import { createOpencodeAdapter } from '../opencode/opencode-adapter';
 import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
 import { createPiAdapter } from '../pi/pi-adapter';
 import { checkPiSignIn, PI_INHERIT_ENV, PI_LOGIN } from '../pi/sign-in';
+import { qwenAcp } from '../qwen/qwen-acp';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 
@@ -127,6 +129,8 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
     checkSignIn: checkPiSignIn,
   },
   acpProviderRuntime(gooseAcp),
+  acpProviderRuntime(qwenAcp),
+  acpProviderRuntime(droidAcp),
 ];
 
 const RUNTIMES = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));
