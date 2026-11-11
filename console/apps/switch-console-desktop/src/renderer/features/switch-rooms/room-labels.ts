@@ -65,6 +65,19 @@ export function addableBridgePeople(
 }
 
 /**
+ * The full name of whoever linked each messaging-app username to Switch, for
+ * showing beside the username. A username nobody linked has no entry; one seen
+ * under two accounts keeps the first name found.
+ */
+export function linkedNamesByUsername(people: BridgePerson[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const person of people)
+    if (person.linkedName !== null && !names.has(person.username))
+      names.set(person.username, person.linkedName);
+  return names;
+}
+
+/**
  * The agents the server says the viewer may add (`GET /chats/agent-candidates`):
  * one the viewer may not use, or already in the chat, is not offered.
  */

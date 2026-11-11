@@ -3,6 +3,7 @@ import {
   addableAgents,
   addableBridgePeople,
   addablePeople,
+  linkedNamesByUsername,
   membershipSummary,
   roomTitle,
 } from './room-labels';
@@ -96,5 +97,28 @@ describe('addableBridgePeople', () => {
       'Ada Zed',
       'bea',
     ]);
+  });
+});
+
+describe('linkedNamesByUsername', () => {
+  const person = (username: string, linkedName: string | null) => ({
+    username,
+    externalUserId: `U-${username}-${linkedName}`,
+    linkedUserIds: linkedName ? ['u'] : [],
+    linkedName,
+  });
+
+  it('names each linked username, and leaves out one nobody linked', () => {
+    const names = linkedNamesByUsername([person('ada', 'Ada Lovelace'), person('bob', null)]);
+    expect([...names]).toEqual([['ada', 'Ada Lovelace']]);
+  });
+
+  it('keeps the first name found for a username seen twice', () => {
+    const names = linkedNamesByUsername([
+      person('carol', null),
+      person('carol', 'Carol Shaw'),
+      person('carol', 'C. Shaw'),
+    ]);
+    expect(names.get('carol')).toBe('Carol Shaw');
   });
 });

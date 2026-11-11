@@ -37,6 +37,7 @@ import { chatAgentLabel } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import { AddAgentPanel, AddPeoplePanel, ChatAddParticipantPanel } from './room-add-participants';
 import { roomAgentPresence } from './room-agent-presence';
+import { linkedNamesByUsername } from './room-labels';
 import { roomInviteability } from './room-membership';
 import {
   AgentMark,
@@ -107,6 +108,19 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
   });
 
   const room = detail.data ?? null;
+  const bridgeId = consoleChat ? null : (room?.bridgeId ?? null);
+  // Who linked each username, to name them beside it. Shares the Add people
+  // panel's cache; if it cannot be read the usernames are shown alone.
+  const bridgePeople = useQuery({
+    queryKey: ['bridge-people', workspaceId, bridgeId],
+    queryFn: () =>
+      rpc.workspaces.listBridgePeople({
+        workspaceId: workspaceId as string,
+        bridgeId: bridgeId as string,
+      }),
+    enabled: workspaceId !== null && bridgeId !== null,
+  });
+  const linkedNames = linkedNamesByUsername(bridgePeople.data ?? []);
   // A room that could not be read is not an empty one: say so, rather than "no agents yet".
   const unreadable = !consoleChat && detail.isError;
   const agentIds = chat ? chat.agents.map((agent) => agent.id) : (room?.agentIds ?? []);
@@ -115,12 +129,14 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
     ? (members.data ?? []).map((member) => ({
         key: member.userId,
         name: member.name,
+        fullName: null,
         detail: member.isOwner ? 'owner' : null,
         isOwner: member.isOwner,
       }))
     : (room?.connectedUserNames ?? []).map((name) => ({
         key: name,
         name,
+        fullName: linkedNames.get(name) ?? null,
         detail: null,
         isOwner: false,
       }));
@@ -240,6 +256,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
             <PersonRow
               key={person.key}
               name={person.name}
+              fullName={person.fullName}
               detail={person.detail}
               onRemove={controls.removePerson(person.key)}
               act={act}
@@ -429,11 +446,14 @@ const AgentRow = observer(function AgentRow({
 
 function PersonRow({
   name,
+  fullName,
   detail,
   onRemove,
   act,
 }: {
   name: string;
+  /** For a messaging-app username, the name of the Switch user who linked it, shown in brackets. */
+  fullName: string | null;
   detail: string | null;
   onRemove: (() => Promise<void>) | null;
   act: (action: () => Promise<void>, fallback: string) => Promise<void>;
@@ -442,7 +462,10 @@ function PersonRow({
   return (
     <div className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--sel-soft)]">
       <PersonMark name={name} size="sm" />
-      <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">{name}</span>
+      <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
+        {name}
+        {fullName !== null && <span className="text-foreground-muted"> ({fullName})</span>}
+      </span>
       {detail && <span className="shrink-0 text-xs text-foreground-muted">{detail}</span>}
       {onRemove && (
         <DropdownMenu>

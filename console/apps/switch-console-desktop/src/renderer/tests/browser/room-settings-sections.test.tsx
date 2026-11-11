@@ -16,6 +16,7 @@ const permissions = vi.hoisted(() => ({
 }));
 const admin = vi.hoisted(() => ({ value: true }));
 const setRoomGroup = vi.hoisted(() => vi.fn());
+const listBridgePeople = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -40,6 +41,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       ),
       listRoomGroups: vi.fn(() => Promise.resolve([{ id: 'g-1', name: 'Design' }])),
       setRoomGroup,
+      listBridgePeople,
     },
     agents: { getAgents: vi.fn(() => Promise.resolve([])) },
   },
@@ -131,6 +133,8 @@ beforeEach(() => {
   );
   permissions.value = { canWrite: true, canChangeMembers: true, canManage: true };
   admin.value = true;
+  listBridgePeople.mockReset();
+  listBridgePeople.mockResolvedValue([]);
   setRoomGroup.mockReset();
   setRoomGroup.mockImplementation(() =>
     Promise.resolve({ ...ROOM, groupId: null, groupName: null })
@@ -202,6 +206,26 @@ describe('room settings for someone who may write to the room', () => {
     expect(el.textContent).toContain('Here now');
     expect(el.querySelector('[aria-label="Add agents"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Add people"]')).not.toBeNull();
+  });
+
+  it('names who linked each username in the side column, and shows an unlinked username alone', async () => {
+    getRoomDetail.mockResolvedValue({ ...ROOM, connectedUserNames: ['ada', 'bob'] });
+    listBridgePeople.mockResolvedValue([
+      { username: 'ada', externalUserId: 'U1', linkedUserIds: ['u-1'], linkedName: 'Ada Lovelace' },
+      { username: 'bob', externalUserId: 'U2', linkedUserIds: [], linkedName: null },
+    ]);
+    const el = await renderPanel('side');
+    expect(listBridgePeople).toHaveBeenCalledWith({ workspaceId: 'ws-1', bridgeId: 'bridge-1' });
+    expect(el.textContent).toContain('ada (Ada Lovelace)');
+    expect(el.textContent).toContain('bob');
+    expect(el.textContent).not.toContain('bob (');
+  });
+
+  it('shows the usernames alone when who linked them cannot be read', async () => {
+    listBridgePeople.mockRejectedValue(new Error('offline'));
+    const el = await renderPanel('side');
+    expect(el.textContent).toContain('ada');
+    expect(el.textContent).not.toContain('ada (');
   });
 
   it('offers no adding or removing in a direct conversation, whose platform fixes who is in it', async () => {
