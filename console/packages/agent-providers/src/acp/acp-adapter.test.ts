@@ -57,6 +57,110 @@ beforeEach(() => {
   agent.session = {};
 });
 
+it.each(['selected-mode', undefined])(
+  'passes advertised modes to the mode hook and honours its answer (%s)',
+  async (modeId) => {
+    const modes = { availableModes: [{ id: 'selected-mode', name: 'Selected mode' }] };
+    agent.session = { modes };
+    const sessionMode = vi.fn(() => modeId);
+    const { adapter, server } = await start({ ...dummy, sessionMode }, { runtimeMode: 'auto' });
+    try {
+      expect(sessionMode).toHaveBeenCalledWith('auto', modes);
+      const requests = server.received.filter((message) => message.method === 'session/set_mode');
+      expect(requests.map((message) => message.params)).toEqual(
+        modeId ? [{ sessionId: 'native', modeId }] : []
+      );
+    } finally {
+      await adapter.stopAll();
+    }
+  }
+);
+
+it.each([undefined, true, false])(
+  'uses an HTTP MCP hook only when the handshake omits support (%s)',
+  async (http) => {
+    agent.capabilities = http === undefined ? {} : { mcpCapabilities: { http } };
+    const result = start(
+      { ...dummy, mcpCapabilities: { http: true } },
+      { mcpServers: { switch: { transport: 'http', url: 'http://localhost/mcp' } } }
+    );
+    if (http === false) {
+      await expect(result).rejects.toThrow('does not declare MCP over HTTP');
+      expect(servers[0]!.received.some((message) => message.method === 'session/new')).toBe(false);
+    } else {
+      const { adapter } = await result;
+      await adapter.stopAll();
+    }
+  }
+);
+
+it('passes registered server names to tool hooks and filters permission options before choosing a grant', async () => {
+  const mcpServerOf = vi.fn(
+    (call: { _meta?: Record<string, unknown> }, names: ReadonlySet<string>) =>
+      call._meta?.server === 'switch' && names.has('switch') ? 'switch' : undefined
+  );
+  const { adapter, server, events } = await start(
+    {
+      ...dummy,
+      mcpServerOf,
+      permissionOptions: (options) => options.filter((option) => option.optionId !== 'disk'),
+    },
+    { mcpServers: { switch: { transport: 'stdio', command: 'echo', args: [] } } }
+  );
+  try {
+    await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'work' });
+    server.send({
+      method: 'session/update',
+      params: {
+        sessionId: 'native',
+        update: { sessionUpdate: 'tool_call', toolCallId: 'tool', _meta: { server: 'switch' } },
+      },
+    });
+    server.send({
+      id: 101,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: 'tool' },
+        options: [{ optionId: 'once', kind: 'allow_once', name: 'Once' }],
+      },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mcpServerOf).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: 'tool' }),
+      new Set(['switch'])
+    );
+    expect(server.received.find((message) => message.id === 101)?.result).toEqual({
+      outcome: { outcome: 'selected', optionId: 'once' },
+    });
+    server.send({
+      id: 102,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: 'shell', kind: 'execute' },
+        options: [
+          { optionId: 'disk', kind: 'allow_always', name: 'Always allow' },
+          { optionId: 'session', kind: 'allow_always', name: 'This session' },
+        ],
+      },
+    });
+    const approval = events.find((event) => event.type === 'request.opened');
+    if (!approval || approval.type !== 'request.opened') throw new Error('Missing approval');
+    expect(approval.options).toEqual([
+      { decision: 'acceptForSession', label: 'This session' },
+      { decision: 'cancel', label: 'Cancel' },
+    ]);
+    await adapter.respondToRequest('s', approval.requestId, 'acceptForSession');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(server.received.find((message) => message.id === 102)?.result).toEqual({
+      outcome: { outcome: 'selected', optionId: 'session' },
+    });
+  } finally {
+    await adapter.stopAll();
+  }
+});
+
 async function start(
   hooks: AcpProviderHooks = dummy,
   input: Partial<Parameters<ReturnType<typeof createAcpAdapter>['startSession']>[0]> = {}

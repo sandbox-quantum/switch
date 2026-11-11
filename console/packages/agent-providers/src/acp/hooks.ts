@@ -143,6 +143,8 @@ export interface AcpProviderHooks {
    * advertises in `initialize` is always honoured as well.
    */
   promptCapabilities?: AcpPromptCapabilities;
+  /** Verified transport support omitted by the agent's handshake. Explicit false still wins. */
+  mcpCapabilities?: { http?: boolean };
   /**
    * The ACP mode to put a new session in for Switch's runtime mode, given the
    * modes the session advertised. Omit, or return undefined, to leave the
@@ -155,8 +157,12 @@ export interface AcpProviderHooks {
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
+  /** Recognizes a native conversation that no longer exists when loading it fails. */
+  conversationUnavailable?(error: unknown): boolean;
   /** The MCP server a tool call belongs to, when the agent says so. */
-  mcpServerOf?(toolCall: AcpToolCall): string | undefined;
+  mcpServerOf?(toolCall: AcpToolCall, serverNames: ReadonlySet<string>): string | undefined;
+  /** Remove vendor-specific permanent grants before applying the normal approval policy. */
+  permissionOptions?(options: AcpPermissionRequest['options']): AcpPermissionRequest['options'];
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**

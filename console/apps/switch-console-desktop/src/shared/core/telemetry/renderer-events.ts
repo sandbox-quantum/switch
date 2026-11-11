@@ -86,7 +86,7 @@ export type RendererTelemetryEvents = {
       | 'opened_existing'
       | 'intro_opened'
       | 'intro_dismissed';
-    provider: 'claude' | 'codex' | 'opencode' | 'cursor' | 'antigravity' | 'none';
+    provider: 'claude' | 'codex' | 'opencode' | 'cursor' | 'antigravity' | 'mistral-vibe' | 'none';
   };
   /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */
   buddy_message_sent: { nth: '1' | '2' | '3' | '4' | '5' | '6+' };

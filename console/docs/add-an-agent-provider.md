@@ -98,11 +98,14 @@ Add hooks only for what really differs:
 | `authMethodId` | The `authenticate` method to send when a session starts, given its environment; return undefined when that environment already signs the CLI in (Cursor with `CURSOR_API_KEY`). Omit it for an agent that needs none. |
 | `sessionMode` | The ACP mode for each Switch runtime mode, when the agent's modes are permission levels. |
 | `promptCapabilities` | Content the agent accepts without advertising it. Prefer fixing the advertisement upstream. |
-| `mcpServerOf` | How a tool call names its MCP server, if the agent says so (in `_meta`, `rawInput`…). Without it, tools on registered servers still ask for permission. |
+| `mcpCapabilities` | Verified MCP transport support the agent omits from its handshake. An explicit refusal in the handshake still wins. Prefer fixing the advertisement upstream. |
+| `mcpServerOf` | How a tool call names its MCP server, if the agent says so (in `_meta`, `rawInput`…). Receives the registered server names to resolve vendor aliases. Without it, tools on registered servers still ask for permission. |
+| `permissionOptions` | Filters vendor-specific permanent grants before the adapter chooses allow-once, session and deny options. |
 | `itemType` | Vendor typing for tool calls, such as subagents. |
 | `permission` | A permission request the vendor uses for something else, such as Antigravity's questions. |
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
 | `nativeSessionIdPrefix` | Only when an earlier, non-ACP runtime of the same provider stored session ids that must not be resumed. |
+| `conversationUnavailable` | Recognizes a native missing-conversation error during resume. The host starts fresh if no provider answer was lost, or asks for a reset while retaining the transcript. |
 
 Then add the runtime to `PROVIDER_RUNTIMES` in `src/providers/registry.ts`:
 
