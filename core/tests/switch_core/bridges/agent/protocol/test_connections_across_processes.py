@@ -408,6 +408,48 @@ class TestPresence:
 
         assert b.registry.session_room(AGENT, "session-1") == ROOM
 
+    async def test_a_placement_whose_connection_lapsed_is_not_presence(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        """A client that dies with a session placed leaves the placement
+        behind, so it has its room back when it reattaches. Until then nothing
+        is in the room, on either process, and the agent is not available."""
+        a, b = processes
+        conn = await _open(a, scope="all")
+        await _place(a, conn.stream_generation, {"session-1": ROOM})
+        await _eventually(lambda: ROOM in rooms_occupied(AGENT, b.registry))
+
+        conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+        assert [closed.id for closed in a.registry.sweep()] == [CONN]
+        await _eventually(lambda: not b.registry.is_live(AGENT))
+
+        for process in (a, b):
+            assert agents_present_in([AGENT], ROOM, process.registry) == set()
+            assert rooms_occupied(AGENT, process.registry) == set()
+            for model in ("auto_session", "session_addressable"):
+                recipient = _recipient_on(process)
+                agent = SimpleNamespace(
+                    id=AGENT, integration_profile={"connection_model": model}
+                )
+                assert not await recipient._is_available(object(), agent, ROOM), model
+        assert a.registry.placements(AGENT) == {"session-1": ROOM}
+        async with session_factory() as session:
+            placed = (
+                await session.execute(
+                    select(
+                        AgentSessionPlacement.session_id, AgentSessionPlacement.room_id
+                    ).where(AgentSessionPlacement.agent_id == AGENT)
+                )
+            ).all()
+        assert [tuple(row) for row in placed] == [("session-1", ROOM)]
+
+        await _open(a, scope="all")
+
+        assert agents_present_in([AGENT], ROOM, a.registry) == {AGENT}
+        await _eventually(lambda: ROOM in rooms_occupied(AGENT, b.registry))
+
 
 class TestRoutedAnywhere:
     """A row is decided by the process that writes it, which need not be the
@@ -434,6 +476,49 @@ class TestRoutedAnywhere:
         assert len(await own_events(session_factory, helper.id)) == 1
         # No "not online" notice from the writer, which holds no connection.
         assert await said_by(session_factory, room, helper_client) == []
+
+    async def test_a_session_whose_connection_lapsed_owes_the_not_online_notice(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, b = processes
+        writer = process_on(session_factory, connections=b.registry)
+        room = await make_room(session_factory)
+        alice = await make_person(session_factory, "alice")
+        helper, helper_client = await make_agent(
+            session_factory, "helper", connection_model="auto_session"
+        )
+        await add_member(session_factory, room, alice)
+        await add_member(session_factory, room, helper_client, agent=helper)
+        conn = await _open(
+            a, agent_id=helper.id, connection_id="conn-helper", scope="all"
+        )
+        await connection_placements(
+            helper.id,
+            ConnectionPlacementsRequest(
+                connection_id="conn-helper",
+                placements={"session-1": room.id},
+                generation=conn.stream_generation,
+            ),
+            agent=SimpleNamespace(  # type: ignore[arg-type]
+                id=helper.id, tenant_id=TENANT_ZERO_ID, metadata_=None
+            ),
+            protocol=a.protocol,
+        )
+        await _eventually(lambda: room.id in rooms_occupied(helper.id, b.registry))
+
+        conn.last_beat = time.monotonic() - HEARTBEAT_TTL_SECONDS - 1
+        assert [closed.id for closed in a.registry.sweep()] == ["conn-helper"]
+        await _eventually(lambda: not b.registry.is_live(helper.id))
+        assert b.registry.placements(helper.id) == {"session-1": room.id}
+
+        await writer.say(room, "@helper can you look at this", sender=alice)
+        await writer.idle()
+
+        said = await said_by(session_factory, room, helper_client)
+        assert len(said) == 1, [s.body for s in said]
+        assert "not online in this room" in (said[0].body or "")
 
     async def test_a_removal_written_through_the_other_process_releases_the_claim(
         self,
