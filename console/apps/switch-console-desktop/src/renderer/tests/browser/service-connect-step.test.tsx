@@ -143,7 +143,30 @@ it('says what limits agent access before the sign-in starts', async () => {
 it('says nothing more for a service without such a limit', async () => {
   await render(connectStep());
 
-  expect(dialog().textContent).not.toContain('hour after each sign-in');
+  expect([...dialog().querySelectorAll('p')].map((p) => p.textContent)).toEqual([
+    'Example access',
+    'You sign in at Example, and allow what Switch asks for. Agents you then turn Example on for act as you there.',
+  ]);
+});
+
+it('still says what limits agent access once the service is connected', async () => {
+  await render(
+    <ServiceConnectStep
+      calls={serverServiceCalls('server')}
+      connection={{
+        ...EXAMPLE,
+        status: 'connected',
+        agent_access_note: 'Agents have Example for up to an hour after each sign-in.',
+      }}
+      onBack={() => {}}
+      onConnected={() => {}}
+    />
+  );
+
+  expect(dialog().textContent).toMatch(/Example connected/);
+  expect(dialog().textContent).toContain(
+    'Agents have Example for up to an hour after each sign-in.'
+  );
 });
 
 it('connects through the sign-in as soon as the server has kept the account', async () => {
