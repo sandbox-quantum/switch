@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from html import unescape
 from typing import Any
 
+from switch_core.bridges.collaboration.session.redaction import format_safe_tool_detail
 from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn, plain_text
 from switch_core.sessions.contract import (
     TURN_ENDED,
@@ -133,7 +134,7 @@ _MAX_PLAN_TASKS = 50
 _MAX_SECTION_ITEMS = _MAX_PLAN_TASKS - 1
 _MAX_PLAN_TITLE = 150
 _MAX_PLAN_TASK_TITLE = 200
-_MAX_PLAN_TASK_DETAILS = 200
+_MAX_PLAN_TASK_DETAILS = 1500
 # Prose gets more room than a tool result because it is read rather than
 # scanned, and because a card's detail is the one part of this block Slack will
 # expand on request.
@@ -996,6 +997,8 @@ def render_activity(
     *,
     elapsed_seconds: float | None = None,
     status_only: bool = False,
+    show_tool_details: bool = True,
+    custom_secrets: list[str] | None = None,
 ) -> SlackMessage:
     """One turn, as the channel sees it: what was said, over what was done.
 
@@ -1061,14 +1064,29 @@ def render_activity(
         for item in said[len(said) - _MAX_MESSAGES :]
     ]
     if did:
-        blocks.append(_plan(items, did, turn, elapsed_seconds=elapsed_seconds))
+        blocks.append(
+            _plan(
+                items,
+                did,
+                turn,
+                elapsed_seconds=elapsed_seconds,
+                show_tool_details=show_tool_details,
+                custom_secrets=custom_secrets,
+            )
+        )
     else:
         state = turn_state(
             items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds
         )
         blocks.append(_context(f"_{state}_"))
     return SlackMessage(
-        text=render_activity_text(items, turn, elapsed_seconds=elapsed_seconds),
+        text=render_activity_text(
+            items,
+            turn,
+            elapsed_seconds=elapsed_seconds,
+            show_tool_details=show_tool_details,
+            custom_secrets=custom_secrets,
+        ),
         blocks=blocks,
     )
 
@@ -1106,7 +1124,12 @@ def render_turn_with_request(
 
 
 def render_activity_text(
-    items: list[Item], turn: TurnUpsert, *, elapsed_seconds: float | None = None
+    items: list[Item],
+    turn: TurnUpsert,
+    *,
+    elapsed_seconds: float | None = None,
+    show_tool_details: bool = True,
+    custom_secrets: list[str] | None = None,
 ) -> str:
     """The same turn with no card at all.
 
@@ -1129,7 +1152,11 @@ def render_activity_text(
     if hidden:
         lines.append(f"…{hidden} earlier in this turn, not shown.")
     lines += [_message_text(item) for item in said[len(said) - _MAX_MESSAGES :]]
-    lines += _activity_lines(did)
+    lines += _activity_lines(
+        did,
+        show_tool_details=show_tool_details,
+        custom_secrets=custom_secrets,
+    )
     lines.append(
         turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
     )
@@ -1161,15 +1188,25 @@ def _message_text(item: Item) -> str:
     return _fit(item.text, _MAX_MESSAGE) if item.text else "_(nothing said)_"
 
 
-def _activity_lines(items: list[Item]) -> list[str]:
+def _activity_lines(
+    items: list[Item],
+    *,
+    show_tool_details: bool = True,
+    custom_secrets: list[str] | None = None,
+) -> list[str]:
     """The tool log, newest end kept, each line marked with how it went."""
     lines: list[str] = []
     spent = 0
     for position, item in enumerate(reversed(items), start=1):
         title = _fit(item.title, _MAX_ACTIVITY_TITLE) if item.title else "_(untitled)_"
         line = f"{_ACTIVITY[item.status]} {title}"
-        if item.text:
-            line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
+        if item.text and show_tool_details:
+            safe_detail = format_safe_tool_detail(
+                item.text,
+                max_length=_MAX_ACTIVITY_DETAIL,
+                custom_secrets=custom_secrets,
+            )
+            line += f" — {_fit(safe_detail, _MAX_ACTIVITY_DETAIL)}"
         if position > _MAX_ACTIVITY_LINES or spent + len(line) + 1 > _MAX_ACTIVITY:
             lines.append(f"_…and {len(items) - position + 1} more before these._")
             break
@@ -1185,6 +1222,8 @@ def render_activity_plan(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    show_tool_details: bool = True,
+    custom_secrets: list[str] | None = None,
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
 
@@ -1223,7 +1262,18 @@ def render_activity_plan(
             "title": _truncate(title, _MAX_PLAN_TITLE),
             "tasks": [
                 _session_card(live=turn.status not in TURN_ENDED),
-                *(_settled(_plan_task(item), item, turn) for item in kept),
+                *(
+                    _settled(
+                        _plan_task(
+                            item,
+                            show_tool_details=show_tool_details,
+                            custom_secrets=custom_secrets,
+                        ),
+                        item,
+                        turn,
+                    )
+                    for item in kept
+                ),
             ],
         }
     ]
@@ -1269,6 +1319,8 @@ def render_activity_stream(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    show_tool_details: bool = True,
+    custom_secrets: list[str] | None = None,
 ) -> StreamedActivity:
     """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
 
@@ -1292,7 +1344,18 @@ def render_activity_stream(
     """
     shown = [item for item in items if in_activity_log(item)]
     blocks = _step_blocks(
-        [_settled(_plan_task(item), item, turn) for item in shown],
+        [
+            _settled(
+                _plan_task(
+                    item,
+                    show_tool_details=show_tool_details,
+                    custom_secrets=custom_secrets,
+                ),
+                item,
+                turn,
+            )
+            for item in shown
+        ],
         _running(shown, turn),
         turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
         turn.status not in TURN_ENDED,
@@ -1590,6 +1653,8 @@ def _plan(
     turn: TurnUpsert,
     *,
     elapsed_seconds: float | None = None,
+    show_tool_details: bool = True,
+    custom_secrets: list[str] | None = None,
 ) -> dict[str, Any]:
     """The tool log as a plan: a header to read, and the steps behind it.
 
@@ -1612,11 +1677,24 @@ def _plan(
     return {
         "type": "plan",
         "title": _truncate(title, _MAX_PLAN_TITLE),
-        "tasks": [_plan_task(item) for item in kept],
+        "tasks": [
+            _plan_task(
+                item,
+                show_tool_details=show_tool_details,
+                custom_secrets=custom_secrets,
+            )
+            for item in kept
+        ],
     }
 
 
-def _plan_task(item: Item) -> dict[str, Any]:
+def _plan_task(
+    item: Item,
+    *,
+    show_tool_details: bool = True,
+    custom_secrets: list[str] | None = None,
+    max_details: int = _MAX_PLAN_TASK_DETAILS,
+) -> dict[str, Any]:
     """One tool call as a card inside the plan.
 
     Plain text, not mrkdwn: a card's title renders none, so markup passed into
@@ -1681,8 +1759,13 @@ def _plan_task(item: Item) -> dict[str, Any]:
         "status": _TASK_STATUS[item.status],
     }
     details = plain_text(item.text) if item.text else ""
-    if details:
-        task["details"] = _rich_text(_truncate_prose(details, _MAX_PLAN_TASK_DETAILS))
+    if details and show_tool_details:
+        safe_details = format_safe_tool_detail(
+            details,
+            max_length=max_details,
+            custom_secrets=custom_secrets,
+        )
+        task["details"] = _rich_text(safe_details)
     return task
 
 
