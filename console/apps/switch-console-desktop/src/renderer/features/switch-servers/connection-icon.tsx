@@ -31,6 +31,7 @@ const MARK_COLOR: Record<string, string> = {
   vercel: 'text-foreground',
   linear: 'text-[#5E6AD2]',
   asana: 'text-[#F06A6A]',
+  clickup: 'text-[#7B68EE]',
   gitlab: 'text-[#FC6D26]',
   atlassian: 'text-[#0052CC] emdark:text-foreground',
   bitbucket: 'text-[#0052CC] emdark:text-foreground',
