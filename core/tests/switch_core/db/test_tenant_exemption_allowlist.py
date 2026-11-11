@@ -61,6 +61,10 @@ _ALLOWED_MODULES = {
     # old activity lines in every tenant: enumerate, then bind each tenant and
     # work under its own policy, the same shape as the runtime-state sweep.
     "switch_core.session_activity.maintenance",
+    # Room schedules fire from every tenant: enumerate, then bind each tenant
+    # and claim its due schedules under its own policy, the same shape as
+    # session-activity upkeep above.
+    "switch_core.room_schedules",
     # Service-token upkeep revokes tokens whose grant or owner is gone and
     # prunes issuance records past retention, in every tenant: enumerate,
     # then bind each tenant and work under its own policy, the same shape as
@@ -71,6 +75,14 @@ _ALLOWED_MODULES = {
     # workspace: enumerate, then read each one's connections under its own
     # policy, the same shape as service-token upkeep above.
     "switch_core.gateway.connector_apps",
+    # Data retention deletes what each workspace no longer keeps, hourly:
+    # enumerate, then bind each tenant and work under its own policy, the same
+    # shape as session-activity upkeep.
+    "switch_core.retention.service",
+    # The erasure loop works every tenant's queue of person erasures:
+    # enumerate, then bind each tenant and work under its own policy, the
+    # same shape as session-activity upkeep.
+    "switch_core.retention.erasure",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
     # time.
     "switch_core.bridges.agent.protocol.agent_core",
@@ -112,6 +124,11 @@ _ALLOWED_MODULES = {
     # `tenants_of_cloud_machine`, and each one's row on the machine is then
     # read with that workspace bound.
     "switch_core.db.stores.hosted_machine_store",
+    # Deleting an account also clears the workspaces the person was removed
+    # from, where nothing binds them any more: enumerate the tenants, then
+    # look for their rows in each under its own policy, the same fan-out as
+    # the boot work.
+    "switch_core.accounts.deletion",
     # Enumerating tenants at boot, and starting one bridge by id from a
     # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",

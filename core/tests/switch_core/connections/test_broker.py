@@ -358,7 +358,7 @@ class TestIssue:
         )
         again = await _refused(broker, session_factory, world.agent.id)
         assert again.code == "connector_revoked"
-        assert "Settings, Connections" in again.message
+        assert "Switch Console, under Connectors" in again.message
         assert vendor.refreshes == 1
         assert vendor.issued == []
 
@@ -472,7 +472,7 @@ class TestChecks:
             "internal",
             False,
         )
-        assert "not available on this server" in refused.message
+        assert "not available here" in refused.message
         assert await connectable(broker, "github") is False
 
     async def test_an_owner_no_longer_in_the_workspace_is_forbidden(
@@ -496,7 +496,7 @@ class TestChecks:
             await session.commit()
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code) == (403, "grant_missing")
-        assert "builder" in refused.message and "Connections" in refused.message
+        assert "builder" in refused.message and "the agent's page" in refused.message
 
     async def test_a_grant_made_on_someone_elses_connection_is_forbidden(
         self, broker, session_factory
@@ -899,7 +899,7 @@ class TestSwitchedOff:
         self, session_factory, vendor
     ) -> None:
         broker = _switched_off(session_factory, vendor, {"github": ""})
-        assert await availability(broker, "github") == "Switched off on this server."
+        assert await availability(broker, "github") == "Switched off here."
 
     async def test_a_service_outside_the_catalog_stops_the_server(
         self, session_factory, vendor
@@ -1313,7 +1313,7 @@ class TestPassThrough:
                 [("unset", SignIn(ConnectionSecret({}), None))],
             )
         assert warning is not None
-        assert "unset is not set up on this server" in warning
+        assert "unset is not set up here" in warning
         assert "Example access" not in warning
 
 
@@ -1714,7 +1714,7 @@ class TestReplacedClient:
         refused = await _refused(broker, session_factory, world.agent.id)
 
         assert refused.code == CONNECTOR_REVOKED
-        assert "an app this server no longer uses" in refused.message
+        assert "an app Switch no longer uses" in refused.message
         assert vendor.refreshes == 0 and vendor.issued == []
         connection = await _connection(session_factory, world.owner.id)
         assert connection is not None
@@ -1741,7 +1741,7 @@ class TestReplacedClient:
         async with session_factory() as session:
             warning = await broker.disconnect(session, world.owner.id, "github")
         assert warning == (
-            "GitHub is not set up on this server, so Switch could not revoke "
+            "GitHub is not set up here, so Switch could not revoke "
             "the sign-in. Revoke it at GitHub."
         )
         assert vendor.connections_revoked == []

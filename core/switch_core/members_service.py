@@ -20,7 +20,11 @@ A refusal comes back as `{"error": <reason>}`.
 
 from __future__ import annotations
 
+import logging
+import time
+
 import httpx
+import jwt
 
 from switch_core.organization_directory import (
     DirectoryRefusal,
@@ -28,12 +32,22 @@ from switch_core.organization_directory import (
     DirectoryUnavailable,
 )
 
+logger = logging.getLogger(__name__)
+
 # Bounds every call: a route holds locks while it waits.
 MEMBERS_SERVICE_TIMEOUT_SECONDS = 10.0
 
 SIGN_IN_AGAIN = (
     "Your sign-in to your organization's account has ended. Confirm it again "
     "to change the organization's members."
+)
+
+# The service checks a token without asking WorkOS, so a 401 for one that has
+# not run out is the service not accepting Switch's AuthKit application at
+# all: signing in again would get the same answer.
+NOT_ACCEPTED = (
+    "Your organization's account service doesn't accept member changes from "
+    "Switch yet. Make the change in the organization's account settings."
 )
 
 
@@ -76,13 +90,34 @@ class MembersService:
                 f"The members service could not be reached ({type(error).__name__})."
             ) from error
         if response.status_code == 401:
-            raise DirectorySignInRequired(SIGN_IN_AGAIN)
+            if _ran_out(access_token):
+                raise DirectorySignInRequired(SIGN_IN_AGAIN)
+            logger.error(
+                "The members service refused Switch's WorkOS token (401) on %s %s; "
+                "it is not set up to accept WORKOS_CLIENT_ID's tokens",
+                method,
+                path,
+            )
+            raise DirectoryUnavailable(NOT_ACCEPTED)
         if response.status_code in (400, 403, 404, 409, 422):
             raise DirectoryRefusal(_reason(response))
         if response.status_code >= 300:
             raise DirectoryUnavailable(
                 f"The members service answered {response.status_code}."
             )
+
+
+def _ran_out(access_token: str) -> bool:
+    """Whether the token's own expiry has passed. Read unverified, for which
+    answer to give only: the token is the one WorkOS gave the admin
+    (`workos_sign_in.py`), and the service is what verifies it."""
+    try:
+        expires_at = jwt.decode(access_token, options={"verify_signature": False})[
+            "exp"
+        ]
+    except (jwt.PyJWTError, KeyError):
+        return False
+    return isinstance(expires_at, int) and expires_at <= time.time()
 
 
 def _reason(response: httpx.Response) -> str:

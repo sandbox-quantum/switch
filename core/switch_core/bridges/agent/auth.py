@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 
 import jwt
@@ -36,6 +37,14 @@ from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
+
+
+class ApiKeyExpired(Exception):
+    """A presented API key matched a row whose `expires_at` has passed."""
+
+    def __init__(self, api_key: ApiKey) -> None:
+        super().__init__(f"API key {api_key.id} expired at {api_key.expires_at}")
+        self.api_key = api_key
 
 
 # Path prefixes that bypass the Bearer middleware entirely. These are either
@@ -281,7 +290,17 @@ class BearerAuthMiddleware:
         # Single ApiKey lookup. If the row exists, branch on its type:
         # agent token → resolve to Agent; registration token → pass through.
         # If no row exists, fall through to OIDC (where applicable).
-        api_key, agent = await self._resolve_api_key(token)
+        try:
+            api_key, agent = await self._resolve_api_key(token)
+        except ApiKeyExpired as exc:
+            logger.warning(
+                "Refused API key %s (%s): it expired at %s",
+                exc.api_key.id,
+                exc.api_key.type,
+                exc.api_key.expires_at,
+            )
+            await _unauthorized(scope, receive, send, "API key expired")
+            return
 
         if agent is None and api_key is None and self._oidc_validator is not None:
             agent = await self._try_oidc(token)
@@ -491,11 +510,15 @@ class BearerAuthMiddleware:
         A resolved agent is memoised for a few seconds (see
         :class:`ApiKeyCache`); everything else — an unknown token, a
         registration token, an agent key with no agent — always reads the
-        database.
+        database. A key past its ``expires_at`` raises :class:`ApiKeyExpired`,
+        whether it was read or remembered.
         """
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         cached = self._api_key_cache.get(token_hash)
         if cached is not None:
+            if cached[0].expired(datetime.now(UTC)):
+                self._api_key_cache.invalidate(token_hash)
+                raise ApiKeyExpired(cached[0])
             return cached
 
         # Two steps, because a credential's tenant has to be known before its
@@ -521,6 +544,8 @@ class BearerAuthMiddleware:
             if found is None:
                 return None, None
             api_key, agent = found
+            if api_key.expired(datetime.now(UTC)):
+                raise ApiKeyExpired(api_key)
             if api_key.type != "agent":
                 agent = None
             session.expunge_all()

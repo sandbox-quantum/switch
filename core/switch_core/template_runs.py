@@ -37,6 +37,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
 from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceError
 from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
+from switch_core.room_service import FIXED_MEMBERSHIP
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -239,8 +240,8 @@ class TemplateAgents:
                     Problem(
                         plan.slot,
                         "agent_management_off",
-                        "agent management is not enabled on this Switch server, "
-                        "so it cannot create agents on a machine.",
+                        "agent management is not turned on here, "
+                        "so it cannot create agents on a device.",
                     )
                     for plan in plans
                 ]
@@ -337,7 +338,8 @@ class TemplateAgents:
         self, tenant_id: str, owner_id: str, plan: NewAgentPlan
     ) -> tuple[list[str], list[Problem]]:
         """The rooms the agent joins, by id: each must exist, be one the owner
-        sees, and one the owner may add agents to."""
+        sees, and one the owner may add agents to, which a direct or group
+        conversation is not (`require_membership_changeable_from_outside`)."""
         if not plan.joins:
             return [], []
         async with tenant_session(self._protocol.session_factory, tenant_id) as session:
@@ -372,6 +374,15 @@ class TemplateAgents:
                         f"it joins {name}, and you may not add agents to that room.",
                     )
                 )
+            elif matches[0].channel_type in FIXED_MEMBERSHIP:
+                problems.append(
+                    Problem(
+                        plan.slot,
+                        "join_fixed_membership",
+                        f"it joins {name}, a {matches[0].channel_type} conversation, "
+                        "whose platform fixes who is in it.",
+                    )
+                )
             else:
                 ids.append(matches[0].id)
         return ids, problems
@@ -386,7 +397,7 @@ class TemplateAgents:
                 Problem(
                     plan.slot,
                     "connections_off",
-                    "connections are not enabled on this Switch server, so it "
+                    "connectors are not turned on here, so it "
                     f"cannot be granted {', '.join(c.service for c in plan.connections)}.",
                 )
             ]

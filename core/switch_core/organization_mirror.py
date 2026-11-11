@@ -190,8 +190,8 @@ async def apply_from_directory(
                     session, dependencies, organization_id, user_id, tenant, details
                 )
                 if (
-                    membership.role == "owner"
-                    and await dependencies.user_store.count_owners(session) <= 1
+                    membership.role == "admin"
+                    and await dependencies.user_store.lock_admins(session) <= 1
                 ):
                     await _conflict(
                         session,
@@ -199,11 +199,11 @@ async def apply_from_directory(
                         user_id,
                         {
                             **details,
-                            "kind": "workspace_left_without_owner",
+                            "kind": "workspace_left_without_admin",
                             "workspace": tenant.name,
                         },
                     )
-                revoked = await remove_membership(
+                removal = await remove_membership(
                     session,
                     revocation,
                     membership,
@@ -212,7 +212,7 @@ async def apply_from_directory(
                     keep_agent_keys=True,
                 )
                 await session.commit()
-                warning = await revocation.finish(session, user_id, revoked)
+                warning = await revocation.finish(session, user_id, removal.revoked)
             if warning:
                 warnings.append(f"{tenant.name}: {warning}")
 

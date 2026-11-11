@@ -116,13 +116,13 @@ describe('discoverConfiguredAgents', () => {
     // is written for every provider, so it finds the agent anyway.
     h.state.workdir = fakeFs({
       '.switch/agents/.gitignore': '*\n',
-      '.switch/agents/codex-hoot.json': creds('sw-codex'),
-      '.switchdash/agents/codex-hoot/agent-launch-spec.json': launchSpec('codex'),
+      '.switch/agents/codex-agent.json': creds('sw-codex'),
+      '.switchdash/agents/codex-agent/agent-launch-spec.json': launchSpec('codex'),
     });
 
     expect(await scan()).toEqual([
       {
-        name: 'codex-hoot',
+        name: 'codex-agent',
         switchAgentId: 'sw-codex',
         apiEndpoint: 'https://switch.example.com',
         providerId: null,
@@ -135,21 +135,21 @@ describe('discoverConfiguredAgents', () => {
   it('never surfaces the API token', async () => {
     // Attaching must not need the secret: it stays on disk for the launch path.
     h.state.workdir = fakeFs({
-      '.switch/agents/hoot.json': creds('sw-1', 'https://switch.example.com', 'tok-do-not-leak'),
+      '.switch/agents/switch.json': creds('sw-1', 'https://switch.example.com', 'tok-do-not-leak'),
     });
 
     expect(JSON.stringify(await scan())).not.toContain('tok-do-not-leak');
   });
 
   it('falls back to the owning provider definition, then to unknown', async () => {
-    h.state.claudeDefinitions = [{ name: 'cc-hoot', description: null }];
+    h.state.claudeDefinitions = [{ name: 'cc-agent', description: null }];
     h.state.workdir = fakeFs({
-      '.switch/agents/cc-hoot.json': creds('sw-cc'),
+      '.switch/agents/cc-agent.json': creds('sw-cc'),
       '.switch/agents/mystery.json': creds('sw-my'),
     });
 
     const byName = new Map((await scan()).map((a) => [a.name, a]));
-    expect(byName.get('cc-hoot')).toMatchObject({
+    expect(byName.get('cc-agent')).toMatchObject({
       providerId: 'claude',
       providerSource: 'definition',
     });
@@ -160,10 +160,10 @@ describe('discoverConfiguredAgents', () => {
   });
 
   it('uses the provider definition and ignores obsolete sidecar launch specs', async () => {
-    h.state.claudeDefinitions = [{ name: 'hoot', description: null }];
+    h.state.claudeDefinitions = [{ name: 'switch', description: null }];
     h.state.workdir = fakeFs({
-      '.switch/agents/hoot.json': creds('sw-1'),
-      '.switchdash/agents/hoot/agent-launch-spec.json': launchSpec('codex'),
+      '.switch/agents/switch.json': creds('sw-1'),
+      '.switchdash/agents/switch/agent-launch-spec.json': launchSpec('codex'),
     });
 
     expect((await scan())[0]).toMatchObject({ providerId: 'claude', providerSource: 'definition' });
@@ -198,9 +198,9 @@ describe('discoverConfiguredAgents', () => {
 
   it('reports nothing for an unknown location rather than failing', async () => {
     h.state.location = undefined;
-    h.state.workdir = fakeFs({ '.switch/agents/hoot.json': creds('sw-1') });
+    h.state.workdir = fakeFs({ '.switch/agents/switch.json': creds('sw-1') });
 
-    expect((await scan())[0]).toMatchObject({ name: 'hoot', alreadyAgent: false });
+    expect((await scan())[0]).toMatchObject({ name: 'switch', alreadyAgent: false });
   });
 
   it('skips unusable credentials files instead of inventing an identity', async () => {
@@ -217,9 +217,9 @@ describe('discoverConfiguredAgents', () => {
   it('ignores non-JSON entries such as the .gitignore', async () => {
     h.state.workdir = fakeFs({
       '.switch/agents/.gitignore': '*\n',
-      '.switch/agents/hoot.json': creds('sw-1'),
+      '.switch/agents/switch.json': creds('sw-1'),
     });
 
-    expect((await scan()).map((a) => a.name)).toEqual(['hoot']);
+    expect((await scan()).map((a) => a.name)).toEqual(['switch']);
   });
 });

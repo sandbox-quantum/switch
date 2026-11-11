@@ -84,6 +84,15 @@ it('reads the MCP server from Kimi qualified tool names', () => {
   expect(kimiMcpServer({ toolCallId: 'b', title: 'mcp__my-server__a_b' })).toBe('my-server');
   expect(kimiMcpServer({ toolCallId: 'c', title: 'Bash' })).toBeUndefined();
   expect(kimiMcpServer({ toolCallId: 'd' })).toBeUndefined();
+  // A session server whose name Kimi folds is found by the folded name.
+  const servers = new Set(['switch', 'my__server']);
+  expect(kimiMcpServer({ toolCallId: 'e', title: 'mcp__my_server__a_b' }, servers)).toBe(
+    'my__server'
+  );
+  expect(kimiMcpServer({ toolCallId: 'f', title: 'mcp__switch__post_message' }, servers)).toBe(
+    'switch'
+  );
+  expect(kimiMcpServer({ toolCallId: 'g', title: 'mcp__other__tool' }, servers)).toBe('other');
 });
 
 it('types Agent and AgentSwarm calls as subagents, from either title or the arguments', () => {

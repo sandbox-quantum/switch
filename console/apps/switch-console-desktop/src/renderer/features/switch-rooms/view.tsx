@@ -218,7 +218,7 @@ const RoomConversation = observer(function RoomConversation({ roomId }: { roomId
 
 /** The side a room shown inside another page opens on, until one is picked. */
 export function embeddedRoomFallbackTab(roomId: string): RoomTab {
-  return embeddedRoomTab(switchRoomsStore.roomBridgeTypeById(roomId));
+  return embeddedRoomTab(switchRoomsStore.roomBridgeTypeById(roomId), opensAsConsoleChat(roomId));
 }
 
 /**

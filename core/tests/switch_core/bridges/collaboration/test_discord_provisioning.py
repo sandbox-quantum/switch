@@ -38,8 +38,9 @@ class _FakeMember:
 
 
 class _FakeCreatedChannel:
-    def __init__(self, channel_id: int, guild: _FakeGuild) -> None:
+    def __init__(self, channel_id: int, guild: _FakeGuild, name: str) -> None:
         self.id = channel_id
+        self.name = name
         self.guild = guild
         self.permission_grants: list[tuple[Any, dict[str, Any]]] = []
 
@@ -59,7 +60,7 @@ class _FakeGuild:
     async def create_text_channel(self, **kwargs: Any) -> _FakeCreatedChannel:
         self.created.append(kwargs)
         self._next_channel_id += 1
-        return _FakeCreatedChannel(self._next_channel_id, self)
+        return _FakeCreatedChannel(self._next_channel_id, self, kwargs["name"])
 
     def get_member(self, user_id: int) -> _FakeMember | None:
         return self.members.get(user_id)
@@ -133,9 +134,9 @@ def test_create_public_channel_sanitizes_name_and_sets_topic() -> None:
     guild = _FakeGuild()
     _wire(adapter, guild)
 
-    channel_id = _run(adapter.create_channel("My Feature Room!", "workstream topic"))
+    created = _run(adapter.create_channel("My Feature Room!", "workstream topic"))
 
-    assert channel_id == "101"
+    assert (created.id, created.name) == ("101", "my-feature-room")
     created = guild.created[0]
     assert created["name"] == "my-feature-room"
     assert created["topic"] == "workstream topic"
@@ -177,7 +178,7 @@ def test_create_dm_channel_provisions_private_channel_with_user() -> None:
 
     assert channel_id == "101"
     created = guild.created[0]
-    assert created["name"] == "dm-louis-my-agent"
+    assert created["name"] == "my-agent-louis"
     assert created["overwrites"][guild.default_role].view_channel is False
 
 

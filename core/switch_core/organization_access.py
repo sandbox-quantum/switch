@@ -17,8 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.transfer import hand_over_everything
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.sign_in_flows import SignInFlows
@@ -32,6 +34,17 @@ from switch_core.gateway.workspace_access import (
     finish_revocation,
     revoke_workspace_access,
 )
+
+
+@dataclass(frozen=True)
+class MembershipRemoval:
+    """What `remove_membership` did: the access it revoked, for
+    `AccessRevocation.finish`, and who received what the member owned (`heir`,
+    None when nobody did) with how many of each kind passed (`handed`)."""
+
+    revoked: RevokedAccess
+    heir: str | None
+    handed: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -82,8 +95,11 @@ async def end_organization_admin_access(
     """In workspace `tenant_id`, bound on `session`, where `user_id` stands
     only as their organization's `org_admin`: remove their keys, service
     connections and sign-ins under way, recorded in its audit log with
-    `details`; `keep_agent_keys` as `revoke_workspace_access` has it. Raises
-    `ServiceError` when a connection is busy."""
+    `details`; `keep_agent_keys` as `revoke_workspace_access` has it.
+
+    What they own there passes to an heir, as `remove_membership` does it,
+    since they can no longer reach it either. Raises `ServiceError` when a
+    connection is busy."""
     revoked = await revoke_workspace_access(
         session,
         user_id,
@@ -91,6 +107,13 @@ async def end_organization_admin_access(
         broker=revocation.broker,
         sign_in_flows=revocation.sign_in_flows,
         keep_agent_keys=keep_agent_keys,
+    )
+    heir, handed = await _hand_over_to_heir(
+        session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        actor_id=actor_id,
+        reason="organization_admin_access_ended",
     )
     await record_audit_event(
         session,
@@ -103,6 +126,8 @@ async def end_organization_admin_access(
             **details,
             "api_keys_deleted": len(revoked.key_hashes),
             "service_connections_deleted": len(revoked.removed_services),
+            "handed_over_to": heir,
+            "handed_over": handed,
         },
     )
     return revoked
@@ -116,13 +141,17 @@ async def remove_membership(
     actor_id: str | None,
     details: dict[str, Any],
     keep_agent_keys: bool,
-) -> RevokedAccess:
+) -> MembershipRemoval:
     """Remove `membership` from its workspace, bound on `session`, with the
     member's keys, service connections and sign-ins under way there, recorded
     in its audit log with `details`; `keep_agent_keys` as
-    `revoke_workspace_access` has it. Agents they own are left as they are.
-    Raises `ServiceError` when a connection is busy, before anything is
-    removed."""
+    `revoke_workspace_access` has it.
+
+    What they own there passes to an heir (`removal_heir`), so the workspace
+    is not left with rooms, packages and the like owned by someone who can no
+    longer reach them. Agents they own are left as they are: the callers
+    refuse, or record a conflict, while there are any. Raises `ServiceError`
+    when a connection is busy, before anything is removed."""
     revoked = await revoke_workspace_access(
         session,
         membership.user_id,
@@ -130,6 +159,13 @@ async def remove_membership(
         broker=revocation.broker,
         sign_in_flows=revocation.sign_in_flows,
         keep_agent_keys=keep_agent_keys,
+    )
+    heir, handed = await _hand_over_to_heir(
+        session,
+        tenant_id=membership.tenant_id,
+        user_id=membership.user_id,
+        actor_id=actor_id,
+        reason="member_removed",
     )
     await record_audit_event(
         session,
@@ -143,10 +179,77 @@ async def remove_membership(
             "role": membership.role,
             "api_keys_deleted": len(revoked.key_hashes),
             "service_connections_deleted": len(revoked.removed_services),
+            "handed_over_to": heir,
+            "handed_over": handed,
         },
     )
     await session.delete(membership)
-    return revoked
+    return MembershipRemoval(revoked=revoked, heir=heir, handed=handed)
+
+
+async def _hand_over_to_heir(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    user_id: str,
+    actor_id: str | None,
+    reason: str,
+) -> tuple[str | None, dict[str, int]]:
+    """Hand what `user_id` owns in `tenant_id` to their `removal_heir`, for
+    `reason`. Returns the heir, or None when there is none and nothing moved,
+    and how many of each kind passed."""
+    heir = await removal_heir(session, tenant_id, user_id, actor_id, lock=True)
+    if heir is None:
+        return None, {}
+    handed = await hand_over_everything(
+        session,
+        tenant_id=tenant_id,
+        previous_owner_id=user_id,
+        heir_id=heir,
+        actor_id=actor_id,
+        reason=reason,
+    )
+    return heir, handed
+
+
+async def removal_heir(
+    session: AsyncSession,
+    tenant_id: str,
+    user_id: str,
+    actor_id: str | None,
+    *,
+    lock: bool,
+) -> str | None:
+    """Who takes over what `user_id` owns in `tenant_id` when they lose access
+    to it: the person removing them, when they are a member of the workspace
+    themselves; otherwise, as for a removal the organization's directory made
+    or the server's operator made from outside, the longest-standing other
+    admin, then the lowest id. None when the workspace has no other admin, and
+    what they own stays theirs.
+
+    With `lock`, as for the removal itself, the heir's membership is locked
+    until the caller commits, so a removal of the heir running at the same
+    time waits for this one and then finds what was handed to them, rather
+    than leaving it with someone already gone. Without it, as for telling an
+    admin beforehand who will receive what, nothing is locked."""
+    if actor_id is not None and actor_id != user_id:
+        actor = await session.get(
+            TenantMember, (tenant_id, actor_id), with_for_update=lock
+        )
+        if actor is not None:
+            return actor_id
+    query = (
+        select(TenantMember.user_id)
+        .where(
+            TenantMember.tenant_id == tenant_id,
+            TenantMember.user_id != user_id,
+            TenantMember.role == "admin",
+        )
+        .order_by(TenantMember.created_at, TenantMember.user_id)
+        .limit(1)
+    )
+    heir: str | None = await session.scalar(query.with_for_update() if lock else query)
+    return heir
 
 
 async def end_access_through_organization(

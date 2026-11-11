@@ -101,10 +101,19 @@ const SKIP_OPTION = /^q\d+_skip$/;
 /**
  * The server a tool call belongs to. Kimi names MCP tools
  * `mcp__<server>__<tool>`, with runs of underscores folded to one inside each
- * part, so the first `__` after the prefix ends the server name.
+ * part. A session server is matched by its folded name, so one with `__` in
+ * its name is still found; any other server is read from the name, where the
+ * first `__` after the prefix ends it.
  */
-export function kimiMcpServer(toolCall: AcpToolCall): string | undefined {
-  return toolCall.title?.match(/^mcp__(.+?)__/)?.[1];
+export function kimiMcpServer(
+  toolCall: AcpToolCall,
+  servers: ReadonlySet<string> = new Set()
+): string | undefined {
+  const title = toolCall.title ?? '';
+  const session = [...servers].find((name) =>
+    title.startsWith(`mcp__${name.replace(/_+/g, '_')}__`)
+  );
+  return session ?? title.match(/^mcp__(.+?)__/)?.[1];
 }
 
 /** Kimi's `Agent` and `AgentSwarm` tools, titled by name while streaming, then by their launch line. */

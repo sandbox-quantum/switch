@@ -34,7 +34,9 @@ from switch_core.bridges.collaboration.install import MessagingInstallError
 from switch_core.bridges.collaboration.install_service import MessagingInstallService
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import MessagingInstall, Room, User, require_tenant_id
-from switch_core.db.stores.messaging_install_store import MessagingInstallNotFound
+from switch_core.db.stores.messaging_install_store import (
+    MessagingInstallNotFound,
+)
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import get_install_service, get_session
 
@@ -97,6 +99,10 @@ class InstalledApp(BaseModel):
     bridge_id: str | None
     installed_at: datetime
     ended_at: datetime | None
+    # Whether the caller may disconnect it (`_disconnect_refusal`). An ended
+    # one may still be: disconnecting it again answers it as it is, and
+    # whether there is anything left to disconnect is `status`.
+    can_disconnect: bool
 
 
 class InstalledApps(BaseModel):
@@ -118,7 +124,7 @@ def _require_installs(
             status_code=501,
             detail=(
                 "This Switch deployment has no messaging app of its own to "
-                "install. Register a bridge with your own app's credentials "
+                "install. Add a messaging app with your own app's credentials "
                 "instead."
             ),
         )
@@ -266,7 +272,14 @@ async def list_installs(
     principal = Principal(user.id, is_admin)
     return InstalledApps(
         installs=[
-            _installed(install, names.get(install.id))
+            _installed(
+                install,
+                names.get(install.id),
+                can_disconnect=_disconnect_refusal(
+                    service, install.platform, rooms.get(install.id), principal
+                )
+                is None,
+            )
             for install in await service.list_installs(session)
             if is_admin
             or (
@@ -283,7 +296,9 @@ def _room_allows(principal: Principal, action: Action, room: Room | None) -> boo
     return room is None or can(principal, action, room)
 
 
-def _installed(install: MessagingInstall, name: str | None) -> InstalledApp:
+def _installed(
+    install: MessagingInstall, name: str | None, *, can_disconnect: bool
+) -> InstalledApp:
     return InstalledApp(
         id=install.id,
         platform=install.platform,
@@ -294,7 +309,37 @@ def _installed(install: MessagingInstall, name: str | None) -> InstalledApp:
         bridge_id=install.bridge_id,
         installed_at=install.installed_at,
         ended_at=install.ended_at,
+        can_disconnect=can_disconnect,
     )
+
+
+def _disconnect_refusal(
+    service: MessagingInstallService,
+    platform: str,
+    room: Room | None,
+    principal: Principal,
+) -> str | None:
+    """Why `principal` may not disconnect an install, or None when they may.
+
+    An OAuth install, or a chat whose platform's installer is gone, is the
+    tenant's: an admin's. One chat of a claim-based platform is a room, and
+    whoever may write to that room may disconnect it, the same as moving the
+    room onto another bridge; once the room is gone, it is the tenant's again.
+    """
+    if not _installs_by_claim_or_gone(service, platform):
+        return None if principal.is_admin else "Tenant admin access required"
+    if room is None:
+        return (
+            None
+            if principal.is_admin
+            else "Only an admin can disconnect a chat whose room is gone."
+        )
+    if not can(principal, "write", room):
+        return (
+            "Only someone who can change this chat's room in Switch, its owner or "
+            "an admin, can disconnect it."
+        )
+    return None
 
 
 def _installs_by_claim_or_gone(service: MessagingInstallService, platform: str) -> bool:
@@ -332,25 +377,15 @@ async def disconnect_install(
         platform = await installs.install_platform(session, install_id=install_id)
     except MessagingInstallNotFound as missing:
         raise HTTPException(status_code=404, detail=str(missing)) from missing
-    if not _installs_by_claim_or_gone(installs, platform):
-        _require_tenant_admin(is_admin)
-    else:
-        room = (await installs.chat_rooms(session)).get(install_id)
-        if room is None:
-            # Nobody's room covers it any more, so it is the tenant's to decide.
-            if not is_admin:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Only an admin can disconnect a chat whose room is gone.",
-                )
-        elif not can(Principal(user.id, is_admin), "write", room):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "Only someone who can change this chat's room in Switch, its "
-                    "owner or an admin, can disconnect it."
-                ),
-            )
+    principal = Principal(user.id, is_admin)
+    refusal = _disconnect_refusal(
+        installs,
+        platform,
+        (await installs.chat_rooms(session)).get(install_id),
+        principal,
+    )
+    if refusal is not None:
+        raise HTTPException(status_code=403, detail=refusal)
     try:
         ended = await installs.disconnect(
             tenant_id=require_tenant_id(), install_id=install_id
@@ -377,5 +412,11 @@ async def disconnect_install(
     )
     await session.commit()
     logger.info("User %s disconnected messaging install %s", user.id, install_id)
-    # Ended, so it has let go of whatever it was called.
-    return _installed(ended, None)
+    # Ended, so it has let go of whatever it was called, and a chat has let go
+    # of its room (`chat_rooms`), which may leave it an admin's.
+    return _installed(
+        ended,
+        None,
+        can_disconnect=_disconnect_refusal(installs, ended.platform, None, principal)
+        is None,
+    )

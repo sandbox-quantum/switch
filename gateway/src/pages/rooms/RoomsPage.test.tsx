@@ -1,41 +1,98 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
-import type { GridColDef } from "@mui/x-data-grid";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { GridColDef, GridRowId } from "@mui/x-data-grid";
+import { useState } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RoomSummary } from "../../data/api";
-import * as hooks from "../../data/hooks";
+import * as api from "../../data/api";
 import RoomsPage from "./RoomsPage";
+
+// Archiving a room is a write. The page offers it only on rooms the server says
+// the caller may write to, and says when the server changed fewer rooms than
+// were asked for.
 
 vi.mock("react-router", () => ({
   useNavigate: () => vi.fn(),
 }));
 
+const room = (id: string, overrides: Partial<RoomSummary>) =>
+  ({
+    id,
+    name: id,
+    description: "",
+    channel_type: null,
+    agent_count: 0,
+    connected_user_count: 0,
+    connected_user_names: [],
+    bridge_id: null,
+    bridge_display_name: null,
+    group_id: null,
+    group_name: null,
+    owner_id: "someone",
+    owner_name: "someone",
+    read_visibility: "public",
+    write_visibility: "private",
+    created_at: "2026-10-01T00:00:00Z",
+    archived: false,
+    can_write: false,
+    can_manage: false,
+    ...overrides,
+  }) as RoomSummary;
+
+const ROOMS = [
+  room("mine", { owner_id: "u1", can_write: true, can_manage: true }),
+  room("open", { write_visibility: "public", can_write: true }),
+  room("readonly", {}),
+];
+
 vi.mock("../../data/hooks", () => ({
-  useRoomGroups: vi.fn(),
-  useRooms: vi.fn(),
+  useRooms: () => ({ data: ROOMS, loading: false, error: null, refetch: vi.fn() }),
+  useRoomGroups: () => ({ data: [], loading: false, error: null, refetch: vi.fn() }),
 }));
 
+vi.mock("../../data/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../data/api")>();
+  return {
+    ...actual,
+    archiveRoom: vi.fn(),
+    unarchiveRoom: vi.fn(),
+    bulkArchiveRooms: vi.fn(),
+  };
+});
+
 // The data grid lays rows out from measured sizes, which jsdom does not have,
-// so it renders none. This draws each row, its action cell, and whether it
-// may be ticked for a bulk action.
+// so it renders none. This draws each row, its selection checkbox when the
+// row is selectable, and its action cell plainly.
 vi.mock("../../components/DataTable", () => ({
-  default: ({
+  TableEmptyState: () => null,
+  default: function FakeTable({
     rows,
     columns,
     isRowSelectable,
+    onRowSelectionModelChange,
   }: {
     rows: RoomSummary[];
     columns: GridColDef<RoomSummary>[];
     isRowSelectable?: (row: RoomSummary) => boolean;
-  }) => {
+    onRowSelectionModelChange?: (ids: GridRowId[]) => void;
+  }) {
+    const [picked, setPicked] = useState<GridRowId[]>([]);
     const actions = columns.find((c) => c.field === "actions");
     return (
       <div>
         {rows.map((row) => (
-          <div
-            key={row.id}
-            data-testid={`row-${row.name}`}
-            data-selectable={String(isRowSelectable ? isRowSelectable(row) : true)}
-          >
+          <div key={row.id} data-testid={`row-${row.name}`}>
+            {row.name}
+            {(isRowSelectable?.(row) ?? true) && (
+              <input
+                type="checkbox"
+                aria-label={`select ${row.name}`}
+                onChange={() => {
+                  const next = [...picked, row.id];
+                  setPicked(next);
+                  onRowSelectionModelChange?.(next);
+                }}
+              />
+            )}
             {actions?.renderCell?.({ row } as never)}
           </div>
         ))}
@@ -44,51 +101,63 @@ vi.mock("../../components/DataTable", () => ({
   },
 }));
 
-function room(id: string, name: string, canWrite: boolean) {
-  return {
-    id,
-    name,
-    description: "",
-    archived: false,
-    group_id: null,
-    bridge_id: null,
-    connected_user_names: [],
-    owner_id: "owner",
-    read_visibility: "public",
-    write_visibility: canWrite ? "public" : "private",
-    can_write: canWrite,
-  } as unknown as RoomSummary;
-}
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
-describe("RoomsPage archiving", () => {
-  beforeEach(() => {
-    vi.mocked(hooks.useRooms).mockReturnValue({
-      data: [room("r1", "planning", true), room("r2", "leadership", false)],
-      loading: false,
-      error: null,
-      refetch: vi.fn(),
-    });
-    vi.mocked(hooks.useRoomGroups).mockReturnValue({
-      data: [],
-      loading: false,
-      error: null,
-      refetch: vi.fn(),
-    });
-  });
-
-  afterEach(() => {
-    cleanup();
-    vi.clearAllMocks();
-  });
-
-  it("offers archiving only rooms the viewer may write to", () => {
+describe("RoomsPage archive", () => {
+  it("offers archive only on rooms the server says the user can write", () => {
     render(<RoomsPage />);
 
-    const writable = screen.getByTestId("row-planning");
-    const readOnly = screen.getByTestId("row-leadership");
-    within(writable).getByRole("button", { name: "Archive" });
-    expect(within(readOnly).queryByRole("button", { name: "Archive" })).toBeNull();
-    expect(writable.dataset.selectable).toBe("true");
-    expect(readOnly.dataset.selectable).toBe("false");
+    for (const name of ["mine", "open"]) {
+      const row = screen.getByTestId(`row-${name}`);
+      expect(within(row).getByRole("button", { name: "Archive" })).toBeTruthy();
+      expect(within(row).getByRole("checkbox")).toBeTruthy();
+    }
+    const readonly = screen.getByTestId("row-readonly");
+    expect(within(readonly).queryByRole("button", { name: "Archive" })).toBeNull();
+    expect(within(readonly).queryByRole("checkbox")).toBeNull();
+  });
+
+  it("says when a bulk archive changed only some rooms", async () => {
+    vi.mocked(api.bulkArchiveRooms).mockResolvedValue({ updated: 1 });
+    render(<RoomsPage />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "select mine" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "select open" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Archive (2)" }));
+
+    await waitFor(() =>
+      expect(api.bulkArchiveRooms).toHaveBeenCalledWith(["mine", "open"], true),
+    );
+    expect(
+      (await screen.findByRole("alert")).textContent,
+    ).toContain("Archived 1 of 2; 1 you can't change or no longer exist.");
+  });
+
+  it("says when a bulk archive failed", async () => {
+    vi.mocked(api.bulkArchiveRooms).mockResolvedValue(null);
+    render(<RoomsPage />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "select mine" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Archive (1)" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Couldn't archive the selected rooms.",
+    );
+  });
+
+  it("says when archiving one room failed", async () => {
+    vi.mocked(api.archiveRoom).mockRejectedValue(new Error("Not authorized"));
+    render(<RoomsPage />);
+
+    fireEvent.click(
+      within(screen.getByTestId("row-open")).getByRole("button", { name: "Archive" }),
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Couldn't archive the room: Not authorized",
+    );
   });
 });

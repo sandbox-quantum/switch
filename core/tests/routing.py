@@ -55,6 +55,7 @@ from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.usage_store import UsageStore
+from switch_core.decision.client import DynamicDecisionClient
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import MessageRouter
@@ -153,6 +154,7 @@ class Process:
         sender: Client,
         caption: str | None = None,
         group: dict[str, object] | None = None,
+        thread_root_id: str | None = None,
     ) -> str:
         """Write one file as `sender`, a part of a multi-file post when
         `group` says so, and return its event id."""
@@ -166,6 +168,7 @@ class Process:
             metered=False,
             msgtype="m.image",
             caption=caption,
+            thread_root_id=thread_root_id,
             group=group,
         )
         return result.event_id
@@ -199,10 +202,12 @@ def router_on(
     telemetry: RecordedTelemetry | None = None,
     conversation: ConversationSettings | None = None,
     announcer: Announcer | None = None,
+    decisions: DynamicDecisionClient | None = None,
 ) -> MessageRouter:
     """A router on the test database with real stores. A test that has no
     agent in its rooms can write through it with nothing else set up.
-    Following the conversation is off unless `conversation` turns it on.
+    Following the conversation is off unless `conversation` turns it on, and
+    routing by decision unless `decisions` is the decision service.
     With `announcer`, it announces its rows after their commits, as the
     server's does; without, the triggers announce them."""
     return MessageRouter(
@@ -240,6 +245,8 @@ def router_on(
             agent_store=AgentStore(),
             room_role_store=RoomRoleStore(),
         ),
+        decisions=decisions,
+        decision_max_age_seconds=120,
     )
 
 
@@ -250,6 +257,7 @@ def process_on(
     connections: AgentConnectionRegistry | None = None,
     conversation: ConversationSettings | None = None,
     announcer: Announcer | None = None,
+    decisions: DynamicDecisionClient | None = None,
 ) -> Process:
     """A process's routing on the test database: real stores, its own
     registry and buffer, telemetry that records. A test of presence across
@@ -269,6 +277,7 @@ def process_on(
         telemetry=telemetry,
         conversation=conversation,
         announcer=announcer,
+        decisions=decisions,
     )
     invites = InviteBus()
     factory = ClientFactory(

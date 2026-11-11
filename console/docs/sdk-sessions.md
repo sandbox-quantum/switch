@@ -1,7 +1,7 @@
 # SDK sessions
 
 Console uses a shared SDK host implementation for Claude Code, Codex, OpenCode,
-Antigravity and Cursor. Local sessions and sessions reached through SSH run
+Antigravity, Cursor, DeepSeek Harness, Pi and Kimi Code. Local sessions and sessions reached through SSH run
 the same host code, but not in the same process tree: an SSH session's host is
 deployed to the remote machine and detached from Console, while a local
 session's host is supervised by Console itself. SSH, ProxyCommand and ProxyJump
@@ -241,7 +241,7 @@ the native thread setting. Choose an explicit effort to replace it. Claude
 Compaction uses a native operation: Claude's `/compact` with a completed compaction
 boundary, Codex's `thread/compact/start` with turn completion, or OpenCode's
 `session.summarize` with native busy/idle completion. Console shows progress and the
-outcome. A timeout or interrupted completion remains unknown. The Antigravity adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt.
+outcome. A timeout or interrupted completion remains unknown. The Antigravity adapter does not expose compaction. The installed Cursor ACP command catalog also advertises no compaction operation. Neither receives a substitute summarization prompt. Pi compacts with its own RPC `compact` command.
 
 | Provider | Reset | Model selection | Native compaction | Attachments |
 | --- | --- | --- | --- | --- |
@@ -250,6 +250,9 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity ad
 | OpenCode | Yes | Connected models and native variants | Native session compaction | Staged file URLs |
 | Antigravity (`agy acp`) | Yes | Native ACP model catalog | Unavailable | Images as bytes; embedded file resources |
 | Cursor | Yes | ACP model catalog | Unavailable | Images as bytes; staged file references |
+| DeepSeek Harness | Yes | ACP `model` option (its `[provider, model]` routes) | Unavailable | Staged file references |
+| Pi | Yes | Models of the providers Pi has credentials for | RPC `compact` | Images as bytes; other files named by path |
+| Kimi Code | Yes | ACP model catalog (the models configured in Kimi) | Unavailable | Images as bytes; embedded file resources |
 
 Controls depend on the connected provider's reported support. OpenCode models
 that report no image input are labelled in the selector and reject images before
@@ -299,6 +302,32 @@ Switch Console used to install keeps using it, with its own `antigravity-acp
 --login`, until `agy` is installed. Conversations saved by that runtime, or by
 the older CLI runtime, cannot be resumed by `agy`; reset the conversation to
 start fresh while preserving its transcript.
+DeepSeek Harness runs `dsh --profile acp` (`npm install -g @deepseek-ai/dsh`)
+with the DeepSeek API key it finds on the execution host: saved under Models in
+`dsh web`, or `DEEPSEEK_API_KEY`. Outside full access every tool asks first except
+those that only read or search files: commands, edits, workflows, web fetches
+and MCP calls among them, through a small dsh plugin Switch mounts with
+`--patch`, and the runtime mode decides each request. dsh refuses to start if
+that plugin does not load, and Switch starts it gated only on a dsh version the
+plugin was verified with. A subagent there cannot run what asks, since dsh
+refuses a subagent's approvals. Background commands are off, as an interrupt
+does not stop them. Sessions run in dsh's `workspace-write` sandbox: on Linux it
+needs bubblewrap or Landlock, and without either every command asks to run
+unconfined. A user's own `$DSH_HOME/cordis.patch.yml` outranks Switch's settings
+and can change the sandbox or approval policy, as Codex's `config.toml` can. It
+is not offered on Windows until verified there.
+Kimi Code runs `kimi acp` (`npm install -g @moonshot-ai/kimi-code`) with the
+providers configured in its own data directory (`~/.kimi-code`, or
+`KIMI_CODE_HOME`): sign in with `kimi login` on the execution host, or configure
+a provider with an API key in Kimi. A model defined entirely by `KIMI_MODEL_NAME`
+and `KIMI_MODEL_API_KEY` in the environment is used as well. The sign-in check
+reads `kimi provider list --json` and never signs in, and Kimi's update check is
+turned off for the sessions Switch starts. Approval-required and auto-accept-edits
+sessions run in Kimi's Default mode; auto mode and full access run in its Ask
+When Needed mode, where routine edits and commands run and sensitive ones ask.
+Its Never Ask mode is not used, because it also stops the agent asking the room
+questions. Kimi sends its questions as permission requests, which reach the room
+as questions.
 Other capability limits remain explicit
 in the session contract. Terminal sessions (tmux/PTY) were removed; SDK adapters
 are the only session runtime. Lifecycle scripts use noninteractive commands.
@@ -381,8 +410,9 @@ resumes or attaches, including ones started automatically:
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
-  uses Smart Auto, Antigravity approves edits and asks before commands, and Kimi
-  Code runs routine edits and commands and asks before sensitive ones.
+  uses Smart Auto, Antigravity and Pi approve edits and ask before commands, Kimi
+  Code runs routine edits and commands and asks before sensitive ones, and DeepSeek
+  Harness, with no reviewer of its own, asks before every tool except those that only read or search files.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
   auto mode when both are on.
 
@@ -415,12 +445,13 @@ missing login. Existing sessions are not stopped when a setup check fails.
 
 Claude uses its native auth status command. Codex uses app-server account status.
 Cursor uses its native account status output. Antigravity initializes an empty
-session without sending a prompt, and returns its native model list. OpenCode checks connected backends; a local or free backend may need no
+session without sending a prompt, and returns its native model list. Pi lists the
+models it has credentials for (`pi --list-models`, offline). OpenCode checks connected backends; a local or free backend may need no
 login. These checks do not prove quota or access to every model, and credentials
 can expire after a check. All model fields use the same editable picker: select a model from the host
 catalogue or enter an ID. Blank uses the provider default. Loading and failed
 catalogue checks are visible and do not prevent text entry. Claude, Codex,
-Cursor and Antigravity catalogues come from native SDK initialization without a
+Cursor, Antigravity and Pi catalogues come from native SDK initialization without a
 prompt; each metadata session is stopped after the probe. OpenCode uses its
 existing host catalogue.
 

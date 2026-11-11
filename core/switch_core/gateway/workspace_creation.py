@@ -13,6 +13,7 @@ import logging
 import re
 import secrets
 import uuid
+from datetime import datetime
 
 from fastapi import HTTPException, Response
 from sqlalchemy import select
@@ -143,16 +144,16 @@ async def lock_workspace_allowance(
     `GET /auth/session` reports the same answer this enforces.
 
     The bound is on workspaces created (`users.workspaces_created`), not on
-    workspaces owned: ownership can be handed to another account, so a count of
-    ownership could be reset by creating, handing over and stepping down, over
-    and over. An invitation into someone else's workspace spends nothing.
+    workspaces administered: a workspace can be handed to another admin, so a
+    count of those could be reset by creating, handing over and stepping down,
+    over and over. An invitation into someone else's workspace spends nothing.
 
     The row lock is what makes the check hold under concurrent requests. It
     is taken `NOWAIT`, so a second request from the same person is refused
     with 409 at once rather than holding a pool connection while it waits —
     the request holding the lock needs more connections to provision, and a
     burst of waiters could starve it of them. `FOR NO KEY UPDATE` rather than
-    `FOR UPDATE`, because the new owner membership's foreign key takes a key
+    `FOR UPDATE`, because the new admin membership's foreign key takes a key
     share on this same row from another session, and `FOR UPDATE` would make
     the request wait on itself.
     """
@@ -198,6 +199,7 @@ async def create_organization_for(
     *,
     name: str,
     workspace_name: str,
+    auth_time: datetime,
 ) -> OrganizationCreateResponse:
     """Create an organization and its first workspace for `caller`, count it
     against their allowance, and switch their session into the workspace.
@@ -241,7 +243,12 @@ async def create_organization_for(
     await user_store.record_last_tenant(session, user, tenant.id)
     await session.commit()
     set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant.id
+        response,
+        user,
+        config.keyring,
+        config.gateway_cookie_secure,
+        tenant.id,
+        auth_time,
     )
     return OrganizationCreateResponse(
         organization=OrganizationSummary(
@@ -254,7 +261,7 @@ async def create_organization_for(
             id=tenant.id,
             slug=tenant.slug,
             name=tenant.name,
-            role="owner",
+            role="admin",
             organization_role=ORGANIZATION_ADMIN_ROLE,
             organization_id=organization.id,
         ),
@@ -273,7 +280,7 @@ async def create_organization(
 ) -> tuple[Organization, Tenant]:
     """Create an organization named `name` and its first workspace, named
     `workspace_name`. `creator` becomes the organization's `org_admin` and
-    the workspace's `owner`, a member there in their own right.
+    the workspace's `admin`, a member there in their own right.
 
     The directory records it first (`organization_directory.py`), since the
     row keeps what the directory knows it by; a `DirectoryError` there leaves
@@ -386,7 +393,7 @@ async def create_workspace(
     name: str,
 ) -> Tenant:
     """Create a workspace named `name` in `organization_id`, with `creator_id`,
-    its `org_admin`, as its `owner`.
+    its `org_admin`, as its `admin`.
 
     The creator administers it through the organization already; the
     membership row makes them a member there in their own right, as creating
@@ -431,7 +438,7 @@ async def _add_creator(
     organization_role: str,
     new_organization: Organization | None,
 ) -> None:
-    """Make `creator_id` the new workspace's `owner` and record its creation:
+    """Make `creator_id` the new workspace's `admin` and record its creation:
     in the workspace's audit log, and in its organization's, with the
     organization's own creation first when `new_organization` was made for it.
 
@@ -447,7 +454,7 @@ async def _add_creator(
                 session,
                 tenant_id=tenant.id,
                 user_id=creator_id,
-                role="owner",
+                role="admin",
                 organization_role=organization_role,
             )
             await record_audit_event(
@@ -489,7 +496,7 @@ async def _add_creator(
             await session.commit()
     except Exception:
         logger.error(
-            "Workspace %s (slug %s) was created but its owner membership for "
+            "Workspace %s (slug %s) was created but its admin membership for "
             "user %s was not written: it now has no members and its slug is "
             "taken. Insert the membership to repair it.",
             tenant.id,

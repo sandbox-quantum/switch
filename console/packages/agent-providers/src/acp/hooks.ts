@@ -34,6 +34,12 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /**
+   * The session's runtime mode, for an agent whose permission policy is set
+   * when it starts rather than through `session/set_mode`. Absent when the
+   * launch is for a sign-in check.
+   */
+  runtimeMode?: RuntimeMode;
 }
 
 /**
@@ -155,10 +161,26 @@ export interface AcpProviderHooks {
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
-  /** The MCP server a tool call belongs to, when the agent says so. */
-  mcpServerOf?(toolCall: AcpToolCall): string | undefined;
+  /**
+   * The MCP server a tool call belongs to, when the agent says so. `servers`
+   * names the session's registered servers. A permission request is asked
+   * about with its own call first, then with the latest announcement or
+   * update of that call this answered for, and the request's call is
+   * `request` both times: an agent may name the server only across the two.
+   */
+  mcpServerOf?(
+    toolCall: AcpToolCall,
+    servers: ReadonlySet<string>,
+    request?: AcpToolCall
+  ): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
+  /**
+   * A title for a tool call whose own title is only the tool's name (DeepSeek
+   * Harness): the command it runs, the file it writes. Undefined keeps the
+   * agent's title.
+   */
+  toolTitle?(toolCall: AcpToolCall): string | undefined;
   /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.

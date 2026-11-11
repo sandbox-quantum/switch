@@ -63,9 +63,9 @@ describe('parseSwitchAgentCredentials', () => {
 
 describe('readAgentSwitchEnvFromFs', () => {
   it('reads the slug-keyed neutral file and returns it as launch env', async () => {
-    const fs = memoryFs({ [agentSettingsRelativePath('codex-hoot')]: credsJson() });
+    const fs = memoryFs({ [agentSettingsRelativePath('codex-agent')]: credsJson() });
 
-    expect(await readAgentSwitchEnvFromFs(fs, 'codex-hoot', log)).toEqual({
+    expect(await readAgentSwitchEnvFromFs(fs, 'codex-agent', log)).toEqual({
       SWITCH_API_ENDPOINT: 'https://switch.example.com',
       SWITCH_API_TOKEN: 'tok-123',
       SWITCH_AGENT_ID: 'sw-1',
@@ -77,20 +77,22 @@ describe('readAgentSwitchEnvFromFs', () => {
     // Only Claude recovers from an empty env (it reads settings.local.json
     // natively); every other provider silently authenticates as nobody, so the
     // miss has to be visible in the log.
-    expect(await readAgentSwitchEnvFromFs(memoryFs(), 'codex-hoot', log)).toEqual({});
+    expect(await readAgentSwitchEnvFromFs(memoryFs(), 'codex-agent', log)).toEqual({});
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('no Switch identity'),
-      expect.objectContaining({ slug: 'codex-hoot', path: '.switch/agents/codex-hoot.json' })
+      expect.objectContaining({ slug: 'codex-agent', path: '.switch/agents/codex-agent.json' })
     );
   });
 
   it('warns when the file exists but its credential block is incomplete', async () => {
-    const fs = memoryFs({ [agentSettingsRelativePath('codex-hoot')]: JSON.stringify({ env: {} }) });
+    const fs = memoryFs({
+      [agentSettingsRelativePath('codex-agent')]: JSON.stringify({ env: {} }),
+    });
 
-    expect(await readAgentSwitchEnvFromFs(fs, 'codex-hoot', log)).toEqual({});
+    expect(await readAgentSwitchEnvFromFs(fs, 'codex-agent', log)).toEqual({});
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('no Switch identity'),
-      expect.objectContaining({ slug: 'codex-hoot' })
+      expect.objectContaining({ slug: 'codex-agent' })
     );
   });
 });

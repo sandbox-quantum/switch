@@ -485,12 +485,13 @@ export function RoomInfoSection({ room }: { room: RemoteRoomDetail }) {
       'Created',
       room.createdAt ? <AbsoluteTime key="created" value={room.createdAt} includeYear /> : '—',
     ],
-    ['Owner', room.ownerName ?? '—'],
     [
       'Messaging app',
       room.bridgeDisplayName ?? (room.isConsoleChat ? 'Group chat in Switch Console' : 'None'),
     ],
   ];
+  // A room an agent created on its own has no owning person; say nothing rather than "—".
+  if (room.ownerName) rows.splice(1, 0, ['Owner', room.ownerName]);
   if (room.linkedChannelName) rows.push(['Channel', `#${room.linkedChannelName}`]);
   if (room.externalChannelId)
     rows.push(['Channel id', <Mono key="c">{room.externalChannelId}</Mono>]);
@@ -569,7 +570,7 @@ export const ArchiveRoomSection = observer(function ArchiveRoomSection({
         <p className="text-xs text-foreground-muted">
           {room.archived
             ? 'Puts the room back in the room lists.'
-            : 'Hides the room from room lists, yours and its agents’. Everything else stays as it is: who is in it, its history and its channel. You can unarchive it from Your Rooms.'}
+            : 'Hides the room from room lists, yours and its agents’. Everything else stays as it is: who is in it, its history and its channel. You can unarchive it from Rooms.'}
         </p>
         {error !== null && <p className="text-xs text-destructive">{error}</p>}
       </div>

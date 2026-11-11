@@ -1,8 +1,16 @@
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { expect, it, vi } from 'vitest';
-import { coreFailureLine, failureLine, startCore, waitForCoreHealth } from './core-process';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  coreFailureLine,
+  failureLine,
+  runningCore,
+  startCore,
+  stopCore,
+  waitForCoreHealth,
+} from './core-process';
 import { nativeLayout } from './native-paths';
 
 vi.mock('@main/lib/logger', () => ({
@@ -72,7 +80,7 @@ it.skipIf(process.platform === 'win32')(
       );
       await startCore(
         layout,
-        { version: '0.30.0', sourceRoot: root, projectDir: root, python },
+        { version: '0.30.0', sourceRoot: root, projectDir: root, python, gatewayUiDir: null },
         {}
       );
       const healthy = await waitForCoreHealth(
@@ -89,3 +97,48 @@ it.skipIf(process.platform === 'win32')(
     }
   }
 );
+
+describe('a pid file whose pid answers EPERM', () => {
+  const realPlatform = process.platform;
+  const roots: string[] = [];
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    Object.defineProperty(process, 'platform', { value: realPlatform });
+    for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  });
+
+  async function recordedForeignPid(platform: NodeJS.Platform) {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'switch-foreign-'));
+    roots.push(root);
+    const layout = nativeLayout(root);
+    await mkdir(layout.run, { recursive: true });
+    await writeFile(
+      path.join(layout.run, 'switch-core.json'),
+      JSON.stringify({ pid: 4242, version: '0.30.0', startedAt: new Date().toISOString() })
+    );
+    Object.defineProperty(process, 'platform', { value: platform });
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+    });
+    return { layout, kill };
+  }
+
+  it.each<NodeJS.Platform>(['linux', 'darwin'])(
+    'is a pid reused by another user on %s, and stopping clears the record',
+    async (platform) => {
+      const { layout, kill } = await recordedForeignPid(platform);
+      expect(await runningCore(layout)).toBeNull();
+      await stopCore(layout);
+      expect(kill).not.toHaveBeenCalledWith(4242, 'SIGTERM');
+      expect(existsSync(path.join(layout.run, 'switch-core.json'))).toBe(false);
+    }
+  );
+
+  it('is a running core on Windows, which stopping refuses loudly', async () => {
+    const { layout } = await recordedForeignPid('win32');
+    expect(await runningCore(layout)).toMatchObject({ pid: 4242 });
+    await expect(stopCore(layout)).rejects.toThrow('kill EPERM');
+    expect(existsSync(path.join(layout.run, 'switch-core.json'))).toBe(true);
+  });
+});
