@@ -83,6 +83,7 @@ from switch_core.bridges.collaboration.adapter import (
     AgentIdentityConflict,
     agent_identity,
 )
+from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.budgets import BudgetGuard
 from switch_core.chats import people_are_members
@@ -3230,6 +3231,8 @@ class AgentCore:
                 raise ValueError(f"Failed to create room: {str(e)}") from e
             except PermissionError as e:
                 raise PermissionError(str(e)) from e
+            except BridgeOperationError as e:
+                raise BridgeOperationError(f"Failed to create room: {e}") from e
             except RuntimeError as e:
                 raise RuntimeError(f"Room service error: {str(e)}") from e
         if include_owner:
