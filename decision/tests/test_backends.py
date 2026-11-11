@@ -524,3 +524,16 @@ def test_a_refused_model_server_token_is_a_502_without_the_token(monkeypatch, ca
         r = tc.post("/decide", json=_payload())
     assert r.status_code == 502 and "401" in r.json()["detail"]
     assert "s3cret" not in caplog.text and "s3cret" not in r.text
+
+
+def test_the_instructions_say_an_agent_spoken_to_by_name_answers():
+    """An agent named in plain text, without @, is being spoken to; one only
+    mentioned is not. Every backend gets the rule: SystemOne's instructions and
+    the prompt the language-model backends read."""
+    from switch_decision.prompt import NONE_CRITERION, SPEAKER_INSTRUCTIONS, SYSTEM
+
+    for text in (SPEAKER_INSTRUCTIONS, SYSTEM):
+        assert "with or without @" in text
+        assert "only mentioned" in text
+        assert "named person who is not an agent" in text
+    assert "only mentioned or talked about" in NONE_CRITERION
