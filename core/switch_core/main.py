@@ -634,21 +634,6 @@ async def _snapshot_loop(reporter: SnapshotReporter) -> None:
         await reporter.run_forever()
 
 
-class _QuietPollFilter(logging.Filter):
-    _SUPPRESSED = [
-        "/events?timeout=",
-        "/room-history?",
-        "/agents/",
-    ]
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return not any(p in msg for p in self._SUPPRESSED)
-
-
-logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
-
-
 async def _prepare_database(config: SwitchConfig) -> None:
     """Re-issue the runtime role's grants, on the owner's connection.
 
@@ -1506,6 +1491,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         bridges_running_by_platform=collab_lifecycle.running_by_platform,
         bridges_configured=collab_lifecycle.expected_count,
         bridges_crashed=collab_lifecycle.crashed,
+        bridges_started=collab_lifecycle.started_names,
         consumers_running=client_lifecycle.running_count,
         agents_connected=connections.live_agents_by_transport,
         pool_stats=lambda: pool_stats(engine, pool_watermark),
