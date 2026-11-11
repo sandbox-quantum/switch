@@ -29,6 +29,7 @@ from uuid import uuid4
 
 import aiohttp
 import httpx
+from sqlalchemy import exc as sa_exc
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core import messaging_platforms
@@ -189,6 +190,26 @@ _NETWORK_EXCEPTIONS = (
 )
 
 
+# Waits before each try at a bridge that crashed on a passing failure: doubling
+# from the first, then the last one for as long as it keeps failing.
+CRASH_RETRY_DELAYS = (5.0, 15.0, 60.0, 300.0)
+
+
+def _is_passing(exc: BaseException, reason: FailureReason) -> bool:
+    """A failure worth trying the bridge again for without anyone acting.
+
+    The network, or Switch's own database being briefly out of connections or
+    unreachable. A refusal, rejected credentials or a bad config stays down
+    until someone edits or restarts the bridge: trying it again would fail the
+    same way, forever.
+    """
+    if isinstance(exc, BridgeStartRefused):
+        return False
+    return reason == "network" or isinstance(
+        exc, sa_exc.TimeoutError | sa_exc.OperationalError | sa_exc.InterfaceError
+    )
+
+
 def _failure_reason(
     exc: BaseException, adapter_cls: type[PlatformAdapter] | None
 ) -> FailureReason:
@@ -331,6 +352,10 @@ class CollaborationBridgeLifecycleService:
         # refused here was read from: not tried again here until it changes,
         # or the bridge is restarted (`_RefusedBefore`).
         self._refused_rows: dict[str, str] = {}
+        # A pending try at each bridge that crashed on a passing failure, and
+        # how many tries in a row it has had (`_retry_after_crash`).
+        self._crash_retries: dict[str, asyncio.Task[None]] = {}
+        self._crash_retry_count: dict[str, int] = {}
         self._external_user_store = external_user_store
         self._bridge_message_map_store = bridge_message_map_store
         self._room_store = room_store
@@ -1489,6 +1514,7 @@ class CollaborationBridgeLifecycleService:
                 # is stopped.
                 connected = True
                 self._connected.add(bridge_id)
+                self._crash_retry_count.pop(bridge_id, None)
                 if workspace_consumer is None:
                     # Quiet: serving requests and webhooks until stopped.
                     await asyncio.Event().wait()
@@ -1526,6 +1552,8 @@ class CollaborationBridgeLifecycleService:
                 reason = _failure_reason(
                     exc, self._running_adapter_classes.pop(bridge_id, None)
                 )
+                if _is_passing(exc, reason):
+                    self._retry_after_crash(bridge_id)
                 if workspace_consumer is None:
                     # Reported by the process that holds the bridge, once.
                     self._connect_started.pop(bridge_id, None)
@@ -1553,6 +1581,51 @@ class CollaborationBridgeLifecycleService:
                             "duration_ms": duration_ms,
                         },
                     )
+
+    def _retry_after_crash(self, bridge_id: str) -> None:
+        """Try a bridge that crashed on a passing failure again, after a wait.
+
+        Otherwise it stays down until someone restarts it or the process is
+        replaced: on pilot a minute of exhausted database pool kept a Slack
+        bridge down for 52.
+        """
+        if bridge_id in self._crash_retries or self._owned.stopping:
+            return
+        tries = self._crash_retry_count.get(bridge_id, 0)
+        delay = CRASH_RETRY_DELAYS[min(tries, len(CRASH_RETRY_DELAYS) - 1)]
+        self._crash_retry_count[bridge_id] = tries + 1
+        logger.warning(
+            "Trying bridge %s again in %.0f s; it crashed on a passing failure",
+            bridge_id,
+            delay,
+        )
+        self._crash_retries[bridge_id] = asyncio.create_task(
+            self._crash_retry(bridge_id, delay)
+        )
+
+    async def _crash_retry(self, bridge_id: str, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            self._crash_retries.pop(bridge_id, None)
+            raise
+        # Gone before the try, so a crash during it can schedule the next.
+        self._crash_retries.pop(bridge_id, None)
+        if (
+            self._owned.stopping
+            or bridge_id not in self._started
+            or self._running(bridge_id) is not None
+        ):
+            return
+        # Forgotten so the re-check starts it again from the same row.
+        self._started_rows.pop(bridge_id, None)
+        try:
+            await self.reconcile_bridge(bridge_id)
+        except Exception as exc:
+            if _is_passing(exc, _failure_reason(exc, None)):
+                self._retry_after_crash(bridge_id)
+            else:
+                logger.exception("Trying bridge %s again failed", bridge_id)
 
     def _note_connect_failure(self, bridge_id: str) -> None:
         """Remember that this bridge failed to come up.
@@ -1679,6 +1752,12 @@ class CollaborationBridgeLifecycleService:
             await self._stop_locked(bridge_id, reason=reason)
 
     async def _stop_locked(self, bridge_id: str, *, reason: str) -> None:
+        # A try after a crash is moot once the bridge is stopped, except when
+        # it is that try doing the stopping.
+        retry = self._crash_retries.get(bridge_id)
+        if retry is not None and retry is not asyncio.current_task():
+            self._crash_retries.pop(bridge_id, None)
+            retry.cancel()
         # The workspace consumer first, and gracefully: it finishes the
         # message in hand and stores how far it got, so whoever holds the
         # bridge next neither posts it again nor skips it.
@@ -1941,7 +2020,8 @@ class CollaborationBridgeLifecycleService:
         it from this version of the row. A bridge already started from this
         row is left alone, running or not: one that crashed or failed to
         start stays down until it is edited or restarted, as it does in a
-        deployment of one process.
+        deployment of one process. A crash on a passing failure is the
+        exception, tried again by `_retry_after_crash`.
         """
         if self._owned.stopping:
             return
@@ -2124,6 +2204,7 @@ class CollaborationBridgeLifecycleService:
         self._connect_started.pop(bridge_id, None)
         self._failed_take_overs.pop(bridge_id, None)
         self._refused_rows.pop(bridge_id, None)
+        self._crash_retry_count.pop(bridge_id, None)
         lock = self._bridge_locks.get(bridge_id)
         if lock is not None and not lock.locked():
             del self._bridge_locks[bridge_id]
