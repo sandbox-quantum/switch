@@ -776,6 +776,7 @@ describe('with the service_connections flag off', () => {
       'server',
       'serverAgents',
       'serverRooms',
+      'library',
       'templates',
     ]);
     // Admin's messaging apps and Switch Trust do not need service connections.
@@ -783,6 +784,7 @@ describe('with the service_connections flag off', () => {
       'server',
       'serverAgents',
       'serverRooms',
+      'library',
       'templates',
       'admin',
     ]);
@@ -790,6 +792,7 @@ describe('with the service_connections flag off', () => {
       'server',
       'serverAgents',
       'serverRooms',
+      'library',
       'templates',
       'connectors',
       'admin',

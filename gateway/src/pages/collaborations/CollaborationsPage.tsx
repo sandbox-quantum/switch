@@ -20,7 +20,7 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import {
   type BridgeDetail,
   beginAppInstall,
@@ -28,7 +28,7 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useBridges, useInstallablePlatforms } from "../../data/hooks";
-import { formatDate, platformLabel, titleCase } from "../../theme/hootFormat";
+import { formatDate, platformLabel, sentenceCase } from "../../theme/format";
 import AddToChatDialog from "./AddToChatDialog";
 import AttentionBanner from "./AttentionBanner";
 import DeleteConnectionText from "./DeleteConnectionText";
@@ -117,6 +117,11 @@ export default function CollaborationsPage() {
     }
   }, []);
 
+  const rows = useMemo<BridgeRow[]>(
+    () => (bridges ?? []).map((b) => ({ ...b, id: b.bridge_id })),
+    [bridges],
+  );
+
   const columns = useMemo<GridColDef<BridgeRow>[]>(
     () => [
       {
@@ -139,7 +144,7 @@ export default function CollaborationsPage() {
         width: 130,
         renderCell: ({ value }) => (
           <Chip
-            label={titleCase(String(value))}
+            label={sentenceCase(String(value))}
             size="small"
             color={STATUS_COLOR[value as string] ?? "default"}
           />
@@ -155,7 +160,8 @@ export default function CollaborationsPage() {
           <Switch
             size="small"
             checked={row.agent_greetings_enabled}
-            disabled={!isAdmin || savingId === row.bridge_id}
+            disabled={!row.can_manage || savingId === row.bridge_id}
+            slotProps={{ input: { "aria-label": `Agent greetings for ${row.display_name}` } }}
             onChange={(e) =>
               handleToggleGreetings(row.bridge_id, e.target.checked)
             }
@@ -172,8 +178,9 @@ export default function CollaborationsPage() {
             <Switch
               size="small"
               checked={row.channel_creation_supported && row.channel_creation_enabled}
+              slotProps={{ input: { "aria-label": `Channel creation for ${row.display_name}` } }}
               disabled={
-                !isAdmin || savingId === row.bridge_id || !row.channel_creation_supported
+                !row.can_manage || savingId === row.bridge_id || !row.channel_creation_supported
               }
               onChange={(e) =>
                 handleToggleChannelCreation(row.bridge_id, e.target.checked)
@@ -194,7 +201,7 @@ export default function CollaborationsPage() {
         width: 140,
         valueFormatter: (value) => formatDate(value as string),
       },
-      ...(isAdmin
+      ...(rows.some((row) => row.can_manage || row.can_delete)
         ? [
             {
               field: "actions" as const,
@@ -215,14 +222,14 @@ export default function CollaborationsPage() {
                   justifyContent="flex-end"
                   height="100%"
                 >
-                  {row.team_placement_supported && (
+                  {row.can_manage && row.team_placement_supported && (
                     <Tooltip title="Choose which teams this app is in">
                       <IconButton size="small" onClick={() => setTeamsTarget(row)}>
                         <GroupsOutlined fontSize="small" />
                       </IconButton>
                     </Tooltip>
                   )}
-                  {(row.install_links ?? []).length > 0 && (
+                  {row.can_manage && (row.install_links ?? []).length > 0 && (
                     <Tooltip title="Add this app to a chat">
                       <IconButton
                         size="small"
@@ -232,21 +239,22 @@ export default function CollaborationsPage() {
                       </IconButton>
                     </Tooltip>
                   )}
-                  <IconButton size="small" onClick={() => setDeleteTarget(row)}>
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
+                  {row.can_delete && (
+                    <IconButton
+                      size="small"
+                      onClick={() => setDeleteTarget(row)}
+                      aria-label={`Delete ${row.display_name}`}
+                    >
+                      <DeleteOutline fontSize="small" />
+                    </IconButton>
+                  )}
                 </Stack>
               ),
             },
           ]
         : []),
     ],
-    [isAdmin, savingId, handleToggleGreetings, handleToggleChannelCreation],
-  );
-
-  const rows = useMemo<BridgeRow[]>(
-    () => (bridges ?? []).map((b) => ({ ...b, id: b.bridge_id })),
-    [bridges],
+    [rows, savingId, handleToggleGreetings, handleToggleChannelCreation],
   );
 
   const needsAttention = useMemo(
@@ -257,7 +265,7 @@ export default function CollaborationsPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" mb={2}>
-        <Typography variant="h5">Messaging Apps</Typography>
+        <Typography variant="h5">Messaging apps</Typography>
         {isAdmin && (
           <Button
             variant="contained"
@@ -265,7 +273,7 @@ export default function CollaborationsPage() {
             sx={{ ml: "auto" }}
             onClick={() => setRegisterOpen(true)}
           >
-            Register messaging app
+            Add messaging app
           </Button>
         )}
       </Stack>
@@ -282,7 +290,7 @@ export default function CollaborationsPage() {
           displayName={b.display_name}
           message={b.attention ?? ""}
           canApproveAgain={
-            isAdmin &&
+            b.can_manage &&
             b.team_placement_supported &&
             (installablePlatforms ?? []).includes(b.bridge_type)
           }
@@ -294,14 +302,20 @@ export default function CollaborationsPage() {
       {loading ? (
         <CircularProgress />
       ) : (
-        <DataTable rows={rows} columns={columns} />
+        <DataTable
+          rows={rows}
+          columns={columns}
+          emptyState={
+            <TableEmptyState title="No messaging apps yet">
+              {isAdmin
+                ? "Add one to bring a Slack, Mattermost, Discord, Teams or Telegram workspace into rooms."
+                : "A workspace admin adds them."}
+            </TableEmptyState>
+          }
+        />
       )}
 
-      <InstalledAppsSection
-        key={installsVersion}
-        isAdmin={isAdmin}
-        onConnectionsChanged={refetch}
-      />
+      <InstalledAppsSection key={installsVersion} onConnectionsChanged={refetch} />
 
       <RegisterMessagingAppDialog
         open={registerOpen}

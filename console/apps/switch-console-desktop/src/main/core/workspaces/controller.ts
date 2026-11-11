@@ -15,6 +15,7 @@ import {
   createRoomRole,
   deleteRoomRole,
   fetchArchivedRooms,
+  fetchBridgePeople,
   fetchBridgeUserNames,
   setRoomAgentJoinEvents,
   setRoomArchived,
@@ -54,6 +55,7 @@ import {
   fetchRoomDetail,
   fetchRoomGroups,
   fetchRoomRoles,
+  fetchRoomSchedules,
   fetchRooms,
   fetchTemplateDetail,
   fetchTemplateRuns,
@@ -78,6 +80,7 @@ import {
   connectServiceWithKey,
   disconnectGitHub,
   disconnectService,
+  setRoomAutoRoute,
   setServiceGrant,
   setWorkspaceService,
   removeServiceGrant,
@@ -96,6 +99,10 @@ import {
   fetchRoomResources,
   removeLinkedRoom,
   setRoomResourceAttached,
+  createRoomSchedule,
+  deleteRoomSchedule,
+  setRoomSchedulePaused,
+  updateRoomSchedule,
 } from '@main/core/switch-servers/gateway-client';
 import {
   cancelLinkRequestOnServer,
@@ -104,6 +111,22 @@ import {
   requireLinkConfirmationOnServer,
   searchDirectoryOnServer,
 } from '@main/core/switch-servers/identities';
+import {
+  createLibraryItem,
+  deleteLibraryItem,
+  fetchLibraryItem,
+  fetchLibraryItemRooms,
+  fetchLibraryItems,
+  fetchReferenceTypes,
+  updateLibraryItem,
+  addPackageMember,
+  fetchPackageMembers,
+  removePackageMember,
+  createReferenceType,
+  deleteReferenceType,
+  fetchManagedReferenceTypes,
+  updateReferenceType,
+} from '@main/core/switch-servers/library-client';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
 import {
@@ -133,6 +156,21 @@ import {
 import { telemetryService, trackEvent, trackEventAt } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import type {
+  LibraryDeleteResult,
+  LibraryDocument,
+  LibraryItem,
+  LibraryItemChanges,
+  LibraryItemInput,
+  LibraryItemRoom,
+  LibraryKind,
+  PackageMemberKind,
+  ManagedReferenceType,
+  PackageMemberRemoval,
+  ReferenceTypeChanges,
+  ReferenceTypeInput,
+  ReferenceTypeOption,
+} from '@shared/core/switch-servers/library';
+import type {
   SlackOwnAppSetup,
   SlackTokensChecked,
 } from '@shared/core/switch-servers/own-app-setup';
@@ -147,6 +185,7 @@ import type {
   BridgeDirectorySearchResult,
   CancelLinkRequestResult,
   ChatClaim,
+  BridgePerson,
   ClaimIdentityParams,
   ConnectedChat,
   ClaimIdentityResult,
@@ -168,8 +207,12 @@ import type {
   RemoteBridgeType,
   RemoteExternalUser,
   RemoteRoomDetail,
+  RoomAutoRoute,
+  SetRoomAutoRouteParams,
   RemoteRoomGroup,
   RemoteRoomRole,
+  RemoteRoomSchedule,
+  RoomScheduleDraft,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
   RetireOutcome,
@@ -778,6 +821,7 @@ export const workspacesController = createRPCController({
           instructions: params.instructions,
           bridgeId: params.bridgeId,
           agentIds: params.agentIds,
+          userNames: params.userNames,
           channel: params.channel,
           groupId: params.groupId,
           access: params.access,
@@ -1081,6 +1125,123 @@ export const workspacesController = createRPCController({
       fetchRoomDocument(server, params.roomId, params.documentId)
     ),
 
+  /** The workspace library's references or documents the signed-in person may read. */
+  listLibraryItems: (params: { workspaceId: string; kind: LibraryKind }): Promise<LibraryItem[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchLibraryItems(server, params.kind)),
+
+  /** One library item; a document comes with its content. */
+  getLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+  }): Promise<LibraryItem | LibraryDocument> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchLibraryItem(server, params.kind, params.itemId)
+    ),
+
+  /** Add a reference or document to the library. Refusals propagate in the gateway's words. */
+  createLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    input: LibraryItemInput;
+  }): Promise<LibraryItem> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createLibraryItem(server, params.kind, params.input)
+    ),
+
+  /** Change a library item. */
+  updateLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+    changes: LibraryItemChanges;
+  }): Promise<LibraryItem | LibraryDocument> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateLibraryItem(server, params.kind, params.itemId, params.changes)
+    ),
+
+  /** Delete a library item, detaching it from its rooms and packages. */
+  deleteLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+  }): Promise<LibraryDeleteResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteLibraryItem(server, params.kind, params.itemId)
+    ),
+
+  /** The rooms a library item is attached to. */
+  listLibraryItemRooms: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+  }): Promise<LibraryItemRoom[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchLibraryItemRooms(server, params.kind, params.itemId)
+    ),
+
+  /** The references or documents a package holds. */
+  listPackageMembers: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+  }): Promise<LibraryItem[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchPackageMembers(server, params.packageId, params.kind)
+    ),
+
+  /** Put a reference or document in a package, or take it out. Refusals propagate in the gateway's words. */
+  addPackageMember: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+    memberId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addPackageMember(server, params.packageId, params.kind, params.memberId)
+    ),
+
+  removePackageMember: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+    memberId: string;
+  }): Promise<PackageMemberRemoval> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      removePackageMember(server, params.packageId, params.kind, params.memberId)
+    ),
+
+  /** The types a new reference may be given. */
+  listReferenceTypes: (params: { workspaceId: string }): Promise<ReferenceTypeOption[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchReferenceTypes(server)),
+
+  /** The reference types the signed-in person may change. */
+  listManagedReferenceTypes: (params: { workspaceId: string }): Promise<ManagedReferenceType[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchManagedReferenceTypes(server)),
+
+  /** Add, change or delete a reference type. Refusals propagate in the gateway's words. */
+  createReferenceType: (params: {
+    workspaceId: string;
+    input: ReferenceTypeInput;
+  }): Promise<ManagedReferenceType> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createReferenceType(server, params.input)
+    ),
+
+  updateReferenceType: (params: {
+    workspaceId: string;
+    type: string;
+    changes: ReferenceTypeChanges;
+  }): Promise<ManagedReferenceType> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateReferenceType(server, params.type, params.changes)
+    ),
+
+  deleteReferenceType: (params: { workspaceId: string; type: string }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteReferenceType(server, params.type)
+    ),
+
   /** The rooms a room points at. */
   listLinkedRooms: (params: { workspaceId: string; roomId: string }): Promise<LinkedRoom[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchLinkedRooms(server, params.roomId)),
@@ -1106,10 +1267,80 @@ export const workspacesController = createRPCController({
       removeLinkedRoom(server, params.roomId, params.targetRoomId)
     ),
 
+  /** The people Switch knows on one bridge, with who linked each, for the New room dialog. */
+  listBridgePeople: (params: { workspaceId: string; bridgeId: string }): Promise<BridgePerson[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchBridgePeople(server, params.bridgeId)
+    ),
+
   /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
   listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       fetchBridgeUserNames(server, params.bridgeId)
+    ),
+
+  /** A room's schedules, for its configuration page. */
+  listRoomSchedules: (params: {
+    workspaceId: string;
+    roomId: string;
+  }): Promise<RemoteRoomSchedule[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomSchedules(server, params.roomId)),
+
+  /**
+   * Add, change, pause or remove one of a room's schedules. Failures propagate
+   * as-is, so a refusal (no write access, an agent not in the room, a time
+   * already past) reaches the form in the server's own words.
+   */
+  createRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomSchedule(server, params.roomId, params.draft)
+    ),
+
+  updateRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSchedule(server, params.roomId, params.scheduleId, params.draft)
+    ),
+
+  setRoomSchedulePaused: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    paused: boolean;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomSchedulePaused(server, params.roomId, params.scheduleId, params.paused)
+    ),
+
+  deleteRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.scheduleId)
+    ),
+
+  /**
+   * Turn auto-route on or off in a room, or name its triage agent, through the
+   * same store `!auto-route` writes. Answers with the setting as it now stands;
+   * a refusal propagates, so the toggle never shows a state the server didn't take.
+   */
+  setRoomAutoRoute: ({
+    workspaceId,
+    roomId,
+    ...changes
+  }: SetRoomAutoRouteParams): Promise<RoomAutoRoute> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      setRoomAutoRoute(server, roomId, changes)
     ),
 
   /**

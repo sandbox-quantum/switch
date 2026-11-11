@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { open, mkdir, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isProcessAlive } from '../process-alive';
 import { HostConnection } from './client';
 
 export async function connectHost(
@@ -39,12 +40,7 @@ export async function connectHost(
     const owner = await readFile(ownerPath, 'utf8');
     const pid = Number(owner);
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK host owner lock.');
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-      await unlink(ownerPath);
-    }
+    if (!isProcessAlive(pid, 'recorded')) await unlink(ownerPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }

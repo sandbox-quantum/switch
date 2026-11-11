@@ -45,6 +45,7 @@ import type {
   ProviderRuntimeEvent,
   TokenUsage,
   TurnOutcome,
+  UsageLimit,
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
@@ -58,13 +59,17 @@ import {
   outcomeForResult,
   parseAskUserQuestionInput,
   PERMISSION_MODE_BY_RUNTIME_MODE,
+  rateLimitErrorText,
+  rejectedLimit,
   requestTypeForTool,
+  resultHitUsageLimit,
   resultMessageText,
   textFromToolResultContent,
   toMcpServerConfig,
   toolNameForItem,
   toolTitle,
   truncate,
+  usageLimitNotice,
 } from './claude-mapping';
 import { claudeConfigDir, configDirSessionStore, savedConversationPath } from './cli-conversations';
 
@@ -179,6 +184,12 @@ interface ActiveTurn {
   turnId: string;
   /** Message uuids this turn is still waiting on a `result` for. */
   outstanding: Set<string>;
+  /** The CLI's notice, in its usage-limit wording, when it stopped this turn at the limit. */
+  usageLimitNotice: string | null;
+  /** The text of a message the CLI flagged `rate_limit` in this turn. */
+  rateLimitText: string | null;
+  /** The limit the CLI last reported as rejected in this turn. */
+  rejectedLimit: UsageLimit | null;
 }
 
 interface TextBlockState {
@@ -366,26 +377,34 @@ function turnStatusMessage(result: SDKResultMessage, outcome: TurnOutcome): stri
 /**
  * The settings a session adds to the person's own Claude Code settings.
  *
- * The tools of the servers the host registers are allowed outright. `canUseTool`
- * allows them too, but Claude Code's auto mode, when it is the person's
- * default, asks its classifier before `canUseTool` is ever reached, and the
- * classifier refuses a Switch tool that hands out access as a permission grant,
- * whatever Switch itself allows. An allow rule is settled before the classifier.
+ * The tools of the servers the host registers, other than connectors, are
+ * allowed outright. `canUseTool` allows them too, but Claude Code's auto mode,
+ * when it is the person's default, asks its classifier before `canUseTool` is
+ * ever reached, and the classifier refuses a Switch tool that hands out access
+ * as a permission grant, whatever Switch itself allows. An allow rule is
+ * settled before the classifier.
+ *
+ * Connectors get no rule here: an allow rule would settle their calls before
+ * the classifier and `canUseTool`, so they would skip the approval the runtime
+ * mode asks for. Their tools follow the runtime mode instead (see
+ * `PERMISSION_MODE_BY_RUNTIME_MODE`): full access runs them, auto lets the
+ * classifier decide, and the other modes ask the person.
  *
  * The connector plugin Switch used to ship would add a second Switch server with
  * its own connection; it is kept off for installs that still have it.
  */
 function sessionSettings(
-  mcpServers: Record<string, McpServerConfig>
+  mcpServers: Record<string, McpServerConfig>,
+  connectorMcpServers: readonly string[]
 ): { settings: Record<string, unknown> } | Record<string, never> {
-  const names = Object.keys(mcpServers);
-  if (names.length === 0) return {};
+  const connectorSet = new Set(connectorMcpServers);
+  const names = Object.keys(mcpServers).filter((name) => !connectorSet.has(name));
+  const hasSwitch = Boolean(mcpServers.switch);
+  if (names.length === 0 && !hasSwitch) return {};
   return {
     settings: {
-      ...(mcpServers.switch
-        ? { enabledPlugins: { 'switch-connector@switch-plugins': false } }
-        : {}),
-      permissions: { allow: names.map((name) => `mcp__${name}`) },
+      ...(hasSwitch ? { enabledPlugins: { 'switch-connector@switch-plugins': false } } : {}),
+      ...(names.length > 0 ? { permissions: { allow: names.map((name) => `mcp__${name}`) } } : {}),
     },
   };
 }
@@ -478,7 +497,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       env: input.env,
       permissionMode,
       strictMcpConfig: false,
-      ...sessionSettings(mcpServers),
+      ...sessionSettings(mcpServers, input.connectorMcpServers),
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
@@ -592,7 +611,13 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (session.turn) {
       session.turn.outstanding.add(uuid);
     } else {
-      session.turn = { turnId: input.turnId, outstanding: new Set([uuid]) };
+      session.turn = {
+        turnId: input.turnId,
+        outstanding: new Set([uuid]),
+        usageLimitNotice: null,
+        rateLimitText: null,
+        rejectedLimit: null,
+      };
       this.emit(session, { type: 'session.state.changed', status: 'running' });
       this.emit(session, { type: 'turn.started', turnId: input.turnId });
     }
@@ -853,9 +878,20 @@ export class ClaudeAdapter implements ProviderAdapter {
       case 'stream_event':
         this.handleStreamEvent(session, message.event, message.parent_tool_use_id);
         return;
-      case 'assistant':
+      case 'assistant': {
+        const turn = session.turn;
+        if (turn && message.parent_tool_use_id === null) {
+          turn.usageLimitNotice = usageLimitNotice(message) ?? turn.usageLimitNotice;
+          turn.rateLimitText = rateLimitErrorText(message) ?? turn.rateLimitText;
+        }
         this.handleAssistantMessage(session, message.message, message.parent_tool_use_id);
         return;
+      }
+      case 'rate_limit_event': {
+        const limit = rejectedLimit(message.rate_limit_info);
+        if (limit !== null && session.turn) session.turn.rejectedLimit = limit;
+        return;
+      }
       case 'user':
         this.handleToolResults(session, message.message.content);
         return;
@@ -1092,7 +1128,16 @@ export class ClaudeAdapter implements ProviderAdapter {
     const single = result.user_message_uuid;
     if (consumed.length === 0 && single !== undefined) consumed.push(single);
 
-    const outcome = outcomeForResult(result);
+    const resultOutcome = outcomeForResult(result);
+    const rejected = turn.rejectedLimit !== null;
+    const notice =
+      turn.usageLimitNotice ??
+      (rejected && turn.rateLimitText !== null
+        ? turn.rateLimitText || 'The provider usage limit was reached.'
+        : null);
+    const limited =
+      resultOutcome !== 'interrupted' && (notice !== null || resultHitUsageLimit(result, rejected));
+    const outcome: TurnOutcome = limited ? 'error' : resultOutcome;
     if (consumed.length === 0) {
       turn.outstanding.clear();
     } else {
@@ -1108,7 +1153,10 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.textBlocks.clear();
     session.streamedMessageIds.clear();
     session.streamMessageId = null;
-    const message = turnStatusMessage(result, outcome);
+    const usageLimit: UsageLimit | null = limited
+      ? { resetsAt: turn.rejectedLimit?.resetsAt ?? null }
+      : null;
+    const message = (limited ? notice : null) ?? turnStatusMessage(result, outcome);
     if (outcome === 'error') {
       this.emit(session, { type: 'runtime.error', message: message ?? 'Claude turn failed.' });
     }
@@ -1117,6 +1165,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       turnId: turn.turnId,
       outcome,
       ...(message ? { message } : {}),
+      ...(usageLimit ? { usageLimit } : {}),
       usage: this.takeUsage(session),
       raw: { source: 'claude', payload: result },
     });

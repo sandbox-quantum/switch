@@ -9,6 +9,7 @@ import type {
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 import type {
+  AcpAgentCapabilities,
   AcpInitializeResult,
   AcpPermissionRequest,
   AcpPromptCapabilities,
@@ -34,6 +35,12 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /**
+   * The session's runtime mode, for an agent whose permission policy is set
+   * when it starts rather than through `session/set_mode`. Absent when the
+   * launch is for a sign-in check.
+   */
+  runtimeMode?: RuntimeMode;
   /** The native id of the conversation to resume, for hooks with `resumeOnLaunch`. */
   resumeSessionId?: string;
 }
@@ -187,6 +194,11 @@ export interface AcpProviderHooks {
    */
   promptCapabilities?: AcpPromptCapabilities;
   /**
+   * MCP transports the agent accepts whether or not it advertises them. What
+   * it advertises in `initialize` is always honoured as well.
+   */
+  mcpCapabilities?: AcpAgentCapabilities['mcpCapabilities'];
+  /**
    * The ACP mode to put a new session in for Switch's runtime mode, given the
    * modes the session advertised. Omit, or return undefined, to leave the
    * agent's default.
@@ -200,10 +212,17 @@ export interface AcpProviderHooks {
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
   /**
    * The MCP server a tool call belongs to, when the agent says so or only one
-   * of `mcpServerNames`, every MCP server the agent has (the session's and
-   * `ownMcpServers`), can be it.
+   * of `servers` can be it. `servers` names every MCP server the agent has:
+   * the session's registered servers and `ownMcpServers`. A permission request
+   * is asked about with its own call first, then with the latest announcement
+   * or update of that call this answered for, and the request's call is
+   * `request` both times: an agent may name the server only across the two.
    */
-  mcpServerOf?(toolCall: AcpToolCall, mcpServerNames: ReadonlySet<string>): string | undefined;
+  mcpServerOf?(
+    toolCall: AcpToolCall,
+    servers: ReadonlySet<string>,
+    request?: AcpToolCall
+  ): string | undefined;
   /**
    * The MCP servers the agent adds to every session from its own settings, by
    * name. `mcpServerOf` is given them with the session's, so a tool call that
@@ -220,6 +239,12 @@ export interface AcpProviderHooks {
   confirmsAnnouncedToolCalls?(request: AcpPermissionRequest): boolean;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
+  /**
+   * A title for a tool call whose own title is only the tool's name (DeepSeek
+   * Harness): the command it runs, the file it writes. Undefined keeps the
+   * agent's title.
+   */
+  toolTitle?(toolCall: AcpToolCall): string | undefined;
   /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import {
   generateSealingKeyPair,
+  providerRuntimeIds,
   providerUnsupportedReason,
   sealProviderLogin,
 } from '@switch-console/agent-providers';
@@ -10,7 +11,6 @@ import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
-import { PROVIDERS } from './providers';
 import { type AgentObservation, emptyObservation } from './runtime';
 import {
   type AgentAssignment,
@@ -295,6 +295,9 @@ describe('providerStatusFrom', () => {
   });
 });
 
+// Every provider the controller runs is checked, whatever their number.
+const PROVIDERS = providerRuntimeIds().length;
+
 describe('ProviderStatuses', () => {
   it('checks each provider at most once per TTL, and reports changes', async () => {
     let clock = NOW;
@@ -313,20 +316,19 @@ describe('ProviderStatuses', () => {
     });
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    const installed = PROVIDERS.length - 1;
-    expect(runtime.probes).toBe(installed);
-    expect(changes).toBe(PROVIDERS.length);
+    expect(runtime.probes).toBe(PROVIDERS - 1);
+    expect(changes).toBe(PROVIDERS);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(installed);
+    expect(runtime.probes).toBe(PROVIDERS - 1);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(2 * installed);
-    expect(changes).toBe(PROVIDERS.length);
+    expect(runtime.probes).toBe(2 * (PROVIDERS - 1));
+    expect(changes).toBe(PROVIDERS);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(PROVIDERS.length + 1);
+    expect(changes).toBe(PROVIDERS + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -431,7 +433,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(PROVIDERS.length - 2);
+    expect(runtime.probes).toBe(PROVIDERS - 2);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 

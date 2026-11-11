@@ -142,6 +142,10 @@ describe('MeetBuddyPage', () => {
       signedOut('opencode'),
       signedOut('cursor'),
       signedOut('antigravity'),
+      signedOut('deepseek-harness'),
+      signedOut('pi'),
+      signedOut('copilot'),
+      signedOut('mistral-vibe'),
       signedOut('openhands')
     );
     await render();

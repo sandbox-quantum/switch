@@ -134,7 +134,11 @@ interface State {
   agentMcpNames: Set<string>;
   /** The registered servers whose tools are allowed without asking: all but the connectors. */
   autoApprovedMcpNames: Set<string>;
-  toolServers: Map<string, string>;
+  /**
+   * The latest announcement or update of each tool call this turn that
+   * `mcpServerOf` placed on a server, by id.
+   */
+  mcpToolCalls: Map<string, AcpToolCall>;
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
@@ -142,7 +146,7 @@ interface State {
 
 /** A tool call a permission request is about. */
 interface AskedToolCall {
-  title: string;
+  title: string | undefined;
   /** Its ACP kind: `execute`, `edit`… */
   kind: string | undefined;
   /** The MCP server it is on, when that is known. */
@@ -236,6 +240,7 @@ export class AcpAdapter implements ProviderAdapter {
       binaryPath,
       cwd,
       env: input.env,
+      runtimeMode: input.runtimeMode,
       resumeSessionId: hooks.resumeOnLaunch ? resumeId : undefined,
     });
     const client = new StdioJsonRpcClient({
@@ -266,7 +271,7 @@ export class AcpAdapter implements ProviderAdapter {
       autoApprovedMcpNames: new Set(
         Object.keys(input.mcpServers).filter((name) => !input.connectorMcpServers.includes(name))
       ),
-      toolServers: new Map(),
+      mcpToolCalls: new Map(),
       prompt: {},
       configOptions: [],
       models: [],
@@ -299,7 +304,11 @@ export class AcpAdapter implements ProviderAdapter {
             hooks.renamedToolArguments
           )
         : input.mcpServers;
-      requireHttpMcp(hooks.label, servers, agent.mcpCapabilities?.http);
+      requireHttpMcp(
+        hooks.label,
+        servers,
+        agent.mcpCapabilities?.http || hooks.mcpCapabilities?.http
+      );
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -409,7 +418,7 @@ export class AcpAdapter implements ProviderAdapter {
     state.interrupted = false;
     state.messageId = randomUUID();
     state.items.clear();
-    state.toolServers.clear();
+    state.mcpToolCalls.clear();
     this.emit(state, { type: 'turn.started', turnId: input.turnId });
     this.emit(state, { type: 'session.state.changed', status: 'running' });
     void this.run(state, input).then(
@@ -683,7 +692,7 @@ export class AcpAdapter implements ProviderAdapter {
       if (
         !decision ||
         options.some((offered) => offered.decision === decision) ||
-        /future|permanent/i.test(option.name)
+        /future|permanent/i.test(`${option.optionId} ${option.name}`)
       )
         continue;
       options.push({
@@ -706,8 +715,10 @@ export class AcpAdapter implements ProviderAdapter {
           : only?.kind === 'edit'
             ? 'file_change_approval'
             : 'tool_approval',
-      title: only?.title || toolCall.title || `${this.hooks.label} needs permission`,
-      ...(asked.length > 1 ? { detail: asked.map(({ title }) => `- ${title}`).join('\n') } : {}),
+      title: (only ? only.title : toolCall.title) ?? `${this.hooks.label} needs permission`,
+      ...(asked.length > 1
+        ? { detail: asked.map(({ title }) => `- ${title ?? 'Tool'}`).join('\n') }
+        : {}),
       options,
       ...(mcp && !state.autoApprovedMcpNames.has(server) ? { connector: server } : {}),
     });
@@ -721,23 +732,32 @@ export class AcpAdapter implements ProviderAdapter {
   private askedAbout(state: State, request: AcpPermissionRequest): AskedToolCall[] {
     if (!this.hooks.confirmsAnnouncedToolCalls?.(request)) {
       const { toolCall } = request;
+      // The request's tool call updates one the agent announced and may name
+      // nothing but its id: what it leaves out is the announced call's.
+      const announced = state.items.get(toolCall.toolCallId);
+      // The request's own call first, then the call as it was placed, asked
+      // again with the request: an agent may name the server only across the two.
+      const placed = state.mcpToolCalls.get(toolCall.toolCallId);
       return [
         {
-          title: toolCall.title ?? '',
-          kind: toolCall.kind,
+          title: this.hooks.toolTitle?.(toolCall) ?? toolCall.title ?? announced?.title,
+          kind: toolCall.kind ?? (announced && ACP_KIND_OF_ITEM[announced.type]),
           server:
-            this.hooks.mcpServerOf?.(toolCall, state.agentMcpNames) ??
-            state.toolServers.get(toolCall.toolCallId),
+            this.hooks.mcpServerOf?.(toolCall, state.agentMcpNames, toolCall) ??
+            (placed && this.hooks.mcpServerOf?.(placed, state.agentMcpNames, toolCall)),
         },
       ];
     }
     return [...state.items.values()]
       .filter((item) => item.status === 'in_progress')
-      .map((item) => ({
-        title: item.title,
-        kind: ACP_KIND_OF_ITEM[item.type],
-        server: state.toolServers.get(item.id),
-      }));
+      .map((item) => {
+        const placed = state.mcpToolCalls.get(item.id);
+        return {
+          title: item.title,
+          kind: ACP_KIND_OF_ITEM[item.type],
+          server: placed && this.hooks.mcpServerOf?.(placed, state.agentMcpNames),
+        };
+      });
   }
 
   private applyConfigOptions(state: State, options: AcpConfigOption[]): void {
@@ -793,7 +813,7 @@ export class AcpAdapter implements ProviderAdapter {
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
     const server = this.hooks.mcpServerOf?.(update, state.agentMcpNames);
-    if (server !== undefined) state.toolServers.set(update.toolCallId, server);
+    if (server !== undefined) state.mcpToolCalls.set(update.toolCallId, update);
     const text = (update.content ?? [])
       .map((part) =>
         part.type === 'diff' ? `${part.path}\n${part.newText ?? ''}` : (part.content?.text ?? '')
@@ -820,7 +840,11 @@ export class AcpAdapter implements ProviderAdapter {
             : update.kind === 'edit'
               ? 'file_change'
               : 'tool_call'),
-      title: update.title ?? old?.title ?? 'Tool',
+      // A later update repeating the bare tool name keeps the hook's title.
+      title:
+        this.hooks.toolTitle?.(update) ??
+        (this.hooks.toolTitle && old ? old.title : (update.title ?? old?.title)) ??
+        'Tool',
       status: outputFailed
         ? 'failed'
         : update.status === 'completed'

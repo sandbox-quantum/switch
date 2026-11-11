@@ -21,6 +21,7 @@ from __future__ import annotations
 import secrets
 import threading
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -180,6 +181,9 @@ class _CollabLifecycle:
     def supports_channel_creation(self, bridge_type: str) -> bool:
         return True
 
+    def supports_private_channels(self, bridge_type: str) -> bool:
+        return True
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
 
@@ -256,6 +260,12 @@ def _config() -> SimpleNamespace:
         gateway_password_login_enabled=True,
         gateway_signup_open=True,
         gateway_signup_max_per_hour=100,
+        gateway_signup_refused_header=None,
+        gateway_admin_email="admin@example.invalid",
+        decision_routing_enabled=False,
+        decision_endpoint_url=None,
+        decision_api_key=None,
+        decision_bedrock_enabled=False,
     )
 
 
@@ -300,7 +310,15 @@ def _app(
 
 
 def _client(app: Any, user: User) -> httpx.AsyncClient:
-    token = create_jwt(user.id, user.email, user.role, _KEYRING, TENANT_ZERO_ID)
+    token = create_jwt(
+        user.id,
+        user.email,
+        user.role,
+        _KEYRING,
+        TENANT_ZERO_ID,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",

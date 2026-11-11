@@ -7,6 +7,14 @@ stay, with no owner, for the workspace's admins to manage, and the invitations,
 join domains and messaging installs they set up pass to another admin of the
 workspace.
 
+What they said in rooms stays, as part of everyone else's conversations, but
+no longer under their name: their messages, the copies stored for agents, the
+member client that sent them and the Console chat descriptions that listed
+them all name a `FORMER_MEMBER_NAME` instead. Invitations addressed to their
+e-mail address are deleted in every workspace. A workspace admin can erase
+the messages themselves (`retention/erasure.py`); the audit log keeps the
+account's id (`docs/design/data-retention.md`).
+
 Nothing is deleted until every refusal has been checked, so a refused deletion
 leaves the account exactly as it was. The refusals are the cases where going
 ahead would strand something nobody else could reach:
@@ -60,6 +68,7 @@ from switch_core.db.models import (
     AgentControllerEnrollmentCode,
     AgentControllerOperation,
     AgentDefinition,
+    Client,
     CloudMachine,
     Document,
     Invitation,
@@ -87,6 +96,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.rls_ddl import GLOBAL_TABLES
 from switch_core.db.session_scope import organization_session, tenant_session
+from switch_core.db.stores.erasure_store import FORMER_MEMBER_NAME, ErasureStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.tenant_context import tenant_scope
 
@@ -157,11 +167,18 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("chat_reads", "user_id"): "database cascades",
     ("service_connections", "user_id"): "database cascades",
     ("sign_in_flows", "user_id"): "database cascades",
-    ("clients", "user_id"): "database clears",
+    # A schedule speaks for its author, so it goes with them.
+    ("room_schedules", "author_id"): "database cascades",
+    ("clients", "user_id"): "cleared",
     ("organization_app_credentials", "updated_by"): "database clears",
     ("organization_service_settings", "updated_by"): "database clears",
+    ("tenant_retention_policies", "updated_by_user_id"): "database clears",
+    ("person_erasures", "requested_by_user_id"): "database clears",
 }
 
+
+#: How many of the person's messages are renamed per transaction.
+RENAME_BATCH = 1000
 
 # The role recorded for a workspace the person is no longer a member of.
 FORMER_MEMBER = "former member"
@@ -249,6 +266,13 @@ class Workspace:
     role: str
 
 
+def is_server_administrator(user: User, admin_email: str) -> bool:
+    """The server's administrator account: an operator, or the account at the
+    configured admin e-mail, which the server recreates every time it starts,
+    so it is never deleted."""
+    return user.role == "admin" or user.email.lower() == admin_email.lower()
+
+
 @dataclass
 class AccountDeletion:
     session_factory: async_sessionmaker[AsyncSession]
@@ -293,10 +317,10 @@ class AccountDeletion:
         self, session: AsyncSession, user: User, workspaces: list[Workspace]
     ) -> str | None:
         """Why the account cannot be deleted now, or None when it can."""
-        if user.role == "admin" or user.email.lower() == self.admin_email.lower():
+        if is_server_administrator(user, self.admin_email):
             return (
-                "This is the server's administrator account, which can't be "
-                "deleted. The server recreates it every time it starts."
+                "This is Switch's administrator account, which can't be "
+                "deleted. Switch recreates it every time it starts."
             )
         machine = await session.scalar(
             select(CloudMachine.id).where(
@@ -335,7 +359,7 @@ class AccountDeletion:
             ):
                 return (
                     f"You're the only admin of {workspace.name}, which has other "
-                    "members. Make one of them an admin first."
+                    "users. Make one of them an admin first."
                 )
             if alone:
                 platform = await session.scalar(
@@ -377,7 +401,7 @@ class AccountDeletion:
             return None
         return (
             f"You're the only organization admin of {organization.name}, which "
-            "has other members. Make one of them an organization admin first."
+            "has other users. Make one of them an organization admin first."
         )
 
     async def delete(
@@ -401,8 +425,9 @@ class AccountDeletion:
         completed: list[Workspace] = []
         try:
             for workspace in workspaces:
-                await self._leave_workspace(user_id, workspace, actor_id)
+                await self._leave_workspace(user, workspace, actor_id)
                 completed.append(workspace)
+            await self._delete_invitations_to(user.email)
             await self._hand_over_server_settings(session, user_id)
             await session.execute(
                 delete(OidcIdentity).where(OidcIdentity.user_id == user_id)
@@ -470,7 +495,7 @@ class AccountDeletion:
                     assert organization is not None
                     raise AccountDeletionRefused(
                         f"You're the only organization admin of {organization.name}, "
-                        "which has other members. Make one of them an "
+                        "which has other users. Make one of them an "
                         "organization admin first."
                     )
             for organization_id, session in held:
@@ -510,10 +535,17 @@ class AccountDeletion:
         )
 
     async def _leave_workspace(
-        self, user_id: str, workspace: Workspace, actor_id: str
+        self, user: User, workspace: Workspace, actor_id: str
     ) -> None:
+        user_id = user.id
         tenant_id = workspace.id
         async with tenant_session(self.session_factory, tenant_id) as session:
+            await self._still_not_the_last_admin(
+                session,
+                user_id,
+                workspace,
+                "Nothing of theirs there has changed",
+            )
             agent_ids = [
                 agent.id for agent in await self.agents.get_by_owner(session, user_id)
             ]
@@ -547,8 +579,18 @@ class AccountDeletion:
         if controller_ids:
             await self._revoke_controllers(tenant_id, user_id, controller_ids)
 
+        member = await self._rename_messages(user_id, tenant_id)
+
         async with tenant_session(self.session_factory, tenant_id) as session:
-            await self._still_not_the_last_admin(session, user_id, workspace)
+            await self._still_not_the_last_admin(
+                session,
+                user_id,
+                workspace,
+                "Their agents there are already deleted, their chats archived "
+                "and their messages renamed",
+            )
+            if member is not None:
+                await self._retire_member(session, member, user.name)
             successor = await self._successor(session, user_id)
             try:
                 removed_services = await self.broker.remove_connections(
@@ -611,6 +653,74 @@ class AccountDeletion:
         if workspace.role != FORMER_MEMBER and successor is None:
             await self._close_if_empty(user_id, tenant_id, actor_id)
 
+    async def _rename_messages(self, user_id: str, tenant_id: str) -> Client | None:
+        """Rename what the person sent in the workspace from Switch Console,
+        in batches of their own transactions so a long history holds no long
+        lock. Returns their member client, or None if they never used one."""
+        erasures = ErasureStore()
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            member = await erasures.member_client_of(session, user_id)
+        if member is None:
+            return None
+        while True:
+            async with (
+                tenant_session(self.session_factory, tenant_id) as session,
+                session.begin(),
+            ):
+                renamed = await erasures.rename_sent_by(
+                    session,
+                    transport_user_id=member.transport_user_id,
+                    name=FORMER_MEMBER_NAME,
+                    limit=RENAME_BATCH,
+                )
+            if renamed < RENAME_BATCH:
+                return member
+
+    async def _retire_member(
+        self, session: AsyncSession, member: Client, user_name: str
+    ) -> None:
+        """In the transaction that takes the person out of the workspace:
+        rename anything sent since the batches, the agents' copies and the
+        Console chat descriptions, then the member client itself, which
+        unlinks it from the account."""
+        erasures = ErasureStore()
+        while (
+            await erasures.rename_sent_by(
+                session,
+                transport_user_id=member.transport_user_id,
+                name=FORMER_MEMBER_NAME,
+                limit=RENAME_BATCH,
+            )
+            == RENAME_BATCH
+        ):
+            pass
+        await erasures.rename_agent_copies(
+            session, transport_user_id=member.transport_user_id, name=FORMER_MEMBER_NAME
+        )
+        await erasures.rename_in_console_chats(
+            session,
+            client_id=member.id,
+            old_names={user_name, member.display_name},
+            name=FORMER_MEMBER_NAME,
+        )
+        await erasures.retire_member_client(session, member.id, FORMER_MEMBER_NAME)
+
+    async def _delete_invitations_to(self, email: str) -> None:
+        """Delete every invitation addressed to `email`, in every workspace,
+        live or not: they would otherwise keep the address of someone who
+        has left Switch."""
+        for tenant_id in sorted(await all_tenant_ids(self.session_factory)):
+            async with (
+                tenant_session(self.session_factory, tenant_id) as session,
+                session.begin(),
+            ):
+                await session.execute(
+                    delete(Invitation).where(
+                        Invitation.tenant_id == tenant_id,
+                        func.lower(Invitation.email) == email.lower(),
+                    )
+                )
+
     async def _close_if_empty(
         self, user_id: str, tenant_id: str, actor_id: str
     ) -> None:
@@ -655,11 +765,13 @@ class AccountDeletion:
         )
 
     async def _still_not_the_last_admin(
-        self, session: AsyncSession, user_id: str, workspace: Workspace
+        self, session: AsyncSession, user_id: str, workspace: Workspace, done: str
     ) -> None:
-        """Check `refusal`'s last-admin rule again, in the transaction that
-        removes the membership and with the admin rows locked: another admin
-        may have been demoted or removed since `refusal` read them.
+        """Check `refusal`'s last-admin rule again, with the admin rows locked:
+        another admin may have been demoted or removed since `refusal` read
+        them. It runs before anything in the workspace changes, and again in
+        the transaction that removes the membership; `done` says, for the
+        error, what has changed by then.
 
         Their own membership row decides, not `workspace.role`: that is the
         role they act with, which is `admin` for the organization's
@@ -674,8 +786,8 @@ class AccountDeletion:
             raise RuntimeError(
                 f"Stopped deleting user {user_id} part-way: they became the only "
                 f"admin of workspace {workspace.id}, which has other members, after "
-                "the deletion was checked. Their agents there are already deleted; "
-                "make another member an admin and delete the account again."
+                f"the deletion was checked. {done}; make another member an admin "
+                "and delete the account again."
             )
 
     async def _successor(self, session: AsyncSession, user_id: str) -> str | None:

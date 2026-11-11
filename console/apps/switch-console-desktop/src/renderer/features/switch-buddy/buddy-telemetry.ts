@@ -12,6 +12,12 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'opencode',
   'cursor',
   'antigravity',
+  'deepseek-harness',
+  'pi',
+  'copilot',
+  'kiro',
+  'mistral-vibe',
+  'goose',
   'openhands',
 ];
 
