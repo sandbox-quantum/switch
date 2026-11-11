@@ -75,7 +75,7 @@ export function buddyOffered(
 
 /**
  * Whether the server offers switch-buddy and the person has none yet: it is
- * waiting on an AI provider. Not while their agents are still unknown, so a
+ * waiting on an agent provider. Not while their agents are still unknown, so a
  * buddy that exists is never drawn as missing.
  */
 export function buddyIsPending({

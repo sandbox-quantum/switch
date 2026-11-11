@@ -97,7 +97,7 @@ const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { server
   return (
     <SidebarMenuRow
       isActive={active}
-      title={`${name} — connect an AI provider to start it`}
+      title={`${name} — connect an agent provider to start it`}
       onMouseDown={(event) => event.preventDefault()}
       onClick={() => appState.navigation.navigate('switchBuddy', { serverId })}
       className="h-[32px] py-0 text-[13.5px]"

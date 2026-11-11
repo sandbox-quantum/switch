@@ -164,9 +164,12 @@ version of their own to them without also giving them a release of their own.
   offline. The agent API keeps its names: the `list_machines` tool, the
   `machine` parameter of `create_agent` and `update_agent_detail`, response
   fields and reason codes are unchanged, and their descriptions now tell an
-  agent to say "device" to people. Access levels are Private, Shared and Open
-  in both apps, and taking a resource out of a room is Detach in both.
-  switch-buddy and the Switch skill use the same words.
+  agent to say "device" to people. Taking a resource out of a room is Detach
+  in both apps. The
+  CLI an agent runs on is an agent provider everywhere, including switch-buddy's
+  setup, chat and instructions, which called it an AI provider, and the
+  dashboard's Devices page, which said only "Provider". switch-buddy and the
+  Switch skill use the same words.
 - **The operator dashboard follows the current design.** A field's label sits
   above it rather than floating inside the box, and the field has a white fill
   and a firm border and ring when focused; switches are pills, and one that is

@@ -157,7 +157,7 @@ Confluence (Atlassian), GitHub, Google (Gmail, Drive, Calendar) and the like.
 
 An agent also gets what is set up on its device, with no Switch connector:
 
-- **The AI provider's own tools.** If Claude Code on their computer is connected
+- **The agent provider's own tools.** If Claude Code on their computer is connected
   to Gmail (a claude.ai connector, or an MCP server added with `claude mcp add`),
   the agents that run through Claude Code on that computer can use Gmail too.
   The same goes for MCP servers in Codex's `config.toml`.

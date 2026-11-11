@@ -400,7 +400,7 @@ describe("MachinesPage", () => {
     render(<MachinesPage />);
     expect(await screen.findByText("New CLI")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "New managed agent" }));
-    fireEvent.mouseDown(await screen.findByRole("combobox", { name: "Provider" }));
+    fireEvent.mouseDown(await screen.findByRole("combobox", { name: "Agent provider" }));
     const options = (await screen.findAllByRole("option")).map((o) => o.textContent);
     expect(options).toEqual(["Claude Code", "Codex", "New CLI"]);
   });

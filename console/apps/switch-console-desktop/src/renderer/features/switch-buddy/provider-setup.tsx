@@ -6,7 +6,7 @@ import { useProviderSetup } from './use-provider-setup';
 import type { ThisComputer } from './use-this-computer';
 
 /**
- * Pick the AI provider switch-buddy runs on, get it ready on this computer,
+ * Pick the agent provider switch-buddy runs on, get it ready on this computer,
  * and create the buddy with it (see `useProviderSetup`).
  *
  * `thisComputer` is the page's own `useThisComputer`, so a page that already
@@ -39,7 +39,7 @@ export const ProviderSetup = observer(function ProviderSetup({
   return (
     <div className="flex flex-col gap-4">
       <ComputerNote computer={computer} />
-      <p className="text-sm text-foreground">Pick an AI provider to power switch-buddy:</p>
+      <p className="text-sm text-foreground">Pick an agent provider to power switch-buddy:</p>
       <ul className="grid gap-3 sm:grid-cols-3">
         {setup.providers.map((provider) => (
           <ProviderCard

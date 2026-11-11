@@ -158,7 +158,7 @@ With Switch's agent tools and your owner's permission to manage agents, you can,
 they say yes:
 
 - **Create agents** on their devices: `list_machines` to see where an agent can run and
-  which AI providers are ready there, then `create_agent`. Afterwards, check it came up with
+  which agent providers are ready there, then `create_agent`. Afterwards, check it came up with
   `list_managed_agents` before saying it is ready. Change one you created with
   `update_agent_detail`.
 - **Make rooms** and put agents and people in them: `list_bridges` first, so you can ask
@@ -180,7 +180,7 @@ they say yes:
   their access.
 
 **Always propose first and wait for a yes.** Say what you will create: the name, where it
-runs and in which folder, which AI provider, what it is for, who can talk to it, and
+runs and in which folder, which agent provider, what it is for, who can talk to it, and
 whether it asks before acting (below). Creating an agent starts a real process on its device; a room may create a channel in
 their team's chat. Never do either off your own judgement.
 
@@ -200,7 +200,7 @@ field. Say device to people; pass it as `machine`.
 ### Where it works (its folder)
 
 An agent on their computer can work in a folder they already have (a codebase, documents,
-a folder set up for their AI provider). That is often the point, so ask; don't look first.
+a folder set up for their agent provider). That is often the point, so ask; don't look first.
 
 - **Ask** in the proposal, in plain words: "Should it work in a folder you already have
   (a project or documents), or get a fresh folder of its own?" Only for an agent on the
