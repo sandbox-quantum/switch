@@ -686,6 +686,26 @@ async def test_the_asking_message_is_marked_working_while_the_turn_runs(
     assert (await _turn_post(session_factory)).mark is None
 
 
+async def test_cancelled_turn_clears_work_mark_and_cancel_hint(
+    service, publisher, platform, bridged, session_factory
+):
+    await _turn(service, bridged.room_id, "queued", 1)
+    [first] = await platform.wait_for(1)
+    assert first.content.cancel_command == f"!cancel @{AGENT} turn-1"
+    await platform.wait_until(lambda: bool(platform.marks))
+    await _turn(service, bridged.room_id, "cancelled", 2)
+    await platform.wait_until(
+        lambda: any(d.content.turn.status == "cancelled" for d in _turns(platform))
+    )
+    last = _turns(platform)[-1]
+    assert last.ref == first.ref
+    assert last.content.cancel_command is None
+    assert last.content.interrupt_turn_id is None
+    assert last.content.elapsed_seconds is None
+    await platform.wait_until(lambda: platform.marks[-1][2] is False)
+    assert (await _turn_post(session_factory)).mark is None
+
+
 async def test_a_marker_two_turns_share_comes_off_with_the_last(
     service, publisher, platform, bridged
 ):

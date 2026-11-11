@@ -176,6 +176,7 @@ class TurnActivity:
     # yet redrawn still names A after B has started, so a press on it is refused
     # for naming an ended turn rather than silently stopping B.
     interrupt_turn_id: str | None = None
+    cancel_command: str | None = None
 
 
 @dataclass(frozen=True)

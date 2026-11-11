@@ -524,15 +524,19 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
+    // Older servers reject newly added turn statuses and usage fields with 422.
+    const sentCompatible = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (item.kind !== 'activity' || error.status !== 422) return false;
+      const cancelled = item.row.kind === 'turn' && item.row.status === 'cancelled';
+      if (!item.row.usage && !cancelled) return false;
       const { usage: _usage, ...row } = item.row;
       console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+        `Switch refused turn ${row.turn_id}; resending without usage${cancelled ? ' and as interrupted instead of cancelled' : ''}: ${error.message}`
       );
-      await send({ kind: 'activity', row });
+      await send({
+        kind: 'activity',
+        row: { ...row, status: cancelled ? 'interrupted' : row.status },
+      });
       return true;
     };
     // One report at a time: the loop below and the last one before a fault share the cursor.
@@ -554,7 +558,7 @@ export async function runSharedHost(
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            if (await sentWithoutUsage(item, error)) continue;
+            if (await sentCompatible(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
@@ -792,6 +796,8 @@ export async function runSharedHost(
         console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
         return `The command is not readable: ${parsed.error.message}`;
       }
+      const replayed = await host!.replayedCancellation(parsed.data);
+      if (replayed) return replayed;
       const command = current(parsed.data);
       if (!command) return 'There is no turn running to interrupt.';
       if (command.sessionId !== options.session.sessionId) {
@@ -839,7 +845,7 @@ export async function runSharedHost(
           );
       // A retry asked for from a room that cannot run is answered there, where it was asked.
       if (
-        command.body.type === 'message.retry' &&
+        (command.body.type === 'message.retry' || command.body.type === 'turn.cancel') &&
         status?.status === 'rejected' &&
         !repeated &&
         parentChannel &&
@@ -851,11 +857,14 @@ export async function runSharedHost(
             type: 'room-reply',
             roomId: command.origin.roomId,
             threadId: command.origin.threadId,
-            body: retryRefusal(status.message),
+            body:
+              command.body.type === 'turn.cancel'
+                ? `I could not cancel that turn: ${status.message ?? 'the host refused the request.'}`
+                : retryRefusal(status.message),
           })
           .catch((error: unknown) =>
             console.warn(
-              `Could not tell room ${command.origin.roomId} that its retry was refused: ${String(error)}`
+              `Could not tell room ${command.origin.roomId} that its command was refused: ${String(error)}`
             )
           );
       // A fresh conversation starts with the instructions this host was given,

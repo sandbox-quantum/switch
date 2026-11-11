@@ -3,6 +3,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { ChatTimelineView } from '@renderer/features/chats/components/chat-timeline';
 import {
+  type ActivityApi,
+  AgentActivity,
+} from '@renderer/features/chats/stores/chat-activity-store';
+import {
   ChatTimeline,
   type TimelineApi,
 } from '@renderer/features/chats/stores/chat-timeline-store';
@@ -189,5 +193,72 @@ describe('ChatTimelineView mentions from the server’s spans', () => {
       'agent',
       'person',
     ]);
+  });
+});
+
+describe('ChatTimelineView queued cancellation', () => {
+  it('shows the queued id, then a terminal cancellation while retaining the original message', () => {
+    const timeline = new ChatTimeline('room-1', api);
+    timeline.apply(message(1, 'me', 'Alice'));
+    const unexpected = (): never => {
+      throw new Error('Rendering a cancelled turn must not call the API.');
+    };
+    const activityApi: ActivityApi = {
+      roomMessages: () => timeline.messages,
+      resolve: unexpected,
+      reasoning: unexpected,
+      watchPlacements: unexpected,
+      roomActivity: unexpected,
+      control: unexpected,
+      retrySupport: unexpected,
+      answerApproval: unexpected,
+    };
+    const activity = new AgentActivity('s', null, 'room-1', 'helper', activityApi);
+    const turnId = '12345678-1234-1234-1234-123456789abc';
+    const row = {
+      agentId: 'helper',
+      sessionId: 'session',
+      turnId,
+      itemId: 'turn',
+      kind: 'turn' as const,
+      status: 'queued',
+      revision: 1,
+      title: '',
+      text: '',
+      commandId: turnId,
+      roomId: 'room-1',
+      threadId: null,
+      messageId: 'm1',
+      occurredAt: '2026-01-01T00:00:01Z',
+      createdAt: '2026-01-01T00:00:01Z',
+      updatedAt: '2026-01-01T00:00:01Z',
+    };
+    const render = () =>
+      renderToStaticMarkup(
+        createElement(ChatTimelineView, {
+          serverId: 's',
+          timeline,
+          agents: [],
+          people: [],
+          activities: [activity],
+          onReply: () => {},
+        })
+      );
+    activity.applyItem(row);
+    expect(activity.working).toBe(true);
+    const queued = render();
+    expect(queued).toContain('Queued…');
+    expect(queued).toContain(`<code class="select-all">${turnId}</code>`);
+    activity.applyItem({ ...row, revision: 2, status: 'cancelled' });
+    expect(activity.working).toBe(false);
+    expect(activity.runningTurn).toBeNull();
+    const cancelled = render();
+    expect(cancelled).toContain('Cancelled before the agent started.');
+    expect(cancelled).toContain('body 1');
+    expect(cancelled).not.toContain('Queued…');
+    expect(cancelled).not.toContain('Thinking…');
+    expect(cancelled).not.toContain('text-shimmer');
+    expect(cancelled).not.toContain('Retry');
+    expect(cancelled.match(/<button /g)).toHaveLength(1); // The existing reply button only.
   });
 });

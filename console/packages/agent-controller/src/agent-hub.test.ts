@@ -336,6 +336,27 @@ describe('placements', () => {
 });
 
 describe('room controls and approvals', () => {
+  it('keeps a cancellation bound to its original session and refuses a missing session', async () => {
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    const { stream, seen } = watcher();
+    stream.start();
+    await stream.replacePlacements({ 'new-session': 'room-a' });
+    const command = {
+      commandId: 'cancel-1',
+      sessionId: 'original-session',
+      body: { type: 'turn.cancel', turnId: 'queued-turn' },
+    };
+    hub.sessionCommand({ agent_id: AGENT, room_id: 'room-a', command });
+    hub.sessionCommand({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: { ...command, commandId: 'cancel-2', sessionId: null },
+    });
+    await waitFor(() => seen.commands.length === 1, 'session-bound cancellation');
+    expect(seen.commands).toEqual([{ ...command, roomId: 'room-a' }]);
+  });
+
   it('hands a room control to the agent host with its room, for it to pick the session', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a', 'room-b']);
