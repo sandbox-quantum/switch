@@ -155,6 +155,8 @@ export interface AcpProviderHooks {
    * without it starts a fresh conversation with `legacyMessage`.
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
+  /** Whether this provider's session/load error means the requested conversation is gone. */
+  sessionLoadUnavailable?(error: unknown, nativeSessionId: string): boolean;
   /** The MCP server a tool call belongs to, when the agent says so. */
   mcpServerOf?(toolCall: AcpToolCall): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */

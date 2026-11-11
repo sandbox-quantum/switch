@@ -1261,6 +1261,377 @@ it('requires an explicit fresh reset when the provider cannot resume the saved c
   expect(recovered.resetDecisionPending).toBe(false);
 });
 
+it.each(['tool activity', 'approval request'] as const)(
+  'requires confirmation before replacing a lost conversation with only %s',
+  async (activity) => {
+    const { host, adapter, emit, root } = await start('copilot');
+    await host.command(message('turn'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+    if (activity === 'tool activity') {
+      emit({
+        type: 'item.started',
+        turnId: 'turn',
+        item: { id: 'tool', type: 'tool_call', title: 'Write', status: 'in_progress' },
+      });
+      await until(() =>
+        expect(host.snapshot().items.some((item) => item.kind === 'tool-activity')).toBe(true)
+      );
+    } else {
+      emit({
+        type: 'request.opened',
+        turnId: 'turn',
+        requestId: 'permission',
+        requestType: 'tool_approval',
+        title: 'Write file',
+        options: [{ decision: 'accept', label: 'Allow' }],
+      });
+      await until(() => expect(host.snapshot().requests).toHaveLength(1));
+    }
+    emit({ type: 'turn.completed', turnId: 'turn', outcome: 'error', usage: [] });
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+    const before = host.snapshot();
+    expect(before.items.some((item) => item.kind === 'assistant-message')).toBe(false);
+    await host.shutdown();
+    // Simulate an older journal without the dispatch record, so this exercises
+    // the recorded provider activity rather than the dispatch safeguard.
+    const inbox = join(root, 'inbox.jsonl');
+    const records = (await readFile(inbox, 'utf8')).trimEnd().split('\n');
+    await writeFile(
+      inbox,
+      `${records
+        .filter((line) => {
+          const record = JSON.parse(line) as { type: string; commandId?: string };
+          return record.type !== 'dispatched' || record.commandId !== 'turn';
+        })
+        .join('\n')}\n`
+    );
+
+    const next = setup('copilot');
+    vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+      new ProviderConversationUnavailableError(
+        'copilot',
+        'session',
+        'Saved conversation unavailable'
+      )
+    );
+    const recovered = await startHost(root, next.config, next.adapter);
+    hosts.push(recovered);
+    expect(recovered.resetDecisionPending).toBe(true);
+    expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+    expect(recovered.snapshot().items).toEqual(before.items);
+    if (activity === 'approval request') expect(recovered.snapshot().requests).toHaveLength(1);
+    await expect(
+      recovered.command({ ...message('held'), epoch: recovered.snapshot().session.epoch })
+    ).rejects.toThrow('NATIVE_CONVERSATION_UNAVAILABLE');
+    expect(next.adapter.sendTurn).not.toHaveBeenCalled();
+    const receipt = await recovered.command({
+      ...message('fresh'),
+      epoch: recovered.snapshot().session.epoch,
+      body: { type: 'session.reset' },
+    });
+    expect(receipt.status).toBe('applied');
+    expect(vi.mocked(next.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+    expect(recovered.snapshot().items).toEqual(before.items);
+  }
+);
+
+it('requires confirmation when a dispatched turn left no provider output', async () => {
+  const { host, adapter, root } = await start('copilot');
+  vi.mocked(adapter.sendTurn).mockImplementation(async (input) => ({ turnId: input.turnId }));
+  await host.command(message('imported:dispatched'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await host.shutdown();
+
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+  expect(recovered.snapshot().items.some((item) => item.kind === 'user-message')).toBe(true);
+});
+
+it('requires confirmation for a dispatched retry without provider output', async () => {
+  const { host, root } = await start('copilot');
+  await host.shutdown();
+  const retry = { ...message('retry'), body: { type: 'message.retry', messageId: 'synthetic' } };
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    `${JSON.stringify({ type: 'accepted', command: retry })}\n${JSON.stringify({ type: 'dispatched', commandId: 'retry' })}\n`
+  );
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+});
+
+it('starts fresh without a decision when input was queued but never dispatched', async () => {
+  const { host, root } = await start('copilot');
+  await host.shutdown();
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    `${JSON.stringify({ type: 'accepted', command: message('queued') })}\n`
+  );
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(false);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(next.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+});
+
+it('does not treat a dispatch before an explicit reset as current-conversation activity', async () => {
+  const { host, adapter, emit, root } = await start('copilot');
+  vi.mocked(adapter.sendTurn).mockImplementation(async (input) => ({ turnId: input.turnId }));
+  await host.command(message('sent'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({ type: 'turn.completed', turnId: 'sent', outcome: 'error', usage: [] });
+  emit({ type: 'session.state.changed', status: 'ready' });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  await host.command({ ...message('reset'), body: { type: 'session.reset' } });
+  await host.shutdown();
+
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(false);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(next.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+});
+
+it.each(['tool activity', 'approval request'] as const)(
+  'does not count known %s from before an explicit reset',
+  async (activity) => {
+    const { host, adapter, emit, root } = await start('copilot');
+    await host.command(message('old-turn'));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+    if (activity === 'tool activity') {
+      emit({
+        type: 'item.started',
+        turnId: 'old-turn',
+        item: { id: 'old-tool', type: 'tool_call', title: 'Write', status: 'in_progress' },
+      });
+      await until(() =>
+        expect(host.snapshot().items.some((item) => item.kind === 'tool-activity')).toBe(true)
+      );
+    } else {
+      emit({
+        type: 'request.opened',
+        turnId: 'old-turn',
+        requestId: 'old-approval',
+        requestType: 'tool_approval',
+        title: 'Write file',
+        options: [{ decision: 'accept', label: 'Allow' }],
+      });
+      await until(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+      await host.command({
+        ...message('approve'),
+        body: {
+          type: 'request.answer',
+          requestId: 'old-approval',
+          expectedRevision: 1,
+          answer: { kind: 'approval', optionId: '0' },
+        },
+      });
+      await until(() => expect(host.snapshot().requests[0]?.state).toBe('resolved'));
+    }
+    emit({ type: 'turn.completed', turnId: 'old-turn', outcome: 'error', usage: [] });
+    emit({ type: 'session.state.changed', status: 'ready' });
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+    await until(() => expect(host.snapshot().session.status).toBe('ready'));
+    await host.command({ ...message('reset'), body: { type: 'session.reset' } });
+    await host.shutdown();
+
+    const next = setup('copilot');
+    vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+      new ProviderConversationUnavailableError(
+        'copilot',
+        'session',
+        'Saved conversation unavailable'
+      )
+    );
+    const recovered = await startHost(root, next.config, next.adapter);
+    hosts.push(recovered);
+    expect(recovered.resetDecisionPending).toBe(false);
+    expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(next.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
+    if (activity === 'tool activity')
+      expect(recovered.snapshot().items.some((item) => item.kind === 'tool-activity')).toBe(true);
+    else expect(recovered.snapshot().requests).toHaveLength(1);
+  }
+);
+
+it('does not count a known completed turn from before an explicit reset', async () => {
+  const { host, adapter, emit, root } = await start('copilot');
+  await host.command(message('old-completed'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({ type: 'turn.completed', turnId: 'old-completed', outcome: 'completed', usage: [] });
+  emit({ type: 'session.state.changed', status: 'ready' });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(host.snapshot().items.every((item) => item.kind === 'user-message')).toBe(true);
+  await host.command({ ...message('reset'), body: { type: 'session.reset' } });
+  await host.shutdown();
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(false);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
+  expect(recovered.snapshot().turns[0]?.status).toBe('completed');
+});
+
+it('keeps unknown legacy activity conservative after a reset', async () => {
+  const { host, adapter, emit, root } = await start('copilot');
+  await host.command(message('legacy-turn'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({
+    type: 'item.started',
+    turnId: 'legacy-turn',
+    item: { id: 'legacy-tool', type: 'tool_call', title: 'Write', status: 'in_progress' },
+  });
+  await until(() =>
+    expect(host.snapshot().items.some((item) => item.kind === 'tool-activity')).toBe(true)
+  );
+  emit({ type: 'turn.completed', turnId: 'legacy-turn', outcome: 'error', usage: [] });
+  emit({ type: 'session.state.changed', status: 'ready' });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  await host.command({ ...message('reset'), body: { type: 'session.reset' } });
+  await host.shutdown();
+  // Simulate an older or incomplete journal with no command provenance.
+  const inbox = join(root, 'inbox.jsonl');
+  const records = (await readFile(inbox, 'utf8')).trimEnd().split('\n');
+  await writeFile(
+    inbox,
+    `${records
+      .filter((line) => {
+        const record = JSON.parse(line) as { type: string; command?: { commandId: string } };
+        return record.type !== 'accepted' || record.command?.commandId !== 'legacy-turn';
+      })
+      .join('\n')}\n`
+  );
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+});
+
+it('retains current activity with an imported-looking command ID after reset', async () => {
+  const { host, adapter, emit, root } = await start('copilot');
+  await host.command({ ...message('reset'), body: { type: 'session.reset' } });
+  await host.command({ ...message('imported:current'), epoch: host.snapshot().session.epoch });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({
+    type: 'item.started',
+    turnId: 'imported:current',
+    item: { id: 'tool', type: 'tool_call', title: 'Write', status: 'in_progress' },
+  });
+  await until(() =>
+    expect(host.snapshot().items.some((item) => item.kind === 'tool-activity')).toBe(true)
+  );
+  emit({ type: 'turn.completed', turnId: 'imported:current', outcome: 'error', usage: [] });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+  await host.shutdown();
+  const inbox = join(root, 'inbox.jsonl');
+  const records = (await readFile(inbox, 'utf8')).trimEnd().split('\n');
+  await writeFile(
+    inbox,
+    `${records
+      .filter((line) => {
+        const record = JSON.parse(line) as { type: string; commandId?: string };
+        return record.type !== 'dispatched' || record.commandId !== 'imported:current';
+      })
+      .join('\n')}\n`
+  );
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+});
+
+it('requires confirmation for an unknown dispatch after reset', async () => {
+  const { host, root } = await start('copilot');
+  await host.command({ ...message('reset'), body: { type: 'session.reset' } });
+  await host.shutdown();
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    `${JSON.stringify({ type: 'dispatched', commandId: 'unknown-legacy-command' })}\n`
+  );
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+});
+
+it('treats a post-reset dispatch with only a prior-generation acceptance as unknown', async () => {
+  const { host, root } = await start('copilot');
+  await host.command({ ...message('old-reset'), body: { type: 'session.reset' } });
+  await host.shutdown();
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    `${JSON.stringify({ type: 'dispatched', commandId: 'old-reset' })}\n`
+  );
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+});
+
+it('treats conflicting duplicate acceptances as an unknown dispatch', async () => {
+  const { host, root } = await start('copilot');
+  await host.command({ ...message('reset'), body: { type: 'session.reset' } });
+  await host.shutdown();
+  const records = [
+    { type: 'accepted', command: message('duplicate') },
+    { type: 'accepted', command: { ...message('duplicate'), body: { type: 'session.reset' } } },
+    { type: 'dispatched', commandId: 'duplicate' },
+  ];
+  await appendFile(
+    join(root, 'inbox.jsonl'),
+    `${records.map((record) => JSON.stringify(record)).join('\n')}\n`
+  );
+  const next = setup('copilot');
+  vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('copilot', 'session', 'Saved conversation unavailable')
+  );
+  const recovered = await startHost(root, next.config, next.adapter);
+  hosts.push(recovered);
+  expect(recovered.resetDecisionPending).toBe(true);
+  expect(next.adapter.startSession).toHaveBeenCalledTimes(1);
+});
+
 it('does not present authentication or transport failures as a missing conversation', async () => {
   const { host, root } = await start('codex');
   await host.shutdown();

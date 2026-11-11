@@ -6,7 +6,7 @@ import {
   SessionReplica,
   commandSchema,
   eventBytes,
-  hasOwnActivity,
+  isImportedTurn,
   serverEventSchema,
 } from '@switch-console/shared/session-v1';
 import type {
@@ -321,7 +321,7 @@ export class HostedSession {
         // A session whose provider never opened a conversation (its first
         // start failed) has nothing to resume: it starts one below. One that
         // continues a conversation resumes the copy it was started with.
-        if (!host.nativeId && host.providerAnswered())
+        if (!host.nativeId && host.providerHasActivity())
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
         const next = host.replica.snapshot();
@@ -367,14 +367,14 @@ export class HostedSession {
         (host.nativeId || config.input.resume)
       ) {
         await host.eventSerial;
-        // Nothing the provider said is lost when it never answered (a session
-        // whose turns all failed while its CLI was signed out, say): start a
-        // new conversation rather than ask. The copy of a conversation this
+        // When the provider left no activity (a session whose turns all failed
+        // while its CLI was signed out, say), start a new conversation rather
+        // than ask. The copy of a conversation this
         // session was started to continue was answered before Switch had it;
         // a fresh one it started since was not.
         const resuming = host.nativeId ?? config.input.resume?.nativeSessionId;
         const copy = config.importHistory ? config.input.resume?.nativeSessionId : undefined;
-        if (!host.providerAnswered() && (copy === undefined || resuming !== copy)) {
+        if (!host.providerHasActivity() && (copy === undefined || resuming !== copy)) {
           try {
             await host.startFresh();
             return host;
@@ -393,16 +393,46 @@ export class HostedSession {
     }
   }
 
-  /**
-   * Whether the provider has ever answered in this session. Turns copied in
-   * from a conversation this session continues are not its own answers.
-   */
-  private providerAnswered(): boolean {
+  /** Whether the provider may have left activity in the current conversation. */
+  private providerHasActivity(): boolean {
     const snapshot = this.replica.snapshot();
-    return hasOwnActivity({
-      items: snapshot.items.filter((item) => item.kind === 'assistant-message'),
-      turns: snapshot.turns.filter((turn) => turn.status === 'completed'),
-    });
+    const earlier = new Set<string>();
+    const current = new Set<string>();
+    const accepted = new Map<string, Command['body']['type'] | null>();
+    let dispatchedTurn = false;
+    for (const record of this.inbox.records) {
+      if (record.type === 'accepted') {
+        const type = record.command.body.type;
+        const id = record.command.commandId;
+        // A malformed journal with conflicting acceptances cannot prove what ran.
+        if (!accepted.has(id)) accepted.set(id, type);
+        else if (accepted.get(id) !== type) accepted.set(id, null);
+        if (type === 'message.send' || type === 'message.retry')
+          current.add(record.command.commandId);
+      } else if (record.type === 'reset-started') {
+        for (const id of current) earlier.add(id);
+        current.clear();
+        accepted.clear();
+        dispatchedTurn = false;
+      } else if (record.type === 'dispatched') {
+        const type = accepted.get(record.commandId);
+        if (!type || type === 'message.send' || type === 'message.retry') dispatchedTurn = true;
+      }
+    }
+    // Only discard activity whose turn is known to predate the reset. Unknown
+    // legacy turns stay conservative; imported history is not an agent turn.
+    const currentOwnTurn = (turnId: string): boolean => {
+      if (current.has(turnId)) return true;
+      if (earlier.has(turnId)) return false;
+      const turn = snapshot.turns.find((item) => item.turnId === turnId);
+      return !(isImportedTurn(turnId) && turn?.commandId === null);
+    };
+    return (
+      dispatchedTurn ||
+      snapshot.items.some((item) => item.kind !== 'user-message' && currentOwnTurn(item.turnId)) ||
+      snapshot.turns.some((turn) => turn.status === 'completed' && currentOwnTurn(turn.turnId)) ||
+      snapshot.requests.some((request) => currentOwnTurn(request.turnId))
+    );
   }
 
   /** Start a new provider conversation in place of one that cannot be resumed. */
