@@ -453,6 +453,14 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     field, and reporting it as `platform_error` would send an operator to
     Slack's status page instead of their own token.
     """
+    if _slack_response_field(exc, "error") in _SLACK_AUTH_ERROR_CODES:
+        return "auth_failed"
+    return "platform_error"
+
+
+def _slack_response_field(exc: SlackApiError, key: str) -> Any:
+    """`key` from the body of Slack's refusal, or None when it has no such
+    field or no readable body."""
     # `.response` is not always a mapping. On the async client slack_sdk
     # raises `SlackApiError(message, res)` with the raw `aiohttp.ClientResponse`
     # whenever the body it was handed is not the JSON the content type claimed
@@ -465,12 +473,48 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     response = getattr(exc, "response", None)
     reader = getattr(response, "get", None)
     try:
-        code = reader("error") if callable(reader) else None
+        return reader(key) if callable(reader) else None
     except Exception:
-        code = None
-    if code in _SLACK_AUTH_ERROR_CODES:
-        return "auth_failed"
-    return "platform_error"
+        return None
+
+
+def _channel_creation_refused(
+    exc: SlackApiError, channel_name: str
+) -> BridgeOperationError | ValueError:
+    """What to raise for a `conversations.create` that Slack refused and a
+    fresh name will not fix: Slack's error code, and what would fix it."""
+    code = _slack_response_field(exc, "error") or str(exc)
+    prefix = f"Slack would not create channel #{channel_name} ({code})"
+    if isinstance(code, str) and code.startswith("invalid_name"):
+        return ValueError(
+            f"{prefix}: Slack does not accept that as a channel name. Use a room "
+            "name with lowercase letters, digits, hyphens or underscores."
+        )
+    if code == "missing_scope":
+        needed = _slack_response_field(exc, "needed")
+        scope = f"the {needed} scope" if needed else "a scope it needs"
+        return BridgeOperationError(
+            f"{prefix}: the Switch Slack app lacks {scope}. Add it to the app's "
+            "bot token scopes and reinstall the app in the workspace."
+        )
+    if code == "restricted_action":
+        return BridgeOperationError(
+            f"{prefix}: this workspace does not let the Switch app create "
+            "channels. A Slack admin can allow it under the workspace's "
+            "channel management settings, or bind the room to an existing "
+            "channel instead."
+        )
+    if code == "not_allowed_token_type":
+        return BridgeOperationError(
+            f"{prefix}: the bridge is configured with a token Slack does not "
+            "accept for this. Configure it with the app's bot token (xoxb-)."
+        )
+    if code == "ratelimited":
+        return BridgeOperationError(
+            f"{prefix}: Slack is rate limiting channel creation. Try again in "
+            f"{_retry_after_seconds(exc)} seconds."
+        )
+    return BridgeOperationError(f"{prefix}.")
 
 
 # The ids Slack gives an app's bot, under which an app's posts with no user are
@@ -2376,31 +2420,50 @@ class SlackAdapter(PlatformAdapter):
             )
 
         is_private = channel_type == "channel_private"
-        channel_name = self.channel_name_for(name)
-
-        try:
-            result = await self._web_client.conversations_create(
-                name=channel_name, is_private=is_private
-            )
-        except SlackApiError:
-            channel_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
-            result = await self._web_client.conversations_create(
-                name=channel_name, is_private=is_private
-            )
-        channel_id: str = result["channel"]["id"]
-        created_name: str = result["channel"].get("name") or channel_name
-        self._channel_name_cache[channel_id] = created_name
+        created = await self._create_conversation(
+            self.channel_name_for(name), is_private=is_private
+        )
+        self._channel_name_cache[created.id] = created.name
 
         try:
             await self._web_client.conversations_setTopic(
-                channel=channel_id, topic=topic
+                channel=created.id, topic=topic
             )
         except SlackApiError as e:
             logger.warning(
-                "Failed to set topic for Slack channel %s: %s", channel_name, e
+                "Failed to set topic for Slack channel %s: %s", created.name, e
             )
 
-        return CreatedChannel(id=channel_id, name=created_name)
+        return created
+
+    async def _create_conversation(
+        self, channel_name: str, *, is_private: bool
+    ) -> CreatedChannel:
+        """Create a channel named `channel_name`, or that name with a random
+        suffix if Slack says it is taken. Any other refusal raises what
+        `_channel_creation_refused` makes of it."""
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        try:
+            result = await self._web_client.conversations_create(
+                name=channel_name, is_private=is_private
+            )
+        except SlackApiError as error:
+            if _slack_response_field(error, "error") != "name_taken":
+                raise _channel_creation_refused(error, channel_name) from error
+            channel_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
+            try:
+                result = await self._web_client.conversations_create(
+                    name=channel_name, is_private=is_private
+                )
+            except SlackApiError as retry_error:
+                raise _channel_creation_refused(
+                    retry_error, channel_name
+                ) from retry_error
+        return CreatedChannel(
+            id=result["channel"]["id"],
+            name=result["channel"].get("name") or channel_name,
+        )
 
     @classmethod
     def channel_name_for(cls, room_name: str) -> str:
@@ -2437,17 +2500,7 @@ class SlackAdapter(PlatformAdapter):
 
         raw_name = f"{agent_name}-{user_name}"
         channel_name = re.sub(r"[^a-z0-9_-]+", "-", raw_name.lower()).strip("-")[:80]
-        try:
-            result = await self._web_client.conversations_create(
-                name=channel_name, is_private=True
-            )
-            channel_id: str = result["channel"]["id"]
-        except SlackApiError:
-            unique_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
-            result = await self._web_client.conversations_create(
-                name=unique_name, is_private=True
-            )
-            channel_id = result["channel"]["id"]
+        channel_id = (await self._create_conversation(channel_name, is_private=True)).id
 
         try:
             await self._web_client.conversations_invite(
