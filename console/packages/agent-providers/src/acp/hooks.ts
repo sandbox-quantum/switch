@@ -34,6 +34,12 @@ export interface AcpLaunchInput {
   binaryPath: string;
   cwd: string;
   env: Record<string, string>;
+  /**
+   * The session's runtime mode, for an agent whose permission policy is set
+   * when it starts rather than through `session/set_mode`. Absent when the
+   * launch is for a sign-in check.
+   */
+  runtimeMode?: RuntimeMode;
 }
 
 /**
@@ -159,6 +165,12 @@ export interface AcpProviderHooks {
   mcpServerOf?(toolCall: AcpToolCall): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
+  /**
+   * A title for a tool call whose own title is only the tool's name (DeepSeek
+   * Harness): the command it runs, the file it writes. Undefined keeps the
+   * agent's title.
+   */
+  toolTitle?(toolCall: AcpToolCall): string | undefined;
   /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.

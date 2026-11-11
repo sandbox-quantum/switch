@@ -16,8 +16,8 @@ def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:
     with pytest.raises(ValidationError) as raised:
         DefinitionV1(provider="gemini")
     assert (
-        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor"
-        in str(raised.value)
+        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
+        "deepseek-harness, pi" in str(raised.value)
     )
 
 
@@ -30,6 +30,8 @@ def test_the_served_provider_list() -> None:
         ("opencode", "OpenCode"),
         ("antigravity", "Antigravity"),
         ("cursor", "Cursor CLI"),
+        ("deepseek-harness", "DeepSeek Harness"),
+        ("pi", "Pi"),
     ]
     by_id = {provider["id"]: provider for provider in providers}
     served = advanced_config_schema()["providers"]
@@ -41,7 +43,15 @@ def test_the_served_provider_list() -> None:
 def test_the_served_schema() -> None:
     providers = advanced_config_schema()["providers"]
 
-    assert set(providers) == {"claude", "codex", "opencode", "cursor", "antigravity"}
+    assert set(providers) == {
+        "claude",
+        "codex",
+        "opencode",
+        "cursor",
+        "antigravity",
+        "deepseek-harness",
+        "pi",
+    }
     assert [field["key"] for field in providers["claude"]["fields"]] == [
         "tools",
         "disallowedTools",
@@ -62,6 +72,7 @@ def test_the_served_schema() -> None:
         "smallModel",
     ]
     assert providers["cursor"] == {"fields": []}
+    assert providers["deepseek-harness"] == {"fields": []}
     assert providers["antigravity"] == {"fields": []}
     claude = {field["key"]: field for field in providers["claude"]["fields"]}
     assert claude["isolation"] == {

@@ -71,6 +71,8 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "opencode": ("opencode", "OpenCode CLI"),
         "antigravity": ("antigravity", "Antigravity CLI"),
         "cursor": ("cursor", "Cursor CLI"),
+        "deepseek-harness": ("deepseek-harness", "DeepSeek Harness"),
+        "pi": ("pi", "Pi"),
         "amp": ("amp", "Amp"),
     }
 
@@ -86,6 +88,11 @@ _CONSOLE_SIGN_IN = {
     "opencode": ("opencode/sign-in.ts", r"OPENCODE_LOGIN = '([^']+)'"),
     "antigravity": ("antigravity/runtime.ts", r"AGY_LOGIN = '([^']+)'"),
     "cursor": ("cursor/cursor-adapter.ts", r"CURSOR_LOGIN = '([^']+)'"),
+    "deepseek-harness": (
+        "deepseek-harness/deepseek-harness-acp.ts",
+        r"DSH_LOGIN = '([^']+)'",
+    ),
+    "pi": ("pi/sign-in.ts", r"PI_LOGIN = '([^']+)'"),
     "amp": ("amp/amp-adapter.ts", r"AMP_LOGIN = '([^']+)'"),
 }
 
@@ -105,7 +112,8 @@ def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
     with pytest.raises(UnknownProvider) as raised:
         agent_provider("gemini")
     assert str(raised.value) == (
-        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, amp"
+        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
+        "deepseek-harness, pi, amp"
     )
 
 

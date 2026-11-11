@@ -40,7 +40,15 @@ const resolvePortsMock = vi.hoisted(() => vi.fn());
 const readPersistedPortsMock = vi.hoisted(() => vi.fn());
 const rememberPortsMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const ensureManagedServerMock = vi.hoisted(() => vi.fn(() => Promise.resolve({ id: 'srv-1' })));
-const passwordLoginMock = vi.hoisted(() => vi.fn(() => Promise.resolve({ success: true })));
+const passwordLoginMock = vi.hoisted(() =>
+  vi.fn(() =>
+    Promise.resolve({
+      success: true,
+      data: { id: 'u-1', name: 'Ada Lovelace', email: 'admin@switch.local', role: 'admin' },
+    })
+  )
+);
+const updateMyNameMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const logError = vi.hoisted(() => vi.fn());
 const logWarn = vi.hoisted(() => vi.fn());
 
@@ -99,6 +107,9 @@ vi.mock('@main/core/switch-servers/servers-store', () => ({
   setActiveServerId: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('@main/core/switch-servers/auth', () => ({ passwordLogin: passwordLoginMock }));
+// Reaches the reachability store, and through it the database client.
+vi.mock('@main/core/switch-servers/gateway-client', () => ({ updateMyName: updateMyNameMock }));
+vi.mock('./os-user-name', () => ({ osUserFullName: () => Promise.resolve('Ada Lovelace') }));
 vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
   reconcileServerWorkspaces: vi.fn(async () => {}),
 }));
@@ -937,6 +948,39 @@ describe('the paths a shared start or join refuses or degrades on', () => {
     expect(logWarn).toHaveBeenCalledWith(
       expect.stringMatching(/auto sign-in failed/),
       expect.objectContaining({ error: 'bad password' })
+    );
+  });
+
+  it('renames the seeded Admin user to the OS account name after sign-in', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    passwordLoginMock.mockResolvedValueOnce({
+      success: true,
+      data: { id: 'u-1', name: 'Admin', email: 'admin@switch.local', role: 'admin' },
+    });
+
+    expect(await startStack(startOptions(sharedHost().host))).toMatchObject({ kind: 'started' });
+    expect(updateMyNameMock).toHaveBeenCalledWith(expect.anything(), 'Ada Lovelace');
+  });
+
+  it('keeps a name the user already chose', async () => {
+    inspectStackMock.mockResolvedValue(present());
+
+    expect(await startStack(startOptions(sharedHost().host))).toMatchObject({ kind: 'started' });
+    expect(updateMyNameMock).not.toHaveBeenCalled();
+  });
+
+  it('warns and carries on when renaming the Admin user fails', async () => {
+    inspectStackMock.mockResolvedValue(present());
+    passwordLoginMock.mockResolvedValueOnce({
+      success: true,
+      data: { id: 'u-1', name: 'Admin', email: 'admin@switch.local', role: 'admin' },
+    });
+    updateMyNameMock.mockRejectedValueOnce(new Error('gateway down'));
+
+    expect(await startStack(startOptions(sharedHost().host))).toMatchObject({ kind: 'started' });
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/could not rename default admin user/),
+      expect.objectContaining({ error: 'Error: gateway down' })
     );
   });
 

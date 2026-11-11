@@ -39,6 +39,8 @@ export { createOpencodeAdapter, OpencodeAdapter } from './opencode/opencode-adap
 export type { OpencodeSkill } from './opencode/server';
 export type { CodexAdapterOptions } from './codex/codex-adapter';
 export { CodexAdapter, createCodexAdapter } from './codex/codex-adapter';
+export type { PiAdapterOptions } from './pi/pi-adapter';
+export { createPiAdapter, PiAdapter } from './pi/pi-adapter';
 export { AcpAdapter, createAcpAdapter } from './acp/acp-adapter';
 export type {
   AcpAdapterOptions,
@@ -53,6 +55,10 @@ export type {
 export { ampAcp, createAmpAdapter } from './amp/amp-adapter';
 export { antigravityAcp, createAntigravityAdapter } from './antigravity/antigravity-adapter';
 export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
+export {
+  createDeepseekHarnessAdapter,
+  deepseekHarnessAcp,
+} from './deepseek-harness/deepseek-harness-acp';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';
@@ -72,6 +78,7 @@ export type { Supervision } from './host/launch';
 export { commandLineNames, killProcessTree, processCommandLine } from './host/process-fence';
 export { execProvider, findOnPath, spawnProvider, stopProvider } from './provider-process';
 export { replaceFile } from './host/replace-file';
+export { IS_PROCESS_ALIVE, isProcessAlive, type PidOrigin } from './process-alive';
 export {
   isStopMessage,
   onStopRequest,

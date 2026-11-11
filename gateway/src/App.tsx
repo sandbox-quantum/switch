@@ -2,35 +2,15 @@ import { Alert, Box, Button, CircularProgress } from "@mui/material";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
 import { appView, readPendingInvite } from "./data/sessionState";
+import { DevRoleCorner } from "./layout/DevRoleSlot";
 import PageShell from "./layout/PageShell";
-import AgentDetailPage from "./pages/agents/AgentDetailPage";
-import AgentsPage from "./pages/agents/AgentsPage";
+import { renderRoutes } from "./routes/renderRoutes";
+import { NotFoundPage } from "./routes/StatusPages";
 import LoginPage from "./pages/auth/LoginPage";
-import CollaborationsPage from "./pages/collaborations/CollaborationsPage";
-import ConnectorAppsPage from "./pages/connector-apps/ConnectorAppsPage";
-import EcosystemGraphPage from "./pages/ecosystem/EcosystemGraphPage";
-import MachinesPage from "./pages/machines/MachinesPage";
-import RegistrationKeysPage from "./pages/registration-keys/RegistrationKeysPage";
-import DocumentDetailPage from "./pages/resources/DocumentDetailPage";
-import PackageDetailPage from "./pages/resources/PackageDetailPage";
-import ReferenceDetailPage from "./pages/resources/ReferenceDetailPage";
-import ResourcesPage from "./pages/resources/ResourcesPage";
-import TemplateDetailPage from "./pages/resources/TemplateDetailPage";
-import CreateRoomPage from "./pages/rooms/CreateRoomPage";
-import GroupsPage from "./pages/rooms/GroupsPage";
-import RoomDetailPage from "./pages/rooms/RoomDetailPage";
-import RoomScopedDocumentView from "./pages/rooms/RoomScopedDocumentView";
-import RoomsGraphPage from "./pages/rooms/RoomsGraphPage";
-import RoomsPage from "./pages/rooms/RoomsPage";
 import AcceptInvitePage from "./pages/onboarding/AcceptInvitePage";
 import InviteCapture from "./pages/onboarding/InviteCapture";
 import OnboardingPage from "./pages/onboarding/OnboardingPage";
 import WorkspacePickerPage from "./pages/onboarding/WorkspacePickerPage";
-import OperatorWorkspacesPage from "./pages/operator/OperatorWorkspacesPage";
-import OrganizationPage from "./pages/organization/OrganizationPage";
-import UsagePage from "./pages/usage/UsagePage";
-import UsersPage from "./pages/users/UsersPage";
-import WorkspacePage from "./pages/workspace/WorkspacePage";
 
 function FullScreen({ children }: { children: React.ReactNode }) {
   return (
@@ -48,7 +28,7 @@ function FullScreen({ children }: { children: React.ReactNode }) {
 }
 
 export function AppRoutes() {
-  const { session, loading, loadError } = useAuth();
+  const { session, loading, loadError, capabilities } = useAuth();
 
   if (loading) {
     return (
@@ -98,56 +78,23 @@ export function AppRoutes() {
         <OnboardingPage />
       );
     return (
-      <Routes>
-        <Route path="/invite" element={<InviteCapture />} />
-        <Route path="/" element={screen} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+      <>
+        <Routes>
+          <Route path="/invite" element={<InviteCapture />} />
+          <Route path="/" element={screen} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+        <DevRoleCorner />
+      </>
     );
   }
 
+  const layout = capabilities.features.gateway_v2 ? "v2" : "current";
   return (
     <Routes>
-      <Route element={<PageShell />}>
-        <Route index element={<Navigate to="/rooms" replace />} />
-        <Route path="ecosystem" element={<EcosystemGraphPage />} />
-        <Route path="rooms" element={<RoomsPage />} />
-        <Route path="rooms/new" element={<CreateRoomPage />} />
-        <Route path="rooms/groups" element={<GroupsPage />} />
-        <Route path="rooms/graph" element={<RoomsGraphPage />} />
-        <Route path="rooms/:roomId" element={<RoomDetailPage />} />
-        <Route
-          path="rooms/:roomId/documents/:documentId"
-          element={<RoomScopedDocumentView />}
-        />
-        <Route path="resources" element={<ResourcesPage />} />
-        <Route
-          path="resources/references/:id"
-          element={<ReferenceDetailPage />}
-        />
-        <Route
-          path="resources/documents/:id"
-          element={<DocumentDetailPage />}
-        />
-        <Route
-          path="resources/packages/:id"
-          element={<PackageDetailPage />}
-        />
-        <Route
-          path="resources/templates/:id"
-          element={<TemplateDetailPage />}
-        />
-        <Route path="agents" element={<AgentsPage />} />
-        <Route path="agents/:agentId" element={<AgentDetailPage />} />
-        <Route path="machines" element={<MachinesPage />} />
-        <Route path="collaborations" element={<CollaborationsPage />} />
-        <Route path="registration-keys" element={<RegistrationKeysPage />} />
-        <Route path="usage" element={<UsagePage />} />
-        <Route path="users" element={<UsersPage />} />
-        <Route path="connectors" element={<ConnectorAppsPage />} />
-        <Route path="workspace" element={<WorkspacePage />} />
-        <Route path="organization" element={<OrganizationPage />} />
-        <Route path="operator/workspaces" element={<OperatorWorkspacesPage />} />
+      <Route element={<PageShell layout={layout} />}>
+        {renderRoutes(layout)}
+        <Route path="*" element={<NotFoundPage />} />
       </Route>
       <Route path="/invite" element={<InviteCapture />} />
       <Route path="/login" element={<Navigate to="/" replace />} />

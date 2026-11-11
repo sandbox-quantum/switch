@@ -80,8 +80,10 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
+    AuthenticatedSession,
     all_workspaces,
     get_authenticated_caller,
+    get_authenticated_session,
     get_authenticated_user_id,
     get_current_user,
     get_tenant_is_admin,
@@ -94,6 +96,7 @@ from switch_core.gateway.auth import (
     session_auth_time,
     set_session_cookie,
     tenant_of_invitation_token,
+    tenants_bindable_by,
     tenants_open_to,
     tenants_with_invitations_for,
 )
@@ -157,6 +160,7 @@ from switch_core.gateway.schemas import (
     TenantDeleteRequest,
     TenantMembershipResponse,
     UsageTotalResponse,
+    WorkspaceCountsResponse,
 )
 from switch_core.gateway.service_connections import service_refusal
 from switch_core.gateway.workspace_creation import (
@@ -164,7 +168,11 @@ from switch_core.gateway.workspace_creation import (
     create_organization_for,
     directory_failed,
 )
-from switch_core.organization_access import AccessRevocation, remove_membership
+from switch_core.organization_access import (
+    AccessRevocation,
+    removal_heir,
+    remove_membership,
+)
 from switch_core.organization_directory import DirectoryError, OrganizationDirectory
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
@@ -201,7 +209,7 @@ def _require_bound_tenant(tenant_id: str) -> None:
     codebase follows refuses to do.
     """
     if current_tenant_id() != tenant_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this tenant")
+        raise HTTPException(status_code=403, detail="Not allowed in this workspace")
 
 
 def _invitation_fields(invitation: Invitation) -> dict[str, object]:
@@ -264,9 +272,9 @@ async def _refuse_organization_admin(
         raise HTTPException(
             status_code=409,
             detail=(
-                "This member administers the workspace's organization, which "
+                "This user administers the workspace's organization, which "
                 "gives them admin rights in every one of its workspaces. Change "
-                "their role in the organization's members first."
+                "their role in the organization's users first."
             ),
         )
 
@@ -322,6 +330,53 @@ async def list_tenants(
     the others — see `list_tenant_memberships`.
     """
     return await list_tenant_memberships(session_factory, user_store, user_id)
+
+
+@router.get("/tenants/counts")
+async def workspace_counts(
+    auth: Annotated[AuthenticatedSession, Depends(get_authenticated_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+) -> list[WorkspaceCountsResponse]:
+    """How many people and agents each workspace the caller may enter has:
+    those of `GET /tenants`, and the one the platform operator entered on the
+    operator flag alone, which their session is in without being one of them.
+
+    For the dashboard's workspace switcher, which asks when it opens rather
+    than on every page: each workspace is read on its own short session, as
+    `GET /tenants` reads them, so this costs as much again.
+    """
+    tenant_ids = await tenants_bindable_by(session_factory, auth.user_id)
+    claim = auth.tenant_claim
+    if (
+        claim is not None
+        and claim not in tenant_ids
+        and await may_bind_tenant(session_factory, user_store, auth.user_id, claim)
+    ):
+        tenant_ids.append(claim)
+    counts: list[WorkspaceCountsResponse] = []
+    for tenant_id in tenant_ids:
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            if tenant is None:
+                logger.warning(
+                    "User %s may enter workspace %s, but it was gone by the "
+                    "time its counts were read",
+                    auth.user_id,
+                    tenant_id,
+                )
+                continue
+            counts.append(
+                WorkspaceCountsResponse(
+                    id=tenant_id,
+                    users=await user_store.count_people(session, tenant),
+                    agents=await agent_store.count(session),
+                )
+            )
+    return counts
 
 
 @router.get("/tenants/current")
@@ -507,7 +562,7 @@ async def switch_tenant(
     workspace (`initial_tenant_claim`), so every visit starts here.
     """
     if not await may_bind_tenant(session_factory, user_store, user_id, tenant_id):
-        raise HTTPException(status_code=403, detail="Not a member of this tenant")
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
 
     user = await user_store.get(session, user_id)
     if user is None:
@@ -1790,7 +1845,7 @@ async def update_member_role(
 
     membership = await session.get(TenantMember, (tenant_id, user_id))
     if membership is None:
-        raise HTTPException(status_code=404, detail="Not a member of this tenant")
+        raise HTTPException(status_code=404, detail="Not a member of this workspace")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
     if membership.role == "admin" and role != "admin":
@@ -1819,6 +1874,37 @@ async def update_member_role(
         caller_id=admin.id,
         administers=True,
     )
+
+
+async def _heir_detail(
+    session: AsyncSession, user_store: UserStore, heir_id: str | None
+) -> dict[str, str] | None:
+    """Who receives what a removed member owns, as the Gateway names them."""
+    if heir_id is None:
+        return None
+    heir = await user_store.get(session, heir_id)
+    if heir is None:
+        raise RuntimeError(f"The heir {heir_id} of a member removal has no user")
+    return {"user_id": heir.id, "name": heir.name, "email": heir.email}
+
+
+@router.get("/tenants/{tenant_id}/members/{user_id}/removal")
+async def preview_member_removal(
+    tenant_id: str,
+    user_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    admin: Annotated[User, Depends(require_tenant_admin)],
+) -> dict:
+    """Who would receive what `user_id` owns here if the caller removed them
+    now (`organization_access.removal_heir`), for the Gateway to say so before
+    the caller confirms: `handed_over_to` names them, or is None when the
+    workspace has no other admin and what they own would stay theirs."""
+    _require_bound_tenant(tenant_id)
+    if await session.get(TenantMember, (tenant_id, user_id)) is None:
+        raise HTTPException(status_code=404, detail="Not a member of this workspace")
+    heir = await removal_heir(session, tenant_id, user_id, admin.id, lock=False)
+    return {"handed_over_to": await _heir_detail(session, user_store, heir)}
 
 
 @router.delete("/tenants/{tenant_id}/members/{user_id}", response_model=None)
@@ -1859,7 +1945,10 @@ async def remove_member(
     workspace's longest-standing other admin when the remover is not a member
     of it (`organization_access.removal_heir`), so nothing is left owned by
     someone who can no longer reach it. Chats and a room's own documents stay
-    as they are, as a transfer refuses them.
+    as they are, as a transfer refuses them. The response names who received
+    them (`handed_over_to`, None when the workspace has no other admin) and
+    how many of each kind passed (`handed_over`); `GET …/removal` names the
+    recipient beforehand.
 
     It does **not** touch any agent the member owns — it refuses instead, 409,
     naming them. An agent is not that member's private property to lose along
@@ -1885,7 +1974,7 @@ async def remove_member(
         populate_existing=True,
     )
     if membership is None:
-        raise HTTPException(status_code=404, detail="Not a member of this tenant")
+        raise HTTPException(status_code=404, detail="Not a member of this workspace")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
     if membership.role == "admin":
@@ -1898,7 +1987,7 @@ async def remove_member(
         raise HTTPException(
             status_code=409,
             detail=(
-                "Cannot remove: this member owns agents in this workspace. "
+                "Cannot remove: this user owns agents in this workspace. "
                 f"Transfer or delete them first: {names}"
             ),
         )
@@ -1911,7 +2000,7 @@ async def remove_member(
         sign_in_flows=request.app.state.sign_in_flows,
     )
     try:
-        revoked = await remove_membership(
+        removal = await remove_membership(
             session,
             revocation,
             membership,
@@ -1923,9 +2012,15 @@ async def remove_member(
         return service_refusal(error)
     await session.commit()
 
-    warning = await revocation.finish(session, user_id, revoked)
+    warning = await revocation.finish(session, user_id, removal.revoked)
+    handed_over_to = await _heir_detail(session, user_store, removal.heir)
     if user_id == admin.id:
         await rebind_if_left(
             request, response, session_factory, user_store, admin, config
         )
-    return {"ok": True, "warning": warning}
+    return {
+        "ok": True,
+        "warning": warning,
+        "handed_over_to": handed_over_to,
+        "handed_over": removal.handed,
+    }

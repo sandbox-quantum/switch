@@ -31,12 +31,29 @@ class CollaborationBridgeStore:
         return list(result.scalars().all())
 
     async def get_all(self, session: AsyncSession) -> list[CollaborationBridge]:
-        result = await session.execute(select(CollaborationBridge))
+        """Every bridge of the bound tenant.
+
+        Filtered here rather than left to row-level security, for the same
+        reason as `get_default`: the policy only applies on the restricted
+        runtime role, and a deployment running on the owner connection
+        (`DB_REQUIRE_RESTRICTED_ROLE=false`) would otherwise hand an agent or
+        a dashboard every tenant's bridges. A caller that needs every tenant's
+        bridges fans out over `all_tenant_ids` and calls this once per tenant,
+        as `bridges/collaboration/lifecycle_service.py` does."""
+        result = await session.execute(
+            select(CollaborationBridge).where(
+                CollaborationBridge.tenant_id == require_tenant_id()
+            )
+        )
         return list(result.scalars().all())
 
     async def get_active(self, session: AsyncSession) -> list[CollaborationBridge]:
+        """The bound tenant's active bridges; scoped as `get_all` is."""
         result = await session.execute(
-            select(CollaborationBridge).where(CollaborationBridge.status == "active")
+            select(CollaborationBridge).where(
+                CollaborationBridge.tenant_id == require_tenant_id(),
+                CollaborationBridge.status == "active",
+            )
         )
         return list(result.scalars().all())
 

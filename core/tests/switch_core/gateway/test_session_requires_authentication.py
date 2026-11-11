@@ -119,6 +119,11 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/tenants"),
     ("POST", "/tenants"),
     ("POST", "/tenants/{tenant_id}/switch"),
+    # What the workspace switcher shows beside each of those workspaces. It
+    # opens a `tenant_session` per tenant `tenants_bindable_by` names, and
+    # around the operator's claim only once `may_bind_tenant` admits it — see
+    # `workspace_counts`.
+    ("GET", "/tenants/counts"),
     # The same for organizations: list the caller's, make one.
     ("GET", "/organizations"),
     ("POST", "/organizations"),

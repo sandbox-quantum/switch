@@ -249,6 +249,9 @@ class AttachmentRef(BaseModel):
     msgtype: str
 
 
+FollowUp = Literal["thread_follow_up", "channel_follow_up", "main_agent"]
+
+
 class MessagePayload(BaseModel):
     addressed: bool
     sender: str
@@ -276,6 +279,22 @@ class MessagePayload(BaseModel):
     # its template has a new revision it was not brought fully up to; told
     # with every message until the agent reads about it. None for nothing.
     switch_notice: str | None = None
+    # True when the message tagged nobody and Switch routed it to this agent
+    # (`delivery/decision.py`). Such a message is always addressed, so every
+    # host wakes for it. `routed_reason` says why: "decided", the decision
+    # service picked this agent; "fallback", the decision service was
+    # unavailable and this agent is the room's triage agent. None when not
+    # routed.
+    routed: bool = False
+    routed_reason: Literal["decided", "fallback"] | None = None
+    # Which follow-the-conversation rule delivered a message that tagged
+    # nobody (`delivery/conversation.py`): "thread_follow_up", a reply in a
+    # thread the agent spoke or was tagged in last; "channel_follow_up", the
+    # sender's next channel message in an exchange with the agent;
+    # "main_agent", the agent is the room's assigned agent. The agent may stay
+    # silent on such a message. None when the message named the agent, or was
+    # routed (`routed_reason`).
+    follow_up: FollowUp | None = None
 
 
 class CommandPayload(BaseModel):

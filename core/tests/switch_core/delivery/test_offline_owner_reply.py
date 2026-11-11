@@ -201,6 +201,8 @@ class TestUnavailableReplyRouting:
             "opencode": "opencode auth login",
             "antigravity": "agy acp --login",
             "cursor": "agent login",
+            "deepseek-harness": "dsh web",
+            "pi": "pi",
         }
         for agent_type, command in sign_in.items():
             agent = _agent(
@@ -301,7 +303,7 @@ class TestStartFromConsoleMessage:
             "I don't have a session connected to this room. "
             "@cmcd can start one connected to **Payments** by opening "
             "**worker.test** in Switch Console. If Switch Console says I'm "
-            "signed out, sign me in first with `agent login` on the machine I "
+            "signed out, sign me in first with `agent login` on the device I "
             "run on."
         )
 

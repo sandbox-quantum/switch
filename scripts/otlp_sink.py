@@ -64,8 +64,10 @@ def _summarise_metrics(payload: dict[str, Any]) -> list[str]:
                     for point in metric["histogram"]["dataPoints"]:
                         count = int(point["count"])
                         mean = (point["sum"] / count) if count else 0.0
+                        unit = metric.get("unit", "")
+                        shown = f"{mean:.1f}{unit}" if unit != "1" else f"{mean:.3f}"
                         lines.append(
-                            f"    {name} n={count} mean={mean:.1f}ms"
+                            f"    {name} n={count} mean={shown}"
                             f"{_render(point.get('attributes', []))}"
                         )
     return lines
