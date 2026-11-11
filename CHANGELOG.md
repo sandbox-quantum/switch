@@ -150,6 +150,15 @@ version of their own to them without also giving them a release of their own.
   field, its label, and a disabled checkbox or switch looked almost the same
   as enabled ones; they are now greyed out, so an action you may not take
   reads as unavailable.
+- **A stopped cloud machine starts on the configured image.** When a machine
+  that was stopped (idle, or put to sleep) starts again and its instance was
+  launched from an older `image_id` or as another instance type, the hosted
+  controller replaces the instance with one launched from the configured image
+  and type, keeping the data volume, instead of starting the old instance. A
+  new image therefore reaches every machine at its next start, without the
+  manual `upgrade` steps; a running machine is not stopped for it. The
+  instance is replaced only once its data volume is set to survive
+  termination; until then it starts as before.
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.
