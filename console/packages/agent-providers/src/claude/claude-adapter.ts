@@ -1072,7 +1072,8 @@ export class ClaudeAdapter implements ProviderAdapter {
         });
         return;
       }
-      if (block.type !== 'tool_use') return;
+      // A subagent's own steps stay with the subagent: only its card shows.
+      if (block.type !== 'tool_use' || parentToolUseId !== null) return;
       const id = block.id;
       const name = block.name;
       if (typeof id !== 'string' || typeof name !== 'string') return;

@@ -1614,6 +1614,25 @@ describe('ClaudeAdapter subagent edge cases', () => {
     await adapter.stopAll();
   });
 
+  it("keeps a subagent's own tool calls off the parent's activity", async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    query.emit(spawn());
+    query.emit(started());
+    query.emit({
+      ...assistantMessage('inside-child', [
+        { type: 'tool_use', id: 'child-bash', name: 'Bash', input: { command: 'sleep 100' } },
+      ]),
+      parent_tool_use_id: 'call-1',
+    });
+    await barrier(query, recorder, 'barrier');
+    const ids = recorder.ofType('item.started').map((event) => event.item.id);
+    expect(ids).toContain('call-1');
+    expect(ids).not.toContain('child-bash');
+    await adapter.stopAll();
+  });
+
   it('fails a background launch the CLI refused, without waiting for a task', async () => {
     const { sdk, adapter, recorder } = await startSession();
     await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
