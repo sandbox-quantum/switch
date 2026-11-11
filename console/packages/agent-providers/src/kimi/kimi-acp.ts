@@ -42,43 +42,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** One `[models.<id>]` entry, as `kimi provider list --json` prints it. */
-interface KimiModel {
-  provider?: string;
-  displayName?: string;
-}
-
-/**
- * Whether one provider signs Kimi in: how, when it does; `false` when it
- * plainly does not (a managed provider logged out of); `undefined` when this
- * check cannot tell (no key it can see).
- */
-async function providerSignIn(
-  id: string,
-  provider: KimiProvider,
-  home: string,
-  env: Record<string, string>
-): Promise<string | false | undefined> {
-  if (id.startsWith('managed:')) {
-    const name = id.slice('managed:'.length);
-    return !!name && (await exists(join(home, 'credentials', `${name}.json`)))
-      ? 'Signed in to Kimi Code.'
-      : false;
-  }
-  if (filled(provider.apiKey)) return `Signs in with the API key configured for ${id}.`;
-  if (filled(provider.apiKeyEnv) && filled(env[provider.apiKeyEnv!]))
-    return `Signs in with ${provider.apiKeyEnv} for ${id}.`;
-  if (
-    Object.entries(provider.env ?? {}).some(
-      ([key, value]) => /_API_KEY$/.test(key) && filled(value)
-    )
-  )
-    return `Signs in with the API key configured for ${id}.`;
-  // A provider with no key we can see (Google application default
-  // credentials, say) may still work.
-  return undefined;
-}
-
 /**
  * Reads `kimi provider list --json`. `kimi login` writes a managed provider
  * (`managed:kimi-code`) whose token lives in `credentials/kimi-code.json`, and
@@ -86,24 +49,17 @@ async function providerSignIn(
  * counts only while its credential file is there. A provider configured with
  * an API key, in `config.toml` or through `api_key_env`, is taken as given: a
  * key cannot be checked without spending a request, and a bad one fails the
- * first turn. The models of the providers that sign Kimi in are the ones it
- * offers, so a machine Console only hears from (a headless controller) can
- * still be given a model to pick.
+ * first turn.
  */
 export async function parseKimiProviders(
   output: string,
   env: Record<string, string>
 ): Promise<ProviderReadiness> {
   let providers: Record<string, KimiProvider>;
-  let models: Record<string, KimiModel>;
   try {
-    const parsed = JSON.parse(output) as { providers?: unknown; models?: unknown };
+    const parsed = JSON.parse(output) as { providers?: unknown };
     if (!parsed.providers || typeof parsed.providers !== 'object') throw new Error('no providers');
     providers = parsed.providers as Record<string, KimiProvider>;
-    models =
-      parsed.models && typeof parsed.models === 'object'
-        ? (parsed.models as Record<string, KimiModel>)
-        : {};
   } catch {
     return readiness(
       'unknown',
@@ -111,21 +67,28 @@ export async function parseKimiProviders(
     );
   }
   const home = kimiHome(env);
-  const signedIn = new Map<string, string>();
   let unverifiable = false;
   for (const [id, provider] of Object.entries(providers)) {
-    const how = await providerSignIn(id, provider, home, env);
-    if (how) signedIn.set(id, how);
-    else if (how === undefined) unverifiable = true;
+    if (id.startsWith('managed:')) {
+      const name = id.slice('managed:'.length);
+      if (name && (await exists(join(home, 'credentials', `${name}.json`))))
+        return readiness('authenticated', 'Signed in to Kimi Code.');
+      continue;
+    }
+    if (filled(provider.apiKey))
+      return readiness('authenticated', `Signs in with the API key configured for ${id}.`);
+    if (filled(provider.apiKeyEnv) && filled(env[provider.apiKeyEnv!]))
+      return readiness('authenticated', `Signs in with ${provider.apiKeyEnv} for ${id}.`);
+    if (
+      Object.entries(provider.env ?? {}).some(
+        ([key, value]) => /_API_KEY$/.test(key) && filled(value)
+      )
+    )
+      return readiness('authenticated', `Signs in with the API key configured for ${id}.`);
+    // A provider with no key we can see (Google application default
+    // credentials, say) may still work.
+    unverifiable = true;
   }
-  const [how] = signedIn.values();
-  if (how)
-    return {
-      ...readiness('authenticated', how),
-      models: Object.entries(models)
-        .filter(([, model]) => !!model.provider && signedIn.has(model.provider))
-        .map(([id, model]) => ({ id, name: model.displayName?.trim() || id })),
-    };
   return unverifiable
     ? readiness('unknown', 'Kimi Code has a provider configured but no key this check can see.')
     : readiness('unauthenticated', signInWith(KIMI_LOGIN));

@@ -275,34 +275,6 @@ it('takes a configured API key as given, in the config or in a named variable', 
   );
 });
 
-it('offers the models of the providers that sign Kimi in, and only those', async () => {
-  const output = JSON.stringify({
-    providers: {
-      anthropic: { type: 'anthropic', apiKey: 'sk-x' },
-      'managed:kimi-code': { type: 'kimi', apiKey: '' },
-    },
-    models: {
-      'anthropic/claude-haiku-4-5': {
-        provider: 'anthropic',
-        model: 'claude-haiku-4-5',
-        displayName: 'Claude Haiku 4.5',
-      },
-      'kimi-code/kimi-for-coding': { provider: 'managed:kimi-code', model: 'kimi-for-coding' },
-      orphan: { model: 'x' },
-    },
-  });
-  expect((await parseKimiProviders(output, { KIMI_CODE_HOME: home })).models).toEqual([
-    { id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' },
-  ]);
-  // Signed in to Kimi's own account too: its models are offered as well.
-  await mkdir(join(home, 'credentials'), { recursive: true });
-  await writeFile(join(home, 'credentials', 'kimi-code.json'), '{}');
-  expect((await parseKimiProviders(output, { KIMI_CODE_HOME: home })).models).toEqual([
-    { id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' },
-    { id: 'kimi-code/kimi-for-coding', name: 'kimi-code/kimi-for-coding' },
-  ]);
-});
-
 it('reports unknown when the provider list cannot be read', async () => {
   expect(
     (await parseKimiProviders('error: unknown command', { KIMI_CODE_HOME: home })).status
