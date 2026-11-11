@@ -87,6 +87,22 @@ rest. If WorkOS no longer has the events from where the mirror stopped (it
 keeps 90 days), the mirror starts again from now, records that in the
 server's audit log, and checks every linked organization in full.
 
+The process running the mirror reports three gauges, read when its metrics
+are collected (`docs/old/observability.md`):
+
+- `switch.workos.cursor_age`: seconds since a pass last read the events
+  through. Up to 30 s is normal. It grows while passes fail, while WorkOS
+  refuses where the mirror reads from, and while one event keeps failing,
+  which is when a removal made in WorkOS isn't reaching Switch.
+- `switch.workos.recheck.oldest_age`: how long the longest-waiting
+  organization has been in the full recheck, 0 when none waits.
+- `switch.workos.full_check.age`: seconds since every linked organization
+  was last checked in full.
+
+Only that process reports them, so no reading means no process is running
+the mirror. `deploy/observability/monitors.json` alerts on each; import those
+monitors with `WORKOS_DIRECTORY=1` (see its README).
+
 For each person it matches (by the WorkOS user their account signs in as):
 
 - **Added or made `org_admin` in WorkOS:** added, or made Org Admin, as at

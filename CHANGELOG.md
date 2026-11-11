@@ -45,6 +45,15 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **The WorkOS directory mirror reports whether it is keeping up.** With
+  `ORGANIZATION_DIRECTORY=workos`, the server running the mirror reports
+  `switch.workos.cursor_age` (seconds since it last read WorkOS's events
+  through), `switch.workos.recheck.oldest_age` (how long an organization has
+  been waiting for a full recheck) and `switch.workos.full_check.age`
+  (seconds since every linked organization was last checked in full).
+  `deploy/observability/` adds three monitors on them, imported with
+  `WORKOS_DIRECTORY=1`, and a dashboard section. A removal made in WorkOS
+  that isn't reaching Switch now raises an alert instead of going unnoticed.
 - **New accounts can be refused by country.** `GATEWAY_SIGNUP_REFUSED_HEADER`
   (chart: `switchCore.signup.refusedHeader`) names a request header that the
   edge in front of Switch, such as a WAF rule matching on the client's
