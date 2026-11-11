@@ -469,12 +469,12 @@ it('types and titles its tools, which it reports as kind other named by the tool
   );
   expect(toolTitle?.(call('bash'))).toBeUndefined();
   expect(toolTitle?.(call('grep', { pattern: 'x' }))).toBeUndefined();
-  expect(mcpServerOf?.(call('mcp__switch__send_message'))).toBe('switch');
-  expect(mcpServerOf?.(call('mcp__my-server_2__echo'))).toBe('my-server_2');
+  expect(mcpServerOf?.(call('mcp__switch__send_message'), new Set())).toBe('switch');
+  expect(mcpServerOf?.(call('mcp__my-server_2__echo'), new Set())).toBe('my-server_2');
   // A server or tool name with `__` in it is ambiguous, so it names no server and asks.
-  expect(mcpServerOf?.(call('mcp__switch__x__tool'))).toBeUndefined();
-  expect(mcpServerOf?.(call('mcp__switch__x__'))).toBeUndefined();
-  expect(mcpServerOf?.(call('bash'))).toBeUndefined();
+  expect(mcpServerOf?.(call('mcp__switch__x__tool'), new Set())).toBeUndefined();
+  expect(mcpServerOf?.(call('mcp__switch__x__'), new Set())).toBeUndefined();
+  expect(mcpServerOf?.(call('bash'), new Set())).toBeUndefined();
 });
 
 it("asks before a command by the call it announced, answering with the agent's options", async () => {
