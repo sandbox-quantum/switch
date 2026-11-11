@@ -1595,7 +1595,10 @@ async def list_bridges() -> list[dict[str, Any]]:
         your owner when you create it, must have linked and confirmed their
         account on that platform: Switch puts them in the private channel
         through it (on Teams, as its owner), and refuses the room when they
-        have not, since nobody could get into it otherwise.
+        have not, since nobody could get into it otherwise. A new public
+        channel puts them in too when they have such an account (not on
+        Teams, where that would add them to the whole team), and is made
+        without them when they have none.
     """
     protocol = get_protocol()
     return await protocol.list_bridges()
