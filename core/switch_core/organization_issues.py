@@ -69,7 +69,7 @@ async def organization_wide_issues(
         issues.append(
             OrganizationIssue(OrganizationIssueKind.NO_ORG_ADMIN, None, None, [])
         )
-    if await _directory_organization_deleted(session, organization_id):
+    if await directory_organization_deleted(session, organization_id):
         issues.append(
             OrganizationIssue(
                 OrganizationIssueKind.DIRECTORY_ORGANIZATION_DELETED, None, None, []
@@ -146,7 +146,7 @@ async def _stranded_agents(
     )
 
 
-async def _directory_organization_deleted(
+async def directory_organization_deleted(
     session: AsyncSession, organization_id: str
 ) -> bool:
     """Whether the WorkOS organization this one follows now was reported

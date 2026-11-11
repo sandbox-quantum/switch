@@ -213,7 +213,9 @@ _READ_WITH_MAX = (
     "switch.hosted.agents",
     "switch.hosted.sessions",
     "switch.hosted.provider_login_problems",
-    "switch.workos.",
+    "switch.workos.cursor_age",
+    "switch.workos.recheck.",
+    "switch.workos.full_check.",
 )
 
 

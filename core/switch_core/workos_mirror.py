@@ -20,6 +20,12 @@ in WorkOS to a linked organization's members, applied in Switch
   stop the rest; an organization with a failure is re-checked on every pass.
   A Switch member with no WorkOS identity can't be compared, and is logged
   and left.
+- **A deleted WorkOS organization.** Removes nobody: that is too much to take
+  away on one event. It is recorded as a directory conflict, which shows the
+  organization's admins a notice and counts
+  `switch.workos.organization_deleted`, and the mirror stops following the
+  organization: no more checks against what WorkOS no longer has. The link
+  stays, since the notice reads it; an operator removes the organization.
 - **What it reports.** While a process runs it, three gauges, read when the
   metrics are collected so a pass stuck on WorkOS keeps them growing: how
   long since a pass last read the events through (`switch.workos.cursor_age`),
@@ -79,9 +85,11 @@ from switch_core.db.tenant_lookup import directory_organizations
 from switch_core.observability.catalogue import (
     WORKOS_CURSOR_AGE,
     WORKOS_FULL_CHECK_AGE,
+    WORKOS_ORGANIZATION_DELETED,
     WORKOS_RECHECK_OLDEST_AGE,
 )
-from switch_core.observability.metrics import GaugeReading
+from switch_core.observability.metrics import GaugeReading, metrics
+from switch_core.organization_issues import directory_organization_deleted
 from switch_core.organization_mirror import MirrorDependencies, apply_from_directory
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.tenant_context import no_tenant
@@ -139,9 +147,11 @@ class WorkOSMirror:
         self._running_since: float | None = None
         self._last_read_through: float | None = None
         self._last_full_check: float | None = None
-        # The linked organizations as of the last pass, and the WorkOS
-        # organization each follows, read again only when they change.
+        # The ids of the organizations linked as of the last pass, read again
+        # only when they change, and the WorkOS organization of each one still
+        # followed: not one whose WorkOS organization was deleted.
         self._linked_now: dict[str, str] | None = None
+        self._linked_ids: set[str] = set()
 
     async def poll_once(self, fence: Fence) -> int:
         """Re-check what is due, then apply the events since the cursor, page
@@ -320,6 +330,7 @@ class WorkOSMirror:
             await self._organization_deleted(
                 fence, organization_id, workos_organization_id
             )
+            following.pop(workos_organization_id, None)
             return
         subject = data.get("user_id")
         if not isinstance(subject, str):
@@ -428,7 +439,7 @@ class WorkOSMirror:
     ) -> None:
         """Deleting a linked organization in WorkOS removes nobody here: that
         is too much to take away on one event. It is reported for an operator
-        to unlink or remove."""
+        to remove, and no longer followed."""
         logger.error(
             "WorkOS organization %s, which organization %s follows, was deleted; "
             "its members are left as they are",
@@ -453,6 +464,10 @@ class WorkOSMirror:
                 },
             )
             await session.commit()
+        metrics().increment(WORKOS_ORGANIZATION_DELETED, {})
+        self._recheck.pop(organization_id, None)
+        if self._linked_now is not None:
+            self._linked_now.pop(organization_id, None)
 
     async def _restart(
         self, fence: Fence, cursor: DirectoryEventCursor, reason: str
@@ -492,9 +507,10 @@ class WorkOSMirror:
         link is never changed in place: `workos_linking.py` refuses). An
         organization linked since the last pass is checked in full: an
         operator links it from another process, and its members would
-        otherwise wait for the daily check."""
+        otherwise wait for the daily check. One whose WorkOS organization was
+        deleted is not followed."""
         ids = await directory_organizations(self._session_factory)
-        if self._linked_now is not None and set(ids) == set(self._linked_now):
+        if self._linked_now is not None and set(ids) == self._linked_ids:
             return self._linked_now
         linked: dict[str, str] = {}
         for organization_id in ids:
@@ -506,11 +522,13 @@ class WorkOSMirror:
                         Organization.id == organization_id
                     )
                 )
-            if workos_organization_id is not None:
+                deleted = await directory_organization_deleted(session, organization_id)
+            if workos_organization_id is not None and not deleted:
                 linked[organization_id] = workos_organization_id
         if self._linked_now is not None:
-            self._to_recheck(set(linked) - set(self._linked_now))
+            self._to_recheck(set(linked) - self._linked_ids)
         self._linked_now = linked
+        self._linked_ids = set(ids)
         return linked
 
     def _to_recheck(self, organization_ids: Iterable[str]) -> None:
