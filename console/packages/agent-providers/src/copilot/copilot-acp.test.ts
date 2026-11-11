@@ -105,7 +105,7 @@ it('reads the saved login from COPILOT_HOME, else ~/.copilot, without starting C
   await expect(signIn({})).resolves.toEqual({
     status: 'unauthenticated',
     message:
-      'Sign in on the execution machine with copilot login. Or give it a token in COPILOT_GITHUB_TOKEN, or a model provider of your own in COPILOT_PROVIDER_BASE_URL and COPILOT_MODEL.',
+      'Sign in on the device the agent runs on with copilot login. Or give it a token in COPILOT_GITHUB_TOKEN, or a model provider of your own in COPILOT_PROVIDER_BASE_URL and COPILOT_MODEL.',
     models: [],
   });
   await writeConfig(join(home, '.copilot'), { lastLoggedInUser: user, loggedInUsers: [user] });
@@ -191,7 +191,7 @@ it('says to sign in with copilot login when Copilot refuses a session for want o
       connectorMcpServers: [],
     })
   ).rejects.toThrow(
-    'Authentication required. Sign in on the execution machine with copilot login.'
+    'Authentication required. Sign in on the device the agent runs on with copilot login.'
   );
 });
 

@@ -17,10 +17,10 @@ import { JsonRpcError } from '../transport/stdio-json-rpc';
  */
 export const JUNIE_LOGIN = 'junie';
 export const JUNIE_SIGN_IN =
-  'Sign in to Junie on the execution machine: run junie and choose Continue with JetBrains account or Use a Junie API key on its Account screen, or set JUNIE_API_KEY in the environment the session host runs with.';
+  'Sign in to Junie on the device the agent runs on: run junie and choose Continue with JetBrains account or Use a Junie API key on its Account screen, or set JUNIE_API_KEY in the environment the session host runs with.';
 /** A signed-in account that JetBrains AI authorises no model for: no Junie licence, trial or key. */
 export const JUNIE_NO_MODELS =
-  'Junie is signed in but offers no model, so every turn would be refused: the JetBrains account has no Junie licence or trial, and no Junie API key or provider key is configured. On the execution machine run junie and add a Junie API key on its Account screen, start a Junie subscription or trial, or set a JUNIE_<PROVIDER>_API_KEY for your own provider.';
+  'Junie is signed in but offers no model, so every turn would be refused: the JetBrains account has no Junie licence or trial, and no Junie API key or provider key is configured. On the device the agent runs on, run junie and add a Junie API key on its Account screen, start a Junie subscription or trial, or set a JUNIE_<PROVIDER>_API_KEY for your own provider.';
 
 /** The notification Junie publishes for each session, saying which account it runs under. */
 export const JUNIE_AUTH_STATUS = '_auth/status_update';
@@ -65,7 +65,7 @@ export function junieReadiness(report: JunieSessionReport): ProviderReadiness {
   if (!report.status)
     return readiness(
       'unknown',
-      `Junie started but did not report whether it is signed in. If its sessions fail, sign in on the execution machine with ${JUNIE_LOGIN}.`
+      `Junie started but did not report whether it is signed in. If its sessions fail, sign in on the device the agent runs on with ${JUNIE_LOGIN}.`
     );
   const signIn = readinessFromAuthStatus(report.status);
   // JetBrains AI authorises no model for an account without a Junie licence;
@@ -95,7 +95,7 @@ export function readinessFromAuthStatus(status: JunieAuthStatus): ProviderReadin
     default:
       return readiness(
         'unknown',
-        `Junie reports a sign-in of kind '${status.kind}' this build does not know. If its sessions fail, sign in on the execution machine with ${JUNIE_LOGIN}.`
+        `Junie reports a sign-in of kind '${status.kind}' this build does not know. If its sessions fail, sign in on the device the agent runs on with ${JUNIE_LOGIN}.`
       );
   }
 }

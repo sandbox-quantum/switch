@@ -309,7 +309,7 @@ it('is signed out with no key anywhere, saying how to sign in', async () => {
   expect(await checkDshSignIn({ cwd: await dir(), env: homed(home) })).toEqual({
     status: 'unauthenticated',
     message:
-      'DeepSeek Harness has no DeepSeek API key. Sign in on the execution machine with dsh web. Save a DeepSeek API key under its Models settings, or set DEEPSEEK_API_KEY.',
+      'DeepSeek Harness has no DeepSeek API key. Sign in on the device the agent runs on with dsh web. Save a DeepSeek API key under its Models settings, or set DEEPSEEK_API_KEY.',
     models: [],
   });
 });
