@@ -21,22 +21,23 @@ PLACEHOLDERS = {
     "linear",
     "salesforce",
     "box",
-    "canva",
     "vercel",
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_canva_datadog_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "canva",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "canva",
         "datadog",
         "github",
         "google-workspace",
@@ -45,6 +46,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["canva"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -228,6 +230,54 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_canva_entry_signs_in_and_calls_its_mcp_server():
+    definition = CATALOG["canva"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Canva matches a loopback redirect's port exactly, so the ports are fixed.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["loopback"],
+    )
+    assert oauth.client_settings == "CANVA"
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    # Revoking a sign-in ends the whole assignment, so a reconnect keeps the
+    # sign-in it replaces.
+    assert oauth.revocation_url == "https://api.canva.com/rest/v1/oauth/revoke"
+    assert oauth.revocation_ends_grant is True
+    # Nothing Switch asks Canva shows whether the MCP server is enabled.
+    assert oauth.unchecked is not None and "MCP" in oauth.unchecked
+    # Canva's refresh tokens are single-use.
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        4 * 3600,
+    )
+    identity = definition.auth.identity
+    assert identity is not None
+    assert identity.url == "https://api.canva.com/rest/v1/users/me"
+    # The answer names only ids, so the connection is labelled by its id.
+    assert (identity.account_id, identity.label) == (
+        "team_user.user_id",
+        "team_user.user_id",
+    )
+    assert definition.mcp is not None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("canva", "https://api.canva.com/connect/v1/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = set(definition.access.read.scopes or [])
+    write = set(definition.access.write.scopes or [])
+    assert read == {"design:meta:read", "design:content:read"}
+    assert write == {
+        "design:meta:read",
+        "design:content:read",
+        "design:content:write",
+    }
 
 
 RESTRICTED_DRIVE = {
@@ -587,6 +637,19 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_loads_a_skill_with_windows_line_endings(catalog_copy):
+    _write_example(catalog_copy)
+    path = catalog_copy / "example" / "skill" / "SKILL.md"
+    content = path.read_bytes().replace(b"\r\n", b"\n")
+    path.write_bytes(content.replace(b"\n", b"\r\n"))
+
+    entry = load_catalog(catalog_copy)["example"]
+
+    assert entry.skill_files["SKILL.md"].startswith(
+        "---\nname: example\ndescription: Work with Example items.\n---\n"
+    )
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
