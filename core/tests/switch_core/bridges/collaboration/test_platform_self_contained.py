@@ -46,6 +46,7 @@ from .dummy_platform.adapter import (
     DummyChatError,
     DummyHookAdapter,
     DummyHookConnectionConfig,
+    DummySelfHookAdapter,
     sign,
 )
 from .test_lifecycle_tenant_binding import _service
@@ -334,6 +335,18 @@ class TestAWebhookPlatformReceivesAVerifiedEventEndToEnd:
 
         assert response.status_code == 404
         assert lifecycle.webhook_url(chat_bridge, "dummychat") is None
+
+    async def test_nobody_is_asked_to_paste_an_address_the_adapter_registers(
+        self, lifecycle: CollaborationBridgeLifecycleService
+    ) -> None:
+        lifecycle.register_adapter(
+            "dummyselfhook", DummySelfHookAdapter, DummyChatConnectionConfig
+        )
+        types = {t.key: t for t in await list_bridge_types(lifecycle, MagicMock())}
+
+        assert types["dummyselfhook"].receives_webhooks is False
+        assert lifecycle.receives_webhooks("dummyselfhook") is False
+        assert lifecycle.webhook_url("any-bridge", "dummyselfhook") is None
 
     async def test_the_operator_is_given_the_address_to_paste_into_the_platform(
         self,
