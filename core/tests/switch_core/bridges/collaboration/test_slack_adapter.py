@@ -936,6 +936,53 @@ def test_create_dm_channel_missing_scope_is_not_retried() -> None:
     assert fake.names == ["a-u"]
 
 
+def test_create_channel_with_a_revoked_token_says_to_reconnect() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([{"ok": False, "error": "token_revoked"}])
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="Reconnect the Slack bridge"):
+        _run(adapter.create_channel("Payments", "topic"))
+
+    assert len(fake.names) == 1
+
+
+def test_create_dm_channel_with_names_that_slug_to_nothing_still_has_a_name() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([])
+    fake.conversations_invite = _accept_invite  # type: ignore[attr-defined]
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    channel_id = _run(
+        adapter.create_dm_channel(
+            agent_name="助手", user_name="Żółć", user_external_id="U1"
+        )
+    )
+
+    assert channel_id == "C-NEW"
+    assert fake.names == ["dm"]
+
+
+def test_create_dm_channel_invalid_name_is_not_blamed_on_a_room_name() -> None:
+    adapter = _adapter()
+    fake = _FakeCreateWebClient([{"ok": False, "error": "invalid_name_specials"}])
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError) as raised:
+        _run(
+            adapter.create_dm_channel(
+                agent_name="a", user_name="u", user_external_id="U1"
+            )
+        )
+
+    assert "invalid_name_specials" in str(raised.value)
+    assert "room name" not in str(raised.value)
+
+
+async def _accept_invite(**kwargs: Any) -> dict[str, Any]:
+    return {"ok": True}
+
+
 # ── Slash commands ───────────────────────────────────────────────────────────
 
 

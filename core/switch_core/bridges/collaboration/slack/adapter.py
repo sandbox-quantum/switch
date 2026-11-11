@@ -479,13 +479,17 @@ def _slack_response_field(exc: SlackApiError, key: str) -> Any:
 
 
 def _channel_creation_refused(
-    exc: SlackApiError, channel_name: str
+    exc: SlackApiError, channel_name: str, *, named_by_caller: bool
 ) -> BridgeOperationError | ValueError:
     """What to raise for a `conversations.create` that Slack refused and a
-    fresh name will not fix: Slack's error code, and what would fix it."""
+    fresh name will not fix: Slack's error code, and what would fix it.
+
+    A name Slack rejects is the caller's to fix only when `named_by_caller`
+    (a room's own name); a name Switch derived is reported as Slack's refusal.
+    """
     code = _slack_response_field(exc, "error") or str(exc)
     prefix = f"Slack would not create channel #{channel_name} ({code})"
-    if isinstance(code, str) and code.startswith("invalid_name"):
+    if named_by_caller and isinstance(code, str) and code.startswith("invalid_name"):
         return ValueError(
             f"{prefix}: Slack does not accept that as a channel name. Use a room "
             "name with lowercase letters, digits, hyphens or underscores."
@@ -496,6 +500,11 @@ def _channel_creation_refused(
         return BridgeOperationError(
             f"{prefix}: the Switch Slack app lacks {scope}. Add it to the app's "
             "bot token scopes and reinstall the app in the workspace."
+        )
+    if code in _SLACK_AUTH_ERROR_CODES:
+        return BridgeOperationError(
+            f"{prefix}: Slack no longer accepts the bridge's token. Reconnect "
+            "the Slack bridge (reinstall the app, or update its bot token)."
         )
     if code == "restricted_action":
         return BridgeOperationError(
@@ -2421,7 +2430,7 @@ class SlackAdapter(PlatformAdapter):
 
         is_private = channel_type == "channel_private"
         created = await self._create_conversation(
-            self.channel_name_for(name), is_private=is_private
+            self.channel_name_for(name), is_private=is_private, named_by_caller=True
         )
         self._channel_name_cache[created.id] = created.name
 
@@ -2437,7 +2446,7 @@ class SlackAdapter(PlatformAdapter):
         return created
 
     async def _create_conversation(
-        self, channel_name: str, *, is_private: bool
+        self, channel_name: str, *, is_private: bool, named_by_caller: bool
     ) -> CreatedChannel:
         """Create a channel named `channel_name`, or that name with a random
         suffix if Slack says it is taken. Any other refusal raises what
@@ -2450,7 +2459,9 @@ class SlackAdapter(PlatformAdapter):
             )
         except SlackApiError as error:
             if _slack_response_field(error, "error") != "name_taken":
-                raise _channel_creation_refused(error, channel_name) from error
+                raise _channel_creation_refused(
+                    error, channel_name, named_by_caller=named_by_caller
+                ) from error
             channel_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
             try:
                 result = await self._web_client.conversations_create(
@@ -2458,7 +2469,7 @@ class SlackAdapter(PlatformAdapter):
                 )
             except SlackApiError as retry_error:
                 raise _channel_creation_refused(
-                    retry_error, channel_name
+                    retry_error, channel_name, named_by_caller=named_by_caller
                 ) from retry_error
         return CreatedChannel(
             id=result["channel"]["id"],
@@ -2499,8 +2510,14 @@ class SlackAdapter(PlatformAdapter):
             raise RuntimeError("Slack client not connected")
 
         raw_name = f"{agent_name}-{user_name}"
-        channel_name = re.sub(r"[^a-z0-9_-]+", "-", raw_name.lower()).strip("-")[:80]
-        channel_id = (await self._create_conversation(channel_name, is_private=True)).id
+        channel_name = (
+            re.sub(r"[^a-z0-9_-]+", "-", raw_name.lower()).strip("-")[:80] or "dm"
+        )
+        channel_id = (
+            await self._create_conversation(
+                channel_name, is_private=True, named_by_caller=False
+            )
+        ).id
 
         try:
             await self._web_client.conversations_invite(
