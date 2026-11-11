@@ -383,6 +383,16 @@ version of their own to them without also giving them a release of their own.
   still only needs write access to the room.
 
 #### Added
+- **The Asana connection.** A person connects Asana from Switch Console,
+  authorizing access to their workspaces, and a granted agent reads and
+  updates tasks, projects, stories and comments, as that person, through
+  Asana's official remote MCP server (`https://mcp.asana.com/v2/mcp`).
+  Each server's operator registers an Asana OAuth app in Asana's Developer
+  Console and saves it under Connector apps or names it in
+  `ASANA_CLIENT_CONFIG_PATH` (Helm: `switchCore.asanaClientSecret`); see
+  `docs/old/asana-setup.md`. Without it, Asana is listed as not set up.
+  Like Google Workspace, it needs `GATEWAY_PUBLIC_URL` to receive sign-in
+  callbacks.
 - **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,
   Templates and Connectors on the rail; Workspace and Organization settings
   as areas of their own, each with a menu of only the pages you may open,

@@ -179,9 +179,21 @@ class ServiceFlows:
         assert access is not None
         # Connecting asks for everything a grant may need: write where the
         # service has it. The grant is then on or off.
-        consent: AccessLevel = "write" if access.write is not None else "read"
-        level = access.write or access.read
-        assert level.scopes is not None and access.read.scopes is not None
+        consent: AccessLevel
+        if access.unscoped:
+            consent = "write"
+            scopes: list[str] = []
+            read_scopes: list[str] = []
+            write_scopes: list[str] = []
+        else:
+            assert access.read is not None
+            consent = "write" if access.write is not None else "read"
+            level = access.write or access.read
+            assert level is not None
+            assert level.scopes is not None and access.read.scopes is not None
+            scopes = list(level.scopes)
+            read_scopes = list(access.read.scopes)
+            write_scopes = list(level.scopes) if consent == "write" else []
         try:
             stored = await self._flows.start(
                 kind=KIND,
@@ -201,9 +213,9 @@ class ServiceFlows:
                     "name": definition.name,
                     "unscoped": access.unscoped,
                     "consent": consent,
-                    "scopes": list(level.scopes),
-                    "read_scopes": list(access.read.scopes),
-                    "write_scopes": list(level.scopes) if consent == "write" else [],
+                    "scopes": scopes,
+                    "read_scopes": read_scopes,
+                    "write_scopes": write_scopes,
                 },
                 completion_secret=completion_secret,
             )

@@ -374,7 +374,9 @@ def _never_expires(name: str) -> str:
 def _level_reach(entry: Connection, access: AccessLevel) -> dict[str, Any] | None:
     """What the catalog says `access` reaches, or None where it has no such
     level. A key reaches whatever its vendor let it, at either level."""
-    if entry.definition.adapter == "api_key":
+    if entry.definition.adapter == "api_key" or (
+        entry.definition.access is not None and entry.definition.access.unscoped
+    ):
         return {}
     levels = entry.definition.access
     level = None if levels is None else getattr(levels, access)

@@ -733,6 +733,7 @@ class OAuthAdapter:
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        if scopes:
         access = self._definition.access
         if access is None or not access.unscoped:
             query["scope"] = " ".join(scopes)
@@ -768,6 +769,30 @@ class OAuthAdapter:
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
         if self._identity.mcp_tool is not None:
+            if self._mcp_url is None:
+                raise ServiceAdapterError(
+                    f"{self._name} names an identity tool without an MCP server."
+                )
+            response = await self._send(
+                self._http.build_request(
+                    "POST",
+                    self._mcp_url,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": self._identity.mcp_tool,
+                            "arguments": {},
+                        },
+                    },
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                    },
+                )
+            )
             body = await self._mcp_identity(access_token)
         else:
             assert self._identity.url is not None
@@ -781,6 +806,55 @@ class OAuthAdapter:
                     },
                 )
             )
+        if response.status_code == 401:
+            raise ReauthorizationRequiredError(
+                f"{self._name} refused the new sign-in when asked whose it is."
+            )
+        if response.status_code != 200:
+            raise ServiceAdapterError(
+                f"{self._name} would not say whose sign-in this is "
+                f"(HTTP {response.status_code})."
+            )
+        body = self._json(response, "account")
+        if self._identity.mcp_tool is not None:
+            if "error" in body:
+                raise ServiceAdapterError(
+                    f"{self._name} identity tool failed: {body['error'].get('message', 'unknown error')}"
+                )
+            result = body.get("result", {})
+            if (
+                "content" in result
+                and isinstance(result["content"], list)
+                and result["content"]
+            ):
+                item = result["content"][0]
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "text"
+                    and isinstance(item.get("text"), str)
+                ):
+                    try:
+                        body = json.loads(item["text"])
+                    except (json.JSONDecodeError, ValueError):
+                        body = result
+                else:
+                    body = result
+            else:
+                body = result
+        account_id = _path_value(body, self._identity.account_id)
+        label = _path_value(body, self._identity.label)
+        if isinstance(account_id, list):
+            if len(account_id) != 1:
+                raise ServiceAdapterError(
+                    f"{self._name} identity tool must resolve to exactly one account (found {len(account_id)})."
+                )
+            account_id = account_id[0]
+        if type(account_id) is int:
+            account_id = str(account_id)
+        if not isinstance(account_id, str) or not account_id:
+            raise ServiceAdapterError(f"{self._name} did not name the account's id.")
+        if isinstance(label, list):
+            label = label[0] if len(label) == 1 else None
             if response.status_code == 401:
                 raise ReauthorizationRequiredError(
                     f"{self._name} refused the new sign-in when asked whose it is."
