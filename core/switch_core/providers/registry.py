@@ -203,6 +203,11 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         label="Kiro CLI",
         sign_in_command="kiro-cli login",
     ),
+    AgentProvider(
+        id="mistral-vibe",
+        label="Mistral Vibe",
+        sign_in_command="vibe-acp --setup",
+    ),
 )
 
 

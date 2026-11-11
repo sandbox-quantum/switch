@@ -32,6 +32,7 @@ protocols. These adapters are the only Console session runtime.
 | `deepseek-harness` | `dsh --profile acp`, ACP over stdio, on the generic ACP adapter | Persistent sessions resumed with `session/resume`, model routes through a `model` config option, MCP registration, cancel, and approvals through a dsh plugin Switch mounts on its `tools/pre-execute` gate. |
 | `pi` | `pi --mode rpc`, Pi's own JSONL protocol over stdio, with a Switch extension loaded by `-e` for the session alone | Pi does not speak ACP, and `pi-acp` does not pass MCP servers on to Pi, while Pi itself never asks before a tool runs. The extension registers the session's MCP servers and asks the adapter about every tool call through an extension dialog, so the runtime mode is enforced in the adapter. It asks with the call's input as Pi gives it to the first `tool_call` handler: the user's own extensions load after it and may still change that input. If nothing in Pi connects the session's MCP servers (its built-in MCP support turned off or replaced), the session does not start. Nothing is written to Pi's own configuration. |
 | `kiro` | `kiro-cli acp`, ACP over stdio, on the generic ACP adapter | Native sessions and `session/load`, model selection through a `model` config option, MCP registration, approvals, and questions asked as permission requests. |
+| `mistral-vibe` | `vibe-acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume through `session/load`, model selection through a `model` config option, MCP registration, approvals, and questions as ACP form elicitations. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -75,11 +76,12 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | deepseek-harness (ACP) | dsh 0.2.1-rc.5 | 8/10 (2026-11-05), not on DeepSeek's API | **Run without a DeepSeek API key:** dsh 0.2.1-rc.5 ran deepseek-v4-1-flash through an OpenAI-compatible gateway, from a custom `$DSH_HOME` profile adding a pi-ai route and turning off `deepseek-llm-api-extensions`; dsh's built-in `deepseek-official` route was not exercised. `interrupt` is skipped: the harness sends a message only once it is committed, so the counting turn's first text arrives as the turn ends; a separate real-CLI test interrupts a running command. `user-input` is skipped: no ask-the-user tool over ACP. `approval-required` and `approval-declined` passed in the recorded run but timed out in some earlier full runs: outside full access every command asks, and when the model runs a second command to check its work, that one asks too while the scenario answers only the first. Outside full access a subagent's gated calls are refused, with that reason (dsh pins a subagent's approval policy to `never`). Run with `DEEPSEEK_API_KEY` (and `DEEPSEEK_BASE_URL`, `DSH_HOME` if used) in the shell; the test passes them through. |
 | pi | 1.5.0 | 8/10 (2026-11-05) | Run with `mistral/devstral-medium-latest`: set a provider's API key in the shell (the test passes `*_API_KEY` through), `SWITCH_PI_MODEL` to a `provider/model` that `pi --list-models` shows, and `SWITCH_PI_BIN` to run a `pi` other than the one on the PATH. Pi has no tool that asks the user (its `question` tool is an example extension, which errors outside the TUI) and no subagent tool, so `user-input` and `subagent` are skipped. Pi never asks before a tool runs: the Switch extension asks the adapter about every call, and auto mode approves edits and asks before commands, as Pi has no automatic review. A mid-turn message queues as its own turn. Without a credential Pi still starts, on a placeholder model that refuses every prompt, so the adapter reads the model from `get_state` and asks for a sign-in. |
 | kiro (ACP) | 3.0.0 | 9/10 (2026-11-04) | Kiro runs Switch's sessions on its V3 engine (it recognises the client); the run with the engine forced to V3 by flag matched. `user-input` is skipped: Kiro offers its `user_input` tool only in its spec workflows, so in the default `vibe` mode (and V2's default agent) it asks in prose and ends the turn. Once, the first session after a controller started was refused `session/set_model` (its `session/new` named no `model` option yet); the host's retry started it, and six more starts with a model did not repeat it. The suite skips itself until `kiro-cli whoami` says signed in; set `KIRO_API_KEY` in the shell to run it with a key, which the test passes through. |
+| mistral-vibe (ACP) | vibe-acp 3.1.0 | 10/10 (2026-11-06) | Run on Vibe's default model, Mistral Medium 3.5 (`mistral-vibe-cli-latest`), with the key in `$VIBE_HOME/.env`. A key set as `MISTRAL_API_KEY` in the shell works too; the test passes it, and `VIBE_HOME`, through. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor, Antigravity, DeepSeek Harness and Kiro run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity, DeepSeek Harness, Kiro and Mistral Vibe run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -94,7 +96,7 @@ covers the protocol and chooses behaviour from what the agent advertises in
 
 Everything else that differs between CLIs is in its hooks file
 (`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
-`src/deepseek-harness/deepseek-harness-acp.ts`, `src/kiro/kiro-acp.ts`):
+`src/deepseek-harness/deepseek-harness-acp.ts`, `src/kiro/kiro-acp.ts`, `src/mistral-vibe/mistral-vibe-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -103,7 +105,7 @@ Permission requests follow one policy for every ACP agent. A tool on an MCP
 server the session registered is allowed once without asking, as is
 everything in `full-access` and edits in `auto-accept-edits`. Otherwise the
 person is offered allow once, allow for this session and reject; options
-naming a permanent or future policy are never offered. A request whose tool
+whose name or id names a permanent or future policy are never offered. A request whose tool
 call names only its id is described and decided by the call the agent
 announced: its title, and whether it runs a command or edits a file.
 
@@ -202,3 +204,23 @@ tool; that is asked as a question. On V2 the model list is the session's
 `models` list, set with
 `session/set_model`; on V3 it is the `model` config option. Sub-agent tasks are tool calls with
 `_meta.kiro.kind` set to `agent-subtask`.
+
+**Mistral Vibe** signs in with a Mistral API key, read from `MISTRAL_API_KEY`,
+`$VIBE_HOME/.env` or the OS keyring. Its handshake offers browser sign-in
+either way, so its sign-in check asks Vibe's read-only `_auth/status` instead.
+Sessions are given no keyring bus and the check runs without one too, so on
+Linux a key saved to the Secret Service reads as signed out; use the variable
+or the `.env` file there. Vibe's modes are permission profiles:
+approval-required is `ask`, auto mode is `smart-approve` (Vibe's own reviewer,
+which runs the calls it rates safe and asks about the rest) where the session
+offers it and `accept-edits` where not, and full access is `auto-approve`.
+Vibe ignores a mode it does not offer, and its config can hide any of them, so
+a session that has to ask and is offered no mode that asks is refused. Its
+`ask_user_question` tool, which Vibe offers only to a client that answers form
+elicitations, asks through the same `elicitation/create` handling as `agy`
+(`src/acp/elicitation.ts`). An MCP tool is named `mcp_<server>.<tool>` with the
+server name normalised; that alias is mapped back to the one registered server
+it can name, and a call it cannot place asks a person. Choosing a model also
+saves it as Vibe's `active_model` in `$VIBE_HOME/config.toml`, which a later
+Vibe session given no model starts with. Its permission requests name only the
+tool call, which the `tool_call` announced before them describes.

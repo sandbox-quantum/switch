@@ -17,7 +17,7 @@ def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:
         DefinitionV1(provider="gemini")
     assert (
         "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
-        "deepseek-harness, pi, copilot, kiro" in str(raised.value)
+        "deepseek-harness, pi, copilot, kiro, mistral-vibe" in str(raised.value)
     )
 
 
@@ -34,6 +34,7 @@ def test_the_served_provider_list() -> None:
         ("pi", "Pi"),
         ("copilot", "GitHub Copilot"),
         ("kiro", "Kiro CLI"),
+        ("mistral-vibe", "Mistral Vibe"),
     ]
     by_id = {provider["id"]: provider for provider in providers}
     served = advanced_config_schema()["providers"]
@@ -56,6 +57,7 @@ def test_the_served_schema() -> None:
         "pi",
         "copilot",
         "kiro",
+        "mistral-vibe",
     }
     assert [field["key"] for field in providers["claude"]["fields"]] == [
         "tools",

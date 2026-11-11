@@ -96,6 +96,7 @@ export type RendererTelemetryEvents = {
       | 'pi'
       | 'copilot'
       | 'kiro'
+      | 'mistral-vibe'
       | 'none';
   };
   /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */

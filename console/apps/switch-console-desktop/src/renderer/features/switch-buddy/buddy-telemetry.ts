@@ -16,6 +16,7 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'pi',
   'copilot',
   'kiro',
+  'mistral-vibe',
 ];
 
 /** A provider id as telemetry may carry it: one of these, else `none`. */

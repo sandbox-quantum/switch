@@ -253,6 +253,7 @@ outcome. A timeout or interrupted completion remains unknown. The Antigravity ad
 | DeepSeek Harness | Yes | ACP `model` option (its `[provider, model]` routes) | Unavailable | Staged file references |
 | Pi | Yes | Models of the providers Pi has credentials for | RPC `compact` | Images as bytes; other files named by path |
 | Kiro CLI | Yes | ACP model catalog (a `model` config option on its V3 engine) | Unavailable | Images as bytes; embedded file resources where advertised |
+| Mistral Vibe | Yes | ACP model config option | Unavailable | Images as bytes; embedded file resources |
 
 Controls depend on the connected provider's reported support. OpenCode models
 that report no image input are labelled in the selector and reject images before
@@ -398,8 +399,9 @@ resumes or attaches, including ones started automatically:
 - **Auto mode** — the provider's own automatic review: safe actions run without
   asking, risky ones still ask. Claude runs in its auto mode, Codex uses its
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
-  uses Smart Auto, Antigravity and Pi approve edits and ask before commands, DeepSeek
-  Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
+  uses Smart Auto, Mistral Vibe uses Smart Approve where Vibe offers it, and
+  Antigravity, Pi (and Mistral Vibe without Smart Approve) approve edits and ask
+  before commands. DeepSeek Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
   and Kiro applies its own trust policy and safety check before anything reaches
   Console, which asks about the rest.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides
@@ -437,7 +439,8 @@ Cursor uses its native account status output. Kiro reads `kiro-cli whoami`
 and, when that cannot answer, the agent's handshake, which a signed-out Kiro
 answers with its `kiro-login` method. Antigravity initializes an empty
 session without sending a prompt, and returns its native model list. Pi lists the
-models it has credentials for (`pi --list-models`, offline). OpenCode checks connected backends; a local or free backend may need no
+models it has credentials for (`pi --list-models`, offline). Mistral
+Vibe uses its read-only `_auth/status` call after the ACP handshake. OpenCode checks connected backends; a local or free backend may need no
 login. These checks do not prove quota or access to every model, and credentials
 can expire after a check. All model fields use the same editable picker: select a model from the host
 catalogue or enter an ID. Blank uses the provider default. Loading and failed
