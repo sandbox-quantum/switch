@@ -173,6 +173,45 @@ it('asks Kimi questions as questions, not approvals, and answers with the option
   });
 });
 
+it('cancels a question whose only option is to skip it', async () => {
+  const { adapter, events, server } = await setup('full-access');
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask me' });
+  server.send({
+    id: 93,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'q', title: 'AskUserQuestion' },
+      options: [{ optionId: 'q0_skip', name: 'Skip', kind: 'reject_once' }],
+    },
+  });
+  await flush();
+  expect(events.some((e) => e.type === 'user-input.requested')).toBe(false);
+  expect(server.received.find((m) => m.id === 93)?.result).toEqual({
+    outcome: { outcome: 'cancelled' },
+  });
+});
+
+it('asks with the tool title when a question carries no text', async () => {
+  const { adapter, events, server } = await setup('full-access');
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask me' });
+  server.send({
+    id: 94,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'q', title: 'Pick a branch' },
+      options: [
+        { optionId: 'q0_opt_0', name: 'main', kind: 'allow_once' },
+        { optionId: 'q0_opt_1', name: 'dev', kind: 'allow_once' },
+      ],
+    },
+  });
+  const event = events.find((e) => e.type === 'user-input.requested');
+  if (!event || event.type !== 'user-input.requested') throw new Error('missing question');
+  expect(event.questions[0]?.question).toBe('Pick a branch');
+});
+
 it('treats an ordinary approval as an approval', async () => {
   const { adapter, events, server } = await setup();
   await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'run' });
@@ -255,4 +294,52 @@ it('treats a model defined in the environment as signed in without running the C
     },
   });
   expect(result.status).toBe('authenticated');
+  // Without its key the model does not count, and the CLI is asked instead:
+  // here there is none, which reads as unknown, never as signed in.
+  const withoutKey = await kimiAcp.checkSignIn!({
+    binaryPath: '/nonexistent/kimi',
+    cwd: '/work',
+    env: { KIMI_MODEL_NAME: 'kimi-for-coding', KIMI_CODE_HOME: home },
+    handshake: async () => {
+      throw new Error('not called');
+    },
+    request: async () => {
+      throw new Error('not called');
+    },
+  });
+  expect(withoutKey.status).toBe('unknown');
 });
+
+// A stand-in `kimi` that answers only `kimi provider list --json` run with the
+// update check off, so the sign-in check's own command line is under test.
+it.skipIf(process.platform === 'win32')(
+  'reads the sign-in from `kimi provider list --json`, run with the update check off',
+  async () => {
+    const binaryPath = join(home, 'kimi');
+    await writeFile(
+      binaryPath,
+      [
+        '#!/bin/sh',
+        '[ "$*" = "provider list --json" ] && [ "$KIMI_CODE_NO_AUTO_UPDATE" = "1" ] || exit 3',
+        `echo '{"providers":{"managed:kimi-code":{"type":"kimi","apiKey":""}}}'`,
+        '',
+      ].join('\n'),
+      { mode: 0o755 }
+    );
+    const notCalled = async (): Promise<never> => {
+      throw new Error('not called');
+    };
+    const check = () =>
+      kimiAcp.checkSignIn!({
+        binaryPath,
+        cwd: home,
+        env: { KIMI_CODE_HOME: home },
+        handshake: notCalled,
+        request: notCalled,
+      });
+    expect((await check()).status).toBe('unauthenticated');
+    await mkdir(join(home, 'credentials'), { recursive: true });
+    await writeFile(join(home, 'credentials', 'kimi-code.json'), '{}');
+    expect((await check()).status).toBe('authenticated');
+  }
+);
