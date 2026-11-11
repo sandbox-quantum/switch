@@ -145,7 +145,9 @@ describe('MeetBuddyPage', () => {
       signedOut('deepseek-harness'),
       signedOut('pi'),
       signedOut('copilot'),
-      signedOut('mistral-vibe')
+      signedOut('mistral-vibe'),
+      signedOut('kiro'),
+      signedOut('goose')
     );
     await render();
     expect(buttons()).toEqual(['Skip', 'Set up AI provider']);
