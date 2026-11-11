@@ -771,6 +771,15 @@ export class SwitchClient {
     });
   }
 
+  /** The `auto_route` block of `GET /gateway/rooms/{room_id}`: the room's auto-route state. */
+  async roomAutoRoute(roomId: string): Promise<Record<string, unknown>> {
+    const room = await this.gateway<{ auto_route: Record<string, unknown> }>(
+      "GET",
+      `/rooms/${roomId}`,
+    );
+    return room.auto_route;
+  }
+
   /** `PUT /gateway/rooms/{room_id}/auto-route`: the room's auto-route switch. */
   async setRoomAutoRoute(
     roomId: string,

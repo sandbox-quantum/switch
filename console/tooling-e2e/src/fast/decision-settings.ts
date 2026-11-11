@@ -86,10 +86,7 @@ export const decisionSettings: FastScenario = {
         expect(kept.available).toBe(false);
         expect((await switchClient.decisionRoomDefault()).auto_route_new_rooms).toBe(true);
         const fresh = await fixtures.internalRoom('drfresh', [agent]);
-        const freshDetail = (await switchClient.getRoom(fresh.id)) as unknown as {
-          auto_route: { on: boolean };
-        };
-        expect(freshDetail.auto_route.on).toBe(false);
+        expect((await switchClient.roomAutoRoute(fresh.id)).on).toBe(false);
         log('with no decision service the default is kept and a new room starts off');
       } finally {
         await switchClient.saveDecisionRoomDefault(false);

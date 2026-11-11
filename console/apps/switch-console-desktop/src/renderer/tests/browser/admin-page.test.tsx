@@ -32,6 +32,8 @@ const featureFlags = vi.hoisted(() => ({
 }));
 const switchServers = vi.hoisted(() => ({
   getDecisionSettings: vi.fn(),
+  getDecisionRoomDefault: vi.fn(),
+  updateDecisionRoomDefault: vi.fn(),
   getConnectorApps: vi.fn(),
   checkConnectorApp: vi.fn(),
   saveConnectorApp: vi.fn(),
@@ -317,6 +319,10 @@ it('gives the workspace’s admins Decision routing under Workspace, with servic
       serverDefault: { configured: true, endpoint: 'http://decision:8230', hasApiKey: false },
       options: { haikuAnthropic: true, haikuBedrock: false },
     },
+  });
+  switchServers.getDecisionRoomDefault.mockResolvedValue({
+    kind: 'loaded',
+    roomDefault: { autoRouteNewRooms: false, available: true, reason: null },
   });
   navigation.navigate('admin', { section: 'decision' });
   const page = await render();
