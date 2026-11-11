@@ -12,6 +12,7 @@ from switch_core.connections.loader import (
 )
 
 PLACEHOLDERS = {
+    "clickup",
     "asana",
     "gitlab",
     "bitbucket",
@@ -46,6 +47,33 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+
+
+def test_clickup_stays_unavailable_without_a_refreshable_expiring_sign_in():
+    entry = CATALOG["clickup"]
+    definition = entry.definition
+    assert definition.name == "ClickUp"
+    assert not definition.enabled
+    assert definition.auth.type == "oauth"
+    assert definition.auth.refresh is None
+    assert definition.adapter is None
+    assert definition.auth.oauth is None
+    assert definition.auth.identity is None
+    assert definition.cli is None
+    assert definition.tools is None
+    assert definition.token is None
+    assert definition.mcp is None
+    assert definition.access is None
+    assert entry.skill_files == {}
+
+
+def test_clickup_cannot_be_enabled_by_flipping_the_catalog_flag(catalog_copy):
+    path = catalog_copy / "clickup" / "connection.yaml"
+    path.write_text(path.read_text().replace("enabled: false", "enabled: true"))
+    with pytest.raises(
+        CatalogError, match="(?s)clickup is invalid.*an enabled entry needs"
+    ):
+        load_catalog(catalog_copy)
 
 
 GOOGLE = "https://www.googleapis.com/auth/"

@@ -89,8 +89,17 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     assert result.pop("atlassian") == "not_connected"
     assert result.pop("google-workspace") == "not_connected"
     assert result.pop("datadog") == "not_connected"
+    assert result.pop("clickup") == "coming_soon"
     assert len(result) == 11
     assert set(result.values()) == {"coming_soon"}
+    clickup = next(
+        entry for entry in response.json()["connections"] if entry["slug"] == "clickup"
+    )
+    assert clickup["name"] == "ClickUp"
+    assert clickup["enabled"] is False
+    assert clickup["auth_type"] == "oauth"
+    assert clickup["status"] == "coming_soon"
+    assert clickup["can_revoke"] is False
     github = next(
         entry for entry in response.json()["connections"] if entry["slug"] == "github"
     )
