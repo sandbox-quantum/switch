@@ -179,6 +179,11 @@ class StatusControllerInfo(_StatusBody):
     # names, or Switch Console, which runs it (on an SSH host, say) and
     # replaces its bundle. Absent from a controller older than this field.
     updated_by: Literal["self", "console"] | None = None
+    # When this controller process started, so a restart shows as a new start
+    # time (the controller-restart count, in the follow-up after the
+    # observability PR). Accepted and not read yet: declared now, with a strict
+    # type, so a controller that sends it works against this Core.
+    started_at: datetime | None = None
 
 
 class MachineStatus(_StatusBody):

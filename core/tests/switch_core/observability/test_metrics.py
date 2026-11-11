@@ -81,6 +81,8 @@ def test_histogram_buckets_by_upper_bound(registry: MetricsRegistry):
     assert point.bucket_counts[1] == 2
     assert point.bucket_counts[-1] == 1
     assert sum(point.bucket_counts) == point.count
+    # Datadog reads `max:` and `min:` of a distribution from these alone.
+    assert (point.minimum, point.maximum) == (1.0, 999_999.0)
 
 
 def test_histogram_resets_between_intervals(registry: MetricsRegistry):

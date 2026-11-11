@@ -3,6 +3,7 @@ one to boot (the controller it enrolled as, or a one-time code to enroll with),
 and recording what the operator controller observed of it."""
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -47,6 +48,7 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.hosted_controller import router
 from switch_core.gateway.hosted_machines import router as machines_router
 from switch_core.keys import Keyring
+from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.hosted_machine_helpers import (
@@ -1459,3 +1461,160 @@ async def test_an_observed_error_is_reported_by_its_code_once(controller_app, re
         )
 
     assert reported.events("cloud_machine_failed") == [{"reason": "needs_attention"}]
+
+
+@pytest.fixture
+def machine_metrics():
+    """An installed metrics registry, as with OTLP configured."""
+    from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+
+    registry = MetricsRegistry()
+    install(registry)
+    yield registry
+    uninstall()
+
+
+def _failure_reasons(registry) -> list[str]:
+    return sorted(
+        dict(point.attributes)["reason"]
+        for payload in registry.collect()
+        if payload.name == "switch.hosted.machine_events"
+        for point in payload.numbers
+        if dict(point.attributes)["event"] == "failed"
+    )
+
+
+@pytest.mark.parametrize(
+    ("revision", "reported_hours_ago", "reason"),
+    [
+        (1, None, "never_connected"),
+        # A retry after a failed first launch moves the revision on, but the
+        # machine has still never run.
+        (3, None, "never_connected"),
+        (3, 2, "wake_failed"),
+    ],
+)
+async def test_a_machine_that_was_woken_and_never_connected_counts_as_wake_failed(
+    controller_app,
+    reported,
+    machine_metrics,
+    caplog,
+    revision,
+    reported_hours_ago,
+    reason,
+):
+    """A machine that has reported before and then misses its connect
+    deadline (a wake or a restart that didn't come back) counts as
+    `wake_failed` on the hosted metric and log line. One that never reported
+    is a first launch, retried or not. Product telemetry keeps its
+    `never_connected`."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state="provisioning",
+        revision=revision,
+        running_observed_at=datetime.now(UTC) - timedelta(minutes=11),
+        heartbeat_at=(
+            None
+            if reported_hours_ago is None
+            else datetime.now(UTC) - timedelta(hours=reported_hours_ago)
+        ),
+    )
+    caplog.set_level(logging.WARNING, logger="switch_core.gateway.hosted_controller")
+    await list_machines(app.client)
+
+    assert reported.events("cloud_machine_failed") == [{"reason": "never_connected"}]
+    assert _failure_reasons(machine_metrics) == [reason]
+    (line,) = [r for r in caplog.records if "failed:" in r.getMessage()]
+    fields = getattr(line, STRUCTURED_FIELDS)["switch"]
+    assert fields == {
+        "event": "hosted.machine_failed",
+        "reason": reason,
+        "machine": app.machine_id,
+    }
+    assert "event.name" not in json.dumps(getattr(line, STRUCTURED_FIELDS))
+
+
+async def test_an_error_while_stopping_counts_as_stop_failed(
+    controller_app, reported, machine_metrics
+):
+    """An error observed while the machine is wanted stopped counts as
+    `stop_failed` on the hosted metric. Product telemetry keeps its reason."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state="stopping",
+        desired_state="stopped",
+        stop_reason="owner",
+    )
+    await observe(
+        app.client,
+        app.machine_id,
+        state="error",
+        revision=1,
+        error="The instance would not stop.",
+    )
+
+    assert reported.events("cloud_machine_failed") == [{"reason": "reported"}]
+    assert _failure_reasons(machine_metrics) == ["stop_failed"]
+
+
+@pytest.mark.parametrize(
+    ("extra", "accepted"),
+    [
+        ({"cloud_errors": [{"call": "launch", "kind": "capacity", "count": 2}]}, True),
+        ({"cloud_errors": []}, True),
+        ({"reconciler_errors": {"cloud": 3, "core_api": 0}}, True),
+        (
+            {
+                "cloud_errors": [
+                    {"call": "launch", "kind": "capacity", "count": 1, "code": "X"}
+                ]
+            },
+            False,
+        ),
+        (
+            {
+                "cloud_errors": [
+                    {"call": "RunInstances", "kind": "capacity", "count": 1}
+                ]
+            },
+            False,
+        ),
+        ({"cloud_errors": [{"call": "launch", "kind": "capacity", "count": 0}]}, False),
+        (
+            {"cloud_errors": [{"call": "launch", "kind": "capacity", "count": 10**7}]},
+            False,
+        ),
+        (
+            {"cloud_errors": [{"call": "launch", "kind": "capacity", "count": 1}] * 29},
+            False,
+        ),
+        ({"reconciler_errors": {"cloud": -1}}, False),
+        ({"reconciler_errors": {"cloud": 10**7}}, False),
+        ({"reconciler_errors": {"free text": 1}}, False),
+    ],
+)
+async def test_the_follow_ups_fields_are_accepted_strictly_and_ignored(
+    controller_app, extra, accepted
+):
+    """For the follow-up (AWS and reconciler errors): declared now with strict
+    types, so a reconciler that sends them works against this Core, and a
+    value outside them is refused. Nothing reads or stores them yet."""
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning")
+    before = await machine_of(app.factory, app.machine_id)
+    response = await app.client.post(
+        f"/hosted-controller/machines/{app.machine_id}/observation",
+        headers=HEADERS,
+        json={"state": "provisioning", "revision": 1, **extra},
+    )
+    assert (response.status_code == 200) is accepted, response.text
+    after = await machine_of(app.factory, app.machine_id)
+    assert (after.state, after.error, after.heartbeat) == (
+        before.state,
+        before.error,
+        before.heartbeat,
+    )

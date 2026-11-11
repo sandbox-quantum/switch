@@ -89,9 +89,98 @@ def test_monitors_are_individually_importable() -> None:
         ]
 
 
+def test_every_monitor_watches_one_deployment_only() -> None:
+    """Scoped to one deployment's `service`, the one tag Core sets that
+    Datadog keeps, so a test slot or staging reporting into the same org can
+    never fire another deployment's alerts. Never by `env`, which isn't set
+    from `ENVIRONMENT` and can't separate deployments. `apply.sh` fills the blanks,
+    and refuses to run without them."""
+    for monitor in _load("monitors.json"):  # type: ignore[union-attr]
+        query, name = monitor["query"], monitor["name"]
+        assert "service:switch-core" not in query, name
+        assert "env:" not in query, name
+        scopes = [
+            scope.split(",")
+            for scope in re.findall(r"\{([^}]*)\}", query)
+            if "service:" in scope
+        ]
+        assert scopes, name
+        for scope in scopes:
+            assert "service:REPLACE-WITH-SERVICE" in scope, (name, scope)
+        assert "REPLACE-WITH-ENV" in name, name
+        assert {"service:REPLACE-WITH-SERVICE", "env:REPLACE-WITH-ENV"} <= set(
+            monitor["tags"]
+        ), name
+    script = (_ARTIFACTS / "apply.sh").read_text()
+    assert "${SERVICE:?" in script
+    assert "${ENV:?" in script
+    assert "monitor=${monitor//REPLACE-WITH-SERVICE/$SERVICE}" in script
+    assert "monitor=${monitor//REPLACE-WITH-ENV/$ENV}" in script
+    # The default service is refused without an explicit opt-in, and no
+    # deployment of ours is named in the public script.
+    assert 'ALLOW_DEFAULT_SERVICE:-}" != "1"' in script
+    assert "pilot" not in script
+
+
+def test_the_dashboard_filters_by_service_not_env() -> None:
+    """`env` can't separate deployments, so the dashboard picks one by
+    `$service` only."""
+    board = _load("dashboard.json")
+    assert "$env" not in json.dumps(board)
+    names = [v["name"] for v in board["template_variables"]]  # type: ignore[index]
+    assert "service" in names and "env" not in names
+    # `flint_env`, which the relay keeps as a tag, is the per-deployment
+    # filter beside `service`.
+    assert "flint_env" in names
+    assert "{$service}" not in json.dumps(board)
+
+
+def test_the_refusals_alerts_split_guessing_from_retries() -> None:
+    """The paging alert watches the bearer routes for guessed tokens only; a
+    revoked controller's exchange, which looks like a guess, goes to a
+    low-urgency alert of its own."""
+    refusal_monitors = {
+        m["name"]: m
+        for m in _load("monitors.json")  # type: ignore[union-attr]
+        if "switch.controller.credential_refusals" in m["query"]
+    }
+    assert len(refusal_monitors) == 2
+    (paging,) = [m for m in refusal_monitors.values() if "route IN" in m["query"]]
+    (routes,) = re.findall(r"route IN \(([^)]*)\)", paging["query"])
+    assert set(routes.split(",")) == {"agent", "controller", "hosted_controller"}
+    (reasons,) = re.findall(r"reason IN \(([^)]*)\)", paging["query"])
+    assert set(reasons.split(",")) == {
+        "invalid_credential",
+        "missing_credential",
+        "wrong",
+        "missing",
+    }
+    (exchange,) = [m for m in refusal_monitors.values() if m is not paging]
+    assert "route:management" in exchange["query"]
+    assert exchange["priority"] > paging["priority"]
+
+
+def test_no_monitor_names_one_deployment() -> None:
+    """Each monitor is copied per deployment, so its text names none."""
+    for monitor in _load("monitors.json"):  # type: ignore[union-attr]
+        for word in ("switch-staging", "/switch/staging", "switch-prod"):
+            assert word not in json.dumps(monitor), (monitor["name"], word)
+
+
 # Every replica reports the same server-wide value for these, so a sum would
 # multiply the reading by the number of pods.
-_READ_WITH_MAX = ("switch.decision.pending",)
+# Gauges whose every series carries the same reading: server-wide values every
+# pod reports, and the hosted gauges, which one process reports but which can
+# reach Datadog as one series per relay instance they passed through. `sum:`
+# would add the copies together; only `max:` gives the real reading.
+_READ_WITH_MAX = (
+    "switch.decision.pending",
+    "switch.hosted.boxes_expected",
+    "switch.hosted.boxes_reporting",
+    "switch.hosted.agents",
+    "switch.hosted.sessions",
+    "switch.hosted.provider_login_problems",
+)
 
 
 @pytest.mark.parametrize(
@@ -110,8 +199,8 @@ def test_server_wide_gauges_are_read_with_max(filename: str) -> None:
             rf"\b([a-z0-9]+):({re.escape(prefix)}[a-z0-9_.]*)\{{", text
         ):
             assert aggregation == "max", (
-                f"{filename} reads {name} with {aggregation}. Every pod reports "
-                "the same server-wide value, so only max gives the real reading."
+                f"{filename} reads {name} with {aggregation}. Every series of it "
+                "carries the same reading, so only max gives the real one."
             )
 
 

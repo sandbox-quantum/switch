@@ -41,6 +41,10 @@ from switch_core.observability.otlp import (
 logger = logging.getLogger(__name__)
 
 _SELF = "switch_core.observability"
+# Structured groups never exported: they would make an ops line a named event
+# (`event.name`, `event_type.*`), which some telemetry pipelines treat as
+# product events.
+NAMED_EVENT_GROUPS = frozenset({"event", "event_type"})
 
 # OTLP's own scale, which is what a receiver filters on — not Python's.
 _SEVERITY = (
@@ -127,6 +131,11 @@ class OtlpLogHandler(logging.Handler):
             if value is not None:
                 attributes[field] = str(value)
         for group, fields in structured_fields(record).items():
+            if group in NAMED_EVENT_GROUPS:
+                # Never a named event: some telemetry pipelines treat a
+                # record carrying `event.name` or `event_type` as a product
+                # event. Ops lines name themselves under `switch.event`.
+                continue
             for name, value in fields.items():
                 if value is not None:
                     attributes[f"{group}.{name}"] = value

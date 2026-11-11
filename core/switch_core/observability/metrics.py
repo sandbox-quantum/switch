@@ -91,7 +91,7 @@ def _validate(spec: MetricSpec, attributes: Mapping[str, AttributeValue]) -> Non
 class _Histogram:
     """Counts per bucket for one series, reset each collection."""
 
-    __slots__ = ("bounds", "buckets", "count", "total")
+    __slots__ = ("bounds", "buckets", "count", "maximum", "minimum", "total")
 
     def __init__(self, bounds: Sequence[float]) -> None:
         self.bounds = bounds
@@ -99,11 +99,17 @@ class _Histogram:
         self.buckets = [0] * (len(bounds) + 1)
         self.count = 0
         self.total = 0.0
+        # The interval's extremes: Datadog reads `max:` and `min:` of a
+        # distribution from these, and has nothing to show without them.
+        self.minimum: float | None = None
+        self.maximum: float | None = None
 
     def record(self, value: float) -> None:
         self.buckets[bisect.bisect_left(self.bounds, value)] += 1
         self.count += 1
         self.total += value
+        self.minimum = value if self.minimum is None else min(self.minimum, value)
+        self.maximum = value if self.maximum is None else max(self.maximum, value)
 
 
 class MetricsRegistry:
@@ -251,6 +257,8 @@ class MetricsRegistry:
                             total=histogram.total,
                             bucket_counts=list(histogram.buckets),
                             bounds=list(histogram.bounds),
+                            minimum=histogram.minimum,
+                            maximum=histogram.maximum,
                         )
                         for key, histogram in buckets.items()
                     ],
