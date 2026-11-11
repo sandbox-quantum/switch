@@ -5,6 +5,8 @@ import { createUserChangesService, type UserChangesDeps } from './user-changes';
 vi.mock('@main/lib/events', () => ({ events: { emit: vi.fn() } }));
 vi.mock('@main/lib/logger', () => ({ log: { debug: vi.fn() } }));
 vi.mock('@main/core/switch-servers/gateway-client', () => ({ gatewaySocketTarget: vi.fn() }));
+const noteSessionEnded = vi.hoisted(() => vi.fn());
+vi.mock('@main/core/switch-servers/session-ended', () => ({ noteSessionEnded }));
 vi.mock('@main/core/workspaces/workspace-session', () => ({
   withReachableServerWorkspaceSession: vi.fn(),
 }));
@@ -112,6 +114,26 @@ describe('user changes', () => {
     const socket = FakeSocket.opened[0];
     socket.frame('ping');
     expect(socket.sent).toEqual([{ type: 'pong' }]);
+  });
+
+  it('says the session ended when the gateway closes the socket with 4401', async () => {
+    // The gateway closes it so once the cookie it was opened with expires, or
+    // at the next ping after the account's sessions end (a password change).
+    const { service } = setup();
+    service.watch('s1');
+    await tick();
+    noteSessionEnded.mockClear();
+    FakeSocket.opened[0].fire('close', { code: 4401 });
+    expect(noteSessionEnded).toHaveBeenCalledExactlyOnceWith('s1');
+  });
+
+  it('says nothing about the session for any other close', async () => {
+    const { service } = setup();
+    service.watch('s1');
+    await tick();
+    noteSessionEnded.mockClear();
+    FakeSocket.opened[0].fire('close', { code: 1012 });
+    expect(noteSessionEnded).not.toHaveBeenCalled();
   });
 
   it('goes down on close and opens again while watched', async () => {

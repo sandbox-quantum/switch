@@ -62,11 +62,16 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
   // Every room the server let us see, not only the ones this user created: an
   // agent's usefulness is mostly in rooms someone else set up, and a picker that
   // omitted them made those rooms unreachable from here entirely.
-  // Only rooms the user may add to: a chat they manage, a room they own or administer.
+  // Only rooms the user may add to: a chat they manage, a room they own or
+  // administer whose members are not fixed by its platform.
   const candidates: Candidate[] = useReadableRoomsInWorkspace(workspaceId)
     .filter((room) => !alreadyIn.has(room.id) && !selected.some((s) => s.id === room.id))
     .filter((room) =>
-      mayAddToRoom(chatsStore.chat(room.id), switchRoomsStore.canDeleteRoom(workspaceId, room))
+      mayAddToRoom(
+        chatsStore.chat(room.id),
+        switchRoomsStore.canDeleteRoom(workspaceId, room) &&
+          switchRoomsStore.roomPermissions(workspaceId, room).canChangeMembers
+      )
     )
     .map((room) => ({ id: room.id, name: room.name, bridgeType: room.bridgeType }));
   const nothingToAdd = candidates.length === 0 && selected.length === 0;

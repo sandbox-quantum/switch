@@ -38,13 +38,14 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast, get_args
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from switch_core.authz import Principal, can_manage
+from switch_core.authz import Principal, can_manage, owns
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
@@ -142,60 +143,138 @@ async def _load(
     return row
 
 
-async def _refuse_agent(session: AsyncSession, tenant_id: str, agent: Agent) -> None:
-    services = sorted(
+@dataclass(frozen=True)
+class AgentTransferFacts:
+    """What decides whether an agent can change owner, read for many agents
+    at once by `agent_transfer_facts`. Every one of these ties the agent to its
+    owner by more than its owner id; see this module's docstring."""
+
+    granted_services: tuple[str, ...]
+    managed: bool
+    may_manage_agents: bool
+    # It is a sub-agent, or has sub-agents.
+    in_family: bool
+    has_oauth_client: bool
+    run_by_server_connector: bool
+
+
+async def agent_transfer_facts(
+    session: AsyncSession, tenant_id: str, agent_ids: Collection[str]
+) -> dict[str, AgentTransferFacts]:
+    """`AgentTransferFacts` for each of `agent_ids` found in the tenant, in one
+    query per kind of fact rather than per agent."""
+    if not agent_ids:
+        return {}
+    ids = list(agent_ids)
+    rows = (
+        await session.execute(
+            select(
+                Agent.id,
+                Agent.can_manage_agents,
+                Agent.parent_agent_id,
+                Agent.oauth_client_id,
+                Agent.metadata_,
+            ).where(Agent.tenant_id == tenant_id, Agent.id.in_(ids))
+        )
+    ).all()
+    services: dict[str, list[str]] = {}
+    for agent_id, service in await session.execute(
+        select(ServiceGrant.agent_id, ServiceGrant.service).where(
+            ServiceGrant.tenant_id == tenant_id, ServiceGrant.agent_id.in_(ids)
+        )
+    ):
+        services.setdefault(agent_id, []).append(service)
+    managed = set(
         await session.scalars(
-            select(ServiceGrant.service).where(
-                ServiceGrant.tenant_id == tenant_id, ServiceGrant.agent_id == agent.id
+            select(AgentDefinition.agent_id).where(
+                AgentDefinition.tenant_id == tenant_id,
+                AgentDefinition.agent_id.in_(ids),
             )
         )
     )
-    if services:
-        raise TransferRefused(
-            409,
-            "This agent uses its owner's own connections to "
-            f"{', '.join(services)}. Remove its service access first; the new "
-            "owner can then grant their own.",
-        )
-    managed = await session.scalar(
-        select(AgentDefinition.id).where(
-            AgentDefinition.tenant_id == tenant_id, AgentDefinition.agent_id == agent.id
+    parents = set(
+        await session.scalars(
+            select(Agent.parent_agent_id).where(
+                Agent.tenant_id == tenant_id, Agent.parent_agent_id.in_(ids)
+            )
         )
     )
-    if managed is not None:
-        raise TransferRefused(
-            409,
-            "This agent is managed on its owner's machine, with their sign-ins, "
-            "and can't be transferred.",
+    return {
+        agent_id: AgentTransferFacts(
+            granted_services=tuple(sorted(services.get(agent_id, ()))),
+            managed=agent_id in managed,
+            may_manage_agents=may_manage_agents,
+            in_family=parent_agent_id is not None or agent_id in parents,
+            has_oauth_client=oauth_client_id is not None,
+            run_by_server_connector=isinstance(metadata, dict)
+            and bool(metadata.get("server_connector_id")),
         )
-    if agent.can_manage_agents:
-        raise TransferRefused(
-            409,
-            "This agent can manage its owner's agents. Turn that off first.",
+        for agent_id, may_manage_agents, parent_agent_id, oauth_client_id, metadata in rows
+    }
+
+
+def agent_transfer_refusal(facts: AgentTransferFacts, *, to_owner: bool) -> str | None:
+    """Why the agent can't change owner, for the person asking; None when it
+    can. Only its owner is told which services it is granted: the grants are
+    made on the owner's own connections, which nobody else is shown."""
+    if facts.granted_services:
+        if to_owner:
+            return (
+                "This agent uses your own connectors for "
+                f"{', '.join(facts.granted_services)}. Remove its service access "
+                "first; the new owner can then grant their own."
+            )
+        return (
+            "This agent uses its owner's own connectors. Its owner has to "
+            "remove its service access first; the new owner can then grant "
+            "their own."
         )
-    child = await session.scalar(
-        select(Agent.id).where(
-            Agent.tenant_id == tenant_id, Agent.parent_agent_id == agent.id
+    if facts.managed:
+        return (
+            "This agent is managed on its owner's device, with their sign-ins, "
+            "and can't be transferred."
         )
-    )
-    if agent.parent_agent_id is not None or child is not None:
-        raise TransferRefused(
-            409,
-            "This agent is part of a family of sub-agents, which can't be transferred.",
+    if facts.may_manage_agents:
+        return "This agent can manage its owner's agents. Turn that off first."
+    if facts.in_family:
+        return (
+            "This agent is part of a family of sub-agents, which can't be transferred."
         )
-    if agent.oauth_client_id is not None:
-        raise TransferRefused(
-            409,
+    if facts.has_oauth_client:
+        return (
             "This agent signs in with an OAuth client of its own and can't be "
-            "transferred.",
+            "transferred."
         )
-    if (agent.metadata_ or {}).get("server_connector_id"):
-        raise TransferRefused(
-            409,
-            "This agent is run by a server connector, which registers it again "
-            "under its own owner whenever the server starts, so it can't be "
-            "transferred.",
+    if facts.run_by_server_connector:
+        return (
+            "This agent is run by Switch itself, which registers it again "
+            "under its own owner whenever Switch starts, so it can't be "
+            "transferred."
         )
+    return None
+
+
+async def _refuse_agent(
+    session: AsyncSession, tenant_id: str, agent: Agent, *, to_owner: bool
+) -> None:
+    facts = (await agent_transfer_facts(session, tenant_id, [agent.id]))[agent.id]
+    refusal = agent_transfer_refusal(facts, to_owner=to_owner)
+    if refusal is not None:
+        raise TransferRefused(409, refusal)
+
+
+def kind_refusal(resource: Room | Document) -> str | None:
+    """Why a room or a document can't change owner, whoever would receive it;
+    None when it can. A chat stays with the people in it, and a room's own
+    document with its room."""
+    if isinstance(resource, Room) and "chat_operation_id" in (resource.metadata_ or {}):
+        return "A chat can't be transferred."
+    if isinstance(resource, Document) and resource.room_id is not None:
+        return (
+            "This document belongs to a room. Only library documents can be "
+            "transferred."
+        )
+    return None
 
 
 async def _refuse(
@@ -204,19 +283,16 @@ async def _refuse(
     kind: str,
     resource: Owned,
     new_owner_id: str,
+    caller: Principal,
 ) -> None:
     if isinstance(resource, Agent):
-        await _refuse_agent(session, tenant_id, resource)
-    elif isinstance(resource, Room):
-        if resource.metadata_ is not None and "chat_operation_id" in resource.metadata_:
-            raise TransferRefused(409, "A chat can't be transferred.")
-    elif isinstance(resource, Document):
-        if resource.room_id is not None:
-            raise TransferRefused(
-                409,
-                "This document belongs to a room. Only library documents can be "
-                "transferred.",
-            )
+        await _refuse_agent(
+            session, tenant_id, resource, to_owner=owns(caller, resource.owner_id)
+        )
+    elif isinstance(resource, Room | Document):
+        refusal = kind_refusal(resource)
+        if refusal is not None:
+            raise TransferRefused(409, refusal)
     elif isinstance(resource, Template):
         clash = await session.scalar(
             select(Template.id).where(
@@ -295,7 +371,7 @@ async def transfer_ownership(
             f"You can't transfer someone else's {label} to yourself. "
             "Ask its owner to transfer it to you.",
         )
-    await _refuse(session, tenant_id, kind, resource, new_owner_id)
+    await _refuse(session, tenant_id, kind, resource, new_owner_id, caller)
 
     retired: str | None = None
     if isinstance(resource, Agent):
@@ -370,9 +446,7 @@ async def hand_over_everything(
             )
         )
         for row in rows:
-            if isinstance(row, Room) and "chat_operation_id" in (row.metadata_ or {}):
-                continue
-            if isinstance(row, Document) and row.room_id is not None:
+            if isinstance(row, (Room, Document)) and kind_refusal(row) is not None:
                 continue
             if isinstance(row, Template):
                 if not await _template_passes(session, row, heir_id):

@@ -1,4 +1,4 @@
-import { watcherHealthFileSchema } from '@switch-console/agent-providers';
+import { IS_PROCESS_ALIVE, watcherHealthFileSchema } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { READ_JSON } from './remote-json';
@@ -25,15 +25,12 @@ import { IS_STATE_ROOT } from './state-roots';
  * `watcherIsCurrent` for that, so the decision lives in one place and can be
  * read without the script.
  */
-export const WATCHER_STATUS_SCRIPT = String.raw`${READ_JSON}${IS_STATE_ROOT}
+export const WATCHER_STATUS_SCRIPT = String.raw`${READ_JSON}${IS_STATE_ROOT}${IS_PROCESS_ALIVE}
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const [baseArg] = process.argv.slice(1);
 const base = baseArg || path.join(os.homedir(), '.local', 'state', 'switch', 'sdk-watchers');
-const alive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-};
 let names = [];
 try { names = fs.readdirSync(base).filter(isStateRoot); } catch {}
 const found = [];
@@ -60,14 +57,14 @@ for (const name of names) {
   found.push({
     agentId: config.session.agentId,
     root,
-    running: !!(owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 && alive(owner.pid)),
+    running: !!(owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 && isProcessAlive(owner.pid, 'recorded')),
     build: owner && typeof owner.build === 'string' ? owner.build : null,
     enabled: watch ? watch.enabled === true : null,
     spawn: watch ? watch.spawn === true : null,
     stoodDown,
     supervisorPid: owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner.pid : null,
     workerPid,
-    workerAlive: workerPid !== null && alive(workerPid),
+    workerAlive: workerPid !== null && isProcessAlive(workerPid, 'recorded'),
     health,
     failure: failure && typeof failure.message === 'string' ? failure.message : null,
     takenOver: takenOver && typeof takenOver.reason === 'string'

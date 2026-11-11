@@ -261,14 +261,29 @@ class GraphClient:
         display_name: str,
         description: str,
         membership_type: str,
+        owner_aad_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a channel in a team. ``membership_type`` is ``standard`` or
-        ``private``. Returns the created channel (with its ``id``)."""
-        body = {
+        ``private``. Returns the created channel (with its ``id``).
+
+        ``owner_aad_id`` names the directory user made the channel's owner.
+        Graph refuses a private channel created with an application token
+        unless the request names one, since a private channel always has a
+        member who owns it and an app cannot be that member.
+        """
+        body: dict[str, Any] = {
             "displayName": display_name,
             "description": description,
             "membershipType": membership_type,
         }
+        if owner_aad_id is not None:
+            body["members"] = [
+                {
+                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                    "user@odata.bind": f"{GRAPH_BASE}/users('{owner_aad_id}')",
+                    "roles": ["owner"],
+                }
+            ]
         resp = await self._send(
             "POST", f"{GRAPH_BASE}/teams/{_segment(team_id)}/channels", json=body
         )

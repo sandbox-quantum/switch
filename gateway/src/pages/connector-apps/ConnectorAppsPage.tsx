@@ -7,7 +7,6 @@ import ConnectorAppCard from "./ConnectorAppCard";
 import {
   cardOrder,
   missingPublicUrl,
-  ONLY_THE_OPERATOR,
   PUBLIC_URL_BANNER,
   sentBackTo,
 } from "./connectorApps";
@@ -19,30 +18,24 @@ function Heading({ publicUrl }: { publicUrl: string | null }) {
       <Typography variant="h5">Connectors</Typography>
       <Typography variant="body2" color="text.secondary">
         Some connectors sign in through an app you register at the vendor. Set each up once,
-        for the whole server, before anyone can connect it.
+        for all of Switch, before anyone can connect it.
         {publicUrl !== null && ` ${sentBackTo(publicUrl)}`}
       </Typography>
     </Box>
   );
 }
 
-const NOT_MOUNTED = "not mounted";
-
-/** Every app of `scope`, a card each, under `heading`. A 404 means the
- * routes are not mounted, and shows `notEnabled`, or nothing when it is null. */
+/** Every app of `scope`, a card each, under `heading`. Render it only where
+ * the server mounts the routes it reads: `service_connections`, and for an
+ * organization's apps `organization_connector_apps` too. */
 export function ConnectorAppsList({
   scope,
-  notEnabled,
   heading: headingOf,
 }: {
   scope: ConnectorAppScope;
-  notEnabled: string | null;
   heading: (publicUrl: string | null) => ReactNode;
 }) {
-  const { data, loading, error, refetch } = useConnectorApps(
-    scope,
-    notEnabled ?? NOT_MOUNTED,
-  );
+  const { data, loading, error, refetch } = useConnectorApps(scope);
   const [checkFailures, setCheckFailures] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<string | null>(null);
 
@@ -54,12 +47,11 @@ export function ConnectorAppsList({
         <CircularProgress />
       </>
     );
-  if (error === NOT_MOUNTED) return null;
   if (error !== null)
     return (
       <>
         {heading}
-        <Alert severity={error === notEnabled ? "info" : "error"}>{error}</Alert>
+        <Alert severity="error">{error}</Alert>
       </>
     );
   if (data === null) return heading;
@@ -101,21 +93,20 @@ export function ConnectorAppsList({
   );
 }
 
-/** The server operator's page; anyone else is told whose it is, and nothing is asked of the server. */
+/** The server operator's page: the route table lets no one else in. */
 export default function ConnectorAppsPage() {
-  const { isOperator } = useAuth();
+  const { capabilities } = useAuth();
   return (
     <Box>
-      {isOperator ? (
+      {capabilities.features.service_connections ? (
         <ConnectorAppsList
           scope="server"
-          notEnabled={CONNECTORS_NOT_ENABLED}
           heading={(publicUrl) => <Heading publicUrl={publicUrl} />}
         />
       ) : (
         <>
           <Heading publicUrl={null} />
-          <Alert severity="info">{ONLY_THE_OPERATOR}</Alert>
+          <Alert severity="info">{CONNECTORS_NOT_ENABLED}</Alert>
         </>
       )}
     </Box>
