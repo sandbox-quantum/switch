@@ -126,3 +126,26 @@ async def test_a_room_with_no_metadata_can_be_told(
         assert await RoomStore().claim_decision_notice(
             session, room.id, every_seconds=3600
         )
+
+
+async def test_removing_the_triage_agent_clears_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    room_id = await _room(session_factory)
+    store = RoomStore()
+    triage, other = str(uuid.uuid4()), str(uuid.uuid4())
+    async with session_factory() as session:
+        await store.set_auto_route_fallback(session, room_id, triage)
+        await session.commit()
+    async with session_factory() as session:
+        await store.remove_agents(session, room_id, [other])
+        await session.commit()
+    async with session_factory() as session:
+        assert await store.auto_route_fallback(session, room_id) == triage
+        await store.remove_agents(session, room_id, [triage])
+        await session.commit()
+    async with session_factory() as session:
+        assert await store.auto_route_fallback(session, room_id) is None
+        room = await store.get(session, room_id)
+        assert room is not None
+        assert AUTO_ROUTE_FALLBACK_KEY not in (room.metadata_ or {})

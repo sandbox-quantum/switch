@@ -595,11 +595,13 @@ class RoomStore:
                 room_agents.c.agent_id.in_(agent_ids),
             )
         )
-        # An agent that leaves stops being the room's main agent, as its alias
-        # goes with its membership row.
+        # An agent that leaves stops being the room's main agent and its
+        # triage agent, as its alias goes with its membership row.
         room = await session.get(Room, room_id)
         if room is not None and main_agent_in(room.metadata_) in agent_ids:
             await self.set_main_agent(session, room_id, None)
+        if room is not None and auto_route_fallback_in(room.metadata_) in agent_ids:
+            await self.set_auto_route_fallback(session, room_id, None)
         await session.flush()
 
     async def get_rooms_for_agent(
