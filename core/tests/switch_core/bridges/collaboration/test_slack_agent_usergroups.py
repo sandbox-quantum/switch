@@ -989,11 +989,19 @@ def test_sync_leaves_unclaimed_legacy_groups_alone_and_says_so(
         bridge_id=BRIDGE_ID, groups=[_agent_group("S003", "old-agent")]
     )
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("DEBUG"):
         _run(adapter.sync_agent_identities([]))
 
     assert client.disabled == []
-    assert "@old-agent" in caplog.text
+    # The count at info; the handles, which grow with every agent deleted
+    # elsewhere and repeat on each bridge start, only at debug.
+    summary = [r for r in caplog.records if "belong to no agent here" in r.getMessage()]
+    assert [r.levelname for r in summary] == ["INFO"]
+    assert "@old-agent" not in summary[0].getMessage()
+    assert any(
+        r.levelname == "DEBUG" and "@old-agent" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_sync_reports_a_failed_retirement() -> None:

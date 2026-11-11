@@ -37,6 +37,7 @@ from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import (
+    SIGNUP_REFUSED_DETAIL,
     AuthenticatedCaller,
     AuthenticatedSession,
     describe_session_state,
@@ -51,6 +52,7 @@ from switch_core.gateway.auth import (
     require_admin,
     session_auth_time,
     set_session_cookie,
+    signup_refused_by_edge,
     tenants_bindable_by,
     verify_password_off_loop,
 )
@@ -227,7 +229,7 @@ async def _refuse_signup(
         emit_safely(current_telemetry(), "signup_refused", {"reason": "rate_limited"})
         raise HTTPException(
             status_code=429,
-            detail="Too many sign-ups on this server in the last hour. Try again later.",
+            detail="Too many sign-ups in the last hour. Try again later.",
             headers={"Retry-After": str(retry_after)},
         )
     if await user_store.get_by_email(session, email) is not None:
@@ -239,6 +241,7 @@ async def _refuse_signup(
 @router.post("/auth/signup", status_code=201)
 async def signup(
     req: SignupRequest,
+    request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
@@ -257,9 +260,13 @@ async def signup(
     """
     if not config.gateway_signup_open:
         emit_safely(current_telemetry(), "signup_refused", {"reason": "disabled"})
-        raise HTTPException(
-            status_code=403, detail="Sign-up is disabled on this server"
+        raise HTTPException(status_code=403, detail="Sign-up is turned off here")
+    if signup_refused_by_edge(request, config):
+        logger.warning(
+            "Refused sign-up: the request is marked as from a country without sign-up"
         )
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "country"})
+        raise HTTPException(status_code=403, detail=SIGNUP_REFUSED_DETAIL)
 
     with tenant_scope(TENANT_ZERO_ID):
         # Checked before the hash so a refusal stays cheap, and again under the
@@ -293,7 +300,7 @@ async def signup(
                 status_code=409, detail="Email already registered"
             ) from None
         await session.commit()
-        logger.info("Signed up user: %s (%s)", user.email, user.id)
+        logger.info("Signed up user %s", user.id)
         emit_safely(current_telemetry(), "account_created", {"method": "signup"})
 
         set_session_cookie(
@@ -744,7 +751,7 @@ async def create_user(
         ) from None
     await session.commit()
 
-    logger.info("Created user: %s (%s)", user.email, user.id)
+    logger.info("Created user %s", user.id)
     emit_safely(current_telemetry(), "account_created", {"method": "admin"})
     return OperatorUserResponse(
         id=user.id,

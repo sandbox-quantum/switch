@@ -3,30 +3,14 @@ import { link, mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/pr
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { isProcessAlive } from '../process-alive';
+import { fileMode } from './host-permissions';
 
 const ticketSchema = z.strictObject({
   choosing: z.boolean(),
   ticket: z.number().int().nonnegative(),
 });
 type Ticket = z.infer<typeof ticketSchema>;
-
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-}
-
-/**
- * `fileMode(0o600)` from `host-permissions`, written out: this module takes
- * no relative import, since its tests load it on its own in a child process.
- */
-function recordMode(): number {
-  return process.env.SWITCH_HOST_SHARED_GROUP === '1' ? 0o640 : 0o600;
-}
 
 /**
  * `replaceFile` from `replace-file`, for any operation: on Windows a rename
@@ -50,7 +34,7 @@ async function waitingOutSharing<T>(operation: () => Promise<T>): Promise<T> {
 
 async function save(path: string, value: unknown, replace: boolean): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
-  const file = await open(temporary, 'wx', recordMode());
+  const file = await open(temporary, 'wx', fileMode(0o600));
   try {
     await file.writeFile(JSON.stringify(value));
     await file.sync();
@@ -92,7 +76,7 @@ export async function withOwnershipLock<T>(root: string, action: () => Promise<T
       if (!/^\d+-[a-f0-9-]+\.json$/.test(name)) continue;
       const pid = Number(name.split('-')[0]);
       if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid ownership ticket PID.');
-      if (!alive(pid)) continue;
+      if (!isProcessAlive(pid, 'recorded')) continue;
       try {
         const text = await waitingOutSharing(() => readFile(join(directory, name), 'utf8'));
         result.push({ id: name, value: ticketSchema.parse(JSON.parse(text)) });

@@ -71,8 +71,8 @@ export default function DeleteWorkspaceSection({ tenantId, tenantName }: Props) 
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
             This deletes <b>{tenantName}</b> for good. Only an empty workspace can be
-            deleted: remove its rooms, agents, resources, machines, connections and
-            other members first. Type the workspace name to confirm.
+            deleted: remove its rooms, agents, resources, devices, connectors, messaging
+            apps and other users first. Type the workspace name to confirm.
           </DialogContentText>
           <TextField
             fullWidth

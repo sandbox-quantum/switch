@@ -1,4 +1,5 @@
 import type { GridColDef } from "@mui/x-data-grid";
+import type { ReactNode } from "react";
 
 type Row = Record<string, unknown>;
 
@@ -18,12 +19,15 @@ function cellText(column: GridColDef<Row>, row: Row): string {
 export default function FakeDataTable({
   rows,
   columns,
+  emptyState,
 }: {
   rows: Row[];
   columns: GridColDef<Row>[];
+  emptyState?: ReactNode;
 }) {
   return (
     <div>
+      {rows.length === 0 && emptyState}
       {rows.map((row) => (
         <div key={String(row.id)} data-testid={`row-${String(row.id)}`}>
           {columns.map((column) => (
@@ -33,6 +37,16 @@ export default function FakeDataTable({
           ))}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** The real one's text, without its layout. */
+export function TableEmptyState({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <div>
+      <p>{title}</p>
+      {children && <p>{children}</p>}
     </div>
   );
 }

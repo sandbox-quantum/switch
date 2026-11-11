@@ -57,7 +57,7 @@ export default function CreateUserDialog({ open, onClose, onCreated }: Props) {
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Add User</DialogTitle>
+      <DialogTitle>Add user</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}

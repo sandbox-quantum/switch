@@ -21,6 +21,13 @@ import type { IssuedSecrets } from "../core/secrets.ts";
  * modelled here; see README.md for the verified request/response shapes.
  */
 
+/** Who receives what a removed workspace member owned there. */
+export interface WorkspaceMemberHeir {
+  user_id: string;
+  name: string;
+  email: string;
+}
+
 export interface AgentRef {
   id: string;
   name: string;
@@ -37,6 +44,16 @@ export interface RoomSummary {
   bridgeId: string | null;
   bridgeType: string | null;
   archived: boolean;
+}
+
+/** A room schedule as the gateway returns it. */
+export interface RoomSchedule {
+  id: string;
+  agentIds: string[];
+  text: string;
+  paused: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
 }
 
 export interface RoomDetail extends RoomSummary {
@@ -555,6 +572,11 @@ export class SwitchClient {
     return this.gateway<OrganizationSummary[]>("GET", "/organizations");
   }
 
+  /** `GET /gateway/tenants/counts` — how many users and agents each workspace the caller may enter has. */
+  async workspaceCounts(): Promise<{ id: string; users: number; agents: number }[]> {
+    return this.gateway("GET", "/tenants/counts");
+  }
+
   /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter. */
   async organizationWorkspaces(): Promise<WorkspaceMembership[]> {
     return this.gateway<WorkspaceMembership[]>(
@@ -707,6 +729,40 @@ export class SwitchClient {
       user_names: params.userNames,
     });
     return toRoomDetail(row);
+  }
+
+  // ── decision routing (auto-route) ────────────────────────────────────────
+
+  /** `GET /gateway/decision-settings`: the signed-in workspace's decision settings. */
+  async decisionSettings(): Promise<Record<string, unknown>> {
+    return this.gateway("GET", "/decision-settings");
+  }
+
+  /** `PUT /gateway/decision-settings`: save the workspace's decision backend. */
+  async saveDecisionSettings(
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.gateway("PUT", "/decision-settings", body);
+  }
+
+  /** `DELETE /gateway/decision-settings`: back to the server default. */
+  async resetDecisionSettings(): Promise<void> {
+    await this.gateway("DELETE", "/decision-settings");
+  }
+
+  /** `POST /gateway/decision-settings/test`: one sample decision, nothing saved. */
+  async testDecisionSettings(
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return this.gateway("POST", "/decision-settings/test", body);
+  }
+
+  /** `PUT /gateway/rooms/{room_id}/auto-route`: the room's auto-route switch. */
+  async setRoomAutoRoute(
+    roomId: string,
+    body: { on?: boolean; fallback_agent?: string | null },
+  ): Promise<Record<string, unknown>> {
+    return this.gateway("PUT", `/rooms/${roomId}/auto-route`, body);
   }
 
   async deleteRoom(roomId: string): Promise<void> {
@@ -892,6 +948,62 @@ export class SwitchClient {
     };
   }
 
+  /** `POST /gateway/rooms/{room}/schedules`: post `text` to `agentIds` once, at `runAt`. */
+  async scheduleOnce(
+    roomId: string,
+    agentIds: string[],
+    text: string,
+    runAt: Date,
+  ): Promise<RoomSchedule> {
+    return toRoomSchedule(
+      await this.gateway<RawRoomSchedule>("POST", `/rooms/${roomId}/schedules`, {
+        agent_ids: agentIds,
+        text,
+        cron: null,
+        run_at: runAt.toISOString(),
+        timezone: "UTC",
+      }),
+    );
+  }
+
+  async listSchedules(roomId: string): Promise<RoomSchedule[]> {
+    const rows = await this.gateway<RawRoomSchedule[]>("GET", `/rooms/${roomId}/schedules`);
+    return rows.map(toRoomSchedule);
+  }
+
+  /** `PUT /gateway/rooms/{room}/schedules/{schedule}`: replace what it says and when, as a daily rule. */
+  async scheduleDaily(
+    roomId: string,
+    scheduleId: string,
+    agentIds: string[],
+    text: string,
+    cron: string,
+  ): Promise<RoomSchedule> {
+    return toRoomSchedule(
+      await this.gateway<RawRoomSchedule>("PUT", `/rooms/${roomId}/schedules/${scheduleId}`, {
+        agent_ids: agentIds,
+        text,
+        cron,
+        run_at: null,
+        timezone: "UTC",
+      }),
+    );
+  }
+
+  async pauseSchedule(roomId: string, scheduleId: string, paused: boolean): Promise<RoomSchedule> {
+    return toRoomSchedule(
+      await this.gateway<RawRoomSchedule>(
+        "PUT",
+        `/rooms/${roomId}/schedules/${scheduleId}/paused`,
+        { paused },
+      ),
+    );
+  }
+
+  async deleteSchedule(roomId: string, scheduleId: string): Promise<void> {
+    await this.gateway<void>("DELETE", `/rooms/${roomId}/schedules/${scheduleId}`);
+  }
+
   /**
    * `POST /gateway/collaborations/{bridge}/identities` on the default bridge
    * of `bridgeType` — start linking a chat account to the signed-in Switch
@@ -1046,9 +1158,34 @@ export class SwitchClient {
     return this.gateway("GET", `/tenants/${encodeURIComponent(tenantId)}/members`);
   }
 
-  /** `DELETE /gateway/tenants/{tenant_id}/members/{user_id}` — remove someone from a workspace. */
-  async removeWorkspaceMember(tenantId: string, userId: string): Promise<void> {
-    await this.gateway<unknown>(
+  /**
+   * `GET /gateway/tenants/{tenant_id}/members/{user_id}/removal` — who would
+   * receive what someone owns in a workspace if this client removed them now.
+   */
+  async previewWorkspaceMemberRemoval(
+    tenantId: string,
+    userId: string,
+  ): Promise<{ handed_over_to: WorkspaceMemberHeir | null }> {
+    return this.gateway(
+      "GET",
+      `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}/removal`,
+    );
+  }
+
+  /**
+   * `DELETE /gateway/tenants/{tenant_id}/members/{user_id}` — remove someone
+   * from a workspace. Says who received what they owned there, and how many
+   * of each kind.
+   */
+  async removeWorkspaceMember(
+    tenantId: string,
+    userId: string,
+  ): Promise<{
+    warning: string | null;
+    handed_over_to: WorkspaceMemberHeir | null;
+    handed_over: Record<string, number>;
+  }> {
+    return this.gateway(
       "DELETE",
       `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
     );
@@ -1347,8 +1484,8 @@ export class SwitchClient {
   /**
    * Register a "known agent" (`POST /agents/register-known`, registration-token
    * auth). `agentType` is one of the gateway's known types — `claude-code`,
-   * `codex`, `opencode`, `cursor` or `antigravity` — and `options` is that
-   * type's option schema, which for OpenCode is `{ auto_session, repo_dir }`.
+   * `codex`, `opencode`, `cursor`, `antigravity` or `deepseek-harness` — and
+   * `options` is that type's option schema, which for OpenCode is `{ auto_session, repo_dir }`.
    *
    * Registration is also what mints the agent's Mattermost bot account: the
    * protocol service calls `create_agent_identity` on every collaboration
@@ -1357,7 +1494,13 @@ export class SwitchClient {
    * be added to a channel.
    */
   async registerKnownAgent(params: {
-    agentType: "opencode" | "codex" | "claude-code" | "antigravity" | "cursor";
+    agentType:
+      | "opencode"
+      | "codex"
+      | "claude-code"
+      | "antigravity"
+      | "cursor"
+      | "deepseek-harness";
     name: string;
     description: string;
     options?: Record<string, unknown>;
@@ -1632,6 +1775,26 @@ export class SwitchClient {
       body: {},
     });
   }
+}
+
+interface RawRoomSchedule {
+  id: string;
+  agent_ids: string[];
+  text: string;
+  paused: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+}
+
+function toRoomSchedule(raw: RawRoomSchedule): RoomSchedule {
+  return {
+    id: raw.id,
+    agentIds: raw.agent_ids,
+    text: raw.text,
+    paused: raw.paused,
+    nextRunAt: raw.next_run_at,
+    lastRunAt: raw.last_run_at,
+  };
 }
 
 interface RawRoom {

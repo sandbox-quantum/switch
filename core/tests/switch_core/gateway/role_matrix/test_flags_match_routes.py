@@ -125,6 +125,36 @@ CHECKS: dict[str, Check] = {
                 _transfer("package", "{package}"),
             ),
         ],
+        # A list may name a private item to whoever may read what holds it;
+        # its `can_read` says whether its own page opens for them.
+        **{
+            f"a private {kind} in a {holder}": [
+                Check(
+                    "can_read",
+                    _get(f"{G}/{holders}/{{{held_by}}}/{kind}s"),
+                    _get(f"{G}/{kind}s/{{{thing}}}"),
+                    match=("id", thing),
+                )
+            ]
+            for kind, holder, holders, held_by, thing in (
+                (
+                    "reference",
+                    "package",
+                    "packages",
+                    "readable_package",
+                    "packaged_reference",
+                ),
+                (
+                    "document",
+                    "package",
+                    "packages",
+                    "readable_package",
+                    "packaged_document",
+                ),
+                ("reference", "room", "rooms", "readable_room", "shown_reference"),
+                ("document", "room", "rooms", "readable_room", "shown_document"),
+            )
+        },
         "a template": [
             Check(
                 "can_edit",
