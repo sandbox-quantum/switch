@@ -511,5 +511,28 @@
       }
     },
     "priority": 3
+  },
+  {
+    "name": "[Switch] a WorkOS organization that Switch follows was deleted",
+    "type": "query alert",
+    "query": "sum(last_5m):default_zero(sum:switch.workos.organization_deleted{service:switch-core}.as_count()) > 0",
+    "message": "{{#is_alert}}WorkOS deleted an organization that a Switch organization follows. Switch removed nobody: the Switch organization keeps its members, workspaces, rooms and agents, its admins see an \"organization deleted\" notice, and the mirror no longer checks it.\n\n**Check:** switch-core's logs for \"was deleted; its members are left as they are\", which names both organizations. If the customer is leaving, delete the Switch organization with `switch-purge-organization`, named by that WorkOS organization's id (docs/old/workos-directory.md, \"When a customer leaves\"). Otherwise, find out who deleted it in WorkOS: changes to that organization's members no longer reach Switch.\n\nDashboard: the WorkOS directory section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: a WorkOS organization that Switch follows was deleted.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:switch-core",
+      "team:switch",
+      "tier:now",
+      "requires:workos-directory"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 0
+      }
+    },
+    "priority": 3
   }
 ]

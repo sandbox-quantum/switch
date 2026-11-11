@@ -54,6 +54,13 @@ version of their own to them without also giving them a release of their own.
   `deploy/observability/` adds three monitors on them, imported with
   `WORKOS_DIRECTORY=1`, and a dashboard section. A removal made in WorkOS
   that isn't reaching Switch now raises an alert instead of going unnoticed.
+- **A WorkOS organization deleted while Switch follows it is counted and
+  alerted on, and no longer checked.** `switch.workos.organization_deleted`
+  counts each one, with a monitor of its own, and the mirror stops checking
+  that organization against WorkOS, where it used to retry it on every pass.
+  The Switch organization keeps its members, rooms and agents, and its
+  admins still see the "organization deleted" notice. Delete it with
+  `switch-purge-organization`, as `docs/old/workos-directory.md` describes.
 - **New accounts can be refused by country.** `GATEWAY_SIGNUP_REFUSED_HEADER`
   (chart: `switchCore.signup.refusedHeader`) names a request header that the
   edge in front of Switch, such as a WAF rule matching on the client's
