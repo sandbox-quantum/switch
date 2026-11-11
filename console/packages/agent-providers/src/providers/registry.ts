@@ -9,6 +9,7 @@ import { checkCodexSignIn, CODEX_LOGIN } from '../codex/sign-in';
 import { copilotAcp } from '../copilot/copilot-acp';
 import { cursorAcp } from '../cursor/cursor-adapter';
 import { deepseekHarnessAcp } from '../deepseek-harness/deepseek-harness-acp';
+import { gooseAcp } from '../goose/goose-adapter';
 import { kimiAcp } from '../kimi/kimi-acp';
 import { kiroAcp } from '../kiro/kiro-acp';
 import { mistralVibeAcp } from '../mistral-vibe/mistral-vibe-acp';
@@ -126,6 +127,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
       createPiAdapter({ binaryPath, ...(logger ? { logger } : {}) }),
     checkSignIn: checkPiSignIn,
   },
+  acpProviderRuntime(gooseAcp),
   acpProviderRuntime(kimiAcp),
 ];
 

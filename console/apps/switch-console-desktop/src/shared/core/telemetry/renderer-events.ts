@@ -97,6 +97,7 @@ export type RendererTelemetryEvents = {
       | 'copilot'
       | 'kiro'
       | 'mistral-vibe'
+      | 'goose'
       | 'kimi'
       | 'none';
   };

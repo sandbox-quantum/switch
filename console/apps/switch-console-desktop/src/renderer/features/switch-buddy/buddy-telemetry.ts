@@ -17,6 +17,7 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'copilot',
   'kiro',
   'mistral-vibe',
+  'goose',
   'kimi',
 ];
 

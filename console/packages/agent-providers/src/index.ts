@@ -58,6 +58,7 @@ export {
   createDeepseekHarnessAdapter,
   deepseekHarnessAcp,
 } from './deepseek-harness/deepseek-harness-acp';
+export { gooseAcp, createGooseAdapter } from './goose/goose-adapter';
 export { kiroAcp, createKiroAdapter } from './kiro/kiro-acp';
 export { createKimiAdapter, kimiAcp } from './kimi/kimi-acp';
 export { ChatProjector } from './session-v1/chat-projector';
