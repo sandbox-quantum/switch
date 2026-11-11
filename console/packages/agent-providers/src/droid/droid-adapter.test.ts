@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -252,6 +252,13 @@ describe('droidAcp hooks', () => {
     };
     expect(droidAcp.mcpServerOf?.(withPrefix, new Set())).toBe('github');
 
+    const underscoredServer: AcpToolCall = {
+      toolCallId: 'tc-2b',
+      title: 'switch_connector___post_message',
+      kind: 'other',
+    };
+    expect(droidAcp.mcpServerOf?.(underscoredServer, new Set())).toBe('switch_connector');
+
     const unmapped: AcpToolCall = {
       toolCallId: 'tc-3',
       title: 'execute',
@@ -283,44 +290,44 @@ describe('checkSignIn', () => {
     request: dummyRequest,
   });
 
-  it('Case 1: returns authenticated when FACTORY_API_KEY is present', async () => {
-    const res = await droidAcp.checkSignIn!(checkInput({ FACTORY_API_KEY: 'sk-test' }));
-    expect(res).toEqual(
-      readiness('authenticated', 'Signs in with the Factory API key it was given.')
-    );
-  });
+  const doctorSays = (stdout: string) =>
+    vi.spyOn(providerProcess, 'execProvider').mockResolvedValue({ stdout, stderr: '' });
 
-  it('Case 2: returns authenticated when auth file exists on disk', async () => {
+  const writeAuthFile = async () => {
     const factoryDir = join(tempDir, '.factory');
-    const { mkdir } = await import('node:fs/promises');
     await mkdir(factoryDir, { recursive: true });
     await writeFile(join(factoryDir, 'auth.v2.keyring'), 'mock-keyring');
+  };
 
+  it('returns authenticated when droid doctor passes', async () => {
+    doctorSays(DOCTOR_SIGNED_IN);
     const res = await droidAcp.checkSignIn!(checkInput({ FACTORY_HOME_OVERRIDE: tempDir }));
     expect(res).toEqual(readiness('authenticated', 'Signed in to Factory Droid.'));
   });
 
-  it('Case 3: returns authenticated when droid doctor passes', async () => {
-    vi.spyOn(providerProcess, 'execProvider').mockResolvedValue({
-      stdout: DOCTOR_SIGNED_IN,
-      stderr: '',
-    });
-
-    const res = await droidAcp.checkSignIn!(checkInput({ FACTORY_HOME_OVERRIDE: tempDir }));
-    expect(res).toEqual(readiness('authenticated', 'Signed in to Factory Droid.'));
+  it('verifies a Factory API key with droid doctor rather than trusting it', async () => {
+    const exec = doctorSays(DOCTOR_SIGNED_OUT_ONLINE);
+    const res = await droidAcp.checkSignIn!(
+      checkInput({ FACTORY_API_KEY: 'sk-revoked', FACTORY_HOME_OVERRIDE: tempDir })
+    );
+    expect(exec).toHaveBeenCalled();
+    expect(res).toEqual(readiness('unauthenticated', signInWith(DROID_LOGIN)));
   });
 
-  it('Case 4: returns unauthenticated with login command when doctor reports not logged in (exit 0)', async () => {
-    vi.spyOn(providerProcess, 'execProvider').mockResolvedValue({
-      stdout: DOCTOR_SIGNED_OUT_ONLINE,
-      stderr: '',
-    });
-
+  it('verifies a stored login with droid doctor rather than trusting the file', async () => {
+    await writeAuthFile();
+    doctorSays(DOCTOR_SIGNED_OUT_ONLINE);
     const res = await droidAcp.checkSignIn!(checkInput({ FACTORY_HOME_OVERRIDE: tempDir }));
     expect(res).toEqual(readiness('unauthenticated', signInWith(DROID_LOGIN)));
   });
 
-  it('Case 4b: returns unauthenticated when doctor exits 1 offline but outputs valid diagnostic JSON', async () => {
+  it('returns unauthenticated when doctor reports not logged in (exit 0)', async () => {
+    doctorSays(DOCTOR_SIGNED_OUT_ONLINE);
+    const res = await droidAcp.checkSignIn!(checkInput({ FACTORY_HOME_OVERRIDE: tempDir }));
+    expect(res).toEqual(readiness('unauthenticated', signInWith(DROID_LOGIN)));
+  });
+
+  it('returns unauthenticated when doctor exits 1 offline but outputs valid diagnostic JSON', async () => {
     const err = Object.assign(new Error('Command failed'), {
       code: 1,
       stdout: DOCTOR_SIGNED_OUT_OFFLINE,
@@ -332,12 +339,60 @@ describe('checkSignIn', () => {
     expect(res).toEqual(readiness('unauthenticated', signInWith(DROID_LOGIN)));
   });
 
-  it('Case 5: returns unknown when doctor yields no stdout (e.g. timeout) or unparseable JSON', async () => {
+  it('says a credential was found but not verified when doctor fails', async () => {
     vi.spyOn(providerProcess, 'execProvider').mockRejectedValue(new Error('ETIMEDOUT'));
+    const res = await droidAcp.checkSignIn!(
+      checkInput({ FACTORY_API_KEY: 'sk-test', FACTORY_HOME_OVERRIDE: tempDir })
+    );
+    expect(res).toEqual(
+      readiness('unknown', 'A Factory API key was given, but droid doctor failed: ETIMEDOUT')
+    );
+  });
 
+  it('names the stored login when doctor cannot verify it', async () => {
+    await writeAuthFile();
+    vi.spyOn(providerProcess, 'execProvider').mockRejectedValue(new Error('ETIMEDOUT'));
     const res = await droidAcp.checkSignIn!(checkInput({ FACTORY_HOME_OVERRIDE: tempDir }));
     expect(res).toEqual(
-      readiness('unknown', 'Could not verify authentication. Check provider setup and try again.')
+      readiness(
+        'unknown',
+        'Factory Droid credentials were found, but droid doctor failed: ETIMEDOUT'
+      )
+    );
+  });
+
+  it('reports output that is not JSON', async () => {
+    doctorSays('Segmentation fault');
+    const res = await droidAcp.checkSignIn!(checkInput({ FACTORY_HOME_OVERRIDE: tempDir }));
+    expect(res.status).toBe('unknown');
+    expect(res.message).toMatch(
+      /^No Factory Droid credentials were found, but droid doctor's output is not JSON \(/
+    );
+  });
+
+  it('reports a report without the auth.verify check', async () => {
+    doctorSays(JSON.stringify({ results: [] }));
+    const res = await droidAcp.checkSignIn!(checkInput({ FACTORY_HOME_OVERRIDE: tempDir }));
+    expect(res).toEqual(
+      readiness(
+        'unknown',
+        "No Factory Droid credentials were found, but droid doctor's report has no auth.verify check"
+      )
+    );
+  });
+
+  it('surfaces an auth check failure in wording it does not recognise', async () => {
+    doctorSays(
+      JSON.stringify({
+        results: [{ id: 'auth.verify', status: 'fail', detail: 'session expired' }],
+      })
+    );
+    const res = await droidAcp.checkSignIn!(checkInput({ FACTORY_HOME_OVERRIDE: tempDir }));
+    expect(res).toEqual(
+      readiness(
+        'unknown',
+        "No Factory Droid credentials were found, but droid doctor's auth check reported fail: session expired"
+      )
     );
   });
 });

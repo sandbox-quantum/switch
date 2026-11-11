@@ -34,7 +34,7 @@ protocols. These adapters are the only Console session runtime.
 | `kiro` | `kiro-cli acp`, ACP over stdio, on the generic ACP adapter | Native sessions and `session/load`, model selection through a `model` config option, MCP registration, approvals, and questions asked as permission requests. |
 | `mistral-vibe` | `vibe-acp`, ACP over stdio, on the generic ACP adapter | Native sessions, resume through `session/load`, model selection through a `model` config option, MCP registration, approvals, and questions as ACP form elicitations. |
 | `qwen` | `qwen --acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model selection through a `model` config option, MCP registration, approvals and questions; hooks for its modes, sign-in check, tool metadata and question requests. |
-| `droid` | `droid exec --output-format acp` (Factory Droid), ACP over stdio, on the generic ACP adapter | Native sessions, resume, dynamic model catalog, MCP registration, and autonomy level mappings. |
+| `droid` | `droid exec --output-format acp` (Factory Droid), ACP over stdio, on the generic ACP adapter | Native sessions, resume, MCP registration, and approvals; the runtime modes map to Droid's autonomy levels. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter

@@ -10,7 +10,7 @@ export const plugin = definePlugin(
     id: 'droid',
     name: 'Factory Droid',
     description:
-      "Factory's Droid agent CLI over ACP, with autonomous code execution and dynamic models.",
+      "Factory's Droid agent CLI over ACP, with its autonomy levels mapped to Switch's runtime modes.",
     websiteUrl: 'https://docs.factory.com',
     cliLabel: 'Droid CLI',
   },

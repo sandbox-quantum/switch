@@ -33,6 +33,72 @@ export function hasFactoryAuth(env: Record<string, string | undefined>): boolean
   });
 }
 
+type DoctorAuth =
+  | { kind: 'signed-in' }
+  | { kind: 'signed-out' }
+  | { kind: 'unverified'; reason: string };
+
+function credentialsFound(env: Record<string, string | undefined>): string {
+  if (env.FACTORY_API_KEY?.trim()) return 'A Factory API key was given';
+  if (hasFactoryAuth(env)) return 'Factory Droid credentials were found';
+  return 'No Factory Droid credentials were found';
+}
+
+/**
+ * Asks `droid doctor` whether the stored login or API key works. The
+ * signed-out case is recognised by droid 1.5.0's wording of the check's
+ * detail; any other outcome comes back as `unverified` with what doctor said.
+ */
+async function doctorAuth(
+  binaryPath: string,
+  cwd: string,
+  env: Record<string, string>
+): Promise<DoctorAuth> {
+  let stdout: string;
+  try {
+    stdout = (
+      await execProvider(binaryPath, ['doctor', '--checks', 'auth', '--json'], {
+        cwd,
+        env,
+        timeout: 5000,
+        maxBuffer: 512 * 1024,
+      })
+    ).stdout;
+  } catch (error) {
+    // doctor exits 1 when any sub-check fails (an offline WorkOS probe, say)
+    // but still writes the full report to stdout.
+    const output = (error as { stdout?: unknown }).stdout;
+    if (typeof output !== 'string' || !output.trim()) {
+      return {
+        kind: 'unverified',
+        reason: `droid doctor failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    stdout = output;
+  }
+  let report: { results?: Array<{ id: string; status: string; detail?: string }> };
+  try {
+    report = JSON.parse(stdout) as typeof report;
+  } catch (error) {
+    return {
+      kind: 'unverified',
+      reason: `droid doctor's output is not JSON (${error instanceof Error ? error.message : String(error)})`,
+    };
+  }
+  const verify = report.results?.find((result) => result.id === 'auth.verify');
+  if (!verify) {
+    return { kind: 'unverified', reason: "droid doctor's report has no auth.verify check" };
+  }
+  if (verify.status === 'pass') return { kind: 'signed-in' };
+  if (verify.detail && /not logged in|no usable credentials/i.test(verify.detail)) {
+    return { kind: 'signed-out' };
+  }
+  return {
+    kind: 'unverified',
+    reason: `droid doctor's auth check reported ${verify.status}: ${verify.detail ?? 'no detail'}`,
+  };
+}
+
 export const droidAcp: AcpProviderHooks = {
   provider: 'droid',
   label: 'Factory Droid',
@@ -58,50 +124,14 @@ export const droidAcp: AcpProviderHooks = {
     'XDG_RUNTIME_DIR',
   ],
   checkSignIn: async ({ binaryPath, cwd, env }: AcpSignInInput): Promise<ProviderReadiness> => {
-    if (env.FACTORY_API_KEY?.trim()) {
-      return readiness('authenticated', 'Signs in with the Factory API key it was given.');
-    }
-    if (hasFactoryAuth(env)) {
+    const probe = await doctorAuth(binaryPath, cwd, env);
+    if (probe.kind === 'signed-in') {
       return readiness('authenticated', 'Signed in to Factory Droid.');
     }
-    let stdout = '';
-    try {
-      const res = await execProvider(binaryPath, ['doctor', '--checks', 'auth', '--json'], {
-        cwd,
-        env,
-        timeout: 5000,
-        maxBuffer: 512 * 1024,
-      });
-      stdout = res.stdout;
-    } catch (err) {
-      // droid doctor exits with code 1 if any sub-check fails (e.g. offline WorkOS probe),
-      // but still writes the complete diagnostic JSON to stdout.
-      if (err && typeof (err as { stdout?: string }).stdout === 'string') {
-        stdout = (err as { stdout: string }).stdout;
-      }
+    if (probe.kind === 'signed-out') {
+      return readiness('unauthenticated', signInWith(DROID_LOGIN));
     }
-    if (stdout.trim()) {
-      try {
-        const data = JSON.parse(stdout) as {
-          results?: Array<{ id: string; status: string; detail?: string }>;
-        };
-        const verify = data.results?.find((r) => r.id === 'auth.verify');
-        if (verify?.status === 'pass') {
-          return readiness('authenticated', 'Signed in to Factory Droid.');
-        }
-        // Human-readable string from droid 1.5.0 doctor output; pinned in unit test fixtures.
-        if (verify?.detail && /not logged in|no usable credentials/i.test(verify.detail)) {
-          return readiness('unauthenticated', signInWith(DROID_LOGIN));
-        }
-      } catch {
-        // Output not valid JSON; fall through to unknown
-      }
-    }
-    // If doctor failed or shape was unrecognized, return unknown (avoids false negative on macOS Keychain)
-    return readiness(
-      'unknown',
-      'Could not verify authentication. Check provider setup and try again.'
-    );
+    return readiness('unknown', `${credentialsFound(env)}, but ${probe.reason}`);
   },
   authMethodId: (env) => (env.FACTORY_API_KEY?.trim() ? 'factory-api-key' : undefined),
   promptCapabilities: {
@@ -127,7 +157,7 @@ export const droidAcp: AcpProviderHooks = {
     const meta = toolCall._meta as { factory?: { server?: string } } | undefined;
     if (typeof meta?.factory?.server === 'string') return meta.factory.server;
     const name = (toolCall as { name?: string }).name ?? toolCall.title;
-    const match = name?.match(/^([^_]+)___/);
+    const match = name?.match(/^(.+?)___/);
     if (match) return match[1];
     return undefined;
   },
