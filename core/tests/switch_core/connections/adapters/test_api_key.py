@@ -20,7 +20,7 @@ from switch_core.connections.adapters.api_key import (
     key_token,
     render,
 )
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import CATALOG, ConnectionDefinition
 
 ENTRY = {
     "slug": "example",
@@ -137,3 +137,44 @@ async def test_a_key_is_never_issued_to_an_agent() -> None:
             AccessToken(key, datetime.now(UTC) + timedelta(hours=1)),
             IssueRequest(service="example", access="write", reach={}, resources={}),
         )
+
+
+async def test_the_shipped_vercel_adapter_identifies_user() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "user": {
+                    "id": "usr_synthetic123",
+                    "email": "user@example.test",
+                    "username": "exampleuser",
+                }
+            },
+        )
+
+    adapter = ApiKeyAdapter(
+        CATALOG["vercel"].definition,
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    identity = await adapter.identify({"api_key": "VERCEL-TOKEN-SECRET"})
+
+    assert (identity.account_id, identity.label) == (
+        "usr_synthetic123",
+        "user@example.test",
+    )
+    [request] = seen
+    assert request.method == "GET"
+    assert str(request.url) == "https://api.vercel.com/v2/user"
+    assert request.headers["Authorization"] == "Bearer VERCEL-TOKEN-SECRET"
+
+
+async def test_disconnecting_vercel_says_only_vercel_can_revoke_it() -> None:
+    adapter = ApiKeyAdapter(
+        CATALOG["vercel"].definition,
+        httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200))),
+    )
+    with pytest.raises(ConnectionNotRevocable, match="Revoke it in Vercel"):
+        await adapter.revoke_connection(adapter.secret({"api_key": "VERCEL-SECRET"}))
