@@ -109,7 +109,7 @@ export function mapCodexItem(raw: CodexThreadItem, lifecycle: ItemLifecycle): Pr
           item.kind === 'started'
             ? 'in_progress'
             : item.kind === 'interrupted'
-              ? 'failed'
+              ? 'declined'
               : item.kind === 'completed'
                 ? 'completed'
                 : lifecycleStatus,
@@ -150,9 +150,11 @@ export function mapCodexChildren(item: CodexThreadItem): ProviderItem[] {
     status:
       state.status === 'completed'
         ? 'completed'
-        : ['errored', 'interrupted', 'shutdown', 'notFound'].includes(state.status)
-          ? 'failed'
-          : 'in_progress',
+        : state.status === 'interrupted'
+          ? 'declined'
+          : ['errored', 'shutdown', 'notFound'].includes(state.status)
+            ? 'failed'
+            : 'in_progress',
     title: item.prompt ? firstLine(item.prompt, 'Subagent') : '',
   }));
 }

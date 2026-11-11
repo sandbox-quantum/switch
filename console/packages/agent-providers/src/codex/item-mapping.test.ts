@@ -126,12 +126,28 @@ it('uses individual child states rather than the outcome of spawn or wait', () =
       a: { status: 'running' },
       b: { status: 'completed' },
       c: { status: 'errored' },
+      d: { status: 'interrupted' },
     },
   });
   expect(children.map((item) => [item.nativeChildId, item.status])).toEqual([
     ['a', 'in_progress'],
     ['b', 'completed'],
     ['c', 'failed'],
+    ['d', 'declined'],
   ]);
   expect(children.every((item) => item.type === 'subagent' && item.text === undefined)).toBe(true);
+});
+
+it('reads a child Codex interrupted as stopped, not failed', () => {
+  const activity = mapCodexItem(
+    {
+      type: 'subAgentActivity',
+      id: 'act-2',
+      kind: 'interrupted',
+      agentThreadId: 'child',
+      agentPath: '/root/read_readme',
+    },
+    'completed'
+  );
+  expect(activity).toMatchObject({ type: 'subagent', status: 'declined' });
 });

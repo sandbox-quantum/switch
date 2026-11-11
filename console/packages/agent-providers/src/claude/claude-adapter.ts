@@ -951,8 +951,12 @@ export class ClaudeAdapter implements ProviderAdapter {
       child.item = { ...child.item, title: truncate(message.patch.description) };
     const ended =
       status === 'completed' || status === 'failed' || status === 'killed' || status === 'stopped';
+    // A subagent stopped or killed ended on purpose: declined, not failed.
     if (ended)
-      child.item = { ...child.item, status: status === 'completed' ? 'completed' : 'failed' };
+      child.item = {
+        ...child.item,
+        status: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'declined',
+      };
     this.emit(session, {
       type: ended ? 'item.completed' : 'item.updated',
       turnId: child.turnId,

@@ -1397,71 +1397,79 @@ describe('ClaudeAdapter connector tools', () => {
   });
 });
 
-it('keeps a background child running past its launch result and reports its real outcome', async () => {
-  const { sdk, adapter, recorder } = await startSession();
-  await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'Review' });
-  const query = sdk.latest();
-  const [sent] = await query.waitForSent(1);
-  query.emit(
-    assistantMessage('launch', [
-      {
-        type: 'tool_use',
-        id: 'call-child',
-        name: 'Agent',
-        input: {
-          description: 'Review changes',
-          subagent_type: 'Reviewer',
-          run_in_background: true,
+it.each([
+  ['completed', 'completed'],
+  ['failed', 'failed'],
+  ['stopped', 'declined'],
+  ['killed', 'declined'],
+] as const)(
+  'keeps a background child running past its launch result and reports %s as %s',
+  async (sdkStatus, expected) => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'Review' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(
+      assistantMessage('launch', [
+        {
+          type: 'tool_use',
+          id: 'call-child',
+          name: 'Agent',
+          input: {
+            description: 'Review changes',
+            subagent_type: 'Reviewer',
+            run_in_background: true,
+          },
         },
+      ])
+    );
+    query.emit({
+      type: 'system',
+      subtype: 'task_started',
+      uuid: randomUUID(),
+      session_id: 'native-1',
+      task_id: 'native-child',
+      tool_use_id: 'call-child',
+      task_type: 'local_agent',
+      description: 'Review changes',
+      subagent_type: 'Reviewer',
+      is_backgrounded: true,
+    });
+    query.emit({
+      type: 'user',
+      uuid: randomUUID(),
+      session_id: 'native-1',
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'call-child', content: 'Launched' }],
       },
-    ])
-  );
-  query.emit({
-    type: 'system',
-    subtype: 'task_started',
-    uuid: randomUUID(),
-    session_id: 'native-1',
-    task_id: 'native-child',
-    tool_use_id: 'call-child',
-    task_type: 'local_agent',
-    description: 'Review changes',
-    subagent_type: 'Reviewer',
-    is_backgrounded: true,
-  });
-  query.emit({
-    type: 'user',
-    uuid: randomUUID(),
-    session_id: 'native-1',
-    parent_tool_use_id: null,
-    message: {
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'call-child', content: 'Launched' }],
-    },
-  });
-  query.emit(resultMessage([sent!.uuid!]));
-  await recorder.waitFor('turn.completed', () => true, 1000);
-  expect(
-    recorder.ofType('item.completed').filter((event) => event.item.id === 'call-child')
-  ).toHaveLength(0);
-  query.emit({
-    type: 'system',
-    subtype: 'task_notification',
-    uuid: randomUUID(),
-    session_id: 'native-1',
-    task_id: 'native-child',
-    status: 'failed',
-    output_file: '',
-    summary: 'private child transcript',
-  });
-  const ended = await recorder.waitFor(
-    'item.completed',
-    (event) => event.item.id === 'call-child',
-    1000
-  );
-  expect(ended).toMatchObject({
-    turnId: 'turn-1',
-    item: { id: 'call-child', type: 'subagent', status: 'failed', title: 'Review changes' },
-  });
-  expect(ended.item.text).toBeUndefined();
-  await adapter.stopAll();
-});
+    });
+    query.emit(resultMessage([sent!.uuid!]));
+    await recorder.waitFor('turn.completed', () => true, 1000);
+    expect(
+      recorder.ofType('item.completed').filter((event) => event.item.id === 'call-child')
+    ).toHaveLength(0);
+    query.emit({
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: randomUUID(),
+      session_id: 'native-1',
+      task_id: 'native-child',
+      status: sdkStatus,
+      output_file: '',
+      summary: 'private child transcript',
+    });
+    const ended = await recorder.waitFor(
+      'item.completed',
+      (event) => event.item.id === 'call-child',
+      1000
+    );
+    expect(ended).toMatchObject({
+      turnId: 'turn-1',
+      item: { id: 'call-child', type: 'subagent', status: expected, title: 'Review changes' },
+    });
+    expect(ended.item.text).toBeUndefined();
+    await adapter.stopAll();
+  }
+);
