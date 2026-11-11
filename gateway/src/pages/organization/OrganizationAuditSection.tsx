@@ -1,13 +1,13 @@
 import { Alert, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import {
   ORGANIZATION_AUDIT_PAGE,
   type OrganizationAuditEvent,
   fetchOrganizationAuditEvents,
 } from "../../data/api";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 const ACTION_LABELS: Record<string, string> = {
   "organization.created": "Organization created",
@@ -101,6 +101,11 @@ export default function OrganizationAuditSection() {
         <DataTable
           rows={events}
           columns={COLUMNS}
+          emptyState={
+            <TableEmptyState title="Nothing recorded yet">
+              Changes to this organization's workspaces and users are recorded here.
+            </TableEmptyState>
+          }
           height={Math.min(520, 108 + events.length * 52)}
           pageSize={25}
         />

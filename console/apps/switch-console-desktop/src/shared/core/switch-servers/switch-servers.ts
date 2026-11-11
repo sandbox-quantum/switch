@@ -370,6 +370,12 @@ export type RemoteRoomSummary = {
   viewerIsMember: boolean;
   /** A Switch Console chat: only its members can open it. False from a server that does not say. */
   isConsoleChat: boolean;
+  /**
+   * The server counts its people as its Switch members (a Console chat on no
+   * app), so its count is right even when 0. Absent from a server too old to
+   * count a chat's members, whose count for a chat always reads 0.
+   */
+  peopleAreMembers?: boolean;
   archived: boolean;
   createdAt: string;
   /** Who may write to the room, when the server says (see `RoomDetail`); absent from an older server. */
@@ -576,6 +582,13 @@ export type RemoteBridge = {
   /** The bridge used when a room is created without naming one. */
   isDefault: boolean;
   /**
+   * Whether the deployment registered this bridge itself rather than a person
+   * connecting it — on a local server, what marks its bundled Mattermost. Null
+   * on a server predating the field, where nothing says either way; read it
+   * through `bundledMattermostBridge`, not directly.
+   */
+  preconfigured: boolean | null;
+  /**
    * Link that opens this bridge's workspace in its messaging app, from the
    * gateway's live adapter. Null when the bridge is not running, the platform
    * offers no such link, or the server predates the field — so treat its
@@ -631,6 +644,18 @@ export type RemoteBridge = {
    * Null on a server predating the field.
    */
   channelIdsRefused: string | null;
+  /**
+   * Whether a new room here can have a private channel, as the server says.
+   * Null on a server predating the field, where Console falls back to what
+   * such servers could do: a private channel on every platform but Teams.
+   */
+  privateChannels: boolean | null;
+  /**
+   * Whether a private channel here needs the person asking to have linked
+   * their account on the platform, which the server names as its owner
+   * (Teams). False on a server predating the field.
+   */
+  privateChannelNeedsLinkedAccount: boolean;
   /** Whether this connection receives its platform's events on an address of
    * its own, which the operator has to give the platform. */
   receivesWebhooks: boolean;
@@ -1463,12 +1488,30 @@ export type CreateRoomParams = {
   /** Switch agent ids to add as members. May be empty — a room is valid with
    * no agents, and members can be invited later. */
   agentIds: string[];
+  /** People to add to the bridged room's channel, by their username on its
+   * messaging app. Absent or empty adds nobody; a new private channel gets its
+   * creator from the server either way. */
+  userNames?: string[];
   /** The bridged room's channel: a new one, or an existing one by its id. Null for a new public one. */
   channel: NewRoomChannel | null;
   /** The group to file the room under, or null for none. */
   groupId: string | null;
   /** Who may see and change the room, or null for the server's default. */
   access: RoomAccess | null;
+};
+
+/**
+ * Someone Switch knows on a messaging app, who a room there can be given
+ * (`GET /collaborations/{id}/users`).
+ */
+export type BridgePerson = {
+  /** Their username on the app: what a room on it is given them by. */
+  username: string;
+  externalUserId: string;
+  /** The Switch users who linked this account and confirmed it from it. */
+  linkedUserIds: string[];
+  /** The first of those users' names, to show beside the username; null when nobody has. */
+  linkedName: string | null;
 };
 
 /** A bridged room's channel, as the New room dialog asks for it. */

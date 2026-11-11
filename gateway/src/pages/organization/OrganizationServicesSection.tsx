@@ -16,7 +16,7 @@ import {
   fetchOrganizationServices,
   setOrganizationService,
 } from "../../data/api";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 
 type Choice = "none" | "on" | "off";

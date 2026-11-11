@@ -192,7 +192,7 @@ export default function RoomsGraphPage() {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
@@ -248,7 +248,7 @@ export default function RoomsGraphPage() {
               p: 1.25,
               borderRadius: "12px",
               backgroundColor: "background.paper",
-              boxShadow: "var(--hoot-shadow-popover)",
+              boxShadow: "var(--sw-shadow-popover)",
               border: "1px solid",
               borderColor: "divider",
               maxWidth: 220,
