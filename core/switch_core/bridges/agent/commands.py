@@ -597,7 +597,7 @@ async def _decide_control_command(
     # which routes the command to the one working in this room. Switch does not
     # know which session that is, so the frame names none.
     controller_backed = client._connections.controllers.is_bound(agent.id)
-    placed = client._connections.session_in_room(agent.id, meta.room_id)
+    placed = client._connections.live_session_in_room(agent.id, meta.room_id)
     if placed is not None or controller_backed:
         if not event.message_id:
             return say(

@@ -187,6 +187,22 @@ version of their own to them without also giving them a release of their own.
   about an agent's message are still posted for the room.
 
 #### Fixed
+- **Removing someone from a workspace, or leaving it, says who receives what
+  they owned.** Their rooms, packages, references, reference types, library
+  documents and templates pass to another admin, and until now nothing said
+  so. The dashboard now asks before removing anyone, naming the admin who will
+  receive what they own, and afterwards reports how many of each passed and to
+  whom, along with any sign-in Switch could not revoke at a vendor, which it
+  used to discard. `DELETE /gateway/tenants/{tenant_id}/members/{user_id}`
+  returns `handed_over_to` (the recipient, or null when there is no other
+  admin) and `handed_over` (counts per kind), and the new
+  `GET /gateway/tenants/{tenant_id}/members/{user_id}/removal` names the
+  recipient beforehand.
+- **The server declares gateway API revision 2.** switch-core 0.31.0 changed
+  the API Switch Console uses (an agent's definition gained `auto_mode`, and a
+  service sign-in lost its `confirm` route) but kept declaring revision 1. It
+  now declares `speaks: 2, accepts: 2`, so a Switch Console can tell it apart
+  from a server too old for it.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error
@@ -3010,6 +3026,12 @@ version of their own to them without also giving them a release of their own.
   of the session's, or when nothing in Pi connects MCP servers (its built-in
   MCP support turned off or replaced). On Linux, Console installs Pi under
   `$HOME/.local`, which needs no root.
+- **A server too old for this Console, or the other way round, says so.**
+  Switch Console compares the gateway API revision the server declares with
+  its own when it reads the session, and shows a banner across the workspace
+  naming both versions and which one to update, instead of failing later with
+  a schema error. System status repeats it, and says so when a server declares
+  no revision at all.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

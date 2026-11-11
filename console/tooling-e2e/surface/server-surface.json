@@ -974,6 +974,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/tenants/{tenant_id}/members/{user_id}/removal",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/tenants/{tenant_id}/people",
       "auth": "session",
       "flags": []
