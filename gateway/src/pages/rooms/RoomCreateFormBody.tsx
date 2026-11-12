@@ -69,7 +69,7 @@ export default function RoomCreateFormBody() {
   const [agentIds, setAgentIds] = useState<string[]>([]);
   // Per-agent opt-in: ids of selected agents whose subagents to also add.
   const [includeSubagentsFor, setIncludeSubagentsFor] = useState<string[]>([]);
-  // Per-agent opt-in: ids of selected agents that should receive room_join
+  // Per-agent opt-in: ids of selected agents that should receive room_join and room_leave
   // events in this room.
   const [joinEventListeners, setJoinEventListeners] = useState<string[]>([]);
   const [userNames, setUserNames] = useState<string[]>([]);
@@ -591,7 +591,7 @@ export default function RoomCreateFormBody() {
       {agentIds.length > 0 && (
         <Stack spacing={0.5} sx={{ pl: 1 }}>
           <Typography variant="caption" color="text.secondary">
-            Listen to join events
+            Listen to join and leave events
           </Typography>
           {agentIds.map((id) => (
             <FormControlLabel
@@ -611,7 +611,7 @@ export default function RoomCreateFormBody() {
               }
               label={`Notify ${
                 agentNameById.get(id) ?? id
-              } when someone joins the room`}
+              } when someone joins or leaves the room`}
             />
           ))}
         </Stack>

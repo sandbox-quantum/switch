@@ -281,7 +281,7 @@ export interface RoomDetail extends RoomSummary {
   agent_ids: string[];
   agent_statuses: Record<string, string>;
   roles: RoomRoleDetail[];
-  // Agent ids configured to receive room_join events in this room.
+  // Agent ids configured to receive room_join and room_leave events in this room.
   join_event_listeners: string[];
   archived_at: string | null;
   // What deleting the room can do to its platform channel, as that platform's
@@ -334,7 +334,7 @@ export interface CreateRoomInput {
   agent_names?: string[];
   // Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
   include_subagents_for?: string[];
-  // Per-agent opt-in: ids (subset of agent_ids) that should receive room_join
+  // Per-agent opt-in: ids (subset of agent_ids) that should receive room_join and room_leave
   // events in this room.
   join_event_listeners?: string[];
   user_names?: string[];

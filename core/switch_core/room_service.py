@@ -109,7 +109,7 @@ class RoomCreateConfig(BaseModel):
     # A subset of the selection — only these parents are expanded, not all.
     include_subagents_for: list[str] | None = None
     # Per-agent opt-in: the identifiers (same space as agent_ids/agent_names)
-    # of selected agents that should receive `room_join` events in this room.
+    # of selected agents that should receive `room_join` and `room_leave` events in this room.
     # Agents not listed keep the default (off).
     join_event_listeners: list[str] | None = None
     user_names: list[str] | None = None
@@ -1278,8 +1278,12 @@ class RoomService:
             for client_id in client_ids:
                 client = self._client_lifecycle.get(client_id)
                 if client:
+                    # Nobody is left to read a departure in a room about
+                    # to be deleted, and the delete takes its history anyway.
                     await self._provisioning.kick_user(
-                        room.transport_room_id, client.transport_user_id
+                        room.transport_room_id,
+                        client.transport_user_id,
+                        announce=False,
                     )
 
             channel: RetireOutcome | None = None
@@ -1469,7 +1473,15 @@ class RoomService:
         room_id: str,
         agent_ids: list[str],
         removed_by_kind: Literal["user", "agent", "system"] = "user",
+        *,
+        removed_by: str | None = None,
     ) -> None:
+        """Take agents out of a room.
+
+        `removed_by` is the name of whoever asked, written into the room's
+        history with each departure ("X was removed by Y"); None when nobody
+        in particular did.
+        """
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
             if room is None:
@@ -1481,14 +1493,26 @@ class RoomService:
             # Both records of the membership before the wake-up. `kick_user`
             # takes `client_rooms`; `room_agents` is the one
             # `get_rooms_for_agent` reads, so a client reacting to the kick by
-            # re-reading its rooms must not still find this one.
+            # re-reading its rooms must not still find this one. The departure
+            # each removal announces goes in the same transaction, written by
+            # whichever call removed the `client_rooms` row.
+            departed: list[Callable[[], None]] = []
             async with self._session_factory() as session:
-                for client_id in agent_clients:
-                    await self._room_store.remove_client(session, client_id, room_id)
+                for transport_user_id in agent_clients.values():
+                    departed.append(
+                        await self._provisioning.record_leave(
+                            session,
+                            room.transport_room_id,
+                            transport_user_id,
+                            removed_by=removed_by,
+                        )
+                    )
                 removed = await self._room_store.remove_agents(
                     session, room_id, agent_ids
                 )
                 await session.commit()
+            for announce in departed:
+                announce()
 
             for transport_user_id in agent_clients.values():
                 await self._provisioning.kick_user(
@@ -1615,7 +1639,7 @@ class RoomService:
     async def set_join_event_listeners(
         self, room_id: str, settings: dict[str, bool]
     ) -> None:
-        """Set, per agent id, whether it receives `room_join` events in the
+        """Set, per agent id, whether it receives `room_join` and `room_leave` events in the
         room. `settings` maps agent id → on/off. Raises ValueError if the room
         does not exist or an agent is not a member of it."""
         if not settings:

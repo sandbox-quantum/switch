@@ -57,6 +57,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.message_events import removed_by
 from switch_core.bridges.agent.protocol.presence import rooms_occupied
 from switch_core.bridges.agent.protocol.statuses import compute_agent_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -2832,6 +2833,22 @@ class AgentCore:
         if sender_kind is None and _PLATFORM_MARKER in (message.content or {}):
             sender_kind = "platform"
         if message.event_type == MEMBERSHIP_EVENT_TYPE:
+            content = message.content or {}
+            if content.get("membership") == "leave":
+                remover = removed_by(content)
+                return {
+                    "id": message.transport_event_id,
+                    "kind": "room_leave",
+                    "sender": message.sender_id,
+                    "sender_name": name,
+                    "body": (
+                        f"{name} was removed from the room by {remover}"
+                        if remover
+                        else f"{name} left the room"
+                    ),
+                    "timestamp": _epoch_ms(message.sent_at),
+                    "attachments": [],
+                }
             return {
                 "id": message.transport_event_id,
                 "kind": "room_join",
@@ -2902,7 +2919,8 @@ class AgentCore:
         "timestamp", "attachments"}, plus "sender_kind" ("platform" for a
         message the Switch app posted) and "on_behalf_of" (the person a
         platform message spoke for) when they apply. `kind` is "message" for
-        something someone said and "room_join" for an arrival. Top-level entries are roots with
+        something someone said, "room_join" for an arrival and "room_leave"
+        for a departure. Top-level entries are roots with
         an empty replies list; replies are ordered oldest-first within a
         thread. A root that falls outside the fetched window but has a reply
         inside it is fetched alongside; if no record of it exists it is
@@ -4945,7 +4963,7 @@ class AgentCore:
         agent to be in the room.
 
         `join_event_listeners` is a partial map of agent name → whether that
-        agent receives `room_join` events in this room; only named agents are
+        agent receives `room_join` and `room_leave` events in this room; only named agents are
         changed, and each must already be a member.
         Passing ``bridge_id`` moves the room onto that collaboration bridge:
         a fresh external channel is provisioned there and the room's current

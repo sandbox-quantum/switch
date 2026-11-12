@@ -683,9 +683,11 @@ async def read_context(
     any entry's) `id` as the `thread_id` argument to post_message /
     send_targeted_message to reply into that thread.
 
-    `kind` is "message" for something a participant said, or "room_join" for
-    someone arriving in the room (body reads "<name> joined the room"). Joins
-    are part of the timeline so the history explains who appeared and when.
+    `kind` is "message" for something a participant said, "room_join" for
+    someone arriving in the room (body reads "<name> joined the room"), or
+    "room_leave" for someone leaving it (body reads "<name> left the room", or
+    "<name> was removed from the room by <who>"). Joins and leaves are part of
+    the timeline so the history explains who appeared and went, and when.
 
     **`truncated` matters.** It is True when older history exists that this
     call did not reach — you are looking at a partial conversation. Widen
@@ -1042,9 +1044,10 @@ async def create_room(
             registered `.claude/agents` subagents) should also be added to the
             room. Only the named parents are expanded, not every agent.
         join_event_listeners: Per-agent opt-in. A subset of `agent_names` that
-            should receive `room_join` events in this room (fired when someone
-            joins). Agents not listed do not receive them. Use for a welcome /
-            onboarding agent that should greet new arrivals.
+            should receive `room_join` and `room_leave` events in this room
+            (fired when someone joins or leaves). Agents not listed do not
+            receive them. Use for a welcome / onboarding agent that should
+            greet new arrivals, or a moderator that tracks who is in the room.
         aliases: Optional per-room agent aliases, keyed by agent name → alias.
             `@<alias>` then addresses that agent in the room exactly like its
             real name. Each agent must be in `agent_names`; an alias may
@@ -2782,7 +2785,7 @@ async def update_room(
             unchanged.
         admin_mode: New admin-mode flag, or None to leave unchanged.
         join_event_listeners: Partial map of agent name → whether that agent
-            should receive `room_join` events in this room. Only the named
+            should receive `room_join` and `room_leave` events in this room. Only the named
             agents change; omit to leave all memberships unchanged. Each named
             agent must already be a member of the room.
         bridge_id: Move the room onto this collaboration bridge. A fresh

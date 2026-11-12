@@ -40,7 +40,9 @@ from switch_core.bridges.agent.commands import (
 from switch_core.bridges.agent.protocol.message_events import (
     attachment_ref,
     message_event,
+    removed_by,
     room_join_event,
+    room_leave_event,
 )
 from switch_core.bridges.agent.protocol.presence import (
     agents_present_in,
@@ -1087,27 +1089,33 @@ class AgentRecipient:
     async def decide_arrival(
         self, session: AsyncSession, event: InboundMembership
     ) -> Delivery:
-        """Whether someone else's arrival in the room is one of the agent's
-        own events: it is when the agent listens for joins in this room.
+        """Whether someone else's arrival in the room, or departure from it,
+        is one of the agent's own events: it is when the agent listens for
+        members coming and going in this room (the join-events setting).
 
-        Only a genuine join counts. A membership-preserving update (a display
-        name or avatar change) re-fires the membership with `prev_membership`
-        "join", and leaving is never written as a row.
+        Only a genuine join counts as an arrival. A membership-preserving
+        update (a display name or avatar change) re-fires the membership with
+        `prev_membership` "join". A departure is a row with membership
+        "leave"; the agent that left is never told, as nobody's own event is
+        the row they wrote.
         """
-        if event.membership != "join" or event.prev_membership == "join":
+        arriving = event.membership == "join" and event.prev_membership != "join"
+        leaving = event.membership == "leave"
+        if not (arriving or leaving):
             return NOTHING
         if not self._member.listening:
-            # The agent does not listen for joins in this room, so the join
-            # is not written to its own events. A reader that wants the whole
-            # conversation still sees it, read from `messages`.
+            # The agent does not listen for members coming and going in this
+            # room, so the change is not written to its own events. A reader
+            # that wants the whole conversation still sees it, read from
+            # `messages`.
             return NOTHING
         meta = self._meta
         member_name = await self._member_name(session, event)
 
         def own_event(row: InboundEvent) -> OwnEvent:
             assert isinstance(row, InboundMembership)
-            return OwnEvent(
-                room_join_event(
+            if leaving:
+                built = room_leave_event(
                     room_id=meta.room_id,
                     bridge_id=meta.bridge_id,
                     channel_type=meta.channel_type,
@@ -1115,10 +1123,19 @@ class AgentRecipient:
                     member_name=member_name,
                     timestamp=row.timestamp,
                     listening=True,
-                ),
-                room_seq=row.seq,
-                message_key=row.event_id,
-            )
+                    removed_by=removed_by(row.content),
+                )
+            else:
+                built = room_join_event(
+                    room_id=meta.room_id,
+                    bridge_id=meta.bridge_id,
+                    channel_type=meta.channel_type,
+                    member=row.state_key,
+                    member_name=member_name,
+                    timestamp=row.timestamp,
+                    listening=True,
+                )
+            return OwnEvent(built, room_seq=row.seq, message_key=row.event_id)
 
         return Delivery(own_event=own_event, after=None)
 

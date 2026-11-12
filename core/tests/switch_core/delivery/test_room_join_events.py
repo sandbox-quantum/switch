@@ -7,7 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.protocol.types import AgentEvent, RoomJoinPayload
+from switch_core.bridges.agent.protocol.types import (
+    AgentEvent,
+    RoomJoinPayload,
+    RoomLeavePayload,
+)
 from switch_core.db.models import TENANT_ZERO_ID, AgentEventRow, Message
 from switch_core.db.session_scope import tenant_session
 from switch_core.delivery.recipient import AgentRecipient
@@ -155,10 +159,38 @@ class TestRoomJoinEnqueue:
         _, event = enqueued[0]
         assert event.payload.member_name == "bob"
 
-    async def test_leave_does_not_enqueue(self) -> None:
+    async def test_leave_enqueues_room_leave_event_for_a_listener(self) -> None:
+        """Members going is told to the same agents as members coming: those
+        the room set up to hear about it."""
+        enqueued = await _enqueued(
+            _client(), _member_event(membership="leave", prev_membership="join")
+        )
+
+        assert len(enqueued) == 1
+        room_id, event = enqueued[0]
+        assert room_id == "room-1"
+        assert event.type == "room_leave"
+        assert isinstance(event.payload, RoomLeavePayload)
+        assert event.payload.member == "@alice:switch.local"
+        assert event.payload.member_name == "Alice"
+        assert event.payload.listening is True
+        assert event.payload.removed_by is None
+
+    async def test_a_removal_names_who_removed_them(self) -> None:
+        event = _member_event(membership="leave", prev_membership="join")
+        event.content["removed_by"] = "Rita"
+
+        enqueued = await _enqueued(_client(), event)
+
+        _, built = enqueued[0]
+        assert isinstance(built.payload, RoomLeavePayload)
+        assert built.payload.removed_by == "Rita"
+
+    async def test_leave_does_not_enqueue_for_an_agent_not_listening(self) -> None:
         assert (
             await _enqueued(
-                _client(), _member_event(membership="leave", prev_membership="join")
+                _client(receives=False),
+                _member_event(membership="leave", prev_membership="join"),
             )
             == []
         )

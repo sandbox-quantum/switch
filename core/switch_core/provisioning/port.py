@@ -44,8 +44,35 @@ class Provisioning(Protocol):
         member is success."""
         ...
 
-    async def kick_user(self, room_id: str, user_id: str) -> None:
-        """Take a user out of a room. Already out is success."""
+    async def record_leave(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        user_id: str,
+        *,
+        removed_by: str | None = None,
+    ) -> Callable[[], None]:
+        """Remove a membership and write its departure in the caller's
+        transaction, so it commits with whatever else the caller removes. The
+        caller still calls `kick_user` after committing, to stop a live
+        client's delivery. Returns what to run once the caller has committed.
+        Already out is success, with nothing to run."""
+        ...
+
+    async def kick_user(
+        self,
+        room_id: str,
+        user_id: str,
+        *,
+        removed_by: str | None = None,
+        announce: bool = True,
+    ) -> None:
+        """Take a user out of a room. Already out is success.
+
+        The departure is written into the room's history ("X left the room"),
+        naming `removed_by` when someone took them out, unless `announce` is
+        False: for a room about to be deleted, where nobody is left to read
+        it."""
         ...
 
     async def delete_room(self, room_id: str) -> None:
