@@ -197,6 +197,7 @@ export interface BridgeDetail {
   // owner). Absent on an older server.
   private_channels_supported?: boolean;
   private_channel_needs_linked_account?: boolean;
+  public_channel_adds_creator?: boolean;
   room_count: number;
   created_at: string;
   // Empty for platforms whose app is installed through their own admin UI.

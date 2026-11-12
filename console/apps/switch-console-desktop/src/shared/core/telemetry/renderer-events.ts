@@ -98,6 +98,10 @@ export type RendererTelemetryEvents = {
       | 'kiro'
       | 'mistral-vibe'
       | 'goose'
+      | 'qwen'
+      | 'droid'
+      | 'cline'
+      | 'junie'
       | 'none';
   };
   /** A message sent to the person's own switch-buddy: the how-manyth, from its chats. */

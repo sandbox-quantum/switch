@@ -235,6 +235,41 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="agent", description="Delegates a task to a subagent"),
         ),
     ),
+    AgentProvider(
+        id="droid",
+        label="Factory Droid",
+        sign_in_command="droid",
+        connector_type="Droid CLI",
+    ),
+    AgentProvider(
+        id="cline",
+        label="Cline CLI",
+        sign_in_command="cline auth",
+        tools=(
+            ToolSpec(name="run_commands", description="Executes shell commands"),
+            ToolSpec(name="read_files", description="Reads file contents"),
+            ToolSpec(name="editor", description="Writes and edits files"),
+            ToolSpec(name="search_codebase", description="Searches file contents"),
+            ToolSpec(name="fetch_web_content", description="Fetches web pages"),
+            ToolSpec(name="ask_question", description="Asks the user a question"),
+            ToolSpec(name="spawn_agent", description="Delegates to a subagent"),
+        ),
+    ),
+    AgentProvider(
+        id="junie",
+        label="Junie",
+        sign_in_command="junie",
+        connector_type="Junie CLI",
+        tools=(
+            ToolSpec(name="Bash", description="Executes shell commands"),
+            ToolSpec(name="Edit", description="Edits existing files"),
+            ToolSpec(name="Write", description="Creates new files"),
+            ToolSpec(name="Read", description="Reads file contents"),
+            ToolSpec(name="Grep", description="Searches file contents"),
+            ToolSpec(name="Glob", description="Finds files by pattern"),
+            ToolSpec(name="WebSearch", description="Searches the web"),
+        ),
+    ),
 )
 
 

@@ -148,7 +148,7 @@ async function start(provider: Session['provider']) {
   await until(() => expect(host.snapshot().session.status).toBe('ready'));
   return { ...fixture, root, host };
 }
-it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen'] as const)(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen', 'junie'] as const)(
   'serializes and deduplicates %s commands across recovery',
   async (provider) => {
     const { root, host, adapter } = await start(provider);
@@ -1304,7 +1304,7 @@ it('resumes a stopped native conversation only once per explicit operation witho
   expect(again.adapter.startSession).not.toHaveBeenCalled();
 });
 
-it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen'] as const)(
+it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'kiro', 'qwen', 'junie'] as const)(
   'starts %s without waiting for model discovery',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), 'startup-models-'));
@@ -2174,6 +2174,57 @@ it("tells its owner when the provider asks to run a connector's tool, and only t
         : []
   );
   expect(order).toEqual(['bash', 'notice', 'search', 'add_comment']);
+});
+
+it('journals child progress, replays it after restart and never reruns the original work', async () => {
+  const { root, host, adapter, emit } = await start('claude');
+  await host.command(message('with-children'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+  emit({
+    type: 'item.started',
+    turnId: 'with-children',
+    item: {
+      id: 'spawn',
+      nativeChildId: 'child-a',
+      type: 'subagent',
+      status: 'in_progress',
+      title: 'Review changes',
+    },
+  });
+  await until(() =>
+    expect(
+      host.snapshot().items.some((item) => item.kind === 'tool-activity' && item.subagent)
+    ).toBe(true)
+  );
+  emit({
+    type: 'item.completed',
+    turnId: 'with-children',
+    item: {
+      id: 'complete',
+      nativeChildId: 'child-a',
+      type: 'subagent',
+      status: 'completed',
+      title: 'Review changes',
+    },
+  });
+  await until(() =>
+    expect(
+      host.snapshot().items.find((item) => item.kind === 'tool-activity' && item.subagent)?.status
+    ).toBe('completed')
+  );
+  const children = host
+    .snapshot()
+    .items.filter((item) => item.kind === 'tool-activity' && item.subagent);
+  expect(children).toHaveLength(1);
+  expect(children[0].revision).toBe(2);
+  await host.shutdown();
+  const recovered = setup('claude');
+  const reopened = await startHost(root, recovered.config, recovered.adapter);
+  hosts.push(reopened);
+  expect(
+    reopened.snapshot().items.filter((item) => item.kind === 'tool-activity' && item.subagent)
+  ).toEqual(children);
+  expect(recovered.adapter.sendTurn).not.toHaveBeenCalled();
 });
 
 describe('retrying a room message', () => {

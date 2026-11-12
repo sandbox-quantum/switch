@@ -212,6 +212,9 @@ GLOBAL_TABLES = frozenset(
 # `tests/switch_core/db/test_tenant_schema_catalogue.py` pins this list too.
 HISTORY_TABLES = frozenset({"audit_events"})
 
+# The organization counterpart: an organization's history outlives it.
+ORGANIZATION_HISTORY_TABLES = frozenset({"organization_audit_events"})
+
 
 class UnscopedTableError(RuntimeError):
     """A table is neither tenant-scoped nor named in `GLOBAL_TABLES`.
@@ -349,7 +352,8 @@ def _organization_column(table: Table) -> str | None:
 
     `organizations` is compared on `id`, as `tenants` is. Every other table
     qualifies by carrying an `organization_id` column whose foreign key
-    targets `organizations.id` — and by not being tenant-scoped, which
+    targets `organizations.id`, or, for one of `ORGANIZATION_HISTORY_TABLES`,
+    an `organization_id` column alone — and by not being tenant-scoped, which
     `tenants` is, though its `organization_id` points there too.
     """
     if _tenant_column(table) is not None:
@@ -359,6 +363,8 @@ def _organization_column(table: Table) -> str | None:
     organization_id_col = table.columns.get("organization_id")
     if organization_id_col is None:
         return None
+    if table.name in ORGANIZATION_HISTORY_TABLES:
+        return "organization_id"
     if any(
         fk.column.table.name == "organizations" and fk.column.name == "id"
         for fk in organization_id_col.foreign_keys

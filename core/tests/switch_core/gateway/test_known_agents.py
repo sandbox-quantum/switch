@@ -398,6 +398,20 @@ _SESSION_DEPENDENT = CommandCapabilities(
             [],
         ),
         ("kiro", "Kiro CLI", [], []),
+        (
+            "junie",
+            "Junie CLI",
+            [
+                "Bash",
+                "Edit",
+                "Write",
+                "Read",
+                "Grep",
+                "Glob",
+                "WebSearch",
+            ],
+            [],
+        ),
     ],
 )
 def test_every_stored_known_agent_type_resolves_as_before(

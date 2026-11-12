@@ -40,7 +40,7 @@ export type RoomCard = {
 
 /** The short word a card shows for a room's access; the full sentence is its tooltip. */
 export const ACCESS_SHORT: Record<RoomAccess, string> = {
-  public: 'Open',
+  public: 'Public',
   read_only: 'Read-only',
   private: 'Private',
 };

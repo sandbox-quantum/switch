@@ -76,6 +76,7 @@ from switch_core.template_runs import (
     room_ids_of,
 )
 from switch_core.template_v2 import is_v2_text
+from switch_core.ui_spec import parse_ui_spec
 
 logger = logging.getLogger(__name__)
 
@@ -786,7 +787,9 @@ async def list_participants() -> list[dict[str, Any]]:
 
 
 @operation
-async def post_message(body: str, thread_id: str | None = None) -> dict[str, Any]:
+async def post_message(
+    body: str, thread_id: str | None = None, ui: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Send a message to the connected room (broadcast, no specific recipient).
 
     Args:
@@ -800,6 +803,11 @@ async def post_message(body: str, thread_id: str | None = None) -> dict[str, Any
             reply) — it is normalised to the thread root. Omit for a top-level
             message. Get ids from read_context or from a notification's
             thread_id.
+        ui: Optional. A rich card to show with the message, as a spec of
+            `root` and `elements` (see the skill's "Rich cards" section).
+            Platforms that can draw it (Slack) show the card; the rest show
+            `body`, so `body` must still say what matters. An invalid spec
+            fails the call, listing each problem, and nothing is posted.
 
     Returns:
         {"event_id": "<event id>"} for the posted message, plus `trust` when
@@ -815,12 +823,17 @@ async def post_message(body: str, thread_id: str | None = None) -> dict[str, Any
         posted in the room; when it could not be, `note` is absent and
         `notice_error` says why, and the room was not warned. A blocked
         message is not delivered at all, and the call fails instead.
+        `trust.card` is "dropped" when Switch Trust redacted the text of your
+        `ui` card: the card was not sent, only `body` (as `delivered`).
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
 
+    spec = parse_ui_spec(ui) if ui is not None else None
     protocol = get_protocol()
-    sent = await protocol.send_message(agent_id, room_id, body, thread_id=thread_id)
+    sent = await protocol.send_message(
+        agent_id, room_id, body, thread_id=thread_id, ui=spec
+    )
     return _with_trust({"event_id": sent.event_id}, sent.trust)
 
 
@@ -830,6 +843,7 @@ async def send_targeted_message(
     target_names: list[str] | None = None,
     target_roles: list[str] | None = None,
     thread_id: str | None = None,
+    ui: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Send a message addressed to specific agents/users and/or roles.
 
@@ -857,6 +871,11 @@ async def send_targeted_message(
         thread_id: Optional. The `id` of a message to reply into, making this a
             threaded reply. Pass any message id from the thread — it is
             normalised to the thread root. Omit for a top-level message.
+        ui: Optional. A rich card to show with the message, as a spec of
+            `root` and `elements` (see the skill's "Rich cards" section).
+            Platforms that can draw it (Slack) show the card; the rest show
+            `body`, so `body` must still say what matters. An invalid spec
+            fails the call, listing each problem, and nothing is posted.
 
     At least one of target_names / target_roles is required.
 
@@ -891,6 +910,7 @@ async def send_targeted_message(
     agent_id = get_agent_id()
     room_id = await require_connected_room()
 
+    spec = parse_ui_spec(ui) if ui is not None else None
     protocol = get_protocol()
     result = await protocol.send_targeted_message(
         agent_id,
@@ -899,6 +919,7 @@ async def send_targeted_message(
         body,
         thread_id=thread_id,
         target_roles=target_roles or [],
+        ui=spec,
     )
     return _with_trust(
         {
@@ -1574,7 +1595,10 @@ async def list_bridges() -> list[dict[str, Any]]:
         your owner when you create it, must have linked and confirmed their
         account on that platform: Switch puts them in the private channel
         through it (on Teams, as its owner), and refuses the room when they
-        have not, since nobody could get into it otherwise.
+        have not, since nobody could get into it otherwise. A new public
+        channel puts them in too when they have such an account (not on
+        Teams, where that would add them to the whole team), and is made
+        without them when they have none.
     """
     protocol = get_protocol()
     return await protocol.list_bridges()

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import {
+  ACCESS_HELPERS,
   ACCESS_LABELS,
   ACCESS_ORDER,
 } from '@renderer/features/switch-rooms/room-settings-sections';
@@ -208,12 +209,12 @@ export function CreateRoomOptions({
           )}
 
           <Field>
-            <FieldLabel>Who can see and change it</FieldLabel>
+            <FieldLabel>Access</FieldLabel>
             <Select
               value={access}
               onValueChange={(next) => onChange({ ...value, access: next as RoomAccess })}
             >
-              <SelectTrigger className="w-full" aria-label="Who can see and change it">
+              <SelectTrigger className="w-full" aria-label="Access">
                 <SelectValue>{ACCESS_LABELS[access]}</SelectValue>
               </SelectTrigger>
               <SelectContent>
@@ -225,9 +226,8 @@ export function CreateRoomOptions({
               </SelectContent>
             </Select>
             <span className="text-xs text-foreground-muted">
-              {bridged
-                ? 'Who can see the room in Switch and change its settings, members and resources. It does not decide who can read or post in the channel. Both can be changed later in the room’s Configuration.'
-                : 'Who can see the room in Switch and change its settings, members and resources. It can be changed later in the room’s Configuration.'}
+              {ACCESS_HELPERS[access]}
+              {bridged && ' It does not decide who can read or post in the channel.'}
             </span>
           </Field>
         </>

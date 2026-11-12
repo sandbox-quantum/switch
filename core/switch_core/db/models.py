@@ -543,7 +543,7 @@ class CloudMachine(Base):
             name="ck_cloud_machine_desired_state",
         ),
         CheckConstraint(
-            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner')",
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'admin')",
             name="ck_cloud_machine_stop_reason",
         ),
         Index(
@@ -778,7 +778,7 @@ class AuditEvent(Base):
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
-class OrganizationAuditEvent(OrganizationScoped, Base):
+class OrganizationAuditEvent(Base):
     """One change to an organization as a whole: its members, their roles,
     its workspaces. The organization's counterpart of `AuditEvent`, with the
     same rules: written in the transaction of the change it records,
@@ -788,6 +788,10 @@ class OrganizationAuditEvent(OrganizationScoped, Base):
     A change inside one workspace stays in that workspace's `audit_events`;
     this holds what no single workspace owns, so an organization's admins
     read it in one place whichever workspace the change was made from.
+
+    `organization_id` carries no foreign key, as `AuditEvent.tenant_id`
+    does not: deleting an organization leaves its history behind. It is still
+    scoped by the policy (`rls_ddl.ORGANIZATION_HISTORY_TABLES`).
     """
 
     __tablename__ = "organization_audit_events"
@@ -799,6 +803,9 @@ class OrganizationAuditEvent(OrganizationScoped, Base):
         ),
     )
 
+    organization_id: Mapped[str] = mapped_column(
+        Text, nullable=False, default=require_organization_id
+    )
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
@@ -2596,6 +2603,9 @@ class BridgeMessageMap(TenantScoped, Base):
     # answers, so a second process handling the same message finds the claim
     # and does not post it again (`CollaborationCore._claim_outbound`).
     external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The press that answered the card this message carries, `{"by", "label"}`;
+    # null until a press is delivered. A card takes one answer.
+    card_answer: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -3995,6 +4005,9 @@ class AgentSessionActivityItem(TenantScoped, Base):
     turn_id: Mapped[str] = mapped_column(Text, nullable=False)
     item_id: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
+    subagent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
