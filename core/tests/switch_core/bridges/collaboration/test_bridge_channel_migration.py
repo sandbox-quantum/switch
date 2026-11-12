@@ -121,6 +121,7 @@ def test_the_handler_is_installed_before_the_adapter_starts() -> None:
     bridge._refresh_channel_types = _noop  # type: ignore[assignment,method-assign]
     bridge._create_agent_identities = _noop  # type: ignore[assignment,method-assign]
     bridge._identity_task = None
+    bridge._member_sync_tasks = set()
 
     asyncio.run(CollaborationCore.start(bridge))
 

@@ -59,6 +59,7 @@ def _core(provision: Any) -> tuple[CollaborationCore, _FakeAdapter]:
     core._identities_owed = set()  # type: ignore[attr-defined]
     core._agent_view = None  # type: ignore[attr-defined]
     core._channel_type_refresh_task = None  # type: ignore[attr-defined]
+    core._member_sync_tasks = set()  # type: ignore[attr-defined]
 
     async def _noop() -> None:
         return None

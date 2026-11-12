@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import io
 import json
 import logging
@@ -3098,10 +3099,11 @@ class MattermostAdapter(PlatformAdapter):
         page = 0
         try:
             while True:
+                params = {"page": page, "per_page": self._MEMBERS_PAGE}
                 batch = await loop.run_in_executor(
                     None,
-                    lambda p=page: driver.channels.get_channel_members(
-                        channel_id, params={"page": p, "per_page": self._MEMBERS_PAGE}
+                    functools.partial(
+                        driver.channels.get_channel_members, channel_id, params=params
                     ),
                 )
                 ids.extend(str(m.get("user_id", "")) for m in batch if m.get("user_id"))

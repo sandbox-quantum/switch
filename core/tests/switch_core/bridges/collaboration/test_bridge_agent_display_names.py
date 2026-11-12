@@ -283,6 +283,7 @@ def test_the_resolver_is_installed_before_the_adapter_starts() -> None:
     bridge = _bridge(_agent("worker", "Worker Bee"))
     bridge._adapter = _Adapter()  # type: ignore[assignment]
     bridge._identity_task = None
+    bridge._member_sync_tasks = set()
 
     async def _noop() -> None:
         return None

@@ -208,6 +208,7 @@ def _startable_core(refresh: Any) -> tuple[CollaborationCore, _StartableAdapter]
         "_adapter": adapter,
         "_identity_task": None,
         "_channel_type_refresh_task": None,
+        "_member_sync_tasks": set(),
         "_load_channel_map": _noop,
         "_load_existing_human_actors": _noop,
         "_ensure_channel_captures": _noop,
