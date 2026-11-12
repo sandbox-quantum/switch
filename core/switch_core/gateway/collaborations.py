@@ -1184,6 +1184,7 @@ async def _send_prompt(
                 number=outcome.number,
                 sent=outcome.sent,
                 unavailable_reason=outcome.unavailable_reason,
+                link=outcome.link,
             )
         }
     )

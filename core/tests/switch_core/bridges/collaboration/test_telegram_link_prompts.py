@@ -66,7 +66,10 @@ def _rows(markup: Any) -> list[list[dict[str, Any]]]:
 async def test_the_prompt_goes_to_the_persons_own_chat_rendered_as_html() -> None:
     adapter = _adapter()
 
-    await adapter.send_direct_prompt(PERSON, _prompt())
+    ref = await adapter.send_direct_prompt(PERSON, _prompt())
+
+    # Telegram links no message in a private chat, so the link opens the chat.
+    assert adapter.direct_prompt_link(ref) == f"https://t.me/{BOT_USERNAME}"
 
     [sent] = _bot(adapter).messages
     assert sent["chat_id"] == PERSON_ID
@@ -154,6 +157,7 @@ async def test_a_press_in_the_private_chat_names_the_message_the_send_returned()
             channel_id=PERSON,
             sender_id=PERSON,
             sender_name="ada",
+            sender_display_name="Alice",
             action_id=position_action(2),
             value=token,
             message_ref=ref,

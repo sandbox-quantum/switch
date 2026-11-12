@@ -516,7 +516,10 @@ version of their own to them without also giving them a release of their own.
   everywhere. An account gets at most three such messages an hour.
   The claim and new-code routes send the message when asked with
   `wants_prompt`, and say on `LinkCode.prompt` whether it went out and, if not,
-  why. A new code retires the previous message's buttons. Slack needs the
+  why. When it went out, `LinkCode.prompt.link` opens it: Slack's
+  `app_redirect` to the app's conversation, the message itself on Discord, the
+  bot's chat on Telegram, and the post's permalink on Mattermost when the
+  bridge has a `public_url`. A new code retires the previous message's buttons. Slack needs the
   app's Messages tab, which the manifest now turns on, read only: an existing
   app keeps using the code until its manifest is re-applied.
 - **The server's administrator can delete someone's account.** The Users page
@@ -3141,9 +3144,9 @@ version of their own to them without also giving them a release of their own.
 
 #### Added
 - **Confirm a linked chat account with a tap.** When the server can message
-  the account, the link screen shows a number to tap in that message, with the
-  code below it as the fallback, and "Send again" sends a fresh message and
-  code. When it can't, the screen says why and shows the code as before. A
+  the account, the link screen shows a number to tap in that message, with an
+  **Open in …** button that opens the message in the chat app, the code below
+  it as the fallback, and "Send again" sends a fresh message and code. When it can't, the screen says why and shows the code as before. A
   server from before this shows only the code.
 - **A service's note on agent access.** The connector page and the connect
   step show it where a service sets one (Sentry).

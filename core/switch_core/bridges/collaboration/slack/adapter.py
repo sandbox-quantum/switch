@@ -2117,6 +2117,16 @@ class SlackAdapter(PlatformAdapter):
         ts = str(posted.get("ts", ""))
         return f"{channel}:{ts}"
 
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """Slack's `app_redirect`, which opens the app's conversation with them
+        in the desktop app, the browser or on mobile. The team is the one the
+        bot authenticated in, which on an Enterprise Grid org is the workspace
+        and not the org."""
+        channel, _, _ = message_ref.partition(":")
+        if not self._team_id:
+            return f"https://slack.com/app_redirect?channel={channel}"
+        return f"https://slack.com/app_redirect?channel={channel}&team={self._team_id}"
+
     async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
         if not self._web_client:
             logger.warning(

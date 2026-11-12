@@ -2485,7 +2485,13 @@ type LinkCodeJson = {
   expires_in_seconds?: number;
   instructions: string;
   /** Absent from a server that predates it, and null when none was asked for. */
-  prompt?: { number: number; sent: boolean; unavailable_reason?: string | null } | null;
+  prompt?: {
+    number: number;
+    sent: boolean;
+    unavailable_reason?: string | null;
+    /** Absent from a server that predates it. */
+    link?: string | null;
+  } | null;
 };
 
 /** The gateway `ExternalUserSummary` wire shape. `link_request` is set when a
@@ -2514,6 +2520,7 @@ export function mapLinkCode(json: LinkCodeJson): LinkCode {
             number: prompt.number,
             sent: prompt.sent,
             unavailableReason: prompt.unavailable_reason ?? null,
+            link: prompt.link ?? null,
           },
   };
 }

@@ -97,6 +97,23 @@ async def test_the_ref_returned_is_the_post_the_prompt_was_sent_as() -> None:
     )
 
 
+async def test_the_link_is_the_posts_permalink_on_the_public_address() -> None:
+    adapter, _ = _prompting()
+    adapter._config = adapter._config.model_copy(
+        update={"public_url": "https://chat.example/"}
+    )
+
+    assert adapter.direct_prompt_link("post-1") == "https://chat.example/team/pl/post-1"
+
+
+async def test_no_public_address_gives_no_link_rather_than_one_to_switchs_own_address() -> (
+    None
+):
+    adapter, _ = _prompting()
+
+    assert adapter.direct_prompt_link("post-1") is None
+
+
 async def test_one_button_per_label_in_order_named_by_the_label_alone() -> None:
     """The labels are the numbers, so a card's "1. " numbering would put a
     number in front of a number."""

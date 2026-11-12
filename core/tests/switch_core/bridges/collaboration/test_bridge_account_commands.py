@@ -480,6 +480,7 @@ class TestPromptPresses:
             channel_id="D1",
             sender_id="U-ada",
             sender_name="ada",
+            sender_display_name="Ada",
             action_id=position_action(2),
             value=f"{PROMPT_TOKEN_PREFIX}abc",
         )

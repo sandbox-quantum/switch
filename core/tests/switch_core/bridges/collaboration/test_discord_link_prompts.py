@@ -191,6 +191,9 @@ async def test_a_prompt_goes_to_the_accounts_own_dm_with_the_bot() -> None:
     assert "**Jane Doe**" in sent["content"]
     # The ref is the one a press on it carries back: DM, then message.
     assert ref == f"{DM_CHANNEL_ID}:{PROMPT_MESSAGE_ID}"
+    assert adapter.direct_prompt_link(ref) == (
+        f"https://discord.com/channels/@me/{DM_CHANNEL_ID}/{PROMPT_MESSAGE_ID}"
+    )
 
 
 async def test_each_label_is_a_button_in_order_and_not_me_is_last() -> None:

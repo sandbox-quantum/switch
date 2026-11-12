@@ -881,6 +881,9 @@ class LinkPromptSummary(BaseModel):
     # Why no message went out, in words to show beside the code, when `sent`
     # is false.
     unavailable_reason: str | None
+    # A web link that opens the message on the platform, when it went out and
+    # the platform can link to it.
+    link: str | None
 
 
 class LinkCode(BaseModel):

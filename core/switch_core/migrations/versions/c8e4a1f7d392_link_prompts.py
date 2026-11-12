@@ -16,7 +16,7 @@ Expand only: every column is nullable or defaulted, and a release from before
 this revision never reads or writes them.
 
 Revision ID: c8e4a1f7d392
-Revises: 689d7d8ff913
+Revises: c8e2f4a6b1d3
 Create Date: 2026-11-05 00:00:00.000000
 
 """
@@ -28,7 +28,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "c8e4a1f7d392"
-down_revision: str | Sequence[str] | None = "689d7d8ff913"
+down_revision: str | Sequence[str] | None = "c8e2f4a6b1d3"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

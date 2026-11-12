@@ -1458,6 +1458,16 @@ class MattermostAdapter(PlatformAdapter):
                 "use the code instead."
             ) from e
 
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """The post's permalink, on `public_url` only: `url` is often an address
+        only Switch can reach (the bundled deployment's
+        `http://mattermost:8065`), and a link that opens nothing is worse than
+        no link."""
+        if not self._config.public_url:
+            return None
+        base = self._config.public_url.rstrip("/")
+        return f"{base}/{self._config.team_name}/pl/{message_ref}"
+
     async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
         """Replace an answered prompt's text and take its buttons off.
 

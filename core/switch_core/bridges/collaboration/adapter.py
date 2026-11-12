@@ -2319,6 +2319,14 @@ class PlatformAdapter(ABC):
             "the code instead."
         )
 
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """A web link that opens the conversation holding a prompt sent by
+        `send_direct_prompt`, for Switch Console to offer beside the number to
+        tap, so nobody has to go looking for the message. None where the
+        platform has no such link.
+        """
+        return None
+
     async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
         """Replace a prompt sent by `send_direct_prompt` with `text` (Switch
         Markdown) and no buttons, once it has been answered.

@@ -1463,6 +1463,11 @@ class DiscordAdapter(PlatformAdapter):
             ) from e
         return f"{channel.id}:{message.id}"
 
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """The message itself: Discord links a direct message under `@me`."""
+        channel_id, _, message_id = message_ref.partition(":")
+        return f"https://discord.com/channels/@me/{channel_id}/{message_id}"
+
     async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
         channel_id, message_id = self._parse_message_ref(message_ref)
         try:

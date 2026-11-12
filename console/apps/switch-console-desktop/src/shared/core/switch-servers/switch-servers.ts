@@ -1266,6 +1266,10 @@ export type LinkPrompt = {
   sent: boolean;
   /** Why no message went out, as a sentence to show; null when one did. */
   unavailableReason: string | null;
+  /** A web link that opens the message on the platform, so nobody has to go
+   * looking for it. Null when none went out, the platform cannot link to it,
+   * or the server predates it. */
+  link: string | null;
 };
 
 /**

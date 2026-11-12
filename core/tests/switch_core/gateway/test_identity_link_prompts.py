@@ -77,6 +77,9 @@ class _Adapter:
         self.sent.append((external_user_id, prompt))
         return f"D-{external_user_id}:{len(self.sent)}"
 
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        return f"https://chat.example/{message_ref}"
+
     async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
         self.settled.append((message_ref, text))
 
@@ -206,6 +209,7 @@ async def _tap(
             channel_id="D-U-ada",
             sender_id=sender,
             sender_name="ada",
+            sender_display_name="Ada",
             action_id=position_action(position),
             value=prompt.token,
             message_ref="D-U-ada:1",
@@ -250,6 +254,8 @@ class TestSendingAPrompt:
         assert code.prompt is not None
         assert code.prompt.sent is True
         assert code.prompt.unavailable_reason is None
+        # Opens the message that went out, so nobody has to look for it.
+        assert code.prompt.link == "https://chat.example/D-U-ada:1"
         [(to, prompt)] = adapter.sent
         assert to == "U-ada"
         assert is_prompt_token(prompt.token)
@@ -331,6 +337,7 @@ class TestSendingAPrompt:
         assert code.prompt is not None
         assert code.prompt.sent is False
         assert code.prompt.unavailable_reason == "They haven't started the bot."
+        assert code.prompt.link is None
 
     async def test_an_account_is_only_messaged_so_often(self, world: _World) -> None:
         adapter = _Adapter()

@@ -250,6 +250,23 @@ describe('issueLinkCodeOnServer', () => {
     });
   });
 
+  it('reads the link that opens the message', async () => {
+    const link = 'https://slack.com/app_redirect?channel=D42&team=T1';
+    fetchMock.mockResolvedValue(response(200, { ...CODE, prompt: { ...PROMPT, link } }));
+
+    await expect(issueLinkCodeOnServer(SERVER, 'b1', 'eu-1')).resolves.toMatchObject({
+      code: { prompt: { number: 42, sent: true, link } },
+    });
+  });
+
+  it('reads no link from a server that predates it', async () => {
+    fetchMock.mockResolvedValue(response(200, { ...CODE, prompt: PROMPT }));
+
+    await expect(issueLinkCodeOnServer(SERVER, 'b1', 'eu-1')).resolves.toMatchObject({
+      code: { prompt: { link: null } },
+    });
+  });
+
   it('reads why no message could be sent', async () => {
     const reason = 'Slack does not let Switch message this person directly.';
     fetchMock.mockResolvedValue(

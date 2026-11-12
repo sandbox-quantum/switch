@@ -264,6 +264,24 @@ class TestDirectPrompts:
         assert {b["value"] for b in buttons} == {_PROMPT.token}
         assert [b.get("style") for b in buttons] == [None, None, None, "danger"]
 
+    async def test_the_link_opens_the_apps_conversation_in_its_workspace(
+        self,
+    ) -> None:
+        adapter = _adapter()
+        adapter._team_id = "T-installed"
+
+        link = adapter.direct_prompt_link("D42:111.1")
+
+        assert link == "https://slack.com/app_redirect?channel=D42&team=T-installed"
+
+    async def test_without_a_known_workspace_slack_picks_the_persons_default(
+        self,
+    ) -> None:
+        assert (
+            _adapter().direct_prompt_link("D42:111.1")
+            == "https://slack.com/app_redirect?channel=D42"
+        )
+
     async def test_slack_refusing_the_conversation_falls_back_to_the_code(
         self,
     ) -> None:

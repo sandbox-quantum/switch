@@ -138,6 +138,9 @@ class PromptOutcome:
     number: int
     sent: bool
     unavailable_reason: str | None
+    # Opens the message on the platform, when it went out and the platform
+    # can link to it.
+    link: str | None
 
 
 async def prepare_prompt(
@@ -197,12 +200,18 @@ async def deliver_prompt(
             number=pending.number,
             sent=False,
             unavailable_reason=pending.withheld or BRIDGE_STOPPED,
+            link=None,
         )
     try:
-        await adapter.send_direct_prompt(account_external_id, pending.message)
+        message_ref = await adapter.send_direct_prompt(
+            account_external_id, pending.message
+        )
     except DirectMessageUnavailable as unavailable:
         return PromptOutcome(
-            number=pending.number, sent=False, unavailable_reason=str(unavailable)
+            number=pending.number,
+            sent=False,
+            unavailable_reason=str(unavailable),
+            link=None,
         )
     except Exception:
         logger.exception(
@@ -217,8 +226,14 @@ async def deliver_prompt(
                 f"{adapter.display_name} didn't accept the message, so use the "
                 "code instead."
             ),
+            link=None,
         )
-    return PromptOutcome(number=pending.number, sent=True, unavailable_reason=None)
+    return PromptOutcome(
+        number=pending.number,
+        sent=True,
+        unavailable_reason=None,
+        link=adapter.direct_prompt_link(message_ref),
+    )
 
 
 async def answer_prompt(

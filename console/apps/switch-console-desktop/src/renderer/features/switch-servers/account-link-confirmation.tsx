@@ -1,10 +1,11 @@
 import { format } from 'date-fns';
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useModalContext } from '@renderer/lib/modal/modal-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { log } from '@renderer/utils/logger';
@@ -44,7 +45,8 @@ export type AccountLinkTarget = {
  * code shown after the first is a new one, and asking for it retires the last.
  *
  * A current server also messages the account with three numbers to pick from
- * (CHOO-4121). When that message went out, the number to tap leads and the code
+ * (CHOO-4121). When that message went out, the number to tap leads, with a
+ * button that opens the message where the platform can link to it, and the code
  * is the fallback; when it could not, the server says why and the code is all
  * there is.
  *
@@ -270,6 +272,7 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
   // before.
   const prompt = code?.prompt ?? null;
   const promptSent = prompt?.sent === true;
+  const promptLink = promptSent ? (prompt?.link ?? null) : null;
 
   if (gone) {
     return (
@@ -340,6 +343,18 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
               {prompt.number}
             </span>
           </div>
+          {promptLink !== null && (
+            <Button
+              size="sm"
+              className="self-start"
+              onClick={() =>
+                void openExternalUrl(promptLink, `Could not open ${bridgeDisplayName}`)
+              }
+            >
+              <ExternalLink className="size-3" />
+              Open in {bridgeDisplayName}
+            </Button>
+          )}
           <div className="flex flex-col gap-2">
             <p className="text-xs text-foreground-muted">
               Didn’t get it? Post this code from that account instead:

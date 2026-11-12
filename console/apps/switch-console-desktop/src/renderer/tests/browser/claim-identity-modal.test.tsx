@@ -34,6 +34,7 @@ const issueIdentityLinkCode = vi.hoisted(() => vi.fn());
 const releaseBridgeIdentity = vi.hoisted(() => vi.fn());
 const cancelIdentityLinkRequest = vi.hoisted(() => vi.fn());
 const reportIdentityConfirmed = vi.hoisted(() => vi.fn());
+const openExternal = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: {
@@ -48,6 +49,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       cancelIdentityLinkRequest,
       reportIdentityConfirmed,
     },
+    app: { openExternal },
   },
   events: { on: () => () => {}, emit: () => {} },
 }));
@@ -109,8 +111,10 @@ const CODE: LinkCode = {
 
 const SENT: LinkCode = {
   ...CODE,
-  prompt: { number: 42, sent: true, unavailableReason: null },
+  prompt: { number: 42, sent: true, unavailableReason: null, link: null },
 };
+
+const DM_LINK = 'https://slack.com/app_redirect?channel=D42&team=T1';
 
 const NOT_SENT_REASON = 'Slack does not let Switch message this person directly.';
 
@@ -559,6 +563,24 @@ describe('a server that messages the account a number to tap', () => {
     expect(el.textContent).toMatch(/Waiting for confirmation\. The code expires at \d\d:\d\d/);
     expect(button(el, 'Copy')).toBeDefined();
     expect(el.querySelector('[data-testid="link-prompt-unavailable"]')).toBeNull();
+    // No link from the server, so nothing to open.
+    expect(button(el, 'Open in Acme Slack')).toBeUndefined();
+  });
+
+  it('opens the message in the chat app, so nobody has to look for it', async () => {
+    openExternal.mockResolvedValue({ success: true });
+    claimReturns({
+      ...PENDING_RESULT,
+      code: { ...SENT, prompt: { ...SENT.prompt!, link: DM_LINK } },
+    });
+    const el = await render();
+    await claimAda(el);
+
+    await click(button(el, 'Open in Acme Slack'));
+
+    expect(openExternal).toHaveBeenCalledWith(DM_LINK);
+    // Still waiting for the tap: opening the message confirms nothing.
+    expect(el.textContent).toContain('Tap 42 there to finish linking.');
   });
 
   it('sends again, showing the new number and code', async () => {
@@ -596,7 +618,10 @@ describe('a server that messages the account a number to tap', () => {
   it('says why no message went out, and leads with the code as before', async () => {
     claimReturns({
       ...PENDING_RESULT,
-      code: { ...CODE, prompt: { number: 42, sent: false, unavailableReason: NOT_SENT_REASON } },
+      code: {
+        ...CODE,
+        prompt: { number: 42, sent: false, unavailableReason: NOT_SENT_REASON, link: null },
+      },
     });
     const el = await render();
 

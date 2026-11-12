@@ -1601,6 +1601,13 @@ class TelegramAdapter(PlatformAdapter):
             ) from refused
         return self._ref(sent)
 
+    def direct_prompt_link(self, message_ref: str) -> str | None:
+        """The private chat with the bot. Telegram links a message only in a
+        group or channel, not in a private chat."""
+        if not self._bot_username:
+            return None
+        return f"https://t.me/{self._bot_username}"
+
     async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
         try:
             chat_id, message_id = self._parse_message_ref(message_ref)
