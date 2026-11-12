@@ -1,7 +1,49 @@
 slug: linear
 name: Linear
 category: Project management
-description: Read and update Linear issues and projects.
+description: Read and update Linear issues and projects, as you.
 enabled: false
+adapter: oauth
 auth:
   type: oauth
+  # Linear access tokens last 24 hours (86,400 s) and refresh tokens rotate on use.
+  refresh: rotating
+  oauth:
+    # Linear's MCP server supports OAuth 2.1 with dynamic client registration (RFC 7591),
+    # PKCE S256, and token revocation. No operator setup is required.
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    revocation_discovered: true
+  # Identity comes from Linear's whoami tool via identity.mcp_tool (#1340).
+  #
+  # Reported on #770 from live inspection of https://mcp.linear.app/mcp:
+  # - whoami inputSchema: type: object, required: [] (optional 'source': string)
+  # - whoami annotations: readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false
+  # - whoami call result: { user: { id: "...", email: "..." }, workspace: { id: "..." } }
+  # - token lifetime: 86,100 s (~24 hours) with rotating refresh tokens
+  #
+  # Because Linear's whoami tool annotates readOnlyHint: false, #1340's guard
+  # intentionally refuses it. Per Petr Bauch's Nov 6 ruling on #770:
+  # "We're keeping readOnlyHint: true required. Without it, whoami can't be the identity route,
+  # so keep Linear enabled: false and have the PR report these measurements... Otherwise we
+  # revisit when Linear marks whoami read-only."
+  #
+  # Not measured in a live Switch Console session:
+  # - Live agent session in Switch Console room (entry remains disabled).
+  identity:
+    mcp_tool: whoami
+    account_id: user.id
+    label: user.email
+token:
+  kind: pass_through
+  max_lifetime: 86400
+mcp:
+  servers:
+    - { name: linear, url: "https://mcp.linear.app/mcp" }
+access:
+  read:
+    scopes: [read]
+  write:
+    scopes: [read, write]
+tools: { mode: pass_through }
