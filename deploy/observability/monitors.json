@@ -290,8 +290,8 @@
   {
     "name": "[Switch] agent connections are dropping en masse",
     "type": "query alert",
-    "query": "pct_change(avg(last_10m),last_30m):sum:switch.agents.connected{service:switch-core} < -50",
-    "message": "{{#is_alert}}Agent connections fell by more than half in 10 minutes. Agents that lost theirs stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "query": "avg(last_10m):sum:switch.agents.connected{service:switch-core} / week_before(sum:switch.agents.connected{service:switch-core}) < 0.5",
+    "message": "{{#is_alert}}Fewer than half as many agents are connected as at this time a week ago. Agents that lost their connection stop answering in their rooms.\n\n**Check:** pod restarts and agent connection logs; a pod loss makes its agents reconnect elsewhere. If last week was the odd one out (an outage, or a load test that connected extra agents), this clears on its own.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: agent connections are dropping en masse.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
       "team:switch",
@@ -304,7 +304,7 @@
       "require_full_window": false,
       "include_tags": true,
       "thresholds": {
-        "critical": -50
+        "critical": 0.5
       }
     },
     "priority": 2
