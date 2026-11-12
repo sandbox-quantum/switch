@@ -94,6 +94,26 @@ switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller update [--check]
 ```
 
+`status` and `doctor` also accept `--json` for scripts. Each writes one JSON
+object to stdout; diagnostics about a command that could not run go to stderr.
+`status` describes local state only: `identity`, `assignment` (`none`, `unreadable`
+or `saved`), and `agents` with their desired and observed process states. It does
+not serialize agent definitions or credentials. `credentialPresent` is `null`
+when it was not checked, such as for an unenrolled or revoked controller.
+`doctor` returns `{ "checks": [...] }`, where each check has a `name`, `status`
+(`ok`, `warn`, `fail`) and `detail`.
+
+The exit codes are the same in either format: `status` returns 1 when this data
+directory is not enrolled and 0 when it can report its enrolled state;
+`doctor` returns 1 if any check fails and 0 otherwise (warnings alone do not
+fail it). Command errors still use the CLI's usual exit codes. Human-readable
+output uses colour only on terminals, and respects `NO_COLOR` and `TERM=dumb`.
+
+```bash
+switch-agent-controller status --json
+switch-agent-controller doctor --json
+```
+
 - `--server` is the agent bridge URL, and it must be `https`. Plain `http` is
   accepted only for a loopback server. Agents never see it: they reach Switch
   through the controller's relay.

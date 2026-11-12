@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as doctor from './doctor';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
 import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
 import { dataLayout } from './paths';
@@ -27,6 +28,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -36,6 +38,116 @@ function lastLine(): string {
 }
 
 describe('main', () => {
+  function stdout(): string {
+    return vi
+      .mocked(process.stdout.write)
+      .mock.calls.map(([chunk]) => String(chunk))
+      .join('');
+  }
+
+  it('returns parseable status JSON even before enrollment, with the existing exit code', async () => {
+    expect(await main(['status', '--data-dir', dir, '--json'])).toBe(EXIT_FAILURE);
+    expect(JSON.parse(stdout())).toMatchObject({
+      dataDir: dir,
+      identity: null,
+      assignment: { kind: 'none', revision: null },
+      agents: [],
+    });
+  });
+
+  it('lists agent state in JSON without serializing the full agent definition', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveSecretStoreKind('file');
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      name: 'build-box',
+      server: 'https://switch.example.com',
+      enrolledAt: '2026-01-01',
+    });
+    store.saveAssignment(
+      {
+        revision: 3,
+        agents: [
+          {
+            agent_id: 'agent-1',
+            revision: 2,
+            desired_state: 'running',
+            definition: {
+              name: 'Helper',
+              display_name: null,
+              icon_url: null,
+              provider: 'claude',
+              model: null,
+              advanced_config: {},
+              instructions: 'private instructions should not be in status',
+              auto_approve: false,
+              auto_mode: false,
+              directory: null,
+              isolation: 'shared',
+            },
+          },
+        ],
+      },
+      null,
+      '2026-01-01'
+    );
+    store.close();
+    expect(await main(['status', '--data-dir', dir, '--json'])).toBe(EXIT_OK);
+    const result = JSON.parse(stdout());
+    expect(result.assignment).toEqual({ kind: 'saved', detail: null, revision: 3 });
+    expect(result.agents).toEqual([
+      expect.objectContaining({
+        id: 'agent-1',
+        name: 'Helper',
+        provider: 'claude',
+        process: 'pending',
+        appliedRevision: null,
+      }),
+    ]);
+    expect(result.credentialPresent).toBe(false);
+    expect(stdout()).not.toContain('private instructions');
+  });
+
+  it('reports an enrolled controller before its first assignment', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveSecretStoreKind('file');
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      name: 'build-box',
+      server: 'https://switch.example.com',
+      enrolledAt: '2026-01-01',
+    });
+    store.close();
+    expect(await main(['status', '--data-dir', dir, '--json'])).toBe(EXIT_OK);
+    expect(JSON.parse(stdout())).toMatchObject({
+      identity: { controllerId: 'controller-1' },
+      assignment: { kind: 'none' },
+      agents: [],
+    });
+  });
+
+  it('keeps normal status output plain when piped', async () => {
+    vi.stubEnv('NO_COLOR', '1');
+    expect(await main(['status', '--data-dir', dir])).toBe(EXIT_FAILURE);
+    expect(stdout()).toContain('Not enrolled');
+    expect(stdout()).not.toContain('\x1b[');
+  });
+
+  it.each(['ok', 'fail'] as const)(
+    'writes doctor JSON and preserves its %s exit code',
+    async (status) => {
+      vi.spyOn(doctor, 'runDoctor').mockResolvedValue([
+        { name: 'Example', status, detail: 'Example result' },
+      ]);
+      expect(await main(['doctor', '--data-dir', dir, '--json'])).toBe(
+        status === 'fail' ? EXIT_FAILURE : EXIT_OK
+      );
+      expect(JSON.parse(stdout())).toEqual({
+        checks: [{ name: 'Example', status, detail: 'Example result' }],
+      });
+    }
+  );
+
   it('exits 2 for arguments it cannot run with, and says why last', async () => {
     expect(await main(['launch'])).toBe(EXIT_CONFIGURATION);
     expect(lastLine()).toBe("switch-agent-controller: Unknown command 'launch'.");
