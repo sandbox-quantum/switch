@@ -1348,11 +1348,13 @@ async def test_rotating_the_secret_remakes_subscriptions_made_under_the_old_one(
                     "id": "OLD-KEY",
                     "resource": f"teams/t/channels/{CHANNEL}/messages",
                     "notificationUrl": stale,
+                    "changeType": "created,updated,deleted",
                 },
                 {
                     "id": "CURRENT",
                     "resource": "teams/t/channels/19:other@thread.tacv2/messages",
                     "notificationUrl": current,
+                    "changeType": "created,updated,deleted",
                 },
             ]
 
@@ -1496,6 +1498,7 @@ class _SubscribingGraph:
                 "id": sub_id,
                 "resource": kwargs["resource"],
                 "notificationUrl": kwargs["notification_url"],
+                "changeType": "created,updated,deleted",
             }
         )
         return {"id": sub_id}
@@ -1549,6 +1552,7 @@ async def test_a_subscription_seen_once_listing_works_is_adopted_not_remade() ->
                 "id": "LIVE",
                 "resource": f"teams/team-1/channels/{CHANNEL}/messages",
                 "notificationUrl": adapter._me.notification_url,
+                "changeType": "created,updated,deleted",
             }
         ],
     )
@@ -1623,6 +1627,7 @@ async def test_a_notification_before_the_subscriptions_could_be_read_reads_them(
                 "id": "LIVE",
                 "resource": f"teams/team-1/channels/{CHANNEL}/messages",
                 "notificationUrl": adapter._me.notification_url,
+                "changeType": "created,updated,deleted",
             }
         ],
     )
@@ -1733,6 +1738,7 @@ async def test_a_subscription_left_in_a_team_switch_is_out_of_is_deleted() -> No
                 "id": "LEFT",
                 "resource": f"teams/team-2/channels/{CHANNEL}/messages",
                 "notificationUrl": adapter._me.notification_url,
+                "changeType": "created,updated,deleted",
             }
         ],
     )
@@ -1811,6 +1817,7 @@ async def test_leaving_the_default_team_leaves_channels_known_to_be_elsewhere() 
                 "id": "ADOPTED",
                 "resource": f"teams/team-2/channels/{adopted}/messages",
                 "notificationUrl": adapter._me.notification_url,
+                "changeType": "created,updated,deleted",
             }
         ],
     )

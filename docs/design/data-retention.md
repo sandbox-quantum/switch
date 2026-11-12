@@ -127,6 +127,7 @@ What each platform reports:
 | Slack | `message_deleted`; a thread root left as a `tombstone` | `message_changed` whose words changed | `channel_deleted`, `group_deleted` | `channel_archive`, `group_archive` |
 | Mattermost | `post_deleted` | `post_edited` | `channel_deleted`, when the channel is gone | `channel_deleted`, when the channel is still there |
 | Discord | a message deleted, one or in bulk | a message edit whose words changed | a channel deleted; a thread deleted, for a room bound to it | none (a thread archiving itself is not followed) |
+| Microsoft Teams | Graph `deleted`, or `updated` with `deletedDateTime`; Bot Framework `messageDelete` | Graph `updated` with `lastEditedDateTime`; Bot Framework `messageUpdate` (`editMessage`) | Bot Framework `conversationUpdate` `channelDeleted` | none |
 | Telegram | never reported to a bot | `edited_message`, `edited_channel_post` | never reported to a bot | none |
 
 Not followed:
@@ -137,7 +138,9 @@ Not followed:
 - **A deleted Discord thread's posts.** A Discord thread is a thread of its
   parent channel's room, and Discord sends no deletion for each of its posts,
   so they stay in the room.
-- **Microsoft Teams**, not yet.
+- **Microsoft Teams chats** are followed only through Bot Framework, for
+  chats the bot is in; Graph subscribes to channels alone. An archived or
+  deleted team is not followed.
 - **What a reader already has.** Switch Console keeps showing a deleted or
   edited message until it reads the room again; nothing tells it to yet. An
   agent keeps what it received in its own transcript, on a machine Switch

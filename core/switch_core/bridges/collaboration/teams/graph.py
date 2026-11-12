@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 _GRAPH_HOST = urlsplit(GRAPH_BASE).hostname
+# What a channel-message subscription is notified of.
+SUBSCRIPTION_CHANGE_TYPES = "created,updated,deleted"
 # How old our token must be before an authorization refusal is worth re-minting
 # it for. A token issued seconds ago cannot have missed a grant.
 _TOKEN_RETRY_AGE = 30.0
@@ -186,12 +188,17 @@ class GraphClient:
     ) -> dict[str, Any]:
         """Create a change-notification subscription with resource data.
 
+        Asks for `SUBSCRIPTION_CHANGE_TYPES`: a deleted or edited post is
+        followed in the room as well as a new one captured. Graph cannot change
+        a subscription's change types afterwards; see
+        `TeamsAdapter._adopt_existing_subscriptions`.
+
         Channel-message subscriptions must include an encryption certificate
         (Graph encrypts the message body) and, because their lifetime exceeds an
         hour's worth of renewals, a lifecycle notification URL.
         """
         body = {
-            "changeType": "created,updated",
+            "changeType": SUBSCRIPTION_CHANGE_TYPES,
             "notificationUrl": notification_url,
             "lifecycleNotificationUrl": lifecycle_notification_url,
             "resource": resource,
