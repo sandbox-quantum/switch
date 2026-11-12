@@ -133,7 +133,12 @@ export default function UsersPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
-        <Typography variant="h5">Users</Typography>
+        <Stack spacing={0.5}>
+          <Typography variant="h5">Users</Typography>
+          <Typography variant="body2" sx={{ color: "text.secondary" }}>
+            Every account, whichever workspaces it is in.
+          </Typography>
+        </Stack>
         <Button
           variant="contained"
           startIcon={<AddCircleOutline />}
@@ -181,8 +186,8 @@ export default function UsersPage() {
         description={
           signingOut && (
             <>
-              Every session {signingOut.name} ({signingOut.email}) has ends now, Switch Console's
-              included, and they have to sign in again. Their password stays as it is: if the
+              {signingOut.name} ({signingOut.email}) is signed out everywhere at once, Switch
+              Console included, and has to sign in again. Their password doesn't change: if the
               account looks taken over, ask them to change it too.
             </>
           )
