@@ -53,6 +53,7 @@ vi.mock('@renderer/lib/telemetry/report', () => ({ report: vi.fn() }));
 
 import { MeetBuddyPage } from '@renderer/features/switch-buddy/meet-buddy-page';
 import '@renderer/index.css';
+import { agentProviders } from '@shared/core/providers/agent-provider-registry';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -136,13 +137,7 @@ describe('MeetBuddyPage', () => {
   });
 
   it('offers to set one up, or skip, when none is ready', async () => {
-    state.computer = machine(
-      signedOut('claude'),
-      signedOut('codex'),
-      signedOut('opencode'),
-      signedOut('cursor'),
-      signedOut('antigravity')
-    );
+    state.computer = machine(...agentProviders().map((provider) => signedOut(provider.id)));
     await render();
     expect(buttons()).toEqual(['Skip', 'Set up AI provider']);
   });
