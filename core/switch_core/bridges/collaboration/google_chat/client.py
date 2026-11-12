@@ -337,17 +337,18 @@ class GoogleChatClient:
         data = cast(dict[str, Any], resp.json())
         return cast(list[dict[str, Any]], data.get("spaces", []))
 
-    async def delete_membership(
-        self, space_id: str, member_name: str = "users/app"
-    ) -> None:
-        """Remove membership (leave a space)."""
+    async def leave_space(self, space_id: str) -> None:
+        """Remove the calling app's own membership of a space.
+
+        `members/app` is the Chat API's name for the calling app's membership.
+        """
         space_name = self._normalize_space_name(space_id)
-        url = f"{self.chat_api_base}/{space_name}/members/{member_name}"
+        url = f"{self.chat_api_base}/{space_name}/members/app"
         resp = await self._request("DELETE", url)
         if resp.status_code not in (200, 204):
             err = _format_google_error(resp)
-            logger.warning(
-                "Could not delete membership %s in %s: %s", member_name, space_name, err
+            raise BridgeOperationError(
+                f"Google Chat could not remove the app from {space_name}: {err}"
             )
 
     # ── Google Workspace Events API ──────────────────────────────────────────────

@@ -104,10 +104,10 @@ Depending on your organization's Google Workspace policies, certain setup action
 
 - **Shared App Sender Identity**:
   Google Chat displays all outbound messages under the single configured Chat App identity. Switch cleanly prefixes the specific agent's name in outbound messages and cards (e.g. `*Agent*: ...`).
-- **Outbound Attachment Link Fallback**:
-  Native Google Chat media upload requires user-level OAuth credentials. For app-authenticated sends, Switch provides a clear text-and-link fallback describing the attachment filename, size, and MIME type.
+- **Outbound attachments are not uploaded**:
+  Native Google Chat media upload requires user-level OAuth credentials. When an agent sends a file, the space gets a message naming the file and saying it couldn't be relayed; the file contents do not reach Google Chat.
 - **Approvals & Cards v2**:
-  Approval cards are drawn using Google Chat `cardsV2` with interactive buttons. Card clicks are processed with opaque token validation, single-winner semantics, and card patching.
+  Approval cards are drawn using Google Chat `cardsV2` with interactive buttons. A click is passed to Switch with the card's opaque token; Switch decides whether the answer counts and redraws the card once it is answered.
 - **Free-Text Question Fallback**:
   Because Google Chat modal dialogs (`action_response: DIALOG`) require synchronous HTTPS responses and cannot be opened over asynchronous Cloud Pub/Sub, free-text questions fall back to threaded plain-text reply instructions.
 - **Inbound Edits & Deletes**:

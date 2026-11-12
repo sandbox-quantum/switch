@@ -154,31 +154,56 @@ def split_message_chunks(
     return chunks
 
 
+def is_app_user(user: dict[str, Any]) -> bool:
+    """Whether a Chat API user is an app rather than a person."""
+    return user.get("type") == "BOT" or user.get("name") == "users/app"
+
+
+def bot_mention_annotations(
+    annotations: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """The USER_MENTION annotations that point at an app."""
+    return [
+        ann
+        for ann in annotations or []
+        if ann.get("type") == "USER_MENTION"
+        and is_app_user(ann.get("userMention", {}).get("user", {}))
+    ]
+
+
 def strip_bot_mention(
     text: str,
-    argument_text: str | None = None,
-    annotations: list[dict[str, Any]] | None = None,
+    argument_text: str | None,
+    annotations: list[dict[str, Any]] | None,
 ) -> str:
-    """Extract message body with bot mention stripped while preserving @agent routing."""
+    """The message body without the app's own @mention.
+
+    Google computes `argumentText` for messages addressed to the app, so it is
+    used when present. Otherwise only the spans the annotations identify as an
+    app mention are cut; any other `@name` in the text is left for routing.
+    """
     if argument_text is not None and argument_text.strip():
         return argument_text.strip()
-
     if not text:
         return ""
 
-    result = text
-    # Strip user mention annotations if present
-    if annotations:
-        for ann in annotations:
-            if ann.get("type") == "USER_MENTION":
-                mention_data = ann.get("userMention", {})
-                user_info = mention_data.get("user", {})
-                # Bot mentions typically have type BOT or users/app
-                if user_info.get("type") == "BOT" or "app" in user_info.get("name", ""):
-                    disp_name = user_info.get("displayName")
-                    if disp_name:
-                        result = re.sub(rf"@?{re.escape(disp_name)}\b", "", result)
+    spans: list[tuple[int, int]] = []
+    for ann in bot_mention_annotations(annotations):
+        start = ann.get("startIndex")
+        length = ann.get("length")
+        if isinstance(start, int) and isinstance(length, int):
+            spans.append((start, start + length))
+            continue
+        name = ann.get("userMention", {}).get("user", {}).get("displayName")
+        if name:
+            found = re.search(rf"@{re.escape(name)}(?![\w-])", text)
+            if found:
+                spans.append(found.span())
 
-    # Generic clean-up of leading @-mention of the bot
-    result = re.sub(r"^@\w+\s*", "", result)
+    result = text
+    for start, end in sorted(set(spans), reverse=True):
+        head, tail = result[:start], result[end:]
+        if head.endswith(" ") and tail.startswith(" "):
+            tail = tail[1:]
+        result = head + tail
     return result.strip()

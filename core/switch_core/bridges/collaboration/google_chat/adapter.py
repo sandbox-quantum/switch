@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import httpx
@@ -27,7 +27,10 @@ from switch_core.bridges.collaboration.google_chat.cards import (
     render_turn_activity_card,
 )
 from switch_core.bridges.collaboration.google_chat.client import GoogleChatClient
-from switch_core.bridges.collaboration.google_chat.consumer import InboundConsumer
+from switch_core.bridges.collaboration.google_chat.consumer import (
+    InboundConsumer,
+    channel_type_of_space,
+)
 from switch_core.bridges.collaboration.google_chat.formatting import (
     markdown_to_google_chat,
     split_message_chunks,
@@ -42,13 +45,13 @@ from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelRetirement,
     ChannelType,
+    CreatedChannel,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
     InboundCommand,
     InboundMessage,
     InboundUserJoin,
-    OutboundAttachment,
     RetireOutcome,
 )
 
@@ -293,7 +296,6 @@ class GoogleChatAdapter(PlatformAdapter):
         thread_root_id: str | None = None,
         *,
         room_wide_mention: bool = False,
-        attachments: Sequence[OutboundAttachment] | None = None,
     ) -> str | None:
         # Outbound Agent Presentation: prefix agent's name cleanly
         body_text = content
@@ -301,17 +303,6 @@ class GoogleChatAdapter(PlatformAdapter):
             body_text = f"*{sender_name}*: {content}"
 
         formatted = self._render_outbound(body_text)
-
-        # Maintainer-approved outbound attachment text-and-link fallback
-        if attachments:
-            att_lines = ["\n\n*Attachments:*"]
-            for att in attachments:
-                size_kb = len(att.data) / 1024
-                att_lines.append(
-                    f"- `{att.filename}` ({size_kb:.1f} KB, {att.mimetype})"
-                )
-            formatted += "\n".join(att_lines)
-
         chunks = split_message_chunks(formatted)
         first_ref: str | None = None
 
@@ -417,19 +408,15 @@ class GoogleChatAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         raise ChannelCreationUnsupported(
             "Google Chat app-authenticated bot cannot create spaces directly."
         )
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
-        try:
-            space = await self.client.get_space(channel_id)
-            if space.get("type") == "DM" or space.get("singleUserBotDm"):
-                return "direct"
-            return "channel_public"
-        except Exception:
-            return "channel_public"
+        space = await self.client.get_space(channel_id)
+        return channel_type_of_space(space) or "channel_public"
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]
@@ -455,7 +442,7 @@ class GoogleChatAdapter(PlatformAdapter):
 
     async def retire_channel(self, channel_id: str) -> RetireOutcome:
         try:
-            await self.client.delete_membership(channel_id, member_name="users/app")
+            await self.client.leave_space(channel_id)
             return RetireOutcome(outcome="left")
         except Exception as exc:
             return RetireOutcome.failed(f"Failed to leave Google Chat space: {exc}")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
@@ -219,50 +218,3 @@ def render_request_card(
         "cardId": f"req-{req.request_id}",
         "card": card_body,
     }
-
-
-def render_settled_approval_card(
-    original_cards: list[dict[str, Any]] | None,
-    decision_label: str,
-    actor_name: str | None = None,
-) -> list[dict[str, Any]]:
-    """Update existing card to remove interactive buttons and show settled status."""
-    who = f" by {actor_name}" if actor_name else ""
-    status_msg = f"*{decision_label}*{who}"
-
-    card_id = f"settled-{uuid.uuid4().hex[:8]}"
-    if original_cards and original_cards[0].get("cardId"):
-        card_id = original_cards[0]["cardId"]
-
-    header = {"title": "Request Resolved", "subtitle": status_msg}
-    if (
-        original_cards
-        and "card" in original_cards[0]
-        and "header" in original_cards[0]["card"]
-    ):
-        orig_header = original_cards[0]["card"]["header"]
-        header["title"] = orig_header.get("title", "Request Resolved")
-        header["subtitle"] = status_msg
-        if "imageUrl" in orig_header:
-            header["imageUrl"] = orig_header["imageUrl"]
-            header["imageType"] = "CIRCLE"
-
-    return [
-        {
-            "cardId": card_id,
-            "card": {
-                "header": header,
-                "sections": [
-                    {
-                        "widgets": [
-                            {
-                                "textParagraph": {
-                                    "text": f"This request was marked as {status_msg}."
-                                }
-                            }
-                        ]
-                    }
-                ],
-            },
-        }
-    ]

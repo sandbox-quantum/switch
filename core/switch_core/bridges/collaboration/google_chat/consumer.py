@@ -8,11 +8,10 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from switch_core.bridges.collaboration.google_chat.cards import (
-    render_settled_approval_card,
-)
 from switch_core.bridges.collaboration.google_chat.client import GoogleChatClient
 from switch_core.bridges.collaboration.google_chat.formatting import (
+    bot_mention_annotations,
+    is_app_user,
     strip_bot_mention,
 )
 from switch_core.bridges.collaboration.google_chat.subscriptions import (
@@ -37,12 +36,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Deduplication cache expiration: 10 minutes
+# How long the in-memory dedupe (used only without a database) remembers a key.
 DEDUPE_TTL_SECONDS = 600
-# Periodic ack deadline extension interval: 20 seconds
-ACK_EXTENSION_INTERVAL = 20
-# Deadline extension amount: 60 seconds
+# Every pulled message has its deadline pushed out to this as soon as the batch
+# arrives, and again every ACK_EXTENSION_INTERVAL while it waits or is handled,
+# so the subscription's own ack deadline (10s by default) never decides it.
 ACK_DEADLINE_EXTENSION_SECONDS = 60
+ACK_EXTENSION_INTERVAL = 20
+
+
+def channel_type_of_space(space: dict[str, Any]) -> ChannelType | None:
+    """The bridge's channel type for a Chat API space, or None when the payload
+    does not say what kind of space it is."""
+    if space.get("singleUserBotDm"):
+        return "direct"
+    kind = space.get("spaceType") or space.get("type")
+    if kind is None:
+        return None
+    if kind in ("DIRECT_MESSAGE", "DM"):
+        return "direct"
+    return "channel_public"
 
 
 class InboundConsumer:
@@ -84,9 +97,6 @@ class InboundConsumer:
 
         # Deduplication cache: key -> timestamp (used as fallback when no session_factory)
         self._seen_events: dict[str, float] = {}
-        # Single-winner / resolved interaction tokens
-        self._resolved_tokens: set[str] = set()
-        self._lock = asyncio.Lock()
 
         # Database event receipt store for horizontal multi-pod deduplication
         self.receipt_store = MessagingEventReceiptStore()
@@ -164,36 +174,31 @@ class InboundConsumer:
         return False
 
     async def _claim_event(self, dedupe_key: str) -> tuple[bool, str | None]:
-        """Claim an event for processing via MessagingEventReceiptStore or in-memory fallback.
+        """Claim an event for processing, returning (claimed, receipt_id).
 
-        Returns (claimed, receipt_id). If claimed is False, another pod/worker has already taken
-        the event, and the caller should ack and drop it immediately.
+        The receipt key carries the bridge id: the receipts' unique index is per
+        tenant and platform, and two Google Chat bridges in one tenant can both
+        see the same message. Without a database (unit tests) an in-memory set
+        stands in. A database error propagates, so the Pub/Sub message is left
+        unacked and redelivered.
         """
-        if self.session_factory and self.tenant_id:
-            try:
-                async with tenant_session(
-                    self.session_factory, self.tenant_id
-                ) as session:
-                    receipt = await self.receipt_store.claim(
-                        session,
-                        platform="google_chat",
-                        external_event_id=dedupe_key,
-                    )
-                    if receipt is None:
-                        return False, None
-                    receipt_id = receipt.id
-                    # Commit immediately to release the unique index lock
-                    await session.commit()
-                    return True, receipt_id
-            except Exception as exc:
-                logger.warning(
-                    "Error claiming event %s via receipt store: %s",
-                    dedupe_key,
-                    exc,
-                )
-                return not self._is_duplicate_and_mark(dedupe_key), None
-
-        return not self._is_duplicate_and_mark(dedupe_key), None
+        if self.session_factory is None or self.tenant_id is None:
+            return not self._is_duplicate_and_mark(dedupe_key), None
+        if self.bridge_id is None:
+            raise RuntimeError(
+                "Google Chat consumer has a database but no bridge id to scope its receipts."
+            )
+        async with tenant_session(self.session_factory, self.tenant_id) as session:
+            receipt = await self.receipt_store.claim(
+                session,
+                platform="google_chat",
+                external_event_id=f"{self.bridge_id}:{dedupe_key}",
+            )
+            if receipt is None:
+                return False, None
+            receipt_id = receipt.id
+            await session.commit()
+            return True, receipt_id
 
     async def _mark_handled(self, receipt_id: str | None) -> None:
         """Mark claimed event handled in the database and prune expired receipts."""
@@ -209,6 +214,35 @@ class InboundConsumer:
                     await session.commit()
             except Exception as exc:
                 logger.warning("Failed to mark receipt %s handled: %s", receipt_id, exc)
+
+    async def _handle_claimed(
+        self, dedupe_key: str, work: Callable[[], Awaitable[None]]
+    ) -> bool:
+        """Claim `dedupe_key`, then run `work` once.
+
+        A claim is final (receipts are at-most-once): a redelivery after a
+        failed handler would find the claim taken and be dropped anyway. So a
+        handler failure is logged as an error and the message acked, and its
+        receipt stays unhandled, which is how a lost event shows up in the
+        receipts table. Failures before the claim leave the message unacked
+        so Pub/Sub redelivers it.
+        """
+        claimed, receipt_id = await self._claim_event(dedupe_key)
+        if not claimed:
+            logger.debug("Duplicate Google Chat event %s dropped.", dedupe_key)
+            return True
+        try:
+            await work()
+        except Exception:
+            logger.error(
+                "Google Chat event %s failed after it was claimed; it will not be "
+                "retried.",
+                dedupe_key,
+                exc_info=True,
+            )
+            return True
+        await self._mark_handled(receipt_id)
+        return True
 
     async def _ack_extender_loop(self) -> None:
         """Periodically extend ack deadline for in-flight slow turn messages."""
@@ -226,7 +260,7 @@ class InboundConsumer:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.debug("Error extending Pub/Sub ack deadlines: %s", exc)
+                logger.warning("Error extending Pub/Sub ack deadlines: %s", exc)
 
     async def _pull_loop(self) -> None:
         """Background pull loop."""
@@ -254,12 +288,27 @@ class InboundConsumer:
                     break
                 continue
 
-            for msg_item in messages:
-                ack_id = msg_item.get("ackId")
-                if not ack_id:
-                    continue
-                # Process message with ack-after-write
-                self._inflight_ack_ids.add(ack_id)
+            batch = [m for m in messages if m.get("ackId")]
+            batch_ack_ids = [m["ackId"] for m in batch]
+            self._inflight_ack_ids.update(batch_ack_ids)
+            try:
+                await self.client.modify_ack_deadline(
+                    self.project_id,
+                    self.subscription_id,
+                    batch_ack_ids,
+                    ack_deadline_seconds=ACK_DEADLINE_EXTENSION_SECONDS,
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning(
+                    "Could not extend the ack deadline of a pulled batch; some "
+                    "messages may be redelivered: %s",
+                    exc,
+                )
+
+            for msg_item in batch:
+                ack_id = msg_item["ackId"]
                 try:
                     await self._process_single_pubsub_message(
                         ack_id, msg_item.get("message", {})
@@ -277,7 +326,7 @@ class InboundConsumer:
     async def _process_single_pubsub_message(
         self, ack_id: str, message_data: dict[str, Any]
     ) -> None:
-        """Process a single Pub/Sub envelope and ack ONLY AFTER successful write."""
+        """Process one Pub/Sub envelope; ack it unless it should be redelivered."""
         raw_b64 = message_data.get("data", "")
         attributes = message_data.get("attributes", {})
         message_id = message_data.get("messageId", "")
@@ -314,7 +363,6 @@ class InboundConsumer:
             logger.error("Error dispatching Pub/Sub event: %s", exc, exc_info=True)
             success = False
 
-        # Ack-after-write: Ack ONLY if the durable room/transport write succeeded
         if success:
             await self.client.acknowledge_pubsub_messages(
                 self.project_id, self.subscription_id, [ack_id]
@@ -331,11 +379,7 @@ class InboundConsumer:
         if not space_name:
             return True
 
-        channel_type: ChannelType = (
-            "direct"
-            if space.get("type") == "DM" or space.get("singleUserBotDm")
-            else "channel_public"
-        )
+        channel_type = channel_type_of_space(space) or "channel_public"
         space_display_name = space.get("displayName")
 
         if event_type == "ADDED_TO_SPACE":
@@ -359,7 +403,7 @@ class InboundConsumer:
             return True
 
         if event_type == "CARD_CLICKED":
-            return await self._handle_card_clicked(payload, space_name)
+            return await self._handle_card_clicked(payload, space_name, event_id)
 
         if event_type == "MESSAGE":
             return await self._handle_chat_message_event(
@@ -380,66 +424,45 @@ class InboundConsumer:
         return True
 
     async def _handle_card_clicked(
-        self, payload: dict[str, Any], space_name: str
+        self, payload: dict[str, Any], space_name: str, event_id: str
     ) -> bool:
+        """Hand a button press to core.
+
+        Core decides what the press means and whether it counts, and redraws
+        the card through `update_rich` when it does. Nothing is settled here:
+        a refused press, or the turn's Stop button, must leave the card as it
+        is. The claim is on the Pub/Sub message, so only a redelivery of the
+        same press is dropped.
+        """
         action = payload.get("action", {})
         params = {p.get("key"): p.get("value") for p in action.get("parameters", [])}
 
         token = params.get("token") or ""
         action_id = params.get("action_id") or ""
-        message_name = payload.get("message", {}).get("name")
         user = payload.get("user", {})
-        sender_id = user.get("name", "")
-        sender_name = user.get("displayName", "User")
 
         if not action_id or not token:
             logger.warning("CARD_CLICKED event missing action_id or token: %r", params)
             return True
-
-        # Replay protection / single-winner semantics across pods
-        claimed, receipt_id = await self._claim_event(f"card:{token}")
-        if not claimed or token in self._resolved_tokens:
-            logger.info(
-                "Card action for token %s already resolved; ignoring duplicate click.",
-                token,
+        if self.on_interaction is None:
+            logger.warning(
+                "A press on a Switch card in %s has nowhere to go: this bridge "
+                "handles no interactions.",
+                space_name,
             )
             return True
-
-        if self.on_interaction:
-            await self.on_interaction(
-                InboundInteraction(
-                    channel_id=space_name,
-                    sender_id=sender_id,
-                    sender_name=sender_name,
-                    action_id=action_id,
-                    value=token,
-                    message_ref=message_name,
-                )
-            )
-
-        # Mark token as resolved
-        self._resolved_tokens.add(token)
-
-        # Patch the card to reflect the decision and disable buttons
-        if message_name:
-            try:
-                settled_cards = render_settled_approval_card(
-                    payload.get("message", {}).get("cardsV2"),
-                    decision_label="Decision Recorded",
-                    actor_name=sender_name,
-                )
-                await self.client.patch_message(
-                    message_name,
-                    cards_v2=settled_cards,
-                    update_mask="cards_v2",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Could not patch settled card on %s: %s", message_name, exc
-                )
-
-        await self._mark_handled(receipt_id)
-        return True
+        on_interaction = self.on_interaction
+        interaction = InboundInteraction(
+            channel_id=space_name,
+            sender_id=user.get("name", ""),
+            sender_name=user.get("displayName", "User"),
+            action_id=action_id,
+            value=token,
+            message_ref=payload.get("message", {}).get("name"),
+        )
+        return await self._handle_claimed(
+            f"click:{event_id}", lambda: on_interaction(interaction)
+        )
 
     async def _handle_slash_command(
         self,
@@ -454,7 +477,11 @@ class InboundConsumer:
         cmd_id = str(cmd_meta.get("appCommandId") or "")
 
         cmd_name = self.slash_command_map.get(cmd_id) or f"command_{cmd_id}"
-        args = strip_bot_mention(message.get("text", ""), message.get("argumentText"))
+        args = strip_bot_mention(
+            message.get("text", ""),
+            message.get("argumentText"),
+            message.get("annotations"),
+        )
 
         if self.on_command:
             await self.on_command(
@@ -484,61 +511,58 @@ class InboundConsumer:
         message_name = message.get("name", "")
         if not message_name:
             return True
+        # Keyed by message name, shared with `message.v1.created`: an @mention
+        # arrives both ways, and whichever is claimed first is the one handled.
+        return await self._handle_claimed(
+            message_name,
+            lambda: self._dispatch_message(
+                message, space_name, channel_type, space_display_name
+            ),
+        )
 
-        # Deduplicate across @mention interaction events and Workspace message.v1.created CloudEvents
-        # Claim Pub/Sub messages through MessagingEventReceiptStore, keyed by message name.
-        claimed, receipt_id = await self._claim_event(message_name)
-        if not claimed:
-            logger.debug("Duplicate message event %s dropped.", message_name)
-            return True
+    async def _dispatch_message(
+        self,
+        message: dict[str, Any],
+        space_name: str,
+        channel_type: ChannelType,
+        space_display_name: str | None,
+    ) -> None:
+        """Turn a Chat API message into a command or an inbound message.
 
+        Both the interaction path and the Workspace Events path come through
+        here, so a message is read the same way whichever delivery wins.
+        """
+        message_name = message.get("name", "")
         sender = message.get("sender", {})
-        if sender.get("type") == "BOT" or "app" in sender.get("name", ""):
-            # Ignore messages posted by our bot
-            await self._mark_handled(receipt_id)
-            return True
+        if is_app_user(sender):
+            return
 
         raw_text = message.get("text", "")
-        argument_text = message.get("argumentText")
         annotations = message.get("annotations", [])
         thread_name = message.get("thread", {}).get("name")
+        self_mentioned = bool(bot_mention_annotations(annotations))
+        clean_text = strip_bot_mention(
+            raw_text, message.get("argumentText"), annotations
+        )
 
-        # Determine self-mention
-        self_mentioned = False
-        for ann in annotations:
-            if ann.get("type") == "USER_MENTION":
-                mention_user = ann.get("userMention", {}).get("user", {})
-                if mention_user.get("type") == "BOT" or "app" in mention_user.get(
-                    "name", ""
-                ):
-                    self_mentioned = True
-                    break
-
-        clean_text = strip_bot_mention(raw_text, argument_text, annotations)
-
-        # Parse !command
         if clean_text.startswith("!"):
             parts = clean_text[1:].split(maxsplit=1)
-            cmd = parts[0]
-            cmd_args = parts[1] if len(parts) > 1 else ""
-            if self.on_command:
+            if self.on_command and parts:
                 await self.on_command(
                     InboundCommand(
                         channel_id=space_name,
                         channel_type=channel_type,
                         sender_id=sender.get("name", ""),
                         sender_name=sender.get("displayName", "User"),
-                        command=cmd,
-                        args=cmd_args,
+                        command=parts[0],
+                        args=parts[1] if len(parts) > 1 else "",
                         message_ref=message_name,
                         root_id=thread_name,
                         channel_name=space_display_name,
                     )
                 )
-            await self._mark_handled(receipt_id)
-            return True
+            return
 
-        # Handle attachments
         inbound_attachments: list[Attachment] = []
         attachment_failures: list[AttachmentFailure] = []
 
@@ -574,7 +598,6 @@ class InboundConsumer:
                         )
                     )
             elif drive_ref.get("driveFileId"):
-                # Drive-linked file fallback
                 drive_id = drive_ref["driveFileId"]
                 drive_link = f"https://drive.google.com/open?id={drive_id}"
                 clean_text += (
@@ -598,9 +621,6 @@ class InboundConsumer:
                 )
             )
 
-        await self._mark_handled(receipt_id)
-        return True
-
     # ── Google Workspace Events (CloudEvents) ────────────────────────────────────
 
     async def _handle_cloud_event(
@@ -612,115 +632,80 @@ class InboundConsumer:
         ce_type = attributes.get("ce-type") or payload.get("type", "")
         ce_id = attributes.get("ce-id") or payload.get("id") or event_id
 
-        # Deduplicate non-message CloudEvents on CloudEvent ID
-        ce_receipt_id: str | None = None
-        if ce_type != "google.workspace.chat.message.v1.created" and ce_id:
-            claimed, ce_receipt_id = await self._claim_event(f"ce:{ce_id}")
-            if not claimed:
-                logger.debug("Duplicate CloudEvent %s dropped.", ce_id)
-                return True
-
         data = payload.get("data", {})
         if not data and "message" in payload:
             data = payload
 
         if ce_type == "google.workspace.chat.message.v1.created":
-            return await self._handle_workspace_message_created(data, ce_id)
+            return await self._handle_workspace_message_created(data)
 
         if ce_type in (
             "google.workspace.chat.message.v1.updated",
             "google.workspace.chat.message.v1.deleted",
         ):
-            # Inbound edits/deletes are unsupported per maintainer instructions (Issue #804 has not landed)
-            logger.debug(
-                "Inbound edit/delete CloudEvent (%s) ignored: core #804 not landed.",
-                ce_type,
-            )
-            await self._mark_handled(ce_receipt_id)
+            logger.debug("Inbound edit/delete CloudEvent (%s) ignored.", ce_type)
             return True
 
         if ce_type == "google.workspace.chat.membership.v1.created":
-            res = await self._handle_workspace_membership_created(data)
-            await self._mark_handled(ce_receipt_id)
-            return res
+            return await self._handle_claimed(
+                f"ce:{ce_id}",
+                lambda: self._handle_workspace_membership_created(data),
+            )
 
         logger.debug("Unhandled Workspace CloudEvent: %s", ce_type)
-        await self._mark_handled(ce_receipt_id)
         return True
 
-    async def _handle_workspace_message_created(
-        self, data: dict[str, Any], event_id: str
-    ) -> bool:
+    async def _handle_workspace_message_created(self, data: dict[str, Any]) -> bool:
         message = data.get("message", {})
         message_name = message.get("name", "")
 
-        # If resource payload was not included (resource-name-only notification), fetch message
+        # A resource-name-only notification carries no message body.
         if not message.get("text") and message_name:
             try:
                 message = await self.client.get_message(message_name)
             except Exception as exc:
                 logger.warning(
-                    "Failed to fetch message for CloudEvent (%s): %s", message_name, exc
+                    "Failed to fetch message for CloudEvent (%s), leaving it for "
+                    "redelivery: %s",
+                    message_name,
+                    exc,
                 )
-                return True
+                return False
 
         if not message_name:
             message_name = message.get("name", "")
         if not message_name:
             return True
 
-        # Check deduplication on message resource name
-        # Claim Pub/Sub messages through MessagingEventReceiptStore, keyed by message name.
-        claimed, receipt_id = await self._claim_event(message_name)
-        if not claimed:
-            logger.debug("Duplicate message resource %s dropped.", message_name)
-            return True
-
-        space_name = data.get("space", {}).get("name") or message.get("space", {}).get(
-            "name"
-        )
+        space = data.get("space") or message.get("space") or {}
+        space_name = space.get("name")
         if not space_name and "/" in message_name:
-            # Extract space from message name: spaces/{space}/messages/{msg}
             space_name = "/".join(message_name.split("/")[:2])
-
         if not space_name:
-            await self._mark_handled(receipt_id)
             return True
 
-        sender = message.get("sender", {})
-        if sender.get("type") == "BOT" or "app" in sender.get("name", ""):
-            await self._mark_handled(receipt_id)
-            return True
+        channel_type = channel_type_of_space(space)
+        if channel_type is None:
+            space = await self.client.get_space(space_name)
+            channel_type = channel_type_of_space(space) or "channel_public"
+        resolved_type: ChannelType = channel_type
+        space_display_name = space.get("displayName")
 
-        raw_text = message.get("text", "")
-        clean_text = strip_bot_mention(raw_text, message.get("argumentText"))
-        thread_name = message.get("thread", {}).get("name")
+        return await self._handle_claimed(
+            message_name,
+            lambda: self._dispatch_message(
+                message, space_name, resolved_type, space_display_name
+            ),
+        )
 
-        if self.on_message:
-            await self.on_message(
-                InboundMessage(
-                    channel_id=space_name,
-                    channel_type="channel_public",
-                    sender_id=sender.get("name", ""),
-                    sender_name=sender.get("displayName", "User"),
-                    content=clean_text,
-                    message_ref=message_name,
-                    root_id=thread_name,
-                )
-            )
-
-        await self._mark_handled(receipt_id)
-        return True
-
-    async def _handle_workspace_membership_created(self, data: dict[str, Any]) -> bool:
+    async def _handle_workspace_membership_created(self, data: dict[str, Any]) -> None:
         membership = data.get("membership", {})
         member = membership.get("member", {})
         space_name = data.get("space", {}).get("name", "")
-
         if not space_name:
-            return True
+            return
 
-        if member.get("type") == "BOT" and "app" in member.get("name", ""):
+        if member.get("name") == "users/app":
             if self.on_app_joined:
                 await self.on_app_joined(
                     InboundAppJoin(
@@ -728,15 +713,12 @@ class InboundConsumer:
                         channel_type="channel_public",
                     )
                 )
-        else:
-            if self.on_user_joined:
-                await self.on_user_joined(
-                    InboundUserJoin(
-                        channel_id=space_name,
-                        channel_type="channel_public",
-                        external_user_id=member.get("name", ""),
-                        external_username=member.get("displayName", "User"),
-                    )
+        elif self.on_user_joined:
+            await self.on_user_joined(
+                InboundUserJoin(
+                    channel_id=space_name,
+                    channel_type="channel_public",
+                    external_user_id=member.get("name", ""),
+                    external_username=member.get("displayName", "User"),
                 )
-
-        return True
+            )
