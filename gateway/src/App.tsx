@@ -1,4 +1,4 @@
-import { Alert, Box, Button, CircularProgress } from "@mui/material";
+import { Alert, Button, Stack } from "@mui/material";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
 import { appView, readPendingInvite } from "./data/sessionState";
@@ -6,52 +6,32 @@ import { DevRoleCorner } from "./layout/DevRoleSlot";
 import PageShell from "./layout/PageShell";
 import { renderRoutes } from "./routes/renderRoutes";
 import { NotFoundPage } from "./routes/StatusPages";
+import AuthLayout, { AuthLoading } from "./pages/auth/AuthLayout";
 import LoginPage from "./pages/auth/LoginPage";
 import AcceptInvitePage from "./pages/onboarding/AcceptInvitePage";
 import InviteCapture from "./pages/onboarding/InviteCapture";
 import OnboardingPage from "./pages/onboarding/OnboardingPage";
 import WorkspacePickerPage from "./pages/onboarding/WorkspacePickerPage";
 
-function FullScreen({ children }: { children: React.ReactNode }) {
-  return (
-    <Box
-      sx={{
-        display: "flex",
-        height: "100vh",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      {children}
-    </Box>
-  );
-}
-
 export function AppRoutes() {
   const { session, loading, loadError, capabilities } = useAuth();
 
-  if (loading) {
-    return (
-      <FullScreen>
-        <CircularProgress />
-      </FullScreen>
-    );
-  }
+  if (loading) return <AuthLoading />;
 
   if (loadError !== null) {
     return (
-      <FullScreen>
-        <Alert
-          severity="error"
-          action={
-            <Button color="inherit" size="small" onClick={() => window.location.reload()}>
-              Retry
-            </Button>
-          }
-        >
-          Could not load your session: {loadError}
-        </Alert>
-      </FullScreen>
+      <AuthLayout
+        title="Could not load your session"
+        subtitle="Try again in a moment."
+        footer={null}
+      >
+        <Stack spacing={2}>
+          <Alert severity="error">{loadError}</Alert>
+          <Button variant="contained" fullWidth onClick={() => window.location.reload()}>
+            Retry
+          </Button>
+        </Stack>
+      </AuthLayout>
     );
   }
 

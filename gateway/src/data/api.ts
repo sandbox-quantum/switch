@@ -1254,10 +1254,19 @@ export async function fetchMe(): Promise<UserInfo | null> {
 
 export type SignupMode = "default_tenant" | "invite_only" | "open";
 
+/** One of the sign-in buttons configured for the identity provider: `id`
+ * goes back to `/auth/oidc/login` to start that way of signing in. */
+export interface OidcLoginOption {
+  id: string;
+  label: string;
+}
+
 export interface AuthConfig {
   password_login_enabled: boolean;
   oidc_enabled: boolean;
   oidc_provider_label: string | null;
+  // Empty for one button, labelled `oidc_provider_label`.
+  oidc_login_options: OidcLoginOption[];
   signup_mode: SignupMode;
 }
 
@@ -1812,14 +1821,16 @@ export async function acceptInvitation(token: string): Promise<TenantMembership>
 }
 
 // Unauthenticated: tells the login page which methods to offer.
-export async function fetchAuthConfig(): Promise<AuthConfig | null> {
-  return fetchJson<AuthConfig>("/auth/config");
+export async function fetchAuthConfig(): Promise<AuthConfig> {
+  return jsonRequest<AuthConfig>("/auth/config", "GET");
 }
 
 // Full-page navigation (not fetch): the IdP redirect round-trip must happen
-// at the top level so cookies and the callback redirect work.
-export function oidcLoginUrl(): string {
-  return `${BASE}/auth/oidc/login`;
+// at the top level so cookies and the callback redirect work. `provider` is
+// one of the configured login options, or null for the provider's own choice.
+export function oidcLoginUrl(provider: string | null): string {
+  const query = provider === null ? "" : `?provider=${encodeURIComponent(provider)}`;
+  return `${BASE}/auth/oidc/login${query}`;
 }
 
 /** Where an admin signs in to their organization's WorkOS account, for the

@@ -23,6 +23,7 @@ import { useAuth } from "../data/AuthContext";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
 import { type Layout, type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
 import ChangePasswordDialog from "./ChangePasswordDialog";
+import SwitchLogo from "./SwitchLogo";
 import ThemeModeToggle from "./ThemeModeToggle";
 
 // The rail follows the window's height: at a laptop's it is sized so an
@@ -124,11 +125,7 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
       }}
     >
       <Tooltip title="Switch Gateway" placement="right">
-        {/* Two assets rather than one recoloured mark: the swap is done in CSS
-            off the colour-scheme attribute so there is no flash on first paint,
-            and a future coloured logo drops in without rework. The file names
-            describe the ink — `dark` is the black mark, for the light theme.
-            An image, so the name the tooltip gives it is allowed on it. */}
+        {/* An image, so the name the tooltip gives it is allowed on it. */}
         <Box
           role="img"
           sx={{
@@ -139,28 +136,7 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
             justifyContent: "center",
           }}
         >
-          <Box
-            component="img"
-            src="/switch_logo_dark.svg"
-            alt="Switch"
-            sx={{
-              width: LOGO,
-              height: LOGO,
-              '[data-mui-color-scheme="dark"] &': { display: "none" },
-            }}
-          />
-          <Box
-            component="img"
-            src="/switch_logo_light.svg"
-            alt=""
-            aria-hidden
-            sx={{
-              width: LOGO,
-              height: LOGO,
-              display: "none",
-              '[data-mui-color-scheme="dark"] &': { display: "block" },
-            }}
-          />
+          <SwitchLogo size={LOGO} />
         </Box>
       </Tooltip>
 

@@ -244,6 +244,27 @@ version of their own to them without also giving them a release of their own.
 - **The dashboard no longer claims the system is healthy.** The "System
   healthy" indicator in its top bar was hard-coded and never checked anything,
   so it is gone.
+- **The dashboard's sign-in and first screens share one look.** Signing in,
+  accepting an invitation, choosing a workspace, creating an organization, and
+  the screens shown while the session loads or when it cannot be read now sit
+  on one card with the Switch mark. The flows themselves are unchanged.
+- **One sign-in button for each configured way of signing in.** Where
+  `GATEWAY_OIDC_LOGIN_OPTIONS` lists several (Google and Microsoft, say), the
+  dashboard's sign-in page now offers a button for each, going straight to that
+  provider and carrying its mark for Google, Microsoft and GitHub, as Switch
+  Console already does. Without any, it keeps the single button. When the page
+  cannot read how sign-in is set up, it says so above the password form instead
+  of quietly offering only that.
+- **The workspace picker lists workspaces by organization.** Someone in
+  workspaces of more than one organization sees them under each organization's
+  name, in the same order as the top bar's workspace switcher.
+- **Sign-in goes straight to the identity provider when it is the only way
+  in.** With password login off and a single sign-in button, the dashboard
+  hands off to the provider's own sign-in page without showing its own first.
+  After someone signs out on purpose it waits for them to ask instead, since the
+  provider's session outlives Switch's and would sign them straight back in;
+  and if they come back from the provider still signed out, it stops and says
+  signing in didn't finish rather than sending them round again.
 - **`GATEWAY_ADMIN_PASSWORD` is optional when password login is off.** With
   `GATEWAY_PASSWORD_LOGIN_ENABLED=false` the admin account is seeded without a
   password, and the first OIDC sign-in with `GATEWAY_ADMIN_EMAIL` links to it.

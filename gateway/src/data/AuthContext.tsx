@@ -15,7 +15,7 @@ import {
 import { type Capabilities, capabilitiesOf } from "./capabilities";
 import { ALL_OFF, type FeatureFlags, GATEWAY_V2 } from "./featureFlags";
 import { landingAfterSwitch } from "./settingsLanding";
-import { clearPendingInvite } from "./sessionState";
+import { clearPendingInvite, clearSignInMarks, markSignedOut } from "./sessionState";
 
 interface AuthState {
   session: Session | null;
@@ -51,6 +51,7 @@ interface Loaded {
 async function loadAll(): Promise<Loaded> {
   const session = await fetchSession();
   if (session === null) return { session: null, tenant: null, flags: ALL_OFF };
+  clearSignInMarks();
   const [flags, tenant] = await Promise.all([
     fetchFeatureFlags(),
     session.state === "ready" ? loadCurrentTenant() : Promise.resolve(null),
@@ -156,12 +157,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // The next person to sign in on this tab must not inherit an invitation
     // they never followed.
     clearPendingInvite();
+    markSignedOut();
     await apiLogout();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
   }, []);
 
   const logoutEverywhere = useCallback(async () => {
     clearPendingInvite();
+    markSignedOut();
     await signOutEverywhere();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
   }, []);
