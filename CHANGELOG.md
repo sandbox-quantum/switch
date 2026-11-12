@@ -45,6 +45,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Signal is a messaging platform.** Connect to a local or internal signal-cli
+  JSON-RPC HTTP daemon to bridge Signal groups into Switch rooms, with SSE event
+  streaming, quote-reply threading, attachments, and remote delete/edits.
 - **WhatsApp is a messaging platform.** Connect a WhatsApp Business number
   through Meta's Cloud API and people can talk to agents in one-to-one chats,
   with files, quoted replies as threads and read receipts. Each connection

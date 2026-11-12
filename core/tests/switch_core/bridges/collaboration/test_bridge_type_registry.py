@@ -16,6 +16,10 @@ from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
 )
+from switch_core.bridges.collaboration.signal.adapter import (
+    SignalAdapter,
+    SignalConnectionConfig,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -108,6 +112,16 @@ def test_telegram_adapter_registers_with_expected_required_fields() -> None:
     # bridge hands out is built from it, with no API call to fall back on.
     assert set(schema["properties"]) == {"bot_token", "bot_username"}
     assert set(schema["required"]) == {"bot_token", "bot_username"}
+
+
+def test_signal_adapter_registers_with_expected_required_fields() -> None:
+    service = _service()
+    service.register_adapter("signal", SignalAdapter, SignalConnectionConfig)
+
+    assert service.get_registered_types() == ["signal"]
+    schema = service.get_config_schema("signal")
+    assert set(schema["properties"]) == {"endpoint_url", "account"}
+    assert set(schema["required"]) == {"endpoint_url", "account"}
 
 
 def test_get_config_schema_exposes_required_fields() -> None:
