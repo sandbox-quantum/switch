@@ -354,6 +354,8 @@ is the kind of machine (`vm` for every machine this server makes today).
   counts whether or not product telemetry is on.
   An idle machine with no agents left is released with its disk kept rather
   than stopped, and counts as `event:stopped` with `reason:retained`.
+  A machine an operator holds stopped (`switch-cloud-machine stop`) counts as
+  `event:stopped` with `reason:admin`.
 - `switch.hosted.reconciler_silence` is per process, counted from the
   process's start until it first hears from the hosted controller service, so
   a reconciler that is down when Core restarts still shows as silent. Read the

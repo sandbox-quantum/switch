@@ -28,6 +28,7 @@ from switch_core.db.stores.hosted_machine_store import (
     CloudMachineConflict,
     CloudMachineStore,
 )
+from switch_core.observability.hosted import record_machine_event
 from switch_core.tenant_context import no_tenant
 
 
@@ -103,6 +104,8 @@ async def stop_machine(
                 store.admin_stop(machine, datetime.now(UTC))
             except CloudMachineConflict as error:
                 raise CloudMachineAdminError(str(error)) from None
+            # Counted once committed, beside the idle and owner stops.
+            record_machine_event(session, "stopped", "admin")
             await record_server_audit_event(
                 session,
                 actor_user_id=None,
