@@ -20,7 +20,7 @@ puts those workspaces back on the server default, before restoring the
 narrower check.
 
 Revision ID: dd2046c13b23
-Revises: a4c7e2d9b813
+Revises: 7105e0bea527
 Create Date: 2026-10-29 00:00:00.000000
 
 """
@@ -31,7 +31,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "dd2046c13b23"
-down_revision: str | Sequence[str] | None = "a4c7e2d9b813"
+down_revision: str | Sequence[str] | None = "7105e0bea527"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
