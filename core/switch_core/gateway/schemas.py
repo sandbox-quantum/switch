@@ -1298,7 +1298,6 @@ def _shown_on_one_line(name: str) -> str:
 
 
 class TenantRenameRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
     name: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
