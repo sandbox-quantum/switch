@@ -644,6 +644,15 @@ class TestControllerMachines:
         assert (await _machine(harness.session_factory, machine.id)).desired_state == (
             "stopped"
         )
+
+        await _update(harness.session_factory, machine.id, stop_reason="admin")
+        async with harness.session_factory() as session:
+            await wake_controller_machine(
+                session, enrolled["controller_id"], datetime.now(UTC), "message"
+            )
+            await session.commit()
+        held = await _machine(harness.session_factory, machine.id)
+        assert (held.desired_state, held.stop_reason) == ("stopped", "admin")
         assert reported.events("cloud_machine_woken") == [
             {"trigger": "message", "stopped_by": "idle"}
         ]
