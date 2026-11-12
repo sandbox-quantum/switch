@@ -235,6 +235,7 @@ interface SessionState {
    * the session is still at work after the turn ends.
    */
   subagentTasks: Map<string, { backgrounded: boolean }>;
+  childActivity: Map<string, { turnId: string; item: ProviderItem; resultSeen: boolean }>;
 }
 
 /** Task types that are agents doing work, rather than shells or tool calls. */
@@ -564,6 +565,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       usage: new CumulativeUsage(),
       unreportedUsage: [],
       subagentTasks: new Map(),
+      childActivity: new Map(),
     };
     this.sessions.set(input.sessionId, session);
     this.emit(session, { type: 'session.state.changed', status: 'starting' });
@@ -910,6 +912,7 @@ export class ClaudeAdapter implements ProviderAdapter {
    */
   private trackSubagentTasks(session: SessionState, message: SDKMessage): void {
     const tasks = session.subagentTasks;
+    this.reportChildTask(session, message);
     if (message.type === 'result') {
       // A foreground task blocks the turn it runs in, so none outlives it.
       for (const [taskId, task] of tasks) if (!task.backgrounded) tasks.delete(taskId);
@@ -945,6 +948,49 @@ export class ClaudeAdapter implements ProviderAdapter {
       default:
         return;
     }
+  }
+
+  private reportChildTask(session: SessionState, message: SDKMessage): void {
+    if (message.type !== 'system') return;
+    if (message.subtype === 'task_started') {
+      if (!isSubagentTask(message) || !session.turn) return;
+      const prior = message.tool_use_id ? session.toolItems.get(message.tool_use_id) : undefined;
+      const child = {
+        turnId: session.turn.turnId,
+        item: {
+          ...prior,
+          id: message.tool_use_id ?? message.task_id,
+          type: 'subagent' as const,
+          status: 'in_progress' as const,
+          title: truncate(message.description),
+          toolName: message.subagent_type ?? prior?.toolName,
+        },
+        resultSeen: message.tool_use_id === undefined,
+      };
+      session.childActivity.set(message.task_id, child);
+      this.emit(session, { type: 'item.updated', turnId: child.turnId, item: child.item });
+      return;
+    }
+    if (message.subtype !== 'task_updated' && message.subtype !== 'task_notification') return;
+    const child = session.childActivity.get(message.task_id);
+    if (!child) return;
+    const status = message.subtype === 'task_updated' ? message.patch.status : message.status;
+    if (message.subtype === 'task_updated' && message.patch.description)
+      child.item = { ...child.item, title: truncate(message.patch.description) };
+    const ended =
+      status === 'completed' || status === 'failed' || status === 'killed' || status === 'stopped';
+    // A subagent stopped or killed ended on purpose: declined, not failed.
+    if (ended)
+      child.item = {
+        ...child.item,
+        status: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'declined',
+      };
+    this.emit(session, {
+      type: ended ? 'item.completed' : 'item.updated',
+      turnId: child.turnId,
+      item: child.item,
+    });
+    if (ended && child.resultSeen) session.childActivity.delete(message.task_id);
   }
 
   private handleStreamEvent(
@@ -1054,7 +1100,8 @@ export class ClaudeAdapter implements ProviderAdapter {
         });
         return;
       }
-      if (block.type !== 'tool_use') return;
+      // A subagent's own steps stay with the subagent: only its card shows.
+      if (block.type !== 'tool_use' || parentToolUseId !== null) return;
       const id = block.id;
       const name = block.name;
       if (typeof id !== 'string' || typeof name !== 'string') return;
@@ -1088,6 +1135,18 @@ export class ClaudeAdapter implements ProviderAdapter {
       const started = session.toolItems.get(toolUseId);
       if (!started) continue;
       session.toolItems.delete(toolUseId);
+      const child = [...session.childActivity.values()].find(
+        (child) => child.item.id === toolUseId
+      );
+      if (child) {
+        child.resultSeen = true;
+        if (child.item.status !== 'in_progress') {
+          for (const [taskId, entry] of session.childActivity)
+            if (entry === child) session.childActivity.delete(taskId);
+        }
+        // A background tool result acknowledges the launch, not child completion.
+        continue;
+      }
       const status: ItemStatus = block.is_error === true ? 'failed' : 'completed';
       const text = textFromToolResultContent(block.content);
       this.emit(session, {

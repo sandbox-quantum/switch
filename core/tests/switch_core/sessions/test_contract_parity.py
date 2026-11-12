@@ -193,3 +193,26 @@ def test_host_publication_claims_are_rejected() -> None:
     payload["body"]["request"]["audience"] = {"kind": "room", "roomId": "room-demo"}
     with pytest.raises(ValueError):
         parse_host_event(payload)
+
+
+def test_subagent_is_a_shared_item_without_raw_child_output() -> None:
+    child = item(1, "").model_copy(
+        update={
+            "item_id": "child",
+            "kind": "tool-activity",
+            "subagent": True,
+            "title": "Reviewer",
+        }
+    )
+    event = parse_server_event(
+        {
+            "contractVersion": 1,
+            "eventId": "child-start",
+            "sessionId": "session-demo",
+            "sequence": 11,
+            "occurredAt": "2026-09-07T12:00:00Z",
+            "body": {"type": "item.upsert", "item": child.model_dump(by_alias=True)},
+        }
+    )
+    assert event.body.item.kind == "tool-activity"
+    assert event.body.item.subagent is True
