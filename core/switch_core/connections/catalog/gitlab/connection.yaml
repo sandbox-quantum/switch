@@ -1,7 +1,58 @@
 slug: gitlab
 name: GitLab
 category: Source control
-description: Work with GitLab projects, merge requests and issues.
-enabled: false
+description: Read and update GitLab projects, issues, merge requests and pipelines, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # GitLab invalidates both the old access and refresh tokens on renewal.
+  refresh: rotating
+  oauth:
+    # The registration probe reported in #816 returned scope: "mcp" and
+    # grant_types: ["authorization_code"], even when read_api, read_user
+    # and refresh_token were requested. This is reported evidence, not a
+    # live sign-in performed for this entry. Dynamic clients cannot provide
+    # the identity, read API scope and renewal this connector needs.
+    # Register a confidential application with mcp read_api read_user api.
+    # Save it in the dashboard's Connector apps page, or name its JSON file
+    # in GITLAB_CLIENT_CONFIG_PATH. See docs/old/gitlab-setup.md.
+    registration: static
+    client_settings: GITLAB
+    redirect: [core]
+    # Discover endpoints from the official MCP server, including its S256
+    # capability. No loopback listener or registration proxy is needed.
+    revocation_discovered: true
+    unchecked: >-
+      Confirm the registered Core callback URL and all required application
+      scopes in GitLab, then complete a sign-in at each offered access level.
+  identity:
+    url: https://gitlab.com/api/v4/user
+    account_id: id
+    label: username
+# GitLab documents a default two-hour lifetime; not measured here.
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  servers:
+    # A top-level group owner must allow MCP access on GitLab.com.
+    # Self-managed hosts need their own endpoints and application; this
+    # entry deliberately connects only to GitLab.com.
+    - { name: gitlab, url: "https://gitlab.com/api/v4/mcp" }
+access:
+  # mcp permits the MCP connection, read_user supplies identity, and
+  # read_api/api select read/write REST access. api includes deletion and
+  # all projects/groups the person can access; GitLab offers no narrower
+  # general write API scope. No admin, sudo or separate repository scopes.
+  # Tools pass through unchanged. Their presence is not an authorization
+  # boundary; live MCP write refusal under read consent still needs QA.
+  read:
+    scopes:
+      - mcp
+      - read_api
+      - read_user
+  write:
+    scopes:
+      - mcp
+      - api
+      - read_user
+tools: { mode: pass_through }

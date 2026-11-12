@@ -68,6 +68,8 @@ GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
 AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
 AIRTABLE_SECRET = "example-airtable-secret-0000"
+GITLAB = "gitlab"
+GITLAB_CALLBACK = f"{PUBLIC}/gateway/service-connections/{GITLAB}/flows/callback"
 GITHUB_CLIENT_ID = "example-github-client-id"
 GITHUB_SECRET = "example-github-secret-0000"
 
@@ -367,7 +369,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, GITLAB}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -390,6 +392,15 @@ class TestOnlyTheOperator:
             "workspacesAndBases:read",
             "data.records:write",
             "data.recordComments:write",
+        ]
+        assert apps[GITLAB]["redirect_uris"] == [GITLAB_CALLBACK]
+        assert apps[GITLAB]["redirect_uri"] == GITLAB_CALLBACK
+        assert apps[GITLAB]["needs_public_url"] is True
+        assert apps[GITLAB]["scopes"] == [
+            "mcp",
+            "read_api",
+            "read_user",
+            "api",
         ]
         assert [entry["slug"] for entry in body["registered"]] == [
             "atlassian",
