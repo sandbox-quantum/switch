@@ -19,7 +19,7 @@ Expand only: a process from before this revision inserts with the old default
 until the column changes, and again as it was after a downgrade.
 
 Revision ID: b61ac7cab64b
-Revises: f3a8d1c6b927
+Revises: 7105e0bea527
 Create Date: 2026-11-07 00:00:00.000000
 
 """
