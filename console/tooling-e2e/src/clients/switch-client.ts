@@ -253,6 +253,19 @@ export interface WorkspaceMembership {
   role: string;
   organization_role: string | null;
   organization_id: string | null;
+  archived_at: string | null;
+}
+
+/** One of the organization's workspaces, as its Workspaces page lists it. */
+export interface OrganizationWorkspace extends WorkspaceMembership {
+  created_at: string;
+  users: number;
+  agents: number;
+  rooms: number;
+  admins: string[];
+  can_archive: boolean;
+  archive_blocked_reason: string | null;
+  can_restore: boolean;
 }
 
 /** A workspace's message retention window; `message_retention_days: null` keeps messages forever. */
@@ -595,9 +608,9 @@ export class SwitchClient {
     return this.gateway("GET", "/tenants/counts");
   }
 
-  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter. */
-  async organizationWorkspaces(): Promise<WorkspaceMembership[]> {
-    return this.gateway<WorkspaceMembership[]>(
+  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter, as its Workspaces page lists them. */
+  async organizationWorkspaces(): Promise<OrganizationWorkspace[]> {
+    return this.gateway<OrganizationWorkspace[]>(
       "GET",
       "/organizations/current/workspaces",
     );

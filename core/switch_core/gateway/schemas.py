@@ -1240,6 +1240,7 @@ class OperatorWorkspaceResponse(BaseModel):
     name: str
     organization_id: str | None
     organization_name: str | None
+    archived_at: str | None
 
 
 class CurrentTenantResponse(TenantMembershipResponse):

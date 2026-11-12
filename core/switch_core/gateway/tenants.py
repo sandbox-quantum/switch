@@ -92,6 +92,7 @@ from switch_core.gateway.auth import (
     get_authenticated_user_id,
     get_current_user,
     get_tenant_is_admin,
+    holds_membership_in,
     initial_tenant_claim,
     list_tenant_memberships,
     may_bind_tenant,
@@ -568,6 +569,9 @@ async def switch_tenant(
     workspace (`initial_tenant_claim`), so every visit starts here.
     """
     if not await may_bind_tenant(session_factory, user_store, user_id, tenant_id):
+        # A membership it may not enter is one in a workspace since archived.
+        if await holds_membership_in(session_factory, user_id, tenant_id):
+            raise HTTPException(status_code=403, detail=WORKSPACE_ARCHIVED)
         raise HTTPException(status_code=403, detail="Not a member of this workspace")
 
     user = await user_store.get(session, user_id)
@@ -596,8 +600,8 @@ async def list_every_workspace(
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
 ) -> list[OperatorWorkspaceResponse]:
-    """Every workspace on the server, for the platform operator to enter one
-    with `POST /tenants/{id}/switch`. Kept apart from `GET /tenants`, which
+    """Every workspace on the server, archived ones included and saying so,
+    for the platform operator to enter one with `POST /tenants/{id}/switch`. Kept apart from `GET /tenants`, which
     stays the caller's own, so the ordinary picker never lists customers'
     workspaces. Listing records nothing; entering does."""
     if not caller.is_operator:
@@ -609,6 +613,7 @@ async def list_every_workspace(
             name=tenant.name,
             organization_id=tenant.organization_id,
             organization_name=organization.name if organization is not None else None,
+            archived_at=archived_since(tenant),
         )
         for tenant, organization in await all_workspaces(session_factory)
     ]

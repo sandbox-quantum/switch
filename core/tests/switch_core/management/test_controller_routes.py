@@ -34,6 +34,11 @@ from switch_core.management.bindings import (
     reconcile_bindings,
 )
 from switch_core.management.controller_routes import ASSIGNMENT_FORMAT
+from switch_core.management.errors import ManagementError
+from switch_core.management.schemas import (
+    ControllerDescription,
+    CreateManagedAgentRequest,
+)
 from tests.switch_core.management.harness import (
     SERVER_URL,
     EnrolledController,
@@ -48,6 +53,7 @@ from tests.switch_core.management.harness import (
     enroll_daemon,
     ensure_connected,
     fixture,
+    platform,
     provider,
     report_status,
     status_report,
@@ -1092,6 +1098,50 @@ class TestAnArchivedWorkspace:
 
         assert before is not None and before.running is True
         assert after is not None and after.running is False
+
+    async def test_nothing_new_is_set_up_in_it(self, harness: Harness) -> None:
+        """No enrollment code, controller or managed agent: none would ever
+        run there. Asked of the service, since nobody but an org admin could
+        reach these routes in an archived workspace at all."""
+        owner = await add_member(harness.session_factory, "ada")
+        await _set_archived(harness, archived=True)
+        service = harness.management.service
+        description = ControllerDescription.model_validate(
+            {
+                "name": "laptop",
+                "kind": "console",
+                "platform": platform(),
+                "version": "1",
+            }
+        )
+        request = CreateManagedAgentRequest.model_validate(
+            {
+                "name": "runner",
+                "description": "",
+                "controller_id": None,
+                "desired_state": "running",
+                "definition": definition(),
+            }
+        )
+        refusals = []
+        async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+            for attempt in (
+                lambda: service.issue_enrollment_code(session, owner_id=owner.id),
+                lambda: service.create_controller(
+                    session,
+                    owner_id=owner.id,
+                    description=description,
+                    public_key=None,
+                ),
+                lambda: service.check_new_managed_agent(
+                    session, TENANT_ZERO_ID, owner.id, request
+                ),
+            ):
+                with pytest.raises(ManagementError) as refused:
+                    await attempt()
+                refusals.append((refused.value.status_code, refused.value.code))
+
+        assert refusals == [(409, "workspace_archived")] * 3
 
     def test_a_binding_in_an_archived_workspace_is_not_running(self) -> None:
         controller = AgentController(id="c-1", name="laptop")

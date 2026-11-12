@@ -36,7 +36,7 @@ from switch_core.agent_icon import (
     generated_icon_url,
     normalise_icon_url,
 )
-from switch_core.archived_workspace import is_archived
+from switch_core.archived_workspace import WORKSPACE_ARCHIVED, is_archived
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore, AgentExistsError
 from switch_core.bridges.agent.protocol.controller_presence import (
@@ -60,6 +60,7 @@ from switch_core.db.models import (
     AgentControllerOperation,
     ApiKey,
     MachineWorkspace,
+    require_tenant_id,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.stores.agent_controller_operation_store import (
@@ -215,6 +216,7 @@ class ManagementService:
         public_key: PublicKey | None,
     ) -> tuple[AgentController, str]:
         """Create a controller and its credential, and commit. Returns both."""
+        await self._refuse_archived(session, require_tenant_id())
         key, credential = await self._new_hash_only_key(
             session,
             owner_id=owner_id,
@@ -247,6 +249,7 @@ class ManagementService:
     async def issue_enrollment_code(
         self, session: AsyncSession, *, owner_id: str
     ) -> tuple[str, datetime]:
+        await self._refuse_archived(session, require_tenant_id())
         key, code = await self._new_hash_only_key(
             session,
             owner_id=owner_id,
@@ -1295,6 +1298,17 @@ class ManagementService:
             )
         )
 
+    async def _refuse_archived(self, session: AsyncSession, tenant_id: str) -> None:
+        """Refuse setting up a new device or managed agent in an archived
+        workspace, which would never run there. A Switch cloud machine that
+        already serves it is left to its own flow (`machine_enrollment_code`):
+        refusing it would put the machine in an error state its owner's other
+        workspaces share, while its agents are assigned stopped regardless."""
+        if await is_archived(session, tenant_id):
+            raise ManagementError(
+                409, reason_codes.WORKSPACE_ARCHIVED, WORKSPACE_ARCHIVED
+            )
+
     async def workspace_archive_changed(
         self, session: AsyncSession, tenant_id: str
     ) -> None:
@@ -1326,6 +1340,7 @@ class ManagementService:
     ) -> None:
         """The checks `create_managed_agent` makes before it registers
         anything, raising as it would, with nothing created."""
+        await self._refuse_archived(session, tenant_id)
         await self._check_target(
             session,
             tenant_id,
@@ -1350,6 +1365,7 @@ class ManagementService:
         """Register a new agent through the known-agent spec for its provider,
         and place it. Placement is checked before anything is registered, so a
         refusal leaves nothing behind."""
+        await self._refuse_archived(session, tenant_id)
         controller = await self._check_target(
             session,
             tenant_id,

@@ -59,13 +59,22 @@ version of their own to them without also giving them a release of their own.
   dashboard and Console connections close too), while the organization's
   admins still can. Its agents can't connect and those connected are cut
   off, every agent on its devices is told to stop (nothing is revoked, so
-  Restore starts them again), its messaging apps stop relaying, invite links
-  and domain joins into it are refused, and its room schedules pause, with
-  the runs missed meanwhile skipped on Restore. The workspace you are in and
+  Restore starts them again), no new device or managed agent can be set up
+  in it, its messaging apps stop relaying, invite links and domain joins into
+  it are refused, and its room schedules pause, with the runs missed
+  meanwhile skipped on Restore. The workspace you are in and
   the one everyone joins on signing up can't be archived. Both changes are
   recorded in the workspace's and the organization's audit logs.
   `GET /organizations/current/workspaces` also reports each workspace's
-  counts, admins and archive state.
+  counts, admins and archive state, and the operator's list of every
+  workspace says which are archived.
+- **An organization's admins see which of its workspaces each person is in,
+  and add someone already in the organization to another one.**
+  `GET /organizations/current/members` lists each person's workspaces in the
+  organization and their role in each, and
+  `POST /organizations/current/workspaces/{id}/members` adds an existing
+  member to a workspace as admin or member, recorded in both audit logs.
+  Someone outside the organization is pointed to an invite link instead.
 - **Templates have a page of their own in the new dashboard layout, and say
   how often each one is run.** Behind `gateway_v2`, Templates leaves the
   Resources tabs: the workspace's own templates and the ones that come with

@@ -547,6 +547,15 @@ async def _archived_memberships(
     ]
 
 
+async def holds_membership_in(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str, tenant_id: str
+) -> bool:
+    """Whether `user_id` holds a membership row in `tenant_id`, whether or not
+    they may enter it: asked once `may_bind_tenant` has said they may not, to
+    tell a workspace archived under them from one they never belonged to."""
+    return tenant_id in await tenants_of_user(session_factory, user_id)
+
+
 def _archived_refusal() -> HTTPException:
     return HTTPException(
         status_code=403,
