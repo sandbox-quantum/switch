@@ -43,6 +43,7 @@ from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.dependencies import get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import (
+    ConnectionNotLetGoError,
     ControllerConnectionError,
     ControllerRevokedError,
 )
@@ -92,6 +93,15 @@ _SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2"})
 # late, so every few seconds its agents read as connecting. Half of that keeps
 # one late ping from costing the socket. The beat's TTL is unchanged.
 PING_INTERVAL_SECONDS = 5.0
+
+# How long a socket reattaching through this process waits for the process
+# that held its connection to record the socket going, and how often it reads
+# the controller's row again meanwhile. The holder records it as the socket
+# goes, in one write, and a controller waits at least a quarter of a second
+# before it reattaches; only a holder that is slow to write, or never saw its
+# socket go, runs this out, and the controller then opens a new connection.
+LET_GO_WAIT_SECONDS = 2.0
+LET_GO_POLL_SECONDS = 0.1
 
 
 class ControllerRoute(ManagementRoute):
@@ -396,7 +406,7 @@ async def open_connection(
         )
     except ControllerConnectionError as exc:
         raise _connection_refusal(exc) from exc
-    logger.info(
+    logger.debug(
         "Controller %s opened connection %s (client=%s version=%s)",
         principal.controller_id,
         conn.id,
@@ -429,15 +439,28 @@ async def attach_stream(
     """
     presence = protocol.connections.controllers
     nudges = management.notifier.subscribe(principal.controller_id)
+    loop = asyncio.get_running_loop()
+    let_go_by = loop.time() + LET_GO_WAIT_SECONDS
     try:
-        async with tenant_session(session_factory, principal.tenant_id) as session:
-            # Wherever it was opened or last held: decided on the
-            # controller's row, which says whether it is still the one the
-            # controller opened last.
-            conn = await management.hold_connection(
-                session, principal, connection_id, generation
-            )
-            state = await management.connection_state(session, principal)
+        while True:
+            try:
+                async with tenant_session(
+                    session_factory, principal.tenant_id
+                ) as session:
+                    # Wherever it was opened or last held: decided on the
+                    # controller's row, which says whether it is still the
+                    # one the controller opened last.
+                    conn = await management.hold_connection(
+                        session, principal, connection_id, generation
+                    )
+                    state = await management.connection_state(session, principal)
+                break
+            except ConnectionNotLetGoError:
+                # Waited out of the session, so the wait holds no connection
+                # to the database.
+                if loop.time() >= let_go_by:
+                    raise
+                await asyncio.sleep(LET_GO_POLL_SECONDS)
         # Attached once nothing more is awaited, and refused if the connection
         # stopped being the controller's current one while the reads above
         # waited.

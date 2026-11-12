@@ -13,6 +13,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.room_service import RoomService
 
 
@@ -183,7 +184,9 @@ class _CreatorCore(_FakeCollaborationCore):
         self.in_room.extend(external_user_ids)
 
 
-async def _add_creator(core: _CreatorCore) -> list[dict[str, Any]]:
+async def _add_creator(
+    core: _CreatorCore, channel_type: ChannelType = "channel_private"
+) -> list[dict[str, Any]]:
     creator = SimpleNamespace(external_user_id="ext-a", external_username="ada")
     return await RoomService._add_creator_to_channel(
         core,  # type: ignore[arg-type]
@@ -191,6 +194,7 @@ async def _add_creator(core: _CreatorCore) -> list[dict[str, Any]]:
         "!room:test",
         "chan-1",
         creator,  # type: ignore[arg-type]
+        channel_type,
     )
 
 
@@ -222,6 +226,17 @@ async def test_a_creator_made_owner_is_not_added_to_the_channel_again() -> None:
     assert core.in_room == ["ext-a"]
 
 
+async def test_the_creator_of_a_public_channel_is_asked_for_wherever_owners_are_named() -> (
+    None
+):
+    # Naming an owner (Teams) puts someone in a private channel only.
+    core = _CreatorCore(failing_ids=[], needs_owner=True)
+
+    assert await _add_creator(core, "channel_public") == []
+    assert core.adapter.calls == [(["ada"], ["ext-a"])]
+    assert core.in_room == ["ext-a"]
+
+
 async def test_no_creator_means_nothing_to_do() -> None:
     core = _CreatorCore(failing_ids=[], needs_owner=False)
 
@@ -232,6 +247,7 @@ async def test_no_creator_means_nothing_to_do() -> None:
             "!room:test",
             "chan-1",
             None,
+            "channel_private",
         )
         == []
     )
