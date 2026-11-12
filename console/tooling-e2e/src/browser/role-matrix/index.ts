@@ -159,11 +159,13 @@ const EVERY_ROLE: readonly string[] = [
 /** What only some roles reach: the routes making them calls, and the pages only they may open. */
 const BY_ROLE: Record<Persona, readonly string[]> = {
   orgAdmin: [
+    'GET /gateway/api-keys/workspace',
     'GET /gateway/tenants/{tenant_id}/budgets',
     'GET /gateway/tenants/{tenant_id}/usage',
     'GET /gateway/tenants/{tenant_id}/invitations',
   ],
   workspaceAdmin: [
+    'GET /gateway/api-keys/workspace',
     'POST /gateway/tenants/{tenant_id}/invitations',
     'POST /gateway/invitations/accept',
     'GET /gateway/tenants/{tenant_id}/budgets',
@@ -172,6 +174,7 @@ const BY_ROLE: Record<Persona, readonly string[]> = {
   ],
   member: ['POST /gateway/tenants/{tenant_id}/invitations', 'POST /gateway/invitations/accept'],
   operator: [
+    'GET /gateway/api-keys/workspace',
     'POST /gateway/tenants/{tenant_id}/switch',
     'GET /gateway/tenants/{tenant_id}/budgets',
     'GET /gateway/tenants/{tenant_id}/usage',

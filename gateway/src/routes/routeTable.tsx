@@ -33,6 +33,7 @@ import {
 } from "../data/capabilities";
 import type { SettingsArea } from "../data/settingsLanding";
 import AgentDetailPage from "../pages/agents/AgentDetailPage";
+import ApiKeysPage from "../pages/api-keys/ApiKeysPage";
 import AgentListPage from "../pages/agents/AgentListPage";
 import AgentsPage from "../pages/agents/AgentsPage";
 import CollaborationsPage from "../pages/collaborations/CollaborationsPage";
@@ -242,7 +243,7 @@ export const ROUTES: readonly AppRoute[] = [
     serviceConnections,
     <WorkspaceConnectorsPage />,
   ),
-  settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <RegistrationKeysPage />),
+  settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <ApiKeysPage />),
   redirect("/settings/api-keys", CURRENT, "/registration-keys"),
   settingsPage(
     "/settings/guardrails",

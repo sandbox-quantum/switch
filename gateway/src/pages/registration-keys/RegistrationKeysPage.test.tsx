@@ -1,23 +1,12 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiKeyDetail } from "../../data/api";
+import { apiKey } from "../api-keys/testFixtures";
 import RegistrationKeysPage from "./RegistrationKeysPage";
 
 vi.mock("../../components/DataTable", () => import("../../test/FakeDataTable"));
 
-function key(id: string, overrides: Partial<ApiKeyDetail>): ApiKeyDetail {
-  return {
-    id,
-    label: id,
-    type: "registration",
-    key_prefix: `sk_${id}`,
-    created_at: "2026-10-01T00:00:00Z",
-    expires_at: null,
-    can_reveal: true,
-    can_delete: true,
-    ...overrides,
-  };
-}
+const key = apiKey;
 
 function serve(keys: ApiKeyDetail[]) {
   vi.stubGlobal(
