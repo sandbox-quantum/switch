@@ -1,3 +1,4 @@
+import { CANARY_SWITCH_VERSION, COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { TelemetryFlintEnv } from '../telemetry/config';
 import {
@@ -37,27 +38,53 @@ export type LocalServerEnvParams = {
 };
 
 /**
- * The feature flags a server Console runs is started with, in a build with the
- * new first run: what switch-buddy needs (agent management, its chat and the
- * buddy itself), addressing an agent without tagging it, and connectors such
- * as GitHub (service connections). A build without it
- * starts them with none, as before.
+ * The flags a server on the stable pin (`STABLE_SWITCH_VERSION`) is started
+ * with, in a build with the new first run: what switch-buddy needs (agent
+ * management, its chat and the buddy itself), addressing an agent without
+ * tagging it, and connectors such as GitHub (service connections).
  */
-export function managedServerFeatureFlags(newFirstRun: boolean): readonly string[] {
-  return newFirstRun
-    ? [
-        'agent_management',
-        'agent_chats',
-        'switch_buddy',
-        'follow_the_conversation',
-        'service_connections',
-      ]
-    : [];
+export const STABLE_MANAGED_SERVER_FLAGS: readonly string[] = [
+  'agent_management',
+  'agent_chats',
+  'switch_buddy',
+  'follow_the_conversation',
+  'service_connections',
+];
+
+/**
+ * The flags a server on the canary pin (`CANARY_SWITCH_VERSION`, which dev
+ * builds run too) is started with: the stable ones, plus Switch Console rooms
+ * (group chats), where switch-buddy continues when no chat app is connected,
+ * and buddy's hand-off to a chat app's private channel.
+ *
+ * switch-core refuses to start when `FEATURE_FLAGS_ENABLED` names a flag it
+ * does not know, so a flag moves to the stable list in the change that moves
+ * the stable pin to a release that has it. A dev build pointed at an older
+ * release with `SWITCH_CONSOLE_SERVER_VERSION` still gets this list.
+ */
+export const CANARY_MANAGED_SERVER_FLAGS: readonly string[] = [
+  ...STABLE_MANAGED_SERVER_FLAGS,
+  'group_chats',
+  'buddy_slack_handoff',
+];
+
+/**
+ * The feature flags a server Console runs is started with: the canary list
+ * when this build runs the canary switch-core, else the stable one. A build
+ * without the new first run starts them with none, as before.
+ */
+export function managedServerFeatureFlags(
+  newFirstRun: boolean,
+  canarySwitchCore: boolean
+): readonly string[] {
+  if (!newFirstRun) return [];
+  return canarySwitchCore ? CANARY_MANAGED_SERVER_FLAGS : STABLE_MANAGED_SERVER_FLAGS;
 }
 
 /** The feature flags every managed stack is started with, in this build. */
 export const MANAGED_SERVER_FEATURE_FLAGS = managedServerFeatureFlags(
-  BUILD_FEATURE_FLAGS.onboarding
+  BUILD_FEATURE_FLAGS.onboarding,
+  COMPATIBLE_SWITCH_VERSION === CANARY_SWITCH_VERSION
 );
 
 /** The variable the server reads its telemetry gate from. Named here because

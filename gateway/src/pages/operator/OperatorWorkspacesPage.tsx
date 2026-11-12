@@ -1,7 +1,7 @@
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import { type OperatorWorkspace, fetchOperatorWorkspaces } from "../../data/api";
 import { useLoad } from "../workspace/useLoad";
@@ -77,6 +77,7 @@ export default function OperatorWorkspacesPage() {
         <DataTable
           rows={workspaces ?? []}
           columns={columns}
+          emptyState={<TableEmptyState title="No workspaces yet" />}
           height={Math.min(600, 108 + (workspaces?.length ?? 0) * 52)}
           pageSize={25}
         />

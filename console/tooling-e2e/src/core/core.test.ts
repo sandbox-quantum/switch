@@ -110,7 +110,7 @@ describe('run naming', () => {
   });
 
   it('fits every provider agent role', () => {
-    for (const role of ['opencode', 'antigrav', 'cursor', 'claude', 'codex']) {
+    for (const role of ['opencode', 'antigrav', 'cursor', 'claude', 'codex', 'deepseek']) {
       expect(isValidMattermostUsername(`e2e-abc123a-${role}`)).toBe(true);
     }
   });

@@ -70,7 +70,7 @@ An agent that answers only you has to be able to recognize you, and that comes f
 
 ### Decide whether it asks before acting
 
-**Auto mode** is on for every new agent, on this machine or a remote host. The agent's own provider reviews each action: safe ones run without asking, risky ones still wait for you. Claude Code uses its auto mode, Codex its automatic reviewer (keeping its sandbox), OpenCode `--auto`, Cursor Smart Auto, and Antigravity approves file edits but still asks before running commands. Turn it off if you want to approve every action yourself.
+**Auto mode** is on for every new agent, on this machine or a remote host. The agent's own provider reviews each action: safe ones run without asking, risky ones still wait for you. Claude Code uses its auto mode, Codex its automatic reviewer (keeping its sandbox), OpenCode `--auto`, Cursor Smart Auto, and Antigravity approves file edits but still asks before running commands. DeepSeek Harness has no reviewer of its own, so in auto mode it asks before every tool except those that only read or search files, as it does with auto mode off. Turn it off if you want to approve every action yourself.
 
 **Bypass permissions** starts the agent's sessions with every permission check turned off, and overrides auto mode while it's on. It's off for a new agent. It's unsafe: turn it on only for an agent you'd leave alone with the directory you gave it.
 

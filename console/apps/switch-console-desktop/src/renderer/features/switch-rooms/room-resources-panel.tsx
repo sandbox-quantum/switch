@@ -4,6 +4,7 @@ import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { LOCKED_ROW_HINT, LockedMark, OpensMark } from '@renderer/features/library/row-access';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
@@ -223,6 +224,10 @@ const ResourceSection = observer(function ResourceSection({
                               })
                           : null
                   }
+                  // A package the viewer may not open, which its owner keeps private.
+                  locked={
+                    kind === 'packages' && serverId !== null && !opensInResources(resource, viewer)
+                  }
                   removeLabel={canUnlink ? `Detach ${resource.name}` : null}
                   busy={busy === resource.id}
                   onRemove={() => void detach(resource)}
@@ -291,6 +296,7 @@ function ResourceRow({
   resource,
   via,
   onOpen,
+  locked = false,
   removeLabel,
   busy,
   confirm = false,
@@ -300,6 +306,8 @@ function ResourceRow({
   /** The packages that brought it in, by name. */
   via: string[];
   onOpen: (() => void) | null;
+  /** Shown to the viewer but not theirs to open: dimmed and locked. */
+  locked?: boolean;
   /** The remove button's label, or null for someone who may not remove it. */
   removeLabel: string | null;
   busy: boolean;
@@ -319,9 +327,12 @@ function ResourceRow({
     <>
       <Icon className="size-4 shrink-0 text-foreground-muted" />
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="flex items-center gap-1.5 truncate text-sm text-foreground">
+        <span
+          className={`flex items-center gap-1.5 truncate text-sm ${locked ? 'text-foreground-muted' : 'text-foreground'}`}
+        >
           {resource.name}
           {resource.urls[0] && <ExternalLink className="size-3 shrink-0 text-foreground-muted" />}
+          {locked && <LockedMark />}
         </span>
         {(resource.description || meta.length > 0) && (
           <span className="truncate text-xs text-foreground-muted">
@@ -340,9 +351,16 @@ function ResourceRow({
           onClick={onOpen}
         >
           {body}
+          {/* A link already shows where it goes; anything else opens here. */}
+          {!resource.urls[0] && <OpensMark />}
         </button>
       ) : (
-        <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
+        <div
+          className="flex min-w-0 flex-1 items-center gap-3"
+          title={locked ? LOCKED_ROW_HINT : undefined}
+        >
+          {body}
+        </div>
       )}
       {removeLabel && confirm && armed && (
         <span className="flex shrink-0 items-center gap-1">

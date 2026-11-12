@@ -11,11 +11,10 @@ export type ChannelChoiceCard = { value: ChannelChoice; title: string; detail: s
  * channel is read without joining it, and a private one there is hidden by
  * permission rather than by membership, so its server's admins still see it.
  *
- * `private` is null where Switch cannot make a private channel. On Teams an
- * app must name an owner when it creates one, and Switch does not, so the
- * choice is left out rather than offered and refused.
+ * Whether a private channel is offered at all is the server's answer
+ * (`RemoteBridge.privateChannels`); this only says what one is.
  */
-const NEW_CHANNEL: Record<string, { public: string; private: string | null }> = {
+const NEW_CHANNEL: Record<string, { public: string; private: string }> = {
   slack: {
     public: 'Anyone in the Slack workspace can find and join it.',
     private: 'Only people invited to it can see it.',
@@ -30,7 +29,7 @@ const NEW_CHANNEL: Record<string, { public: string; private: string | null }> = 
   },
   teams: {
     public: 'A standard channel: everyone in the team can see it.',
-    private: null,
+    private: 'Only people added to it can see it.',
   },
 };
 
@@ -46,14 +45,40 @@ const OTHER = {
  * where the platform has one Switch can make, and an existing channel where
  * the app lets a channel be named by its id.
  */
+type ChoiceBridge = Pick<
+  RemoteBridge,
+  | 'type'
+  | 'displayName'
+  | 'channelIdsRefused'
+  | 'privateChannels'
+  | 'privateChannelNeedsLinkedAccount'
+>;
+
+/**
+ * Whether `bridge` can make a private channel. The server says; a server
+ * predating the answer could on every platform but Teams, where it named no
+ * owner and Microsoft refused.
+ */
+function offersPrivateChannel(bridge: ChoiceBridge): boolean {
+  return bridge.privateChannels ?? bridge.type !== 'teams';
+}
+
 export function channelChoiceCards(
-  bridge: Pick<RemoteBridge, 'type' | 'displayName' | 'channelIdsRefused'>
+  bridge: ChoiceBridge,
+  linkedHere: boolean | null = null
 ): ChannelChoiceCard[] {
   const known = NEW_CHANNEL[bridge.type] ?? OTHER;
+  // Said only to someone who has no confirmed account linked here, the one case
+  // where the private channel would be refused. Not while the answer is still
+  // unknown: a warning on a list that has not arrived is a false alarm.
+  const privateDetail =
+    bridge.privateChannelNeedsLinkedAccount && linkedHere === false
+      ? `${known.private} ${linkFirst(bridge)}`
+      : known.private;
   return [
     { value: 'public', title: 'New public channel', detail: known.public },
-    ...(known.private !== null
-      ? [{ value: 'private' as const, title: 'New private channel', detail: known.private }]
+    ...(offersPrivateChannel(bridge)
+      ? [{ value: 'private' as const, title: 'New private channel', detail: privateDetail }]
       : []),
     ...(bridge.channelIdsRefused === null
       ? [
@@ -67,10 +92,21 @@ export function channelChoiceCards(
   ];
 }
 
+/**
+ * Why a private channel on `bridge` needs the person's linked account: Teams
+ * makes them its owner; anywhere else they are put in it, as nobody else
+ * could let them in.
+ */
+export function linkFirst(bridge: Pick<ChoiceBridge, 'type' | 'displayName'>): string {
+  return bridge.type === 'teams'
+    ? `Link your ${bridge.displayName} account first: ${bridge.displayName} needs you as its owner.`
+    : `Link your ${bridge.displayName} account first, so Switch can add you to it.`;
+}
+
 /** `options` with its channel choice kept only if `bridge` offers it. */
 export function optionsForBridge(
   options: RoomCreateOptions,
-  bridge: Pick<RemoteBridge, 'type' | 'displayName' | 'channelIdsRefused'> | null
+  bridge: ChoiceBridge | null
 ): RoomCreateOptions {
   if (bridge === null) return options;
   const offered = new Set(channelChoiceCards(bridge).map((card) => card.value));
