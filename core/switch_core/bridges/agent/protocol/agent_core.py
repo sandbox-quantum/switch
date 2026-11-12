@@ -172,6 +172,7 @@ from switch_core.trust.client import (
     trust_annotation,
     trust_is_active,
 )
+from switch_core.ui_spec import UI_CONTENT_KEY, UISpec, trust_text
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
@@ -294,9 +295,11 @@ def _trust_feedback(
     delivered: str | None,
     alert: tuple[str, TrustOutcome] | None,
     notice_error: str | None,
+    card_dropped: bool,
 ) -> TrustFeedback | None:
     """What to tell an agent Switch Trust did to the text it sent, or None
-    when it let the text through unflagged.
+    when it let the text through unflagged. `card_dropped` is set when it
+    redacted the text of the message's card, which was then not sent.
 
     `verdict` is Switch Trust's outcome for the text (None when it was not
     checked), `alert` the notice due under the message, if any, and
@@ -307,13 +310,14 @@ def _trust_feedback(
     alerted: Literal["alerted", "errored"] | None = None
     if alert is not None:
         alerted = "alerted" if alert[1] == "alerted" else "errored"
-    if verdict == "redacted":
+    if verdict == "redacted" or card_dropped:
         return TrustFeedback(
             outcome="redacted",
             delivered=delivered,
             alert=alerted,
             note=note,
             notice_error=notice_error,
+            card="dropped" if card_dropped else None,
         )
     if alerted is None:
         return None
@@ -1788,6 +1792,52 @@ class AgentCore:
         pending_alert = (annotation, check.outcome) if annotation is not None else None
         return content, pending_alert, check.outcome
 
+    async def _enforce_card_trust(
+        self,
+        room: RoomDescriptor,
+        content: str,
+        ui: UISpec,
+        thread_root_id: str | None,
+        client: AgentActor,
+    ) -> tuple[str, tuple[str, TrustOutcome] | None, TrustOutcome, UISpec | None]:
+        """`_enforce_trust` for a message carrying a card: every string in the
+        card (`trust_text`) is checked alongside the body. A card Switch Trust
+        blocks, or redacts with nothing to redact with, blocks the whole send
+        as the body would. A card it redacts is dropped (returned as None) —
+        a card has no redacted form, and its words must not reach the room —
+        and the body goes alone. Its alert or error notes join the body's."""
+        body_check, card_check = await asyncio.gather(
+            check_message(
+                self.trust_client, role="assistant", content=content, room_id=room.id
+            ),
+            check_message(
+                self.trust_client,
+                role="assistant",
+                content=trust_text(ui),
+                room_id=room.id,
+            ),
+        )
+        if card_check.blocked or (
+            card_check.outcome == "redacted" and card_check.redacted_content is None
+        ):
+            await self._post_trust_blocked_notice(room, thread_root_id, client)
+            raise GuardrailBlockedError(card_check)
+        delivered, body_alert, verdict = await self._apply_trust_check(
+            room, content, body_check, thread_root_id, client
+        )
+        alerts = [body_alert] if body_alert is not None else []
+        card_annotation = trust_annotation(card_check)
+        if card_annotation is not None:
+            alerts.append((card_annotation, card_check.outcome))
+        pending_alert: tuple[str, TrustOutcome] | None = None
+        if alerts:
+            pending_alert = (
+                "\n".join(dict.fromkeys(note for note, _ in alerts)),
+                "alerted" if any(o == "alerted" for _, o in alerts) else "errored",
+            )
+        sent_ui = None if card_check.outcome == "redacted" else ui
+        return delivered, pending_alert, verdict, sent_ui
+
     async def _post_trust_blocked_notice(
         self, room: RoomDescriptor, thread_root_id: str | None, client: AgentActor
     ) -> None:
@@ -1916,6 +1966,7 @@ class AgentCore:
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
+        ui: UISpec | None = None,
     ) -> SentMessage:
         """Send a message to a room. Returns its event_id and, when Switch
         Trust redacted or flagged it, what it did (`TrustFeedback`), so the
@@ -1923,7 +1974,9 @@ class AgentCore:
 
         When thread_id is set the message is posted as a reply in that thread
         (the id is normalised to the thread root). `extra_content` carries
-        `com.switch.*` markers alongside the body. Raises ValueError if the
+        `com.switch.*` markers alongside the body, and `ui` a card shown with
+        it where the platform can draw one (`_enforce_card_trust`). Raises
+        ValueError if the
         agent is not a room member, the client is not running, or thread_id
         does not resolve to an event in the room.
         Raises PermissionError if auth fails (should not happen in same-process).
@@ -1942,9 +1995,21 @@ class AgentCore:
             thread_root_id = await self._resolve_thread_root(
                 client, room.transport_room_id, thread_id
             )
-        delivered, pending_alert, verdict = await self._enforce_trust(
-            room, content, thread_root_id, client
-        )
+        ui_dropped = False
+        if ui is None:
+            delivered, pending_alert, verdict = await self._enforce_trust(
+                room, content, thread_root_id, client
+            )
+        else:
+            delivered, pending_alert, verdict, sent_ui = await self._enforce_card_trust(
+                room, content, ui, thread_root_id, client
+            )
+            ui_dropped = sent_ui is None
+            if sent_ui is not None:
+                extra_content = {
+                    **(extra_content or {}),
+                    UI_CONTENT_KEY: sent_ui.model_dump(mode="json", exclude_none=True),
+                }
         event_id = await client.send_message(
             room.transport_room_id,
             delivered,
@@ -1976,7 +2041,9 @@ class AgentCore:
             )
         return SentMessage(
             event_id=event_id,
-            trust=_trust_feedback(verdict, delivered, pending_alert, notice_error),
+            trust=_trust_feedback(
+                verdict, delivered, pending_alert, notice_error, ui_dropped
+            ),
         )
 
     async def send_media(
@@ -2139,7 +2206,7 @@ class AgentCore:
             "attachments": posted,
         }
         feedback = _trust_feedback(
-            caption_verdict, caption_text, media_alert, notice_error
+            caption_verdict, caption_text, media_alert, notice_error, False
         )
         if feedback is not None:
             result["trust"] = feedback.to_result()
@@ -2189,6 +2256,7 @@ class AgentCore:
         content: str,
         thread_id: str | None = None,
         target_roles: list[str] | None = None,
+        ui: UISpec | None = None,
     ) -> SendTargetedResult:
         """Send a message addressed to specific agents/users and/or roles.
 
@@ -2331,6 +2399,7 @@ class AgentCore:
             body,
             thread_id=thread_id,
             extra_content=room_wide_mention_content() if room_wide else None,
+            ui=ui,
         )
 
         # Reachability: direct agent name targets plus each role's live holders.
@@ -2492,7 +2561,7 @@ class AgentCore:
             notice_error = await self._post_trust_alert_notice(
                 room, event_id, annotation, outcome
             )
-        return _trust_feedback(verdict, detail, pending_alert, notice_error)
+        return _trust_feedback(verdict, detail, pending_alert, notice_error, False)
 
     async def set_runtime_state(
         self,

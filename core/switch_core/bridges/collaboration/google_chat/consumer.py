@@ -452,10 +452,12 @@ class InboundConsumer:
             )
             return True
         on_interaction = self.on_interaction
+        display_name = user.get("displayName", "User")
         interaction = InboundInteraction(
             channel_id=space_name,
             sender_id=user.get("name", ""),
-            sender_name=user.get("displayName", "User"),
+            sender_name=display_name,
+            sender_display_name=display_name,
             action_id=action_id,
             value=token,
             message_ref=payload.get("message", {}).get("name"),

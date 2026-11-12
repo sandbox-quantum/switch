@@ -543,7 +543,7 @@ class CloudMachine(Base):
             name="ck_cloud_machine_desired_state",
         ),
         CheckConstraint(
-            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner')",
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'admin')",
             name="ck_cloud_machine_stop_reason",
         ),
         Index(
@@ -2603,6 +2603,9 @@ class BridgeMessageMap(TenantScoped, Base):
     # answers, so a second process handling the same message finds the claim
     # and does not post it again (`CollaborationCore._claim_outbound`).
     external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The press that answered the card this message carries, `{"by", "label"}`;
+    # null until a press is delivered. A card takes one answer.
+    card_answer: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

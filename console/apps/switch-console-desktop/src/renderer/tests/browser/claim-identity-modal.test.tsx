@@ -249,6 +249,19 @@ describe('linking an account on a server that wants proof', () => {
     expect(button(el, 'Copy')).toBeDefined();
   });
 
+  it('copies the whole command to post, not just the code', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    claimReturns(PENDING_RESULT);
+    const el = await render();
+    await claimAda(el);
+
+    await click(button(el, 'Copy'));
+
+    expect(writeText).toHaveBeenCalledWith('/link-account 7KQ2-M9XD');
+    expect(button(el, 'Copied')).toBeDefined();
+  });
+
   it('gives a new code in place of the old one', async () => {
     claimReturns(PENDING_RESULT);
     issueIdentityLinkCode.mockResolvedValue({

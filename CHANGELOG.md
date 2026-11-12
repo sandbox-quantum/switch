@@ -59,6 +59,9 @@ version of their own to them without also giving them a release of their own.
   needs its own Meta app, and Switch checks the token's app and permissions
   when you save it. Replies more than 24 hours after the person's last message
   are refused by WhatsApp; Switch doesn't send template messages.
+- **Agents can use their owner's Sentry, through the Sentry connection.** Core
+  signs in through Sentry's MCP server and reads the account from its `whoami`
+  tool. Agents have Sentry for up to an hour after each sign-in.
 - **switch-core counts controller reconnects.** `switch.controllers.connections`
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn
@@ -108,6 +111,18 @@ version of their own to them without also giving them a release of their own.
   `alerted` or `errored`. A message Switch Trust left alone has no `trust`
   field, so its result is as before. Until now an agent whose words were
   redacted had no way to know.
+- **The Notion connection.** A person connects Notion from Switch Console,
+  choosing a workspace at Notion's consent screen, and a granted agent
+  searches, reads and edits pages, databases and comments there, as that
+  person, through Notion's hosted MCP server. Nothing needs configuring on the
+  server: Core registers its own client, and the sign-in comes back to Switch
+  Console. Notion has one scope and no read-only sign-in, so every connection
+  can write. Its tokens reach no account endpoint, so Switch reads the account
+  by token introspection (RFC 7662), which an `oauth` catalog entry can now
+  ask for in place of an account URL: the connection is that user in that
+  workspace. A person has one Notion connection. Connecting another workspace
+  replaces it, and agents must be granted Notion again. Disconnecting revokes
+  the sign-in at Notion.
 - **How many users and agents each workspace has.** `GET /gateway/tenants/counts`
   answers for every workspace the caller may enter, counting people as the
   workspace's members list shows them: its members, and its organization's
@@ -217,6 +232,21 @@ version of their own to them without also giving them a release of their own.
   service sign-in lost its `confirm` route) but kept declaring revision 1. It
   now declares `speaks: 2, accepts: 2`, so a Switch Console can tell it apart
   from a server too old for it.
+- **A new switch-core pod takes traffic as soon as it can serve, so a rolling
+  update leaves the other pods carrying everything for less time.** With
+  more than one replica, a starting pod read not ready until the health
+  check after its listeners connected, ten seconds later, and the chart's
+  readiness probe looked every ten seconds, so pods became ready 11 to 19
+  seconds after they could serve. A not-ready answer is now checked again
+  after a second, and the chart probes readiness every two seconds. A pod is
+  still taken out of service only after a minute of failures.
+- **Kubernetes no longer restarts a switch-core pod that is still booting or
+  only busy.** The chart's liveness probe began 30 seconds after a pod started
+  and gave up after three answers slower than a second, so a pod whose boot
+  waited for others starting at the same time, or whose event loop was busy
+  taking over another pod's agents during a roll, was restarted and handed its
+  work over again. A startup probe now gives a booting pod up to five minutes,
+  and liveness waits five seconds for an answer.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error
@@ -509,7 +539,7 @@ version of their own to them without also giving them a release of their own.
   server refuses with a 4xx other than 401 or 429, the message gives the
   status. The identity call reaches only what the outbound policy allows
   (`OUTBOUND_ALLOWED_PRIVATE_HOSTS`). `account_id` can list 2 to 8 paths,
-  joined into one id, so a person in two accounts has two connections. An
+  joined into one id, so two accounts of one person have two different ids. An
   entry whose vendor has no OAuth scopes can leave out `scope`. Its sign-ins
   are always read and write, and it has no access profiles. For a discovered
   server, Core now sends the `resource` that the server advertises. Core
@@ -3036,6 +3066,8 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A service's note on agent access.** The connector page and the connect
+  step show it where a service sets one (Sentry).
 - **Pi as an agent CLI.** Agents can run on Pi (`pi --mode rpc`, 1.5.0), on
   any model provider Pi is signed in to, with the model chosen in Switch.
   Each session loads a Switch extension with `-e`, written to a directory of
