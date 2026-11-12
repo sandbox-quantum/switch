@@ -5,6 +5,8 @@ takes its agents off it. A cloud device is Switch's to name and remove.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import UTC, datetime
 
 import httpx
@@ -12,7 +14,15 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import TENANT_ZERO_ID, AgentController, TenantMember, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    AgentController,
+    AgentDefinition,
+    TenantMember,
+    User,
+)
+from switch_core.db.session_scope import tenant_session
+from switch_core.management.notifier import CREDENTIAL_REVOKED
 from switch_core.management.workspace_devices import device_type
 from tests.switch_core.management.harness import (
     WORKSPACES_DIR,
@@ -203,6 +213,74 @@ class TestAnAdminRemoving:
         assert agent["desired_state"] == "running"
         assert agent["definition"]["directory"] is None
         assert refused.status_code == 401
+
+    async def test_two_removals_at_once_remove_it_once(
+        self, harness: Harness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The second waits for the first, then finds it removed: the device
+        is not revoked, and its agents not taken off, twice over."""
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller, _agent = await _device_with_agent(harness, client, ada, "scout")
+        service = harness.management.service
+        controller_id = controller.controller_id
+        subscription = service.notifier.subscribe(controller_id)
+        caplog.set_level(logging.INFO, logger="switch_core.management.service")
+
+        async def remove_alongside() -> None:
+            async with tenant_session(
+                harness.session_factory, TENANT_ZERO_ID
+            ) as session:
+                await service.remove_controller(
+                    session, TENANT_ZERO_ID, controller_id, owner_id=None
+                )
+
+        async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as first:
+            assert await service.controllers.locked(
+                first, TENANT_ZERO_ID, controller_id
+            )
+            second = asyncio.create_task(remove_alongside())
+            await asyncio.sleep(0.5)
+            assert not second.done()
+            await service.remove_controller(
+                first, TENANT_ZERO_ID, controller_id, owner_id=None
+            )
+        await second
+
+        assert [event for event, _ in subscription.drain()] == [CREDENTIAL_REVOKED]
+        removals = [
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith(
+                f"Revoked agent controller {controller_id}"
+            )
+        ]
+        assert removals == [
+            f"Revoked agent controller {controller_id}, taking 1 agent(s) off it"
+        ]
+
+    async def test_an_agent_on_someone_elses_device_still_names_it(
+        self, harness: Harness
+    ) -> None:
+        """Placing never puts an agent on another person's device, but nothing
+        in the tables stops it; the list still answers."""
+        ada = await add_member(harness.session_factory, "ada")
+        grace = await add_member(harness.session_factory, "grace")
+        async with harness.client() as client:
+            _device, agent_id = await _device_with_agent(harness, client, ada, "scout")
+            graces = await enroll_console(harness, client, grace, name="grace-laptop")
+            async with harness.session_factory() as session:
+                await session.execute(
+                    update(AgentDefinition)
+                    .where(AgentDefinition.agent_id == agent_id)
+                    .values(controller_id=graces.controller_id)
+                )
+                await session.commit()
+            listed = await client.get(WORKSPACE, cookies=cookies_for(ada))
+
+        assert listed.status_code == 200, listed.text
+        [agent] = listed.json()["managed_agents"]
+        assert agent["controller_name"] == "grace-laptop"
 
     async def test_a_member_cannot_remove_someone_elses_device_or_agent(
         self, harness: Harness

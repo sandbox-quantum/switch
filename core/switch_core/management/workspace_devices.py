@@ -163,20 +163,27 @@ async def workspace_devices(
         for c in controllers
         if not is_revoked(c)
     ]
-    # An agent is placed only on its owner's own device, so whoever sees the
-    # agent sees the device it is on, removed or not.
-    managed_agents = [
-        _managed_agent(
-            row,
-            agent.name,
-            agent.display_name,
-            None if row.controller_id is None else by_id[row.controller_id],
-            None if row.controller_id is None else states[row.controller_id],
-            owners[row.owner_id],
-            viewer,
+    managed_agents = []
+    for row, agent in definitions:
+        controller = None if row.controller_id is None else by_id.get(row.controller_id)
+        if row.controller_id is not None and controller is None:
+            # Placed on a device the viewer's list leaves out: someone else's,
+            # which placing never does, but a definition does not stop. The
+            # agent's own owner still sees where it is.
+            controller = await management.controllers.get(
+                session, tenant_id, row.controller_id
+            )
+        managed_agents.append(
+            _managed_agent(
+                row,
+                agent.name,
+                agent.display_name,
+                controller,
+                None if controller is None else management.state_of(controller, leases),
+                owners[row.owner_id],
+                viewer,
+            )
         )
-        for row, agent in definitions
-    ]
     operations = await management.operations.list_for_controllers(
         session, tenant_id, list(by_id), OPERATION_LIST_LIMIT
     )
