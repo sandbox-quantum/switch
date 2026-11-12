@@ -7,7 +7,9 @@ what a standalone or MCP client leaves behind. Coverage is not presence: an
 
 Switch keeps no record of a session's liveness, so a session that has stopped
 without leaving its room still counts until another takes the room or the
-agent's controller connection goes.
+connection it was placed over goes. The placement itself is kept past that,
+and counts again once a live connection owns it: the same connection
+reattaching, or the watcher restating its placements on a new one.
 
 A controller-backed agent has neither placements nor claims here, and Switch
 does not know where its sessions are. It is present in every room it is a
@@ -33,7 +35,7 @@ def agents_present_in(
             controllers.live_in_room(agent_id, room_id)
             if controllers.is_bound(agent_id)
             else (
-                connections.session_in_room(agent_id, room_id) is not None
+                connections.live_session_in_room(agent_id, room_id) is not None
                 or connections.claimant_of(agent_id, room_id) is not None
             )
         )
@@ -44,7 +46,7 @@ def rooms_occupied(agent_id: str, connections: AgentConnectionRegistry) -> set[s
     """Every room this agent is in right now."""
     if connections.controllers.is_bound(agent_id):
         return connections.controllers.live_rooms(agent_id)
-    occupied = connections.placed_rooms(agent_id)
+    occupied = connections.live_placed_rooms(agent_id)
     for conn in connections.for_agent(agent_id):
         occupied |= conn.rooms
     return occupied

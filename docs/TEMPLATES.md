@@ -148,7 +148,7 @@ is the name; keep it a plain identifier.
 | `bridge` | The display name of a messaging app set up on the server. | The server checks it exists. |
 | `room` | The name of a room on the server. | The server checks it exists. |
 | `user` | A username on the room's messaging app. | The server looks it up on the app. |
-| `provider` | A coding agent id: `claude`, `codex`, `opencode`, `antigravity` or `cursor`. | Read when the agents are created; never in the room document. |
+| `provider` | A coding agent id: `claude`, `codex`, `opencode`, `antigravity`, `cursor`, `deepseek-harness`, `pi` or `mistral-vibe`. | Read when the agents are created; never in the room document. |
 | `location` | Where an agent runs: `local`, or an SSH host name the Console knows. | Switch Console; never in the room document. |
 | `machine` | One of the deployer's machines on the server, by name or id. | Read when the agents are created; never in the room document. |
 | `directory` | An agent's working directory, on the machine it runs on. | Read when the agents are created; never in the room document. |
@@ -268,7 +268,7 @@ agent:
   icon_url:       https URL
   description:    text
   instructions:   text
-  provider:       claude | codex | opencode | antigravity | cursor | "{param}"
+  provider:       claude | codex | opencode | antigravity | cursor | deepseek-harness | pi | mistral-vibe | "{param}"
   machine:        machine name or id | "{param}"
   location:       local | ssh host | "{param}"
   directory:      path | "{param}"
@@ -458,7 +458,8 @@ is missing, ambiguous or not the deployer's to read stops the run; an entry
 with `type`, `name`, `description`, `instructions` and `value: {urls: [...]}`
 creates a new one (private unless `read_visibility` / `write_visibility` say
 otherwise). `docs:` are documents created in the room, each
-`{name, description, instructions, content}`. An exported room writes roles
+`{name, description, instructions, content}`; any agent in the room may
+update or delete them. An exported room writes roles
 and docs in full and references by `id`.
 
 `agents:` names agents that exist on the server, plus the ones this

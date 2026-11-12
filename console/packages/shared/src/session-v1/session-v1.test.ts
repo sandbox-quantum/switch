@@ -538,3 +538,29 @@ it.each(['gemini', 'antigravity', 'future-provider'])(
     expect(snapshotSchema.parse(snapshot).session.provider).toBe(provider);
   }
 );
+
+it('keeps only the newest child revision through snapshot and event replay', () => {
+  const replica = new SessionReplica(initial());
+  const child: Item = {
+    ...item(1, ''),
+    itemId: 'child',
+    kind: 'tool-activity',
+    subagent: true,
+    title: 'Reviewer',
+  };
+  for (const [index, update] of [
+    child,
+    { ...child, revision: 3, status: 'completed' as const },
+    { ...child, revision: 2 },
+  ].entries()) {
+    replica.apply(
+      serverEventSchema.parse(
+        event(initial().throughSequence + 1 + index, { type: 'item.upsert', item: update })
+      )
+    );
+  }
+  const snapshot = snapshotSchema.parse(replica.snapshot());
+  expect(
+    new SessionReplica(snapshot).snapshot().items.find((item) => item.itemId === 'child')
+  ).toMatchObject({ kind: 'tool-activity', subagent: true, status: 'completed', revision: 3 });
+});

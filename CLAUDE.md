@@ -124,8 +124,8 @@ are no connector plugins and no standalone runtime. Each session gets the Switch
 tools from its own session host, and the room-workflow skill from Console:
 `console/packages/plugins/src/switch-skill/SKILL.md` is the single copy,
 exported as `@switch-console/plugins/switch-skill`. OpenCode loads it as a
-skill file; Codex gets it as developer instructions; Claude Code, Cursor and
-Antigravity get it (without its frontmatter) as system context.
+skill file; Codex gets it as developer instructions; Claude Code, Cursor,
+Antigravity and Junie get it (without its frontmatter) as system context.
 
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, event delivery, or anything an agent needs to know —

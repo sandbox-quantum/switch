@@ -45,13 +45,20 @@ function isBeingDeleted(machine: CloudMachine, now: number): boolean {
 export function isMachineAsleep(machine: CloudMachine, now: number): boolean {
   return (
     machine.sleeping &&
+    !isAdminStopped(machine) &&
     !isBeingDeleted(machine, now) &&
     machine.state !== 'error' &&
     !isRetained(machine)
   );
 }
 
+/** A server administrator holds the machine stopped; only they can release it. */
+function isAdminStopped(machine: CloudMachine): boolean {
+  return machine.stopped_by_admin;
+}
+
 function machineLabel(machine: CloudMachine, now: number): string {
+  if (isAdminStopped(machine)) return 'Stopped by an administrator';
   if (isBeingDeleted(machine, now)) return 'Deleting disk…';
   if (machine.state === 'error') return 'Error';
   if (isRetained(machine)) return 'Retained';
@@ -63,6 +70,8 @@ function machineLabel(machine: CloudMachine, now: number): string {
 }
 
 function machineProblem(machine: CloudMachine, now: number): string | null {
+  if (isAdminStopped(machine))
+    return 'A server administrator stopped the machine. Contact them to have it released.';
   if (isBeingDeleted(machine, now)) return null;
   if (machine.error_code === 'disk_full') return 'The machine’s disk is full.';
   if (machine.state !== 'error') return null;
@@ -85,6 +94,7 @@ function machineDisk(machine: CloudMachine): MachineDisk | null {
 }
 
 function machineActions(machine: CloudMachine, now: number): MachineAction[] {
+  if (isAdminStopped(machine)) return [];
   if (isBeingDeleted(machine, now)) return [];
   if (machine.state === 'error')
     return machine.error_code === 'machine_needs_attention' ? [] : ['retry'];
@@ -109,6 +119,7 @@ export function machinePresentation(machine: CloudMachine, now: number): Machine
     problem: machineProblem(machine, now),
     retainUntil:
       isRetained(machine) &&
+      !isAdminStopped(machine) &&
       !isBeingDeleted(machine, now) &&
       machine.state !== 'error' &&
       machine.retain_until !== null &&

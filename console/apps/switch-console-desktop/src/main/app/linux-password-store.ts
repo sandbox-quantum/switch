@@ -67,15 +67,69 @@ export function probeSecretService(
     : { kind: 'absent' };
 }
 
+export type ChromiumKeyring = 'kwallet' | 'gnome-libsecret' | 'basic_text';
+
+const SECRET_SERVICE_DESKTOPS = [
+  'Unity',
+  'Deepin',
+  'GNOME',
+  'X-Cinnamon',
+  'Pantheon',
+  'XFCE',
+  'UKUI',
+  'COSMIC',
+];
+const SECRET_SERVICE_SESSIONS = ['deepin', 'gnome', 'mate', 'ukui', 'xubuntu'];
+
+/**
+ * The keyring Chromium picks by itself when no `--password-store` is passed:
+ * `base::nix::GetDesktopEnvironment` (base/nix/xdg_util.cc) mapped through
+ * `SelectBackend` (components/os_crypt/sync/key_storage_util_linux.cc), as in
+ * the Chromium Electron 41 ships. Only the outcome matters here, so the KWallet
+ * versions are folded together. A desktop it does not recognise (Hyprland,
+ * Sway, i3, niri, LXQt) or none at all gets `basic_text`.
+ */
+export function chromiumDefaultKeyring(env: NodeJS.ProcessEnv): ChromiumKeyring {
+  const desktops = (env.XDG_CURRENT_DESKTOP ?? '')
+    .split(':')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const desktop of desktops) {
+    if (desktop === 'KDE') return 'kwallet';
+    if (desktop === 'LXQt') return 'basic_text';
+    if (SECRET_SERVICE_DESKTOPS.includes(desktop)) return 'gnome-libsecret';
+  }
+
+  const session = env.DESKTOP_SESSION ?? '';
+  if (SECRET_SERVICE_SESSIONS.includes(session) || session.includes('xfce')) {
+    return 'gnome-libsecret';
+  }
+  if (session === 'kde4' || session === 'kde-plasma') return 'kwallet';
+  if (session === 'kde') return env.KDE_SESSION_VERSION === undefined ? 'basic_text' : 'kwallet';
+
+  if (env.GNOME_DESKTOP_SESSION_ID !== undefined) return 'gnome-libsecret';
+  if (env.KDE_FULL_SESSION !== undefined) {
+    return env.KDE_SESSION_VERSION === undefined ? 'basic_text' : 'kwallet';
+  }
+  return 'basic_text';
+}
+
+function describeDesktop(env: NodeJS.ProcessEnv): string {
+  return env.XDG_CURRENT_DESKTOP
+    ? `desktop "${env.XDG_CURRENT_DESKTOP}"`
+    : 'no desktop environment (XDG_CURRENT_DESKTOP unset)';
+}
+
 /**
  * The `--password-store` Chromium should use on Linux when the launch did not
  * choose one, or null to leave its own choice.
  *
- * Chromium picks a keyring from the desktop environment, and with none
- * (`XDG_CURRENT_DESKTOP` unset: WSL2, a headless box, a bare window manager)
- * it falls back to `basic_text`, which the secrets store refuses. A running
- * Secret Service is still usable there when asked for, so it is asked for
- * only when one is on the session bus.
+ * Chromium picks a keyring from the desktop environment, and for one it does
+ * not recognise (a window manager such as Hyprland or Sway, or none at all, as
+ * under WSL2) it falls back to `basic_text`, which the secrets store refuses.
+ * A running Secret Service is still usable there when asked for, so it is
+ * asked for in that case only, and only when one is on the session bus. A
+ * desktop Chromium already handles, KDE with KWallet included, is left alone.
  */
 export function linuxPasswordStoreFallback(
   env: NodeJS.ProcessEnv,
@@ -83,15 +137,25 @@ export function linuxPasswordStoreFallback(
   probe: () => SecretServiceProbe
 ): string | null {
   if (passwordStoreChosen) return null;
-  if (env.XDG_CURRENT_DESKTOP) return null;
+  if (chromiumDefaultKeyring(env) !== 'basic_text') return null;
 
+  const desktop = describeDesktop(env);
   const secretService = probe();
   if (secretService.kind === 'failed') {
     log.warn(
-      `Could not check the session bus for a Secret Service (${secretService.reason}); ` +
-        'leaving the keyring choice to Chromium.'
+      `Chromium has no keyring for ${desktop}, and checking the session bus for a Secret ` +
+        `Service failed (${secretService.reason}). Secrets cannot be saved unless Switch ` +
+        'Console is started with --password-store=gnome-libsecret.'
     );
     return null;
   }
-  return secretService.kind === 'present' ? 'gnome-libsecret' : null;
+  if (secretService.kind === 'absent') {
+    log.warn(
+      `Chromium has no keyring for ${desktop} and no Secret Service is on the session bus. ` +
+        'Secrets cannot be saved until one, such as gnome-keyring, is running.'
+    );
+    return null;
+  }
+  log.info(`Using the Secret Service for secret storage: Chromium has no keyring for ${desktop}.`);
+  return 'gnome-libsecret';
 }

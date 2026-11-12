@@ -41,7 +41,7 @@ import { useMachineDetails } from './use-machines';
 type Filter = 'all' | MachineCategory;
 
 /**
- * Settings → Your devices: the computers that run the signed-in person's managed
+ * Settings → Devices: the computers that run the signed-in person's managed
  * agents on the server the window is on, one card each, opening its page.
  * The server returns the whole list in one response, unpaged, and only this
  * person's own devices.
@@ -62,7 +62,7 @@ export const DevicesSettingsPage = observer(function DevicesSettingsPage() {
     <>
       <PageHeader
         sticky
-        title="Your devices"
+        title="Devices"
         description={`The devices that host your agents on ${server?.name ?? 'this server'}.`}
       >
         <div className="flex items-center justify-between gap-2">
@@ -121,7 +121,7 @@ function DevicesBody({
   if (machines.error && !machines.data)
     return frozen ? (
       <p className="pt-4 text-sm text-foreground-muted">
-        Your devices show here once the server answers again.
+        Devices show here once the server answers again.
       </p>
     ) : (
       <p role="alert" className="pt-4 text-sm text-destructive">

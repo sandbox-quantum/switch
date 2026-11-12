@@ -309,13 +309,19 @@ terms can run without this image: Qwen on llama.cpp's CPU image (compose's
 
 ## Evaluate
 
-`eval/` holds two scenario sets: `scenarios.json` (15 easy cases, three agents)
-and `scenarios_hard.json` (40 cases, five agents with overlapping jobs;
-regenerate it with `eval/make_hard_scenarios.py`).
+`eval/` holds four scenario sets: `scenarios.json` (15 easy cases, three agents),
+`scenarios_hard.json` (40 cases, five agents with overlapping jobs; regenerate
+it with `eval/make_hard_scenarios.py`), `scenarios_extra60.json` (60 cases
+across four rooms), and `scenarios_names.json` (24 cases where an agent is
+named in plain text: spoken to, so it answers, or only mentioned, quoted or
+named in code or a link, so it doesn't; each case's `note` says which). The
+standard run is the hard, extra60 and names sets.
 
 ```
 uv run python eval/eval.py --url http://localhost:8230
 uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_hard.json
+uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_extra60.json
+uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_names.json
 # through the Haiku override (reads ANTHROPIC_API_KEY)
 uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_hard.json --backend anthropic
 ```

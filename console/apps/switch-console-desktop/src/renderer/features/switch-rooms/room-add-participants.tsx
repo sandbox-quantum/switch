@@ -31,7 +31,7 @@ import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import { administersWorkspace } from '@shared/core/workspaces/workspaces';
-import { addableAgents, addablePeople } from './room-labels';
+import { addableAgents, addableBridgePeople, addablePeople } from './room-labels';
 import { agentKindFor, localAgentFor, PersonMark, roomDetailKey } from './room-participants';
 
 /*
@@ -257,9 +257,9 @@ export const AddPeoplePanel = observer(function AddPeoplePanel({
 }) {
   const queryClient = useQueryClient();
   const [notAdded, setNotAdded] = useState<string | null>(null);
-  const users = useQuery({
-    queryKey: ['bridge-user-names', workspaceId, bridgeId],
-    queryFn: () => rpc.workspaces.listBridgeUserNames({ workspaceId, bridgeId }),
+  const people = useQuery({
+    queryKey: ['bridge-people', workspaceId, bridgeId],
+    queryFn: () => rpc.workspaces.listBridgePeople({ workspaceId, bridgeId }),
   });
   const present = new Set(room.connectedUserNames);
   return (
@@ -268,32 +268,28 @@ export const AddPeoplePanel = observer(function AddPeoplePanel({
         noun="person"
         searchPlaceholder={`Search people on ${room.bridgeDisplayName ?? 'the messaging app'}…`}
         allInText="Everyone Switch knows on this messaging app is already in the room."
-        loading={users.isPending}
-        loadError={users.isError ? failureText(users.error, 'Could not list the people.') : null}
-        candidates={(users.data ?? [])
-          .filter((name) => !present.has(name))
-          .map((name) => ({
-            id: name,
-            name,
-            mark: <PersonMark name={name} size="sm" />,
-            detail: 'person',
-          }))}
+        loading={people.isPending}
+        loadError={people.isError ? failureText(people.error, 'Could not list the people.') : null}
+        candidates={addableBridgePeople(people.data ?? [], present).map((person) => ({
+          ...person,
+          mark: <PersonMark name={person.name} size="sm" />,
+        }))}
         footer={
           <p className="px-1 text-xs text-foreground-muted">
             Only people Switch has seen on this messaging app are listed.
           </p>
         }
-        onAdd={async (name) => {
+        onAdd={async (username) => {
           setNotAdded(null);
           const updated = await rpc.workspaces.addRoomUsers({
             workspaceId,
             roomId: room.id,
-            userNames: [name],
+            userNames: [username],
           });
           queryClient.setQueryData(roomDetailKey(workspaceId, room.id), updated);
-          if (!updated.connectedUserNames.includes(name))
+          if (!updated.connectedUserNames.includes(username))
             setNotAdded(
-              `${name} was not added. The messaging app may not have let Switch invite them.`
+              `@${username} was not added. The messaging app may not have let Switch invite them.`
             );
         }}
       />

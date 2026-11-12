@@ -24,6 +24,7 @@ from pydantic.json_schema import SkipJsonSchema
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
+    CardRejectedError,
     ChannelNotBindable,
     ConfigEditRefused,
     PlatformAdapter,
@@ -39,6 +40,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     InboundAgentJoin,
     InboundAppJoin,
@@ -71,18 +73,23 @@ from switch_core.bridges.collaboration.teams.auth import (
 )
 from switch_core.bridges.collaboration.teams.cards import (
     activity_detail,
+    agent_card,
     agent_message_card,
     answer_actions,
     card_attachment,
     interrupt_action,
     read_press,
+    settle_card,
+    ui_spec_elements,
 )
 from switch_core.bridges.collaboration.teams.connector import (
     BotConnectorClient,
     BotConnectorConflict,
+    BotConnectorError,
     BotConnectorGone,
     BotConnectorRefused,
     BotConnectorThrottled,
+    checked_payload,
 )
 from switch_core.bridges.collaboration.teams.crypto import (
     ResourceDataError,
@@ -106,6 +113,12 @@ from switch_core.room_wide_mention import (
     defuse_mass_mention_words_in_prose,
 )
 from switch_core.sessions.contract import TURN_ENDED
+from switch_core.ui_spec import (
+    ANSWERER_NAME_MAX,
+    UI_ACTION_PREFIX,
+    UISpec,
+    card_buttons,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.collaboration.teams.shared_app import TeamsSharedApp
@@ -195,6 +208,23 @@ context rather than a field: two people pressing at once are two tasks with a
 context each, and the same person pressing twice is two presses rather than one
 notice overwriting another.
 """
+
+_PRESS_CONVERSATION: ContextVar[tuple[str, str] | None] = ContextVar(
+    "switch_teams_press_conversation", default=None
+)
+"""The (service URL, conversation) the press being handled came from, as the
+authenticated invoke names them: where its card is redrawn. After a restart
+`_locate` can only guess, and guesses wrong for a card posted in a thread."""
+
+
+def _settled(activity: dict[str, Any], line: str) -> dict[str, Any]:
+    """A card's activity as answered: its buttons replaced by `line`."""
+    return {
+        **activity,
+        "attachments": [
+            card_attachment(settle_card(activity["attachments"][0]["content"], line))
+        ],
+    }
 
 
 def _invoke_error(status: int, code: str, message: str) -> dict[str, Any]:
@@ -782,6 +812,7 @@ class TeamsAdapter(PlatformAdapter):
     #: in the channel where everyone sees it.
     private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "in_channel"
     private_channel_needs_owner: ClassVar[bool] = True
+    adds_creator_to_public_channel: ClassVar[bool] = False
     docs_slug: ClassVar[str | None] = "microsoft-teams"
     # Graph delivers a channel's messages to every subscription made for it,
     # so only the process holding the bridge makes, adopts and renews them.
@@ -987,6 +1018,9 @@ class TeamsAdapter(PlatformAdapter):
         # channel id -> its display name; "" records that Graph was asked and
         # could not say, so it is not asked again on every message.
         self._channel_names: dict[str, str] = {}
+        # team thread id -> the team's name as activities last gave it, which
+        # is the old name a `teamRenamed` activity does not carry.
+        self._team_names: dict[str, str] = {}
         # channel id -> when a Graph read of it last failed (monotonic), so the
         # retry is throttled without being abandoned. See `_read_channel`.
         self._channel_read_failed_at: dict[str, float] = {}
@@ -1852,6 +1886,127 @@ class TeamsAdapter(PlatformAdapter):
         thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
         return await self._relay(self._connector, channel_id, thread_root_id, activity)
 
+    async def send_ui_message(
+        self,
+        channel_id: str,
+        sender_name: str,
+        spec: UISpec,
+        fallback_text: str,
+        thread_root_id: str | None,
+        *,
+        room_wide_mention: bool,
+    ) -> str | None:
+        """The card under the agent's header in place of the body. The body
+        carries the card's key facts, so it is not drawn again; it is the
+        notification preview and what a surface that cannot draw the card
+        shows. Card text mentions nobody: it gets no mention entities.
+
+        A card Teams refuses, or that is over the activity size limit, raises
+        `CardRejectedError` before anything was posted, so the caller posts the
+        body instead. An
+        unknown outcome is not raised, since the card may be in the channel.
+        """
+        if self._connector is None:
+            raise RuntimeError("Cannot send card: Teams adapter not started")
+        activity = await self._ui_activity(sender_name, spec, fallback_text)
+        labels = [b.label for b in card_buttons(spec)]
+        if labels:
+            # Refused now, as an over-size card is, if the redraw naming who
+            # answered could not be sent.
+            try:
+                checked_payload(
+                    "A card",
+                    _settled(
+                        activity,
+                        self._settled_line(
+                            "@" * ANSWERER_NAME_MAX,
+                            max(labels, key=lambda label: len(self._card_text(label))),
+                        ),
+                    ),
+                )
+            except BotConnectorRefused as error:
+                raise CardRejectedError(str(error)) from error
+        thread_root_id = await self._post_to_answer_in(channel_id, thread_root_id)
+        try:
+            msg_id = await self._relay(
+                self._connector, channel_id, thread_root_id, activity
+            )
+        except BotConnectorRefused as error:
+            raise CardRejectedError(str(error)) from error
+        except BotConnectorError:
+            logger.error(
+                "Teams did not confirm the card in %s; it may have been posted, so "
+                "it is not sent again as text",
+                channel_id,
+                exc_info=True,
+            )
+            return None
+        return msg_id
+
+    async def _ui_activity(
+        self, sender_name: str, spec: UISpec, body: str
+    ) -> dict[str, Any]:
+        agent = await self.agent_rendering(sender_name)
+        return {
+            "type": "message",
+            "summary": f"{agent.field_label}: {body}",
+            "attachments": [
+                card_attachment(
+                    agent_card(agent, body, [], ui_spec_elements(spec, self._card_text))
+                )
+            ],
+        }
+
+    def _settled_line(self, name: str, label: str) -> str:
+        return f"✅ {self.escape_label_for_body(name)} chose {self._card_text(label)}"
+
+    def _card_text(self, text: str) -> str:
+        """Card text with any `<at>` tag broken, so it renders as text."""
+        return self.defuse_mass_mentions(text.replace("<", "<" + _ZERO_WIDTH_SPACE))
+
+    async def settle_card_press(
+        self,
+        interaction: InboundInteraction,
+        label: str,
+        *,
+        author: str,
+        spec: UISpec,
+        body: str,
+    ) -> None:
+        """Redraw the card from its room message with who chose what in place
+        of its buttons; a card takes one answer, so only link buttons stay."""
+        ref = interaction.message_ref
+        if ref is None or self._connector is None:
+            logger.warning(
+                "Cannot mark the card press on %s in %s as done: no message or "
+                "adapter not started, so its buttons stay pressable",
+                ref,
+                interaction.channel_id,
+            )
+            return
+        activity = _settled(
+            await self._ui_activity(author, spec, body),
+            self._settled_line(interaction.sender_display_name, label),
+        )
+        service_url, conversation_id = _PRESS_CONVERSATION.get() or self._locate(
+            interaction.channel_id, ref
+        )
+        try:
+            async with self._writes_to(conversation_id):
+                await self._connector.update_activity(
+                    service_url=service_url,
+                    conversation_id=conversation_id,
+                    activity_id=ref,
+                    activity=activity,
+                )
+        except BotConnectorError:
+            logger.warning(
+                "Could not mark the card press on %s as done; its buttons stay "
+                "pressable",
+                ref,
+                exc_info=True,
+            )
+
     async def _relay(
         self,
         connector: BotConnectorClient,
@@ -2610,11 +2765,11 @@ class TeamsAdapter(PlatformAdapter):
 
     # ── Channels ─────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _sanitize_channel_name(name: str) -> str:
+    @classmethod
+    def channel_name_for(cls, room_name: str) -> str:
         """Teams channel display names disallow several characters and cap at
         50 chars. Replace the reserved set and trim."""
-        cleaned = re.sub(r'[~#%&*{}+/\\:<>?|\'"]', "-", name).strip(" .-")
+        cleaned = re.sub(r'[~#%&*{}+/\\:<>?|\'"]', "-", room_name).strip(" .-")
         return (cleaned or "switch")[:50]
 
     async def create_channel(
@@ -2624,7 +2779,7 @@ class TeamsAdapter(PlatformAdapter):
         *,
         channel_type: ChannelType = "channel_public",
         owner_external_id: str | None = None,
-    ) -> str:
+    ) -> CreatedChannel:
         if self._graph is None:
             raise RuntimeError("Teams adapter not started")
         if channel_type in ("group", "direct"):
@@ -2653,7 +2808,7 @@ class TeamsAdapter(PlatformAdapter):
             )
         channel = await self._graph.create_channel(
             team_id=team_id,
-            display_name=self._sanitize_channel_name(name),
+            display_name=self.channel_name_for(name),
             description=topic,
             membership_type="private" if is_private else "standard",
             owner_aad_id=owner_external_id if is_private else None,
@@ -2664,11 +2819,12 @@ class TeamsAdapter(PlatformAdapter):
 
         self._channel_type[channel_id] = channel_type
         await self._learn_channel_team(channel_id, team_id)
-        self._channel_names[channel_id] = str(channel.get("displayName") or "")
+        created_name = str(channel.get("displayName") or self.channel_name_for(name))
+        self._channel_names[channel_id] = created_name
         self._channel_layouts[channel_id] = str(channel.get("layoutType") or "")
         # Capture the new channel's messages right away.
         await self._ensure_channel_subscription(channel_id)
-        return channel_id
+        return CreatedChannel(id=channel_id, name=created_name)
 
     def can_own_channel(self, external_user_id: str) -> bool:
         """Only a directory (Entra) account can own a channel. Switch records a
@@ -3143,7 +3299,14 @@ class TeamsAdapter(PlatformAdapter):
             if chat_type is not None:
                 self._channel_type[channel_id] = chat_type
 
-        team = (activity.get("channelData") or {}).get("team") or {}
+        channel_data = activity.get("channelData") or {}
+        team = channel_data.get("team") or {}
+        if (
+            team.get("id")
+            and team.get("name")
+            and channel_data.get("eventType") != "teamRenamed"
+        ):
+            self._team_names[str(team["id"])] = str(team["name"])
         # Graph channel subscriptions key on the team's AAD group GUID, which
         # Teams sends as ``aadGroupId`` — on some activities only. ``team.id``
         # is the non-GUID channel thread id and Graph rejects it ("TeamGroupId
@@ -3652,7 +3815,13 @@ class TeamsAdapter(PlatformAdapter):
             )
 
         action_id, value = press
-        card = self._pressed_card(activity)
+        # A card press names the bare message id: the ref `send_ui_message`
+        # returned, under which core finds the room message.
+        card = (
+            str(activity.get("replyToId") or "") or None
+            if action_id.startswith(UI_ACTION_PREFIX)
+            else self._pressed_card(activity)
+        )
         if card is None:
             logger.warning(
                 "Ignoring a press in channel %s: Teams named no message for it, "
@@ -3671,12 +3840,18 @@ class TeamsAdapter(PlatformAdapter):
 
         notices: list[str] = []
         held = _PRESS_NOTICE.set(notices)
+        conversation_id = str((activity.get("conversation") or {}).get("id", ""))
+        service_url = str(activity.get("serviceUrl", "")).strip()
+        located = _PRESS_CONVERSATION.set(
+            (service_url, conversation_id) if service_url and conversation_id else None
+        )
         try:
             await self._on_interaction(
                 InboundInteraction(
                     channel_id=channel_id,
                     sender_id=sender_id,
                     sender_name=sender_name,
+                    sender_display_name=str(sender.get("name") or "") or sender_name,
                     action_id=action_id,
                     value=value,
                     message_ref=card,
@@ -3689,6 +3864,7 @@ class TeamsAdapter(PlatformAdapter):
             )
         finally:
             _PRESS_NOTICE.reset(held)
+            _PRESS_CONVERSATION.reset(located)
         if notices:
             return {"statusCode": 200, "type": _MESSAGE_RESPONSE, "value": notices[0]}
         return None
@@ -3845,6 +4021,7 @@ class TeamsAdapter(PlatformAdapter):
     async def _dispatch_conversation_update(
         self, activity: dict[str, Any], channel_id: str, chat_type: ChannelType | None
     ) -> None:
+        await self._report_rename(activity, channel_id, chat_type)
         members_added = activity.get("membersAdded") or []
         if not members_added:
             # Deletions, renames and departures don't need the type; skip the read.
@@ -3886,6 +4063,54 @@ class TeamsAdapter(PlatformAdapter):
                         channel_name=channel_name,
                     )
                 )
+
+    async def _report_rename(
+        self, activity: dict[str, Any], channel_id: str, chat_type: ChannelType | None
+    ) -> None:
+        """Hand a renamed channel, team or group chat to the bridge.
+
+        A team's rename is reported as its General channel's, whose id is the
+        team's: that channel is the one a room named after the team belongs
+        to. It is reported only once the team's old name is known, since a
+        room that knows its General channel by another name was not named
+        after the team. A group chat's new name is its topic."""
+        channel_data = activity.get("channelData") or {}
+        event_type = channel_data.get("eventType")
+        if event_type == "channelRenamed":
+            channel = channel_data.get("channel") or {}
+            renamed_id = str(channel.get("id") or channel_id)
+            new_name = str(channel.get("name") or "")
+            old_name = self._channel_names.get(renamed_id, "")
+        elif event_type == "teamRenamed":
+            team = channel_data.get("team") or {}
+            renamed_id = str(team.get("id") or "")
+            new_name = str(team.get("name") or "")
+            old_name = self._team_names.get(renamed_id, "")
+            if renamed_id and new_name:
+                self._team_names[renamed_id] = new_name
+            if not old_name:
+                logger.warning(
+                    "Teams team %s was renamed to %r before Switch learned its "
+                    "old name, so a room named after the team keeps its name",
+                    renamed_id,
+                    new_name,
+                )
+                return
+        elif chat_type == "group" and activity.get("topicName"):
+            renamed_id = channel_id
+            new_name = str(activity.get("topicName") or "")
+            old_name = self._channel_names.get(renamed_id, "")
+        else:
+            return
+        if not renamed_id or not new_name:
+            logger.warning(
+                "Teams %s without a conversation or a new name, skipping",
+                event_type or "group chat rename",
+            )
+            return
+        self._channel_names[renamed_id] = new_name
+        if self._on_channel_named is not None:
+            await self._on_channel_named(renamed_id, old_name, new_name)
 
     @staticmethod
     def _channel_name(activity: dict[str, Any]) -> str | None:

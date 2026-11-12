@@ -13,6 +13,7 @@ from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelInUse,
     ChannelNotUsable,
+    CreatedChannel,
 )
 from switch_core.room_service import RoomService
 
@@ -39,6 +40,7 @@ class _FakeRoomStore:
         self._room = room
         self._agent_ids = agent_ids
         self.update_bridge_calls: list[dict[str, Any]] = []
+        self.created_channel_names: list[tuple[str, str]] = []
         # Channel id → the id of the room already bound to it.
         self.bound: dict[str, str] = {}
         # Raised by `update_bridge`, standing in for the database refusing it.
@@ -76,6 +78,11 @@ class _FakeRoomStore:
             }
         )
 
+    async def set_created_channel_name(
+        self, session: Any, room_id: str, channel_name: str
+    ) -> None:
+        self.created_channel_names.append((room_id, channel_name))
+
 
 class _FakeAgentStore:
     def __init__(self, names: dict[str, str]) -> None:
@@ -88,6 +95,7 @@ class _FakeAgentStore:
 class _FakeAdapter:
     platform_name = "Fakechat"
     private_channel_needs_owner = False
+    adds_creator_to_public_channel = True
 
     def __init__(self, events: list[Any], new_channel_id: str) -> None:
         self._events = events
@@ -118,14 +126,14 @@ class _FakeAdapter:
         *,
         channel_type: str = "channel_public",
         owner_external_id: str | None = None,
-    ) -> str:
+    ) -> CreatedChannel:
         if owner_external_id is None:
             self._events.append(("create_channel", name, topic, channel_type))
         else:
             self._events.append(
                 ("create_channel", name, topic, channel_type, owner_external_id)
             )
-        return self._new_channel_id
+        return CreatedChannel(id=self._new_channel_id, name=name)
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]
@@ -266,6 +274,20 @@ def _owner_linked(svc: RoomService) -> None:
     svc._private_channel_creator = owner  # type: ignore[method-assign]
 
 
+def _owner_account(svc: RoomService, *, linked: bool = True) -> None:
+    """Whether the room's owner has a confirmed account on the new bridge, to
+    be put in a new public channel there."""
+
+    async def accounts(*_: Any) -> list[Any]:
+        if not linked:
+            return []
+        return [
+            SimpleNamespace(external_user_id="owner-account", external_username="ada")
+        ]
+
+    svc._confirmed_accounts = accounts  # type: ignore[method-assign]
+
+
 class TestChangeBridge:
     async def test_full_move_provisions_repopulates_and_detaches(self) -> None:
         events: list[Any] = []
@@ -311,6 +333,8 @@ class TestChangeBridge:
                 "external_channel_id": "chan-new",
             }
         ]
+        # The channel made for the room is the one the room now follows.
+        assert room_store.created_channel_names == [("room-1", "Work")]
         # Agents were re-added to the new channel; of the people, only the
         # owner is carried over, so the new private channel has someone in it.
         assert ("add_agents", "chan-new", ["agent.one", "agent.two"]) in events
@@ -692,6 +716,82 @@ class TestChangeBridge:
 
         assert ("add_users", "chan-new", ["owner-account"]) in events
         assert ("ensure_in_room", "room-1", ["owner-account"]) in events
+
+    async def test_the_owner_is_put_in_a_new_public_channel_on_a_move(
+        self,
+    ) -> None:
+        events: list[Any] = []
+        svc, _, new_bridge = self._moving(events)
+        new_bridge.adapter._new_channel_id = "chan-new"
+        _owner_account(svc)
+
+        await svc.change_bridge(
+            "room-1", bridge_id="bridge-new", channel_type="channel_public"
+        )
+
+        assert ("create_channel", "Work", "A room", "channel_public") in events
+        assert ("add_users", "chan-new", ["owner-account"]) in events
+        assert ("ensure_in_room", "room-1", ["owner-account"]) in events
+
+    async def test_a_move_to_a_public_channel_goes_ahead_without_a_link(
+        self,
+    ) -> None:
+        events: list[Any] = []
+        svc, room_store, new_bridge = self._moving(events)
+        new_bridge.adapter._new_channel_id = "chan-new"
+        _owner_account(svc, linked=False)
+
+        await svc.change_bridge(
+            "room-1", bridge_id="bridge-new", channel_type="channel_public"
+        )
+
+        assert room_store.update_bridge_calls[0]["external_channel_id"] == "chan-new"
+        assert not any(e[0] in ("add_users", "ensure_in_room") for e in events)
+
+    async def test_a_public_move_is_not_failed_when_the_owner_is_refused(
+        self,
+    ) -> None:
+        # They can join a public channel themselves.
+        events: list[Any] = []
+        svc, room_store, new_bridge = self._moving(events)
+        new_bridge.adapter._new_channel_id = "chan-new"
+        new_bridge.adapter.add_refused.add("owner-account")
+        _owner_account(svc)
+
+        await svc.change_bridge(
+            "room-1", bridge_id="bridge-new", channel_type="channel_public"
+        )
+
+        assert room_store.update_bridge_calls[0]["external_channel_id"] == "chan-new"
+        assert ("remove_room_mapping", "room-1") in events
+
+    async def test_the_owner_is_put_in_a_public_channel_given_to_a_room(
+        self,
+    ) -> None:
+        events: list[Any] = []
+        svc, _, new_bridge = self._moving(events)
+        new_bridge.adapter._new_channel_id = "chan-new"
+        _owner_account(svc)
+        svc._require_tenant_bridge = _no_check  # type: ignore[method-assign]
+
+        await svc.link_bridge_to_room("room-1", "bridge-new", "channel_public")
+
+        assert ("add_users", "chan-new", ["owner-account"]) in events
+        assert ("ensure_in_room", "room-1", ["owner-account"]) in events
+
+    async def test_linking_a_public_channel_is_not_failed_when_the_owner_is_refused(
+        self,
+    ) -> None:
+        events: list[Any] = []
+        svc, _, new_bridge = self._moving(events)
+        new_bridge.adapter._new_channel_id = "chan-new"
+        new_bridge.adapter.add_refused.add("owner-account")
+        _owner_account(svc)
+        svc._require_tenant_bridge = _no_check  # type: ignore[method-assign]
+
+        await svc.link_bridge_to_room("room-1", "bridge-new", "channel_public")
+
+        assert ("add_users", "chan-new", ["owner-account"]) in events
 
     async def test_capture_is_established_for_a_freshly_created_channel(self) -> None:
         # Idempotent by design: the adapter skips a channel it is already

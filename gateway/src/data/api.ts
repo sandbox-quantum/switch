@@ -197,6 +197,7 @@ export interface BridgeDetail {
   // owner). Absent on an older server.
   private_channels_supported?: boolean;
   private_channel_needs_linked_account?: boolean;
+  public_channel_adds_creator?: boolean;
   room_count: number;
   created_at: string;
   // Empty for platforms whose app is installed through their own admin UI.
@@ -1416,8 +1417,44 @@ export async function updateMemberRole(
   );
 }
 
-export async function removeMember(tenantId: string, userId: string): Promise<void> {
-  await jsonRequest(
+/** Who receives what a removed member owns in the workspace: the admin
+ * removing them when that admin is a member, otherwise its longest-standing
+ * other admin. */
+export interface RemovalHeir {
+  user_id: string;
+  name: string;
+  email: string;
+}
+
+export interface MemberRemovalPreview {
+  /** Null when the workspace has no other admin: what they own stays theirs. */
+  handed_over_to: RemovalHeir | null;
+}
+
+export interface MemberRemovalResult {
+  ok: true;
+  /** Sign-ins Switch could not revoke at a vendor. */
+  warning: string | null;
+  handed_over_to: RemovalHeir | null;
+  /** How many of each kind passed to `handed_over_to`; kinds with none are absent. */
+  handed_over: Partial<Record<Exclude<OwnershipKind, "agent">, number>>;
+}
+
+export async function previewMemberRemoval(
+  tenantId: string,
+  userId: string,
+): Promise<MemberRemovalPreview> {
+  return jsonRequest<MemberRemovalPreview>(
+    `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}/removal`,
+    "GET",
+  );
+}
+
+export async function removeMember(
+  tenantId: string,
+  userId: string,
+): Promise<MemberRemovalResult> {
+  return jsonRequest<MemberRemovalResult>(
     `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
     "DELETE",
   );
