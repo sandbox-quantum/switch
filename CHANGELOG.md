@@ -45,6 +45,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Twilio SMS messaging platform adapter.** Senders on a configured allow-list
+  can interact with Switch agents by cellular SMS through an operator's Twilio
+  account. Includes GSM-7 and UCS-2 segment budgeting, allow-list filtering, and
+  webhook signature verification.
 - **switch-core counts controller reconnects.** `switch.controllers.connections`
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn
