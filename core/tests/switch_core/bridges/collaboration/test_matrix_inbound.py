@@ -543,6 +543,26 @@ class TestReactions:
         assert press.message_ref == "$card"
         assert press.thread_ref == "$root"
         assert (press.sender_id, press.sender_name) == (ALICE, "alice")
+        # No member state with a display name: the handle stands in.
+        assert press.sender_display_name == "alice"
+
+    async def test_a_press_names_the_presser_as_the_room_shows_them(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        homeserver = FakeHomeserver()
+        self._card(homeserver)
+        homeserver.state[(ROOM, "m.room.member", ALICE)] = {
+            "membership": "join",
+            "displayname": "Alice Liddell",
+        }
+        recorder, _, _ = await _deliver(
+            monkeypatch, [self._reaction("1\ufe0f\u20e3")], homeserver
+        )
+        [press] = recorder.interactions
+        assert (press.sender_name, press.sender_display_name) == (
+            "alice",
+            "Alice Liddell",
+        )
 
     async def test_a_keycap_without_its_variation_selector_counts_too(
         self, monkeypatch: pytest.MonkeyPatch

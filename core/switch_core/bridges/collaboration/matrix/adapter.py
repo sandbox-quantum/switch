@@ -1884,17 +1884,42 @@ class MatrixAdapter(PlatformAdapter):
         card = await self._card(room_id, str(target_id))
         if card is None:
             return
+        handle = self._remember(sender)
         await self._on_interaction(
             InboundInteraction(
                 channel_id=room_id,
                 sender_id=sender,
-                sender_name=self._remember(sender),
+                sender_name=handle,
+                sender_display_name=await self._display_name(room_id, sender, handle),
                 action_id=position_action(position),
                 value=card.token,
                 message_ref=str(target_id),
                 thread_ref=card.thread_ref,
             )
         )
+
+    async def _display_name(self, room_id: str, user_id: str, handle: str) -> str:
+        """The name the room shows `user_id` by, or `handle` where it has none.
+
+        A press must not be lost to a profile read, so a failed one falls back
+        to the handle, at warning level.
+        """
+        try:
+            member = await self._require_api().state_event(
+                room_id, "m.room.member", user_id
+            )
+        except (MatrixApiError, httpx.HTTPError) as exc:
+            logger.warning(
+                "Could not read %s's display name in Matrix room %s (%s); naming "
+                "them @%s",
+                user_id,
+                room_id,
+                exc,
+                handle,
+            )
+            return handle
+        name = member.get("displayname") if member else None
+        return name.strip() if isinstance(name, str) and name.strip() else handle
 
     async def _card(self, room_id: str, event_id: str) -> _Card | None:
         """The bot's request card `event_id`, or None when it is not one.
