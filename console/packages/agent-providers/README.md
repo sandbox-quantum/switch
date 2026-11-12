@@ -293,4 +293,7 @@ turn after `NO_LICENSE` from every model. A provider key of one's own
 (`JUNIE_ANTHROPIC_API_KEY`, `JUNIE_OPENAI_API_KEY`, …) needs no subscription,
 but Junie prefers its JetBrains provider whenever an account is logged in, so
 such a setup also sets `JUNIE_LLM_PROVIDER` (both are passed through to
-sessions) or chooses one of the provider's models for the agent.
+sessions) or chooses one of the provider's models for the agent. With only such a
+key (or `JUNIE_LITELLM_URL`), a sign-in check that finds no account reports
+Junie as signed in, naming the variable; the key itself is checked at the
+first turn.

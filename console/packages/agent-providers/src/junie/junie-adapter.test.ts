@@ -90,6 +90,7 @@ const {
   junieAcp,
   junieBraveMode,
   junieMcpServer,
+  junieOwnProvider,
   junieReadiness,
   junieSessionReport,
   junieSubagent,
@@ -347,6 +348,38 @@ describe('sessions', () => {
     expect(events.at(-1)).toMatchObject({ type: 'session.state.changed', status: 'error' });
   });
 
+  it.each(['cancel', 'decline'] as const)(
+    'reports a turn Junie cancels after an approval was answered %s as an interruption',
+    async (decision) => {
+      const { adapter, events, server } = await setup();
+      await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'run tests' });
+      const prompt = await server.waitFor('session/prompt');
+      server.send({
+        id: 94,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'native',
+          toolCall: { toolCallId: 'shell', kind: 'execute', title: 'npm test' },
+          options: [
+            { optionId: 'once', name: 'Allow once', kind: 'allow_once' },
+            { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+          ],
+        },
+      });
+      await flush();
+      const request = events.find((e) => e.type === 'request.opened');
+      if (!request || request.type !== 'request.opened') throw new Error('missing approval');
+      await adapter.respondToRequest('s', request.requestId, decision);
+      server.send({ id: prompt.id, result: { stopReason: 'cancelled' } });
+      await flush();
+      expect(events.find((e) => e.type === 'turn.completed')).toMatchObject({
+        turnId: 't',
+        outcome: 'interrupted',
+        message: 'Interrupted.',
+      });
+    }
+  );
+
   it('shows a delegated run as a subagent, from its title or a marker', async () => {
     const { adapter, events, server } = await setup();
     await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'delegate' });
@@ -496,6 +529,30 @@ describe('sign-in check', () => {
     expect(junieReadiness(later).status).toBe('authenticated');
   });
 
+  it.each([
+    ['JUNIE_ANTHROPIC_API_KEY', [{ kind: 'none', label: 'Not ready' }]],
+    ['JUNIE_LITELLM_URL', []],
+  ])(
+    'takes %s as signed in when Junie reports no account for it',
+    async (name, authStatuses) => {
+      junie.authStatuses = authStatuses;
+      const result = await checkAcpSignIn(junieAcp, { ...input, env: { [name]: 'set' } });
+      expect(result.status).toBe('authenticated');
+      expect(result.message).toContain(name);
+      expect(methods()).toEqual(['initialize', 'session/new']);
+    },
+    20_000
+  );
+
+  it('reads a provider key with an account as the account Junie reports', async () => {
+    junie.authStatuses = [{ kind: 'api_key', label: 'Anthropic' }];
+    const result = await checkAcpSignIn(junieAcp, {
+      ...input,
+      env: { JUNIE_ANTHROPIC_API_KEY: 'sk-placeholder' },
+    });
+    expect(result.message).toBe('Signed in to Junie with an API key (Anthropic).');
+  });
+
   it('treats a session refused for want of authentication as signed out', async () => {
     junie.authRequired = true;
     expect((await checkAcpSignIn(junieAcp, input)).status).toBe('unauthenticated');
@@ -525,6 +582,13 @@ describe('sign-in check', () => {
       'Signed in to Junie with an API key (Anthropic).'
     );
     expect(methods()).toEqual(['initialize', 'session/new']);
+  });
+
+  it('names the variable that gives Junie a provider of its own, ignoring blank ones', () => {
+    expect(junieOwnProvider({ JUNIE_OPENAI_API_KEY: ' ', JUNIE_LITELLM_URL: 'http://gw' })).toBe(
+      'JUNIE_LITELLM_URL'
+    );
+    expect(junieOwnProvider({ JUNIE_API_KEY: 'perm-x' })).toBeUndefined();
   });
 
   it('names each kind of sign-in Junie reports', () => {

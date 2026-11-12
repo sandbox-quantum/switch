@@ -140,6 +140,8 @@ interface State {
   messageText: string;
   stopping: boolean;
   interrupted: boolean;
+  /** Whether someone cancelled or declined one of this turn's approval requests. */
+  refusedRequest: boolean;
   context: string;
   runtimeMode: ProviderSessionStartInput['runtimeMode'];
   mcpNames: Set<string>;
@@ -232,6 +234,7 @@ export class AcpAdapter implements ProviderAdapter {
       messageText: '',
       stopping: false,
       interrupted: false,
+      refusedRequest: false,
       context: input.systemContext ?? '',
       runtimeMode: input.runtimeMode,
       mcpNames: new Set(Object.keys(input.mcpServers)),
@@ -366,6 +369,7 @@ export class AcpAdapter implements ProviderAdapter {
     if (!input) return;
     state.turn = input.turnId;
     state.interrupted = false;
+    state.refusedRequest = false;
     state.messageId = randomUUID();
     state.items.clear();
     state.mcpToolCalls.clear();
@@ -374,9 +378,10 @@ export class AcpAdapter implements ProviderAdapter {
     void this.run(state, input).then(
       (reason) => {
         if (state.turn !== input.turnId) return;
-        // `cancelled` is the answer to our own `session/cancel`; an agent that
-        // cancels unasked (Junie, when every model refuses it) has failed.
-        const interrupted = state.interrupted;
+        // `cancelled` answers our own `session/cancel`, or follows a request
+        // someone cancelled or declined; an agent that cancels unasked (Junie,
+        // when every model refuses it) has failed.
+        const interrupted = state.interrupted || (reason === 'cancelled' && state.refusedRequest);
         this.complete(
           state,
           interrupted ? 'interrupted' : reason === 'end_turn' ? 'completed' : 'error',
@@ -500,6 +505,7 @@ export class AcpAdapter implements ProviderAdapter {
     if (response === undefined && decision !== 'cancel' && decision !== 'decline')
       throw new ProviderSessionError(this.provider, id, `Decision ${decision} is not offered`);
     state.decisions.delete(requestId);
+    if (decision === 'cancel' || decision === 'decline') state.refusedRequest = true;
     pending.settle(response ?? ACP_CANCELLED);
     this.emit(state, { type: 'request.resolved', requestId, decision });
   }

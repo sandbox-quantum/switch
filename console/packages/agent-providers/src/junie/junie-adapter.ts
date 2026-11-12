@@ -33,6 +33,22 @@ export interface JunieAuthStatus {
   account?: { email?: string; organization?: string };
 }
 
+/** A model provider of one's own, which needs no Junie account or licence. */
+const OWN_PROVIDER_ENV = [
+  'JUNIE_ANTHROPIC_API_KEY',
+  'JUNIE_OPENAI_API_KEY',
+  'JUNIE_GOOGLE_API_KEY',
+  'JUNIE_GROK_API_KEY',
+  'JUNIE_META_API_KEY',
+  'JUNIE_OPENROUTER_API_KEY',
+  'JUNIE_LITELLM_URL',
+] as const;
+
+/** The first variable in `env` that gives Junie a model provider of its own. */
+export function junieOwnProvider(env: Record<string, string>): string | undefined {
+  return OWN_PROVIDER_ENV.find((name) => env[name]?.trim());
+}
+
 const AUTH_STATUS_TIMEOUT_MS = 10_000;
 const MODEL_WAIT_MS = 8_000;
 
@@ -261,13 +277,7 @@ export const junieAcp: AcpProviderHooks = {
     'JUNIE_API_KEY',
     'JUNIE_HOME',
     'JUNIE_LLM_PROVIDER',
-    'JUNIE_ANTHROPIC_API_KEY',
-    'JUNIE_OPENAI_API_KEY',
-    'JUNIE_GOOGLE_API_KEY',
-    'JUNIE_GROK_API_KEY',
-    'JUNIE_META_API_KEY',
-    'JUNIE_OPENROUTER_API_KEY',
-    'JUNIE_LITELLM_URL',
+    ...OWN_PROVIDER_ENV,
     'JUNIE_LITELLM_API_KEY',
   ],
   checkSignIn: async ({ env, cwd, handshake, connection }) => {
@@ -282,7 +292,16 @@ export const junieAcp: AcpProviderHooks = {
     // the account it runs under and the models it offers. `authenticate` is
     // never sent; for the account method it is the browser sign-in itself.
     try {
-      return junieReadiness(await junieSessionReport(connection(), cwd));
+      const report = await junieSessionReport(connection(), cwd);
+      const ownProvider = junieOwnProvider(env);
+      // Whether Junie reports an account for a provider key alone is not
+      // known, so a key is not taken as signed out for want of one.
+      if (ownProvider && (!report.status || report.status.kind === 'none'))
+        return readiness(
+          'authenticated',
+          `Junie runs on its own model provider from ${ownProvider}; the key is checked at the first turn.`
+        );
+      return junieReadiness(report);
     } catch (error) {
       if (error instanceof JsonRpcError && error.code === -32000)
         return readiness('unauthenticated', JUNIE_SIGN_IN);

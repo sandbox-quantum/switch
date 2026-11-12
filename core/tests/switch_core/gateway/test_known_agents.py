@@ -409,7 +409,6 @@ _SESSION_DEPENDENT = CommandCapabilities(
                 "Grep",
                 "Glob",
                 "WebSearch",
-                "AskUserQuestion",
             ],
             [],
         ),

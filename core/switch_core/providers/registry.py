@@ -268,10 +268,6 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="Grep", description="Searches file contents"),
             ToolSpec(name="Glob", description="Finds files by pattern"),
             ToolSpec(name="WebSearch", description="Searches the web"),
-            ToolSpec(
-                name="AskUserQuestion",
-                description="Asks the user for input or a choice",
-            ),
         ),
     ),
 )
