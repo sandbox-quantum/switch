@@ -1130,7 +1130,7 @@ function AgentRow({
                 sx={{ fontSize: 15, color: "text.secondary" }}
               />
               <Typography variant="caption" color="text.secondary">
-                Notify on join
+                Notify on join &amp; leave
               </Typography>
             </Stack>
           }
