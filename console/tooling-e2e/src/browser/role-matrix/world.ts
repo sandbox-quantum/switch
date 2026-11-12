@@ -122,13 +122,15 @@ export class RoleWorld {
     const email = this.operatorLogin.gatewayAdminEmail;
     const password = this.operatorLogin.gatewayAdminPassword;
     const home = await this.admin.tenantId();
-    const client = this.admin.as(email, password);
-    await client.switchTenant(workspace.id);
+    // Before the first switch, so that whatever fails from here on, the
+    // choice is still put back.
     const chooser = this.admin.as(email, password);
-    await chooser.switchTenant(home);
     this.fixtures.defer(`the operator's choice of workspace (${home})`, () =>
       chooser.switchTenant(home)
     );
+    const client = this.admin.as(email, password);
+    await client.switchTenant(workspace.id);
+    await chooser.switchTenant(home);
     return { id: await client.userId(), email, password, client };
   }
 
