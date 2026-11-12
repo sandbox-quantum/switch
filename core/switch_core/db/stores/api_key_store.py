@@ -50,7 +50,9 @@ class ApiKeyStore:
     async def list_for_tenant(self, session: AsyncSession) -> list[ApiKey]:
         """Every key in the bound tenant, whoever holds it."""
         result = await session.execute(
-            select(ApiKey).where(ApiKey.tenant_id == require_tenant_id())
+            select(ApiKey)
+            .where(ApiKey.tenant_id == require_tenant_id())
+            .order_by(ApiKey.created_at, ApiKey.id)
         )
         return list(result.scalars().all())
 

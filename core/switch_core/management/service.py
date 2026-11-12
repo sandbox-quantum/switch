@@ -958,8 +958,12 @@ class ManagementService:
         places them again. A cloud device's machine enrolls again instead, and
         the agents move onto the controller it enrolls (`enroll`).
         """
-        if controller.revoked_at is not None:
+        # Two removals take turns, so only the first revokes and takes the
+        # agents off.
+        locked = await self.controllers.locked(session, tenant_id, controller.id)
+        if locked is None or locked.revoked_at is not None:
             return
+        controller = locked
         controller_id, owner_id = controller.id, controller.owner_id
         await self._revoke(session, tenant_id, controller_id)
         detached: list[AgentDefinitionRow] = []
