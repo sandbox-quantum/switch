@@ -287,6 +287,10 @@ class InboundUserJoin(BaseModel):
     external_user_id: str
     external_username: str
     channel_name: str | None = None
+    # Written to the room's history without waking any agent: someone who
+    # came to see the channel without being added to it (joining a Discord
+    # server makes its public channels visible), not someone added to it.
+    quiet: bool = False
 
 
 class InboundUserLeave(BaseModel):

@@ -168,10 +168,24 @@ the flag, or the connection closes with 4014.
 - **Either way:** a change to a channel's or a role's permissions re-checks the
   rooms it affects, as that needs no privileged intent.
 
+"Can see the channel" follows Discord's own rule, so server **administrators**,
+and anyone whose role may manage the channel's permissions, count as in every
+channel, private ones included. Discord lists them in a private channel's
+members too. A room shows only what is in its channel, so they read nothing
+there they could not read on Discord; they do get the rights that being in a
+room gives.
+
+Someone joining the server joins the rooms of the bridged channels they can see
+quietly: it is written to the room's history, and no agent is woken for it.
+Someone given a role that lets them see a channel is announced, as someone added
+to it would be. One batch of member changes puts at most 500 people in rooms;
+anyone beyond that joins when they first post or at the next start.
+
 Kept cheap on the shared connection: no guild's member list is cached or
 fetched at start, member updates that change no roles are dropped, a guild's
 changes are gathered for a few seconds before its tenant is resolved, one read
-of a guild's members answers for all its bridged channels for two minutes, and
+of a guild's members answers for all its bridged channels for two minutes
+(kept up to date as people change rather than read again), and
 background reads queue two at a time, leaving 20 of the minute's member searches
 for people. A server over 25,000 members is never read whole; only its rooms'
 existing people are checked, as with the intent off. A self-created app always

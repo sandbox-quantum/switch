@@ -2874,6 +2874,7 @@ class CollaborationCore:
             external_username=join.external_username,
             room_id=room_id,
             transport_room_id=transport_room_id,
+            quiet=join.quiet,
         )
 
     #: How long a removal Switch asked for waits for the platform's report of

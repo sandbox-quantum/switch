@@ -81,7 +81,7 @@ class _Guild:
         self.chunk_error: Exception | None = None
         self.fetch_errors: dict[int, Exception] = {}
 
-    def get_channel_or_thread(self, channel_id: int) -> _Channel | None:
+    def get_channel(self, channel_id: int) -> _Channel | None:
         return self.channels.get(channel_id)
 
     async def chunk(self, *, cache: bool = True) -> list[_Member]:
@@ -138,11 +138,13 @@ class _Bridge:
     def __init__(self, bridged: set[str]) -> None:
         self.bridged = bridged
         self.joins: list[tuple[str, str]] = []
+        self.quiet: list[bool] = []
         self.leaves: list[tuple[str, str]] = []
         self.resyncs: list[list[str]] = []
 
     async def joined(self, join: InboundUserJoin) -> None:
         self.joins.append((join.channel_id, join.external_user_id))
+        self.quiet.append(join.quiet)
 
     async def left(self, leave: InboundUserLeave) -> None:
         self.leaves.append((leave.channel_id, leave.external_user_id))
@@ -190,6 +192,8 @@ async def test_someone_joining_the_server_joins_the_bridged_channels_they_can_se
 
     assert bridge.joins == [("10", "1")]
     assert bridge.leaves == []
+    # Joining the server is not being added to the channel: no agent woken.
+    assert bridge.quiet == [True]
 
 
 async def test_someone_leaving_the_server_leaves_every_bridged_channel() -> None:
@@ -212,6 +216,25 @@ async def test_a_role_change_moves_someone_in_and_out() -> None:
 
     assert bridge.joins == [("10", "1")]
     assert bridge.leaves == [("11", "1")]
+    # Being given a role that shows the channel is announced.
+    assert bridge.quiet == [False]
+
+
+async def test_a_flood_of_newcomers_is_capped_per_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(adapter_module, "_LIVE_JOINS_MAX", 2)
+    people = [_Member(i, f"p{i}") for i in range(1, 6)]
+    guild = _Guild([_Channel(10, {p.id for p in people})], people)
+    adapter, bridge = _adapter(guild, {"10"})
+
+    await adapter.dispatch_member_changes(
+        [_change("join", p) for p in people] + [_change("leave", _Member(9, "z"))]
+    )
+
+    assert len(bridge.joins) == 2
+    # Leaving is never capped.
+    assert bridge.leaves == [("10", "9")]
 
 
 async def test_another_guilds_changes_are_ignored() -> None:
@@ -244,13 +267,27 @@ async def test_one_member_read_answers_for_every_bridged_channel() -> None:
     assert guild.chunks == 1
 
 
-async def test_a_member_change_makes_the_next_listing_read_again() -> None:
-    ann = _Member(1, "ann")
-    guild = _Guild([_Channel(10, {1})], [ann])
+async def test_member_changes_update_the_read_rather_than_discard_it() -> None:
+    ann, bob, cat = _Member(1, "ann"), _Member(2, "bob"), _Member(3, "cat")
+    channel = _Channel(10, {1, 2})
+    guild = _Guild([channel], [ann, bob])
     adapter, _ = _adapter(guild, {"10"})
 
     await adapter.list_channel_members("10")
-    await adapter.dispatch_member_changes([_change("update", ann)])
+    channel.viewers.add(3)
+    await adapter.dispatch_member_changes([_change("leave", bob), _change("join", cat)])
+    listing = await adapter.list_channel_members("10")
+
+    assert listing is not None and listing.members == {"1": "ann", "3": "cat"}
+    assert guild.chunks == 1
+
+
+async def test_a_permission_change_makes_the_next_listing_read_again() -> None:
+    guild = _Guild([_Channel(10, {1})], [_Member(1, "ann")])
+    adapter, _ = _adapter(guild, {"10"})
+
+    await adapter.list_channel_members("10")
+    adapter.dispatch_permission_change(None)
     await adapter.list_channel_members("10")
 
     assert guild.chunks == 2
@@ -586,3 +623,67 @@ async def test_the_shared_client_resolves_a_guild_once_per_burst() -> None:
     assert sorted(bridge.joins) == [("10", "1"), ("10", "2")]
     gateway._member_changes.close()
     gateway._permission_changes.close()
+
+
+def test_the_member_update_hook_works_on_a_real_discord_client() -> None:
+    """The hook reaches into discord.py's parser table, which is not public
+    API: this fails if an upgrade moves it, rather than role changes going
+    unnoticed in production."""
+    intents = discord.Intents.none()
+    intents.guilds = True
+    intents.members = True
+    connection = DiscordConnection(
+        bot_token="t", intents=intents, command_guild_id=None, cache_members=False
+    )
+    seen: list[GuildMemberChange] = []
+    connection.set_member_change_handler(seen.append)
+    client = discord.Client(
+        intents=intents,
+        member_cache_flags=discord.MemberCacheFlags.none(),
+        chunk_guilds_at_startup=False,
+    )
+    connection._hook_member_updates(client)
+    state = client._connection
+    state._add_guild_from_data(
+        {
+            "id": str(GUILD_ID),
+            "name": "g",
+            "roles": [
+                {
+                    "id": str(GUILD_ID),
+                    "name": "@everyone",
+                    "permissions": "0",
+                    "position": 0,
+                    "color": 0,
+                    "hoist": False,
+                    "managed": False,
+                    "mentionable": False,
+                }
+            ],
+            "channels": [],
+            "members": [],
+            "member_count": 1,
+        }  # type: ignore[arg-type]
+    )
+
+    state.parsers["GUILD_MEMBER_UPDATE"](
+        {
+            "guild_id": str(GUILD_ID),
+            "roles": ["7"],
+            "user": {
+                "id": "1",
+                "username": "ann",
+                "discriminator": "0",
+                "avatar": None,
+                "global_name": None,
+            },
+            "joined_at": "2024-01-01T00:00:00+00:00",
+            "nick": None,
+            "deaf": False,
+            "mute": False,
+            "flags": 0,
+        }
+    )
+
+    assert [(c.kind, c.user_id, c.username) for c in seen] == [("update", 1, "ann")]
+    assert isinstance(seen[0].member, discord.Member)

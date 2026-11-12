@@ -184,6 +184,10 @@ _MEMBER_QUERY_BATCH = 100
 # confirmed gone one by one. Past that they are left for the next check, so a
 # wrong empty answer can never turn into a burst of calls or an emptied room.
 _ABSENCE_CHECKS_PER_PASS = 20
+# The most people one batch of live member changes puts in rooms, as the
+# start-up sync caps its additions: a raid or a big role grant is not
+# thousands of new identities at once.
+_LIVE_JOINS_MAX = 500
 
 # The one exception, for a message the server marked as a room-wide mention.
 # Discord needs both halves: `@everyone` in the text and this on the request.
@@ -1045,12 +1049,15 @@ class DiscordAdapter(PlatformAdapter):
         return bool(channel.permissions_for(member).view_channel)
 
     def _bridged_channels_in(self, guild: Any) -> list[Any]:
-        """The guild's channels this bridge has rooms for."""
+        """The guild's channels this bridge has rooms for. Never a thread: a
+        thread's messages go to its parent channel's room, so a thread has no
+        room, and a private thread's members could not be told from its
+        parent's anyway."""
         channels = []
         for channel_id in self._bridged_channel_ids():
             if not channel_id.isdigit():
                 continue
-            channel = guild.get_channel_or_thread(int(channel_id))
+            channel = guild.get_channel(int(channel_id))
             if channel is not None:
                 channels.append(channel)
         return channels
@@ -1065,19 +1072,32 @@ class DiscordAdapter(PlatformAdapter):
         (a no-op for someone already there); someone whose roles no longer let
         them see it, or who left the server, is taken out (a no-op for
         someone Switch never put there).
+
+        Joining the server puts someone in every public bridged channel at
+        once, so those joins are quiet: written to history, waking no agent,
+        as the start-up sync's are. A role change that lets someone see a
+        channel is announced, as someone being added to it. At most
+        `_LIVE_JOINS_MAX` people join rooms per batch; the rest join when
+        they first post or at the next sync.
         """
         changes = [c for c in changes if c.guild_id == self._guild_id]
         if not changes:
             return
-        self._forget_members()
         guild = self._cached_guild()
         if guild is None:
+            self._forget_members()
             return
+        self._note_member_changes(guild, changes)
         channels = self._bridged_channels_in(guild)
         if not channels:
             return
         on_user_joined = self._on_user_joined
+        joining = 0
         for change in changes:
+            if change.kind != "leave":
+                if joining >= _LIVE_JOINS_MAX:
+                    continue
+                joining += 1
             for channel in channels:
                 try:
                     if change.kind != "leave" and self._can_see(channel, change.member):
@@ -1090,6 +1110,7 @@ class DiscordAdapter(PlatformAdapter):
                                 external_user_id=str(change.user_id),
                                 external_username=change.username,
                                 channel_name=getattr(channel, "name", None),
+                                quiet=change.kind == "join",
                             )
                         )
                     elif change.kind != "join":
@@ -1107,6 +1128,36 @@ class DiscordAdapter(PlatformAdapter):
                         change.kind,
                         channel.id,
                     )
+        if joining >= _LIVE_JOINS_MAX:
+            logger.warning(
+                "Discord guild %s had more than %d people join or change roles "
+                "at once; the rest join rooms when they post or at the next sync",
+                self._guild_id,
+                _LIVE_JOINS_MAX,
+            )
+
+    def _note_member_changes(
+        self, guild: Any, changes: list[GuildMemberChange]
+    ) -> None:
+        """Bring what was read about the guild's members up to date with
+        these changes, rather than discarding it: on a busy server a change
+        arrives every few seconds, and the start-up sync would otherwise
+        read the whole server again for each channel."""
+        snapshot = self._member_snapshot
+        if snapshot is not None:
+            read_at, viewers = snapshot
+            for channel_id, people in viewers.items():
+                channel = guild.get_channel(int(channel_id))
+                for change in changes:
+                    people.pop(str(change.user_id), None)
+                    if (
+                        change.kind != "leave"
+                        and channel is not None
+                        and self._can_see(channel, change.member)
+                    ):
+                        people[str(change.user_id)] = change.username
+        for change in changes:
+            self._member_lookups.pop(str(change.user_id), None)
 
     def dispatch_permission_change(self, channel_ids: set[int] | None) -> None:
         """Channel or role permissions changed in the guild: line up again the
@@ -1162,9 +1213,7 @@ class DiscordAdapter(PlatformAdapter):
             ):
                 return snapshot[1][channel_id]
             channel = (
-                guild.get_channel_or_thread(int(channel_id))
-                if channel_id.isdigit()
-                else None
+                guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
             )
             if channel is None:
                 return None
@@ -1211,11 +1260,7 @@ class DiscordAdapter(PlatformAdapter):
         guild = self._cached_guild()
         if guild is None or self._connection is None:
             return None
-        channel = (
-            guild.get_channel_or_thread(int(channel_id))
-            if channel_id.isdigit()
-            else None
-        )
+        channel = guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
         if channel is None:
             return None
         members = await self._look_up_members(
