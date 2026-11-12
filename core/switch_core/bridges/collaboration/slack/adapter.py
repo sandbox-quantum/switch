@@ -44,7 +44,10 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
+    ChannelNotUsable,
     ChannelType,
+    CreatedChannel,
     DirectoryUser,
     FailureReason,
     InboundAgentJoin,
@@ -54,6 +57,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
@@ -95,6 +99,13 @@ _SLACK_MASS_MENTION = re.compile(
 _SLACK_MASS_MENTION_WORD = re.compile(
     r"<!(channel|here|everyone|group)(?:\|[^>]*)?>", re.IGNORECASE
 )
+
+# A channel link, `<#C123|general>`. The label may be empty (`<#C123|>`).
+_SLACK_CHANNEL_LINK = re.compile(r"<#([A-Z0-9]+)(?:\|([^>]*))?>")
+
+# The only three characters Slack escapes in the text it delivers.
+_SLACK_ENTITY = re.compile(r"&(amp|lt|gt);")
+_SLACK_ENTITY_CHARS = {"amp": "&", "lt": "<", "gt": ">"}
 
 # Stamped on the description of every user group we mint for an agent, so a
 # reload can tell ours apart from the workspace's own groups.
@@ -442,6 +453,14 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     field, and reporting it as `platform_error` would send an operator to
     Slack's status page instead of their own token.
     """
+    if _slack_response_field(exc, "error") in _SLACK_AUTH_ERROR_CODES:
+        return "auth_failed"
+    return "platform_error"
+
+
+def _slack_response_field(exc: SlackApiError, key: str) -> Any:
+    """`key` from the body of Slack's refusal, or None when it has no such
+    field or no readable body."""
     # `.response` is not always a mapping. On the async client slack_sdk
     # raises `SlackApiError(message, res)` with the raw `aiohttp.ClientResponse`
     # whenever the body it was handed is not the JSON the content type claimed
@@ -454,12 +473,57 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     response = getattr(exc, "response", None)
     reader = getattr(response, "get", None)
     try:
-        code = reader("error") if callable(reader) else None
+        return reader(key) if callable(reader) else None
     except Exception:
-        code = None
+        return None
+
+
+def _channel_creation_refused(
+    exc: SlackApiError, channel_name: str, *, named_by_caller: bool
+) -> BridgeOperationError | ValueError:
+    """What to raise for a `conversations.create` that Slack refused and a
+    fresh name will not fix: Slack's error code, and what would fix it.
+
+    A name Slack rejects is the caller's to fix only when `named_by_caller`
+    (a room's own name); a name Switch derived is reported as Slack's refusal.
+    """
+    code = _slack_response_field(exc, "error") or str(exc)
+    prefix = f"Slack would not create channel #{channel_name} ({code})"
+    if named_by_caller and isinstance(code, str) and code.startswith("invalid_name"):
+        return ValueError(
+            f"{prefix}: Slack does not accept that as a channel name. Use a room "
+            "name with lowercase letters, digits, hyphens or underscores."
+        )
+    if code == "missing_scope":
+        needed = _slack_response_field(exc, "needed")
+        scope = f"the {needed} scope" if needed else "a scope it needs"
+        return BridgeOperationError(
+            f"{prefix}: the Switch Slack app lacks {scope}. Add it to the app's "
+            "bot token scopes and reinstall the app in the workspace."
+        )
     if code in _SLACK_AUTH_ERROR_CODES:
-        return "auth_failed"
-    return "platform_error"
+        return BridgeOperationError(
+            f"{prefix}: Slack no longer accepts the bridge's token. Reconnect "
+            "the Slack bridge (reinstall the app, or update its bot token)."
+        )
+    if code == "restricted_action":
+        return BridgeOperationError(
+            f"{prefix}: this workspace does not let the Switch app create "
+            "channels. A Slack admin can allow it under the workspace's "
+            "channel management settings, or bind the room to an existing "
+            "channel instead."
+        )
+    if code == "not_allowed_token_type":
+        return BridgeOperationError(
+            f"{prefix}: the bridge is configured with a token Slack does not "
+            "accept for this. Configure it with the app's bot token (xoxb-)."
+        )
+    if code == "ratelimited":
+        return BridgeOperationError(
+            f"{prefix}: Slack is rate limiting channel creation. Try again in "
+            f"{_retry_after_seconds(exc)} seconds."
+        )
+    return BridgeOperationError(f"{prefix}.")
 
 
 # The ids Slack gives an app's bot, under which an app's posts with no user are
@@ -486,6 +550,8 @@ class SlackAdapter(PlatformAdapter):
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "<!channel>"
+    #: `chat.postEphemeral`: in the channel, to one member alone.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "ephemeral"
     #: Cheap on a stream in a way it never was on an edit. An append is rate
     #: limited at 100+/min and redraws nothing, so the clock ticks in the one
     #: message without disturbing what is open in front of a reader.
@@ -1367,7 +1433,7 @@ class SlackAdapter(PlatformAdapter):
         )
         if missing is None:
             return True
-        logger.warning(
+        logger.info(
             "Not streaming the activity for turn %s (%s); drawing it as an "
             "ordinary message, which collapses an expanded plan on each redraw.",
             content.turn.turn_id,
@@ -1658,7 +1724,7 @@ class SlackAdapter(PlatformAdapter):
         code = error.response.get("error")
         if code in _STREAM_CLOSED_ERRORS:
             self._streams.pop(message_ref, None)
-            logger.warning(
+            logger.info(
                 "The activity stream %s is no longer accepting appends (%s); "
                 "the turn is drawn as an ordinary message from here.",
                 message_ref,
@@ -1823,6 +1889,26 @@ class SlackAdapter(PlatformAdapter):
                 e,
                 text,
             )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """An ephemeral message: shown in the channel, in the message's
+        thread, to the person who posted it and to nobody else."""
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        await self._web_client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text=self.translate_outbound(content),
+            thread_ts=self._thread_ts_of(thread_root_id),
+        )
 
     def adapt_icon_url(self, icon_url: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
@@ -2332,7 +2418,8 @@ class SlackAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         if not self._web_client:
             raise RuntimeError("Slack client not connected")
 
@@ -2342,30 +2429,56 @@ class SlackAdapter(PlatformAdapter):
             )
 
         is_private = channel_type == "channel_private"
-        channel_name = re.sub(r"[^a-z0-9_-]", "-", name.lower()).strip("-")[:80]
+        created = await self._create_conversation(
+            self.channel_name_for(name), is_private=is_private, named_by_caller=True
+        )
+        self._channel_name_cache[created.id] = created.name
 
+        try:
+            await self._web_client.conversations_setTopic(
+                channel=created.id, topic=topic
+            )
+        except SlackApiError as e:
+            logger.warning(
+                "Failed to set topic for Slack channel %s: %s", created.name, e
+            )
+
+        return created
+
+    async def _create_conversation(
+        self, channel_name: str, *, is_private: bool, named_by_caller: bool
+    ) -> CreatedChannel:
+        """Create a channel named `channel_name`, or that name with a random
+        suffix if Slack says it is taken. Any other refusal raises what
+        `_channel_creation_refused` makes of it."""
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
         try:
             result = await self._web_client.conversations_create(
                 name=channel_name, is_private=is_private
             )
-            channel_id: str = result["channel"]["id"]
-        except SlackApiError:
-            unique_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
-            result = await self._web_client.conversations_create(
-                name=unique_name, is_private=is_private
-            )
-            channel_id = result["channel"]["id"]
+        except SlackApiError as error:
+            if _slack_response_field(error, "error") != "name_taken":
+                raise _channel_creation_refused(
+                    error, channel_name, named_by_caller=named_by_caller
+                ) from error
+            channel_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
+            try:
+                result = await self._web_client.conversations_create(
+                    name=channel_name, is_private=is_private
+                )
+            except SlackApiError as retry_error:
+                raise _channel_creation_refused(
+                    retry_error, channel_name, named_by_caller=named_by_caller
+                ) from retry_error
+        return CreatedChannel(
+            id=result["channel"]["id"],
+            name=result["channel"].get("name") or channel_name,
+        )
 
-        try:
-            await self._web_client.conversations_setTopic(
-                channel=channel_id, topic=topic
-            )
-        except SlackApiError as e:
-            logger.warning(
-                "Failed to set topic for Slack channel %s: %s", channel_name, e
-            )
-
-        return channel_id
+    @classmethod
+    def channel_name_for(cls, room_name: str) -> str:
+        return re.sub(r"[^a-z0-9_-]", "-", room_name.lower()).strip("-")[:80]
 
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         if not self._web_client:
@@ -2397,18 +2510,14 @@ class SlackAdapter(PlatformAdapter):
             raise RuntimeError("Slack client not connected")
 
         raw_name = f"{agent_name}-{user_name}"
-        channel_name = re.sub(r"[^a-z0-9_-]+", "-", raw_name.lower()).strip("-")[:80]
-        try:
-            result = await self._web_client.conversations_create(
-                name=channel_name, is_private=True
+        channel_name = (
+            re.sub(r"[^a-z0-9_-]+", "-", raw_name.lower()).strip("-")[:80] or "dm"
+        )
+        channel_id = (
+            await self._create_conversation(
+                channel_name, is_private=True, named_by_caller=False
             )
-            channel_id: str = result["channel"]["id"]
-        except SlackApiError:
-            unique_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
-            result = await self._web_client.conversations_create(
-                name=unique_name, is_private=True
-            )
-            channel_id = result["channel"]["id"]
+        ).id
 
         try:
             await self._web_client.conversations_invite(
@@ -2436,6 +2545,42 @@ class SlackAdapter(PlatformAdapter):
         if not self._config.workspace_id:
             return None
         return f"slack://open?team={self._config.workspace_id}"
+
+    async def check_channel_usable(self, channel_id: str) -> None:
+        """The channel exists, Slack lets the app see it, and the app is in it.
+
+        Slack reports a private channel the app is not in as not found, so
+        the two are said together.
+
+        A public channel the app is not in is refused too, not joined: the
+        app has neither `channels:join` nor `chat:write.public`, so in such a
+        channel it could not post and Slack would send it no events. Binding
+        it would make a room that looks set up and never works."""
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        try:
+            result = await self._web_client.conversations_info(channel=channel_id)
+        except SlackApiError as error:
+            reason = str(error.response.get("error") or error)
+            if reason == "channel_not_found":
+                raise ChannelNotUsable(
+                    f"Slack cannot find channel {channel_id} (channel_not_found). "
+                    "Check the id, and for a private channel add the Switch app "
+                    "to it first."
+                ) from error
+            raise BridgeOperationError(
+                f"Slack would not describe channel {channel_id}: {reason}."
+            ) from error
+        channel = result["channel"]
+        if channel.get("is_im") or channel.get("is_mpim"):
+            return
+        if not channel.get("is_member"):
+            raise ChannelNotUsable(
+                f"The Switch app is not in Slack channel {channel_id} "
+                "(not_in_channel), so it could not post or read there. Add it "
+                "to the channel (/invite @Switch, public or private), then "
+                "try again."
+            )
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
         if not self._web_client:
@@ -2630,7 +2775,7 @@ class SlackAdapter(PlatformAdapter):
             label, handle = group.name, group.handle
             try:
                 await self._retire_agent_group(group.group_id, label)
-                logger.warning(
+                logger.info(
                     "Retired Slack user group @%s (%s): its agent no longer exists",
                     handle,
                     group.group_id,
@@ -2644,11 +2789,16 @@ class SlackAdapter(PlatformAdapter):
             if group.ours and not group.disabled and group.agent_id is None
         ]
         if unclaimed:
-            logger.warning(
+            # Said on every bridge start, and the list grows with every agent
+            # ever deleted elsewhere: the count at info, the handles at debug.
+            logger.info(
                 "%d Slack user group(s) marked as Switch agents belong to no agent "
                 "here and were left alone, as they may belong to another Switch "
-                "installation: %s. Disable them in Slack if they are not needed.",
+                "installation. Disable them in Slack if they are not needed.",
                 len(unclaimed),
+            )
+            logger.debug(
+                "Slack user groups belonging to no agent here: %s",
                 ", ".join(f"@{group.handle}" for group in unclaimed),
             )
         return failures
@@ -3198,11 +3348,51 @@ class SlackAdapter(PlatformAdapter):
         return escape_mrkdwn(super().escape_label_for_body(label))
 
     def translate_inbound(self, raw_message: str) -> str:
+        return self._unescape_entities(self._translate_markup(raw_message))
+
+    def _translate_markup(self, raw_message: str) -> str:
+        """Rewrite Slack's `<…>` sequences, leaving its entity escaping alone.
+
+        Running this twice changes nothing, which is why a command's arguments
+        get only this from the adapter: `CollaborationCore` runs every
+        command's arguments through `translate_inbound` again, and the entities
+        must be decoded exactly once, or a person's literal `&amp;lt;` would
+        reach the agent as `<`.
+        """
         return self._translate_links_to_markdown(
-            self._translate_mass_mentions_to_markdown(
-                self._translate_mentions_to_markdown(raw_message)
+            self._translate_channel_links(
+                self._translate_mass_mentions_to_markdown(
+                    self._translate_mentions_to_markdown(raw_message)
+                )
             )
         )
+
+    @staticmethod
+    def _unescape_entities(message: str) -> str:
+        """Decode `&amp;`, `&lt;` and `&gt;` back to what the person typed.
+
+        Must run after every `<…>` sequence is translated: until then a `<`
+        can only be Slack's own markup, because Slack escapes the ones people
+        type. Decoding is one pass, so `&amp;lt;` becomes the `&lt;` that was
+        typed rather than `<`.
+        """
+        return _SLACK_ENTITY.sub(
+            lambda match: _SLACK_ENTITY_CHARS[match.group(1)], message
+        )
+
+    def _translate_channel_links(self, message: str) -> str:
+        """Show a channel link `<#C123|general>` as `#general`.
+
+        A link without a label falls back to the channel's cached name, and to
+        its id when the name is not known yet.
+        """
+
+        def _replace(match: re.Match[str]) -> str:
+            channel_id = match.group(1)
+            name = match.group(2) or self._channel_name_cache.get(channel_id)
+            return f"#{name or channel_id}"
+
+        return _SLACK_CHANNEL_LINK.sub(_replace, message)
 
     @staticmethod
     def _translate_mass_mentions_to_markdown(message: str) -> str:
@@ -3360,6 +3550,8 @@ class SlackAdapter(PlatformAdapter):
         if event_type == "message":
             if event_subtype == "channel_join":
                 await self._handle_member_joined_channel(event)
+            elif event_subtype in self._RENAME_SUBTYPES:
+                await self._handle_channel_renamed(event)
             else:
                 await self._handle_message_event(event)
         elif event_type == "member_joined_channel":
@@ -3474,6 +3666,28 @@ class SlackAdapter(PlatformAdapter):
     # Everything else (edits, deletes, channel-join system messages, …) is skipped.
     _ALLOWED_SUBTYPES = frozenset({"file_share", "thread_broadcast", "bot_message"})
 
+    # The system line Slack posts into a channel when someone renames it,
+    # carrying `old_name` and `name`: "channel_name" for a channel, public or
+    # private, and "group_name" for a private channel from before Slack made
+    # them channels. Read off the message subscriptions the app already has,
+    # where the `channel_rename` event would need one more and a reinstall.
+    _RENAME_SUBTYPES = frozenset({"channel_name", "group_name"})
+
+    async def _handle_channel_renamed(self, event: dict[str, object]) -> None:
+        channel_id = str(event.get("channel") or "")
+        name = str(event.get("name") or "")
+        if not channel_id or not name:
+            logger.warning(
+                "Slack rename event without a channel or a new name, skipping: %s",
+                {key: event.get(key) for key in ("channel", "subtype", "ts")},
+            )
+            return
+        self._channel_name_cache[channel_id] = name
+        if self._on_channel_named is not None:
+            await self._on_channel_named(
+                channel_id, str(event.get("old_name") or ""), name
+            )
+
     async def _handle_message_event(self, event: dict[str, object]) -> None:
         # Skip only our own posts (loop prevention). Messages from third-party
         # apps/bots carry a bot_id too, but we still bridge those — only the
@@ -3567,7 +3781,7 @@ class SlackAdapter(PlatformAdapter):
         if stripped.startswith("!") and self._on_command:
             parts = stripped.split(None, 1)
             command = parts[0].lstrip("!")
-            args = self.translate_inbound(parts[1].strip()) if len(parts) > 1 else ""
+            args = self._translate_markup(parts[1].strip()) if len(parts) > 1 else ""
             await self._on_command(
                 InboundCommand(
                     channel_id=channel_id,
@@ -3634,7 +3848,7 @@ class SlackAdapter(PlatformAdapter):
         # Slack encodes @mentions in command arguments as `<@U…>`; normalise
         # them to `@name` so the command dispatcher's first `@` token resolves
         # to the target agent or role.
-        args = self.translate_inbound(text)
+        args = self._translate_markup(text)
 
         try:
             channel_type = await self.get_channel_type(channel_id)
@@ -3713,7 +3927,7 @@ class SlackAdapter(PlatformAdapter):
                 continue
             size = file.get("size")
             if isinstance(size, int) and size > self._max_attachment_bytes:
-                logger.warning(
+                logger.info(
                     "Slack attachment %s is %d bytes, over the %d cap",
                     filename,
                     size,

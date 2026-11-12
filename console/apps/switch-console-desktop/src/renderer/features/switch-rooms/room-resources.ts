@@ -36,3 +36,22 @@ export function attachableResources(
     )
     .sort((a, b) => a.name.localeCompare(b.name));
 }
+
+/**
+ * Whether the viewer may open an attached item's own page in Resources. A
+ * room shows everything attached to it to every reader, including an item
+ * its owner keeps private, whose page would refuse them. The server says so
+ * where it can; otherwise its own rule: owner, admin, or readable by all.
+ */
+export function opensInResources(
+  resource: Pick<RoomResource, 'roomScoped' | 'canRead' | 'ownerId' | 'readVisibility'>,
+  viewer: { id: string | null; isAdmin: boolean }
+): boolean {
+  if (resource.roomScoped) return false;
+  if (resource.canRead !== undefined) return resource.canRead;
+  return (
+    viewer.isAdmin ||
+    resource.readVisibility === 'public' ||
+    (viewer.id !== null && resource.ownerId === viewer.id)
+  );
+}

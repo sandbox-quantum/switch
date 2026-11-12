@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal
+from switch_core.authz import Principal, can, can_manage
 from switch_core.bridges.resource.registry import ReferenceValue, is_builtin_type
 from switch_core.bridges.resource.service import (
     ReferenceTypeInUseError,
@@ -47,6 +47,7 @@ router = APIRouter()
 
 def _to_detail(
     ref: Reference,
+    reader: Principal,
     *,
     owner_name: str | None = None,
     type_display_name: str | None = None,
@@ -70,6 +71,9 @@ def _to_detail(
         packages=packages or [],
         created_at=str(ref.created_at),
         type_display_name=type_display_name,
+        can_read=can(reader, "read", ref),
+        can_edit=can(reader, "write", ref),
+        can_manage=can_manage(reader, ref.owner_id),
     )
 
 
@@ -100,6 +104,7 @@ async def _enrich(
     return [
         _to_detail(
             r,
+            reader,
             owner_name=owners.get(r.owner_id),
             type_display_name=type_names.get(r.type),
             attached_rooms_count=counts[r.id].attached,
@@ -146,7 +151,7 @@ def _type_to_info(view: ReferenceTypeView, owner_name: str | None) -> ReferenceT
 
 
 def _type_to_detail(
-    entry: ReferenceTypeRow, owner_name: str | None
+    entry: ReferenceTypeRow, owner_name: str | None, reader: Principal
 ) -> ReferenceTypeDetail:
     row = entry.row
     return ReferenceTypeDetail(
@@ -162,6 +167,8 @@ def _type_to_detail(
         write_visibility=row.write_visibility,
         shadowed_by_builtin=entry.shadowed_by_builtin,
         created_at=str(row.created_at),
+        can_edit=can(reader, "write", row),
+        can_manage=can_manage(reader, row.owner_id),
     )
 
 
@@ -203,7 +210,8 @@ async def list_owned_reference_types(
         session, user_id=user.id, is_admin=is_admin
     )
     owners = await _owner_names(session, user_store, {e.row.owner_id for e in rows})
-    return [_type_to_detail(e, owners.get(e.row.owner_id)) for e in rows]
+    reader = Principal(user.id, is_admin)
+    return [_type_to_detail(e, owners.get(e.row.owner_id), reader) for e in rows]
 
 
 @router.post("/references/reference-types", status_code=201)
@@ -229,9 +237,11 @@ async def create_reference_type(
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
     owners = await _owner_names(session, user_store, {row.owner_id})
+    # Its creator owns it, which is all either flag asks.
     return _type_to_detail(
         ReferenceTypeRow(row=row, shadowed_by_builtin=False),
         owners.get(row.owner_id),
+        Principal(user.id, False),
     )
 
 
@@ -266,6 +276,7 @@ async def patch_reference_type(
     return _type_to_detail(
         ReferenceTypeRow(row=row, shadowed_by_builtin=is_builtin_type(row.type)),
         owners.get(row.owner_id),
+        Principal(user.id, is_admin),
     )
 
 

@@ -2,7 +2,7 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { describeFailure, type FailureDescription } from '@renderer/lib/errors/describe-failure';
-import { rpc } from '@renderer/lib/ipc';
+import { events, rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import type { InviteServer } from '@shared/core/switch-servers/switch-cloud';
 import type {
@@ -13,6 +13,7 @@ import type {
   SwitchServer,
   UpdateServerResult,
 } from '@shared/core/switch-servers/switch-servers';
+import { gatewaySessionEndedChannel } from '@shared/events/switchServerEvents';
 
 /**
  * How long the first read of the server list may take before the window says so
@@ -69,6 +70,13 @@ export class SwitchServersStore {
   loaded = false;
   /** Server ids with an in-flight status refresh. */
   readonly refreshing = new Set<string>();
+  /**
+   * The latest status check started for each server. Checks overlap (a
+   * session-ended hint, the account page after a password change, a manual
+   * refresh), and only the latest may write: one that set out with a cookie
+   * since replaced must not land after it and undo its answer. Nothing renders it.
+   */
+  private readonly statusGeneration = new Map<string, number>();
   /** The sentence the page leads with. Never raw exception text. */
   error: string | null = null;
   /** Diagnostics for the same failure, rendered under `error` rather than in it. */
@@ -345,12 +353,33 @@ export class SwitchServersStore {
     await Promise.all([this.refreshStatus(serverId), this.ensureAuthConfig(serverId)]);
   }
 
+  /**
+   * A signed-in call to this server was refused with 401. Re-read its status
+   * rather than signing out on the spot: `/auth/me` is what decides, so a
+   * session that has really gone reads as signed out — the sidebar asks for a
+   * sign-in instead of calling its rooms out of date and its chats offline —
+   * and a stray 401 costs one request and changes nothing.
+   *
+   * Only a server that reads as signed in is re-checked, and not while a check
+   * is already running. The re-check of a dead session is itself refused with
+   * 401 and says so again; once it has landed, the server no longer reads as
+   * signed in, so that echo ends here.
+   */
+  async noteSessionEnded(serverId: string): Promise<void> {
+    if (!this.isConnected(serverId) || this.refreshing.has(serverId)) return;
+    await this.refreshStatus(serverId);
+  }
+
   async refreshStatus(serverId: string): Promise<void> {
+    const generation = (this.statusGeneration.get(serverId) ?? 0) + 1;
+    this.statusGeneration.set(serverId, generation);
+    const latest = () => this.statusGeneration.get(serverId) === generation;
     runInAction(() => {
       this.refreshing.add(serverId);
     });
     try {
       const status = await rpc.switchServers.getConnectionStatus(serverId);
+      if (!latest()) return;
       runInAction(() => {
         this.statuses.set(serverId, status);
         this.statusUnreachable.delete(serverId);
@@ -362,14 +391,18 @@ export class SwitchServersStore {
       // raise the page-level `error` banner: that field is global, so one
       // unreachable server would paint an error over every server's view.
       console.warn(`[switch-servers] could not read status for ${serverId}`, cause);
+      if (!latest()) return;
       runInAction(() => {
         this.statuses.set(serverId, { serverId, connected: false, user: null });
         this.statusUnreachable.add(serverId);
       });
     } finally {
-      runInAction(() => {
-        this.refreshing.delete(serverId);
-      });
+      // An overtaken check leaves the flag to the one still running.
+      if (latest()) {
+        runInAction(() => {
+          this.refreshing.delete(serverId);
+        });
+      }
     }
   }
 
@@ -742,3 +775,7 @@ export class SwitchServersStore {
 }
 
 export const switchServersStore = new SwitchServersStore();
+
+events.on(gatewaySessionEndedChannel, ({ serverId }) => {
+  void switchServersStore.noteSessionEnded(serverId);
+});

@@ -12,6 +12,7 @@ const teamsInstall: InstalledApp = {
   bridge_id: "b1",
   installed_at: "2026-01-01",
   ended_at: null,
+  can_disconnect: true,
 };
 
 function mockFetch(installs: InstalledApp[] = []) {
@@ -37,7 +38,7 @@ describe("InstalledAppsSection", () => {
 
   it("names the Microsoft Teams app rather than a bare title-cased 'Teams'", async () => {
     mockFetch();
-    render(<InstalledAppsSection isAdmin onConnectionsChanged={() => {}} />);
+    render(<InstalledAppsSection onConnectionsChanged={() => {}} />);
 
     expect(
       await screen.findByRole("button", { name: "Add to Microsoft Teams" }),
@@ -46,7 +47,7 @@ describe("InstalledAppsSection", () => {
 
   it("shows the platform column's own name, not a bare title-cased key", async () => {
     mockFetch([teamsInstall]);
-    render(<InstalledAppsSection isAdmin onConnectionsChanged={() => {}} />);
+    render(<InstalledAppsSection onConnectionsChanged={() => {}} />);
 
     expect(await screen.findByText("org-123")).toBeTruthy();
     // The row's platform chip renders Microsoft's own name, same as the

@@ -9,6 +9,11 @@ import { RenameChatModal } from '@renderer/features/chats/components/chat-modals
 import { CommandPaletteModal } from '@renderer/features/command-palette/command-palette-modal';
 import { ConnectServiceModal } from '@renderer/features/connectors/connect-service-modal';
 import { DisconnectServiceDialog } from '@renderer/features/connectors/disconnect-dialog';
+import {
+  DeleteLibraryItemModal,
+  NewLibraryItemModal,
+} from '@renderer/features/library/library-modals';
+import { ReferenceTypeModal } from '@renderer/features/library/reference-types';
 import { AddAgentModal } from '@renderer/features/locations/components/add-agent-modal/add-agent-modal';
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
@@ -81,6 +86,15 @@ export const modalRegistry = {
   }),
   saveTemplateModal: createModal(SaveTemplateModal, { size: 'sm', dismissOnOutsideClick: false }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
+  newLibraryItemModal: createModal(NewLibraryItemModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
+  deleteLibraryItemModal: createModal(DeleteLibraryItemModal, { size: 'sm' }),
+  referenceTypeModal: createModal(ReferenceTypeModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
   deleteAgentModal: createModal(DeleteAgentModal, { size: 'sm' }),
   renameAgentModal: createModal(RenameAgentModal, { size: 'sm', dismissOnOutsideClick: false }),
   removeAgentConfigModal: createModal(RemoveAgentConfigModal, { size: 'sm' }),

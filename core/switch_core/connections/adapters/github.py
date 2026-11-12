@@ -216,7 +216,7 @@ class GitHubAdapter:
             raise ServiceAdapterError("GitHub grants name App permissions.")
         if self._signer is None:
             raise ServiceAdapterError(
-                "GitHub cannot be granted on this server: no signing key is configured."
+                "GitHub cannot be granted here: no signing key is configured."
             )
         try:
             token = await self._signer.mint(

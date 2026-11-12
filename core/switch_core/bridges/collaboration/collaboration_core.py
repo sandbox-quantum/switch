@@ -22,11 +22,14 @@ from switch_core.bridges.agent.commands import link_account_reply, stop_control_
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
+    MessagePartlySent,
     PlatformAdapter,
+    PrivateNoticeRefused,
     SupportsSharedConnection,
     agent_identity,
 )
 from switch_core.bridges.collaboration.models import (
+    ChannelInUse,
     ChannelType,
     InboundAgentJoin,
     InboundAppJoin,
@@ -94,11 +97,14 @@ from switch_core.transport import (
     TransportError,
     writes_derived_from,
 )
+from switch_core.trust.attachments import AttachmentsVerdict, check_attachments
 from switch_core.trust.client import (
     NullTrustClient,
+    TrustCheckResult,
     TrustClient,
     check_message,
     trust_annotation,
+    trust_is_active,
     trust_redaction_notice,
 )
 
@@ -113,6 +119,11 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# (bridge type, agent name, failure) of identity provisioning failures already
+# logged as a warning by this process; see `_sync_agent_identities`.
+_IDENTITY_FAILURES_SEEN: set[tuple[str, str, str]] = set()
+_IDENTITY_FAILURES_SEEN_MAX = 2000
 
 _InboundEventT = TypeVar(
     "_InboundEventT",
@@ -816,13 +827,25 @@ class CollaborationCore:
 
         failures = await self._adapter.sync_agent_identities(list(current.values()))
         failed = {name for name, _ in failures}
+        any_new = False
         for name, exc in failures:
-            logger.error(
+            # A refusal that needs a person (a handle taken in the workspace)
+            # comes back on every bridge start: a warning the first time this
+            # process sees it, debug after that.
+            seen = (self._bridge_id, name, str(exc))
+            first = seen not in _IDENTITY_FAILURES_SEEN
+            if first:
+                any_new = True
+                if len(_IDENTITY_FAILURES_SEEN) >= _IDENTITY_FAILURES_SEEN_MAX:
+                    _IDENTITY_FAILURES_SEEN.clear()
+                _IDENTITY_FAILURES_SEEN.add(seen)
+            logger.log(
+                logging.WARNING if first else logging.DEBUG,
                 "Failed to provision %s identity for agent %s: %s",
                 self._bridge_type,
                 name,
                 exc,
-                exc_info=exc,
+                exc_info=exc if first else None,
             )
         for identity in current.values():
             if identity.name not in failed:
@@ -833,7 +856,8 @@ class CollaborationCore:
         # count regardless of failures would read as success on a run where
         # every one of them failed.
         if failures:
-            logger.warning(
+            logger.log(
+                logging.WARNING if any_new else logging.INFO,
                 "Provisioned %s identities for %d agents; %d failed",
                 self._bridge_type,
                 len(current),
@@ -931,13 +955,12 @@ class CollaborationCore:
         self, channel_id: str, old_name: str, new_name: str
     ) -> None:
         """The platform reports this channel's name (renamed from `old_name`,
-        or unchanged). The room linked to it follows when it is named after
-        the channel (`NAME_SOURCE_KEY` "channel"), or, from before that was
-        kept, when its name is exactly the one it was made with from the old
-        channel name. Any other room keeps its name, and the channel's is
-        recorded for whoever wants to take it (`/rooms/{id}/sync-name`)."""
-        bridge_name = self._bridge_display_name
-        name = f"{bridge_name}: {new_name}"
+        empty when the platform did not say, or unchanged). The room linked to
+        it follows when it is named after the channel (`NAME_SOURCE_KEY`
+        "channel" or "created"), or, from before that was kept, while its name
+        still matches the channel's old one (`RoomStore.follow_channel_name`).
+        Any other room keeps its name, and the channel's is recorded for
+        whoever wants to take it (`/rooms/{id}/sync-name`)."""
         with tenant_scope(self._bridge_tenant_id):
             async with tenant_session(
                 self._session_factory, self._bridge_tenant_id
@@ -947,12 +970,15 @@ class CollaborationCore:
                 )
             if room is None:
                 return
-            metadata = room.metadata_ or {}
-            if room.name != name and await self._room_service.follow_channel_name(
-                room.id, name, new_name, f"{bridge_name}: {old_name}"
+            if await self._room_service.follow_channel_name(
+                room.id,
+                old_name=old_name,
+                new_name=new_name,
+                bridge_display_name=self._bridge_display_name,
+                channel_name_for=self._adapter.channel_name_for,
             ):
                 return
-            if metadata.get(LINKED_CHANNEL_NAME_KEY) != new_name:
+            if (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY) != new_name:
                 await self._room_service.record_channel_name(room.id, new_name)
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
@@ -1164,7 +1190,7 @@ class CollaborationCore:
         if msg.root_id is not None:
             thread_root_id = await self._event_for_external_post(msg.root_id)
             if thread_root_id is None:
-                logger.warning(
+                logger.info(
                     "[BRIDGE-IN] no room message mapped for external root %s; "
                     "posting top-level in room %s",
                     msg.root_id,
@@ -1267,6 +1293,73 @@ class CollaborationCore:
             )
             return
 
+        # A message with files is checked as a whole before anything is
+        # uploaded: the typed text exactly as above, and each file through the
+        # text it carries (`trust/attachments.py`), so a refusal of either
+        # leaves nothing of the message in the room.
+        caption_check: TrustCheckResult | None = None
+        files_check = AttachmentsVerdict()
+        if await trust_is_active(self._trust_client):
+            files = [(a.data, a.filename, a.mimetype) for a in msg.attachments]
+            files_check_task = check_attachments(
+                self._trust_client, role="user", files=files, room_id=room_id
+            )
+            if content.strip():
+                caption_check, files_check = await asyncio.gather(
+                    check_message(
+                        self._trust_client,
+                        role="user",
+                        content=content,
+                        room_id=room_id,
+                    ),
+                    files_check_task,
+                )
+            else:
+                files_check = await files_check_task
+        caption_refused = caption_check is not None and (
+            caption_check.blocked
+            or (
+                caption_check.outcome == "redacted"
+                and caption_check.redacted_content is None
+            )
+        )
+        if caption_refused or files_check.blocked:
+            logger.warning(
+                "[BRIDGE-IN] message with %d attachment(s) from %s not relayed: "
+                "Switch Trust text outcome=%s, files: %s, room %s",
+                len(msg.attachments),
+                msg.sender_name,
+                caption_check.outcome if caption_check is not None else "unchecked",
+                "; ".join(files_check.block_reasons) or "not blocked",
+                transport_room_id,
+            )
+            if files_check.blocked:
+                notice = (
+                    "🚫 Your message was blocked by Switch Trust and was not "
+                    f"delivered to the room: {'; '.join(files_check.block_reasons)}. "
+                    "You can still see it, but agents can't access it."
+                )
+            else:
+                notice = (
+                    "🚫 Your message was blocked by Switch Trust and was not "
+                    "delivered to the room. You can still see it, but agents "
+                    "can't access it."
+                )
+            await self._post_trust_notice(msg, notice, AdminMessageType.TRUST_BLOCKED)
+            return
+        if caption_check is not None and caption_check.redacted_content is not None:
+            content = caption_check.redacted_content
+        caption_annotation = (
+            trust_annotation(caption_check) if caption_check is not None else None
+        )
+        trust_notes = [
+            *([caption_annotation] if caption_annotation is not None else []),
+            *files_check.notes,
+        ]
+        if trust_notes:
+            notes_text = "\n".join(trust_notes)
+            content = f"{content}\n\n{notes_text}" if content.strip() else notes_text
+
         # Caption convention: the text rides as the caption on the first
         # attachment so "text + one image" reaches the agent as a single event;
         # remaining attachments are sent as bare media events. The first media
@@ -1322,6 +1415,25 @@ class CollaborationCore:
                 first_event_id = event_id
 
         if first_event_id is not None:
+            # As for a text-only message, the sender hears what Switch Trust
+            # did only once the message is confirmed in the room.
+            if caption_check is not None and caption_check.redacted_content is not None:
+                redaction_notice = trust_redaction_notice(caption_check)
+                if redaction_notice is not None:
+                    await self._post_trust_notice(
+                        msg, redaction_notice, AdminMessageType.TRUST_REDACTED
+                    )
+            if trust_notes:
+                flagged = files_check.flagged or (
+                    caption_check is not None and caption_check.outcome == "alerted"
+                )
+                await self._post_trust_notice(
+                    msg,
+                    "\n".join(trust_notes),
+                    AdminMessageType.TRUST_ALERTED
+                    if flagged
+                    else AdminMessageType.TRUST_ERRORED,
+                )
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
                 transport_event_id=first_event_id,
@@ -1331,10 +1443,79 @@ class CollaborationCore:
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType
     ) -> None:
-        """Tell the sender's platform what Switch Trust did with their message
-        — blocked, redacted, alerted, or errored. Never lets a failed notice
-        take the inbound message down with it — mirrors
+        """Tell the sender, and only the sender, what Switch Trust did with
+        their message: blocked, redacted, flagged, or not fully checked.
+
+        Each of these is about what one person wrote, so it goes to them the
+        way the platform allows (`private_notice_delivery`). Where it has no
+        private route, or the private one fails, the notice is posted in the
+        channel and a warning says everyone there saw it: a sender left not
+        knowing their message was blocked is worse than a notice others can
+        read. In a direct conversation the channel is already private. An
+        app's post, or one from an account many people share (Telegram's
+        stand-in for anonymous admins), has no one person to reach, so its
+        notice goes straight to the channel. Never lets a failed notice take
+        the inbound message down with it, which mirrors
         `AgentCore._post_trust_blocked_notice`."""
+        delivery = self._adapter.private_notice_delivery
+        no_one_to_reach = (
+            msg.sender_is_app
+            or self._adapter.unlinkable_account_reason(msg.sender_id) is not None
+        )
+        if msg.channel_type != "direct":
+            if no_one_to_reach:
+                logger.info(
+                    "The Switch Trust %s notice for %s goes in channel %s: an "
+                    "app or a shared account has no one person to tell",
+                    message_type.value,
+                    msg.sender_name,
+                    msg.channel_id,
+                )
+            elif delivery == "in_channel":
+                logger.warning(
+                    "%s has no way to reach one person privately: posting the "
+                    "Switch Trust %s notice for %s in channel %s, where "
+                    "everyone in it sees it",
+                    self._adapter.platform_name,
+                    message_type.value,
+                    msg.sender_name,
+                    msg.channel_id,
+                )
+            else:
+                try:
+                    await self._adapter.notify_privately(
+                        channel_id=msg.channel_id,
+                        channel_name=msg.channel_name,
+                        user_id=msg.sender_id,
+                        content=body,
+                        # Where the sender is looking: their thread, or the
+                        # channel itself for a top-level message, since a
+                        # private notice opens no thread anyone would see.
+                        thread_root_id=msg.root_id,
+                    )
+                    return
+                except PrivateNoticeRefused as refused:
+                    logger.warning(
+                        "%s would not let the bot reach %s privately (%s): "
+                        "posting the Switch Trust %s notice in channel %s "
+                        "instead, where everyone in it sees it",
+                        self._adapter.platform_name,
+                        msg.sender_name,
+                        refused,
+                        message_type.value,
+                        msg.channel_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not send the Switch Trust %s notice to %s by %s: "
+                        "posting it in channel %s instead, where everyone in it "
+                        "sees it",
+                        message_type.value,
+                        msg.sender_name,
+                        delivery,
+                        msg.channel_id,
+                        exc_info=True,
+                    )
         try:
             await self._adapter.admin_message(
                 msg.channel_id,
@@ -1662,9 +1843,10 @@ class CollaborationCore:
 
         try:
             result = await self._room_service.create_room(config)
-        except IntegrityError:
+        except (IntegrityError, ChannelInUse):
             # Backstop: the (bridge_id, external_channel_id) unique index
-            # rejected a concurrent duplicate. Adopt the room that won the race.
+            # rejected a concurrent duplicate (room creation reports that as
+            # `ChannelInUse`). Adopt the room that won the race.
             logger.warning(
                 "Duplicate room creation for channel %s rejected by unique "
                 "constraint; adopting existing room",
@@ -2192,6 +2374,18 @@ class CollaborationCore:
             )
         return created
 
+    async def forget_human(self, external_user_id: str, transport_user_id: str) -> None:
+        """Drop what this bridge remembers about a person whose identity was erased.
+
+        Called once their rows are gone and their client is stopped. If they
+        write again they are provisioned afresh, as someone never seen before.
+        """
+        lock = self._human_actor_locks.setdefault(external_user_id, asyncio.Lock())
+        async with lock:
+            self._human_actors.pop(external_user_id, None)
+            self._names_known_good.discard(external_user_id)
+            self._human_user_ids.discard(transport_user_id)
+
     async def _create_human_actor(
         self, external_user_id: str, external_username: str
     ) -> str:
@@ -2542,6 +2736,8 @@ class CollaborationCore:
                 admin_marker=admin_marker if is_system else None,
                 is_system=is_system,
             )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(event.event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -2782,6 +2978,8 @@ class CollaborationCore:
                     caption=caption,
                     thread_root_id=thread_root_ref,
                 )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(event.event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(event.event_id))
             raise
@@ -2912,6 +3110,8 @@ class CollaborationCore:
                 caption=pending.caption,
                 thread_root_id=thread_root_ref,
             )
+        except MessagePartlySent as partial:
+            message_ref = self._partly_posted(claim_event_id, channel_id, partial)
         except (Exception, asyncio.CancelledError):
             await asyncio.shield(self._release_outbound(claim_event_id))
             raise
@@ -3024,6 +3224,25 @@ class CollaborationCore:
                 channel_id,
             )
         return claimed
+
+    @staticmethod
+    def _partly_posted(
+        transport_event_id: str, channel_id: str, partial: MessagePartlySent
+    ) -> str:
+        """The ref to settle a message's claim with when only some of its parts
+        reached the platform.
+
+        Settled rather than let go: a claim let go is posted again by the next
+        delivery, and the parts already in the channel would show twice. What
+        is missing has been said in the channel by the adapter."""
+        logger.error(
+            "[BRIDGE-OUT] %s reached channel %s only in part, and is not posted "
+            "again: %s",
+            transport_event_id,
+            channel_id,
+            partial,
+        )
+        return partial.first_ref
 
     async def _settle_outbound(
         self, transport_event_id: str, external_post_id: str | None

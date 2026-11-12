@@ -3,7 +3,6 @@ import {
   ManagementApiError,
   createManagedAgent,
   enrollCommand,
-  fetchManagementAvailable,
   fetchProviders,
   managementError,
   providerLabel,
@@ -45,25 +44,6 @@ describe("managementError", () => {
     );
     expect(error.code).toBe("http_error");
     expect(error.message).toBe("404 Not Found");
-  });
-});
-
-describe("fetchManagementAvailable", () => {
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("is true when the controllers list answers", async () => {
-    respond(200, []);
-    await expect(fetchManagementAvailable()).resolves.toBe(true);
-  });
-
-  it("is false when the routes are not mounted", async () => {
-    respond(404, { detail: "Not Found" });
-    await expect(fetchManagementAvailable()).resolves.toBe(false);
-  });
-
-  it("throws on any other failure rather than hiding the page", async () => {
-    respond(500, { detail: "boom" });
-    await expect(fetchManagementAvailable()).rejects.toBeInstanceOf(ManagementApiError);
   });
 });
 

@@ -25,6 +25,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.keys import Keyring
+from switch_core.room_service import MembershipFixed
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -189,3 +190,42 @@ class TestRoomRosterAuthz:
         async with session_factory() as session:
             room = await svc._require_room_roster_change(session, admin_agent, room_id)
             assert room.id == room_id
+
+
+class _UntouchedRoomService:
+    """Fails the test if the tools get as far as changing anyone's rooms."""
+
+    async def add_agents_to_room(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("an agent was added")
+
+    async def add_users_to_room(self, *args: object, **kwargs: object) -> list[str]:
+        raise AssertionError("a person was added")
+
+
+class TestFixedMembership:
+    @pytest.mark.parametrize("channel_type", ["direct", "group"])
+    async def test_not_even_an_admin_adds_to_a_direct_or_group_conversation(
+        self, session_factory: async_sessionmaker[AsyncSession], channel_type: str
+    ) -> None:
+        """Its platform fixes who is in it; agents and people get in from
+        inside it, which the agent tools are not."""
+        svc = _service(session_factory)
+        svc.room_service = _UntouchedRoomService()  # type: ignore[assignment]
+        person = await _make_user(session_factory, "person")
+        admin = await _make_user(session_factory, "root", role="admin")
+        dm_agent = await _register(svc, "dm-agent", person)
+        admin_agent = await _register(svc, "admin-agent", admin)
+        room_id = await _make_public_room(
+            session_factory, owner_id=person, member_agent_ids=[dm_agent]
+        )
+        async with session_factory() as session:
+            room = await session.get(Room, room_id)
+            assert room is not None
+            room.channel_type = channel_type
+            await session.commit()
+
+        for caller in (admin_agent, dm_agent):
+            with pytest.raises(MembershipFixed, match=channel_type):
+                await svc.invite_agent_to_room(caller, room_id, "admin-agent")
+            with pytest.raises(MembershipFixed, match=channel_type):
+                await svc.add_users_to_room(caller, room_id, ["root"])

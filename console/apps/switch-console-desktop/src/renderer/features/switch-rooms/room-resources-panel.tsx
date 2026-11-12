@@ -4,7 +4,10 @@ import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { LOCKED_ROW_HINT, LockedMark, OpensMark } from '@renderer/features/library/row-access';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
@@ -19,9 +22,10 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { Input } from '@renderer/lib/ui/input';
+import { MarkdownRenderer } from '@renderer/lib/ui/markdown-renderer';
 import type { RoomResource, RoomResourceKind } from '@shared/core/switch-servers/switch-servers';
 import { useRoomDetail } from './room-participants';
-import { attachableResources, resourcesByOrigin } from './room-resources';
+import { attachableResources, opensInResources, resourcesByOrigin } from './room-resources';
 
 const KIND_LABEL: Record<RoomResourceKind, { title: string; noun: string; none: string }> = {
   references: { title: 'References', noun: 'reference', none: 'No references attached.' },
@@ -63,10 +67,15 @@ export const RoomResourcesPanel = observer(function RoomResourcesPanel({
   // A Console chat's members may read it but only its managers change it.
   const permissions =
     opensAsConsoleChat(roomId) && chat
-      ? { canWrite: chat.canManage, canManage: chat.canManage, canUnlink: chat.canManage }
+      ? {
+          canWrite: chat.canManage,
+          canChangeMembers: chat.canManage,
+          canManage: chat.canManage,
+          canUnlink: chat.canManage,
+        }
       : room !== null
         ? switchRoomsStore.roomPermissions(workspaceId, room)
-        : { canWrite: false, canManage: false, canUnlink: false };
+        : { canWrite: false, canChangeMembers: false, canManage: false, canUnlink: false };
   const canWrite = permissions.canWrite;
   const canUnlink = permissions.canUnlink;
 
@@ -116,6 +125,13 @@ const ResourceSection = observer(function ResourceSection({
   canUnlink: boolean;
 }) {
   const queryClient = useQueryClient();
+  const { navigate } = useNavigate();
+  const serverId = workspacesStore.serverIdFor(workspaceId);
+  // Who is looking, to tell which attached items their Resources page opens for.
+  const viewer = {
+    id: serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null,
+    isAdmin: administersWorkspaceById(workspaceId),
+  };
   const key = roomResourcesKey(workspaceId, roomId, kind);
   const attached = useQuery({
     queryKey: key,
@@ -195,7 +211,22 @@ const ResourceSection = observer(function ResourceSection({
                       ? () => void openExternalUrl(resource.urls[0]!, 'Could not open the link')
                       : kind === 'documents'
                         ? () => setReading(resource)
-                        : null
+                        : // A package has nothing to read here: its page shows what it holds,
+                          // when the viewer may open it (the server says per package).
+                          kind === 'packages' &&
+                            serverId !== null &&
+                            opensInResources(resource, viewer)
+                          ? () =>
+                              navigate('libraryItem', {
+                                serverId,
+                                kind: 'packages',
+                                itemId: resource.id,
+                              })
+                          : null
+                  }
+                  // A package the viewer may not open, which its owner keeps private.
+                  locked={
+                    kind === 'packages' && serverId !== null && !opensInResources(resource, viewer)
                   }
                   removeLabel={canUnlink ? `Detach ${resource.name}` : null}
                   busy={busy === resource.id}
@@ -247,6 +278,14 @@ const ResourceSection = observer(function ResourceSection({
           roomId={roomId}
           document={reading}
           onClose={() => setReading(null)}
+          onOpenInResources={
+            serverId !== null && opensInResources(reading, viewer)
+              ? () => {
+                  setReading(null);
+                  navigate('libraryItem', { serverId, kind: 'documents', itemId: reading.id });
+                }
+              : null
+          }
         />
       )}
     </section>
@@ -257,6 +296,7 @@ function ResourceRow({
   resource,
   via,
   onOpen,
+  locked = false,
   removeLabel,
   busy,
   confirm = false,
@@ -266,6 +306,8 @@ function ResourceRow({
   /** The packages that brought it in, by name. */
   via: string[];
   onOpen: (() => void) | null;
+  /** Shown to the viewer but not theirs to open: dimmed and locked. */
+  locked?: boolean;
   /** The remove button's label, or null for someone who may not remove it. */
   removeLabel: string | null;
   busy: boolean;
@@ -285,9 +327,12 @@ function ResourceRow({
     <>
       <Icon className="size-4 shrink-0 text-foreground-muted" />
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="flex items-center gap-1.5 truncate text-sm text-foreground">
+        <span
+          className={`flex items-center gap-1.5 truncate text-sm ${locked ? 'text-foreground-muted' : 'text-foreground'}`}
+        >
           {resource.name}
           {resource.urls[0] && <ExternalLink className="size-3 shrink-0 text-foreground-muted" />}
+          {locked && <LockedMark />}
         </span>
         {(resource.description || meta.length > 0) && (
           <span className="truncate text-xs text-foreground-muted">
@@ -306,9 +351,16 @@ function ResourceRow({
           onClick={onOpen}
         >
           {body}
+          {/* A link already shows where it goes; anything else opens here. */}
+          {!resource.urls[0] && <OpensMark />}
         </button>
       ) : (
-        <div className="flex min-w-0 flex-1 items-center gap-3">{body}</div>
+        <div
+          className="flex min-w-0 flex-1 items-center gap-3"
+          title={locked ? LOCKED_ROW_HINT : undefined}
+        >
+          {body}
+        </div>
       )}
       {removeLabel && confirm && armed && (
         <span className="flex shrink-0 items-center gap-1">
@@ -451,11 +503,14 @@ function DocumentDialog({
   roomId,
   document,
   onClose,
+  onOpenInResources,
 }: {
   workspaceId: string;
   roomId: string;
   document: RoomResource;
   onClose: () => void;
+  /** Opens a document from Resources on its own page there; null for one written in the room. */
+  onOpenInResources: (() => void) | null;
 }) {
   // The room's listing already carries the content; an older server's may not.
   const content = useQuery({
@@ -490,9 +545,20 @@ function DocumentDialog({
               {failureText(content.error, 'Could not read this document.')}
             </p>
           ) : (
-            <pre className="rounded-md bg-background-1 p-3 font-mono text-xs whitespace-pre-wrap text-foreground">
-              {content.data.content}
-            </pre>
+            <div className="rounded-md border border-border px-4 py-3">
+              {content.data.content.trim() ? (
+                <MarkdownRenderer content={content.data.content} variant="compact" />
+              ) : (
+                <p className="text-sm text-foreground-muted italic">Empty.</p>
+              )}
+            </div>
+          )}
+          {onOpenInResources && (
+            <div className="flex justify-end">
+              <Button size="sm" variant="outline" onClick={onOpenInResources}>
+                Open in Resources
+              </Button>
+            </div>
           )}
         </DialogContentArea>
       </DialogContent>

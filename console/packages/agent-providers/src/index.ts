@@ -39,9 +39,12 @@ export { createOpencodeAdapter, OpencodeAdapter } from './opencode/opencode-adap
 export type { OpencodeSkill } from './opencode/server';
 export type { CodexAdapterOptions } from './codex/codex-adapter';
 export { CodexAdapter, createCodexAdapter } from './codex/codex-adapter';
+export type { PiAdapterOptions } from './pi/pi-adapter';
+export { createPiAdapter, PiAdapter } from './pi/pi-adapter';
 export { AcpAdapter, createAcpAdapter } from './acp/acp-adapter';
 export type {
   AcpAdapterOptions,
+  AcpConnection,
   AcpExtensionRegistrar,
   AcpLaunch,
   AcpLaunchInput,
@@ -52,6 +55,16 @@ export type {
 } from './acp/hooks';
 export { antigravityAcp, createAntigravityAdapter } from './antigravity/antigravity-adapter';
 export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
+export {
+  createDeepseekHarnessAdapter,
+  deepseekHarnessAcp,
+} from './deepseek-harness/deepseek-harness-acp';
+export { droidAcp, createDroidAdapter } from './droid/droid-adapter';
+export { gooseAcp, createGooseAdapter } from './goose/goose-adapter';
+export { kiroAcp, createKiroAdapter } from './kiro/kiro-acp';
+export { qwenAcp, createQwenAdapter } from './qwen/qwen-acp';
+export { clineAcp, createClineAdapter } from './cline/cline-adapter';
+export { createJunieAdapter, junieAcp } from './junie/junie-adapter';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';
@@ -71,6 +84,7 @@ export type { Supervision } from './host/launch';
 export { commandLineNames, killProcessTree, processCommandLine } from './host/process-fence';
 export { execProvider, findOnPath, spawnProvider, stopProvider } from './provider-process';
 export { replaceFile } from './host/replace-file';
+export { IS_PROCESS_ALIVE, isProcessAlive, type PidOrigin } from './process-alive';
 export {
   isStopMessage,
   onStopRequest,
@@ -129,7 +143,7 @@ export {
 } from './host/watch-flags';
 export { superviseSharedHost } from './host/supervisor';
 export { controllerConnectionId } from './host/connection-id';
-export { AGENT_ENV_VARS, EXECUTION_INHERIT_ENV } from './host/agent-env';
+export { AGENT_ENV_VARS, EXECUTION_INHERIT_ENV, PROVIDER_ENV_VARS } from './host/agent-env';
 export { SHARED_GROUP_ENV } from './host/host-permissions';
 export {
   type HostedCredential,

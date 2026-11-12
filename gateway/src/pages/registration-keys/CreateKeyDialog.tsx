@@ -9,11 +9,19 @@ import {
   DialogTitle,
   IconButton,
   InputAdornment,
+  MenuItem,
   Stack,
   TextField,
 } from "@mui/material";
 import { useCallback, useState } from "react";
-import { createApiKey } from "../../data/api";
+import { type ApiKeyLifetime, createApiKey } from "../../data/api";
+import { formatKeyExpiry } from "./keyExpiry";
+
+const LIFETIMES: { value: ApiKeyLifetime; label: string }[] = [
+  { value: 90, label: "90 days" },
+  { value: 365, label: "1 year" },
+  { value: "never", label: "Never" },
+];
 
 interface Props {
   open: boolean;
@@ -23,13 +31,17 @@ interface Props {
 
 export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
   const [label, setLabel] = useState("");
+  const [lifetime, setLifetime] = useState<ApiKeyLifetime>(90);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ key: string } | null>(null);
+  const [result, setResult] = useState<{ key: string; expiresAt: string | null } | null>(
+    null,
+  );
   const [copied, setCopied] = useState(false);
 
   const reset = useCallback(() => {
     setLabel("");
+    setLifetime(90);
     setSubmitting(false);
     setError(null);
     setResult(null);
@@ -47,14 +59,14 @@ export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await createApiKey(label);
-      setResult({ key: res.key });
+      const res = await createApiKey(label, lifetime);
+      setResult({ key: res.key, expiresAt: res.expires_at });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create key.");
     } finally {
       setSubmitting(false);
     }
-  }, [label]);
+  }, [label, lifetime]);
 
   const handleCopy = useCallback(() => {
     if (!result) return;
@@ -77,7 +89,7 @@ export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>{result ? "Key Created" : "Create API Key"}</DialogTitle>
+      <DialogTitle>{result ? "Key created" : "Create API key"}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {result ? (
@@ -86,7 +98,7 @@ export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
                 Copy the key now. It will not be shown again.
               </Alert>
               <TextField
-                label="Registration Key"
+                label="API key"
                 value={result.key}
                 fullWidth
                 slotProps={{
@@ -94,14 +106,20 @@ export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
                     readOnly: true,
                     endAdornment: (
                       <InputAdornment position="end">
-                        <IconButton onClick={handleCopy} size="small">
+                        <IconButton onClick={handleCopy} size="small" aria-label="Copy key">
                           <ContentCopy fontSize="small" />
                         </IconButton>
                       </InputAdornment>
                     ),
                   },
                 }}
-                helperText={copied ? "Copied!" : undefined}
+                helperText={
+                  copied
+                    ? "Copied!"
+                    : result.expiresAt === null
+                      ? "This key does not expire."
+                      : `Expires ${formatKeyExpiry(result.expiresAt, new Date())}.`
+                }
               />
             </>
           ) : (
@@ -115,6 +133,28 @@ export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
                 required
                 placeholder="e.g. My ADK connector"
               />
+              <TextField
+                select
+                label="Expires after"
+                value={String(lifetime)}
+                onChange={(e) =>
+                  setLifetime(e.target.value === "never" ? "never" : Number(e.target.value))
+                }
+                fullWidth
+              >
+                {LIFETIMES.map((option) => (
+                  <MenuItem key={String(option.value)} value={String(option.value)}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+              {lifetime === "never" && (
+                <Alert severity="warning">
+                  A key that never expires keeps working until you delete it,
+                  including if it leaks. Choose an expiry unless something
+                  depends on this key and cannot be given a new one.
+                </Alert>
+              )}
             </>
           )}
         </Stack>

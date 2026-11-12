@@ -28,6 +28,7 @@ import {
 import { ConnectorAppProfile } from './connector-app-profile';
 import { useConnectorApps } from './connector-apps-queries';
 import { ConnectorAppsTab } from './connector-apps-tab';
+import { DecisionRoutingSection } from './decision-routing-section';
 import { WorkspaceSwitchesTab } from './workspace-switches-tab';
 
 type AdminParams = {
@@ -90,6 +91,22 @@ const AdminPanel = observer(function AdminPanel() {
             ) : (
               <GuardrailsSection serverId={serverId} initiallyOpen />
             )}
+          </div>
+        </PageContent>
+      </AdminFrame>
+    );
+  if (section === 'decision')
+    return (
+      <AdminFrame serverId={serverId} groups={groups} active="decision">
+        <PageContent className="px-0">
+          <div className="space-y-6 pb-10">
+            <PageHeader
+              sticky
+              title={ADMIN_MENU_LABELS.decision}
+              description={`In an auto-route room, Switch asks a decision service which agent should answer a message that tags nobody. Choose the one ${workspace.name}’s rooms use.`}
+            />
+            {/* Keyed so a workspace switch reads that workspace's own setting. */}
+            <DecisionRoutingSection key={workspace.id} workspaceId={workspace.id} />
           </div>
         </PageContent>
       </AdminFrame>

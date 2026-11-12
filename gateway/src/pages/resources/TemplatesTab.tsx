@@ -3,12 +3,12 @@ import type { GridColDef } from "@mui/x-data-grid";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { AccessChip } from "../../components/AccessControls";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import type { TemplateSummary } from "../../data/api";
 import { useTemplates } from "../../data/hooks";
 import ResourceFiltersBar from "./ResourceFiltersBar";
 import { formatBytes } from "./templateFormat";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 
 interface Props {
   refreshKey: number;
@@ -137,6 +137,15 @@ export default function TemplatesTab({ refreshKey }: Props) {
           rows={filtered}
           columns={columns}
           fillHeight
+          emptyState={
+            searchSent || ownerId || kind ? (
+              <TableEmptyState title="No templates match these filters">
+                Clear the search or owner to see every one.
+              </TableEmptyState>
+            ) : (
+              <TableEmptyState title="No templates yet">Upload one to start rooms from it.</TableEmptyState>
+            )
+          }
           onRowClick={(params) => navigate(`/resources/templates/${params.id}`)}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
         />

@@ -74,6 +74,10 @@ class AuditAction(StrEnum):
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
     WORKSPACE_SERVICE_CLEARED = "workspace_service.cleared"
     OWNERSHIP_TRANSFERRED = "ownership.transferred"
+    RETENTION_POLICY_SET = "retention_policy.set"
+    RETENTION_POLICY_CLEARED = "retention_policy.cleared"
+    PERSON_ERASURE_REQUESTED = "person_erasure.requested"
+    PERSON_ERASURE_COMPLETED = "person_erasure.completed"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -118,6 +122,9 @@ class ServerAuditAction(StrEnum):
     USER_DELETED = "user.deleted"
     USER_DELETION_REFUSED = "user.deletion_refused"
     USER_DELETION_FAILED = "user.deletion_failed"
+    # Every session the account held was ended, by the person ("Sign out of
+    # all devices") or by the operator for them.
+    USER_SESSIONS_ENDED = "user.sessions_ended"
     WORKSPACE_DELETED = "workspace.deleted"
     # WorkOS refused where the directory mirror had got to in its events, and
     # the mirror started again from now, with a full check of every linked

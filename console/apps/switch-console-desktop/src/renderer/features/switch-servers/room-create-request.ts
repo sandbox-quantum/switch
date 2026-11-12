@@ -14,6 +14,12 @@ export type RoomCreateRequest =
         greeting: null;
         /** A room made here is a group even with one agent and nobody else. */
         kind: 'group';
+        /** Empty leaves the description naming who is in the chat. */
+        description: string;
+        instructions: string | undefined;
+        groupId: string | null;
+        /** Null leaves the chat private, as a Switch Console chat is. */
+        access: RoomAccess | null;
       };
     }
   | {
@@ -25,6 +31,8 @@ export type RoomCreateRequest =
         instructions: string | undefined;
         bridgeId: string;
         agentIds: string[];
+        /** The people to add, by their username on the room's messaging app. */
+        userNames: string[];
         channel: NewRoomChannel;
         groupId: string | null;
         /** Null leaves the server's default. */
@@ -32,7 +40,7 @@ export type RoomCreateRequest =
       };
     };
 
-/** The New room dialog's More options, for a room on a messaging app. */
+/** The New room dialog's channel and More options; a Switch Console chat takes all but the channel. */
 export type RoomCreateOptions = {
   channel: NewRoomChannel;
   groupId: string | null;
@@ -57,10 +65,12 @@ export function roomCreateRequest(form: {
   description: string;
   instructions: string;
   agentIds: string[];
-  /** The people to add; a bridged room is created without them. */
+  /** The people to add to a Switch Console room, by Switch user id. */
   memberUserIds: string[];
+  /** The people to add to a bridged room, by username on its app. */
+  userNames: string[];
   requestId: string;
-  /** A bridged room's More options; a Switch Console room has none. */
+  /** The More options; a Switch Console chat has no channel, so its channel is ignored. */
   options: RoomCreateOptions;
 }): RoomCreateRequest {
   const name = form.name.trim();
@@ -76,6 +86,10 @@ export function roomCreateRequest(form: {
         requestId: form.requestId,
         greeting: null,
         kind: 'group',
+        description: form.description.trim(),
+        instructions: form.instructions.trim() || undefined,
+        groupId: form.options.groupId,
+        access: form.options.access,
       },
     };
   return {
@@ -87,6 +101,7 @@ export function roomCreateRequest(form: {
       instructions: form.instructions.trim() || undefined,
       bridgeId: form.bridgeId,
       agentIds,
+      userNames: [...new Set(form.userNames)],
       ...roomOptionsParams(form.options, form.bridgeType ?? ''),
     },
   };
@@ -114,7 +129,7 @@ export function roomOptionsReady(options: RoomCreateOptions, bridgeType: string)
   return id.trim() !== '' && channelIdProblem(bridgeType, id) === null;
 }
 
-/** A room needs only a name; a bridged room's description is optional, as its channel topic is. */
+/** A room needs only a name; its description is optional, as a channel topic is. */
 export function canCreate(form: { name: string }) {
   return form.name.trim() !== '';
 }
@@ -136,12 +151,15 @@ export class CreateRequestIds {
     name: string;
     agentIds: string[];
     memberUserIds: string[];
+    /** The room's own settings: the server refuses a retry that changes them under the same id. */
+    settings?: unknown;
   }): string {
     const key = JSON.stringify([
       form.bridgeId,
       form.name.trim(),
       form.agentIds,
       form.memberUserIds,
+      form.settings ?? null,
     ]);
     if (key !== this.key) {
       this.key = key;

@@ -8,7 +8,7 @@ import type { GridColDef, GridRowId } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { AccessChip } from "../../components/AccessControls";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import {
   type RoomSummary,
   archiveRoom,
@@ -16,7 +16,7 @@ import {
   unarchiveRoom,
 } from "../../data/api";
 import { useRoomGroups, useRooms } from "../../data/hooks";
-import { EM_DASH, MONO_SX, channelTypeLabel, formatDate } from "../../theme/hootFormat";
+import { EM_DASH, MONO_SX, channelTypeLabel, formatDate } from "../../theme/format";
 import { buildGroupIndex, effectiveColor, groupPathName } from "./groupTree";
 import { RoomFilters, filterRooms, useRoomFilterState } from "./roomFilters";
 
@@ -289,6 +289,23 @@ export default function RoomsPage() {
           rows={filteredRooms}
           columns={columns}
           fillHeight
+          emptyState={
+            filters.search ||
+            filters.groupFilter ||
+            filters.ownerFilter ||
+            filters.bridgeFilter ||
+            filters.userFilter ? (
+              <TableEmptyState title="No rooms match these filters">
+                Clear the search or filters to see every room.
+              </TableEmptyState>
+            ) : viewingArchived ? (
+              <TableEmptyState title="No archived rooms">Rooms you archive are listed here.</TableEmptyState>
+            ) : (
+              <TableEmptyState title="No rooms in this workspace yet">
+                Create one to bring agents and people together.
+              </TableEmptyState>
+            )
+          }
           checkboxSelection
           isRowSelectable={(room) => room.can_write}
           onRowSelectionModelChange={setSelected}

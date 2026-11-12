@@ -16,7 +16,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -57,8 +57,10 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.agent_sessions import ApprovalRequestView
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, session_is_current
+from switch_core.gateway.dependencies import get_user_store
 from switch_core.session_activity.listener import Change, RoomSubscription
 
 logger = logging.getLogger(__name__)
@@ -120,6 +122,13 @@ class CreateChatRequest(CamelModel):
     # Only finishes the create this request id already started: 404 when it
     # started none; older clients send none.
     resume_only: bool = False
+    # The room's own settings, as a room made on a messaging app takes them;
+    # older clients send none. The visibilities go together.
+    description: str | None = None
+    instructions: str | None = None
+    group_id: str | None = None
+    read_visibility: str | None = None
+    write_visibility: str | None = None
 
     def chosen_agents(self) -> list[str]:
         if (self.agent_id is None) == (self.agent_ids is None):
@@ -207,6 +216,7 @@ class ActivityItemView(CamelModel):
     turn_id: str
     item_id: str
     kind: str
+    subagent: bool = False
     revision: int
     status: str
     title: str
@@ -226,6 +236,7 @@ class ActivityItemView(CamelModel):
             session_id=row.session_id,
             turn_id=row.turn_id,
             item_id=row.item_id,
+            subagent=bool(row.subagent),
             kind=row.kind,
             revision=row.revision,
             status=row.status,
@@ -334,6 +345,11 @@ async def create_chat(
         kind=req.kind,
         bridge_id=req.bridge_id,
         resume_only=req.resume_only,
+        description=req.description,
+        instructions=req.instructions,
+        group_id=req.group_id,
+        read_visibility=req.read_visibility,
+        write_visibility=req.write_visibility,
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return ChatEnvelope(
@@ -341,10 +357,26 @@ async def create_chat(
         )
 
 
+def _session_check(
+    service: ChatService, user_store: UserStore, user: User
+) -> Callable[[], Awaitable[bool]]:
+    """What a stream asks at each re-read: whether the session it was opened
+    with still stands, or the account's sessions have been ended since."""
+    session_version = user.session_version
+
+    async def still_current() -> bool:
+        return await session_is_current(
+            service.session_factory, user_store, user.id, session_version
+        )
+
+    return still_current
+
+
 @router.get("/events")
 async def chat_events_stream(
     user: CurrentUser,
     service: Service,
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     after: Annotated[str | None, Query()] = None,
 ) -> StreamingResponse:
     tenant_id = require_tenant_id()
@@ -356,6 +388,7 @@ async def chat_events_stream(
             parse_after(after),
             ping_seconds=PING_SECONDS,
             recheck_seconds=RECHECK_SECONDS,
+            session_current=_session_check(service, user_store, user),
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
@@ -371,19 +404,24 @@ async def agent_candidates(
     user: CurrentUser,
     service: Service,
     room_id: Annotated[str | None, Query(alias="roomId")] = None,
+    group_id: Annotated[str | None, Query(alias="groupId")] = None,
 ) -> AgentCandidates:
-    """The agents the caller could add to a new chat, or with `roomId` to
-    that chat, which they must manage."""
+    """The agents the caller could add to a new chat, filed in `groupId` if
+    given, or with `roomId` to that chat, which they must manage."""
     tenant_id = require_tenant_id()
     async with tenant_session(service.session_factory, tenant_id) as session:
         return AgentCandidates(
-            agent_ids=await service.agent_candidates(session, tenant_id, user, room_id)
+            agent_ids=await service.agent_candidates(
+                session, tenant_id, user, room_id, new_group_id=group_id
+            )
         )
 
 
 @router.get("/activity/events")
 async def chat_activity_stream(
-    user: CurrentUser, service: Service
+    user: CurrentUser,
+    service: Service,
+    user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> StreamingResponse:
     tenant_id = require_tenant_id()
     return StreamingResponse(
@@ -394,6 +432,7 @@ async def chat_activity_stream(
             ping_seconds=PING_SECONDS,
             recheck_seconds=RECHECK_SECONDS,
             queue_max=ACTIVITY_QUEUE_MAX,
+            session_current=_session_check(service, user_store, user),
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
@@ -874,6 +913,7 @@ async def chat_events(
     *,
     ping_seconds: float,
     recheck_seconds: float,
+    session_current: Callable[[], Awaitable[bool]],
 ) -> AsyncIterator[bytes]:
     """The caller's chat events as SSE frames.
 
@@ -882,7 +922,8 @@ async def chat_events(
     `chat` and followed from its head; one that leaves the list is `chat.removed`.
     A change to the caller's chats wakes the stream at once, whichever process
     made it (`chats/signals.py`). A re-read every `recheck_seconds` recovers
-    anything a missed notification or a missed signal left behind.
+    anything a missed notification or a missed signal left behind, and ends
+    the stream once the caller's session no longer `session_current`.
     """
     stream = _ChatStream(service, tenant_id, user, after)
     service.watch_memberships(tenant_id, user.id, stream.on_memberships)
@@ -908,6 +949,8 @@ async def chat_events(
                 yield b": ping\n\n"
             read: set[str] | None
             if now >= next_recheck:
+                if not await session_current():
+                    return
                 next_recheck = now + recheck_seconds
                 read = None
             elif stream.wake.is_set():
@@ -934,6 +977,7 @@ async def chat_activity_events(
     ping_seconds: float,
     recheck_seconds: float,
     queue_max: int,
+    session_current: Callable[[], Awaitable[bool]],
 ) -> AsyncIterator[bytes]:
     """Turn steps and approval requests of the rooms the caller may read, as SSE.
 
@@ -943,7 +987,8 @@ async def chat_activity_events(
     `recheck_seconds`. Readability is still checked on every change, so
     leaving a room stops its frames at once. `resync` means changes may have
     been missed (the listener reconnected, this connection fell behind, or the
-    caller joined a room): reload snapshots.
+    caller joined a room): reload snapshots. Each re-read first ends the
+    stream if the caller's session no longer `session_current`.
     """
     queue: asyncio.Queue[object] = asyncio.Queue(maxsize=queue_max)
 
@@ -995,6 +1040,8 @@ async def chat_activity_events(
                 yield b": ping\n\n"
             recheck = now >= next_recheck
             if recheck:
+                if not await session_current():
+                    return
                 next_recheck = now + recheck_seconds
             if recheck or item is _RESYNC or item is _MEMBERSHIPS:
                 current = await _readable_room_ids(service, tenant_id, user)

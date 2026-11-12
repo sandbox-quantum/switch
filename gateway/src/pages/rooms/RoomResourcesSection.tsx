@@ -30,6 +30,7 @@ import {
   useRoomPackages,
   useRoomReferences,
 } from "../../data/hooks";
+import { LockedMark, OpensMark } from "../../components/RowAccess";
 
 interface Props {
   roomId: string;
@@ -507,9 +508,15 @@ function RoomPackages({
               onClick={p.can_read ? () => navigate(`/resources/packages/${p.id}`) : undefined}
               data-testid={`room-package-${p.id}`}
             >
-              <Typography variant="body2" sx={{ flexGrow: 1 }}>
+              <Typography
+                variant="body2"
+                color={p.can_read ? undefined : "text.secondary"}
+              >
                 {p.name || p.description}
               </Typography>
+              {!p.can_read && <LockedMark />}
+              <span style={{ flexGrow: 1 }} />
+              {p.can_read && <OpensMark />}
               {canUnlink && (
                 <Button
                   size="small"

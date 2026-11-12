@@ -15,15 +15,18 @@ import { describeFailure, failureText } from '@renderer/lib/errors/describe-fail
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
+import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { cn } from '@renderer/utils/utils';
 import { type ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
+import { RoomAutoRouteSection } from './room-auto-route-section';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { roomTitle } from './room-labels';
-import { roomDetailKey, useRoomDetail } from './room-participants';
+import { agentNameFor, roomDetailKey, useRoomDetail } from './room-participants';
+import { SchedulesSection } from './room-schedules-section';
 import {
   AccessAndGroupFields,
   ArchiveRoomSection,
@@ -75,6 +78,7 @@ const ChatConfiguration = observer(function ChatConfiguration({
               room={detail.data}
               permissions={{
                 canWrite: chat.canManage,
+                canChangeMembers: chat.canManage,
                 canManage: chat.canManage,
                 canUnlink: chat.canManage,
               }}
@@ -193,7 +197,18 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             permissions={permissions}
             administersWorkspace={administersWorkspaceById(workspaceId)}
           />
+          {/* Absent from a server that predates decision routing. */}
+          {room.autoRoute && (
+            <AutoRouteSection
+              workspaceId={workspaceId}
+              room={room}
+              autoRoute={room.autoRoute}
+              canWrite={permissions.canWrite}
+              canManage={permissions.canManage}
+            />
+          )}
           <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
+          <SchedulesSection workspaceId={workspaceId} room={room} permissions={permissions} />
           <RoomInfoSection room={room} />
           <section
             id="room-settings-archive"
@@ -509,6 +524,39 @@ function Field({
     </div>
   );
 }
+
+/** The room's auto-route switch and triage agent, offering the room's own agents. */
+const AutoRouteSection = observer(function AutoRouteSection({
+  workspaceId,
+  room,
+  autoRoute,
+  canWrite,
+  canManage,
+}: {
+  workspaceId: string;
+  room: RemoteRoomDetail;
+  autoRoute: NonNullable<RemoteRoomDetail['autoRoute']>;
+  canWrite: boolean;
+  canManage: boolean;
+}) {
+  const remoteAgents = useWorkspaceAgents(workspaceId);
+  const remoteById = new Map((remoteAgents.data ?? []).map((a) => [a.id, a]));
+  const agents = room.agentIds.map((id) => ({
+    id,
+    name: agentNameFor(id, workspaceId, remoteById),
+  }));
+  return (
+    <RoomAutoRouteSection
+      workspaceId={workspaceId}
+      room={room}
+      autoRoute={autoRoute}
+      agents={agents}
+      canWrite={canWrite}
+      canManage={canManage}
+      detailKey={roomDetailKey(workspaceId, room.id)}
+    />
+  );
+});
 
 function PanelNotice({
   icon,

@@ -1,4 +1,5 @@
 import { posix } from 'node:path';
+import { IS_PROCESS_ALIVE } from '@switch-console/agent-providers';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { log } from '@main/lib/logger';
 
@@ -21,7 +22,7 @@ import { log } from '@main/lib/logger';
  */
 export const STOP_LEGACY_SIDECAR_FN = `
 function stopLegacySidecar(repoDir, slug) {
-const fs = require('node:fs');
+${IS_PROCESS_ALIVE}const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
 const directory = path.join(repoDir, '.switchdash', 'agents', slug);
@@ -30,15 +31,6 @@ const read = (name) => {
     return JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'));
   } catch (error) {
     if (error.code === 'ENOENT') return null;
-    throw error;
-  }
-};
-const alive = (pid) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error.code === 'ESRCH') return false;
     throw error;
   }
 };
@@ -62,14 +54,14 @@ for (const session of read('state.json')?.sessions ?? []) {
   stopped.push(target);
 }
 const pid = read('sidecar.ready')?.pid;
-if (Number.isSafeInteger(pid) && pid > 0 && alive(pid)) {
+if (Number.isSafeInteger(pid) && pid > 0 && isProcessAlive(pid, 'recorded')) {
   process.kill(pid, 'SIGTERM');
-  for (let attempt = 0; attempt < 50 && alive(pid); attempt++) pause(100);
-  if (alive(pid)) {
+  for (let attempt = 0; attempt < 50 && isProcessAlive(pid, 'recorded'); attempt++) pause(100);
+  if (isProcessAlive(pid, 'recorded')) {
     process.kill(pid, 'SIGKILL');
-    for (let attempt = 0; attempt < 20 && alive(pid); attempt++) pause(100);
+    for (let attempt = 0; attempt < 20 && isProcessAlive(pid, 'recorded'); attempt++) pause(100);
   }
-  if (alive(pid)) throw new Error('Superseded sidecar ' + pid + ' would not stop.');
+  if (isProcessAlive(pid, 'recorded')) throw new Error('Superseded sidecar ' + pid + ' would not stop.');
   stopped.push('sidecar:' + pid);
 }
 return stopped;

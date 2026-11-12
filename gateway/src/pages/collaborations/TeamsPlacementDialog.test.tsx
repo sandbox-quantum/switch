@@ -15,6 +15,8 @@ const bridge: BridgeDetail = {
   created_at: "2026-01-01",
   attention: null,
   team_placement_supported: true,
+  can_manage: true,
+  can_delete: true,
 };
 
 function placements(
@@ -190,7 +192,7 @@ describe("TeamsPlacementDialog", () => {
       if (reads === 1) return jsonResponse(200, before);
       if (reads === 2) {
         return jsonResponse(503, {
-          detail: "The Teams connection is not running; try again in a moment.",
+          detail: "The Teams messaging app is not running; try again in a moment.",
         });
       }
       return jsonResponse(200, after);
@@ -203,7 +205,7 @@ describe("TeamsPlacementDialog", () => {
     fireEvent.click(screen.getAllByRole("radio")[1]);
 
     expect(
-      await screen.findByText("The connection is restarting with your change…"),
+      await screen.findByText("Switch is reconnecting to Teams with your change…"),
     ).toBeTruthy();
     expect(screen.queryByText(/not running/)).toBeNull();
     await vi.advanceTimersByTimeAsync(1500);
@@ -220,19 +222,19 @@ describe("TeamsPlacementDialog", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mockFetch(() =>
       jsonResponse(503, {
-        detail: "The Teams connection is not running; try again in a moment.",
+        detail: "The Teams messaging app is not running; try again in a moment.",
       }),
     );
     render(
       <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
     );
 
-    await screen.findByText("The connection is restarting with your change…");
+    await screen.findByText("Switch is reconnecting to Teams with your change…");
     await vi.advanceTimersByTimeAsync(1500 * 21);
 
     expect(
       await screen.findByText(
-        "The Teams connection is not running; try again in a moment.",
+        "The Teams messaging app is not running; try again in a moment.",
       ),
     ).toBeTruthy();
     vi.useRealTimers();
@@ -241,12 +243,12 @@ describe("TeamsPlacementDialog", () => {
   it("stops waiting for a restart once the dialog is closed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const fetchMock = mockFetch(() =>
-      jsonResponse(503, { detail: "The Teams connection is not running." }),
+      jsonResponse(503, { detail: "The Teams messaging app is not running." }),
     );
     const { rerender } = render(
       <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
     );
-    await screen.findByText("The connection is restarting with your change…");
+    await screen.findByText("Switch is reconnecting to Teams with your change…");
     rerender(<TeamsPlacementDialog bridge={null} onClose={() => {}} onChanged={() => {}} />);
     const callsWhenClosed = fetchMock.mock.calls.length;
 
@@ -335,7 +337,7 @@ describe("TeamsPlacementDialog", () => {
     mockFetch((_url, init) =>
       init?.method === "DELETE"
         ? jsonResponse(503, {
-            detail: "The Teams connection is not running; try again in a moment.",
+            detail: "The Teams messaging app is not running; try again in a moment.",
           })
         : jsonResponse(200, placements()),
     );
@@ -348,7 +350,7 @@ describe("TeamsPlacementDialog", () => {
     fireEvent.click(switches[0]); // Engineering already has Switch -> DELETE, which fails
 
     expect(
-      await screen.findByText("The Teams connection is not running; try again in a moment."),
+      await screen.findByText("The Teams messaging app is not running; try again in a moment."),
     ).toBeTruthy();
   });
 

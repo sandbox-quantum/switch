@@ -20,22 +20,21 @@ import {
   fetchDocument,
   updateDocument,
 } from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import {
+  ACCESS_HELPERS_FOR_OTHERS,
   type AccessLevel,
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
 import { usePackages } from "../../data/hooks";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
+import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
 
 export default function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, canAdminTenant } = useAuth();
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -77,15 +76,13 @@ export default function DocumentDetailPage() {
     );
   }
 
-  const canMutate =
-    !!user && (user.id === doc.owner_id || canAdminTenant);
-
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
         <IconButton
           onClick={() => navigate("/resources?tab=documents")}
           size="small"
+          aria-label="Back"
         >
           <ArrowBack />
         </IconButton>
@@ -100,7 +97,8 @@ export default function DocumentDetailPage() {
         <Divider />
         <EditFieldsSection
           doc={doc}
-          canMutate={canMutate}
+          canEdit={doc.can_edit}
+          canChangeAccess={doc.can_manage}
           onSaved={(updated) => setDoc(updated)}
         />
         <Divider />
@@ -111,7 +109,7 @@ export default function DocumentDetailPage() {
           resourceId={id}
           hiddenRoomsCount={doc.hidden_rooms_count}
         />
-        {canMutate && (
+        {doc.can_transfer && (
           <>
             <Divider />
             <TransferOwnershipSection
@@ -119,8 +117,13 @@ export default function DocumentDetailPage() {
               resourceId={id}
               resourceLabel={doc.name || id}
               ownerId={doc.owner_id}
+              blockedReason={null}
               onTransferred={() => navigate(0)}
             />
+          </>
+        )}
+        {doc.can_manage && (
+          <>
             <Divider />
             <DangerSection onDelete={() => setDeleteOpen(true)} />
           </>
@@ -183,11 +186,13 @@ function InfoLine({
 
 function EditFieldsSection({
   doc,
-  canMutate,
+  canEdit,
+  canChangeAccess,
   onSaved,
 }: {
   doc: DocumentDetail;
-  canMutate: boolean;
+  canEdit: boolean;
+  canChangeAccess: boolean;
   onSaved: (updated: DocumentDetail) => void;
 }) {
   const [name, setName] = useState(doc.name);
@@ -217,7 +222,8 @@ function EditFieldsSection({
         description,
         instructions,
         content,
-        ...fromAccessLevel(access),
+        // Changing who may see or change it is the manager's alone.
+        ...(access !== toAccessLevel(doc) ? fromAccessLevel(access) : {}),
       });
       onSaved(updated);
     } catch (e) {
@@ -236,13 +242,13 @@ function EditFieldsSection({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
       />
       <TextField
         label="Description"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={2}
         helperText="Short, human-readable summary. Shown in lists."
@@ -251,7 +257,7 @@ function EditFieldsSection({
         label="Instructions"
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={4}
         helperText="Sent to agents on connect. Not shown in lists."
@@ -260,7 +266,7 @@ function EditFieldsSection({
         label="Content"
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={12}
         slotProps={{ input: { sx: { fontFamily: "monospace" } } }}
@@ -268,7 +274,8 @@ function EditFieldsSection({
       <AccessSelect
         value={access}
         onChange={setAccess}
-        disabled={!canMutate || saving}
+        disabled={!canChangeAccess || saving}
+        helpers={canChangeAccess ? undefined : ACCESS_HELPERS_FOR_OTHERS}
         sx={{ maxWidth: 320 }}
       />
       {error && <Alert severity="error">{error}</Alert>}
@@ -276,7 +283,7 @@ function EditFieldsSection({
         <Button
           variant="contained"
           onClick={handleSave}
-          disabled={!canMutate || !dirty || saving}
+          disabled={!(canEdit || canChangeAccess) || !dirty || saving}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
           Save

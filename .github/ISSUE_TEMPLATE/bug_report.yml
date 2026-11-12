@@ -19,7 +19,7 @@ body:
         - switch-core (control plane)
         - gateway (operator dashboard)
         - Switch Console (desktop app)
-        - Agent sessions (Claude Code / Codex / OpenCode / Cursor / Antigravity)
+        - Agent sessions (Claude Code / Codex / OpenCode / Cursor / Antigravity / Junie)
         - Collaboration bridge (Slack / Mattermost / Discord / Teams / Telegram)
         - Deployment (Docker Compose / Helm)
         - Not sure

@@ -18,6 +18,7 @@ from switch_core.bridges.collaboration.telegram.adapter import (
 from switch_core.bridges.collaboration.telegram.chunking import (
     MAX_MESSAGE,
     chunk_message,
+    safe_split,
 )
 
 
@@ -136,3 +137,49 @@ def test_splitting_a_list_loses_only_the_separator_newlines() -> None:
     )
     # Exactly one per boundary — each piece is its own message.
     assert lost == len(chunks) - 1
+
+
+_ENTITY_FRAGMENT = re.compile(r"&[a-zA-Z#0-9]*$|^[a-zA-Z#0-9]*;")
+
+
+@pytest.mark.parametrize(
+    ("entity", "offset"),
+    [
+        (entity, offset)
+        for entity in ["&lt;", "&gt;", "&amp;", "&quot;", "&#39;", "&#128512;"]
+        for offset in range(1, len(entity))
+    ],
+)
+def test_a_cut_never_lands_inside_an_entity(entity: str, offset: int) -> None:
+    # The body is already Telegram HTML, so `<` is `&lt;`. A cut through one
+    # leaves a bare `&` that Telegram refuses and a stray `lt;` after it.
+    text = "x" * (MAX_MESSAGE - offset) + entity + "y" * 50
+
+    cut = safe_split(text, MAX_MESSAGE)
+
+    assert cut == MAX_MESSAGE - offset
+    assert text[cut:].startswith(entity)
+
+
+def test_a_long_body_of_entities_splits_between_them() -> None:
+    # Unformatted, so the plain splitter sees it too.
+    body = _render("a<b " * 3000)
+    assert "&lt;" in body
+
+    chunks = chunk_message(body)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= MAX_MESSAGE for c in chunks)
+    for chunk in chunks:
+        assert not _ENTITY_FRAGMENT.search(chunk), chunk[-12:]
+    assert "".join(chunks) == body
+
+
+def test_entities_in_markup_too_deep_to_keep_are_not_split() -> None:
+    body = "".join(f"<b>&lt;{i}&gt; " for i in range(1500))
+
+    chunks = chunk_message(body)
+
+    assert all(len(c) <= MAX_MESSAGE for c in chunks)
+    for chunk in chunks:
+        assert not _ENTITY_FRAGMENT.search(chunk), chunk[-12:]

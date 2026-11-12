@@ -16,7 +16,7 @@ params:
   provider:
     type: provider
     description: The coding agent that runs it. The first one ready on its machine is chosen.
-    default: [claude, codex, opencode, cursor, antigravity]
+    default: [claude, codex, opencode, cursor, antigravity, deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie]
     input: advanced
   machine:
     type: machine
@@ -25,7 +25,7 @@ params:
     input: advanced
   directory:
     type: directory
-    description: Its working directory. The Switch repository is cloned inside it.
+    description: Its working directory.
     default: "{$agents_dir}/{buddy.name}"
     input: advanced
 form:
@@ -43,6 +43,5 @@ resources:
     provider: "{provider}"
     machine: "{machine}"
     directory: "{directory}"
-    repo: https://github.com/sandbox-quantum/switch
     can_manage_agents: true
     addressing: owner-agents

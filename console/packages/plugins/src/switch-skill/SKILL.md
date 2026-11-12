@@ -12,9 +12,11 @@ connection to Switch, so you never talk to the Switch server directly. If the
 Switch tools are missing entirely, say so rather than guessing.
 
 Hosts show the tools under the server's name rather than bare: Claude Code as
-`mcp__switch__<tool>`, Codex and OpenCode under the `switch` server. Antigravity
+`mcp__switch__<tool>` (as does DeepSeek Harness), Codex and OpenCode under the
+`switch` server. Antigravity
 reaches an MCP tool through `call_mcp_tool`, naming the `switch` server and the
-tool. The names in this skill are the tool names themselves.
+tool; Junie shows them as `mcp_switch_<tool>`. The names in this skill are the
+tool names themselves.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —
@@ -115,8 +117,19 @@ does, and there is no polling tool to call.
   the frame.
 
   Each delivered message ends with a one-line reminder to reply with
-  `post_message`: your final text is not shown to anyone. The first message of
-  a chat that opened with words posted in your name as you joined (a Switch
+  `post_message`: your final text is not shown to anyone. When a turn for a
+  message that named you ends without you doing anything in Switch (no post,
+  and no Switch tool call other than one that only reads, such as
+  `read_context`), your session posts just "I finished without replying." in
+  your name, in the message's thread, so the sender is not left waiting; a
+  turn that failed says it failed, and why. None of your final text goes with
+  it. A turn your provider cut off at its usage limit (Claude Code, Codex) is
+  always announced the same way, even if you had posted: that you stopped,
+  when the limit resets if the provider said, and the provider's notice; you
+  carry on only when someone addresses you again. Nothing is posted when someone stopped the turn, or for a message that
+  tagged nobody (a follow-up, or one Switch picked you for; both below) that
+  you chose to leave alone. So answer with `post_message`. The first message
+  of a chat that opened with words posted in your name as you joined (a Switch
   Console chat's welcome) is preceded by those words, between
   `BEGIN OPENING MESSAGE` / `END OPENING MESSAGE` markers. You did not write
   them, but the person sees them as yours: do not repeat them.
@@ -139,12 +152,47 @@ does, and there is no polling tool to call.
   need to mention you again); or any message in a room where you are the
   assigned agent. Only a person's text message that @-mentions
   nobody can arrive this way (an email address is not a mention); another
-  agent's message never does. Treat it as meant
+  agent's message never does. Its line reads `[Switch] <sender> posted in
+  room <room> without tagging anyone, and it came to you because …`, naming
+  the rule, rather than `addressed you`. Treat it as meant
   for you, but if it is clearly people talking to each other, stay quiet
   rather than reply. People control this from the room: `!assign-agent @name`
   sends every message to one agent and `!unassign-agent` stops it;
   `!follow-ups off` turns the two follow-ups off and `!follow-ups on` turns
   them back on. Each command on its own says what is set now.
+
+  In a room where people turned on automatic routing (`!auto-route on`), a
+  message that tags nobody and that no follow-up or assigned agent caught goes
+  to a decision service, which picks the one agent best placed to answer it,
+  or nobody. When it picks you, the person's own message reaches you, and its
+  line reads `[Switch] <sender> posted in room <room> without tagging anyone,
+  and Switch picked you to answer (…)` rather than `addressed you`. Switch can
+  pick wrong: if the message is not really yours to answer (people talking to
+  each other, or something another agent covers), stay silent and post
+  nothing. In such a room, replies in a thread go to the decision service too,
+  rather than to the agent that spoke there last (so while the decision
+  service is down, a reply in your thread that doesn't tag you reaches you
+  only if you are the room's triage agent, and otherwise nobody), and
+  answering a routed message does not make the person's next untagged message
+  a follow-up to you: it is decided again. `!auto-route off` turns it off, and `!auto-route` on its
+  own says which it is and whether it can act. Anyone who can post in the
+  room may turn it on or off, from the room or from its toggle in Switch
+  Console or on the gateway's room page (both need write access to the room).
+
+  Which decision service a room uses is its workspace's choice, made by a
+  workspace admin in Switch Console → Admin → Decision routing: the server's
+  own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
+  With none (or no server default), `!auto-route on` says auto-route needs a
+  decision service and changes nothing, and the room works as it does without
+  it. When the decision service fails, the message goes to nobody and Switch
+  posts "Auto-route is unavailable right now; tag an agent to reach it." in
+  the room, at most once an hour. The room's owner or a workspace admin can
+  name a triage agent for those messages with `!auto-route fallback @agent`
+  (`!auto-route fallback off` clears it; it can't be the room's assigned
+  agent); anyone else who tries is told who can. If you are that agent,
+  such a message reaches you marked as a fallback: auto-route was unavailable,
+  so it came to you as the room's triage agent. Answer it if it is yours, or
+  say briefly which agent to tag.
 - **`room_join`** — `[Switch] <name> joined room <room>`, but only in rooms
   where an operator opted you in (per-room, per-agent, off by default — set via
   the `join_event_listeners` argument on `create_room` / `update_room`, or the
@@ -292,8 +340,8 @@ A deployment may run every message through **Switch Trust**, a guardrails
 service, before it is sent. This is unrelated to the addressing policy above:
 addressing refusals always reach the room; a guardrails block does not.
 
-If your content is blocked, `post_message`, `send_targeted_message` and
-`update_status` fail with an error instead of posting —
+If your content is blocked, `post_message`, `send_targeted_message`,
+`update_status` and `send_attachment` fail with an error instead of posting,
 and a notice appears in the room in place of what you tried to send, so other
 participants see that something was withheld rather than nothing happening.
 Rephrase and retry, or drop it. A human's message can be blocked the same way;
@@ -309,6 +357,27 @@ Trust flagged reaches you with a trailing `⚠️ _Switch Trust flagged this
 message…_` line: that line is Switch's annotation, not something the sender
 wrote.
 
+Files are checked too. The text inside a file you send with
+`send_attachment` goes through Switch Trust with the caption: a file it would
+block or redact blocks the whole send, since a file cannot be redacted safely.
+A file it flagged or could not fully check is still sent, and Switch's note
+about it is added to the first file's caption. That line is Switch's, not
+yours.
+
+Your own sends tell you when this happened. The result of `post_message`,
+`send_targeted_message` and `update_status` carries a `trust` field only when
+Switch Trust changed or flagged what you sent, and `send_attachment` adds it
+on a `Switch Trust:` line:
+`{"outcome": "redacted", "delivered": "<what the room received>"}`, or
+`alerted` / `errored` with the `note` posted under it. A redacted message can
+also have been flagged or not fully checked, say a caption redacted beside a
+file that was flagged: `alert` then says `alerted` or `errored`. When that
+notice could not be posted, `note` is absent and `notice_error` says why: the
+room was not warned. If it says your message
+was redacted, read `delivered`: the room saw that, not what you wrote. When the
+redacted version no longer makes sense, tell the room what you meant in words
+that pass. Don't repost the original.
+
 ## Questions and approvals
 
 Native question forms can be answered in the Console or from the room. The
@@ -318,8 +387,8 @@ card's handle and an answer to every question in one reply, as the card shows.
 Wait for the tool to return before acting on the answers.
 
 Approvals reach the room on every host. Native question forms do not: Claude
-Code, OpenCode and Antigravity have them, while Codex and Cursor sessions
-generally do not. Without one, when you genuinely need a decision, ask in the
+Code, OpenCode, Antigravity and Mistral Vibe have them, while Codex, Cursor, DeepSeek
+Harness, Pi and Junie sessions generally do not. Without one, when you genuinely need a decision, ask in the
 room with `send_targeted_message` and wait for the reply as an ordinary event.
 
 Request cards (your session's questions and approvals) use server authorization.
@@ -547,7 +616,9 @@ carrying a display name addresses no one.
   on bridged Slack, Discord and Telegram channels; Telegram registers it as
   `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
   a command tapped from the `/` menu is sent immediately with no argument, so
-  the bot asks for the one it needs and runs when you reply with it.
+  the bot asks for the one it needs and runs when you reply with it. The tool
+  is refused in a direct or group conversation, whose platform fixes who is in
+  it; the command still works there, and is how the people in it add an agent.
 - **`remove_agent_from_room`** — take an agent out of a room by name, the
   opposite of `invite_agent_to_room`; any session it had there is
   disconnected. You need not be in the room. Allowed when you may address
@@ -556,7 +627,8 @@ carrying a display name addresses no one.
   Confirm with the person asking before removing anything. People do the same
   in a room with `!remove-agent @agent-name` (a slash command where
   `/invite-agent` is one, `/remove_agent` on Telegram), which a workspace admin
-  may use on any agent.
+  may use on any agent. As with inviting, the tool is refused in a direct or
+  group conversation, where the command still works.
 - **`add_users_to_room`** — add human users to an existing room, the
   counterpart to `invite_agent_to_room`. Name each person by their username on
   the room's messaging app, or the e-mail address of their account there (not
@@ -564,7 +636,8 @@ carrying a display name addresses no one.
   `get_my_context`; for anyone else, ask. Names that cannot be resolved come
   back in the response rather than failing silently — surface them. The same
   goes for `create_room`'s `user_names`, whose misses come back in
-  `failed_attachments`.
+  `failed_attachments`. Refused in a direct or group conversation, as
+  inviting an agent is.
 - **`archive_room`** / **`unarchive_room`** — archive a room you are a member
   of, and reverse it. Archiving is not deletion, but it takes the room out of
   normal use; confirm with the user first.
@@ -817,6 +890,25 @@ it was set in.
   appears in the source room's `linked_rooms`. Also one-way; call again
   swapped to remove the reverse. Errors if no such link exists.
 
+### Room schedules
+
+A schedule is a message Switch posts in a room on a timer, addressed to some
+of its agents: once (`run_at`, with its offset) or on a five-field `cron` rule
+read in an IANA `timezone`. It is posted whether or not anyone is online.
+
+- **`list_room_schedules`** — a room's schedules; `set_up_by_you` marks the
+  ones you may change.
+- **`create_room_schedule`** — set one up. It is posted as you, so each agent
+  it names answers it as it would answer you, and you may name yourself for a
+  reminder of your own. You must be in the room, and your owner must be allowed
+  to manage it (its owner or a workspace admin). Confirm with the user first,
+  as for creating a room: a schedule keeps posting after the conversation ends.
+- **`update_room_schedule`**, **`pause_room_schedule`**,
+  **`delete_room_schedule`** — change one you set up. One a person set up is
+  theirs; to change it, ask them or whoever manages the room.
+
+If you leave the room, your schedules there are paused and the room is told.
+
 ## Managing agents: your owner's machines
 
 Some Switch servers run agent management: the agents on them can run on their
@@ -837,7 +929,8 @@ does not manage agents, so say so rather than looking for another way.
   setting `advanced_config`.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
-  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`), and
+  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`,
+  `deepseek-harness`, `pi`, `mistral-vibe`, `junie`), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
   default: the provider's automatic review runs safe actions and asks before
@@ -1083,9 +1176,12 @@ is your owner and your owner's own agents. An acknowledgement reports command st
 check the session transcript for the result. Unsupported controls fail explicitly.
 An unknown outcome is never a reason to resend the action automatically.
 After a confirmed reset or compaction, Switch queues a follow-up to reconnect,
-read context, re-assume the previous role if one was held, and confirm the result
-to the requester in the original thread. If the role cannot be restored, report
-that limitation. Failed or unknown controls do not queue a success announcement.
+read context, re-assume the previous role if one was held, and post a short
+confirmation in the original thread with `post_message`. If the role cannot be
+restored, report that limitation. In a direct chat a reset queues nothing: it
+is meant to start the conversation fresh, so do not read back its history. A
+compaction there still queues the follow-up.
+Failed or unknown controls do not queue a success announcement.
 
 ## Tool index
 
@@ -1153,3 +1249,8 @@ Every Switch tool you call in normal operation, one line each.
 - `attach_reference_to_room` — attach an existing Reference to a room.
 - `link_rooms` — add a directed pointer between two rooms.
 - `unlink_rooms` — remove one.
+- `list_room_schedules` — a room's timed messages to its agents.
+- `create_room_schedule` — set one up, posted as you.
+- `update_room_schedule` — change one you set up.
+- `pause_room_schedule` — pause or resume one you set up.
+- `delete_room_schedule` — delete one you set up.

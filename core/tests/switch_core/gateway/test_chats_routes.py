@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -42,7 +42,9 @@ from switch_core.db.models import (
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import chats as chats_module
+from switch_core.gateway.auth import session_is_current
 from switch_core.gateway.chats import (
     chat_activity_events,
     chat_events,
@@ -852,6 +854,73 @@ class _Events:
                 return data
 
 
+async def _always_current() -> bool:
+    return True
+
+
+def _session_of(chats: _Harness, user: User) -> Callable[[], Awaitable[bool]]:
+    """The check a route hands its stream: the session the stream was opened
+    with, against the account as it is now."""
+    session_version = user.session_version
+
+    async def current() -> bool:
+        return await session_is_current(
+            chats.factory, UserStore(), user.id, session_version
+        )
+
+    return current
+
+
+async def _end_sessions(chats: _Harness, user: User) -> None:
+    async with chats.factory() as session:
+        await UserStore().end_sessions(session, user.id)
+        await session.commit()
+
+
+async def test_the_stream_ends_at_its_next_re_read_once_the_sessions_are_ended(
+    chats: _Harness,
+) -> None:
+    events = _Events(
+        chat_events(
+            chats.service,
+            TENANT,
+            chats.alice,
+            {},
+            ping_seconds=60.0,
+            recheck_seconds=0.05,
+            session_current=_session_of(chats, chats.alice),
+        )
+    )
+    assert (await events.next())[0] == "ready"
+
+    await _end_sessions(chats, chats.alice)
+
+    with pytest.raises(StopAsyncIteration):
+        await events.next()
+
+
+async def test_the_activity_stream_ends_once_the_sessions_are_ended(
+    chats: _Harness,
+) -> None:
+    events = _Events(
+        chat_activity_events(
+            chats.service,
+            TENANT,
+            chats.alice,
+            ping_seconds=60.0,
+            recheck_seconds=0.05,
+            queue_max=64,
+            session_current=_session_of(chats, chats.alice),
+        )
+    )
+    assert (await events.next())[0] == "ready"
+
+    await _end_sessions(chats, chats.alice)
+
+    with pytest.raises(StopAsyncIteration):
+        await events.next()
+
+
 def _stream(
     chats: _Harness, user: User, after: dict[str, int], recheck: float
 ) -> _Events:
@@ -863,6 +932,7 @@ def _stream(
             after,
             ping_seconds=60.0,
             recheck_seconds=recheck,
+            session_current=_always_current,
         )
     )
 
@@ -1191,6 +1261,7 @@ def _stream_on(process: _Process, user: User) -> _Events:
             {},
             ping_seconds=60.0,
             recheck_seconds=3600.0,
+            session_current=_always_current,
         )
     )
 
@@ -1682,7 +1753,14 @@ async def test_an_owner_who_created_the_chat_keeps_it_when_the_agent_goes(
 
 
 async def _step(
-    chats: _Harness, agent: Agent, room_id: str, turn_id: str, item_id: str, rev: int
+    chats: _Harness,
+    agent: Agent,
+    room_id: str,
+    turn_id: str,
+    item_id: str,
+    rev: int,
+    *,
+    subagent: bool = False,
 ) -> None:
     async with chats.factory() as session:
         await session.merge(
@@ -1693,6 +1771,7 @@ async def _step(
                 turn_id=turn_id,
                 item_id=item_id,
                 kind="turn" if item_id == "turn" else "tool-activity",
+                subagent=subagent,
                 revision=rev,
                 status="running" if item_id == "turn" else "in-progress",
                 title=f"{item_id} r{rev}",
@@ -1754,6 +1833,7 @@ def _activity_stream(
             ping_seconds=ping_seconds,
             recheck_seconds=recheck_seconds,
             queue_max=queue_max,
+            session_current=_always_current,
         )
     )
 
@@ -1779,7 +1859,7 @@ async def test_room_activity_is_the_rooms_steps_and_requests_in_every_state(
     other_agent = await chats.agent("other", owner=chats.bob)
     other = await chats.new_chat(chats.bob, other_agent, "c2")
     await _step(chats, agent, mine, "t1", "turn", 1)
-    await _step(chats, agent, mine, "t1", "tool-1", 2)
+    await _step(chats, agent, mine, "t1", "tool-1", 2, subagent=True)
     await _step(chats, other_agent, other, "t9", "turn", 1)
     await _request(chats, agent, mine, "r-open", "open")
     await _request(chats, agent, mine, "r-done", "answered")
@@ -1794,6 +1874,9 @@ async def test_room_activity_is_the_rooms_steps_and_requests_in_every_state(
         ("t1", "turn", 1),
         ("t1", "tool-1", 2),
     ]
+    child = next(i for i in body["items"] if i["itemId"] == "tool-1")
+    assert child["kind"] == "tool-activity"
+    assert child["subagent"] is True
     assert {(a["requestId"], a["state"]) for a in body["approvals"]} == {
         ("r-open", "open"),
         ("r-done", "answered"),
@@ -2132,6 +2215,7 @@ def _activity_stream_on(process: _Process, user: User) -> _Events:
             ping_seconds=60.0,
             recheck_seconds=3600.0,
             queue_max=64,
+            session_current=_always_current,
         )
     )
 

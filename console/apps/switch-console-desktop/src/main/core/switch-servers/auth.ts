@@ -138,7 +138,15 @@ async function persistSessionCookie(
       message: `${action} succeeded but the gateway did not return a session cookie.`,
     });
   }
-  await setSessionCookie(server.id, jwt);
+  try {
+    await setSessionCookie(server.id, jwt);
+  } catch (cause) {
+    const detail = cause instanceof Error ? `: ${cause.message}` : '';
+    return err({
+      kind: 'failed',
+      message: `${action} succeeded, but Switch Console could not save the session securely${detail}${detail ? '' : '.'} Check that the operating system keychain is available, then sign in again.`,
+    });
+  }
   return ok(true);
 }
 
