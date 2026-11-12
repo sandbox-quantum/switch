@@ -112,6 +112,9 @@ class TestConnections:
         assert response.status_code == 200, response.text
         entries = {entry["slug"]: entry for entry in response.json()["connections"]}
         assert set(entries) == set(CATALOG)
+        assert entries["canva"]["oauth_access_levels"] == ["read", "write"]
+        assert entries["github"]["oauth_access_levels"] == []
+        assert entries["asana"]["oauth_access_levels"] == []
         github = entries["github"]
         assert {
             key: github[key]

@@ -683,7 +683,7 @@ class OAuthAdapter:
             )
         raise ServiceAdapterError(
             f"{self._name} refused Switch's token request "
-            f"(HTTP {response.status_code}{f', {error}' if isinstance(error, str) else ''})."
+            f"(HTTP {response.status_code})."
         )
 
     def _credentials(
@@ -696,7 +696,7 @@ class OAuthAdapter:
         token_type = body.get("token_type")
         if isinstance(token_type, str) and token_type.lower() != "bearer":
             raise ServiceAdapterError(
-                f"{self._name} returned a {token_type} token, not a bearer token."
+                f"{self._name} returned a token type other than bearer."
             )
         expires_in = body.get("expires_in")
         if type(expires_in) is not int or expires_in <= 0:

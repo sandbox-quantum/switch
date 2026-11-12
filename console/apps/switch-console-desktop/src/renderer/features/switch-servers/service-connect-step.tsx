@@ -1,5 +1,5 @@
 import { ExternalLink } from 'lucide-react';
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   canCloseConnectFlow,
   connectFlowReducer,
@@ -37,6 +37,8 @@ export function ServiceConnectStep({
   onConnected?: (warning: string | null) => void;
 }) {
   const service = connection.slug;
+  const [access, setAccess] = useState<'read' | 'write'>(connection.consent ?? 'read');
+  const accessLevels = connection.oauth_access_levels ?? [];
   const [state, dispatch] = useReducer(
     connectFlowReducer,
     connection.status === 'connected',
@@ -89,7 +91,7 @@ export function ServiceConnectStep({
     try {
       dispatch({
         type: 'started',
-        flowId: await calls.startSignIn(service),
+        flowId: await calls.startSignIn(service, accessLevels.length ? access : undefined),
       });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
@@ -145,6 +147,23 @@ export function ServiceConnectStep({
               <p className="text-sm text-destructive">
                 Switch can no longer use your {connection.name} sign-in. Connect again.
               </p>
+            )}
+            {!connected && accessLevels.length > 0 && (
+              <fieldset disabled={busy} className="space-y-2 text-sm">
+                <legend>Allow agents to</legend>
+                {accessLevels.map((level) => (
+                  <label key={level} className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="connection-access"
+                      value={level}
+                      checked={access === level}
+                      onChange={() => setAccess(level)}
+                    />
+                    {level === 'read' ? 'Read only' : 'Read and write'}
+                  </label>
+                ))}
+              </fieldset>
             )}
             {connected && (
               <p className="text-xs text-foreground-muted">

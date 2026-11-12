@@ -144,10 +144,17 @@ class Console:
         self.state = secrets.token_urlsafe(32)
         self.secret = secrets.token_urlsafe(32)
 
-    async def start(self, service: str = "example", port: int = PORT) -> httpx.Response:
+    async def start(
+        self, service: str = "example", port: int = PORT, access: str | None = None
+    ) -> httpx.Response:
         return await self.client.post(
             f"/gateway/service-connections/{service}/flows",
-            json={"port": port, "state": self.state, "completion_secret": self.secret},
+            json={
+                "port": port,
+                "state": self.state,
+                "completion_secret": self.secret,
+                **({"access": access} if access is not None else {}),
+            },
             cookies=cookies_for(self.user),
         )
 
@@ -219,6 +226,52 @@ async def _loopback_connect(world: World, console: Console) -> httpx.Response:
 
 
 class TestLoopback:
+    @pytest.mark.parametrize("access", ["read", "write"])
+    async def test_requested_access_selects_scopes_and_survives_reconnect(
+        self, session_factory, tmp_path, access
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+            console = Console(client, ada)
+            started = await console.start(access=access)
+            assert started.status_code == 200
+            scopes = parse_qs(urlsplit(started.json()["url"]).query)["scope"][0].split()
+            assert scopes == (
+                ["read:items"] if access == "read" else ["read:items", "write:items"]
+            )
+            code = _listener_code(
+                world.vendor.authorize(started.json()["url"]), console.state
+            )
+            completed = await console.complete(code)
+            assert completed.status_code == 200
+            assert completed.json()["consent"] == access
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert connection.consent == access
+        assert connection.granted_scopes == scopes
+
+    async def test_read_only_request_refuses_vendor_write_scopes(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        mint = world.vendor.mint
+        monkeypatch.setattr(
+            world.vendor, "mint", lambda scopes: mint(["read:items", "write:items"])
+        )
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start(access="read")
+            code = _listener_code(
+                world.vendor.authorize(started.json()["url"]), console.state
+            )
+            completed = await console.complete(code)
+            assert completed.status_code == 400
+            assert "despite a read-only request" in completed.json()["detail"]
+        assert await _connection(session_factory, ada.id) is None
+
     async def test_signs_in_through_console_and_writes_the_connection(
         self, session_factory, tmp_path
     ) -> None:

@@ -155,6 +155,19 @@ async function signIn(modal: HTMLElement): Promise<void> {
   await act(async () => button(/^connect example/i, modal)!.click());
 }
 
+it.each(['read', 'write'] as const)(
+  'sends the chosen %s access when connecting',
+  async (access) => {
+    const modal = await render(entry({ oauth_access_levels: ['read', 'write'] }));
+    const choice = modal.querySelector<HTMLInputElement>(`input[value="${access}"]`)!;
+    await act(async () => choice.click());
+    await signIn(modal);
+    expect(workspaces.startServiceConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ service: 'example', access })
+    );
+  }
+);
+
 it('closes as soon as the server has kept the sign-in, handing the warning on', async () => {
   workspaces.getServiceFlow.mockResolvedValue({
     status: 'connected',

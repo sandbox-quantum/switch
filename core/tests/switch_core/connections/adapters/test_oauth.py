@@ -422,6 +422,28 @@ class TestIntrospection:
 
 
 class TestRefresh:
+    @pytest.mark.parametrize("field,status", [("error", 400), ("token_type", 200)])
+    async def test_vendor_errors_do_not_echo_credentials(
+        self, vendor, field, status
+    ) -> None:
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        sentinel = " ".join(
+            [secret.access_token, secret.values["refresh_token"], STATIC_CLIENT_SECRET]
+        )
+        vendor.fail[f"{ISSUER}/token"] = (
+            status,
+            {"access_token": "synthetic-access", field: sentinel},
+        )
+        with pytest.raises(ServiceAdapterError) as failure:
+            await adapter.refresh(secret)
+        for value in (
+            secret.access_token,
+            secret.values["refresh_token"],
+            STATIC_CLIENT_SECRET,
+        ):
+            assert value not in str(failure.value)
+
     async def test_a_rotating_refresh_spends_the_old_token(self, vendor) -> None:
         adapter, _ = _adapter(vendor)
         secret = await _sign_in(adapter, vendor)

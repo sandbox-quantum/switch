@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { HttpMcpServerSpec } from '../adapter';
 import { Redactions } from './redaction';
 import { type ServiceGrant, serviceGrantSchema, type ServiceTokenAnswer } from './service-access';
+import { AgentServiceTokens } from './service-tokens';
 import type { HostAsk } from './session-channel';
 import { startVendorServers, textResult, type VendorServers } from './vendor-mcp';
 
@@ -116,6 +117,76 @@ const token = (value: string): ServiceTokenAnswer => ({
 });
 
 describe('a granted vendor’s MCP servers', () => {
+  it('scrubs credentials echoed by vendor tools before the coding tool receives them', async () => {
+    const server = await serveMcpOverHttp(GOOD, {
+      listTools: async () => [
+        { name: 'inspect', description: GOOD, inputSchema: { type: 'object' } },
+      ],
+      callTool: async (_name, args) => {
+        if (args.fail) throw new Error(GOOD);
+        return { content: [{ type: 'text', text: GOOD }] };
+      },
+    });
+    servers.push(server);
+    const vendors = await started(
+      [grant('canva', [{ name: 'canva', url: VENDOR_URL }])],
+      [token(GOOD), token(GOOD), token(GOOD)],
+      routedTo(server.url, [])
+    );
+    const tool = await client(vendors.specs.canva!);
+    expect((await tool.listTools()).tools[0]?.description).toBe('[REDACTED]');
+    expect((await tool.callTool({ name: 'inspect', arguments: {} })).content).toEqual([
+      { type: 'text', text: '[REDACTED]' },
+    ]);
+    const failed = await tool.callTool({ name: 'inspect', arguments: { fail: true } });
+    expect(failed.isError).toBe(true);
+    expect(JSON.stringify(failed)).not.toContain(GOOD);
+    expect(JSON.stringify(failed)).toContain('[REDACTED]');
+  });
+
+  it('blocks a previously discovered tool within 60 seconds of grant removal', async () => {
+    const { server, calls } = await vendor();
+    const canva = { ...grant('canva', [{ name: 'canva', url: VENDOR_URL }]), revision: 1 };
+    let now = Date.now();
+    let granted = true;
+    const redactions = new Redactions();
+    const tokens = new AgentServiceTokens({
+      endpoint: {
+        endpoint: 'https://switch.example.test',
+        token: 'synthetic-session',
+        agentId: 'example-agent',
+      },
+      redactions,
+      now: () => now,
+      issue: async () =>
+        granted
+          ? { token: GOOD, expiresAt: now + 3_600_000, useUntil: now + 3_600_000, grantRevision: 1 }
+          : { code: 'grant_missing', message: 'No Canva grant.', retryable: false },
+      readGrants: async () => (granted ? [canva] : []),
+    });
+    const vendors = await startVendorServers({
+      grants: [canva],
+      redactions,
+      ask: async (ask) => {
+        if (ask.type !== 'service-token') throw new Error('Unexpected host request');
+        return tokens.answer(ask.service, ask.rejected);
+      },
+      listTimeoutMs: 5_000,
+      callTimeoutMs: 5_000,
+      fetch: routedTo(server.url, []),
+    });
+    servers.push(vendors);
+    const tool = await client(vendors.specs.canva!);
+    await tool.listTools();
+    await tool.callTool({ name: 'search_items', arguments: { query: 'before' } });
+    granted = false;
+    now += 30_000;
+    const result = await tool.callTool({ name: 'search_items', arguments: { query: 'after' } });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain('No Canva grant.');
+    expect(calls).toEqual([{ name: 'search_items', args: { query: 'before' } }]);
+  });
+
   it('lists and calls the vendor’s tools with a token asked for on each call', async () => {
     const { server, calls } = await vendor();
     const seen: string[] = [];

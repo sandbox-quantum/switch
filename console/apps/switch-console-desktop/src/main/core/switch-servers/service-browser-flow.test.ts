@@ -64,7 +64,7 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.resetAllMocks();
 });
-async function start(service = 'example') {
+async function start(service = 'example', access?: 'read' | 'write') {
   vi.mocked(cancelServiceConnection).mockResolvedValue(undefined);
   vi.mocked(completeServiceConnection).mockResolvedValue({
     warning: null,
@@ -77,11 +77,16 @@ async function start(service = 'example') {
     mode: 'loopback',
   }));
   const open = vi.fn().mockResolvedValue(undefined);
-  const id = await startServiceBrowserFlow(server, service, open);
+  const id = await startServiceBrowserFlow(server, service, open, access);
   flows.push([service, id]);
   const input = vi.mocked(startServiceConnection).mock.calls[0]![2];
   return { id, input, open, url: `http://127.0.0.1:${input.port}/switch-services/callback` };
 }
+
+it.each(['read', 'write'] as const)('passes the chosen %s consent to Core', async (access) => {
+  const { input } = await start('example', access);
+  expect(input.access).toBe(access);
+});
 
 it('takes back only this Console’s state, and hands the code to Core with its secret', async () => {
   const { id, input, open, url } = await start();

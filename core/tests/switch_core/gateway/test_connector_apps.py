@@ -367,7 +367,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, "canva"}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -390,6 +390,18 @@ class TestOnlyTheOperator:
             "workspacesAndBases:read",
             "data.records:write",
             "data.recordComments:write",
+        ]
+        canva = apps["canva"]
+        assert canva["source"] == "none"
+        assert canva["redirect_uris"] == [
+            f"http://127.0.0.1:{port}/switch-services/callback"
+            for port in (39231, 39232, 39233, 39234, 39235)
+        ]
+        assert canva["needs_public_url"] is False
+        assert canva["scopes"] == [
+            "design:meta:read",
+            "design:content:read",
+            "design:content:write",
         ]
         assert [entry["slug"] for entry in body["registered"]] == [
             "atlassian",

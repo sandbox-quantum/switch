@@ -94,6 +94,7 @@ export const connectionCatalogEntrySchema = z.object({
   external_identity: z.string().nullable(),
   /** What the person allowed when they connected; null when not connected or not said. */
   consent: z.enum(['read', 'write']).nullable(),
+  oauth_access_levels: z.array(z.enum(['read', 'write'])).optional(),
   /**
    * Whether the workspace has the service switched on. Null from a server
    * with no workspace switch, which every page treats as on.
@@ -146,6 +147,7 @@ export const serviceConnectionsSchema = z.object({
       key: serviceKeyFormSchema.nullable().default(null),
       external_identity: z.string().nullable().default(null),
       consent: z.enum(['read', 'write']).nullable().default(null),
+      oauth_access_levels: z.array(z.enum(['read', 'write'])).optional(),
       workspace_enabled: z.boolean().nullable().default(null),
       status: z.enum(['not_connected', 'active', 'needs_reauthorization', 'error']),
     })

@@ -168,6 +168,15 @@ scope was granted, else read. Flows are rows in `sign_in_flows`, so any
 process can take any step: ten minutes each, at most 256 per workspace, one
 per person.
 
+Scoped OAuth entries advertise `oauth_access_levels` in the connections list.
+Console offers read-only or read/write before opening consent, defaulting to
+read for a new connection and preserving a previous consent on reconnect.
+The flow's optional `access` selects that level's scopes; clients that omit it
+keep the previous write-where-available behavior. An explicitly read-only
+flow refuses a token response that reports any catalog write-only scope.
+Unscoped providers do not offer this choice. This is OAuth consent, not
+per-tool classification: enforcement remains the vendor's responsibility.
+
 A dynamically registered client is the deployment's own, kept in
 `service_oauth_clients` (one row per service, encrypted with the keyring,
 re-encrypted at key rotation, no tenant). Registration asks for a public client
@@ -729,6 +738,49 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `enabled: false`, or remove its client (under Connectors, or by unsetting
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
+
+## Canva
+
+Uses Canva's [static Developer Portal client](https://www.canva.dev/docs/apps/mcp/access/)
+and `https://api.canva.com/connect/v1/mcp`. Create a public app ("Anyone on
+Canva"; private apps require Enterprise), start integrating under Outside
+Canva and enable Canva MCP. Switch also calls the REST identity endpoint, so
+enable Canva REST APIs and select `design:meta:read`, `design:content:read`
+and `design:content:write`. Register all Console redirects:
+
+```text
+http://127.0.0.1:39231/switch-services/callback
+http://127.0.0.1:39232/switch-services/callback
+http://127.0.0.1:39233/switch-services/callback
+http://127.0.0.1:39234/switch-services/callback
+http://127.0.0.1:39235/switch-services/callback
+```
+
+Save the client under Admin, Connector apps, or set `CANVA_CLIENT_CONFIG_PATH`
+to an absolute path outside the checkout holding only `client_id` and
+`client_secret` as JSON. Keep that file server-side. Turn on
+`FEATURE_FLAGS_ENABLED=service_connections` and enable Canva for the workspace;
+people connect under Settings, Connections in Switch Console.
+
+Public metadata checked on 2026-11-06 advertises S256 and separate design
+read/write scopes. Endpoints are discovered; omitted authentication methods
+mean HTTP Basic. Identity uses `/rest/v1/users/me`'s `team_user.user_id`, without
+a profile scope. Four-hour access, rotating refresh and consent-wide revocation
+come from the REST documentation. The entry uses the existing broker guard
+against revoking a replacement sign-in for the same account and client.
+
+Live QA on 2026-11-12 renewed an expired token through the broker, stored a
+rotated refresh token and a 14,400-second expiry, and confirmed the identity
+still matched the saved account. Fresh MCP initialization returned HTTP 500
+with both Python and Node clients using that renewed token. Earlier room
+search/edit evidence does not establish current MCP availability.
+
+Vendor revocation and refusal of mutations after read-only consent still need
+live QA, including a reconnect from write to read. Compare initialization, `tools/list` and a
+read call with [MCP Inspector](https://www.canva.dev/docs/apps/mcp/verify-app/);
+REST success alone does not prove MCP compatibility. Do not relax OAuth checks
+or substitute REST tools if MCP fails. Roll back with `DISABLED_SERVICES` or
+`enabled: false`.
 
 ## Notion
 

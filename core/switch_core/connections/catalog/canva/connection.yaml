@@ -1,7 +1,48 @@
 slug: canva
 name: Canva
 category: Design
-description: Create and export Canva designs.
-enabled: false
+
+description: Search, create, edit and export Canva designs, as you.
+enabled: true
+adapter: oauth
+
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # Create a Developer Portal app and enable Canva MCP under Outside Canva.
+    # The operator saves its client under Connector apps, or names its JSON
+    # settings in CANVA_CLIENT_CONFIG_PATH. No dynamic registration is needed.
+    registration: static
+    client_settings: CANVA
+    # Register all five exact Console callback URLs in the Developer Portal.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    unchecked: >-
+      Connect once to confirm the registered redirect URLs and MCP access.
+    # Canva's REST reference says revoking a refresh token also ends user
+    # consent. Keep a replaced sign-in when revoking it could end the new one.
+    # Acceptance of MCP-issued tokens at this endpoint still needs live QA.
+    revocation_url: https://api.canva.com/rest/v1/oauth/revoke
+    revocation_ends_grant: true
+  identity:
+    # Confirmed with the saved MCP sign-in after renewal on 2026-11-12;
+    # no profile scope is needed.
+    url: https://api.canva.com/rest/v1/users/me
+    account_id: team_user.user_id
+    label: team_user.user_id
+# Measured 2026-11-12 on renewal: 14,400 s and a rotated refresh token.
+# MCP initialization still needs separate verification from OAuth renewal.
+token: { kind: pass_through, max_lifetime: 14400 }
+mcp:
+  servers:
+    - { name: canva, url: "https://api.canva.com/connect/v1/mcp" }
+access:
+  # Design discovery/inspection, then creation/editing. No asset, folder,
+  # comment, brand-kit or template scopes. Verify read-only mutation refusal
+  # with MCP-issued tokens: the skill is not an authorization boundary.
+  read:
+    scopes: [design:meta:read, design:content:read]
+  write:
+    scopes: [design:meta:read, design:content:read, design:content:write]
+tools: { mode: pass_through }
