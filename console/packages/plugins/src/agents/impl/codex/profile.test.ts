@@ -222,18 +222,29 @@ describe('codexLaunchProfileSettings', () => {
       'model_reasoning_effort',
       'model_reasoning_summary',
       'model_verbosity',
-      'tools',
+      'web_search',
     ]);
-    expect((toml.tools as Record<string, unknown>).web_search).toBe(true);
+    expect(toml.web_search).toBe('live');
   });
 
   it('turns web search off explicitly, which is not the same as leaving it unset', () => {
     const off = parseTOML(buildCodexProfileToml({ webSearch: 'false' }));
-    expect((off.tools as Record<string, unknown>).web_search).toBe(false);
+    expect(off).toEqual({ web_search: 'disabled' });
 
     // Unset writes nothing at all, so the user's own config still decides.
     // An empty profile still stringifies to a newline, which is why the
     // no-profile check in `codexLaunchProfile` tests the trimmed result.
     expect(buildCodexProfileToml({ webSearch: '' }).trim()).toBe('');
+  });
+
+  it('writes the top-level web_search mode, not the boolean Codex discards', () => {
+    // Codex parses `tools.web_search = <bool>` and throws the value away, so
+    // a profile carrying it leaves web search on whatever it says.
+    for (const raw of ['true', 'false']) {
+      expect(parseTOML(buildCodexProfileToml({ webSearch: raw }))).not.toHaveProperty('tools');
+    }
+    expect(parseTOML(buildCodexProfileToml({ webSearch: 'true' }))).toEqual({
+      web_search: 'live',
+    });
   });
 });
