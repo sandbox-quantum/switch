@@ -1416,6 +1416,7 @@ async def test_only_a_manager_renames_a_group_and_everyone_sees_it(
                 None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]
                 None,  # type: ignore[arg-type]
+                None,  # type: ignore[arg-type]
                 user,
                 False,
             )

@@ -19,6 +19,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
@@ -27,6 +28,7 @@ from switch_core.events import COMMAND_EVENT_TYPE, CommandEvent
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
+    from switch_core.decision.settings import DecisionAvailability
     from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,7 @@ class CommandConsumer(Consumer[SystemActor]):
         connections: AgentConnectionRegistry,
         document_store: DocumentStore,
         reference_store: ReferenceStore,
+        package_store: PackageStore,
         agent_session_store: AgentSessionStore,
         room_service: RoomService,
         user_store: UserStore,
@@ -70,6 +73,7 @@ class CommandConsumer(Consumer[SystemActor]):
         deletion_requests: AgentDeletionRequests,
         frontend_base_url: str | None,
         follow_the_conversation_enabled: bool,
+        decision_availability: DecisionAvailability,
     ) -> None:
         super().__init__(actor=actor)
         self._agent_store = agent_store
@@ -79,6 +83,7 @@ class CommandConsumer(Consumer[SystemActor]):
         self._connections = connections
         self._document_store = document_store
         self._reference_store = reference_store
+        self._package_store = package_store
         self._agent_session_store = agent_session_store
         self._room_service = room_service
         self._user_store = user_store
@@ -91,6 +96,9 @@ class CommandConsumer(Consumer[SystemActor]):
         # Whether `!follow-ups` and `!assign-agent` mean anything here: with
         # the feature flag off they say so rather than claim a change.
         self._follow_the_conversation_enabled = follow_the_conversation_enabled
+        # Whether `!auto-route` means anything in a room: the feature flag,
+        # and a decision backend for the room's workspace.
+        self._decision_availability = decision_availability
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )

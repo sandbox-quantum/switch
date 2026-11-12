@@ -122,6 +122,13 @@ class CreateChatRequest(CamelModel):
     # Only finishes the create this request id already started: 404 when it
     # started none; older clients send none.
     resume_only: bool = False
+    # The room's own settings, as a room made on a messaging app takes them;
+    # older clients send none. The visibilities go together.
+    description: str | None = None
+    instructions: str | None = None
+    group_id: str | None = None
+    read_visibility: str | None = None
+    write_visibility: str | None = None
 
     def chosen_agents(self) -> list[str]:
         if (self.agent_id is None) == (self.agent_ids is None):
@@ -209,6 +216,7 @@ class ActivityItemView(CamelModel):
     turn_id: str
     item_id: str
     kind: str
+    subagent: bool = False
     revision: int
     status: str
     title: str
@@ -228,6 +236,7 @@ class ActivityItemView(CamelModel):
             session_id=row.session_id,
             turn_id=row.turn_id,
             item_id=row.item_id,
+            subagent=bool(row.subagent),
             kind=row.kind,
             revision=row.revision,
             status=row.status,
@@ -336,6 +345,11 @@ async def create_chat(
         kind=req.kind,
         bridge_id=req.bridge_id,
         resume_only=req.resume_only,
+        description=req.description,
+        instructions=req.instructions,
+        group_id=req.group_id,
+        read_visibility=req.read_visibility,
+        write_visibility=req.write_visibility,
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return ChatEnvelope(
@@ -390,13 +404,16 @@ async def agent_candidates(
     user: CurrentUser,
     service: Service,
     room_id: Annotated[str | None, Query(alias="roomId")] = None,
+    group_id: Annotated[str | None, Query(alias="groupId")] = None,
 ) -> AgentCandidates:
-    """The agents the caller could add to a new chat, or with `roomId` to
-    that chat, which they must manage."""
+    """The agents the caller could add to a new chat, filed in `groupId` if
+    given, or with `roomId` to that chat, which they must manage."""
     tenant_id = require_tenant_id()
     async with tenant_session(service.session_factory, tenant_id) as session:
         return AgentCandidates(
-            agent_ids=await service.agent_candidates(session, tenant_id, user, room_id)
+            agent_ids=await service.agent_candidates(
+                session, tenant_id, user, room_id, new_group_id=group_id
+            )
         )
 
 

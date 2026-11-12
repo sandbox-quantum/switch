@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RoomGroupDetail, RoomSummary } from "../../data/api";
+import { ALL_OFF } from "../../data/featureFlags";
 import { useAuth } from "../../data/AuthContext";
 import * as hooks from "../../data/hooks";
 import type { UseQueryResult } from "../../data/hooks";
@@ -24,6 +25,17 @@ function authState(canAdminTenant: boolean) {
     loadError: null,
     isOperator: false,
     canAdminTenant,
+    capabilities: {
+      isOperator: false,
+      administersWorkspace: canAdminTenant,
+      administersOrganization: false,
+      inOrganization: false,
+      canDeleteWorkspace: false,
+      canManageDataProtection: false,
+      features: ALL_OFF,
+    },
+    staleError: null,
+    recheck: vi.fn(),
     refresh: vi.fn(async () => {}),
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),

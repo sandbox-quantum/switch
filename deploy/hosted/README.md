@@ -152,10 +152,16 @@ switch-hosted-controller --config /etc/switch-hosted/controller.json --gateway-c
 Every new instance of a machine launches from the configured image, as
 `gateway.json`'s `instance_type`: a relaunch for new user data, a recovery, or
 a retained machine starting again moves it onto a new `image_id` and instance
-type, keeping its disk. Stopping and starting a machine does not: it starts the
-same instance, which keeps its image and type for as long as it exists.
+type, keeping its disk. So does a stopped machine starting again: if its
+instance was launched from another image or as another type, the controller
+terminates it and launches a new one on the same data volume instead of
+starting it. A running machine is not stopped for this; it moves at its next
+start (machines stop after `HOSTED_IDLE_STOP_MINUTES` without a session). An
+instance whose data volume is not yet marked to survive termination is started
+as it is and moves at a later start.
 
-To move a machine onto the configured image and type now:
+To move a machine onto the configured image and type now, without waiting for
+it to stop:
 
 1. `stop` it, and wait for `status` to report `observed_state` `stopped`.
 2. Terminate its instance (`instance_id` in `status`) with the EC2 API or

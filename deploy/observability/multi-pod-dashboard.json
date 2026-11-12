@@ -534,6 +534,38 @@
         "width": 4,
         "height": 3
       }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Messages waiting for a decision, by pod (server-wide, so every pod shows the same value)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q0",
+                "query": "max:switch.decision.pending{$env,$service,$pod_name} by {pod_name}"
+              }
+            ],
+            "response_format": "timeseries",
+            "display_type": "line",
+            "formulas": [
+              {
+                "formula": "q0"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 17,
+        "width": 4,
+        "height": 3
+      }
     }
   ]
 }

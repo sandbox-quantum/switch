@@ -83,6 +83,16 @@ TENANT_SELECTION_INVALID = "tenant_selection_invalid"
 TENANT_MEMBERSHIP_UNRESOLVED = "tenant_membership_unresolved"
 
 
+SIGNUP_REFUSED_DETAIL = "New Switch accounts are not available in your country."
+
+
+def signup_refused_by_edge(request: Request, config: SwitchConfig) -> bool:
+    """Whether the edge in front of the server marked this request as one
+    that may not create an account (`gateway_signup_refused_header`)."""
+    header = config.gateway_signup_refused_header
+    return header is not None and header in request.headers
+
+
 def hash_password(password: str) -> str:
     result: bytes = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
     return result.decode()
@@ -935,7 +945,7 @@ def workspace_creation_refusal(
         return None
     if new_organization and config.gateway_signup_mode == "invite_only":
         return (
-            "Creating organizations is turned off on this server. Ask a "
+            "Creating organizations is turned off here. Ask a "
             "workspace admin for an invitation."
         )
     limit = config.gateway_max_workspaces_per_user

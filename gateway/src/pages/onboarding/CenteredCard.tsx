@@ -21,11 +21,11 @@ export default function CenteredCard({
         minHeight: "100vh",
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "var(--hoot-canvas)",
+        backgroundColor: "var(--sw-canvas)",
         py: 4,
       }}
     >
-      <Card sx={{ width: 420, p: 4, boxShadow: "var(--hoot-shadow-surface)" }}>
+      <Card sx={{ width: 420, p: 4, boxShadow: "var(--sw-shadow-surface)" }}>
         <Typography variant="h6" sx={{ mb: 0.5 }}>
           {title}
         </Typography>

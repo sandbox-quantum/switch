@@ -514,6 +514,131 @@ class TestWhereTheMetadataIs:
         assert "access_type" not in vendor.authorizations[-1]
 
 
+_UNSET = object()
+
+
+def _advertising(vendor: FakeOAuthServer, resource: object) -> httpx.AsyncClient:
+    """The vendor, with its MCP server's metadata naming `resource`, or no
+    `resource` where it is `_UNSET`."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        response = vendor.handle(request)
+        if request.url.path != vendor.resource_metadata_path:
+            return response
+        body = response.json()
+        if resource is _UNSET:
+            del body["resource"]
+        else:
+            body["resource"] = resource
+        return httpx.Response(response.status_code, json=body)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(respond))
+
+
+def _advertising_adapter(vendor: FakeOAuthServer, resource: object) -> OAuthAdapter:
+    adapter, _ = _adapter(vendor)
+    return OAuthAdapter(_definition(), adapter._client, _advertising(vendor, resource))
+
+
+class TestAdvertisedResource:
+    @pytest.mark.parametrize(
+        "advertised",
+        [
+            MCP_URL,
+            f"{MCP_URL}/",
+            "https://mcp.example.test/v1",
+            "https://mcp.example.test",
+            "https://MCP.EXAMPLE.TEST/v1",
+            "https://mcp.example.test:443/v1/mcp",
+            "https://mcp.example.test:443",
+        ],
+    )
+    async def test_accepts_a_resource_that_covers_the_server(
+        self, vendor, advertised
+    ) -> None:
+        endpoints = await _advertising_adapter(vendor, advertised).endpoints()
+        assert endpoints.resource == advertised
+
+    @pytest.mark.parametrize(
+        "advertised",
+        [
+            "https://api.other.example/v1/mcp",
+            "https://mcp.example.test:8443/v1/mcp",
+            "https://mcp.example.test:0/v1/mcp",
+            "https://mcp.example.test:99999/v1/mcp",
+            f"{MCP_URL}?tenant=1",
+            f"{MCP_URL}?",
+            f"{MCP_URL}#part",
+            f"{MCP_URL}2",
+            "https://mcp.example.test/v1/mc",
+            f"{MCP_URL}/tools",
+            "https://mcp.example.test/v0",
+        ],
+    )
+    async def test_refuses_a_resource_for_another_server(
+        self, vendor, advertised
+    ) -> None:
+        adapter = _advertising_adapter(vendor, advertised)
+        with pytest.raises(
+            ServiceAdapterError, match="names another server as its resource"
+        ) as raised:
+            await adapter.endpoints()
+        assert advertised not in str(raised.value)
+        assert f"{ISSUER}/.well-known/oauth-authorization-server" not in vendor.paths
+
+    @pytest.mark.parametrize(
+        "advertised",
+        [
+            "http://mcp.example.test",
+            "file:///tmp/resource",
+            "https://",
+            "https://user:pass@mcp.example.test",
+            None,
+        ],
+    )
+    async def test_refuses_a_resource_that_is_not_an_https_url(
+        self, vendor, advertised
+    ) -> None:
+        adapter = _advertising_adapter(vendor, advertised)
+        with pytest.raises(ServiceAdapterError, match="resource identifier"):
+            await adapter.endpoints()
+
+    async def test_refuses_the_hosts_root_metadata_for_another_server(
+        self, vendor
+    ) -> None:
+        vendor.advertise = False
+        vendor.fail[
+            "https://mcp.example.test/.well-known/oauth-protected-resource/v1/mcp"
+        ] = (404, {})
+        adapter, _ = _adapter(vendor)
+        with pytest.raises(
+            ServiceAdapterError, match="names another server as its resource"
+        ):
+            await adapter.endpoints()
+        assert (
+            "https://mcp.example.test/.well-known/oauth-protected-resource"
+            in vendor.paths
+        )
+        assert not any("legacy.example.test" in path for path in vendor.paths)
+
+    async def test_sends_an_origin_resource_in_every_request(self, vendor) -> None:
+        origin = "https://mcp.example.test"
+        adapter = _advertising_adapter(vendor, origin)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.refresh(secret)
+        assert vendor.authorizations[-1]["resource"] == origin
+        assert vendor.token_requests[0]["grant_type"] == "authorization_code"
+        assert vendor.token_requests[0]["resource"] == origin
+        assert vendor.token_requests[-1]["grant_type"] == "refresh_token"
+        assert vendor.token_requests[-1]["resource"] == origin
+
+    async def test_uses_the_mcp_url_where_no_resource_is_advertised(
+        self, vendor
+    ) -> None:
+        endpoints = await _advertising_adapter(vendor, _UNSET).endpoints()
+        assert endpoints.resource == MCP_URL
+
+
 class TestThroughTheBroker:
     async def test_agents_renewing_at_once_refresh_a_rotating_sign_in_once(
         self,

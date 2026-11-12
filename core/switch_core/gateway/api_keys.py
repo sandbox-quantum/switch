@@ -134,7 +134,7 @@ async def create_api_key(
     )
     await session.commit()
 
-    logger.info("Created API key '%s' for user %s", req.label, user.email)
+    logger.info("Created API key '%s' for user %s", req.label, user.id)
     emit_safely(
         current_telemetry(), "api_key_created", {"key_type": _key_type(key.type)}
     )
@@ -215,7 +215,7 @@ async def delete_api_key(
     await session.commit()
     get_protocol().api_key_cache.invalidate(key_hash)
 
-    logger.info("Deleted API key '%s' for user %s", key.label, user.email)
+    logger.info("Deleted API key '%s' for user %s", key.label, user.id)
     emit_safely(
         current_telemetry(),
         "api_key_revoked",

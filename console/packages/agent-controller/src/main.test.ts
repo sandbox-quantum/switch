@@ -80,6 +80,8 @@ describe('main', () => {
       '  The build box in the office ',
       '--data-dir',
       dir,
+      '--secret-store',
+      'file',
     ]);
     vi.unstubAllGlobals();
     expect(code).toBe(EXIT_OK);
@@ -101,7 +103,15 @@ describe('main', () => {
         );
       })
     );
-    const base = ['enroll', '--server', 'https://switch.example.com', '--code', 'swce_test'];
+    const base = [
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--secret-store',
+      'file',
+    ];
     expect(await main([...base, '--description', 'x'.repeat(501), '--data-dir', dir])).toBe(
       EXIT_CONFIGURATION
     );

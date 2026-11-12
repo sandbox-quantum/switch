@@ -325,7 +325,7 @@ def test_a_stored_host_clients_read_differently_counts_as_an_avatar_service(
 
 def test_setting_an_avatar_service_icon_is_refused_only_with_them_off() -> None:
     dicebear = generated_icon_url("pm-agent")
-    with pytest.raises(InvalidIconUrl, match="third-party avatars turned off"):
+    with pytest.raises(InvalidIconUrl, match="third-party avatars are turned off"):
         refuse_third_party_avatar(dicebear, third_party_avatars=False)
     assert refuse_third_party_avatar(dicebear, third_party_avatars=True) == dicebear
     other = "https://cdn.example.com/a.png"

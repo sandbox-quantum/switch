@@ -18,6 +18,7 @@ from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
     BUDDY_SLACK_HANDOFF,
+    DECISION_ROUTING,
     FOLLOW_THE_CONVERSATION,
     GROUP_CHATS,
     HOSTED_AGENTS,
@@ -245,9 +246,44 @@ class SwitchConfig(BaseSettings):
     # counts as a follow-up to it.
     follow_the_conversation_window_seconds: int = Field(default=300, ge=1, le=3600)
 
-    # Gateway admin seed
+    # Decision routing (feature flag `decision_routing`): the decision service
+    # Switch asks who should answer a message no rule delivered to anyone
+    # (`POST {DECISION_ENDPOINT_URL}`). These are the server default, used by
+    # every workspace that has not chosen a backend of its own in Switch
+    # Console (`decision_settings`); with no endpoint and no choice, auto-route
+    # is unavailable in that workspace and no message is sent anywhere. The
+    # key, when set, is sent as a bearer token. The timeout applies to every
+    # workspace's backend.
+    decision_endpoint_url: str | None = None
+    decision_api_key: str | None = None
+    decision_timeout_seconds: float = 5.0
+    # Whether a workspace may choose Haiku on Amazon Bedrock, which runs in the
+    # server's decision service on the server's own AWS credentials.
+    decision_bedrock_enabled: bool = False
+    # A message still waiting for a decision after this long (a restart, a
+    # long outage) is dropped and logged rather than answered late.
+    decision_pending_max_age_seconds: int = Field(default=120, ge=1, le=3600)
+    # How many tenants' waiting decisions each process's sweep settles at
+    # once, so one tenant with a slow backend does not hold up the others.
+    decision_sweep_concurrency: int = Field(default=4, ge=1, le=64)
+
+    @field_validator(
+        "decision_endpoint_url",
+        "decision_api_key",
+        "gateway_signup_refused_header",
+        mode="before",
+    )
+    @classmethod
+    def _blank_setting_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    # Gateway admin seed. The password is the seeded admin's password-login
+    # credential, so it is required only while password login is on; without
+    # it the admin is seeded with no password and signs in through OIDC.
     gateway_admin_email: str
-    gateway_admin_password: str
+    gateway_admin_password: str | None = None
 
     # OIDC (optional — enables OAuth token validation on the MCP server).
     # The audience is required with the issuer: without it, a token the same
@@ -315,6 +351,19 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # The name of a request header that a trusted edge in front of the server
+    # (prod's WAF) adds to requests from countries where new accounts are not
+    # offered. A request carrying it, with any value (empty included), may not
+    # create an account: neither a first OIDC sign-in nor a password sign-up,
+    # the two ways a person creates their own. The edge must therefore add it
+    # only to requests it refuses, never set it to a "no" value for the rest.
+    # Existing accounts sign in as before, and accounts that are not sign-ups
+    # (`POST /users`, the seeded admin, the bootstrap owner) are unaffected.
+    # Trusting the header's presence is safe, since a client that sends it
+    # only refuses itself; its absence proves nothing, because the edge
+    # decides where a request comes from and this server never checks. Unset
+    # or blank turns the check off.
+    gateway_signup_refused_header: str | None = None
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
     # Cloud machines run the agent controller, so above 0 this needs the
@@ -1304,6 +1353,42 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_decision_routing(self) -> "SwitchConfig":
+        if self.decision_endpoint_url is not None and urlsplit(
+            self.decision_endpoint_url
+        ).scheme not in ("http", "https"):
+            raise ValueError(
+                "DECISION_ENDPOINT_URL must be an http or https URL, got "
+                f"{self.decision_endpoint_url!r}."
+            )
+        if self.decision_timeout_seconds <= 0:
+            raise ValueError(
+                "DECISION_TIMEOUT_SECONDS must be positive, got "
+                f"{self.decision_timeout_seconds!r}."
+            )
+        if (
+            self.feature_flags[DECISION_ROUTING]
+            and not self.feature_flags[FOLLOW_THE_CONVERSATION]
+        ):
+            raise ValueError(
+                f"The {DECISION_ROUTING!r} feature flag needs "
+                f"{FOLLOW_THE_CONVERSATION!r} in FEATURE_FLAGS_ENABLED as well: "
+                "it asks about the messages the follow-the-conversation rules "
+                "leave with nobody."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_gateway_admin_password(self) -> "SwitchConfig":
+        if self.gateway_password_login_enabled and not self.gateway_admin_password:
+            raise ValueError(
+                "GATEWAY_ADMIN_PASSWORD is required while password login is "
+                "enabled. Set it, or set GATEWAY_PASSWORD_LOGIN_ENABLED=false "
+                "to seed the admin without a password and sign in through OIDC."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_oauth_audience(self) -> "SwitchConfig":
         if self.oauth_issuer_url and not self.oauth_audience:
             raise ValueError(
@@ -1373,6 +1458,10 @@ class SwitchConfig(BaseSettings):
     @property
     def follow_the_conversation_enabled(self) -> bool:
         return self.feature_flags[FOLLOW_THE_CONVERSATION]
+
+    @property
+    def decision_routing_enabled(self) -> bool:
+        return self.feature_flags[DECISION_ROUTING]
 
     @property
     def agent_chats_enabled(self) -> bool:

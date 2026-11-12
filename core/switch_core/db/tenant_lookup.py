@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as eighteen functions.
+"""The whole exemption from row-level security, written out as nineteen functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -203,6 +203,15 @@ tenant on the server in turn to find the few that belong to it. It discloses
 which workspaces an organization has, what `all_tenant_ids` already
 discloses, narrowed; the gateway asks it only for the platform operator.
 
+**`tenants_with_pending_decisions` is the nineteenth**: the workspaces with
+a message waiting for the decision service (`pending_decisions`). Every
+process sweeps those messages every few seconds so that one whose process
+stopped is still decided; binding every tenant in turn to find the few with
+any cost each tenant several sessions per sweep whether or not auto-route was
+on anywhere in it. It discloses which workspaces have a decision waiting at
+that moment, which says that auto-route is on and in use there; the sweep is
+its only caller.
+
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
 version is that returning rows instead of tenant ids would put a second copy
@@ -296,7 +305,7 @@ class TenantLookup:
         return f"{self.name}({', '.join('text' for _ in self.arguments)})"
 
 
-# The eighteen of them. Ordered as the three shapes above: enumeration, then
+# The nineteen of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
@@ -517,6 +526,16 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
     ),
     TenantLookup(
+        name="tenants_with_pending_decisions",
+        arguments=(),
+        query="SELECT DISTINCT tenant_id FROM pending_decisions ORDER BY tenant_id",
+        purpose=(
+            "The workspaces with a message waiting for the decision service, "
+            "so the decision sweep binds only those rather than every tenant "
+            "on the server."
+        ),
+    ),
+    TenantLookup(
         name="tenant_of_messaging_install",
         arguments=("platform", "external_workspace_id"),
         query=(
@@ -589,12 +608,12 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the eighteen names are fixed and known here, so there is nothing
+# at call time: the nineteen names are fixed and known here, so there is nothing
 # for a call site to build. Each bind is named after the lookup's own argument,
 # which is what lets `_call` zip them positionally against the dataclass and
 # fail loudly on a mismatch rather than binding the workspace to the platform.
 # The assertion below is what keeps this dict from quietly falling behind
-# `TENANT_LOOKUPS`: a nineteenth lookup with no entry here fails at import, not
+# `TENANT_LOOKUPS`: a twentieth lookup with no entry here fails at import, not
 # with a `KeyError` on whatever request reaches it first.
 _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "all_tenant_ids": text("SELECT tenant_id FROM all_tenant_ids() AS tenant_id"),
@@ -652,6 +671,9 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "tenants_of_organization": text(
         "SELECT tenant_id FROM tenants_of_organization(:organization_id) AS tenant_id"
     ),
+    "tenants_with_pending_decisions": text(
+        "SELECT tenant_id FROM tenants_with_pending_decisions() AS tenant_id"
+    ),
 }
 
 assert _LOOKUP_STATEMENTS.keys() == TENANT_LOOKUPS_BY_NAME.keys(), (
@@ -701,6 +723,14 @@ async def all_tenant_ids(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> list[str]:
     return await _call(session_factory, TENANT_LOOKUPS_BY_NAME["all_tenant_ids"])
+
+
+async def tenants_with_pending_decisions(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> list[str]:
+    return await _call(
+        session_factory, TENANT_LOOKUPS_BY_NAME["tenants_with_pending_decisions"]
+    )
 
 
 async def all_organization_ids(

@@ -1200,3 +1200,10 @@ def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
         match="(?s)datadog is invalid.*only an oauth entry with access levels",
     ):
         load_catalog(catalog_copy)
+
+
+def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
+    path.write_bytes(raw.replace(b"\n", b"\r\n"))
+    assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()

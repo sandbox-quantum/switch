@@ -124,7 +124,7 @@ export function stateLabel(state: CardState): string {
     case "not_set_up":
       return "Not set up";
     case "configured":
-      return "Set on the server";
+      return "Set in configuration";
     case "attention":
       return "Needs attention";
   }
@@ -153,7 +153,7 @@ export function notSetUpSentence(app: ConnectorApp): string {
   const what = app.kind === "github_app" ? "GitHub App" : `${vendorName(app)} client`;
   // An organization's page: its workspaces may use the server's app meanwhile.
   if (app.server_app === true)
-    return `Your workspaces use the server's ${what}. Add your organization's own to use that instead.`;
+    return `Your workspaces use Switch's ${what}. Add your organization's own to use that instead.`;
   if (app.server_app === false)
     return `People in your organization can't connect ${app.name} until you add your organization's ${what}.`;
   return app.kind === "github_app"
@@ -316,7 +316,7 @@ export function setupInstructions(
   if (app.slug === AIRTABLE)
     return [
       {
-        text: "In Airtable's Builder Hub, under OAuth integrations, register a new OAuth integration. Use an Airtable account your organization owns: whoever owns the integration can delete it, and that stops every connection.",
+        text: "In Airtable's Builder Hub, under OAuth integrations, register a new OAuth integration. Use an Airtable account your organization owns: whoever owns the integration can delete it, and that disconnects everyone.",
         copy: [],
         link: { label: "Open Builder Hub", href: "https://airtable.com/create/oauth" },
         items: [],
@@ -415,7 +415,7 @@ export function switchWarning(app: ConnectorApp, impact: ConnectorAppImpact): st
 export function removeWarning(app: ConnectorApp): string {
   const name = app.name;
   if (app.server_app === true) {
-    const back = `Your workspaces go back to the server's ${name} app.`;
+    const back = `Your workspaces go back to Switch's ${name} app.`;
     if (app.connected_members === 0) return back;
     const people =
       app.connected_members === 1 ? "The 1 person" : `The ${app.connected_members} people`;
@@ -459,7 +459,7 @@ export function moveChecklist(app: ConnectorApp): ChecklistItem[] {
   return [
     { text: "Copy into Switch. Nothing is retyped.", done: waitingForRestart(app) },
     {
-      text: `Remove ${variables(app)} from the server's configuration.${helm ? ` For Helm, that is ${helm}.` : ""}`,
+      text: `Remove ${variables(app)} from Switch's configuration.${helm ? ` For Helm, that is ${helm}.` : ""}`,
       done: false,
     },
     { text: "Restart Switch.", done: false },
@@ -480,6 +480,3 @@ export function changeBlocked(app: ConnectorApp, publicUrl: string | null): bool
 
 export const PUBLIC_URL_BANNER =
   "Set GATEWAY_PUBLIC_URL first: Google and GitHub need to know where to send people back to Switch.";
-
-export const ONLY_THE_OPERATOR =
-  "Only the person who runs this Switch server can set up connectors.";
