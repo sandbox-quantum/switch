@@ -35,6 +35,9 @@ class _FakeAdapter:
     def set_activity_resolver(self, resolver: Any) -> None:
         pass
 
+    def set_takeback_handlers(self, **handlers: Any) -> None:
+        return None
+
     async def start(self, **kwargs: Any) -> None:
         self.started = True
 

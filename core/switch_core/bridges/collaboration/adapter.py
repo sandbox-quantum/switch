@@ -36,9 +36,12 @@ from switch_core.bridges.collaboration.models import (
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
+    InboundChannelRemoved,
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageDeleted,
+    InboundMessageEdited,
     InboundUserJoin,
     OutboundAttachment,
     PrivateNoticeDelivery,
@@ -757,6 +760,17 @@ class PlatformAdapter(ABC):
         # includes every message once the session or the bridge is gone.
         self._resolve_activity: (
             Callable[[str, str], Awaitable[ActivitySnapshot | None]] | None
+        ) = None
+        # Set by set_takeback_handlers. Called when a post is deleted or edited
+        # on the platform, or a channel deleted or archived there.
+        self._on_message_deleted: (
+            Callable[[InboundMessageDeleted], Awaitable[None]] | None
+        ) = None
+        self._on_message_edited: (
+            Callable[[InboundMessageEdited], Awaitable[None]] | None
+        ) = None
+        self._on_channel_removed: (
+            Callable[[InboundChannelRemoved], Awaitable[None]] | None
         ) = None
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
@@ -2162,6 +2176,74 @@ class PlatformAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_takeback_handlers(
+        self,
+        *,
+        on_message_deleted: Callable[[InboundMessageDeleted], Awaitable[None]],
+        on_message_edited: Callable[[InboundMessageEdited], Awaitable[None]],
+        on_channel_removed: Callable[[InboundChannelRemoved], Awaitable[None]],
+    ) -> None:
+        """Install the callbacks for what is taken back on the platform: a post
+        deleted or edited, a channel deleted or archived. The room's copy
+        follows (`retention/platform_deletes.py`).
+
+        An adapter reports these through `report_message_deleted`,
+        `report_message_edited` and `report_channel_removed`, for whichever its
+        platform delivers to a bot. One that delivers none (Telegram never
+        tells a bot a message was deleted) reports nothing, and says so in its
+        docstring."""
+        self._on_message_deleted = on_message_deleted
+        self._on_message_edited = on_message_edited
+        self._on_channel_removed = on_channel_removed
+
+    async def report_message_deleted(self, channel_id: str, message_ref: str) -> None:
+        """Tell the bridge a post was deleted on the platform. `message_ref` in
+        the form `InboundMessage.message_ref` carried when it came in."""
+        if self._on_message_deleted is None:
+            logger.debug(
+                "%s: no handler for the deletion of %s in %s",
+                type(self).__name__,
+                message_ref,
+                channel_id,
+            )
+            return
+        await self._on_message_deleted(
+            InboundMessageDeleted(channel_id=channel_id, message_ref=message_ref)
+        )
+
+    async def report_message_edited(
+        self, channel_id: str, message_ref: str, content: str
+    ) -> None:
+        """Tell the bridge a post now says `content`. Only for a change to its
+        words: a platform that reports a link preview or a reaction as an
+        edit is filtered by its adapter, not here."""
+        if self._on_message_edited is None:
+            logger.debug(
+                "%s: no handler for the edit of %s in %s",
+                type(self).__name__,
+                message_ref,
+                channel_id,
+            )
+            return
+        await self._on_message_edited(
+            InboundMessageEdited(
+                channel_id=channel_id, message_ref=message_ref, content=content
+            )
+        )
+
+    async def report_channel_removed(self, channel_id: str, *, deleted: bool) -> None:
+        """Tell the bridge a channel was deleted (`deleted`) or archived."""
+        if self._on_channel_removed is None:
+            logger.debug(
+                "%s: no handler for the removal of channel %s",
+                type(self).__name__,
+                channel_id,
+            )
+            return
+        await self._on_channel_removed(
+            InboundChannelRemoved(channel_id=channel_id, deleted=deleted)
+        )
 
     def set_channel_rename_handler(
         self, handler: Callable[[str, str, str], Awaitable[None]]

@@ -2,7 +2,9 @@
 
 The workspace's policy lives here, and so does every deletion retention makes
 apart from messages themselves, which `MessageStore.delete_sent_before` owns
-because deleting them has to keep the room's numbering intact.
+because deleting them has to keep the room's numbering intact. Erasing a
+person and following a platform's deletions (`retention/platform_deletes.py`)
+clean up after the messages they delete with the same methods.
 """
 
 from __future__ import annotations
@@ -11,7 +13,18 @@ from collections.abc import Collection
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, Result, delete, func, select, text
+from sqlalchemy import (
+    CursorResult,
+    Result,
+    Text,
+    delete,
+    func,
+    literal_column,
+    select,
+    text,
+    update,
+)
+from sqlalchemy import cast as cast_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +35,8 @@ from switch_core.db.models import (
     Invitation,
     Message,
     MessagingInstallState,
+    PendingAttachmentGroup,
+    PendingDecision,
     TenantRetentionPolicy,
     require_tenant_id,
 )
@@ -134,6 +149,85 @@ class RetentionStore:
                 AgentEventRow.message_key.in_(list(message_keys)),
             )
         )
+
+    async def delete_pending_decisions(
+        self, session: AsyncSession, message_keys: Collection[str]
+    ) -> None:
+        """Drop the questions to the decision service about these (deleted)
+        messages, so nothing is decided, and nobody answers, for a message
+        that is no longer there."""
+        if not message_keys:
+            return
+        await session.execute(
+            delete(PendingDecision).where(
+                PendingDecision.tenant_id == require_tenant_id(),
+                PendingDecision.message_key.in_(list(message_keys)),
+            )
+        )
+
+    async def delete_pending_attachment_groups(
+        self,
+        session: AsyncSession,
+        room_ids: Collection[str],
+        group_ids: Collection[str],
+    ) -> None:
+        """Forget the multi-file posts among `group_ids` still assembling in
+        `room_ids`, whose files were deleted, so none is decided later with
+        the files that are left."""
+        if not room_ids or not group_ids:
+            return
+        await session.execute(
+            delete(PendingAttachmentGroup).where(
+                PendingAttachmentGroup.tenant_id == require_tenant_id(),
+                PendingAttachmentGroup.room_id.in_(list(room_ids)),
+                PendingAttachmentGroup.group_id.in_(list(group_ids)),
+            )
+        )
+
+    async def replace_agent_copy_bodies(
+        self, session: AsyncSession, message_key: str, body: str
+    ) -> None:
+        """Make the copies of an edited message stored as events for agents
+        (`agent_events`), keyed as `DeletedMessages.message_keys`, say `body`,
+        so an agent reading one from now on is not handed the old words."""
+        await session.execute(
+            update(AgentEventRow)
+            .where(
+                AgentEventRow.tenant_id == require_tenant_id(),
+                AgentEventRow.message_key == message_key,
+                AgentEventRow.type == "message",
+            )
+            .values(
+                payload=func.jsonb_set(
+                    AgentEventRow.payload,
+                    literal_column("'{payload,body}'"),
+                    func.to_jsonb(cast_(body, Text)),
+                )
+            )
+        )
+
+    async def delete_unreferenced_files(
+        self, session: AsyncSession, uris: Collection[str]
+    ) -> int:
+        """Delete the stored files among `uris` that nothing refers to now.
+
+        No grace period, unlike `delete_unreferenced_media`: the caller knows
+        each was attached to a message it just deleted, so none is an upload
+        still waiting for its message.
+        """
+        if not uris:
+            return 0
+        result = await session.execute(
+            text(
+                f"""
+                DELETE FROM media_blobs b
+                WHERE b.tenant_id = :t AND b.uri = ANY(:uris)
+                  AND {UNREFERENCED_BLOB}
+                """
+            ),
+            {"t": require_tenant_id(), "uris": list(uris)},
+        )
+        return _rowcount(result)
 
     async def delete_unreferenced_media(
         self, session: AsyncSession, *, created_before: datetime, limit: int

@@ -51,7 +51,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
-from switch_core.db.stores.retention_store import UNREFERENCED_BLOB
+from switch_core.db.stores.retention_store import RetentionStore
 
 #: What `answered_by` reads once the person who answered has been erased.
 ERASED_ANSWERER = "erased"
@@ -661,19 +661,7 @@ class ErasureStore:
         to have been attached to the erased person's messages, so none is an
         upload still waiting for its message.
         """
-        if not uris:
-            return 0
-        result = await session.execute(
-            text(
-                f"""
-                DELETE FROM media_blobs b
-                WHERE b.tenant_id = :t AND b.uri = ANY(:uris)
-                  AND {UNREFERENCED_BLOB}
-                """
-            ),
-            {"t": require_tenant_id(), "uris": list(uris)},
-        )
-        return _rowcount(result)
+        return await RetentionStore().delete_unreferenced_files(session, uris)
 
     async def member_client_of(
         self, session: AsyncSession, user_id: str
