@@ -52,6 +52,10 @@ export const CAUTION_TEXT: Record<PrivateChannelRoomCaution, string> = {
     "This app can't list the channel's members, so people in it who never posted aren't in the room and would lose sight of it.",
   channel_type_not_recorded:
     "Switch has no record of what kind of channel this is. Ask the app, or check it's private before ticking.",
+  channel_type_unknown:
+    "The app couldn't say what kind of channel this is (it may be gone). Check it's private before ticking.",
+  many_people:
+    "A channel this big may have members Switch doesn't know about yet, who would lose sight of the room. Check the channel's member count first.",
   bridge_not_connected: "This room's app isn't connected right now.",
 };
 
@@ -94,6 +98,13 @@ export function describeAsk(result: AskPlatformResult): string {
   }
   if (!parts.length) parts.push("Nothing to ask about.");
   return parts.join(" ");
+}
+
+export function confirmText(untyped: number): string {
+  const base =
+    "Only the people in each room will see it in Switch. The channels aren't changed. A room's owner or an admin can make it Public again in its settings.";
+  if (!untyped) return base;
+  return `${base} ${untyped === 1 ? "1 of these has" : `${untyped} of these have`} no recorded channel type: if its channel is public, it will still become Private.`;
 }
 
 type Filter = "all" | "ready" | "check";
@@ -177,7 +188,10 @@ export default function PrivateChannelRoomsPage() {
   const shown = useMemo(() => all.filter((r) => matches(r, filter, search)), [all, filter, search]);
   const pageRows = shown.slice(page * rowsPerPage, (page + 1) * rowsPerPage);
   const ready = all.filter((r) => r.recommended).length;
-  const unrecorded = all.filter((r) => r.channel_type === null).length;
+  // Rooms the apps can still be asked about; ones they couldn't place are
+  // left to check by hand.
+  const unrecorded = all.filter((r) => r.cautions.includes("channel_type_not_recorded")).length;
+  const tickedUntyped = all.filter((r) => ticked.has(r.room_id) && r.channel_type === null).length;
   const count = ticked.size;
   const tooMany = count > MAKE_PRIVATE_MAX;
 
@@ -204,6 +218,7 @@ export default function PrivateChannelRoomsPage() {
 
   const apply = async () => {
     const names = new Map(all.map((r) => [r.room_id, r.name]));
+    // A refusal is shown in the dialog, which stays open (`ConfirmDialog`).
     const outcome = await makeRoomsPrivate(tenantId, [...ticked]);
     setConfirming(false);
     // The list first, so the message never sits over rooms it says changed.
@@ -269,7 +284,7 @@ export default function PrivateChannelRoomsPage() {
                 }
               >
                 Switch has no record of the channel type for{" "}
-                {plural(unrecorded, "room", "rooms")}. Ask their apps about up to 20 at a time;
+                {plural(unrecorded, "room", "rooms")}. Ask their apps about up to 10 at a time;
                 the answers are saved.
               </Alert>
             )}
@@ -378,7 +393,7 @@ export default function PrivateChannelRoomsPage() {
       <ConfirmDialog
         open={confirming}
         title={`Make ${plural(count, "room", "rooms")} Private?`}
-        description="Only the people in each room will see it in Switch. The channels aren't changed. A room's owner or an admin can make it Public again in its settings."
+        description={confirmText(tickedUntyped)}
         confirmLabel="Make Private"
         tone="plain"
         onConfirm={apply}

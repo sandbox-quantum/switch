@@ -1787,6 +1787,8 @@ export async function clearRetentionPolicy(tenantId: string): Promise<RetentionP
 export type PrivateChannelRoomCaution =
   | "members_not_listed"
   | "channel_type_not_recorded"
+  | "channel_type_unknown"
+  | "many_people"
   | "bridge_not_connected";
 
 export interface PrivateChannelRoom {
@@ -1814,7 +1816,8 @@ export interface AskPlatformResult {
   unanswered: { room_id: string; reason: "bridge_not_connected" | "could_not_tell" }[];
   // Set when the batch stopped early.
   stopped: "rate_limited" | "timed_out" | null;
-  // Listed rooms still without a recorded type.
+  // Listed rooms still to ask about: no recorded type, not already found
+  // unplaceable.
   remaining: number;
 }
 

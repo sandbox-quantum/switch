@@ -414,7 +414,40 @@ async def test_a_channel_the_platform_cannot_place_stays_unrecorded(
         [(unknown, "could_not_tell"), (offline, "bridge_not_connected")]
     )
     assert result.stopped is None
-    assert result.remaining == 2
+    # The unplaceable one is not left to ask; the offline one is.
+    assert result.remaining == 1
+    listed = {c.room_id: c for c in await world.service().preview(world.tenant)}
+    assert listed[unknown].cautions == ("channel_type_unknown",)
+    assert listed[offline].cautions == (
+        "channel_type_not_recorded",
+        "bridge_not_connected",
+    )
+
+
+async def test_the_next_batch_moves_past_rooms_the_platform_could_not_place(
+    world: World,
+) -> None:
+    adapter = _Adapter()
+    slack = await world.bridge(adapter=adapter)
+    gone = [await world.room(f"a gone {i}", slack, None) for i in range(2)]
+    later = await world.room("z later", slack, None)
+    adapter.types = {await world.channel_of(later): "channel_private"}
+    adapter.fail_with = {
+        await world.channel_of(room_id): RuntimeError("channel_not_found")
+        for room_id in gone
+    }
+    service = world.service()
+
+    first = await service.ask_platform(world.tenant, limit=2)
+    second = await service.ask_platform(world.tenant, limit=2)
+
+    assert sorted(first.unanswered) == sorted((r, "could_not_tell") for r in gone)
+    assert second.answered == [(later, "channel_private")]
+    assert second.remaining == 0
+    # Named, an unplaceable room is asked about again.
+    adapter.asked_types.clear()
+    await service.ask_platform(world.tenant, [gone[0]])
+    assert adapter.asked_types == [await world.channel_of(gone[0])]
 
 
 async def test_a_bridge_not_running_here_is_listed_unticked(world: World) -> None:
@@ -435,6 +468,68 @@ async def test_apply_refuses_too_many_rooms_at_once(world: World) -> None:
             [f"r{i}" for i in range(APPLY_MAX + 1)],
             actor_user_id="a",
         )
+
+
+async def test_a_room_as_large_as_one_member_sync_needs_a_check(
+    world: World,
+) -> None:
+    slack = await world.bridge()
+    big = await world.room("big", slack, "channel_private")
+    async with tenant_session(world.harness.owner, world.tenant) as session:
+        for i in range(private_channel_rooms.LARGE_ROOM):
+            person = Client(
+                transport_user_id=f"@big{i}-{big[:8]}:test",
+                display_name=f"p{i}",
+                type="user",
+            )
+            session.add(person)
+            await session.flush()
+            session.add(
+                ExternalUser(
+                    bridge_id=slack,
+                    external_user_id=f"UBIG{i}-{big[:8]}",
+                    external_username=f"p{i}",
+                    client_id=person.id,
+                )
+            )
+            session.add(ClientRoom(client_id=person.id, room_id=big))
+        await session.commit()
+
+    (candidate,) = await world.service().preview(world.tenant)
+
+    assert candidate.people == private_channel_rooms.LARGE_ROOM
+    assert candidate.cautions == ("many_people",)
+
+
+def test_a_large_room_is_one_member_syncs_worth() -> None:
+    from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
+
+    assert private_channel_rooms.LARGE_ROOM == CollaborationCore.MEMBER_SYNC_MAX_ADDS
+
+
+async def test_a_person_linked_on_two_bridges_counts_once(world: World) -> None:
+    slack = await world.bridge()
+    other = await world.bridge("mattermost")
+    room_id = await world.room("r", slack, "channel_private", people=1)
+    async with tenant_session(world.harness.owner, world.tenant) as session:
+        client_id = (
+            await session.execute(
+                select(ClientRoom.client_id).where(ClientRoom.room_id == room_id)
+            )
+        ).scalar_one()
+        session.add(
+            ExternalUser(
+                bridge_id=other,
+                external_user_id="U-ELSEWHERE",
+                external_username="p0",
+                client_id=client_id,
+            )
+        )
+        await session.commit()
+
+    (candidate,) = await world.service().preview(world.tenant)
+
+    assert candidate.people == 1
 
 
 async def test_rooms_needing_a_second_look_come_first(world: World) -> None:

@@ -2486,7 +2486,8 @@ class PrivateChannelRoom(BaseModel):
     # messaging app is not running.
     members_listed: bool | None
     # Why the room starts unticked: "members_not_listed",
-    # "channel_type_not_recorded" or "bridge_not_connected". Empty when none.
+    # "channel_type_not_recorded", "channel_type_unknown", "many_people" or
+    # "bridge_not_connected". Empty when none.
     cautions: list[str]
     recommended: bool
 
@@ -2528,7 +2529,8 @@ class AskPlatformResponse(BaseModel):
     unanswered: list[UnansweredRoom]
     # "rate_limited" or "timed_out" when the batch stopped early.
     stopped: str | None
-    # Listed rooms still without a recorded type.
+    # Listed rooms still to ask about: no recorded type, and not already
+    # found unplaceable.
     remaining: int
 
 

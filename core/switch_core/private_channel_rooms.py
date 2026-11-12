@@ -35,7 +35,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import Text, cast, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.chats import MEMBER_CLIENT_TYPE
@@ -61,9 +61,9 @@ MADE_PRIVATE_NOTICE = (
 
 #: The most rooms one `ask_platform` asks about. Slack allows about 50
 #: channel lookups a minute per workspace, shared with the bot's own work.
-ASK_BATCH = 20
-#: Seconds between two asks in one batch.
-ASK_PAUSE = 0.5
+ASK_BATCH = 10
+#: Seconds between two asks in one batch: about 50 a minute at most.
+ASK_PAUSE = 1.2
 #: Seconds to wait for one answer before stopping the batch.
 PLATFORM_TIMEOUT = 10.0
 #: The most rooms one `apply` changes.
@@ -71,6 +71,16 @@ APPLY_MAX = 200
 #: Seconds between two history notices after an apply, so a large batch does
 #: not post to every channel at once.
 NOTICE_PAUSE = 0.5
+
+#: Room metadata: when a platform last could not say what the room's
+#: channel is. Such a room is not asked about again unless named, so a batch
+#: moves on to the rest; it stays listed, to check by hand.
+UNPLACED_AT_KEY = "channel_type_unplaced_at"
+
+#: A room with at least this many people may not have everyone in its channel
+#: yet: one member sync adds at most this many
+#: (`CollaborationCore.MEMBER_SYNC_MAX_ADDS`).
+LARGE_ROOM = 500
 
 #: Channel types worth saving when a platform reports one.
 _RECORDABLE = ("channel_public", "channel_private", "group", "direct")
@@ -81,6 +91,10 @@ Caution = Literal[
     "members_not_listed",
     # The channel's type is not recorded: ask the platform, or check by hand.
     "channel_type_not_recorded",
+    # The channel's type is not recorded and the platform could not say it.
+    "channel_type_unknown",
+    # So many people that Switch may not know everyone in the channel yet.
+    "many_people",
     # The room's messaging app is not running here.
     "bridge_not_connected",
 ]
@@ -153,7 +167,8 @@ class AskResult:
     unanswered: list[tuple[str, UnansweredReason]] = field(default_factory=list)
     # Set when the batch stopped early; the rest were not asked.
     stopped: StopReason | None = None
-    # Rooms still without a recorded type after this batch.
+    # Rooms still to ask about after this batch: no recorded type, and not
+    # already found unplaceable.
     remaining: int = 0
 
 
@@ -167,6 +182,18 @@ def _candidates() -> Any:
         Room.external_channel_id.is_not(None),
         or_(Room.channel_type.is_(None), Room.channel_type.in_(PRIVATE_CHANNELS)),
     )
+
+
+def _not_yet_asked() -> Any:
+    """Rooms of unrecorded type no platform has failed to place."""
+    return _candidates().where(
+        Room.channel_type.is_(None),
+        or_(Room.metadata_.is_(None), Room.metadata_[UNPLACED_AT_KEY].astext.is_(None)),
+    )
+
+
+def _unplaced(room: Room) -> bool:
+    return bool((room.metadata_ or {}).get(UNPLACED_AT_KEY))
 
 
 def _could_be_private(channel_type: str | None) -> bool:
@@ -192,17 +219,17 @@ async def _people_by_room(
     session: AsyncSession, room_ids: Collection[str]
 ) -> dict[str, int]:
     """How many people each room has: platform accounts and Switch Console
-    members, each counted once."""
+    members, each counted once even when linked on more than one bridge."""
     if not room_ids:
         return {}
     platform = (
-        select(ClientRoom.room_id, func.count())
+        select(ClientRoom.room_id, func.count(ClientRoom.client_id.distinct()))
         .join(ExternalUser, ExternalUser.client_id == ClientRoom.client_id)
         .where(ClientRoom.room_id.in_(room_ids))
         .group_by(ClientRoom.room_id)
     )
     console = (
-        select(ClientRoom.room_id, func.count())
+        select(ClientRoom.room_id, func.count(ClientRoom.client_id.distinct()))
         .join(Client, Client.id == ClientRoom.client_id)
         .where(ClientRoom.room_id.in_(room_ids), Client.type == MEMBER_CLIENT_TYPE)
         .group_by(ClientRoom.room_id)
@@ -278,7 +305,13 @@ class PrivateChannelRooms:
             members_listed: bool | None = None
             cautions: list[Caution] = []
             if room.channel_type is None:
-                cautions.append("channel_type_not_recorded")
+                cautions.append(
+                    "channel_type_unknown"
+                    if _unplaced(room)
+                    else "channel_type_not_recorded"
+                )
+            if people.get(room.id, 0) >= LARGE_ROOM:
+                cautions.append("many_people")
             if core is None:
                 cautions.append("bridge_not_connected")
             else:
@@ -312,20 +345,24 @@ class PrivateChannelRooms:
         limit: int = ASK_BATCH,
     ) -> AskResult:
         """Ask the platform what kind of channel each of up to `limit` listed
-        rooms of unrecorded type is (of `room_ids` when given), and record the
-        answer on the room.
+        rooms of unrecorded type is, and record the answer on the room. Only
+        rooms not already found unplaceable, unless named in `room_ids`.
 
         One room at a time, `ask_pause` apart. A rate limit or an answer that
         takes too long stops the batch there: the admin asks again later. A
         room the platform cannot place (a channel it no longer has) stays
-        unrecorded and is said so. A type is written only where none is yet,
-        so two admins asking at once never overwrite each other.
+        unrecorded, is said so, and is marked so the next batch moves on. A
+        type is written only where none is yet, so two admins asking at once
+        never overwrite each other.
         """
         result = AskResult()
         async with tenant_session(self._session_factory, tenant_id) as session:
-            query = _candidates().where(Room.channel_type.is_(None))
-            if room_ids is not None:
-                query = query.where(Room.id.in_(list(room_ids)))
+            if room_ids is None:
+                query = _not_yet_asked()
+            else:
+                query = _candidates().where(
+                    Room.channel_type.is_(None), Room.id.in_(list(room_ids))
+                )
             rooms = list(
                 (await session.execute(query.order_by(Room.name, Room.id).limit(limit)))
                 .scalars()
@@ -358,9 +395,11 @@ class PrivateChannelRooms:
                     room.id,
                     exc,
                 )
+                await self._mark_unplaced(tenant_id, room.id)
                 result.unanswered.append((room.id, "could_not_tell"))
                 continue
             if channel_type not in _RECORDABLE:
+                await self._mark_unplaced(tenant_id, room.id)
                 result.unanswered.append((room.id, "could_not_tell"))
                 continue
             async with tenant_session(self._session_factory, tenant_id) as session:
@@ -375,12 +414,27 @@ class PrivateChannelRooms:
 
         async with tenant_session(self._session_factory, tenant_id) as session:
             remaining = await session.execute(
-                select(func.count()).select_from(
-                    _candidates().where(Room.channel_type.is_(None)).subquery()
-                )
+                select(func.count()).select_from(_not_yet_asked().subquery())
             )
             result.remaining = int(remaining.scalar_one())
         return result
+
+    async def _mark_unplaced(self, tenant_id: str, room_id: str) -> None:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await session.execute(
+                update(Room)
+                .where(Room.id == room_id)
+                .values(
+                    metadata_=func.coalesce(
+                        Room.metadata_, func.jsonb_build_object()
+                    ).op("||")(
+                        func.jsonb_build_object(UNPLACED_AT_KEY, cast(func.now(), Text))
+                    )
+                )
+                .execution_options(synchronize_session=False)
+            )
+            await session.commit()
+        self._room_changes.room_changed(tenant_id, room_id)
 
     async def apply(
         self, tenant_id: str, room_ids: Collection[str], *, actor_user_id: str
