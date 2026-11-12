@@ -63,6 +63,11 @@ RETRY_RENEWAL_SECONDS = 1.0
 
 PRUNE_AFTER = timedelta(hours=1)
 
+# How long the machines a process held still read as connected after it shut
+# down, while their controllers reattach to the processes left: as long as a
+# process that died goes unnoticed, so a planned stop never reads worse.
+MOVE_GRACE = LEASE_TTL
+
 # Why a connection the row still shows open is not, when its process is the
 # reason: the process shut down without writing it, or stopped renewing.
 SERVER_SHUTDOWN = "server_shutdown"
@@ -72,10 +77,11 @@ SERVER_LOST = "server_lost"
 @dataclass(frozen=True)
 class ProcessLeases:
     """Every process's lease as the database held it at `read_at`, its own
-    clock."""
+    clock, read just after `read_mono` on this process's monotonic clock."""
 
     read_at: datetime
     leases: dict[str, ProcessLeaseRow]
+    read_mono: float
 
     def holds(self, process_id: str | None) -> bool:
         """Whether the process is alive and holding its sockets."""
@@ -85,6 +91,22 @@ class ProcessLeases:
             and lease.stopped_at is None
             and self.read_at - lease.beat_at < LEASE_TTL
         )
+
+    def moving(self, process_id: str | None) -> bool:
+        """Whether the process shut down less than `MOVE_GRACE` ago, so the
+        controllers whose sockets it held are reattaching to the others."""
+        return self.move_ends(process_id) is not None
+
+    def move_ends(self, process_id: str | None) -> float | None:
+        """When, on this process's monotonic clock, `MOVE_GRACE` ends for a
+        process that shut down; None for one still holding its lease, lost,
+        or stopped longer ago. Counted from before the read, so however long
+        a reader takes to act on it, it is never longer."""
+        lease = self.leases.get(process_id) if process_id is not None else None
+        if lease is None or lease.stopped_at is None:
+            return None
+        left = (MOVE_GRACE - (self.read_at - lease.stopped_at)).total_seconds()
+        return self.read_mono + left if left > 0 else None
 
     def takes_work(self, process_id: str) -> bool:
         """Whether the process holds its lease and has finished booting, so
@@ -109,8 +131,9 @@ async def read_leases(
 ) -> ProcessLeases:
     """Every lease, in the caller's session; the table has no tenant policy,
     so any session reads it."""
+    read_mono = time.monotonic()
     read_at, leases = await processes.read(session)
-    return ProcessLeases(read_at=read_at, leases=leases)
+    return ProcessLeases(read_at=read_at, leases=leases, read_mono=read_mono)
 
 
 class ProcessLease:

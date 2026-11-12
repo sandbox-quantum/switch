@@ -79,8 +79,10 @@ class SwitchCoreProcessStore:
     async def read(
         self, session: AsyncSession
     ) -> tuple[datetime, dict[str, ProcessLeaseRow]]:
-        """The database's now, and every lease as it stands then."""
-        now = (await session.execute(select(func.now()))).scalar_one()
+        """The database's now, and every lease as it stands then. Its clock
+        now, not its transaction's start: a reader may have done more in the
+        same transaction first."""
+        now = (await session.execute(select(func.clock_timestamp()))).scalar_one()
         rows = await session.execute(
             select(
                 SwitchCoreProcess.id,

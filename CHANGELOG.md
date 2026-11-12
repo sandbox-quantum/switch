@@ -1540,6 +1540,16 @@ version of their own to them without also giving them a release of their own.
   its platform until that pod's boot was done. A starting pod now takes work
   once it can hear the other pods, and they hand its share over then. A pod
   starting alone takes everything at once, as before.
+- **A machine no longer reads offline while a release moves it to another
+  switch-core pod.** Each pod a rolling update stopped took its machines
+  offline until their controllers reattached to another pod, one to three
+  seconds later: Switch Console showed them offline, and a message to one of
+  their agents got the "device is offline" reply. A machine whose pod shut
+  down now reads online for up to 15 seconds while it reattaches, as long as
+  one whose pod died, and messages to its agents wait for it. One that does
+  not come back in time reads offline from when its pod stopped, and its
+  owner's Console is told, as it now is when a machine's pod dies; before,
+  Console showed such a machine online until it next refreshed on its own.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error

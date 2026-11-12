@@ -1049,7 +1049,7 @@ def test_a_waking_machine_is_judged_by_its_last_report() -> None:
         last_seen_at=now - timedelta(hours=2),
         status={"providers": [{"provider": "claude", "installed": True, "auth": "ok"}]},
     )
-    leases = ProcessLeases(read_at=now, leases={})
+    leases = ProcessLeases(read_at=now, leases={}, read_mono=0.0)
     asleep = placement_refusal(
         controller, "claude", leases=leases, now=now, interval_seconds=60, waking=False
     )

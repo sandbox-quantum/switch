@@ -480,8 +480,8 @@ class TestOverallStatuses:
         _bind(registry, "stopped", running=False)
         _bind(registry, "unreached", running=True)
         # The devices of the first two are connected, to another process.
-        registry.controllers.held_elsewhere("device-running", "p2")
-        registry.controllers.held_elsewhere("device-stopped", "p2")
+        registry.controllers.held_elsewhere("device-running", "p2", None)
+        registry.controllers.held_elsewhere("device-stopped", "p2", None)
         store = _FakeAnywhereStore(live_ids={"unreached"})
 
         statuses = await overall_statuses(
