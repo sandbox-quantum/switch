@@ -44,6 +44,10 @@ from switch_core.bridges.collaboration.whatsapp.adapter import (
     WhatsAppAdapter,
     WhatsAppConnectionConfig,
 )
+from switch_core.bridges.collaboration.zulip.adapter import (
+    ZulipAdapter,
+    ZulipConnectionConfig,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.collaboration.lifecycle_service import (
@@ -67,6 +71,7 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("telegram", TelegramAdapter, TelegramConnectionConfig),
     PlatformRegistration("whatsapp", WhatsAppAdapter, WhatsAppConnectionConfig),
     PlatformRegistration("google_chat", GoogleChatAdapter, GoogleChatConnectionConfig),
+    PlatformRegistration("zulip", ZulipAdapter, ZulipConnectionConfig),
     PlatformRegistration("signal", SignalAdapter, SignalConnectionConfig),
 )
 
