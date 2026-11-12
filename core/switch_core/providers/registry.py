@@ -241,6 +241,20 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         sign_in_command="droid",
         connector_type="Droid CLI",
     ),
+    AgentProvider(
+        id="amp",
+        label="Amp",
+        sign_in_command="amp login",
+        tools=(
+            ToolSpec(name="Bash", description="Executes shell commands"),
+            ToolSpec(name="Read", description="Reads file contents"),
+            ToolSpec(name="Write", description="Writes files"),
+            ToolSpec(name="Edit", description="Edits existing files"),
+            ToolSpec(name="Grep", description="Searches file contents"),
+            ToolSpec(name="Glob", description="Finds files by pattern"),
+            ToolSpec(name="Task", description="Delegates to a subagent"),
+        ),
+    ),
 )
 
 

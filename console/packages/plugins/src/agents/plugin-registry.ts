@@ -3,6 +3,7 @@ import {
   type CLIAgentPluginProvider,
   createPluginRegistry,
 } from '@switch-console/core/agents/plugins';
+import { provider as amp } from './impl/amp';
 import { provider as antigravity } from './impl/antigravity';
 import { provider as claude } from './impl/claude';
 import { provider as codex } from './impl/codex';
@@ -34,6 +35,7 @@ for (const p of [
   goose,
   qwen,
   droid,
+  amp,
 ]) {
   pluginRegistry.register(p);
 }
