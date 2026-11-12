@@ -14,6 +14,7 @@ import {
 import type { ProviderRuntimeEvent } from '../events';
 import { stubSwitchFetch } from '../testing/agent-sessions-server';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
+import type * as processFence from './process-fence';
 import { Redactions } from './redaction';
 import { ServiceNotices } from './service-notices';
 import { connectParent, type ParentChannel } from './session-channel';
@@ -31,6 +32,13 @@ import { hostParked } from './shared-state';
 // Windows runners take many times longer over that. The waits have no deadline
 // of their own (see `until`), so this is the one clock.
 vi.setConfig({ testTimeout: 30_000 });
+
+// These providers run in-process; the OS probe is covered by process-fence
+// tests and need not spawn ps in this harness.
+vi.mock('./process-fence', async (original) => ({
+  ...(await original<typeof processFence>()),
+  ownProcessGroup: async () => null,
+}));
 
 /**
  * `vi.waitFor`, for state the host writes to disk without telling anyone,
@@ -416,6 +424,47 @@ const roomMessage = (sequence: number, body: string, attachments: unknown[] = []
     },
     missed: { count: 2, reason: null },
   },
+});
+
+it.each([false, true])('reports child activity (older Core=%s)', async (olderCore) => {
+  const host = await start({ rooms: true });
+  host.switchCore.state.refusesSubagent = olderCore;
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'inspect using a child') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const turnId = host.turns[0]!.turnId;
+    const child = {
+      id: 'child',
+      nativeChildId: 'child',
+      type: 'subagent',
+      status: 'in_progress',
+      title: 'Review tests',
+    };
+    host.emit({ type: 'item.started', turnId, item: child });
+    const rows = () =>
+      host.switchCore.calls.filter((call) => {
+        const row = call.body as { subagent?: boolean; title?: string; status?: string } | null;
+        return (
+          call.path.endsWith('/activity') &&
+          row?.title === 'Review tests' &&
+          (!olderCore || !row.subagent)
+        );
+      });
+    await until(() =>
+      expect(rows().at(-1)?.body).toMatchObject({ kind: 'tool-activity', status: 'in-progress' })
+    );
+    host.emit({ type: 'item.completed', turnId, item: { ...child, status: 'completed' } });
+    await until(() =>
+      expect(rows().at(-1)?.body).toMatchObject({ kind: 'tool-activity', status: 'completed' })
+    );
+    expect(
+      host.switchCore.calls.some((call) => (call.body as { subagent?: boolean } | null)?.subagent)
+    ).toBe(true);
+    if (olderCore) expect(rows().at(-1)?.body).not.toHaveProperty('subagent');
+    else expect(rows().at(-1)?.body).toHaveProperty('subagent', true);
+  } finally {
+    await host.stop();
+  }
 });
 
 it('names itself to its parent, which makes its tool calls, before the provider starts', async () => {

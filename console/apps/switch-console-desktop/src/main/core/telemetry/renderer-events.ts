@@ -98,6 +98,8 @@ const RENDERER_TELEMETRY_SCHEMAS = {
       'goose',
       'qwen',
       'droid',
+      'cline',
+      'junie',
       'none',
     ]),
   }),

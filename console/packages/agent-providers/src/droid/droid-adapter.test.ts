@@ -282,12 +282,16 @@ describe('checkSignIn', () => {
 
   const dummyHandshake = async () => ({ protocolVersion: 1 });
   const dummyRequest = async <T>() => ({}) as T;
+  const dummyConnection = () => {
+    throw new Error('droid sign-in check asked for the connection');
+  };
   const checkInput = (env: Record<string, string>) => ({
     binaryPath: 'droid',
     cwd: '/tmp',
     env,
     handshake: dummyHandshake,
     request: dummyRequest,
+    connection: dummyConnection,
   });
 
   const doctorSays = (stdout: string) =>
