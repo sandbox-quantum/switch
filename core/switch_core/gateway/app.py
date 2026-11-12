@@ -291,8 +291,8 @@ def create_gateway_app(
     )
     if config.gateway_oidc_enabled:
         register_oidc_client(config)
-    # One Origin check for every cookie-authenticated change (W.5), and
-    # `X-Frame-Options: DENY` on every answer (W.8).
+    # One Origin check for every cookie-authenticated change, and
+    # `X-Frame-Options: DENY` on every answer.
     origins = allowed_origins(config)
     log_origin_setup(config, origins)
     app.add_middleware(OriginCheckMiddleware, allowed=origins)

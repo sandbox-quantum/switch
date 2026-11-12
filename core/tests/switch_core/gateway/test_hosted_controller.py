@@ -2008,18 +2008,28 @@ async def test_a_machine_that_was_woken_and_never_connected_counts_as_wake_faile
     assert "event.name" not in json.dumps(getattr(line, STRUCTURED_FIELDS))
 
 
+@pytest.mark.parametrize(
+    ("desired_state", "reason"),
+    [
+        ("stopped", "stop_failed"),
+        ("retained", "stop_failed"),
+        ("deleted", "stop_failed"),
+        ("running", "reported"),
+    ],
+)
 async def test_an_error_while_stopping_counts_as_stop_failed(
-    controller_app, reported, machine_metrics
+    controller_app, reported, machine_metrics, desired_state, reason
 ):
-    """An error observed while the machine is wanted stopped counts as
-    `stop_failed` on the hosted metric. Product telemetry keeps its reason."""
+    """An error observed while the machine is wanted stopped, retained or
+    deleted counts as `stop_failed` on the hosted metric; while it's wanted
+    running, as the report it is. Product telemetry keeps its reason."""
     app = controller_app
     await update_machine(
         app.factory,
         app.machine_id,
         state="stopping",
-        desired_state="stopped",
-        stop_reason="owner",
+        desired_state=desired_state,
+        stop_reason="owner" if desired_state == "stopped" else None,
     )
     await observe(
         app.client,
@@ -2030,7 +2040,7 @@ async def test_an_error_while_stopping_counts_as_stop_failed(
     )
 
     assert reported.events("cloud_machine_failed") == [{"reason": "reported"}]
-    assert _failure_reasons(machine_metrics) == ["stop_failed"]
+    assert _failure_reasons(machine_metrics) == [reason]
 
 
 @pytest.mark.parametrize(

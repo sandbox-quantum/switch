@@ -73,7 +73,7 @@ async def test_an_exception_escaping_a_request_is_counted_and_named(
 ) -> None:
     transport = httpx.ASGITransport(app=_app(), raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://x") as client:
-        with caplog.at_level(logging.ERROR, logger="switch_core.runtime"):
+        with caplog.at_level(logging.WARNING, logger="switch_core.runtime"):
             answer = await client.get(f"/things/{CANARY}-id")
     assert answer.status_code == 500
     assert _counted(registry) == {("http", "RuntimeError"): 1.0}
@@ -153,7 +153,7 @@ async def test_a_task_exception_nobody_retrieved_is_counted_and_still_reported(
 async def test_the_agent_bridges_http_error_line_names_the_route_not_the_path(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """L4: the route template and the status, never the raw path (ids, what
+    """The route template and the status, never the raw path (ids, what
     the caller typed) or the error's detail."""
     app = FastAPI()
 
@@ -171,3 +171,56 @@ async def test_the_agent_bridges_http_error_line_names_the_route_not_the_path(
     [line] = [r for r in caplog.records if "→ 404" in r.getMessage()]
     assert line.getMessage() == "GET /agents/{agent_id}/things → 404"
     assert CANARY not in line.getMessage()
+
+
+def _uvicorn_like(app: Any) -> Any:
+    """Logs as uvicorn does when an exception escapes the app: the one ERROR
+    line, with its stack, that the log alerts count."""
+    server_logger = logging.getLogger("uvicorn.error")
+
+    async def wrapped(scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await app(scope, receive, send)
+        except Exception:
+            server_logger.exception("Exception in ASGI application")
+            raise
+
+    return wrapped
+
+
+async def test_one_unhandled_exception_is_one_error_line(
+    registry: MetricsRegistry, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The server's own ERROR line stays the only one, so an error-count alert
+    counts each exception once; ours is a WARNING beside it."""
+    transport = httpx.ASGITransport(
+        app=_uvicorn_like(_app()), raise_app_exceptions=False
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://x") as client:
+        with caplog.at_level(logging.DEBUG):
+            await client.get("/things/one")
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert [r.getMessage() for r in errors] == ["Exception in ASGI application"]
+    [ours] = [r for r in caplog.records if r.name == "switch_core.runtime"]
+    assert ours.levelno == logging.WARNING
+    assert _counted(registry) == {("http", "RuntimeError"): 1.0}
+
+
+async def test_one_task_exception_is_one_error_line(
+    registry: MetricsRegistry, caplog: pytest.LogCaptureFixture
+) -> None:
+    """asyncio's own "never retrieved" ERROR stays the only one."""
+    loop = asyncio.get_running_loop()
+    before = loop.get_exception_handler()
+    loop.set_exception_handler(None)
+    try:
+        install_task_exception_counter(loop)
+        with caplog.at_level(logging.DEBUG):
+            loop.call_exception_handler(
+                {"message": "Task exception was never retrieved", "exception": Broken()}
+            )
+    finally:
+        loop.set_exception_handler(before)
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1 and errors[0].name == "asyncio"
+    assert _counted(registry) == {("task", "RuntimeError"): 1.0}
