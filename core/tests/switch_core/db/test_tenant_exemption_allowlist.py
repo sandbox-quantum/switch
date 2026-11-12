@@ -275,6 +275,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`); every workspace and organization it touches
     # is bound.
     "switch_core.accounts.organization_purge",
+    # What the purge leaves outside Switch: it reads `oidc_identities`, global
+    # (`rls_ddl.GLOBAL_TABLES`), and writes the server's audit log; it reads
+    # no workspace or organization.
+    "switch_core.accounts.purge_elsewhere",
     # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
     # and reads `oidc_identities` to match people, both global
     # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.

@@ -287,11 +287,18 @@ Nothing waits for the customer to empty anything first.
 
 1. **Outside Switch first.** Every service sign-in is removed and revoked at
    its vendor with the tokens issued on it, and each cloud machine of an
-   account the purge deletes is set to be deleted. While a machine is still
-   being torn down or a token is still live at its vendor, the purge says so,
-   deletes nothing and exits 3; the same command, run again, carries on.
+   account the purge deletes is set to be deleted with its disk's retention
+   ended (`retain_until` set to now), so the hosted controller deletes the
+   data volume at once rather than after `HOSTED_DISK_RETENTION_DAYS`. While
+   a machine is still being torn down or a token is still live at its
+   vendor, the purge says so, deletes nothing and exits 3; the same command,
+   run again, carries on. The controller reports a machine `deleted` only
+   once its instance is terminated and its data volume is gone (or was never
+   created), so a purge that goes on past this step has left no disk behind.
 2. **A record of the run**, in the server's audit log
-   (`organization.purge_started`), naming the accounts it is to delete.
+   (`organization.purge_started`), naming the accounts it is to delete, the
+   WorkOS users of the people involved, and every room id of every workspace,
+   so a resumed run can still clean up outside after the rows are gone.
 3. **Every workspace**, in its own transaction, with everything in it. Just
    before, its live messaging installs are ended as disconnecting them does
    (Slack's bot token revoked, a Teams organization withdrawn from, a Telegram
@@ -304,6 +311,39 @@ Nothing waits for the customer to empty anything first.
    workspace or organization and no rows left in one. Others keep their
    account and lose only what was here; the server's administrator account is
    always kept. Each deletion, or failure, is recorded on its own.
+6. **WorkOS**, with the server's `WORKOS_API_KEY`
+   (`accounts/workos_offboarding.py`). The WorkOS environment may be shared
+   with other products, so only what Switch alone had there goes. Each
+   person's membership of the organization's WorkOS organization is removed,
+   in any status. A WorkOS user is deleted only when no account here signs
+   in as it any more and, those memberships gone, it is a member of no
+   organization in the environment; anyone still in another organization is
+   kept, and the outcome says so. The WorkOS organization is deleted only
+   when nobody is left in it in any status and it has no SSO connection or
+   directory. Without the key nothing at WorkOS changes: the command lists
+   the organization, users and memberships to remove there and exits 4.
+7. **Switch Trust**, which keeps the messages it checked under the room
+   they were sent in (`x-agent-session-id`). When the server's Trust settings
+   configure it, each room of each purged workspace is sent for deletion
+   with the same credentials as a check. The deletion call,
+   `DELETE {endpoint}/guardrails/sessions/{room id}` with 404 meaning
+   nothing is held, is provisional: Switch Trust has not published a
+   deletion API yet, and `HttpTrustClient.delete_session` is the one place
+   to change when it does. Rooms deleted before the purge are not sent, as
+   their ids are gone. Without Trust settings nothing is sent, and the
+   outcome says so.
+
+Steps 6 and 7 run on every run once Switch's side is done, the resumed ones
+included, and each records what it did (`organization.purge_workos`,
+`organization.purge_trust`). Every deletion there treats 404 as done, so a
+failure is retried by running the command again.
+
+The command ends with a receipt: the accounts deleted, the service sign-ins
+revoked, the messaging installs ended, the cloud machines deleted, what was
+done at WorkOS and Switch Trust, and that backups still hold the
+organization for up to 37 days (below). Exit codes: `0` done, `1` refused or
+something failed (run again), `3` waiting outside Switch (run again later),
+`4` done but WorkOS left for a person to clean up.
 
 A run that stops part-way is finished by running the command again. The
 record of each started run brings back the accounts found through workspaces
@@ -314,10 +354,7 @@ A cloud machine whose owner keeps their account is not torn down: it loses
 the organization's workspaces and is prepared again without them.
 
 The workspaces' audit history stays for two years, as for any deleted
-workspace. Nothing at WorkOS is changed, because the WorkOS environment may be
-shared with other products: the command prints the WorkOS organization and
-users to remove there, for whoever owns it. Copies on chat platforms stay, as
-always.
+workspace. Copies on chat platforms stay, as always.
 
 The server's default workspace refuses the purge. The command refuses a
 database connection that row-level security does not bind, since the service
@@ -356,9 +393,12 @@ refusal.
 
 ### Backups and logs
 
-Deleted rows remain in database backups until those backups expire. A
-deployment's backup retention should be documented alongside its message
-retention, and restoring a backup should be followed by a retention pass, which
+Deleted rows remain in database backups until those backups expire. On the
+hosted service the nightly dumps and point-in-time restore keep them for up
+to 37 days, so a purged organization is gone from every copy 37 days after
+the purge; restoring a backup within that time brings it back, and the purge
+is then run again. A deployment's backup retention should be documented
+alongside its message retention, and restoring a backup should be followed by a retention pass, which
 happens on its own within the hour. Application logs do not include message
 bodies by default. Any change that starts logging them should be treated as
 personal-data processing.

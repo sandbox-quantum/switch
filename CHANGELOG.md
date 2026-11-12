@@ -76,8 +76,19 @@ version of their own to them without also giving them a release of their own.
   app installs, revokes its service sign-ins, tears down its cloud machines,
   then deletes every workspace with everything in it, the organization, and
   the accounts that belonged to nothing else. It waits, and says so, while a
-  machine or token is still live outside Switch. WorkOS is left alone; the
-  command lists what to remove there.
+  machine or token is still live outside Switch. A cloud machine's disk is
+  deleted straight away rather than kept for its retention period, and the
+  purge goes on only once the disk is gone. With the server's
+  `WORKOS_API_KEY` it then takes the organization out of WorkOS: each
+  person's membership goes, a WorkOS user goes only if no other organization
+  in the environment still has them, and the WorkOS organization goes only
+  once nobody else is in it. Without the key it lists what to remove there
+  and exits 4. Where Switch Trust is configured, it asks Trust to delete
+  what it holds for each of the organization's rooms. Every step outside
+  Switch is recorded in the server's audit log and retried by running the
+  command again, and the command ends with a receipt of what was done
+  outside Switch and a reminder that backups keep the organization for up
+  to 37 days.
 - **WhatsApp is a messaging platform.** Connect a WhatsApp Business number
   through Meta's Cloud API and people can talk to agents in one-to-one chats,
   with files, quoted replies as threads and read receipts. Each connection

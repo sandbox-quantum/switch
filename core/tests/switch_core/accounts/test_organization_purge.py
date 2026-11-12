@@ -9,14 +9,17 @@ processes) is faked, recording what it was asked to do.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.accounts import organization_purge
 from switch_core.accounts.organization_purge import OrganizationPurge, PurgeRefused
+from switch_core.accounts.purge_elsewhere import PurgeElsewhere
 from switch_core.bridges.collaboration.install import MessagingInstallerRegistry
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
@@ -38,11 +41,15 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.message_store import MessageStore
+from switch_core.gateway.hosted_controller import machine_item
 from switch_core.keys import Keyring
+from switch_core.trust.client import HttpTrustClient
 from tests.switch_core.accounts.test_account_deletion import ADMIN_EMAIL, _agent
+from tests.switch_core.accounts.test_workos_offboarding import FakeWorkOS
 from tests.switch_core.hosted_machine_helpers import add_workspace, seed_machine
 
 KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
+ISSUER = "https://auth.test"
 
 
 class _Installer:
@@ -100,6 +107,7 @@ def _purge(
             "controller.revoked", controller_id=controller_id
         ),
         admin_email=ADMIN_EMAIL,
+        sign_in_issuer=ISSUER,
     )
     return purge, installer, signals
 
@@ -146,9 +154,7 @@ async def _person(
         user = User(name=name, email=f"{name}@example.test", role="user")
         session.add(user)
         await session.flush()
-        session.add(
-            OidcIdentity(user_id=user.id, iss="https://auth.test", sub=f"user_{name}")
-        )
+        session.add(OidcIdentity(user_id=user.id, iss=ISSUER, sub=f"user_{name}"))
         if organization_id is not None:
             session.add(
                 OrganizationMember(
@@ -513,3 +519,257 @@ async def test_a_failed_account_is_recorded_and_retried_after_the_organization_w
     assert retried.finished
     assert [account.id for account in retried.deleted_accounts] == [dave]
     assert await _count(session_factory, User, User.id == dave) == 0
+
+
+async def test_a_machine_in_retention_loses_its_disk_now_not_when_retention_ends(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    alice = await _person(session_factory, "alice", [workspace], organization_id)
+    later = datetime.now(UTC) + timedelta(days=7)
+    async with tenant_session(session_factory, workspace) as session:
+        retained = await seed_machine(
+            session,
+            owner_id=alice,
+            state="retained",
+            desired_state="retained",
+            stop_reason=None,
+            revision=5,
+        )
+        retained.retain_until = later
+        await session.commit()
+        machine_id = retained.id
+    purge, _, _ = _purge(session_factory)
+
+    first = await purge.run(await purge.plan(organization_id), "TICKET-6")
+
+    assert not first.finished
+    async with session_factory() as session:
+        machine = await session.get(CloudMachine, machine_id)
+        assert machine is not None
+        assert machine.desired_state == "deleted" and machine.revision == 6
+        # What the hosted controller is sent: deleted, with the disk's
+        # retention already over, so it deletes the volume at once.
+        item = machine_item(machine)
+        assert item["desired_state"] == "deleted"
+        assert datetime.fromisoformat(item["retain_until"]) <= datetime.now(UTC)
+        # The controller reports deleted once the volume is gone.
+        machine.state = "deleted"
+        await session.commit()
+
+    plan = await purge.plan(organization_id)
+    assert plan.removed_machines == [machine_id]
+    assert (await purge.run(plan, "TICKET-6")).finished
+
+
+async def test_a_machine_already_set_to_be_deleted_has_its_retention_ended(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A machine an earlier run set to be deleted, keeping its disk's
+    retention date: the controller never brings that date forward on its
+    own, so it is brought forward in a new revision."""
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    alice = await _person(session_factory, "alice", [workspace], organization_id)
+    async with tenant_session(session_factory, workspace) as session:
+        machine = await seed_machine(
+            session,
+            owner_id=alice,
+            state="deleting",
+            desired_state="deleted",
+            stop_reason=None,
+            revision=2,
+        )
+        machine.retain_until = datetime.now(UTC) + timedelta(days=30)
+        await session.commit()
+        machine_id = machine.id
+    purge, _, _ = _purge(session_factory)
+
+    await purge.run(await purge.plan(organization_id), "TICKET-7")
+    await purge.run(await purge.plan(organization_id), "TICKET-7")
+
+    async with session_factory() as session:
+        machine = await session.get(CloudMachine, machine_id)
+        assert machine is not None
+        assert machine.retain_until is not None
+        assert machine.retain_until <= datetime.now(UTC)
+        assert machine.revision == 3, "only the first run needed a new revision"
+
+
+class _Trust:
+    """Switch Trust's provisional deletion endpoint, faked."""
+
+    def __init__(self) -> None:
+        self.deleted: list[str] = []
+        self.fail_once: set[str] = set()
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        assert request.method == "DELETE"
+        assert request.headers["x-flintai-api-key"] == "trust-key"
+        session_id = request.url.path.removeprefix("/guardrails/sessions/")
+        if session_id in self.fail_once:
+            self.fail_once.discard(session_id)
+            return httpx.Response(503)
+        if session_id in self.deleted:
+            return httpx.Response(404)
+        self.deleted.append(session_id)
+        return httpx.Response(204)
+
+    def client(self) -> HttpTrustClient:
+        return HttpTrustClient(
+            base_url="https://trust.test",
+            api_key="trust-key",
+            policy_id="pol_1",
+            timeout_seconds=1.0,
+            client=httpx.AsyncClient(transport=httpx.MockTransport(self.handler)),
+        )
+
+
+def _elsewhere(
+    session_factory: async_sessionmaker[AsyncSession],
+    workos: FakeWorkOS | None,
+    trust: _Trust | None,
+) -> PurgeElsewhere:
+    async def eraser() -> HttpTrustClient | None:
+        return None if trust is None else trust.client()
+
+    return PurgeElsewhere(
+        session_factory=session_factory,
+        workos=None if workos is None else workos.client(),
+        trust=eraser,
+        sign_in_issuer=ISSUER,
+    )
+
+
+async def _room_ids(
+    session_factory: async_sessionmaker[AsyncSession], tenant_id: str
+) -> list[str]:
+    async with tenant_session(session_factory, tenant_id) as session:
+        return list(
+            await session.scalars(select(Room.id).where(Room.tenant_id == tenant_id))
+        )
+
+
+async def test_after_the_purge_workos_and_switch_trust_are_cleaned_and_recorded(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    organization_id, (first, second) = await _organization(session_factory, 2)
+    _, (elsewhere_ws,) = await _organization(session_factory, 1)
+    alice = await _person(session_factory, "alice", [first, second], organization_id)
+    await _person(session_factory, "bob", [first, elsewhere_ws], organization_id)
+    await _fill(session_factory, first, alice)
+    await _fill(session_factory, second, alice)
+    rooms = sorted(
+        await _room_ids(session_factory, first)
+        + await _room_ids(session_factory, second)
+    )
+    workos_org = f"org_{organization_id}"
+    workos = FakeWorkOS()
+    workos.member("om_alice", "user_alice", workos_org)
+    workos.member("om_bob", "user_bob", workos_org)
+    trust = _Trust()
+    purge, _, _ = _purge(session_factory)
+    elsewhere = _elsewhere(session_factory, workos, trust)
+
+    plan = await purge.plan(organization_id)
+    assert plan.workos_users == {
+        "user_alice": alice,
+        "user_bob": plan.workos_users["user_bob"],
+    }
+    assert plan.trust_sessions == rooms
+    preview = await elsewhere.plan_workos(plan)
+    assert preview is not None and preview.users_deleted == ["user_alice"]
+    assert workos.deleted == []
+
+    assert (await purge.run(plan, "TICKET-8")).finished
+    outcome = await elsewhere.run(plan, "TICKET-8")
+
+    assert not outcome.failed and not outcome.left_by_hand
+    assert outcome.workos is not None
+    # Alice's account went, and nothing else has her user; Bob keeps his
+    # account, so only his membership goes.
+    assert outcome.workos.users_deleted == ["user_alice"]
+    assert outcome.workos.users_kept == {"user_bob": "Switch still uses this user"}
+    assert "user_bob" in workos.users and workos.memberships == {}
+    assert outcome.workos.organization_deleted
+    assert sorted(trust.deleted) == rooms and outcome.trust_deleted == len(rooms)
+
+    records = {
+        action: details
+        for action, details in (await _server_audit(session_factory)).values()
+    }
+    assert records["organization.purge_workos"]["users_deleted"] == ["user_alice"]
+    assert records["organization.purge_workos"]["organization_deleted"] is True
+    assert records["organization.purge_trust"]["sessions_deleted"] == len(rooms)
+    assert records["organization.purge_trust"]["request"] == "TICKET-8"
+    assert records["organization.purge_started"]["trust_sessions"] == rooms
+
+
+async def test_a_resumed_purge_still_cleans_what_deleted_workspaces_left_outside(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first workspace is deleted, then the run fails. The rerun finds
+    its rooms and its people's WorkOS users only in the run's record, and a
+    Switch Trust deletion that fails is retried by the run after."""
+    organization_id, workspaces = await _organization(session_factory, 2)
+    first, second = sorted(workspaces)
+    carol = await _person(session_factory, "carol", [first], None)
+    await _fill(session_factory, first, carol)
+    rooms = await _room_ids(session_factory, first)
+    workos = FakeWorkOS()
+    workos.users.add("user_carol")
+    trust = _Trust()
+    trust.fail_once.update(rooms)
+    purge, _, _ = _purge(session_factory)
+    elsewhere = _elsewhere(session_factory, workos, trust)
+    real = organization_purge.purge_workspace
+
+    async def failing_on(session: AsyncSession, tenant_id: str, request: str) -> list:
+        if tenant_id == second:
+            raise RuntimeError("lock timeout")
+        return await real(session, tenant_id, request)
+
+    monkeypatch.setattr(organization_purge, "purge_workspace", failing_on)
+    with pytest.raises(RuntimeError):
+        await purge.run(await purge.plan(organization_id), "TICKET-9")
+    monkeypatch.setattr(organization_purge, "purge_workspace", real)
+
+    plan = await purge.plan(organization_id)
+    assert plan.trust_sessions == rooms
+    assert plan.workos_users == {"user_carol": carol}
+    assert (await purge.run(plan, "TICKET-9")).finished
+    failed = await elsewhere.run(plan, "TICKET-9")
+
+    assert failed.failed and [s for s, _ in failed.trust_failed] == rooms
+    assert failed.workos is not None and failed.workos.users_deleted == ["user_carol"]
+
+    again = await elsewhere.run(await purge.plan(organization_id), "TICKET-9")
+
+    assert not again.failed
+    assert trust.deleted == rooms and again.trust_deleted == len(rooms)
+
+
+async def test_without_a_workos_key_the_purge_lists_what_is_left_there(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    await _person(session_factory, "dave", [workspace], organization_id)
+    purge, _, _ = _purge(session_factory)
+    elsewhere = _elsewhere(session_factory, None, None)
+
+    plan = await purge.plan(organization_id)
+    assert (await purge.run(plan, "TICKET-10")).finished
+    outcome = await elsewhere.run(plan, "TICKET-10")
+
+    assert outcome.workos is None and outcome.left_by_hand
+    assert outcome.workos_leftover is not None
+    assert outcome.workos_leftover.organization == f"org_{organization_id}"
+    assert outcome.workos_leftover.users == ["user_dave"]
+    assert not outcome.trust_configured and not outcome.failed
+    records = {
+        action: details
+        for action, details in (await _server_audit(session_factory)).values()
+    }
+    assert records["organization.purge_workos"]["configured"] is False
+    assert records["organization.purge_workos"]["left_by_hand"] is True
+    assert records["organization.purge_trust"]["configured"] is False
