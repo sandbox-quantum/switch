@@ -1781,6 +1781,57 @@ export async function clearRetentionPolicy(tenantId: string): Promise<RetentionP
   );
 }
 
+// ── Public rooms on private channels ──────────────────────────────────────
+
+/** Why a listed room starts unticked. */
+export type PrivateChannelRoomCaution =
+  | "members_not_listed"
+  | "channel_type_unknown"
+  | "bridge_not_connected";
+
+export interface PrivateChannelRoom {
+  room_id: string;
+  name: string;
+  bridge_id: string;
+  bridge_name: string | null;
+  bridge_type: string | null;
+  // The recorded type, or the platform's answer when none was recorded.
+  channel_type: string | null;
+  people: number;
+  // Null when the platform could not be asked.
+  members_listed: boolean | null;
+  cautions: PrivateChannelRoomCaution[];
+  recommended: boolean;
+}
+
+export interface MakeRoomsPrivateResult {
+  changed: string[];
+  skipped: { room_id: string; reason: string }[];
+}
+
+/** The Public rooms bound to a private channel, a group or a DM. A dry run:
+ * changes nothing. */
+export async function previewPrivateChannelRooms(
+  tenantId: string,
+): Promise<PrivateChannelRoom[]> {
+  const result = await jsonRequest<{ rooms: PrivateChannelRoom[] }>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms`,
+    "GET",
+  );
+  return result.rooms;
+}
+
+export async function makeRoomsPrivate(
+  tenantId: string,
+  roomIds: string[],
+): Promise<MakeRoomsPrivateResult> {
+  return jsonRequest<MakeRoomsPrivateResult>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
+    "POST",
+    { room_ids: roomIds },
+  );
+}
+
 // ── Erasing a person ───────────────────────────────────────────────────────
 
 export interface PersonClaimant {
