@@ -50,11 +50,11 @@ describe('roomCreateRequest', () => {
       options: {
         channel: { kind: 'new', private: true },
         groupId: 'g1',
-        access: 'read_only',
+        access: 'public',
       },
     });
     expect(request.kind).toBe('chat');
-    expect(request.params).toMatchObject({ groupId: 'g1', access: 'read_only' });
+    expect(request.params).toMatchObject({ groupId: 'g1', access: 'public' });
     expect(request.params).not.toHaveProperty('channel');
   });
 
