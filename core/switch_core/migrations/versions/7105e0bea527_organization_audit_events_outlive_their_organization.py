@@ -12,7 +12,7 @@ release relies on it. The downgrade puts the key back `NOT VALID`, so it does
 not fail on the history of an organization deleted in between.
 
 Revision ID: 7105e0bea527
-Revises: ab802e19c401
+Revises: e3b8d1f6a2c4
 Create Date: 2026-11-12 00:00:00.000000
 
 """
@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "7105e0bea527"
-down_revision: str | Sequence[str] | None = "ab802e19c401"
+down_revision: str | Sequence[str] | None = "e3b8d1f6a2c4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
