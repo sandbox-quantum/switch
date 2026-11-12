@@ -4,6 +4,7 @@ import type { ProviderAdapter } from '../adapter';
 import { antigravityAcp } from '../antigravity/antigravity-adapter';
 import { createClaudeAdapter } from '../claude/claude-adapter';
 import { checkClaudeSignIn, CLAUDE_LOGIN } from '../claude/sign-in';
+import { clineAcp } from '../cline/cline-adapter';
 import { createCodexAdapter } from '../codex/codex-adapter';
 import { checkCodexSignIn, CODEX_LOGIN } from '../codex/sign-in';
 import { copilotAcp } from '../copilot/copilot-acp';
@@ -12,6 +13,7 @@ import { deepseekHarnessAcp } from '../deepseek-harness/deepseek-harness-acp';
 import { droidAcp } from '../droid/droid-adapter';
 import { gooseAcp } from '../goose/goose-adapter';
 import { grokBuildAcp } from '../grok-build/grok-build-acp';
+import { junieAcp } from '../junie/junie-adapter';
 import { kiroAcp } from '../kiro/kiro-acp';
 import { mistralVibeAcp } from '../mistral-vibe/mistral-vibe-acp';
 import { createOpencodeAdapter } from '../opencode/opencode-adapter';
@@ -132,6 +134,8 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   acpProviderRuntime(gooseAcp),
   acpProviderRuntime(qwenAcp),
   acpProviderRuntime(droidAcp),
+  acpProviderRuntime(clineAcp),
+  acpProviderRuntime(junieAcp),
   acpProviderRuntime(grokBuildAcp),
 ];
 

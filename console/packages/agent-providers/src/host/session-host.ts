@@ -220,6 +220,7 @@ export class HostedSession {
       if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
     }
     this.projector = new ChatProjector(config.session, config.redactions ?? null);
+    this.projector.restore(this.replica.snapshot().items);
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
       this.reasoningBuffer.ingest(event, this.config.session.epoch, Date.now());

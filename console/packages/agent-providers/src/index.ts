@@ -44,6 +44,7 @@ export { createPiAdapter, PiAdapter } from './pi/pi-adapter';
 export { AcpAdapter, createAcpAdapter } from './acp/acp-adapter';
 export type {
   AcpAdapterOptions,
+  AcpConnection,
   AcpExtensionRegistrar,
   AcpLaunch,
   AcpLaunchInput,
@@ -68,6 +69,8 @@ export {
   grokBuildSessionMode,
   GROK_BUILD_LOGIN,
 } from './grok-build/grok-build-acp';
+export { clineAcp, createClineAdapter } from './cline/cline-adapter';
+export { createJunieAdapter, junieAcp } from './junie/junie-adapter';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
 export { HostConnection } from './host/client';
