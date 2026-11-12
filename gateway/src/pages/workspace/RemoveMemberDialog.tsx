@@ -1,49 +1,46 @@
 import { Alert, CircularProgress, Link, Stack, Typography } from "@mui/material";
+import { useCallback } from "react";
 import { Link as RouterLink } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
-import { type Member, loadAgents } from "../../data/api";
+import { type Member, loadAgents, previewMemberRemoval } from "../../data/api";
+import { removalDescription } from "./memberRemoval";
 import { useLoad } from "./useLoad";
 
 interface Props {
+  tenantId: string;
   member: Member;
   workspaceName: string;
-  /** Their own row: they are leaving rather than being removed. */
-  leaving: boolean;
-  /** Whether the person removing them has a membership here, so takes over
-   * what they own (`removal_heir`); otherwise another admin does. */
-  removerIsMember: boolean;
+  selfId: string;
   onRemove: () => Promise<void>;
   onClose: () => void;
 }
 
-/** Removing someone, or leaving: what goes with them, and what the server
- * will refuse. An agent stays with its owner rather than going with them, so
- * someone who still owns any is sent to each one first, where it can be
- * handed over or deleted. The server checks again when asked, and whatever
- * else it refuses is shown as it says it. Mounted only while open, so the
- * agents are read as it opens. */
+/** Removing someone, or leaving: what goes with them, and to whom, as the
+ * server would hand it over now. An agent stays with its owner rather than
+ * going with them, so someone who still owns any is sent to each one first,
+ * where it can be handed over or deleted. The server checks again when asked,
+ * and whatever else it refuses is shown as it says it. Mounted only while
+ * open, so both are read as it opens. */
 export default function RemoveMemberDialog({
+  tenantId,
   member,
   workspaceName,
-  leaving,
-  removerIsMember,
+  selfId,
   onRemove,
   onClose,
 }: Props) {
+  const leaving = member.user_id === selfId;
   const agents = useLoad(loadAgents);
+  const loadPreview = useCallback(
+    () => previewMemberRemoval(tenantId, member.user_id),
+    [tenantId, member.user_id],
+  );
+  const preview = useLoad(loadPreview);
   const owned = (agents.data ?? []).filter((agent) => agent.owner_id === member.user_id);
-  const heir = removerIsMember && !leaving ? "you" : "another admin of the workspace";
 
   let description;
-  if (agents.loading) {
-    description = <CircularProgress size={20} aria-label="Checking their agents" />;
-  } else if (agents.error !== null) {
-    description = (
-      <Alert severity="warning">
-        Couldn't check which agents {leaving ? "you own" : "they own"}: {agents.error}. Switch
-        still refuses if any are left.
-      </Alert>
-    );
+  if (agents.loading || preview.loading) {
+    description = <CircularProgress size={20} aria-label="Checking what they own" />;
   } else if (owned.length > 0) {
     description = (
       <Stack spacing={1}>
@@ -70,14 +67,24 @@ export default function RemoveMemberDialog({
     );
   } else {
     description = (
-      <Typography variant="body2">
-        {leaving ? "You lose" : `${member.name} loses`} access to {workspaceName} at once.{" "}
-        {leaving ? "Your" : "Their"} API keys and connectors here stop working, and the rooms,
-        templates and library items {leaving ? "you" : "they"} own pass to {heir}.
-        {leaving
-          ? " You'd need a new invitation to come back."
-          : " Inviting them again brings them back, without what they owned."}
-      </Typography>
+      <Stack spacing={1.5}>
+        {agents.error !== null && (
+          <Alert severity="warning">
+            Couldn't check which agents {leaving ? "you own" : "they own"}: {agents.error}.
+            Removing still fails if any are left.
+          </Alert>
+        )}
+        {preview.data !== null ? (
+          <Typography variant="body2">
+            {removalDescription(member, preview.data.handed_over_to, selfId)}
+          </Typography>
+        ) : (
+          <Alert severity="warning">
+            Couldn't check who would receive what {leaving ? "you own" : "they own"}:{" "}
+            {preview.error}
+          </Alert>
+        )}
+      </Stack>
     );
   }
 
@@ -88,7 +95,7 @@ export default function RemoveMemberDialog({
       description={description}
       confirmLabel={leaving ? "Leave workspace" : "Remove"}
       tone="destructive"
-      confirmDisabled={agents.loading || owned.length > 0}
+      confirmDisabled={agents.loading || preview.loading || owned.length > 0}
       onConfirm={onRemove}
       onClose={onClose}
     />

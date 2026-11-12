@@ -67,9 +67,9 @@ export default function WorkspaceUsersPage() {
               canOpenOrganizationUsers={organizationAdmins(capabilities).allowed}
               onChanged={members.refetch}
               onSelfChanged={refresh}
-              // The session moved off this workspace when they left; a full
-              // load starts the dashboard again from wherever it now is.
-              onLeft={() => window.location.assign("/")}
+              // The session moved off this workspace when they left: read it
+              // again, and the page follows it to wherever it is now.
+              onLeft={refresh}
             />
           )
         )}

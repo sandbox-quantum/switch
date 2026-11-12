@@ -1,4 +1,4 @@
-import { Box, Chip, Link, Stack, Typography } from "@mui/material";
+import { Alert, Box, Chip, Link, Stack, Typography } from "@mui/material";
 import { useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router";
 import DataTable, { type TableColumn, TableEmptyState } from "../../components/DataTable";
@@ -6,6 +6,7 @@ import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu"
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { type Member, type TenantRole, removeMember, updateMemberRole } from "../../data/api";
 import ChangeRoleDialog from "./ChangeRoleDialog";
+import { removalNotice } from "./memberRemoval";
 import RemoveMemberDialog from "./RemoveMemberDialog";
 import { type RoleTone, roleOf } from "./roles";
 
@@ -46,8 +47,9 @@ interface Props {
   onChanged: () => Promise<void>;
   /** After stepping down: what this person may do here has changed. */
   onSelfChanged: () => Promise<void>;
-  /** After leaving: the session is on another workspace now, or none. */
-  onLeft: () => void;
+  /** After leaving: the session is on another workspace now, or none, and
+   * the page follows it. */
+  onLeft: () => Promise<void>;
 }
 
 /** The workspace's roster. What each row offers is the server's answer for
@@ -67,7 +69,11 @@ export default function UsersTable({
   onLeft,
 }: Props) {
   const [pending, setPending] = useState<Pending | null>(null);
-  const removerIsMember = members.some((m) => m.user_id === selfId && !m.via_organization);
+  // What the last removal handed over, and what it could not revoke, as the
+  // server reported them. Kept across leaving, when the page moves on to the
+  // workspace the session is on now.
+  const [notice, setNotice] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
 
   const columns = useMemo<TableColumn<MemberRow>[]>(() => {
     const present = new Set(members.map((m) => roleOf(m).label));
@@ -196,9 +202,11 @@ export default function UsersTable({
   };
 
   const remove = async (member: Member) => {
-    await removeMember(tenantId, member.user_id);
+    const result = await removeMember(tenantId, member.user_id);
+    setNotice(removalNotice(member, result, selfId));
+    setWarning(result.warning);
     if (member.user_id === selfId) {
-      onLeft();
+      await onLeft();
       return;
     }
     await onChanged();
@@ -207,7 +215,17 @@ export default function UsersTable({
   const close = () => setPending(null);
 
   return (
-    <>
+    <Stack spacing={1.5}>
+      {notice !== null && (
+        <Alert severity="info" onClose={() => setNotice(null)}>
+          {notice}
+        </Alert>
+      )}
+      {warning !== null && (
+        <Alert severity="warning" onClose={() => setWarning(null)}>
+          {warning}
+        </Alert>
+      )}
       <DataTable
         rows={members.map((m) => ({ ...m, id: m.user_id }))}
         columns={columns}
@@ -238,14 +256,14 @@ export default function UsersTable({
       )}
       {pending?.kind === "remove" && (
         <RemoveMemberDialog
+          tenantId={tenantId}
           member={pending.member}
           workspaceName={workspaceName}
-          leaving={pending.member.user_id === selfId}
-          removerIsMember={removerIsMember}
+          selfId={selfId}
           onRemove={() => remove(pending.member)}
           onClose={close}
         />
       )}
-    </>
+    </Stack>
   );
 }

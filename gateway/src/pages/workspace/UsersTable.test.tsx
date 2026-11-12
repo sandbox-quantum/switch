@@ -262,58 +262,114 @@ describe("UsersTable", () => {
     expect(remove.disabled).toBe(true);
   });
 
-  it("removes someone who owns no agents, saying what goes with them", async () => {
-    const fetchMock = stubFetch((url, init) =>
-      url.endsWith("/agents")
-        ? new Response("[]")
-        : init?.method === "DELETE"
-          ? new Response(JSON.stringify({ ok: true, warning: null }))
-          : new Response("{}"),
-    );
+  /** Answers the agents list, the removal preview and the removal itself. */
+  function stubRemoval({
+    heir,
+    warning = null,
+    handed = {},
+  }: {
+    heir: { user_id: string; name: string; email: string } | null;
+    warning?: string | null;
+    handed?: Record<string, number>;
+  }) {
+    return stubFetch((url, init) => {
+      if (url.endsWith("/agents")) return new Response("[]");
+      if (url.endsWith("/removal")) return new Response(JSON.stringify({ handed_over_to: heir }));
+      if (init?.method === "DELETE")
+        return new Response(
+          JSON.stringify({ ok: true, warning, handed_over_to: heir, handed_over: handed }),
+        );
+      return new Response("{}");
+    });
+  }
+
+  const ANN = { user_id: "ann", name: "Ann", email: "ann@example.com" };
+
+  it("names who receives what a removed person owns, then says what passed", async () => {
+    const fetchMock = stubRemoval({ heir: { user_id: "me", name: "Me", email: "me@example.com" }, handed: { room: 2, template: 1 } });
     const { onChanged, onLeft } = renderTable([ME, BOB]);
 
     fireEvent.click(within(openMenu("Bob")).getByText("Remove from workspace"));
     const dialog = screen.getByRole("dialog");
-    expect(await within(dialog).findByText(/pass to you/)).toBeTruthy();
+    expect(await within(dialog).findByText(/passes to you\. Chats stay as they are/)).toBeTruthy();
+    expect(calls(fetchMock, "GET").some(([url]) => url.includes("/tenants/t1/members/bob/removal"))).toBe(true);
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     const [[url]] = calls(fetchMock, "DELETE");
     expect(url).toContain("/tenants/t1/members/bob");
     expect(onLeft).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText("Removed Bob. What they owned there passed to you: 2 rooms, 1 template."),
+    ).toBeTruthy();
   });
 
-  it("hands what a removed person owns to another admin when you aren't a member", async () => {
-    stubFetch(() => new Response("[]"));
-    // An organization admin with no membership here.
-    renderTable([{ ...ORG_ADMIN, user_id: "me", name: "Me" }, BOB]);
+  it("names another admin when the server would hand things to them", async () => {
+    stubRemoval({ heir: ANN });
+    renderTable([ME, BOB]);
 
     fireEvent.click(within(openMenu("Bob")).getByText("Remove from workspace"));
 
     expect(
-      await within(screen.getByRole("dialog")).findByText(/pass to another admin of the workspace/),
+      await within(screen.getByRole("dialog")).findByText(/passes to Ann \(ann@example\.com\)/),
     ).toBeTruthy();
   });
 
-  it("leaves the workspace from your own row, then follows the session", async () => {
-    stubFetch((url, init) =>
-      url.endsWith("/agents")
-        ? new Response("[]")
-        : init?.method === "DELETE"
-          ? new Response(JSON.stringify({ ok: true, warning: null }))
-          : new Response("{}"),
+  it("says what they own stays theirs when there is no other admin", async () => {
+    stubRemoval({ heir: null });
+    renderTable([ME, BOB]);
+
+    fireEvent.click(within(openMenu("Bob")).getByText("Remove from workspace"));
+
+    expect(
+      await within(screen.getByRole("dialog")).findByText(/no other admin, so what they own here stays theirs/),
+    ).toBeTruthy();
+  });
+
+  it("shows the sign-ins the removal could not revoke", async () => {
+    stubRemoval({ heir: ANN, warning: "Could not revoke the GitHub sign-in; revoke it at GitHub." });
+    const { onChanged } = renderTable([ME, BOB]);
+
+    fireEvent.click(within(openMenu("Bob")).getByText("Remove from workspace"));
+    const dialog = screen.getByRole("dialog");
+    await within(dialog).findByText(/passes to Ann/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(await screen.findByText(/Could not revoke the GitHub sign-in/)).toBeTruthy();
+    expect(screen.getByText("Removed Bob. Nothing they owned there changed hands.")).toBeTruthy();
+  });
+
+  it("still lets you remove when the preview can't be read, saying so", async () => {
+    stubFetch((url) =>
+      url.endsWith("/removal")
+        ? new Response(JSON.stringify({ detail: "Boom" }), { status: 500 })
+        : new Response("[]"),
     );
+    renderTable([ME, BOB]);
+
+    fireEvent.click(within(openMenu("Bob")).getByText("Remove from workspace"));
+    const dialog = screen.getByRole("dialog");
+
+    expect(await within(dialog).findByText(/Couldn't check who would receive what they own/)).toBeTruthy();
+    const remove = within(dialog).getByRole("button", { name: "Remove" }) as HTMLButtonElement;
+    expect(remove.disabled).toBe(false);
+  });
+
+  it("leaves the workspace from your own row, then follows the session", async () => {
+    stubRemoval({ heir: ANN });
     const { onChanged, onLeft } = renderTable([ME, { ...BOB, role: "admin" }]);
 
     fireEvent.click(within(openMenu("Me")).getByText("Leave workspace"));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("Leave Acme?")).toBeTruthy();
-    expect(await within(dialog).findByText(/You lose access to Acme at once/)).toBeTruthy();
-    // Even though you are a member: you can't take over what you yourself own.
-    expect(within(dialog).getByText(/pass to another admin of the workspace/)).toBeTruthy();
+    expect(
+      await within(dialog).findByText(/You will lose access to this workspace.*passes to Ann/),
+    ).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Leave workspace" }));
 
     await waitFor(() => expect(onLeft).toHaveBeenCalled());
     expect(onChanged).not.toHaveBeenCalled();
+    expect(await screen.findByText(/^You left the workspace\./)).toBeTruthy();
   });
 });
