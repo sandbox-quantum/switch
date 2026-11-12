@@ -51,7 +51,7 @@ export default function GuardrailPolicyCard({
                 </IconButton>
               </Tooltip>
             </Stack>
-            <Typography variant="body2" color="text.secondary" role="status" sx={{ minHeight: "1.43em" }}>
+            <Typography variant="caption" color="text.secondary" role="status" sx={{ display: "block" }}>
               {copied === "yes"
                 ? "Copied the policy ID."
                 : copied === "refused"
@@ -61,10 +61,11 @@ export default function GuardrailPolicyCard({
           </Box>
           {actions}
         </Stack>
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          Every message is checked against it.
-          {policyUrl && " Its detectors for user and assistant messages are on Switch Trust."}
-        </Typography>
+        {policyUrl && (
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            Its detectors for user and assistant messages are listed on Switch Trust.
+          </Typography>
+        )}
       </CardContent>
       {policyUrl && (
         <CardActions sx={{ borderTop: "1px solid var(--sw-border)", px: 2 }}>
