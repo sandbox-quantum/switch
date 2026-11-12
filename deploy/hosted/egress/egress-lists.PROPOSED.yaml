@@ -1,0 +1,236 @@
+# PROPOSED, not applied. Per-box internet allow-lists.
+# Reviewed before use, and applied step by step
+# in an agreed window.
+#
+# Placeholders: __SQUID_IMAGE__ (today's pinned squid image, unchanged), __RELOAD_SHA256__ (the full sha256 of
+# squid-reload.sh, checked by the apply script before it builds the ConfigMap from the file).
+#
+# What changes, in full:
+#   1. Two empty objects squid reads, written only by the generator: ConfigMap squid-boxes, Secret squid-passwd.
+#   2. The generator's rights, under its own service account, egress-lists/egress-lists (not the box
+#      scaler's, so only the generator's token can read proxy passwords and squid's hashes):
+#        egress-proxy:     get, patch on configmaps/squid-boxes and secrets/squid-passwd, by name.
+#        each box namespace: get, patch on secrets/switch-proxy-login, by name (render-user adds this Role per box,
+#                            beside the scaler's existing one, and creates the Secret empty).
+#        switch-node-gate:  get, patch on secrets/switch-proxy-login, by name: the gate's own login (gate-check),
+#                            whose list is only the hosts its proxy check must reach.
+#      Never a list, a create, any other object, or squid's pods (no pods/exec).
+#   3. squid.conf: basic auth from the hashes, the per-box include, and (roll-out step 1 only) a legacy rule.
+#   4. The squid Deployment: the reload watcher as its entrypoint, and the two new folders mounted whole.
+#   5. The box template and render-user: see the end of this file.
+#
+# Roll-out (each step a separate apply, with a live check after it):
+#   step 1: everything below, with the LEGACY line in squid.conf. No box loses anything.
+#   step 2: remove the LEGACY line. Generator default parts "github" (SWITCH_EGRESS_DEFAULT_PARTS=github).
+#   step 3: generator default parts "" (new boxes get base only).
+#   Rollback at any step: put the LEGACY line back; the watcher reloads within a minute.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: egress-lists
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: egress-lists
+  namespace: egress-lists
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: squid-boxes
+  namespace: egress-proxy
+data: {}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: squid-passwd
+  namespace: egress-proxy
+type: Opaque
+data:
+  passwd: ""
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-egress-lists
+  namespace: egress-proxy
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["squid-boxes"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["squid-passwd"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-egress-lists
+  namespace: egress-proxy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-egress-lists
+subjects:
+  - kind: ServiceAccount
+    name: egress-lists
+    namespace: egress-lists
+---
+# The per-box Role, rendered by render-user into each agents-user-<x> namespace (as the enrol-code Role is).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-proxy-login
+  namespace: agents-__USER__
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["switch-proxy-login"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-proxy-login
+  namespace: agents-__USER__
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-proxy-login
+subjects:
+  - kind: ServiceAccount
+    name: egress-lists
+    namespace: egress-lists
+---
+# The gate's own login: the same named Secret and Role, in the gate's namespace, created once by platform.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-proxy-login
+  namespace: switch-node-gate
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["switch-proxy-login"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-proxy-login
+  namespace: switch-node-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-proxy-login
+subjects:
+  - kind: ServiceAccount
+    name: egress-lists
+    namespace: egress-lists
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: switch-proxy-login
+  namespace: switch-node-gate
+type: Opaque
+data: {}
+---
+# Created empty by render-user; the generator fills it. The box's pod waits (CreateContainerConfigError, retried by
+# the kubelet) until its login is there, then starts: a box never starts without its own login.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: switch-proxy-login
+  namespace: agents-__USER__
+type: Opaque
+data: {}
+---
+# squid.conf, replacing the http_access block of squid-conf (everything above it is unchanged: SSL_ports, CONNECT,
+# allowed, agents, private_dst). The basic_ncsa_auth path is the Ubuntu squid image's; platform confirms it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: squid-conf
+  namespace: egress-proxy
+data:
+  squid.conf.http_access-block: |
+    auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/passwd/passwd
+    auth_param basic realm switch-egress
+    # A removed or changed login stops working within 5 minutes; the hash check is cheap at our numbers.
+    auth_param basic credentialsttl 5 minutes
+    # The access log names the box for every host it visits: rotated daily by the watcher, three old files kept,
+    # on the proxy's emptyDir only, never sent anywhere.
+    logfile_rotate 3
+    acl has_login req_header Proxy-Authorization .
+    http_access deny private_dst
+    http_access deny !CONNECT
+    http_access deny CONNECT !SSL_ports
+    # LEGACY (roll-out step 1 only): today's shared list, for a box that sends no login yet. It comes before the
+    # per-box lines, because a proxy_auth ACL challenges (407) a request that has no login.
+    http_access allow CONNECT !has_login agents allowed
+    # Per box: generated by the hosted controller, one file per box.
+    include /etc/squid/boxes/*.conf
+    http_access deny all
+---
+# The squid Deployment's container and volumes, as a strategic-merge patch on today's Deployment.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: squid
+  namespace: egress-proxy
+spec:
+  template:
+    spec:
+      containers:
+        - name: squid
+          image: __SQUID_IMAGE__
+          command: ["/bin/sh", "/etc/squid/reload/squid-reload.sh"]
+          volumeMounts:
+            # Whole folders, never subPath, so updates appear in place (platform).
+            - {name: boxes, mountPath: /etc/squid/boxes, readOnly: true}
+            - {name: passwd, mountPath: /etc/squid/passwd, readOnly: true}
+            - {name: reload, mountPath: /etc/squid/reload, readOnly: true}
+      volumes:
+        - name: boxes
+          configMap: {name: squid-boxes}
+        - name: passwd
+          secret: {secretName: squid-passwd, defaultMode: 0440}
+        - name: reload
+          configMap: {name: squid-reload}  # from squid-reload.sh, checked against __RELOAD_SHA256__
+---
+# The box template (agents container), replacing today's four proxy variables. NO_PROXY is unchanged.
+#   - name: HTTPS_PROXY
+#     valueFrom: {secretKeyRef: {name: switch-proxy-login, key: https_proxy}}
+#   - name: https_proxy
+#     valueFrom: {secretKeyRef: {name: switch-proxy-login, key: https_proxy}}
+#   - name: HTTP_PROXY
+#     valueFrom: {secretKeyRef: {name: switch-proxy-login, key: https_proxy}}
+#   - name: http_proxy
+#     valueFrom: {secretKeyRef: {name: switch-proxy-login, key: https_proxy}}
+# A split box's controller container also gets, and only it (a variable read once and removed):
+#   - name: SWITCH_CONTROLLER_GATEWAY_PROXY
+#     valueFrom: {secretKeyRef: {name: switch-proxy-login, key: ctl_https_proxy}}
+#
+# render-user, per box: create the empty switch-proxy-login Secret and its Role and RoleBinding (above), and add
+# the box to the operator's egress file (0600, beside the box map) with its parts and whether it is split.
+# Before applying, it runs the template check on the rendered StatefulSet and refuses on any problem:
+#   kubectl create --dry-run=client -o json -f <rendered> > sts.json && switch-egress-check-template sts.json [--split]
+# It refuses envFrom or a volume of switch-proxy-login, any key but https_proxy outside the controller container,
+# and ctl_https_proxy anywhere on a box that isn't split.
+#
+# The operator's egress file also names the gate's hosts (the ALLOW-via-proxy hosts of its proxy check):
+#   {"_gate": {"hosts": ["registry.npmjs.org"]}, "agents-user-b": {"parts": ["github"]}}
+#
+# The gate (node-gate.PROPOSED.yaml) mounts its login and is told where it is:
+#   env:          - {name: SWITCH_NODE_GATE_PROXY_LOGIN, value: /proxy-login/https_proxy}
+#   volumeMounts: - {name: proxy-login, mountPath: /proxy-login, readOnly: true}
+#   volumes:      - {name: proxy-login, secret: {secretName: switch-proxy-login, items: [{key: https_proxy, path: https_proxy}], defaultMode: 0400}}
+# Only the gate's own Deployment mounts it; its check pods get the login only as the proxy check Job's env.

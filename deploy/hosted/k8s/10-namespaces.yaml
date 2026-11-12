@@ -1,0 +1,48 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosted-agents-test
+    kubernetes.io/metadata.name: switch-hosted
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+  name: switch-hosted
+spec:
+  finalizers:
+  - kubernetes
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: egress-proxy
+    pod-security.kubernetes.io/enforce: restricted
+  name: egress-proxy
+spec:
+  finalizers:
+  - kubernetes
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/part-of: hosted-agents-test
+    kubernetes.io/metadata.name: egress-lists
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+  name: egress-lists
+spec:
+  finalizers:
+  - kubernetes
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: switch-drain-room
+    pod-security.kubernetes.io/enforce: restricted
+  name: switch-drain-room
+spec:
+  finalizers:
+  - kubernetes

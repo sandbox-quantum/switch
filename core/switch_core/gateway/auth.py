@@ -966,6 +966,8 @@ def describe_session_state(
     tenants: list[TenantMembershipResponse],
     operator_entered: TenantMembershipResponse | None,
     tenants_isolated: bool,
+    *,
+    hosted_operator: bool | None = None,
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
 
@@ -1004,7 +1006,11 @@ def describe_session_state(
 
     return SessionStateResponse(
         user=SessionStateUser(
-            id=user.id, name=user.name, email=user.email, is_operator=is_operator
+            id=user.id,
+            name=user.name,
+            email=user.email,
+            is_operator=is_operator,
+            hosted_operator=hosted_operator,
         ),
         tenant=tenant,
         tenants=tenants,

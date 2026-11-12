@@ -53,6 +53,8 @@ from switch_core.gateway.dependencies import (
 )
 from switch_core.gateway.hosted_controller import router as controller_router
 from switch_core.gateway.hosted_machines import router as machines_router
+from switch_core.hosted_v2 import _config as hosted_v2_config
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.management.placement import placement_refusal
 from switch_core.observability.hosted import reconciler_watch
@@ -131,6 +133,8 @@ def _hosted_app(
         hosted_launch_capacity=1,
         hosted_agents_enabled=True,
         third_party_avatars_enabled=True,
+        # The v1/v2 switch as the test runs it, for the v2-only routes' gate.
+        hosted_box_provisioning=process_hosted_v2(),
     )
 
     async def session():
@@ -143,6 +147,7 @@ def _hosted_app(
     app.dependency_overrides[get_session] = session
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_config] = lambda: config
+    app.dependency_overrides[hosted_v2_config] = lambda: config
     app.dependency_overrides[get_current_user] = current_user
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://switch.example.test"
@@ -736,6 +741,7 @@ class TestControllerMachines:
                         desired_state=row.desired_state,
                         heartbeat=row.heartbeat,
                         heartbeat_at=row.heartbeat_at,
+                        backend=row.backend,
                     )
                 ],
                 datetime.now(UTC),
@@ -783,7 +789,8 @@ class TestControllerMachines:
                     "provisioning",
                     "running",
                 )
-                assert gauges(booting) == ({"vm": 0}, {"vm": 0})
+                kind = booting.backend
+                assert gauges(booting) == ({"vm": 0, "box": 0}, {"vm": 0, "box": 0})
 
                 # The reconciler sees it running at the new revision, then its
                 # controller's first report makes it ready.
@@ -795,7 +802,9 @@ class TestControllerMachines:
                 await report_status(client, controller, 1)  # type: ignore[arg-type]
                 ready = await _machine(harness.session_factory, machine.id)
                 assert ready.state == "ready"
-                assert gauges(ready) == ({"vm": 1}, {"vm": 1})
+                expected, reporting = gauges(ready)
+                assert expected[kind] == 1
+                assert reporting[kind] == 1
 
     async def test_a_login_problem_is_logged_once_when_it_first_shows(
         self,

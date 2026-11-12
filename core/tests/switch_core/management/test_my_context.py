@@ -268,6 +268,33 @@ async def test_it_says_who_it_works_for_and_where(
     assert context["server"]["kind"] == "self_hosted"
 
 
+async def test_it_shows_no_machines_where_agent_management_isnt_on(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Security (workspace gates v3): `get_my_context` reads machines through `management_port()`, which a workspace
+    off `management_tenant_ids` sees as off, so it shows none, as on a server without agent management."""
+    allowed: list[str] = [TENANT_ZERO_ID]
+    harness = build_harness(session_factory, workspace_allowed=lambda t: t in allowed)
+    protocol = harness.protocol
+    protocol.config = _config()  # type: ignore[assignment]
+    protocol.collab_lifecycle = _Lifecycle()  # type: ignore[assignment]
+    protocol.bridge_store = CollaborationBridgeStore()
+    protocol.external_user_store = ExternalUserStore()
+    protocol.install_service = _Installs()  # type: ignore[assignment]
+    previous = op_context._protocol
+    op_context.init_operations_protocol(protocol)
+    try:
+        buddy_id, key, _ = await _setup(harness)
+        async with harness.client() as client:
+            on = await _context(client, buddy_id, key)
+            allowed.clear()
+            off = await _context(client, buddy_id, key)
+    finally:
+        op_context._protocol = previous
+    assert on["machines"] is not None
+    assert off["machines"] is None
+
+
 async def test_it_says_how_messaging_apps_are_and_would_be_set_up(
     harness: Harness, client: httpx.AsyncClient
 ) -> None:

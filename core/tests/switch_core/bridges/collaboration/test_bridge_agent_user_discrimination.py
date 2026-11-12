@@ -9,6 +9,12 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
 )
 
+
+async def _not_handed_in(_msg: object) -> bool:
+    """No post is in its room yet: these tests are not about second copies."""
+    return False
+
+
 # CHOO-551: a bridged Switch agent must map to a single agent participant and
 # never spawn a duplicate "user" identity. The discriminator is "is this a
 # registered Switch agent" (by name) — so third-party bots and humans keep
@@ -68,6 +74,7 @@ def _fake_bridge(*, agents: set[str]) -> SimpleNamespace:
         _handle_text_answer=_no_text_answer,
         _repair_placeholder_username=_noop_repair,
         _is_registered_agent=_is_registered_agent,
+        _already_handed_in=_not_handed_in,
         _ensure_human_in_room=_ensure_human_in_room,
         _handle_agent_joined_channel=_handle_agent_joined_channel,
         _maybe_guide_self_mention=_maybe_guide_self_mention,

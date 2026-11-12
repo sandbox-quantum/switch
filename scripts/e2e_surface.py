@@ -15,8 +15,13 @@ so the surface it reads is a committed snapshot:
     controller's operator token (`operator-token`), or nothing (`none`). The
     gate requires each route that takes nothing to be listed with a reason;
   - the feature flags it is mounted behind, found by building the app with
-    each flag off in turn. The fast lane probes every `session` route whose
-    flags the deployment has on, and expects a 401 without a session.
+    each flag off in turn, plus `hosted_v2` for a route behind the hosted
+    agents v2 gate (`require_hosted_v2`, `require_hosted_v2_here`). Those
+    routes are always mounted, but with v2 off the gate answers 404, as a
+    route that doesn't exist, before any authentication; `/feature-flags`
+    lists `hosted_v2` only with v2 on. The fast lane probes every `session`
+    route whose flags the deployment has on, and expects a 401 without a
+    session.
 
 Every setting comes from this script, never from the environment, so a
 developer's `.env` (which `just` exports) cannot change what it writes.
@@ -58,6 +63,11 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.changes import get_socket_caller
 from switch_core.gateway.hosted_controller import controller_session
+from switch_core.hosted_v2 import (
+    HOSTED_V2_FLAG,
+    require_hosted_v2,
+    require_hosted_v2_here,
+)
 from switch_core.management.wiring import mount_gateway_routes
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -170,6 +180,19 @@ OPERATOR_TOKEN_DEPENDENCIES: frozenset[Callable[..., Any]] = frozenset(
     {controller_session}
 )
 
+# The hosted agents v2 gate, as core's route walk (`test_hosted_v2_route_walk`)
+# finds it. A route behind it is served only with v2 on, so it is listed as
+# mounted behind the `hosted_v2` flag.
+HOSTED_V2_GATES: frozenset[Callable[..., Any]] = frozenset(
+    {require_hosted_v2, require_hosted_v2_here}
+)
+
+
+def _behind_hosted_v2(route: Route | APIWebSocketRoute) -> bool:
+    if not isinstance(route, (APIRoute, APIWebSocketRoute)):
+        return False
+    return bool(set(_dependency_calls(route.dependant)) & HOSTED_V2_GATES)
+
 
 def _auth(route: Route | APIWebSocketRoute) -> str:
     if not isinstance(route, (APIRoute, APIWebSocketRoute)):
@@ -182,9 +205,9 @@ def _auth(route: Route | APIWebSocketRoute) -> str:
     return "none"
 
 
-def _routes_by_key(app: FastAPI) -> dict[str, str]:
-    """Each route's `METHOD /gateway/path`, and what it authenticates with."""
-    routes: dict[str, str] = {}
+def _routes_by_key(app: FastAPI) -> dict[str, Route | APIWebSocketRoute]:
+    """Each route by its `METHOD /gateway/path`."""
+    routes: dict[str, Route | APIWebSocketRoute] = {}
     for route in app.routes:
         if isinstance(route, APIWebSocketRoute):
             # `WS`, not a method: the socket is opened by an HTTP upgrade, and
@@ -192,7 +215,7 @@ def _routes_by_key(app: FastAPI) -> dict[str, str]:
             key = f"WS /gateway{route.path_format}"
             if key in routes:
                 raise ValueError(f"Gateway route {key} is mounted twice.")
-            routes[key] = _auth(route)
+            routes[key] = route
             continue
         if not isinstance(route, Route):
             raise TypeError(
@@ -207,7 +230,7 @@ def _routes_by_key(app: FastAPI) -> dict[str, str]:
             key = f"{method} /gateway{route.path_format}"
             if key in routes:
                 raise ValueError(f"Gateway route {key} is mounted twice.")
-            routes[key] = _auth(route)
+            routes[key] = route
     return routes
 
 
@@ -227,8 +250,11 @@ def gateway_routes() -> list[dict[str, Any]]:
         for key in routes:
             if key not in without:
                 gated_by[key].append(flag)
+    for key, route in routes.items():
+        if _behind_hosted_v2(route):
+            gated_by[key].append(HOSTED_V2_FLAG)
     return [
-        {"route": key, "auth": routes[key], "flags": gated_by[key]}
+        {"route": key, "auth": _auth(routes[key]), "flags": sorted(gated_by[key])}
         for key in sorted(routes)
     ]
 

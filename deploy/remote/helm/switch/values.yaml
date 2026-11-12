@@ -231,6 +231,44 @@ switchCore:
   hostedLaunchCapacity: 0
   hostedDiskRetentionDays: 7
   hostedIdleStopMinutes: 30
+  # Hosted agents v2 (HOSTED_BOX_PROVISIONING): each person gets a box on a
+  # shared cluster instead of a cloud machine of their own. false is v1,
+  # exactly as before. switch-core reads it once at start-up, so switching
+  # between v1 and v2 is this value plus a rollout, with no code change.
+  # true needs hostedControllerSecret, hostedLaunchCapacity above 0, and the
+  # "hosted_agents" and "agent_management" feature flags (the chart refuses
+  # to render without them). The box side (gVisor nodes, the box provisioner
+  # and controller) is set up in the cluster separately: deploy/hosted/k8s.
+  # Only true (a real true, or the string "true") turns it on; anything else is off.
+  hostedBoxProvisioning: false
+  # v2 only. How many boxes switch-core asks for per minute (1-60), and how
+  # many may exist at once (1-10000). Empty uses switch-core's defaults (5
+  # and 50).
+  hostedProvisionsPerMinute: ""
+  hostedBoxCeiling: ""
+  # v2's Hosted area for Switch operators. Each is an existing Secret,
+  # mounted as a single file (subPath, mode 0400), because switch-core
+  # refuses a key or operator list that is a link or that anyone else can
+  # read. A subPath mount doesn't pick up changes to the Secret: restart
+  # switch-core after changing either.
+  # Secret with keyed-id.key: the key that turns ids into the keyed ids the
+  # Hosted area shows (VISIBILITY_KEYED_ID_KEY_PATH). Without it the Hosted
+  # area's pages say they're unavailable.
+  visibilityKeyedIdKeySecret: ""
+  # The key's version, prefixed to every keyed id ("k1", "k2", ...). Empty
+  # uses switch-core's default, k1. Change it when the key changes.
+  visibilityKeyedIdKeyVersion: ""
+  # Secret with operators.json, {"operators": [user ids]}: who is a Switch
+  # operator (VISIBILITY_OPERATORS_PATH). Without it nobody is.
+  visibilityOperatorsSecret: ""
+  # Extra environment variables for the switch-core container, rendered after
+  # the chart's own: a list of {name, value} or {name, valueFrom}, as in a pod
+  # spec. For a setting this chart has no value for. Never put a secret in
+  # `value`: it lands in the pod spec, readable by anyone who can read the
+  # Deployment. Use `valueFrom.secretKeyRef` instead. The hosted agents v2
+  # settings above (HOSTED_BOX_PROVISIONING, HOSTED_PROVISIONS_PER_MINUTE,
+  # HOSTED_BOX_CEILING, VISIBILITY_*) are refused here: use their values.
+  extraEnv: []
   image: switch-core:latest
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
@@ -510,7 +548,8 @@ switchCore:
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
   # hosted_agents, service_connections, agent_chats, follow_the_conversation,
   # switch_buddy, buddy_slack_handoff, decision_routing, gateway_v2
-  # (development and staging only until the new dashboard layout is finished).
+  # (development and staging only until the new dashboard layout is finished),
+  # hosted_awake_budgets and hosted_cloud_files (hosted agents v2).
   featureFlags:
     enabled: []
   # Catalog services turned off on this server, each with the reason people

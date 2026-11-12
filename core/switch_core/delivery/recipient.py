@@ -22,10 +22,11 @@ import asyncio
 import logging
 import random
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from sqlalchemy import select
 
@@ -69,7 +70,13 @@ from switch_core.clients.mentions import (
     strip_emphasis as _strip_emphasis,
 )
 from switch_core.clients.room_meta import RoomMeta
-from switch_core.db.models import Agent, CloudMachine, TenantMember
+from switch_core.db.models import (
+    Agent,
+    AgentController,
+    CloudMachine,
+    MachineWorkspace,
+    TenantMember,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.standing import organization_admin_of
 from switch_core.db.stores.hosted_machine_store import owner_stopped
@@ -84,8 +91,12 @@ from switch_core.delivery.conversation import ConversationRoute
 from switch_core.events import (
     CommandEvent,
 )
-from switch_core.gateway.cloud_controllers import wake_controller_machine
+from switch_core.gateway.cloud_controllers import (
+    wake_controller_machine,
+    wake_lifted_machine,
+)
 from switch_core.gateway.known_agents import known_agent_for
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.observability.catalogue import OBSERVER_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.observability.throttle import WarningThrottle
@@ -97,6 +108,9 @@ from switch_core.transport import (
     InboundMessage,
     RoomRef,
 )
+from switch_core.visibility.hosted_access import block_reason_in
+from switch_core.visibility.reason_codes import StopReason
+from switch_core.visibility.stop_reasons import room_line
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -390,6 +404,59 @@ def _owner_ref(owner_handle: str | None) -> str:
     return f"my owner (@{owner_handle})" if owner_handle else "my owner"
 
 
+# The process state a controller reports for an agent host it gave up on: down,
+# with the failure recorded, until a restart. Not "crashed", which is a host
+# found not running with no failure recorded, that the controller starts again
+# by itself (agent-controller status.ts). Core does not import management
+# (test_import_boundary.py), so this is not management's FAILED_PROCESS_STATES.
+_HOST_DOWN_STATES = frozenset({"failed"})
+
+
+def _host_failure_reason(entry: dict[str, Any] | None) -> str | None:
+    """The `reason` of an agent's status entry when it reports its agent host
+    failed; None for any other process state (crashed included), or no entry."""
+    if entry is None or entry.get("process") not in _HOST_DOWN_STATES:
+        return None
+    return str(entry.get("reason") or "internal")
+
+
+def _agent_entry(
+    controller: AgentController | None, agent_id: str
+) -> dict[str, Any] | None:
+    """The agent's entry in its controller's last stored status report."""
+    agents = (controller.status or {}).get("agents") if controller is not None else None
+    for entry in agents if isinstance(agents, list) else []:
+        if isinstance(entry, dict) and entry.get("agent_id") == agent_id:
+            return entry
+    return None
+
+
+def _host_gave_up_message(owner_handle: str | None, reason: str) -> str:
+    """A managed agent whose controller is online but reports its agent host
+    failed, so nothing will take the message.
+
+    `internal` is the host that kept failing and was left down: only a restart
+    brings it back, which turning the agent off and on again in Console does.
+    The message stays queued and is answered once the host is back, so the
+    reply says so rather than telling the person to give up.
+    Any other failure (a refused credential, a definition the machine can't
+    run) is for the owner to look at, so the reply names no cure.
+    """
+    owner = f"My owner (@{owner_handle})" if owner_handle else "My owner"
+    if reason == "internal":
+        return (
+            "I can't reply right now. I stopped after failing to start several "
+            f"times. {owner} can restart me from Your Agents in Switch Console. "
+            "I've kept your message, so there's no need to send it again. I'll "
+            "answer when I'm back."
+        )
+    return (
+        "I can't reply right now. I'm not running on my machine. "
+        f"{owner} can see why in Your Agents in Switch Console. I've kept your "
+        "message, so there's no need to send it again. I'll answer when I'm back."
+    )
+
+
 def _machine_offline_message(machine: str, owner_handle: str | None) -> str:
     """A managed agent whose controller's stream is down: Core restarted, the
     machine lost its network, or it is switched off."""
@@ -408,6 +475,10 @@ class CloudMachineState:
     state: str
     revision: int
     owner_stopped: bool
+    #: Whether the machine is meant to run now: woken by this message, or already up.
+    starting: bool = False
+    #: A v2 box (`backend` "box"), not a v1 machine.
+    box: bool = False
 
     @classmethod
     def of(cls, machine: CloudMachine) -> CloudMachineState:
@@ -415,6 +486,8 @@ class CloudMachineState:
             state=machine.state,
             revision=machine.revision,
             owner_stopped=owner_stopped(machine),
+            starting=machine.desired_state == "running",
+            box=machine.backend == "box",
         )
 
 
@@ -425,6 +498,57 @@ def _cloud_machine_waking_message(machine: str) -> str:
         f"My device, **{machine}**, was asleep and is starting now. I'll pick "
         "this up as soon as it's back, usually within a few minutes."
     )
+
+
+def _waking_notice_once(
+    notices: set[tuple[str, int]],
+    meta: RoomMeta,
+    machine: CloudMachineState,
+    controller_name: str,
+) -> str | None:
+    """The waking line, once per room for each start: the next messages just
+    wait with it. A function on the recipient's notice set, not a method, so
+    the reply path with hosted agents v2 off calls nothing on the recipient
+    that it didn't before v2."""
+    notice = (meta.room_id, machine.revision)
+    if notice in notices:
+        return None
+    notices.add(notice)
+    return _cloud_machine_waking_message(controller_name)
+
+
+#: An operator's pause and an admin's turn-off: the agreed room
+#: lines, posted at most once per room per
+#: hour in each process, and the message isn't kept.
+HOSTED_BLOCK_NOTICE_SECONDS = 3600.0
+_hosted_block_notices: dict[tuple[str, str], float] = {}
+_HOSTED_BLOCK_NOTICES_MAX = 10_000
+
+
+def _hosted_block_message(code: str, owner_handle: str | None) -> str:
+    owner = f"my owner ({owner_handle})" if owner_handle else "my owner"
+    if code == "paused_by_switch":
+        return (
+            f"Switch has paused hosted agents for {owner}, so I can't answer. "
+            "This message won't be answered later. Contact your workspace admin."
+        )
+    return (
+        f"Hosted agents are turned off for {owner}, so I can't answer. This "
+        "message won't be answered later. Ask your workspace admin to turn them "
+        "back on."
+    )
+
+
+def _hosted_block_notice_due(room_id: str, code: str) -> bool:
+    """Whether this room is due the line again: at most once an hour."""
+    now = time.monotonic()
+    last = _hosted_block_notices.get((room_id, code))
+    if last is not None and now - last < HOSTED_BLOCK_NOTICE_SECONDS:
+        return False
+    if len(_hosted_block_notices) >= _HOSTED_BLOCK_NOTICES_MAX:
+        _hosted_block_notices.clear()
+    _hosted_block_notices[(room_id, code)] = now
+    return True
 
 
 def _cloud_machine_stopped_message(machine: str, owner_handle: str | None) -> str:
@@ -821,12 +945,13 @@ class AgentRecipient:
         asleep, as a mention would, without the notice a mention posts."""
         controllers = self._connections.controllers
         binding = controllers.binding(self.agent.id)
-        if (
-            binding is None
-            or not binding.running
-            or controllers.is_revoked(binding.controller_id)
-            or controllers.is_live(self.agent.id)
-        ):
+        if binding is None or not binding.running or controllers.is_live(self.agent.id):
+            return
+        if controllers.is_revoked(binding.controller_id):
+            # Only a lifted pause or turn-off wakes it (`_controller_unavailable_reply`).
+            # With hosted agents v2 off, as before v2: nothing.
+            if process_hosted_v2():
+                await self._wake_lifted_box(binding.controller_id)
             return
         await self._wake_cloud_machine(binding.controller_id)
 
@@ -867,6 +992,16 @@ class AgentRecipient:
                     unavailable = await self._reply_when_unavailable_here(
                         session, agent, meta, self._sender_handle(event)
                     )
+            elif process_hosted_v2() and self._connections.controllers.is_bound(
+                self.agent.id
+            ):
+                # Connected is not the same as able to answer: the
+                # controller may have given up on this agent's host.
+                async with self.session_factory() as session:
+                    unavailable = await self._controller_host_failed_reply(
+                        session, agent, meta
+                    )
+                agent_live = unavailable is None
 
         if addressed:
             self._report_addressed(
@@ -1503,21 +1638,90 @@ class AgentRecipient:
         owner = await self.owner_handle_in(session, agent, meta.bridge_id)
         if not binding.running:
             return _stopped_owner_message(owner, asker_handle)
-        if controllers.is_revoked(binding.controller_id):
+        if controllers.is_revoked(binding.controller_id) and not process_hosted_v2():
+            # The v1/v2 switch: with v2 off, exactly as before v2.
             return _machine_removed_message(binding.controller_name, owner)
+        if controllers.is_revoked(binding.controller_id):
+            # A hosted box whose controller an operator's pause or an admin's
+            # turn-off revoked: once that's lifted, a message
+            # wakes the box, and it enrols again with a fresh one-time code as
+            # a new controller with a new key, which takes over the agents. The
+            # revoked controller stays revoked. Only that revoke counts
+            # (`wake_lifted_machine`, security): anything else revoked stays
+            # gone, and a block still in force refuses the wake.
+            machine = await self._wake_lifted_box(binding.controller_id)
+            if (
+                machine is None
+                or not machine.starting
+                or machine.state == "error"
+                or machine.owner_stopped
+            ):
+                return _machine_removed_message(binding.controller_name, owner)
+            return _waking_notice_once(
+                self._cloud_waking_notices, meta, machine, binding.controller_name
+            )
         if not controllers.is_live(self.agent.id):
             machine = await self._wake_cloud_machine(binding.controller_id)
-            if machine is None or machine.state == "error":
+            if not process_hosted_v2() and (
+                machine is None or machine.state == "error" or machine.box
+            ):
+                # The v1/v2 switch: with v2 off, as before v2. A v2 box stays
+                # stopped, so it reads as offline rather than waking.
                 return _machine_offline_message(binding.controller_name, owner)
+            if machine is None:
+                # An agent on its owner's own machine: named as today.
+                return _machine_offline_message(binding.controller_name, owner)
+            if machine.state == "error":
+                # A hosted box Switch can't reach: the agreed line, the same words the
+                # owner's Console shows for `cant_reach`.
+                # A v1 machine keeps upstream's offline line, whatever the switch says.
+                if not machine.box:
+                    return _machine_offline_message(binding.controller_name, owner)
+                return room_line(StopReason.CANT_REACH, owner)
             if machine.owner_stopped:
                 return _cloud_machine_stopped_message(binding.controller_name, owner)
-            # Once per room for each start: the next messages just wait with it.
-            notice = (meta.room_id, machine.revision)
-            if notice in self._cloud_waking_notices:
-                return None
-            self._cloud_waking_notices.add(notice)
-            return _cloud_machine_waking_message(binding.controller_name)
+            return _waking_notice_once(
+                self._cloud_waking_notices, meta, machine, binding.controller_name
+            )
         return None
+
+    async def _controller_host_failed_reply(
+        self, session: AsyncSession, agent: Agent, meta: RoomMeta
+    ) -> str | None:
+        """For an agent run by a connected controller (one `_is_available`
+        counts as live): why it can't answer when its controller reports it
+        gave up on the agent's host, which nothing else would tell the room.
+        None while the host is not reported failed."""
+        binding = self._connections.controllers.binding(self.agent.id)
+        if binding is None:
+            return None
+        failure = await self._agent_host_failure(binding.controller_id)
+        if failure is None:
+            return None
+        owner = await self.owner_handle_in(session, agent, meta.bridge_id)
+        return _host_gave_up_message(owner, failure)
+
+    async def _agent_host_failure(self, controller_id: str) -> str | None:
+        """Why this agent's controller last reported its agent host failed (the
+        reported `reason`), or None while it reports it anything else, has not
+        reported it, or could not be read. Reads only this agent's entry in
+        its own controller's report."""
+        try:
+            async with (
+                asyncio.timeout(5),
+                tenant_session(self.session_factory, self.tenant_id) as session,
+            ):
+                controller = await session.get(AgentController, controller_id)
+                entry = _agent_entry(controller, self.agent.id)
+        except Exception:
+            logger.warning(
+                "Could not read the status of agent %s from controller %s",
+                self.agent.id,
+                controller_id,
+                exc_info=True,
+            )
+            return None
+        return _host_failure_reason(entry)
 
     async def _wake_cloud_machine(self, controller_id: str) -> CloudMachineState | None:
         """Starts the Switch cloud machine running `controller_id` if it is
@@ -1537,6 +1741,29 @@ class AgentRecipient:
         except Exception:
             logger.warning(
                 "Could not wake the cloud machine of controller %s",
+                controller_id,
+                exc_info=True,
+            )
+            return None
+
+    async def _wake_lifted_box(self, controller_id: str) -> CloudMachineState | None:
+        """`_wake_cloud_machine` for a revoked controller: the hosted box wakes
+        only when a pause or turn-off revoked it and has been lifted
+        (`wake_lifted_machine`); None otherwise."""
+        try:
+            async with (
+                asyncio.timeout(5),
+                tenant_session(self.session_factory, self.tenant_id) as session,
+            ):
+                machine = await wake_lifted_machine(
+                    session, controller_id, datetime.now(UTC)
+                )
+                state = None if machine is None else CloudMachineState.of(machine)
+                await session.commit()
+                return state
+        except Exception:
+            logger.warning(
+                "Could not wake the cloud machine of revoked controller %s",
                 controller_id,
                 exc_info=True,
             )
@@ -1764,6 +1991,21 @@ class AgentRecipient:
         common case: only messages that already tag this agent are ever
         checked, and open policies short-circuit.
         """
+        # Paused, or turned off in this workspace: the message
+        # isn't kept for later, and the room is told at most once an hour.
+        # With hosted agents v2 off, as before v2: no such check.
+        blocked = (
+            await self._hosted_block(session, agent) if process_hosted_v2() else None
+        )
+        if blocked is not None:
+            if self._triggered_by_auto_reply(event) or not _hosted_block_notice_due(
+                meta.room_id, blocked
+            ):
+                return _GateOutcome(addressed=False, refusal=None)
+            owner = await self.owner_handle_in(session, agent, meta.bridge_id)
+            return _GateOutcome(
+                addressed=False, refusal=_hosted_block_message(blocked, owner)
+            )
         decision = await self._addressing_allowed(
             session, agent, event.sender, meta.room_id, event.content
         )
@@ -1775,12 +2017,66 @@ class AgentRecipient:
             except BudgetExceeded as exc:
                 refusal = str(exc)
             else:
-                return _GateOutcome(addressed=True, refusal=None)
+                capped = (
+                    await self._daily_cap_refusal(session, agent, meta)
+                    if process_hosted_v2()
+                    else None
+                )
+                if capped is None:
+                    return _GateOutcome(addressed=True, refusal=None)
+                refusal = capped
         else:
             refusal = decision.refusal
         if self._triggered_by_auto_reply(event):
             return _GateOutcome(addressed=False, refusal=None)
         return _GateOutcome(addressed=False, refusal=refusal)
+
+    async def _daily_cap_refusal(
+        self, session: AsyncSession, agent: Agent, meta: RoomMeta
+    ) -> str | None:
+        """The cap line while this agent's box reports its daily AI limit used up, or None.
+
+        As with a budget, Core refuses the message rather than
+        letting the agent start a turn its gateway would refuse, so no provider error reaches
+        the room. It reads only this agent's own controller's last report, and a report it
+        can't read never blocks a message.
+
+        A courtesy, not the limit: the box's gateway is what enforces the cap. The
+        report comes from the box itself, so a box that over-reports only stops its own owner's
+        messages, and one that under-reports still has every call refused at its gateway."""
+        binding = self._connections.controllers.binding(self.agent.id)
+        if binding is None:
+            return None
+        controller = await session.get(AgentController, binding.controller_id)
+        status = (controller.status or {}) if controller is not None else {}
+        machine = status.get("machine") if isinstance(status, dict) else None
+        if not isinstance(machine, dict) or machine.get("gateway_capped") is not True:
+            return None
+        owner = await self.owner_handle_in(session, agent, meta.bridge_id)
+        # The gateway counts calls per UTC day, so the cap resets at the next 00:00 UTC.
+        return room_line(StopReason.DAILY_CAP_REACHED, owner)
+
+    async def _hosted_block(self, session: AsyncSession, agent: Agent) -> str | None:
+        """The pause or turn-off code blocking this agent, for an agent run on a Switch cloud
+        box; None for any other agent, and when nothing blocks it. An agent on
+        its owner's own computer is never affected by a hosted pause."""
+        binding = self._connections.controllers.binding(self.agent.id)
+        if binding is None:
+            return None
+        # Read without the machine lock: this runs for every addressed message.
+        owner_id = await session.scalar(
+            select(CloudMachine.owner_id)
+            .join(MachineWorkspace, MachineWorkspace.machine_id == CloudMachine.id)
+            .where(
+                MachineWorkspace.tenant_id == self.tenant_id,
+                MachineWorkspace.controller_id == binding.controller_id,
+                CloudMachine.state != "deleted",
+            )
+        )
+        if owner_id is None:
+            return None
+        blocked = await block_reason_in(session, owner_id, self.tenant_id)
+        return None if blocked is None else blocked.value
 
     @staticmethod
     def _triggered_by_auto_reply(event: InboundMessage) -> bool:

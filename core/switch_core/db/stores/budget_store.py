@@ -13,11 +13,18 @@ from sqlalchemy import (
     func,
     or_,
     select,
+    update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from switch_core.db.models import Agent, TenantUsage, UsageBudget, UsageMetric
+from switch_core.db.models import (
+    Agent,
+    AgentController,
+    TenantUsage,
+    UsageBudget,
+    UsageMetric,
+)
 
 
 @dataclass(frozen=True)
@@ -219,3 +226,38 @@ class BudgetStore:
         )
         if result.rowcount == 0:  # type: ignore[attr-defined]
             raise BudgetNotFound(budget_id)
+
+
+async def hosted_daily_cap(session: AsyncSession, tenant_id: str) -> int | None:
+    """The workspace's hosted daily AI cap, or None with none
+    set. The gateway enforces it; Core only hands it to the controllers."""
+    limit = await session.scalar(
+        select(UsageBudget.amount_limit).where(
+            UsageBudget.tenant_id == tenant_id,
+            UsageBudget.metric == UsageMetric.HOSTED_AI_CALLS.value,
+            UsageBudget.agent_id.is_(None),
+        )
+    )
+    return None if limit is None else int(limit)
+
+
+async def bump_hosted_controllers(
+    session: AsyncSession, tenant_id: str
+) -> dict[str, int]:
+    """Bump the assignment revision of this workspace's hosted controllers only,
+    in the caller's transaction, so each refetches its assignment and reads the
+    new daily cap. Returns controller id to new revision, for the nudge after
+    commit. Other workspaces' controllers and people's own computers are left
+    alone."""
+    rows = await session.execute(
+        update(AgentController)
+        .where(
+            AgentController.tenant_id == tenant_id,
+            AgentController.kind == "ec2",
+            AgentController.revoked_at.is_(None),
+        )
+        .values(assignment_revision=AgentController.assignment_revision + 1)
+        .returning(AgentController.id, AgentController.assignment_revision)
+        .execution_options(synchronize_session=False)
+    )
+    return {controller_id: int(revision) for controller_id, revision in rows.all()}

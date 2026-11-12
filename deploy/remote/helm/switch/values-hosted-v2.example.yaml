@@ -1,0 +1,49 @@
+# Hosted agents v2: the values to turn it on, as an example. Once the box side of
+# the cluster is set up (deploy/hosted/DEPLOY.md), put them in the deployment's
+# own values, or layer a copy of this file over them with a second -f. Don't
+# commit a filled copy to this repo.
+#
+# Every name below is an example: use the deployment's own Secret names. The
+# Secrets are made by someone with access to the namespace this release runs
+# in; nothing here holds a secret value. To go back to v1, drain every box to
+# 0 first, then set hostedBoxProvisioning to false (or leave this file out) and
+# roll out.
+switchCore:
+  # The v1/v2 switch (HOSTED_BOX_PROVISIONING). Only true turns v2 on.
+  hostedBoxProvisioning: true
+
+  # Secret with controller.json: the hosted controller config. Its keys are
+  # allowed_tenant_ids (required: a list of workspace ids, or null for all),
+  # allowed_user_ids, management_tenant_ids, token, provisioner_token,
+  # operator_token (with operator_token_previous and
+  # operator_token_previous_until while rotating), and agent_api_endpoint.
+  # token, provisioner_token and operator_token are each 32+ random characters,
+  # all different, and equal to the three token Secrets in the cluster's
+  # switch-hosted namespace.
+  hostedControllerSecret: switch-hosted-controller
+
+  # How many boxes may be awake at once on this server. Above 0 for v2.
+  hostedLaunchCapacity: 20
+
+  # Optional. How many boxes switch-core asks for per minute, and how many may
+  # exist at once. The provisioner has its own ceiling (switch-box-operator-config,
+  # 20 as shipped); the lower one wins, so raise both together.
+  hostedProvisionsPerMinute: 5
+  hostedBoxCeiling: 50
+
+  # The Hosted area for Switch operators. Secret with keyed-id.key (random
+  # bytes, read only by switch-core), and Secret with operators.json:
+  # {"operators": ["<user id>", ...]}. Restart switch-core after changing either.
+  visibilityKeyedIdKeySecret: switch-visibility-key
+  visibilityOperatorsSecret: switch-visibility-operators
+
+  # Both flags are required with v2 on (the chart refuses to render without
+  # them). Keep any flags the deployment already has in this list too.
+  # hosted_awake_budgets is optional: leave it off until every box runs the
+  # split layout.
+  featureFlags:
+    enabled: ["agent_management", "hosted_agents"]
+
+# agent_management also needs the controller token secret: set
+# secrets.controllerTokenSecret (32+ random characters), or put
+# CONTROLLER_TOKEN_SECRET in secrets.existingSecret. Never commit its value.

@@ -34,7 +34,12 @@ ACCESS_TOKEN_LIFETIME = timedelta(hours=1)
 ENROLLMENT_CODE_LIFETIME = timedelta(minutes=10)
 # A Switch cloud machine's code is handed over before the machine boots, and
 # used once it has mounted its disk and installed its controller.
-MACHINE_ENROLLMENT_CODE_LIFETIME = timedelta(minutes=30)
+# 15 minutes: a used or expired code is dead wherever it sits.
+# A fresh one is minted for a box that starts after its code has expired.
+MACHINE_ENROLLMENT_CODE_LIFETIME = timedelta(minutes=15)
+# A v1 machine's code, and any with hosted agents v2 off: upstream's 30
+# minutes (the v1/v2 switch, sweep row 18).
+V1_MACHINE_ENROLLMENT_CODE_LIFETIME = timedelta(minutes=30)
 
 _REQUIRED_CLAIMS = ["cid", "tid", "oid", "iat", "exp", "aud"]
 

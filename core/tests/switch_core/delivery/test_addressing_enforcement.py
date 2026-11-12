@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
@@ -544,9 +546,13 @@ def _gate_client(  # type: ignore[no-untyped-def]
     allowed: bool,
     refusal: str = _ADDRESSING_DENIED_MESSAGE,
     budgets: list[BudgetStanding] | None = None,
+    cap_line: str | None = None,
 ):
     """Fake client for _gate_addressed and the auto-reply it hands back."""
     sent: list[dict] = []
+
+    async def _daily_cap_refusal(_session, _agent, _meta):  # type: ignore[no-untyped-def]
+        return cap_line
 
     async def _addressing_allowed(
         _session, _agent, _sender_user_id, _room_id, _content=None
@@ -559,11 +565,16 @@ def _gate_client(  # type: ignore[no-untyped-def]
     def _sender_handle(_event):  # type: ignore[no-untyped-def]
         return "human"
 
+    async def _hosted_block(_session, _agent):  # type: ignore[no-untyped-def]
+        return None  # not a paused or turned-off hosted agent
+
     client = SimpleNamespace(
         agent=SimpleNamespace(id="agent-1", name="fixer"),
+        _hosted_block=_hosted_block,
         tenant_id="tenant-1",
         _budget_guard=BudgetGuard(_FakeBudgetStore(budgets or [])),  # type: ignore[arg-type]
         _addressing_allowed=_addressing_allowed,
+        _daily_cap_refusal=_daily_cap_refusal,
         actor=SimpleNamespace(send_message=_send_message),
         _sender_handle=_sender_handle,
         _triggered_by_auto_reply=AgentRecipient._triggered_by_auto_reply,
@@ -657,6 +668,25 @@ class TestGateAddressed:
         outcome = await _gate(client, _event(auto_reply=True))
         assert outcome.addressed is False
         assert client.sent == []
+
+    @pytest.mark.usefixtures("hosted_v2_on")
+    async def test_a_capped_box_demotes_the_message_and_says_so_once(self) -> None:
+        # Like a budget, the agent never starts a turn its gateway would refuse.
+        line = "My owner (@ada) has reached today's AI limit, so I can't start on this."
+        client = _gate_client(allowed=True, cap_line=line)
+        outcome = await _gate(client, _event())
+        assert outcome.addressed is False
+        assert line in client.sent[0]["body"]
+        assert client.sent[0]["extra_content"] == {AUTO_REPLY_FLAG: True}
+        again = _gate_client(allowed=True, cap_line=line)
+        assert (await _gate(again, _event(auto_reply=True))).refusal is None
+
+    async def test_a_budget_is_said_before_the_cap(self) -> None:
+        client = _gate_client(
+            allowed=True, budgets=[_standing(spent=10)], cap_line="cap"
+        )
+        await _gate(client, _event())
+        assert "has reached its budget" in client.sent[0]["body"]
 
     async def test_a_denied_sender_hears_the_policy_not_the_budget(self) -> None:
         client = _gate_client(allowed=False, budgets=[_standing(spent=10)])
@@ -808,4 +838,65 @@ class TestCommandTargetsMeExplicitly:
                 client, None, "@manager", "room-1"
             )
             is True
+        )
+
+
+class TestDailyCapRefusal:
+    """`_daily_cap_refusal` reads only this agent's own controller's last report."""
+
+    @staticmethod
+    def _client(status: object, *, bound: bool = True):  # type: ignore[no-untyped-def]
+        from switch_core.db.models import AgentController
+
+        controller = AgentController(id="c1", status=status)
+
+        class Session:
+            async def get(self, _model, controller_id):  # type: ignore[no-untyped-def]
+                return controller if controller_id == "c1" else None
+
+        async def owner_handle_in(_session, _agent, _bridge_id):  # type: ignore[no-untyped-def]
+            return "ada"
+
+        controllers = SimpleNamespace(
+            binding=lambda _agent_id: (
+                SimpleNamespace(controller_id="c1") if bound else None
+            )
+        )
+        client = SimpleNamespace(
+            agent=SimpleNamespace(id="agent-1"),
+            _connections=SimpleNamespace(controllers=controllers),
+            owner_handle_in=owner_handle_in,
+        )
+        return client, Session()
+
+    async def _refusal(self, status: object, *, bound: bool = True):  # type: ignore[no-untyped-def]
+        client, session = self._client(status, bound=bound)
+        meta = SimpleNamespace(room_id="room-1", bridge_id="bridge-1")
+        return await AgentRecipient._daily_cap_refusal(
+            client, session, SimpleNamespace(id="agent-1"), meta
+        )
+
+    async def test_a_capped_box_gets_the_cap_line_with_its_owner_and_00_00_utc(
+        self,
+    ) -> None:
+        line = await self._refusal({"machine": {"gateway_capped": True}})
+        assert line == (
+            "My owner (@ada) has reached today's AI limit, so I can't start on this. "
+            "It resets at 00:00 UTC. Send it again after that."
+        )
+
+    async def test_anything_but_a_real_true_never_blocks(self) -> None:
+        for status in (
+            None,
+            {},
+            {"machine": {}},
+            {"machine": {"gateway_capped": False}},
+            {"machine": {"gateway_capped": "yes"}},
+            {"machine": "capped"},
+            [],
+        ):
+            assert await self._refusal(status) is None, status
+        assert (
+            await self._refusal({"machine": {"gateway_capped": True}}, bound=False)
+            is None
         )

@@ -80,6 +80,14 @@ SWITCH_BUDDY = "switch_buddy"
 # turning it on before the rollout finishes is not protected.
 GROUP_CHATS = "group_chats"
 
+# Awake-time budgets on hosted agents. Off until every hosted
+# box is split (v12.2's roll), because on an unsplit box the agents share the
+# controller's user and could under-report the awake time a budget sums.
+# Off, the budgets route refuses an
+# `awake_minutes` budget, `BudgetGuard` ignores any such row, and Console
+# doesn't offer one. Awake time is still counted and shown either way.
+HOSTED_AWAKE_BUDGETS = "hosted_awake_budgets"
+
 # switch-buddy's chat on a bridge: Console offers to move the buddy's welcome
 # to a private channel with the person on their team's chat app (a chat
 # created with `bridgeId`, resumed with `resumeOnly`). Like group chats, turn
@@ -87,6 +95,13 @@ GROUP_CHATS = "group_chats"
 # upgraded process refuses those requests while it is off, but an older one
 # ignores the fields and makes an internal chat instead.
 BUDDY_SLACK_HANDOFF = "buddy_slack_handoff"
+
+# Your cloud files: the owner lists, previews and downloads the files on their
+# own hosted box, read-only (`gateway/cloud_files.py`). Off by default. It needs
+# a single switch-core replica until a process-to-process relay exists: a file
+# request is served only by the process holding the box controller's socket,
+# and any other answers `503 files_elsewhere` for the client to retry.
+HOSTED_CLOUD_FILES = "hosted_cloud_files"
 
 # Connector apps per organization: a workspace signs in to GitHub and the
 # static OAuth services through the app its organization registered, where
@@ -125,6 +140,10 @@ def without_flag(flags: frozenset[str], flag: str) -> frozenset[str]:
 
 
 # Every flag the server recognises.
+# Flags only hosted agents v2 has, absent upstream: a list of flags leaves
+# them out with v2 off, so it is upstream's exactly.
+V2_ONLY_FLAGS: frozenset[str] = frozenset({HOSTED_AWAKE_BUDGETS, HOSTED_CLOUD_FILES})
+
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
         ECOSYSTEM_SHOW_OWNERS,
@@ -137,6 +156,8 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         AGENT_CHATS,
         SWITCH_BUDDY,
         GROUP_CHATS,
+        HOSTED_AWAKE_BUDGETS,
+        HOSTED_CLOUD_FILES,
         BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
         GATEWAY_V2,

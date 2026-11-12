@@ -235,14 +235,17 @@ class TemplateAgents:
         if not plans:
             return []
         if self._management is None:
+            # Imported here, not at the top: `operations/__init__` loads
+            # `agent_template_ops`, which needs this module's `agent_templates`
+            # caller to have finished loading (an import cycle otherwise).
+            from switch_core.bridges.agent.operations.agent_management import (
+                management_off_reason,
+            )
+
+            off_reason = management_off_reason()
             raise AgentsNotCreated(
                 [
-                    Problem(
-                        plan.slot,
-                        "agent_management_off",
-                        "agent management is not turned on here, "
-                        "so it cannot create agents on a device.",
-                    )
+                    Problem(plan.slot, "agent_management_off", off_reason)
                     for plan in plans
                 ]
             )

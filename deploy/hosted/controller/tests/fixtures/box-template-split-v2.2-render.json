@@ -1,0 +1,631 @@
+{
+  "apiVersion": "v1",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "annotations": {
+          "switch.dev/machine-id": "7a3e8f4c-1d2b-4c5e-9f60-718293a4b5c6"
+        },
+        "labels": {
+          "app.kubernetes.io/managed-by": "switch-hosted",
+          "app.kubernetes.io/part-of": "hosted-agents-test",
+          "pod-security.kubernetes.io/enforce": "restricted",
+          "pod-security.kubernetes.io/warn": "restricted",
+          "switch.dev/user": "user-k1-0123456789abcdef"
+        },
+        "name": "agents-user-k1-0123456789abcdef"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ResourceQuota",
+      "metadata": {
+        "name": "no-shared-services-priority",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      },
+      "spec": {
+        "hard": {
+          "pods": "0"
+        },
+        "scopeSelector": {
+          "matchExpressions": [
+            {
+              "operator": "In",
+              "scopeName": "PriorityClass",
+              "values": [
+                "switch-shared-services"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "automountServiceAccountToken": false,
+      "kind": "ServiceAccount",
+      "metadata": {
+        "name": "box",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "default-deny",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      },
+      "spec": {
+        "podSelector": {},
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "agent-egress",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      },
+      "spec": {
+        "egress": [
+          {
+            "ports": [
+              {
+                "port": 53,
+                "protocol": "UDP"
+              },
+              {
+                "port": 53,
+                "protocol": "TCP"
+              }
+            ],
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "k8s-app": "kube-dns"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "ports": [
+              {
+                "port": 443,
+                "protocol": "TCP"
+              }
+            ],
+            "to": [
+              {
+                "ipBlock": {
+                  "cidr": "10.0.0.10/32"
+                }
+              }
+            ]
+          },
+          {
+            "ports": [
+              {
+                "port": 3128,
+                "protocol": "TCP"
+              }
+            ],
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "egress-proxy"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app": "squid"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "podSelector": {},
+        "policyTypes": [
+          "Egress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "switch-box-watch",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "ClusterRole",
+        "name": "switch-box-watch"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "name": "switch-hosted-controller",
+          "namespace": "switch-hosted"
+        }
+      ]
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Secret",
+      "metadata": {
+        "name": "switch-enrol",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      },
+      "type": "Opaque"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Secret",
+      "metadata": {
+        "name": "switch-proxy-login",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      },
+      "type": "Opaque"
+    },
+    {
+      "apiVersion": "v1",
+      "data": {
+        "ca.crt": "-----BEGIN CERTIFICATE-----\nTESTCA\n-----END CERTIFICATE-----\n"
+      },
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "switch-ca",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "data": {
+        "managed-settings.json": "{\"test\": true}\n"
+      },
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "claude-managed-settings",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "name": "data-controller",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      },
+      "spec": {
+        "accessModes": [
+          "ReadWriteOnce"
+        ],
+        "resources": {
+          "requests": {
+            "storage": "2Gi"
+          }
+        },
+        "storageClassName": "gp3"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "metadata": {
+        "name": "data-agents",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      },
+      "spec": {
+        "accessModes": [
+          "ReadWriteOnce"
+        ],
+        "resources": {
+          "requests": {
+            "storage": "15Gi"
+          }
+        },
+        "storageClassName": "gp3"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "StatefulSet",
+      "metadata": {
+        "labels": {
+          "app": "switch-box",
+          "switch.dev/user": "user-k1-0123456789abcdef"
+        },
+        "name": "box",
+        "namespace": "agents-user-k1-0123456789abcdef"
+      },
+      "spec": {
+        "replicas": 0,
+        "selector": {
+          "matchLabels": {
+            "app": "switch-box"
+          }
+        },
+        "serviceName": "box",
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "switch-box",
+              "switch.dev/user": "user-k1-0123456789abcdef"
+            }
+          },
+          "spec": {
+            "affinity": {
+              "podAntiAffinity": {
+                "preferredDuringSchedulingIgnoredDuringExecution": [
+                  {
+                    "podAffinityTerm": {
+                      "labelSelector": {
+                        "matchLabels": {
+                          "app": "switch-box"
+                        }
+                      },
+                      "namespaceSelector": {
+                        "matchExpressions": [
+                          {
+                            "key": "switch.dev/user",
+                            "operator": "Exists"
+                          }
+                        ]
+                      },
+                      "topologyKey": "kubernetes.io/hostname"
+                    },
+                    "weight": 100
+                  }
+                ]
+              }
+            },
+            "automountServiceAccountToken": false,
+            "containers": [
+              {
+                "args": [
+                  "--launcher-address",
+                  "127.0.0.1:7420",
+                  "--agents-data-dir",
+                  "/data/agents",
+                  "--agents-workspaces",
+                  "/data/agents/workspaces"
+                ],
+                "env": [
+                  {
+                    "name": "SWITCH_SERVER",
+                    "value": "https://10.0.0.10"
+                  },
+                  {
+                    "name": "SWITCH_MACHINE_NAME",
+                    "value": "Switch cloud"
+                  },
+                  {
+                    "name": "SWITCH_MACHINE_DESCRIPTION",
+                    "value": "hosted-agents-test pod (user-k1-0123456789abcdef)"
+                  },
+                  {
+                    "name": "SWITCH_CONTROLLER_DATA_DIR",
+                    "value": "/data/controller"
+                  },
+                  {
+                    "name": "HOME",
+                    "value": "/data/controller/home"
+                  },
+                  {
+                    "name": "NODE_EXTRA_CA_CERTS",
+                    "value": "/etc/switch/ca/ca.crt"
+                  },
+                  {
+                    "name": "SWITCH_SESSION_PARK_AFTER_MS",
+                    "value": "900000"
+                  },
+                  {
+                    "name": "SWITCH_CONTROLLER_REST_AFTER_MS",
+                    "value": "600000"
+                  },
+                  {
+                    "name": "SWITCH_SESSION_START_CONCURRENCY",
+                    "value": "3"
+                  },
+                  {
+                    "name": "SWITCH_SESSION_START_RESERVE_BYTES",
+                    "value": "536870912"
+                  },
+                  {
+                    "name": "SWITCH_CONTROLLER_PROVIDER_GATEWAY",
+                    "value": "1"
+                  },
+                  {
+                    "name": "SWITCH_CONTROLLER_RESERVE_BYTES",
+                    "value": "268435456"
+                  },
+                  {
+                    "name": "SWITCH_CONTROLLER_GATEWAY_PROXY",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "ctl_https_proxy",
+                        "name": "switch-proxy-login"
+                      }
+                    }
+                  },
+                  {
+                    "name": "HTTPS_PROXY",
+                    "value": "http://squid.egress-proxy.svc:3128"
+                  },
+                  {
+                    "name": "https_proxy",
+                    "value": "http://squid.egress-proxy.svc:3128"
+                  },
+                  {
+                    "name": "HTTP_PROXY",
+                    "value": "http://squid.egress-proxy.svc:3128"
+                  },
+                  {
+                    "name": "http_proxy",
+                    "value": "http://squid.egress-proxy.svc:3128"
+                  },
+                  {
+                    "name": "NO_PROXY",
+                    "value": "10.0.0.10,.svc,.cluster.local,localhost,127.0.0.1"
+                  },
+                  {
+                    "name": "no_proxy",
+                    "value": "10.0.0.10,.svc,.cluster.local,localhost,127.0.0.1"
+                  },
+                  {
+                    "name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+                    "value": "1"
+                  },
+                  {
+                    "name": "SWITCH_BOX_MEMORY_LIMIT_BYTES",
+                    "value": "6442450944"
+                  }
+                ],
+                "image": "123456789012.dkr.ecr.eu-west-3.amazonaws.com/hosted-agents-test/box@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "imagePullPolicy": "IfNotPresent",
+                "name": "controller",
+                "resources": {
+                  "limits": {
+                    "cpu": "1",
+                    "memory": "768Mi"
+                  },
+                  "requests": {
+                    "cpu": "100m",
+                    "memory": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "readOnlyRootFilesystem": true,
+                  "runAsGroup": 2000,
+                  "runAsUser": 2001
+                },
+                "volumeMounts": [
+                  {
+                    "mountPath": "/data/controller",
+                    "name": "data-controller"
+                  },
+                  {
+                    "mountPath": "/tmp",
+                    "name": "tmp-controller"
+                  },
+                  {
+                    "mountPath": "/etc/switch/ca",
+                    "name": "ca",
+                    "readOnly": true
+                  },
+                  {
+                    "mountPath": "/etc/switch/enrol",
+                    "name": "enrol",
+                    "readOnly": true
+                  }
+                ]
+              },
+              {
+                "command": [
+                  "/usr/bin/tini",
+                  "-g",
+                  "--",
+                  "switch-agent-controller",
+                  "launcher",
+                  "--data-dir",
+                  "/data/agents",
+                  "--workspaces",
+                  "/data/agents/workspaces",
+                  "--controller-address",
+                  "127.0.0.1:7420"
+                ],
+                "env": [
+                  {
+                    "name": "HOME",
+                    "value": "/data/agents/home"
+                  },
+                  {
+                    "name": "NODE_EXTRA_CA_CERTS",
+                    "value": "/etc/switch/ca/ca.crt"
+                  },
+                  {
+                    "name": "HTTPS_PROXY",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "https_proxy",
+                        "name": "switch-proxy-login"
+                      }
+                    }
+                  },
+                  {
+                    "name": "https_proxy",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "https_proxy",
+                        "name": "switch-proxy-login"
+                      }
+                    }
+                  },
+                  {
+                    "name": "HTTP_PROXY",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "https_proxy",
+                        "name": "switch-proxy-login"
+                      }
+                    }
+                  },
+                  {
+                    "name": "http_proxy",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "key": "https_proxy",
+                        "name": "switch-proxy-login"
+                      }
+                    }
+                  },
+                  {
+                    "name": "NO_PROXY",
+                    "value": "10.0.0.10,.svc,.cluster.local,localhost,127.0.0.1"
+                  },
+                  {
+                    "name": "no_proxy",
+                    "value": "10.0.0.10,.svc,.cluster.local,localhost,127.0.0.1"
+                  },
+                  {
+                    "name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+                    "value": "1"
+                  }
+                ],
+                "image": "123456789012.dkr.ecr.eu-west-3.amazonaws.com/hosted-agents-test/box@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "imagePullPolicy": "IfNotPresent",
+                "name": "agents",
+                "resources": {
+                  "limits": {
+                    "cpu": "3",
+                    "memory": "5376Mi"
+                  },
+                  "requests": {
+                    "cpu": "150m",
+                    "memory": "768Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "readOnlyRootFilesystem": true,
+                  "runAsGroup": 2000,
+                  "runAsUser": 2000
+                },
+                "volumeMounts": [
+                  {
+                    "mountPath": "/data/agents",
+                    "name": "data-agents"
+                  },
+                  {
+                    "mountPath": "/tmp",
+                    "name": "tmp-agents"
+                  },
+                  {
+                    "mountPath": "/etc/switch/ca",
+                    "name": "ca",
+                    "readOnly": true
+                  },
+                  {
+                    "mountPath": "/etc/claude-code",
+                    "name": "claude-managed",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "enableServiceLinks": false,
+            "hostname": "user-k1-0123456789abcdef",
+            "nodeSelector": {
+              "switch.dev/pool": "agents",
+              "topology.kubernetes.io/zone": "eu-west-3a"
+            },
+            "runtimeClassName": "gvisor",
+            "securityContext": {
+              "fsGroup": 2000,
+              "fsGroupChangePolicy": "OnRootMismatch",
+              "runAsNonRoot": true,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "serviceAccountName": "box",
+            "terminationGracePeriodSeconds": 60,
+            "volumes": [
+              {
+                "name": "data-controller",
+                "persistentVolumeClaim": {
+                  "claimName": "data-controller"
+                }
+              },
+              {
+                "name": "data-agents",
+                "persistentVolumeClaim": {
+                  "claimName": "data-agents"
+                }
+              },
+              {
+                "emptyDir": {
+                  "sizeLimit": "512Mi"
+                },
+                "name": "tmp-controller"
+              },
+              {
+                "emptyDir": {
+                  "sizeLimit": "2Gi"
+                },
+                "name": "tmp-agents"
+              },
+              {
+                "configMap": {
+                  "name": "switch-ca"
+                },
+                "name": "ca"
+              },
+              {
+                "name": "enrol",
+                "secret": {
+                  "optional": true,
+                  "secretName": "switch-enrol"
+                }
+              },
+              {
+                "configMap": {
+                  "name": "claude-managed-settings"
+                },
+                "name": "claude-managed"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "kind": "List"
+}

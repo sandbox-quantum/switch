@@ -232,6 +232,12 @@ class TenantMember(Base):
     )
     user_id: Mapped[str] = mapped_column(Text, ForeignKey("users.id"), primary_key=True)
     role: Mapped[str] = mapped_column(Text, nullable=False)
+    # Whether this member may use hosted agents in this workspace (A2): set by
+    # the workspace's admins, on by default so today's access carries over.
+    # The server's own lists still decide who may use hosted agents at all.
+    hosted_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true", default=True
+    )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -371,6 +377,11 @@ class User(Base):
     # Nullable: OIDC-provisioned users have no local password until one is set.
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    # When a Switch operator paused this user's hosted agents,
+    # or None. Its own column, so a write to `metadata` can't clear it.
+    hosted_paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -543,8 +554,12 @@ class CloudMachine(Base):
             name="ck_cloud_machine_desired_state",
         ),
         CheckConstraint(
-            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner')",
+            "stop_reason IS NULL OR stop_reason IN ('idle', 'owner', 'paused', 'turned_off')",
             name="ck_cloud_machine_stop_reason",
+        ),
+        CheckConstraint(
+            "backend IN ('vm', 'box')",
+            name="ck_cloud_machine_backend",
         ),
         Index(
             "uq_cloud_machine_owner",
@@ -562,6 +577,12 @@ class CloudMachine(Base):
     )
     stop_reason: Mapped[str | None] = mapped_column(Text)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    # What runs it: `vm`, a v1 EC2 machine the hosted
+    # controller's `serve` manages, or `box`, a cluster box the box
+    # provisioner makes and the scaler runs. Each side acts only on its own rows.
+    backend: Mapped[str] = mapped_column(
+        Text, nullable=False, default="vm", server_default="vm"
+    )
     instance_type: Mapped[str | None] = mapped_column(Text)
     data_volume_id: Mapped[str | None] = mapped_column(Text)
     instance_id: Mapped[str | None] = mapped_column(Text)
@@ -4081,6 +4102,36 @@ class UsageMetric(StrEnum):
     OUTPUT_TOKENS = "output_tokens"
     CACHE_READ_TOKENS = "cache_read_tokens"
     CACHE_WRITE_TOKENS = "cache_write_tokens"
+    # Hosted agents. Minutes an agent was awake, per agent,
+    # from its controller's status reports; a budget may cap it.
+    AWAKE_MINUTES = "awake_minutes"
+    # AI calls through a hosted box's gateway, from the count the box reports.
+    # A budget on it is the hosted daily cap, which the gateway enforces; Core
+    # never enforces it (`GATEWAY_ENFORCED_METRICS`), because the count comes
+    # from the box.
+    HOSTED_AI_CALLS = "hosted_ai_calls"
+
+
+# Budgets on these are enforced where the work happens (the gateway), never by
+# `BudgetGuard` from usage a box reports.
+GATEWAY_ENFORCED_METRICS: frozenset[UsageMetric] = frozenset(
+    {UsageMetric.HOSTED_AI_CALLS}
+)
+# What the budgets API lets an admin create today. The hosted daily cap joins
+# it with the cap-from-budget set, once the gateway reads it; until then a
+# budget nothing enforces would only mislead.
+BUDGET_METRICS: tuple[UsageMetric, ...] = tuple(
+    m for m in UsageMetric if m not in GATEWAY_ENFORCED_METRICS
+)
+# What is counted per model; a budget on anything else names no model.
+PER_MODEL_METRICS: frozenset[UsageMetric] = frozenset(
+    {
+        UsageMetric.INPUT_TOKENS,
+        UsageMetric.OUTPUT_TOKENS,
+        UsageMetric.CACHE_READ_TOKENS,
+        UsageMetric.CACHE_WRITE_TOKENS,
+    }
+)
 
 
 class TenantUsage(TenantScoped, Base):
@@ -4129,6 +4180,10 @@ class TenantUsage(TenantScoped, Base):
 # and the gateway's numbers from overflowing.
 MAX_BUDGET_PERIOD_HOURS = 8784
 MAX_BUDGET_AMOUNT = 2**53 - 1
+# The hosted daily AI cap set from a budget: a whole day, at
+# most this many calls. The gateway holds it again to its own floor and ceiling.
+DAILY_CAP_PERIOD_HOURS = 24
+MAX_DAILY_CAP = 1_000_000
 
 
 class UsageBudget(TenantScoped, Base):
@@ -4359,6 +4414,10 @@ class AgentController(TenantScoped, Base):
         CheckConstraint(
             "kind IN ('console', 'daemon', 'ec2')", name="ck_agent_controllers_kind"
         ),
+        CheckConstraint(
+            "revoked_by IS NULL OR revoked_by IN ('pause', 'turn_off')",
+            name="ck_agent_controllers_revoked_by",
+        ),
         Index("ix_agent_controllers_owner_id", "owner_id"),
         Index("ix_agent_controllers_tenant_id", "tenant_id"),
     )
@@ -4384,6 +4443,11 @@ class AgentController(TenantScoped, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Set only when an operator's pause (`pause`) or an admin's turn-off
+    # (`turn_off`) revoked it, so a message after the lift may
+    # wake its hosted box to enrol a new controller. Any other revoke
+    # path leaves it NULL, and clears it on a row already revoked.
+    revoked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     connection_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Not a foreign key: a lease row is pruned once long stale, and a
     # connection naming a process with no lease reads as lost.

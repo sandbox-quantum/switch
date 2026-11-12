@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 import time
 from typing import Annotated, Any
 
@@ -37,9 +38,13 @@ from switch_core.bridges.agent.protocol.agent_connections import (
     MAX_ID_LENGTH,
     UnknownConnectionError,
 )
-from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.protocol.agent_core import (
+    AgentClientNotRunning,
+    AgentCore,
+)
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
     BRIDGE_ERRORS,
@@ -77,6 +82,11 @@ def refusal_status(exc: Exception) -> int | None:
         return 422
     if isinstance(exc, PermissionError):
         return 403
+    if isinstance(exc, AgentClientNotRunning):
+        # Core has only just started: the agent's host sends the post again,
+        # as for any 503, rather than taking it as refused. With hosted
+        # agents v2 off, upstream's 400, as for any ValueError below.
+        return 503 if process_hosted_v2() else 400
     if isinstance(exc, MembershipFixed):
         # As the room routes answer it: nothing is wrong with the request, the
         # room is a direct or group conversation.
@@ -110,6 +120,7 @@ async def call_operation(
     agent_id: str,
     connection_id: str | None,
     session: CallerSession | None,
+    client_txn_id: str | None = None,
 ) -> Any:
     """Run one operation on behalf of an agent.
 
@@ -154,7 +165,12 @@ async def call_operation(
     )
     started = time.perf_counter()
     with call_context(
-        CallContext(agent_id=agent_id, session_key=connection_id, session=session)
+        CallContext(
+            agent_id=agent_id,
+            session_key=connection_id,
+            session=session,
+            client_txn_id=client_txn_id,
+        )
     ):
         try:
             result = fn(**call_args)
@@ -175,6 +191,40 @@ async def call_operation(
 
 
 # ── HTTP router ──────────────────────────────────────────────────────────────
+
+
+# The only keys an agent's host may put on a room post, and how long one
+# may be: they share Core's per-sender key with the restart line
+# (`restart:<turnId>`), which a host must never be able to claim.
+REPLY_KEY_PREFIX = "reply:"
+MAX_REPLY_KEY_LENGTH = 200
+# Plain characters only: the key goes into the sender's key column
+# and logs. A host's keys are `reply:<uuid>` and `reply:<uuid>:lost`.
+REPLY_KEY_PATTERN = re.compile(r"reply:[A-Za-z0-9:_-]+")
+
+
+def checked_reply_key(value: str | None) -> str | None:
+    """The `X-Switch-Client-Txn-Id` a call carries, refused unless it is a
+    reply key of at most `MAX_REPLY_KEY_LENGTH` characters."""
+    if value is None:
+        return None
+    if len(value) > MAX_REPLY_KEY_LENGTH or not REPLY_KEY_PATTERN.fullmatch(value):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"X-Switch-Client-Txn-Id must be {REPLY_KEY_PREFIX!r} followed by "
+                "letters, digits, ':', '_' or '-', at most "
+                f"{MAX_REPLY_KEY_LENGTH} characters"
+            ),
+        )
+    return value
+
+
+def reply_key(value: str | None) -> str | None:
+    """The host's reply key for this call's room post. With hosted agents v2
+    off the header is ignored, as before v2: no 400 for one out of shape, and
+    no `sent_under` lookup."""
+    return checked_reply_key(value) if process_hosted_v2() else None
 
 
 SESSION_SELECTOR_HEADERS = (
@@ -312,6 +362,7 @@ async def post_operation(
     host_id: Annotated[str | None, Header(alias="x-switch-session-host-id")] = None,
     epoch: Annotated[str | None, Header(alias="x-switch-session-epoch")] = None,
     room_id: Annotated[str | None, Header(alias="x-switch-room-id")] = None,
+    client_txn_id: Annotated[str | None, Header(alias="x-switch-client-txn-id")] = None,
 ) -> dict[str, Any]:
     """Run one operation. The body is the operation's arguments.
 
@@ -326,7 +377,13 @@ async def post_operation(
 
     A controller acting as the agent sends `X-Switch-Room-Id` instead
     (`resolve_controller_caller`).
+
+    `X-Switch-Client-Txn-Id`, when sent, is the host's key for the room post
+    this call makes (`reply:…`): asked again under it, after an answer
+    lost to a Switch restart, the post is the one already made. With hosted
+    agents v2 off it is ignored, as before v2 (`reply_key`).
     """
+    key = reply_key(client_txn_id)
     caller: CallerSession | None
     session_key: str | None
     if isinstance(request.scope.get("controller"), ControllerPrincipal):
@@ -351,6 +408,7 @@ async def post_operation(
             agent_id=agent.id,
             connection_id=session_key,
             session=caller,
+            client_txn_id=key,
         )
     except Exception as exc:
         status = refusal_status(exc)

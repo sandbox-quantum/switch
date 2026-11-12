@@ -75,7 +75,11 @@ from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
-from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
+from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
+    AUTO_REPLY_FLAG,
+    PLATFORM_MARKER,
+)
 from switch_core.clients.mention_warnings import MentionWarnings, unmatched_mentions
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.agent_event_notify_ddl import (
@@ -2098,6 +2102,62 @@ class MessageRouter:
             clients=reads,
             notices=reads,
             cloud_waking_notices=self._cloud_waking.setdefault(member.agent.id, set()),
+        )
+
+    async def post_as_agent(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        room_id: str,
+        body: str,
+        *,
+        thread_root_id: str | None,
+        client_txn_id: str,
+    ) -> str | None:
+        """Post `body` into `room_id` as the agent, from anywhere in Core: a
+        notice Switch posts in the agent's name (not something it chose to
+        say), so it is flagged as an auto-reply and not metered. Keyed by
+        `client_txn_id` for the agent, so asking again posts nothing new.
+
+        None when the agent is not a member of the room, so nothing is said
+        there as itself."""
+        async with tenant_session(self.services.session_factory, tenant_id) as session:
+            found = (
+                await session.execute(
+                    select(Agent, Client, Room.transport_room_id)
+                    .join(Client, Client.id == Agent.client_id)
+                    .join(
+                        room_agents,
+                        and_(
+                            room_agents.c.agent_id == Agent.id,
+                            room_agents.c.room_id == room_id,
+                        ),
+                    )
+                    .join(Room, Room.id == room_agents.c.room_id)
+                    .where(Agent.id == agent_id)
+                )
+            ).first()
+        if found is None:
+            return None
+        agent, client, transport_room_id = found
+        member = RoomMember(
+            agent=agent,
+            client_id=client.id,
+            transport_user_id=client.transport_user_id,
+            display_name=client.display_name or agent.name,
+            alias=None,
+            listening=False,
+            joined_at=datetime.now(UTC),
+        )
+        actor = self._poster(tenant_id, member)
+        await actor.connect()
+        return await actor.send_message(
+            transport_room_id,
+            body,
+            metered=False,
+            thread_root_id=thread_root_id,
+            extra_content={AUTO_REPLY_FLAG: True},
+            client_txn_id=client_txn_id,
         )
 
     def _poster(self, tenant_id: str, member: RoomMember) -> AgentActor:

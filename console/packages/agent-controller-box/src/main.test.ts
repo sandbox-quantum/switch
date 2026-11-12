@@ -1,0 +1,604 @@
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK, EXIT_REVOKED } from './exit-codes';
+import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
+import { dataLayout } from './paths';
+import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
+import type * as SecretsModule from './secrets';
+import { ReleasesDirInstaller } from './self-update';
+import { ControllerStore } from './store';
+
+/**
+ * No test here may reach an OS keychain or keyring: on a developer's Mac the
+ * default store for `enroll` is the login keychain, and a test would write to
+ * it (or fail on it). Every store a test asks for that is not the file store
+ * is refused and counted, and each test checks the count stays 0.
+ */
+const osKeyStoresAsked = vi.hoisted(() => ({ count: 0 }));
+vi.mock('./secrets', async (importOriginal) => {
+  const actual = await importOriginal<typeof SecretsModule>();
+  return {
+    ...actual,
+    secretStoreFor: (...args: Parameters<typeof actual.secretStoreFor>) => {
+      if (args[0] !== 'file') {
+        osKeyStoresAsked.count++;
+        throw new Error(`A test reached the ${args[0]} secret store; tests use the file store.`);
+      }
+      return actual.secretStoreFor(...args);
+    },
+  };
+});
+
+let dir: string;
+let bundle: string;
+let stderr: string[];
+
+beforeEach(() => {
+  osKeyStoresAsked.count = 0;
+  dir = mkdtempSync(join(tmpdir(), 'controller-main-'));
+  bundle = join(dir, 'shared-host.mjs');
+  writeFileSync(bundle, '');
+  stderr = [];
+  vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+    stderr.push(String(chunk));
+    return true;
+  });
+  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+});
+
+afterEach(() => {
+  expect(osKeyStoresAsked.count, 'a test reached an OS keychain or keyring').toBe(0);
+  vi.restoreAllMocks();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+/** The last line the CLI wrote to stderr: the reason a parent shows. */
+function lastLine(): string {
+  return stderr.join('').trimEnd().split('\n').at(-1) ?? '';
+}
+
+describe('main', () => {
+  it('exits 2 for arguments it cannot run with, and says why last', async () => {
+    expect(await main(['launch'])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe("switch-agent-controller: Unknown command 'launch'.");
+    expect(await main(['run', '--no-such-flag'])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/^switch-agent-controller: Unknown option '--no-such-flag'/);
+    expect(await main(['run', '--controller-id', 'controller-1'])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe(
+      'switch-agent-controller: --controller-id and --server adopt an identity together; pass both.'
+    );
+    expect(await main(['run', '--updated-by-console', '--releases-dir', '/tmp/releases'])).toBe(
+      EXIT_CONFIGURATION
+    );
+    expect(lastLine()).toMatch(/--updated-by-console and --releases-dir disagree/);
+    expect(await main(['enroll', '--server', 'https://switch.example.com'])).toBe(
+      EXIT_CONFIGURATION
+    );
+    expect(await main([])).toBe(EXIT_CONFIGURATION);
+    expect(await main(['--help'])).toBe(EXIT_OK);
+  });
+
+  it('enrolls with the name and description it is given', async () => {
+    const bodies: unknown[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
+        return new Response(
+          JSON.stringify({ controller_id: 'controller-1', credential: 'swcc_test' }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      })
+    );
+    const code = await main([
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--name',
+      'build-box',
+      '--description',
+      '  The build box in the office ',
+      '--data-dir',
+      dir,
+      // Never the OS keychain under test, on any OS (the Mac's default).
+      '--secret-store',
+      'file',
+    ]);
+    vi.unstubAllGlobals();
+    expect(code).toBe(EXIT_OK);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({
+      controller: { kind: 'daemon', name: 'build-box', description: 'The build box in the office' },
+    });
+  });
+
+  it('enrolls without a description when none is given, and refuses an overlong one', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
+        return new Response(
+          JSON.stringify({ controller_id: 'controller-1', credential: 'swcc_test' }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      })
+    );
+    const base = [
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--secret-store',
+      'file',
+    ];
+    expect(await main([...base, '--description', 'x'.repeat(501), '--data-dir', dir])).toBe(
+      EXIT_CONFIGURATION
+    );
+    expect(lastLine()).toBe(
+      'switch-agent-controller: --description must be at most 500 characters.'
+    );
+    expect(await main([...base, '--name', 'box', '--data-dir', dir])).toBe(EXIT_OK);
+    vi.unstubAllGlobals();
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]!.controller).not.toHaveProperty('description');
+  });
+
+  it('keeps tests off the OS keychain: a store other than the file store is refused here', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ controller_id: 'controller-1', credential: 'swcc_test' }), {
+            status: 201,
+            headers: { 'Content-Type': 'application/json' },
+          })
+      )
+    );
+    const enroll = ['enroll', '--server', 'https://switch.example.com', '--code', 'swce_test'];
+    expect(
+      await main([...enroll, '--name', 'box', '--data-dir', dir, '--secret-store', 'keychain'])
+    ).not.toBe(EXIT_OK);
+    expect(osKeyStoresAsked.count).toBe(1);
+    osKeyStoresAsked.count = 0;
+    // With the file store, the credential lands in the data directory's own files.
+    expect(
+      await main([...enroll, '--name', 'box', '--data-dir', dir, '--secret-store', 'file'])
+    ).toBe(EXIT_OK);
+    vi.unstubAllGlobals();
+    expect(await new FileSecretStore(dataLayout(dir).secrets).get(CONTROLLER_CREDENTIAL)).toBe(
+      'swcc_test'
+    );
+  });
+
+  it('exits 2 when the data directory belongs to another controller', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.close();
+    const code = await main([
+      'run',
+      '--data-dir',
+      dir,
+      '--controller-id',
+      'controller-2',
+      '--server',
+      'https://switch.example.com',
+      '--shared-host-bundle',
+      bundle,
+    ]);
+    expect(code).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/already belongs to controller controller-1/);
+  });
+
+  it('exits 2 when the shared host bundle is missing, or the server URL is not one', async () => {
+    expect(
+      await main(['run', '--data-dir', dir, '--shared-host-bundle', join(dir, 'missing.mjs')])
+    ).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/shared host bundle .*missing\.mjs does not exist/);
+    expect(
+      await main([
+        'run',
+        '--data-dir',
+        dir,
+        '--controller-id',
+        'controller-1',
+        '--server',
+        'http://switch.example.com',
+        '--shared-host-bundle',
+        bundle,
+      ])
+    ).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/must use https/);
+  });
+
+  it("set-info changes the machine's name and description, and records the name", async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.close();
+    await new FileSecretStore(dataLayout(dir).secrets).set(CONTROLLER_CREDENTIAL, 'swcc_test');
+    const calls: { method: string; url: string; body: unknown; auth: string | null }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        const headers = new Headers(init.headers);
+        calls.push({
+          method: String(init.method),
+          url,
+          body: init.body ? JSON.parse(String(init.body)) : null,
+          auth: headers.get('Authorization'),
+        });
+        const body = url.endsWith('/token')
+          ? {
+              access_token: 'swct_test',
+              expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+            }
+          : { id: 'controller-1', name: 'build-box', description: null, state: 'online' };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      })
+    );
+    const code = await main([
+      'set-info',
+      '--name',
+      ' build-box ',
+      '--description',
+      '',
+      '--data-dir',
+      dir,
+    ]);
+    vi.unstubAllGlobals();
+    expect(code).toBe(EXIT_OK);
+    expect(calls.map((c) => [c.method, c.url])).toEqual([
+      ['POST', 'https://switch.example.com/v1/management/controllers/controller-1/token'],
+      ['PATCH', 'https://switch.example.com/v1/management/controllers/controller-1'],
+    ]);
+    expect(calls[0]!.body).toEqual({ credential: 'swcc_test' });
+    expect(calls[1]!.body).toEqual({ name: 'build-box', description: null });
+    expect(calls[1]!.auth).toBe('Bearer swct_test');
+    const reopened = ControllerStore.open(join(dir, 'controller.db'));
+    expect(reopened.identity()?.name).toBe('build-box');
+    reopened.close();
+  });
+
+  it('set-info refuses what it cannot send, before calling Switch', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    expect(await main(['set-info', '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe(
+      'switch-agent-controller: set-info needs --name, --description, or both.'
+    );
+    expect(await main(['set-info', '--name', '  ', '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe('switch-agent-controller: --name must not be blank.');
+    expect(await main(['set-info', '--name', 'box', '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/holds no enrolled controller/);
+    vi.unstubAllGlobals();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('set-info exits 1 when Switch refuses the change', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.close();
+    await new FileSecretStore(dataLayout(dir).secrets).set(CONTROLLER_CREDENTIAL, 'swcc_test');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url.endsWith('/token')
+          ? new Response(
+              JSON.stringify({
+                access_token: 'swct_test',
+                expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+              }),
+              { status: 200 }
+            )
+          : new Response(
+              JSON.stringify({
+                error: { code: 'validation_error', message: 'name too long', retryable: false },
+              }),
+              { status: 422 }
+            )
+      )
+    );
+    expect(await main(['set-info', '--name', 'box', '--data-dir', dir])).toBe(EXIT_FAILURE);
+    vi.unstubAllGlobals();
+    expect(lastLine()).toBe('switch-agent-controller: validation_error: name too long');
+    const reopened = ControllerStore.open(join(dir, 'controller.db'));
+    expect(reopened.identity()?.name).toBe('box');
+    reopened.close();
+  });
+
+  it('exits 2 when it is not enrolled', async () => {
+    expect(await main(['run', '--data-dir', dir, '--shared-host-bundle', bundle])).toBe(
+      EXIT_CONFIGURATION
+    );
+    expect(lastLine()).toMatch(/not enrolled/);
+  });
+
+  it('exits 3 when an earlier run was revoked and wiped its credential', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.markRevoked('2026-01-02T00:00:00.000Z');
+    store.close();
+    expect(await main(['run', '--data-dir', dir, '--shared-host-bundle', bundle])).toBe(
+      EXIT_REVOKED
+    );
+  });
+});
+
+describe('infoChange', () => {
+  it('trims, clears a blank description, and keeps to the limits', () => {
+    expect(infoChange({ name: ' box ' })).toEqual({ name: 'box' });
+    expect(infoChange({ description: '  ' })).toEqual({ description: null });
+    expect(infoChange({ name: 'x'.repeat(200), description: 'y'.repeat(500) })).toEqual({
+      name: 'x'.repeat(200),
+      description: 'y'.repeat(500),
+    });
+    expect(() => infoChange({ name: 'x'.repeat(201) })).toThrow(/at most 200/);
+    expect(() => infoChange({ description: 'y'.repeat(501) })).toThrow(/at most 500/);
+  });
+});
+
+describe('isSupervised', () => {
+  it('restarts on 7 under the separate-users service, launchd, or anything systemd runs', () => {
+    expect(isSupervised(null, false, {})).toBe(false);
+    expect(
+      isSupervised(
+        {
+          v: 1,
+          user: 'builder',
+          uid: 1001,
+          gid: 990,
+          dataDir: '/var/lib/controller',
+          agentsDir: '/var/lib/switch-agents/1001',
+          agentUsers: 4,
+          node: '/usr/bin/node',
+          bundle: '/opt/shared-host.mjs',
+          releasesDir: null,
+        },
+        false,
+        {}
+      )
+    ).toBe(true);
+    expect(isSupervised(null, true, {})).toBe(true);
+    expect(isSupervised(null, false, { INVOCATION_ID: 'abc' })).toBe(true);
+  });
+});
+
+const NPM = { run: vi.fn(), node: 'node', cacheDir: 'cache', env: {} };
+
+describe('installerFor', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'installer-for-'));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('says a Windows controller does not update itself, whatever it runs from', async () => {
+    const installer = await installerFor(null, null, NPM, 'win32');
+    expect(installer.unavailable).toMatch(/Linux and macOS only/);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'installs into the releases directory a service runs through',
+    async () => {
+      const releasesDir = join(root, 'releases');
+      mkdirSync(releasesDir);
+      expect((await installerFor(null, releasesDir, NPM, 'linux')).unavailable).toMatch(
+        /no current link/
+      );
+      symlinkSync(join(root, 'prefix'), join(releasesDir, 'current'));
+      const installer = await installerFor(null, releasesDir, NPM, 'linux');
+      expect(installer.unavailable).toBeNull();
+      expect(installer).toBeInstanceOf(ReleasesDirInstaller);
+    }
+  );
+});
+
+describe.skipIf(process.platform === 'win32')('planServiceReleases', () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'service-releases-'));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  const cliIn = (prefix: string) =>
+    join(prefix, 'lib', 'node_modules', 'switch-agent-controller', 'dist', 'cli.js');
+
+  it('runs an npm install through <data dir>/releases', async () => {
+    const dir = join(root, 'data', 'releases');
+    expect(await planServiceReleases(cliIn('/home/me/.local'), dir)).toEqual({
+      dir,
+      prefix: '/home/me/.local',
+    });
+  });
+
+  it('has none for a checkout', async () => {
+    expect(await planServiceReleases('/src/switch/console/dist/cli.js', root)).toBeNull();
+  });
+
+  it('runs again from a release of its own directory, and refuses another setup’s', async () => {
+    const own = join(root, 'data', 'releases');
+    const other = join(root, 'var', 'releases');
+    for (const dir of [own, other]) {
+      mkdirSync(join(dir, '0.31.0'), { recursive: true });
+      symlinkSync(join(dir, '0.31.0'), join(dir, 'current'));
+    }
+    expect(await planServiceReleases(cliIn(join(own, '0.31.0')), own)).toEqual({
+      dir: own,
+      prefix: join(own, '0.31.0'),
+    });
+    await expect(planServiceReleases(cliIn(join(other, '0.31.0')), own)).rejects.toThrow(
+      /releases directory of another setup/
+    );
+  });
+});
+
+describe('status --live', () => {
+  let dir: string;
+  let out: string[];
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'status-live-'));
+    out = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk));
+      return true;
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const written = (at: number) =>
+    JSON.stringify({
+      version: 1,
+      written_at: new Date(at).toISOString(),
+      controller: {
+        version: '0.9.1',
+        image_digest: null,
+        started_at: new Date(at - 60_000).toISOString(),
+        assignment_revision: 3,
+        last_sync_at: null,
+        anon_bytes: null,
+        optimize_for_size: true,
+        node_options_set: false,
+        launcher_mode: false,
+      },
+      box: {
+        memory_limit_bytes: null,
+        memory_bytes: null,
+        memory_percent: null,
+        shmem_bytes: null,
+        claude_processes: 0,
+        host_processes: 1,
+      },
+      valve: {
+        enabled: false,
+        cap: null,
+        formula_cap: null,
+        awake: 0,
+        peak_awake: 0,
+        starting: 0,
+        waiting: 0,
+        waiting_for_room: 0,
+        hosts: null,
+        hosts_joined: null,
+        memory: null,
+      },
+      guard: { enabled: true, backstop: 0.92, share: 0.6, noting: false },
+      launcher: null,
+      exec_exemption: null,
+      totals: {
+        desired_running: 1,
+        desired_stopped: 0,
+        process: {
+          pending: 0,
+          starting: 0,
+          running: 1,
+          stopping: 0,
+          stopped: 0,
+          crashed: 0,
+          failed: 0,
+        },
+        resting: 0,
+        out_of_memory: 0,
+        on_hub: 1,
+      },
+      agents: [],
+      conversations: [],
+      events: [
+        {
+          at: new Date(at - 1_000).toISOString(),
+          kind: 'agent_resting',
+          agent: 'abcd1234',
+          conversation: null,
+          reason: null,
+          count: 1,
+        },
+      ],
+      events_dropped_before: null,
+    });
+
+  it('prints the running controller’s counts, opening no state of its own', async () => {
+    writeFileSync(join(dir, 'live-status.json'), written(Date.now()));
+    expect(await main(['status', '--live', '--live-dir', dir])).toBe(EXIT_OK);
+    expect(out.join('')).toContain('agents: desired_running=1 desired_stopped=0');
+    expect(out.join('')).toContain('valve: off');
+    // Reading the live status never creates the controller's database.
+    expect(existsSync(dataLayout(dir).database)).toBe(false);
+  });
+
+  it('prints JSON with --json', async () => {
+    writeFileSync(join(dir, 'live-status.json'), written(Date.now()));
+    expect(await main(['status', '--json', '--live-dir', dir])).toBe(EXIT_OK);
+    const parsed = JSON.parse(out.join(''));
+    expect(parsed.state).toBe('fresh');
+    expect(parsed.version).toBe(1);
+    expect(parsed.totals.process.running).toBe(1);
+  });
+
+  it('adds the events since a time with --since, and refuses a time that is not ISO', async () => {
+    writeFileSync(join(dir, 'live-status.json'), written(Date.now()));
+    const since = new Date(Date.now() - 60_000).toISOString();
+    expect(await main(['status', '--json', '--since', since, '--live-dir', dir])).toBe(EXIT_OK);
+    expect(JSON.parse(out.join('')).since.counts.agent_resting).toBe(1);
+    expect(await main(['status', '--json', '--since', 'yesterday', '--live-dir', dir])).toBe(
+      EXIT_CONFIGURATION
+    );
+  });
+
+  it('exits 1 when the file is missing or stale, and says why', async () => {
+    expect(await main(['status', '--live', '--live-dir', dir])).toBe(EXIT_FAILURE);
+    expect(out.join('')).toContain('No live status');
+    out.length = 0;
+    writeFileSync(join(dir, 'live-status.json'), written(Date.now() - 120_000));
+    expect(await main(['status', '--live', '--live-dir', dir])).toBe(EXIT_FAILURE);
+    expect(out.join('')).toContain('STALE');
+  });
+
+  it('says when the live status is off, and refuses --live-dir alone', async () => {
+    vi.stubEnv('SWITCH_CONTROLLER_LIVE_STATUS_DIR', '');
+    expect(await main(['status', '--json'])).toBe(EXIT_CONFIGURATION);
+    expect(await main(['status', '--live'])).toBe(EXIT_CONFIGURATION);
+    vi.unstubAllEnvs();
+    expect(await main(['status', '--live-dir', dir, '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+  });
+
+  it('reads the folder the controller was told to write to', async () => {
+    writeFileSync(join(dir, 'live-status.json'), written(Date.now()));
+    vi.stubEnv('SWITCH_CONTROLLER_LIVE_STATUS_DIR', dir);
+    expect(await main(['status', '--json'])).toBe(EXIT_OK);
+    vi.unstubAllEnvs();
+  });
+});

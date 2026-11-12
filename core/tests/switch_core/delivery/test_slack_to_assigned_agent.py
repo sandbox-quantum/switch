@@ -82,6 +82,11 @@ class SlackRoom:
         async def _nothing(*_args: Any, **_kwargs: Any) -> None:
             return None
 
+        async def _not_handed_in(_msg: InboundMessage) -> bool:
+            # Hosted agents v2's once-only check (`_already_handed_in`): every post
+            # here is a first copy. With v2 off it is never asked.
+            return False
+
         core = CollaborationCore.__new__(CollaborationCore)
         vars(core).update(
             _bridge_id="slack-bridge",
@@ -98,6 +103,7 @@ class SlackRoom:
             _repair_placeholder_username=_nothing,
             _maybe_guide_self_mention=_nothing,
             _trust_client=NullTrustClient(),
+            _already_handed_in=_not_handed_in,
         )
         return core
 

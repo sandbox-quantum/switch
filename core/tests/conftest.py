@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import threading
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 
+import asyncpg
 import pytest
 import pytest_asyncio
 from sqlalchemy import insert, text
@@ -52,6 +55,29 @@ encrypted_json.configure(TEST_KEYRING)
 # same platforms to exist.
 for _platform in PLATFORMS:
     messaging_platforms.register(_platform.adapter.describe(_platform.key))
+
+
+@pytest.fixture(autouse=True)
+def _hosted_v2_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The v1/v2 switch's process-wide copy, for code with no config to hand.
+    On by default, so the v2 tests read as they were written; a run with
+    SWITCH_TEST_HOSTED_V2=0 takes the whole suite with v2 off, as v1 servers
+    run it (the switch's flag-off parity run). A test that needs one state
+    sets it itself."""
+    from switch_core import hosted_v2
+
+    monkeypatch.setattr(
+        hosted_v2, "_process_on", os.environ.get("SWITCH_TEST_HOSTED_V2", "1") != "0"
+    )
+
+
+@pytest.fixture
+def hosted_v2_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins hosted agents v2 on for a test written for it, so it reads the same
+    in the whole-suite off run (SWITCH_TEST_HOSTED_V2=0) as by default."""
+    from switch_core import hosted_v2
+
+    monkeypatch.setattr(hosted_v2, "_process_on", True)
 
 
 @pytest.fixture(autouse=True)
@@ -173,6 +199,117 @@ async def empty_the_database(engine: AsyncEngine) -> None:
     )
 
 
+THROWAWAY_DATABASE = "switch_test_throwaway"
+
+
+def external_test_database(url_text: str, environ: Mapping[str, str]) -> None:
+    """Refuses a test database that could be someone's real one."""
+    url = make_url(url_text)
+    if (
+        environ.get("SWITCH_TEST_POSTGRES_THROWAWAY") != "1"
+        or url.get_backend_name() != "postgresql"
+        or url.host not in {"127.0.0.1", "localhost"}
+        or url.database != THROWAWAY_DATABASE
+    ):
+        raise RuntimeError(
+            "SWITCH_TEST_POSTGRES_URL is used only with SWITCH_TEST_POSTGRES_THROWAWAY=1, "
+            f"a localhost postgresql URL and the database {THROWAWAY_DATABASE}."
+        )
+
+
+# The advisory lock a run holds on the external throwaway database ("SWTEST").
+SOLE_RUN_LOCK = 0x5357_5445_5354
+
+
+def busy_database(url_text: str) -> str:
+    """The database a refusal names: its name, host and port, never the password."""
+    url = make_url(url_text)
+    return f"{url.database} on {url.host}:{url.port or 5432}"
+
+
+@contextlib.contextmanager
+def sole_run_on(
+    url_text: str, environ: Mapping[str, str], key: int = SOLE_RUN_LOCK
+) -> Iterator[None]:
+    """One test run at a time on the external throwaway database.
+
+    Each test empties the database on the way in, so a second run on the same
+    one (another pytest, from any folder or pod, or `-n` workers) wipes the
+    first's rows mid-test and collides on its fixed emails: a row a test just
+    made is gone, and later tests fail setup with duplicate keys. So a run
+    holds a session-level advisory lock there, on a connection of its own,
+    for as long as it uses it, and a second run is refused at once, naming
+    the database. The lock goes when the run ends or dies, with its
+    connection. Only for `SWITCH_TEST_POSTGRES_URL`: CI's workers each get a
+    container of their own and never come here.
+    """
+    if environ.get("PYTEST_XDIST_WORKER"):
+        raise RuntimeError(
+            f"SWITCH_TEST_POSTGRES_URL is one shared database ({busy_database(url_text)}), "
+            "so run without -n."
+        )
+    dsn = (
+        make_url(url_text)
+        .set(drivername="postgresql")
+        .render_as_string(hide_password=False)
+    )
+    held = threading.Event()
+    done = threading.Event()
+    outcome: dict[str, object] = {}
+
+    async def hold() -> None:
+        conn = await asyncpg.connect(dsn, timeout=10)
+        try:
+            outcome["locked"] = await conn.fetchval(
+                "SELECT pg_try_advisory_lock($1)", key
+            )
+            held.set()
+            if outcome["locked"]:
+                await asyncio.to_thread(done.wait)
+        finally:
+            await conn.close()
+
+    def run() -> None:
+        try:
+            asyncio.run(hold())
+        except BaseException as exc:  # noqa: BLE001 -- handed to the caller
+            outcome["error"] = exc
+            held.set()
+
+    # Its own thread and loop: the lock has to outlive every per-test loop.
+    thread = threading.Thread(target=run, name="sole-test-run", daemon=True)
+    thread.start()
+    held.wait()
+    try:
+        if "error" in outcome:
+            # Only the error's kind: a driver's message could carry the URL.
+            raise RuntimeError(
+                f"Couldn't lock {busy_database(url_text)} for this run "
+                f"({type(outcome['error']).__name__})."
+            ) from None
+        if not outcome.get("locked"):
+            raise RuntimeError(
+                f"Another test run is using {busy_database(url_text)}. Runs on "
+                "SWITCH_TEST_POSTGRES_URL share one database, so run them one at a time."
+            )
+        yield
+    finally:
+        done.set()
+        thread.join(timeout=10)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """`-n` on the shared test database is refused before any worker starts:
+    the workers would all use one database (see `sole_run_on`). CI's `-n`
+    runs set no URL, and each worker there gets a container of its own."""
+    external = os.environ.get("SWITCH_TEST_POSTGRES_URL")
+    if external and getattr(config.option, "numprocesses", None):
+        raise pytest.UsageError(
+            f"SWITCH_TEST_POSTGRES_URL is one shared database ({busy_database(external)}), "
+            "so run without -n."
+        )
+
+
 @pytest.fixture(scope="session")
 def postgres_url() -> Iterator[str]:
     """A throwaway PostgreSQL instance for the whole test session.
@@ -186,6 +323,23 @@ def postgres_url() -> Iterator[str]:
     entirely write traffic. Nothing about the behaviour under test changes:
     these settings govern what survives a crash, not what a transaction sees.
     """
+    # A runner with no Docker socket (the gVisor integration box) points this at
+    # its own throwaway Postgres instead. Every test truncates and reseeds it, so
+    # it is refused unless all three hold: the explicit throwaway flag, a local
+    # host, and the fixed throwaway database name. Refused before connecting.
+    external = os.environ.get("SWITCH_TEST_POSTGRES_URL")
+    if external:
+        external_test_database(external, os.environ)
+        with contextlib.ExitStack() as held:
+            try:
+                held.enter_context(sole_run_on(external, os.environ))
+            except RuntimeError as refused:
+                # The whole run stops here, once, with only the message: a
+                # raised error would be reported per test, with the URL's
+                # password among the arguments pytest prints.
+                pytest.exit(str(refused), returncode=3)
+            yield external
+        return
     container = PostgresContainer("postgres:16-alpine").with_command(
         "postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
     )

@@ -21,5 +21,8 @@
   "agents": [
     "3f1c2b4a-0000-4000-8000-0000000000c1"
   ],
-  "controller_id": "3f1c2b4a-0000-4000-8000-0000000000e1"
+  "controller_id": "3f1c2b4a-0000-4000-8000-0000000000e1",
+  "room": null,
+  "awake": null,
+  "ai_calls_today": null
 }

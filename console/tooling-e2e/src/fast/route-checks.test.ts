@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentRef, RoomDetail } from '../clients/switch-client.ts';
 import { crossTenantPath, probeOrder, type OtherTenant } from './cross-tenant.ts';
-import { isHtml } from './session-required.ts';
+import { isHtml, probeSessionRoutes } from './session-required.ts';
+import type { SwitchClient } from '../clients/switch-client.ts';
+import type { ServerSurface } from '../gate/gate.ts';
 
 const OTHER: OtherTenant = {
   tenantId: 't-1',
@@ -60,5 +62,43 @@ describe('isHtml', () => {
     expect(isHtml('Text/HTML')).toBe(true);
     expect(isHtml('application/json')).toBe(false);
     expect(isHtml('')).toBe(false);
+  });
+});
+
+describe('probeSessionRoutes', () => {
+  // A hosted agents v2 route answers 404 with v2 off, before any session check,
+  // as a route that doesn't exist; `/feature-flags` lists `hosted_v2` only with v2 on.
+  const surface = {
+    operations: [],
+    gatewayRoutes: [
+      { route: 'GET /gateway/rooms', auth: 'session', flags: [] },
+      { route: 'GET /gateway/shared-cloud/overview', auth: 'session', flags: ['hosted_v2'] },
+    ],
+  } as unknown as ServerSurface;
+
+  function client(flags: string[], v2On: boolean): SwitchClient {
+    return {
+      enabledFeatureFlags: async () => new Set(flags),
+      statusWithoutCredentials: async (_method: string, path: string) =>
+        path.includes('shared-cloud') && !v2On
+          ? { status: 404, contentType: 'application/json' }
+          : { status: 401, contentType: 'application/json' },
+    } as unknown as SwitchClient;
+  }
+
+  it("counts a route behind hosted_v2 as not mounted when the server doesn't list it", async () => {
+    expect(await probeSessionRoutes(client([], false), surface)).toEqual({
+      probed: 1,
+      notMounted: 1,
+      wrong: [],
+    });
+  });
+
+  it('probes it, and expects the 401, when the server lists hosted_v2 as on', async () => {
+    expect(await probeSessionRoutes(client(['hosted_v2'], true), surface)).toEqual({
+      probed: 2,
+      notMounted: 0,
+      wrong: [],
+    });
   });
 });

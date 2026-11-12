@@ -4,9 +4,10 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 import jwt
 from fastapi import HTTPException
@@ -19,6 +20,13 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
+from switch_core.bridges.agent.refusals import (
+    RefusalGuard,
+    client_address,
+    method_of,
+    refusal_guard,
+    route_kind,
+)
 from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TYPES
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX as MESSAGING_INSTALL_PREFIX,
@@ -31,9 +39,10 @@ from switch_core.db.tenant_lookup import (
     tenant_of_agent_oauth_client,
     tenant_of_api_key,
 )
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
-from switch_core.observability.hosted import record_credential_refusal, route_kind
+from switch_core.observability.hosted import record_credential_refusal
 from switch_core.observability.metrics import metrics
 from switch_core.tenant_context import tenant_scope
 
@@ -143,10 +152,11 @@ class ControllerPrincipal:
 class ControllerAuthError(Exception):
     """A controller credential was refused; ``code`` is a contract reason code."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, status_code: int = 401) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.status_code = status_code
 
 
 class ControllerAuthenticator(Protocol):
@@ -179,6 +189,11 @@ class ControllerAuthenticator(Protocol):
     def is_controller_token(self, token: str) -> bool: ...
 
     async def authenticate(self, token: str) -> ControllerPrincipal: ...
+
+    def signature_valid(self, token: str) -> bool:
+        """Whether the token's signature and expiry check out, with no
+        database read: what a locked-out address must pass to be served."""
+        ...
 
 
 class BearerAuthMiddleware:
@@ -238,8 +253,10 @@ class BearerAuthMiddleware:
         session_factory: async_sessionmaker[AsyncSession],
         oidc_validator: OIDCTokenValidator | None = None,
         controller_auth: ControllerAuthenticator | None = None,
+        refusals: RefusalGuard | None = None,
     ) -> None:
         self.app = app
+        self._refusals = refusals if refusals is not None else refusal_guard()
         self._agent_store = agent_store
         self._api_key_store = api_key_store
         self._api_key_cache = api_key_cache
@@ -365,17 +382,24 @@ class BearerAuthMiddleware:
         send: Send,
     ) -> None:
         if controller_auth.is_public(path):
-            await self.app(scope, receive, send)
+            await self._serve_public_controller_route(path, scope, receive, send)
             return
-        if not auth_header.startswith("Bearer "):
+        token = auth_header[7:] if auth_header.startswith("Bearer ") else None
+        if await self._locked_out(controller_auth, token, path, scope, receive, send):
+            return
+        if token is None:
+            self._record_refusal("missing_credential", path, scope)
             await _controller_refusal(
                 "invalid_credential", "Missing or invalid Authorization header", 401
             )(scope, receive, send)
             return
         try:
-            principal = await controller_auth.authenticate(auth_header[7:])
+            principal = await controller_auth.authenticate(token)
         except ControllerAuthError as exc:
-            await _controller_refusal(exc.code, exc.message, 401)(scope, receive, send)
+            self._record_refusal(exc.code, path, scope)
+            await _controller_refusal(exc.code, exc.message, exc.status_code)(
+                scope, receive, send
+            )
             return
         scope["controller"] = principal
         with (
@@ -410,10 +434,15 @@ class BearerAuthMiddleware:
         revoked and an agent the moment its binding changes. The binding
         itself is checked against `presence` every time.
         """
+        if await self._locked_out(controller_auth, token, path, scope, receive, send):
+            return
         try:
             principal = await controller_auth.authenticate(token)
         except ControllerAuthError as exc:
-            await _controller_refusal(exc.code, exc.message, 401)(scope, receive, send)
+            self._record_refusal(exc.code, path, scope)
+            await _controller_refusal(exc.code, exc.message, exc.status_code)(
+                scope, receive, send
+            )
             return
 
         header = headers.get(AGENT_ID_HEADER, b"").decode() or None
@@ -475,6 +504,86 @@ class BearerAuthMiddleware:
             log_context(agent_id=agent.id, tenant_id=principal.tenant_id),
         ):
             await self.app(scope, receive, send)
+
+    async def _serve_public_controller_route(
+        self, path: str, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        """Enrollment and token exchange, authenticated by the secret in the
+        body: served as before, and a 401 from either logs one WARN.
+        They are never locked out: their secrets are long and random, so a
+        lockout would add nothing against guessing, and behind a shared proxy
+        it would let one client's bad secret block everyone's enrollment.
+        With hosted agents v2 off, served as before (no WARN); a 401 is still
+        counted, by the management routes' error envelope."""
+        status: list[int] = []
+
+        async def watching_send(message: MutableMapping[str, Any]) -> None:
+            if message.get("type") == "http.response.start":
+                status.append(int(message.get("status", 0)))
+            await send(message)
+
+        await self.app(scope, receive, watching_send)
+        if status and status[0] == 401:
+            reason = (
+                "enrollment_code_invalid"
+                if path.endswith("/enroll")
+                else "invalid_credential"
+            )
+            self._record_refusal(reason, path, scope)
+
+    def _record_refusal(self, reason: str, path: str, scope: Scope) -> None:
+        """One WARN for a refused controller credential: the reason
+        code, the kind of route, the method and the address the server saw.
+        Never the token, and never text the client chose. With hosted agents
+        v2 off, no log line and no lockout, as before. Not counted here: the
+        401 that follows is counted where it is sent (`_controller_refusal`,
+        or the management routes' error envelope)."""
+        if not process_hosted_v2():
+            return
+        self._refusals.refused(
+            client_address(scope),
+            reason=reason,
+            route=route_kind(path),
+            method=method_of(scope),
+            count=False,
+        )
+
+    async def _locked_out(
+        self,
+        controller_auth: ControllerAuthenticator,
+        token: str | None,
+        path: str,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> bool:
+        """Answers a locked-out address's request with a 429 at once, unless
+        it carries a token whose signature and expiry check out: that one is
+        served as usual, so controllers sharing an address behind a proxy are
+        never locked out by another client's bad credential. True when the
+        request has been answered here. With hosted agents v2 off, never: as
+        before, no lockout."""
+        if not process_hosted_v2():
+            return False
+        address = client_address(scope)
+        if not self._refusals.locked(address):
+            return False
+        verify = getattr(controller_auth, "signature_valid", None)
+        if token is not None and verify is not None and verify(token):
+            return False
+        self._refusals.refused(
+            address,
+            reason="locked_out",
+            route=route_kind(path),
+            method=method_of(scope),
+        )
+        await _controller_refusal(
+            "invalid_credential",
+            "Too many refused credentials from this address; try again later.",
+            429,
+            retry_after_s=self._refusals.retry_after_s(address),
+        )(scope, receive, send)
+        return True
 
     async def _read_agents_of(
         self,
@@ -579,16 +688,20 @@ class BearerAuthMiddleware:
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
 
 
-def _controller_refusal(code: str, message: str, status_code: int) -> ASGIApp:
+def _controller_refusal(
+    code: str, message: str, status_code: int, *, retry_after_s: int = 0
+) -> ASGIApp:
     """A controller refusal, in the contract's error envelope.
 
     On a WebSocket, which cannot read a refused handshake (see
     `_unauthorized`), the same refusal the agent connection sends: a `refused`
-    frame carrying the code, then a close with 4000 plus the status.
+    frame carrying the code, then a close with 4000 plus the status. A
+    lockout's 429 carries `Retry-After` on HTTP.
     """
     response = JSONResponse(
         {"error": {"code": code, "message": message, "retryable": False}},
         status_code=status_code,
+        headers={"Retry-After": str(retry_after_s)} if retry_after_s > 0 else None,
     )
 
     async def refuse(scope: Scope, receive: Receive, send: Send) -> None:

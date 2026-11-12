@@ -162,8 +162,8 @@ def test_the_refusals_alerts_split_guessing_from_retries() -> None:
         for m in _load("monitors.json")  # type: ignore[union-attr]
         if "switch.controller.credential_refusals" in m["query"]
     }
-    assert len(refusal_monitors) == 2
-    (paging,) = [m for m in refusal_monitors.values() if "route IN" in m["query"]]
+    assert len(refusal_monitors) == 3
+    (paging,) = [m for m in refusal_monitors.values() if "reason IN" in m["query"]]
     (routes,) = re.findall(r"route IN \(([^)]*)\)", paging["query"])
     assert set(routes.split(",")) == {"agent", "controller", "hosted_controller"}
     (reasons,) = re.findall(r"reason IN \(([^)]*)\)", paging["query"])
@@ -173,9 +173,33 @@ def test_the_refusals_alerts_split_guessing_from_retries() -> None:
         "wrong",
         "missing",
     }
-    (exchange,) = [m for m in refusal_monitors.values() if m is not paging]
-    assert "route:management" in exchange["query"]
+    (exchange,) = [
+        m
+        for m in refusal_monitors.values()
+        if m is not paging and "lockout_started" not in m["query"]
+    ]
+    # Token exchange, enrolment and the in-cluster workers' own credentials:
+    # retries after a revoke or a rotation look like guesses, so low urgency.
+    (low,) = re.findall(r"route IN \(([^)]*)\)", exchange["query"])
+    assert set(low.split(",")) == {
+        "management",
+        "hosted_provisioner",
+        "hosted_operator",
+    }
     assert exchange["priority"] > paging["priority"]
+
+
+def test_a_lockout_starting_has_a_low_urgency_alert() -> None:
+    """v2's per-address lockout: several starting is worth a look, not a page."""
+    (lockouts,) = [
+        m
+        for m in _load("monitors.json")  # type: ignore[union-attr]
+        if "reason:lockout_started" in m["query"]
+    ]
+    assert "switch.controller.credential_refusals" in lockouts["query"]
+    assert "service:REPLACE-WITH-SERVICE" in lockouts["query"]
+    assert "env:" not in lockouts["query"]
+    assert lockouts["priority"] >= 4
 
 
 def test_no_monitor_names_one_deployment() -> None:
@@ -198,6 +222,13 @@ _READ_WITH_MAX = (
     "switch.hosted.agents",
     "switch.hosted.sessions",
     "switch.hosted.provider_login_problems",
+    # Hosted agents v2 boxes' gauges, reported the same way.
+    "switch.hosted.agent_restarts_10m",
+    "switch.hosted.agent_oom_kills",
+    "switch.hosted.waiting_for_room",
+    "switch.hosted.boxes_valve_memory",
+    "switch.hosted.gateway",
+    "switch.hosted.alerts_open",
 )
 
 

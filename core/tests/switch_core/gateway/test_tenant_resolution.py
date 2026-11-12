@@ -37,9 +37,12 @@ paper over here.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated
 
@@ -76,6 +79,8 @@ from switch_core.gateway.schemas import LoginRequest
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
 from switch_core.organization_directory import LocalDirectory
+from switch_core.visibility.guards import get_operator_list
+from switch_core.visibility.operators import OperatorList
 from tests.conftest import empty_the_database
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
@@ -156,6 +161,8 @@ def _session_app(
     signup_mode: str,
     invite_email_enabled: bool = False,
     tenants_isolated: bool = True,
+    operators: OperatorList | None = None,
+    hosted_v2: bool = True,
 ) -> FastAPI:
     """A route-scoped app for `GET /auth/session`, stubbed as `_app` is."""
 
@@ -176,10 +183,13 @@ def _session_app(
         gateway_signup_mode=signup_mode,
         gateway_max_workspaces_per_user=3,
         invite_email_enabled=invite_email_enabled,
+        hosted_box_provisioning=hosted_v2,
     )
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: SimpleNamespace(
         tenants_isolated=tenants_isolated
     )
+    if operators is not None:
+        app.dependency_overrides[get_operator_list] = lambda: operators
     return app
 
 
@@ -237,6 +247,7 @@ async def _make_user_with_memberships(
     *,
     name: str,
     tenant_ids: list[str],
+    role: str = "user",
 ) -> str:
     """A user with one membership in each of `tenant_ids`, creating whichever
     of them isn't tenant zero."""
@@ -245,7 +256,7 @@ async def _make_user_with_memberships(
             if tenant_id != TENANT_ZERO_ID:
                 session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
                 await session.flush()
-        user = User(name=name, email=f"{name}@example.invalid", role="user")
+        user = User(name=name, email=f"{name}@example.invalid", role=role)
         session.add(user)
         await session.flush()
         for tenant_id in tenant_ids:
@@ -398,6 +409,8 @@ class TestSessionStateEndpoint:
         signup_mode: str,
         invite_email_enabled: bool = False,
         tenants_isolated: bool = True,
+        operators: OperatorList | None = None,
+        hosted_v2: bool = True,
     ) -> httpx.Response:
         async with _client(
             _session_app(
@@ -405,6 +418,8 @@ class TestSessionStateEndpoint:
                 signup_mode=signup_mode,
                 invite_email_enabled=invite_email_enabled,
                 tenants_isolated=tenants_isolated,
+                operators=operators,
+                hosted_v2=hosted_v2,
             ),
             token,
         ) as client:
@@ -439,7 +454,138 @@ class TestSessionStateEndpoint:
             "name": "ready",
             "email": "ready@example.invalid",
             "is_operator": False,
+            "hosted_operator": False,
         }
+
+    async def test_with_v2_off_the_session_says_nothing_of_hosted_operators(
+        self, session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
+    ) -> None:
+        """The v1/v2 switch (sweep row 21): the user is upstream's four keys,
+        and the operator list isn't read, even for someone on it."""
+        user_id = await _make_user_with_memberships(
+            session_factory, name="v1user", tenant_ids=[TENANT_ZERO_ID]
+        )
+        token = create_jwt(
+            user_id,
+            "v1user@example.invalid",
+            "user",
+            _KEYRING,
+            TENANT_ZERO_ID,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
+        response = await self._get(
+            session_factory,
+            token,
+            signup_mode="default_tenant",
+            operators=self._operator_list(tmp_path, [user_id]),
+            hosted_v2=False,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["user"] == {
+            "id": user_id,
+            "name": "v1user",
+            "email": "v1user@example.invalid",
+            "is_operator": False,
+        }
+
+    @staticmethod
+    def _operator_list(tmp_path: Path, ids: list[str]) -> OperatorList:
+        path = tmp_path / "operators.json"
+        path.write_text(json.dumps({"operators": ids}))
+        os.chmod(path, 0o600)
+        return OperatorList(path)
+
+    async def test_hosted_operator_comes_from_the_operator_list(
+        self, session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
+    ) -> None:
+        """Someone on Core's operator list is a hosted operator, without being
+        the server admin."""
+        user_id = await _make_user_with_memberships(
+            session_factory, name="listed", tenant_ids=[TENANT_ZERO_ID]
+        )
+        token = create_jwt(
+            user_id,
+            "listed@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
+
+        response = await self._get(
+            session_factory,
+            token,
+            signup_mode="default_tenant",
+            operators=self._operator_list(tmp_path, [user_id]),
+        )
+
+        assert response.status_code == 200, response.text
+        user = response.json()["user"]
+        assert (user["is_operator"], user["hosted_operator"]) == (False, True)
+
+    async def test_the_server_admin_flag_never_makes_a_hosted_operator(
+        self, session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
+    ) -> None:
+        """`users.role == "admin"` is not the operator list: a server admin who
+        isn't listed is not a hosted operator, and neither is anyone while the
+        list is missing or not wired."""
+        admin_id = await _make_user_with_memberships(
+            session_factory, name="admin", tenant_ids=[TENANT_ZERO_ID], role="admin"
+        )
+        token = create_jwt(
+            admin_id,
+            "admin@example.invalid",
+            "admin",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
+
+        listed_other = self._operator_list(tmp_path, ["someone-else"])
+        missing = OperatorList(tmp_path / "missing.json")
+        for operators in (listed_other, missing, None):
+            response = await self._get(
+                session_factory,
+                token,
+                signup_mode="default_tenant",
+                operators=operators,
+            )
+            assert response.status_code == 200, response.text
+            user = response.json()["user"]
+            assert (user["is_operator"], user["hosted_operator"]) == (True, False)
+
+    async def test_a_removal_from_the_list_shows_on_the_next_read(
+        self, session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
+    ) -> None:
+        user_id = await _make_user_with_memberships(
+            session_factory, name="removed", tenant_ids=[TENANT_ZERO_ID]
+        )
+        token = create_jwt(
+            user_id,
+            "removed@example.invalid",
+            "user",
+            _KEYRING,
+            None,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
+        operators = self._operator_list(tmp_path, [user_id])
+
+        first = await self._get(
+            session_factory, token, signup_mode="default_tenant", operators=operators
+        )
+        path = tmp_path / "operators.json"
+        path.write_text(json.dumps({"operators": []}))
+        os.chmod(path, 0o600)
+        second = await self._get(
+            session_factory, token, signup_mode="default_tenant", operators=operators
+        )
+
+        assert first.json()["user"]["hosted_operator"] is True
+        assert second.json()["user"]["hosted_operator"] is False
 
     async def test_no_claim_and_one_membership_is_ready(
         self, session_factory: async_sessionmaker[AsyncSession]

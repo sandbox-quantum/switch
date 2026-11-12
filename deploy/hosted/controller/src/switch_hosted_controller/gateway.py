@@ -43,6 +43,13 @@ PENDING_STATES = {
 }
 
 
+def ec2_machines(listed: list) -> list:
+    """Only the machines this EC2 reconciler runs: Core's `backend` is `vm`, or absent from an older Core, which only
+    has EC2 machines. A provisioned box (`box`) is the box operator's and the scaler's, so it's never synced, prepared or
+    observed here, and nor is any value this doesn't know, or an item that isn't an object at all: it fails closed."""
+    return [item for item in listed if isinstance(item, dict) and item.get("backend", "vm") == "vm"]
+
+
 def bundle_token(machine_id: str, bundle_revision: int) -> str:
     return str(uuid5(NAMESPACE_URL, f"{machine_id}:{bundle_revision}"))
 
@@ -173,7 +180,7 @@ class Gateway:
         response = self.request("/machines")
         if not isinstance(response, dict) or not isinstance(response.get("machines"), list):
             raise ConfigError("Cloud gateway returned an invalid machine list.")
-        return response["machines"]
+        return ec2_machines(response["machines"])
 
     def sync_machines(self, listed: list[dict]) -> None:
         active_ids = {item.get("machine_id") for item in listed if isinstance(item, dict)}

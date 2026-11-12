@@ -1,0 +1,169 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: switch-egress-lists
+  name: switch-egress-lists
+  namespace: egress-lists
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: switch-egress-lists
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: switch-egress-lists
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - switch-egress-lists
+        env:
+        - name: SWITCH_EGRESS_PROXY
+          value: squid.egress-proxy.svc:3128
+        - name: SWITCH_EGRESS_DEFAULT_PARTS
+          value: github
+        - name: SWITCH_EGRESS_DEFAULT_SPLIT
+          value: 'true'
+        image: __EGRESS_LISTS_IMAGE__
+        imagePullPolicy: IfNotPresent
+        name: egress-lists
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 20m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: "/dev/termination-log"
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: "/var/run/secrets/kubernetes.io/serviceaccount"
+          name: kube
+          readOnly: true
+        - mountPath: "/tmp"
+          name: tmp
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      nodeSelector:
+        switch.dev/pool: agents
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: egress-lists
+      serviceAccountName: egress-lists
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: kube
+        projected:
+          defaultMode: 288
+          sources:
+          - serviceAccountToken:
+              expirationSeconds: 3600
+              path: token
+          - configMap:
+              items:
+              - key: ca.crt
+                path: ca.crt
+              name: kube-root-ca.crt
+          - downwardAPI:
+              items:
+              - fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+                path: namespace
+      - emptyDir:
+          sizeLimit: 16Mi
+        name: tmp
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  finalizers:
+  - networking.k8s.aws/resources
+  name: default-deny
+  namespace: egress-lists
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  finalizers:
+  - networking.k8s.aws/resources
+  name: egress-lists-egress
+  namespace: egress-lists
+spec:
+  egress:
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: __API_SERVER_IP_1__/32
+    - ipBlock:
+        cidr: __API_SERVER_IP_2__/32
+    - ipBlock:
+        cidr: 172.20.0.1/32
+  podSelector:
+    matchLabels:
+      app: switch-egress-lists
+  policyTypes:
+  - Egress
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: egress-settings
+  namespace: egress-lists
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - egress-settings
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: egress-settings
+  namespace: egress-lists
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: egress-settings
+subjects:
+- kind: ServiceAccount
+  name: egress-lists
+  namespace: egress-lists
+---
+apiVersion: v1
+automountServiceAccountToken: false
+kind: ServiceAccount
+metadata:
+  name: egress-lists
+  namespace: egress-lists

@@ -149,6 +149,7 @@ def _service(
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
+        client_txn_id: str | None = None,
     ) -> SentMessage:
         sent.append(_Sent(body, extra_content))
         return SentMessage(event_id=f"evt-{len(sent)}", trust=None)

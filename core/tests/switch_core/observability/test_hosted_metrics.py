@@ -3,6 +3,9 @@
 What matters most here is what can't leave. A status report carries text a
 machine chose and ids; none of it may reach a metric, so a canary is put in
 every text field a report has and looked for in everything the metrics see.
+
+The first part covers v1 machines (`backend` `vm`); the part after it covers
+what only hosted agents v2 boxes (`backend` `box`) report.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
+from switch_core.bridges.agent.refusals import RefusalGuard
 from switch_core.observability.hosted import (
     MAX_COUNT,
     HostedSampler,
@@ -27,6 +31,7 @@ from switch_core.observability.hosted import (
     box_summary,
     record_box_report,
     record_credential_refusal,
+    record_evictions,
     record_machine_event,
     route_kind,
     snapshot_of,
@@ -172,7 +177,7 @@ class TestSnapshot:
     def test_a_stale_report_drops_out(self) -> None:
         snap = snapshot_of([_row("fresh"), _row("stale", at=timedelta(minutes=4))], NOW)
         assert snap.agents == {("vm", "running", "none"): 1}
-        assert snap.sessions_running == {"vm": 2}
+        assert snap.sessions_running == {"vm": 2, "box": 0}
 
     def test_only_machines_that_should_run_are_expected(self) -> None:
         """Machines stopped by their owner or for idleness must not set off
@@ -189,8 +194,8 @@ class TestSnapshot:
             ],
             NOW,
         )
-        assert snap.boxes_expected == {"vm": 3}
-        assert snap.boxes_reporting == {"vm": 1}
+        assert snap.boxes_expected == {"vm": 3, "box": 0}
+        assert snap.boxes_reporting == {"vm": 1, "box": 0}
 
     def test_a_woken_machine_is_not_expected_until_it_reports(self) -> None:
         """Waking a ready machine makes it prove itself again
@@ -217,12 +222,12 @@ class TestSnapshot:
         )
         snap = snapshot_of([row], NOW)
         assert (machine.state, machine.desired_state) == ("provisioning", "running")
-        assert snap.boxes_expected == {"vm": 0}
+        assert snap.boxes_expected == {"vm": 0, "box": 0}
 
     def test_a_machine_of_an_unknown_kind_is_left_out(self) -> None:
         snap = snapshot_of([_row(backend=CANARY)], NOW)
         assert snap.agents == {}
-        assert snap.boxes_expected == {"vm": 0}
+        assert snap.boxes_expected == {"vm": 0, "box": 0}
 
     def test_every_reading_obeys_the_catalogue_and_carries_no_text(
         self, registry: MetricsRegistry
@@ -248,7 +253,8 @@ class TestSnapshot:
         snap = snapshot_of([], NOW)
         registry.register_observer(lambda: snapshot_readings(snap))
         points = _points(registry)
-        assert len(points["switch.hosted.agents"]) == 7 * 4
+        # Every process and session state, for each kind of machine.
+        assert len(points["switch.hosted.agents"]) == 2 * 7 * 4
         assert all(value == 0.0 for _a, value in points["switch.hosted.agents"])
 
 
@@ -404,7 +410,9 @@ class TestSamplerWithoutTheLock:
 # ── Against a real Postgres ──────────────────────────────────────────────────
 
 
-async def _seed_machine(session_factory, *, summary: dict[str, Any]) -> str:
+async def _seed_machine(
+    session_factory, *, summary: dict[str, Any], backend: str = "vm"
+) -> str:
     """A cloud machine with one fresh controller report carrying `summary`.
     The table is global, so no tenant is involved."""
     from uuid import uuid4
@@ -437,6 +445,7 @@ async def _seed_machine(session_factory, *, summary: dict[str, Any]) -> str:
                 },
             },
             heartbeat_at=now,
+            backend=backend,
         )
         session.add(machine)
         await session.commit()
@@ -456,7 +465,7 @@ class TestOneProcessReports:
             snap = await first.sample_once()
             assert snap is not None
             assert snap.agents == {("vm", "running", "none"): 1}
-            assert snap.boxes_expected == snap.boxes_reporting == {"vm": 1}
+            assert snap.boxes_expected == snap.boxes_reporting == {"vm": 1, "box": 0}
             assert await second.sample_once() is None
             assert list(second.readings()) == []
 
@@ -482,7 +491,7 @@ class TestOneProcessReports:
         finally:
             await sampler.aclose()
         assert snap is not None
-        assert snap.boxes_expected == {"vm": 1}
+        assert snap.boxes_expected == {"vm": 1, "box": 0}
         assert snap.agents == {("vm", "running", "none"): 1}
 
 
@@ -575,3 +584,331 @@ class TestCatalogueAdditions:
             a["reason"] for a, _ in _points(registry)["switch.hosted.machine_events"]
         )
         assert reasons == ["stop_failed", "wake_failed"]
+
+
+# ── Hosted agents v2 boxes ───────────────────────────────────────────────────
+# What only a box reports (restarts, the memory guard, the valve, the provider
+# gateway), kept apart from v1 machines' counts.
+
+
+def _box_summary(machine: dict[str, Any], agents: list[Any]) -> dict[str, Any]:
+    return box_summary(machine, agents, backend="box")
+
+
+def _box_agent(**overrides: Any) -> dict[str, Any]:
+    return _agent(
+        **{"session": "active", "restarts_10m": 0, "oom_kills": 0, **overrides}
+    )
+
+
+def _box_row(machine_id: str = "m1", **kwargs: Any) -> MachineRow:
+    kwargs.setdefault("summary", _box_summary(_machine(), [_box_agent()]))
+    return _row(machine_id, backend="box", **kwargs)
+
+
+class TestBoxOnlySummary:
+    def test_no_id_or_text_from_a_box_report_reaches_the_summary(self) -> None:
+        summary = _box_summary(
+            _machine(valve_memory=CANARY, gateway_capped=CANARY, guard_stops=CANARY),
+            [
+                _box_agent(),
+                _box_agent(process="crashed", reason=CANARY, detail=CANARY),
+                _box_agent(process=CANARY, session=CANARY),
+                _box_agent(
+                    session=CANARY,
+                    waiting_for_room={"count": 2, "oldest_since": CANARY},
+                ),
+                {CANARY: CANARY},
+                CANARY,
+            ],
+        )
+        assert CANARY not in json.dumps(summary)
+
+    def test_session_states_map_onto_the_fixed_set(self) -> None:
+        summary = _box_summary(
+            _machine(),
+            [
+                _box_agent(),
+                _box_agent(session="parked", process="running"),
+                _box_agent(session=None, process="pending"),
+                _box_agent(session="something-new"),
+                _box_agent(process="something-new"),
+            ],
+        )
+        assert summary["agents"] == {
+            "running:active": 1,
+            "running:parked": 1,
+            "pending:none": 1,
+            "running:none": 1,
+        }
+
+    def test_box_counts_are_bounded_ints(self) -> None:
+        summary = _box_summary(
+            _machine(
+                sessions_max=10**12,
+                gateway_agents=True,
+                gateway_refused=-4,
+                guard_stops=3,
+                valve_parks=10**9,
+            ),
+            [
+                _box_agent(restarts_10m=10**12, oom_kills="7"),
+                _box_agent(restarts_10m=MAX_COUNT),
+            ],
+        )
+        assert summary["sessions_max"] == MAX_COUNT
+        assert summary["gateway_agents"] == 0
+        assert summary["gateway_refused"] == 0
+        assert summary["restarts_10m"] == MAX_COUNT
+        assert summary["oom_kills"] == 0
+        assert summary["guard_stops"] == 3
+        assert summary["valve_parks"] == MAX_COUNT
+
+    def test_missing_since_start_counts_stay_missing(self) -> None:
+        summary = _box_summary(_machine(), [])
+        assert summary["guard_stops"] is None
+        assert summary["valve_parks"] is None
+
+    def test_a_v1_machine_keeps_no_box_only_field(self) -> None:
+        summary = box_summary(
+            _machine(gateway_agents=4, guard_stops=2), [_box_agent(restarts_10m=3)]
+        )
+        assert set(summary) == {
+            "agents",
+            "stopped",
+            "sessions_running",
+            "sessions_max",
+            "login_problems",
+        }
+
+
+class TestBoxSnapshot:
+    def test_a_stale_box_report_drops_out(self) -> None:
+        snap = snapshot_of(
+            [_box_row("fresh"), _box_row("stale", at=timedelta(minutes=4))], NOW
+        )
+        assert snap.agents == {("box", "running", "active"): 1}
+        assert list(snap.box_counts) == ["fresh/w1"]
+
+    def test_a_v1_machine_adds_nothing_to_the_box_only_gauges(self) -> None:
+        summary = _box_summary(
+            _machine(gateway_agents=4, valve_memory="failing", guard_stops=2),
+            [_box_agent(restarts_10m=3)],
+        )
+        snap = snapshot_of([_row(summary=summary)], NOW)
+        assert snap.restarts_10m == 0
+        assert snap.gateway_agents == 0
+        assert snap.valve_memory == {"unprotected": 0, "failing": 0}
+        assert snap.box_counts == {}
+
+    def test_the_expected_rule_is_one_function(self) -> None:
+        """A change to `expected_to_run` changes the count with no other
+        change."""
+        from switch_core.observability import hosted
+
+        rows = [_box_row("a"), _box_row("b")]
+        original = hosted.expected_to_run
+        try:
+            hosted.expected_to_run = lambda row: row.id == "a"  # type: ignore[assignment]
+            snap = snapshot_of(rows, NOW)
+        finally:
+            hosted.expected_to_run = original  # type: ignore[assignment]
+        assert snap.boxes_expected == {"vm": 0, "box": 1}
+
+    def test_only_boxes_that_should_run_are_expected(self) -> None:
+        """Paused, turned off or stopped boxes must not set off the silent-box alert."""
+        snap = snapshot_of(
+            [
+                _box_row("up"),
+                _box_row("silent", reported=timedelta(minutes=10)),
+                _box_row("never", reported=None),
+                _box_row("paused", desired="stopped"),
+                _box_row("stopping", state="stopping", desired="stopped"),
+                _box_row("stopped", state="stopped", desired="stopped"),
+                _box_row("starting", state="provisioning"),
+            ],
+            NOW,
+        )
+        assert snap.boxes_expected == {"vm": 0, "box": 3}
+        assert snap.boxes_reporting == {"vm": 0, "box": 1}
+
+    def test_every_box_reading_obeys_the_catalogue(
+        self, registry: MetricsRegistry
+    ) -> None:
+        summary = _box_summary(
+            _machine(valve_memory="unprotected", gateway_agents=2, gateway_capped=True),
+            [_box_agent(), _box_agent(process="stopped", reason="out_of_memory")],
+        )
+        snap = snapshot_of([_box_row(summary=summary)], NOW)
+        registry.register_observer(lambda: snapshot_readings(snap))
+        # Collecting validates every name and attribute set against the catalogue.
+        gauges = _points(registry)
+        assert ({"kind": "capped_boxes"}, 1.0) in gauges["switch.hosted.gateway"]
+        assert ({"state": "unprotected"}, 1.0) in gauges[
+            "switch.hosted.boxes_valve_memory"
+        ]
+        assert ({"reason": "out_of_memory", "backend": "box"}, 1.0) in gauges[
+            "switch.hosted.agents_stopped"
+        ]
+        for points in gauges.values():
+            for attributes, _value in points:
+                assert CANARY not in json.dumps(attributes)
+
+
+def _sampler() -> HostedSampler:
+    return HostedSampler(lambda: create_async_engine("sqlite+aiosqlite://"))
+
+
+class TestRises:
+    def _rises(
+        self, registry: MetricsRegistry, sampler: HostedSampler, **counts
+    ) -> dict:
+        sampler._record_rises(counts)
+        points = _points(registry)
+        return {
+            "guard": sum(v for _a, v in points.get("switch.hosted.guard_stops", [])),
+            "parks": sum(v for _a, v in points.get("switch.hosted.valve_parks", [])),
+        }
+
+    def test_the_first_sight_is_a_baseline(self, registry: MetricsRegistry) -> None:
+        sampler = _sampler()
+        assert self._rises(registry, sampler, a=(5, 9)) == {"guard": 0, "parks": 0}
+
+    def test_a_rise_is_counted_once(self, registry: MetricsRegistry) -> None:
+        sampler = _sampler()
+        self._rises(registry, sampler, a=(5, 9))
+        assert self._rises(registry, sampler, a=(7, 10)) == {"guard": 2, "parks": 1}
+        assert self._rises(registry, sampler, a=(7, 10)) == {"guard": 0, "parks": 0}
+
+    def test_a_controller_restart_reads_as_a_reset(
+        self, registry: MetricsRegistry
+    ) -> None:
+        sampler = _sampler()
+        self._rises(registry, sampler, a=(5, 9))
+        assert self._rises(registry, sampler, a=(1, 0)) == {"guard": 1, "parks": 0}
+
+    def test_a_box_that_went_silent_starts_again_from_a_baseline(
+        self, registry: MetricsRegistry
+    ) -> None:
+        sampler = _sampler()
+        self._rises(registry, sampler, a=(5, 9))
+        self._rises(registry, sampler)
+        assert self._rises(registry, sampler, a=(8, 9)) == {"guard": 0, "parks": 0}
+
+    def test_a_box_without_the_counts_adds_nothing(
+        self, registry: MetricsRegistry
+    ) -> None:
+        sampler = _sampler()
+        self._rises(registry, sampler, a=(None, None))
+        assert self._rises(registry, sampler, a=(None, None)) == {
+            "guard": 0,
+            "parks": 0,
+        }
+
+
+class TestBoxRecordedWhereTheyArrive:
+    def test_memory_histograms(self, registry: MetricsRegistry) -> None:
+        record_box_report(_machine(mem_anon_bytes=2048), "box")
+        record_box_report(_machine(mem_total_bytes=0), "box")
+        record_box_report(_machine(mem_free_bytes=True), "box")
+        points = _points(registry)
+        assert points["switch.hosted.box_memory_used"] == [({"backend": "box"}, 75.0)]
+        assert points["switch.hosted.box_anon_memory"] == [({}, 2048.0)]
+
+    def test_evictions(self, registry: MetricsRegistry) -> None:
+        record_evictions(3)
+        record_evictions(0)
+        record_evictions(None)
+        assert _points(registry)["switch.hosted.box_evictions"] == [({}, 3.0)]
+
+    def test_the_refusal_guard_counts_by_reason_and_route_only(
+        self, registry: MetricsRegistry
+    ) -> None:
+        guard = RefusalGuard(lockout_after=2)
+        guard.refused(
+            "203.0.113.9", reason="invalid_credential", route="controller", method="GET"
+        )
+        guard.refused("203.0.113.9", reason=CANARY, route="controller", method="GET")
+        guard.refused(
+            "203.0.113.9", reason="token_expired", route="controller", method="GET"
+        )
+        guard.refused(
+            "unknown", reason="missing_credential", route="agent", method="GET"
+        )
+        points = _points(registry)["switch.controller.credential_refusals"]
+        assert {a["reason"]: v for a, v in points} == {
+            "invalid_credential": 1.0,
+            "other": 1.0,
+            "lockout_started": 1.0,
+            # Counted while locked out too: one per refused credential.
+            "token_expired": 1.0,
+            "missing_credential": 1.0,
+        }
+        for attributes, _value in points:
+            assert set(attributes) == {"reason", "route"}
+            assert attributes["route"] in {"agent", "controller"}
+        assert "203.0.113" not in json.dumps(points)
+
+    def test_a_refusal_left_to_the_response_is_not_counted_twice(
+        self, registry: MetricsRegistry
+    ) -> None:
+        """The middleware's 401 counts itself, so the guard only logs it, but
+        a lockout starting is still counted."""
+        guard = RefusalGuard(lockout_after=2)
+        for _ in range(2):
+            guard.refused(
+                "203.0.113.9",
+                reason="invalid_credential",
+                route="controller",
+                method="GET",
+                count=False,
+            )
+        points = _points(registry)["switch.controller.credential_refusals"]
+        assert {a["reason"]: v for a, v in points} == {"lockout_started": 1.0}
+
+    def test_nothing_box_only_is_recorded_without_an_otlp_endpoint(self) -> None:
+        """No registry is installed then, and every call is a no-op."""
+        uninstall()
+        record_box_report(_machine(mem_anon_bytes=1), "box")
+        record_evictions(2)
+        record_credential_refusal("locked_out", "hosted_operator")
+        assert metrics().enabled is False
+        assert metrics().collect() == []
+
+
+class TestOneProcessReportsBoxes:
+    async def test_a_box_is_read_with_its_backend(
+        self, session_factory, postgres_schema: str
+    ) -> None:
+        await _seed_machine(
+            session_factory,
+            summary=_box_summary(_machine(), [_box_agent()]),
+            backend="box",
+        )
+        sampler = HostedSampler(lambda: _unpooled(postgres_schema))
+        try:
+            snap = await sampler.sample_once()
+        finally:
+            await sampler.aclose()
+        assert snap is not None
+        assert snap.agents == {("box", "running", "active"): 1}
+        assert snap.boxes_expected == snap.boxes_reporting == {"vm": 0, "box": 1}
+
+    async def test_the_restricted_runtime_role_can_read_the_boxes(
+        self, rls_harness
+    ) -> None:
+        """The deployment runs as a role row-level security applies to."""
+        url = rls_harness.restricted_engine.url.render_as_string(hide_password=False)
+        await _seed_machine(
+            rls_harness.owner,
+            summary=_box_summary(_machine(), [_box_agent()]),
+            backend="box",
+        )
+        sampler = HostedSampler(lambda: _unpooled(url))
+        try:
+            snap = await sampler.sample_once()
+        finally:
+            await sampler.aclose()
+        assert snap is not None
+        assert snap.boxes_expected == {"vm": 0, "box": 1}
+        assert snap.agents == {("box", "running", "active"): 1}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -10,9 +11,12 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    TypeAdapter,
+    ValidationError,
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
 from switch_core.bridges.collaboration.models import (
@@ -22,11 +26,16 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.db.audit import OrganizationIssueKind
 from switch_core.db.models import (
+    BUDGET_METRICS,
+    DAILY_CAP_PERIOD_HOURS,
     MAX_BUDGET_AMOUNT,
     MAX_BUDGET_PERIOD_HOURS,
+    MAX_DAILY_CAP,
     MAX_MESSAGE_RETENTION_DAYS,
+    PER_MODEL_METRICS,
     UsageMetric,
 )
+from switch_core.hosted_v2 import process_hosted_v2
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -1282,6 +1291,14 @@ class SessionStateUser(BaseModel):
     # The deployment operator (`users.role == "admin"`), who administers every
     # workspace and the deployment-wide user list.
     is_operator: bool
+    # On Core's Switch operator list (`visibility/operators.py`), the only
+    # thing that admits someone to the hosted operator routes. Never derived
+    # from `is_operator`. A hint for showing Hosted in the web's navigation:
+    # each operator route still checks the list itself. Left out of the answer
+    # with hosted agents v2 off, as upstream (sweep row 21).
+    hosted_operator: bool | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class SessionStateResponse(BaseModel):
@@ -1390,6 +1407,15 @@ class AuditEventDetail(BaseModel):
     target_type: str
     target_id: str | None
     details: dict[str, Any] | None
+
+
+class NamedAuditEventDetail(AuditEventDetail):
+    """An audit entry with names, sent only with hosted agents v2 on: with it
+    off, the entry is upstream's, with no name keys (the v1/v2 switch)."""
+
+    # The workspace's own members only; never an operator.
+    actor_name: str | None = None
+    target_name: str | None = None
 
 
 class JoinDomainDetail(BaseModel):
@@ -2081,6 +2107,31 @@ class TemplateValidateResponse(BaseModel):
     warnings: list[TemplateFinding]
 
 
+def daily_cap_problem(
+    *, agent_id: str | None, model: str, amount_limit: int, period_hours: int
+) -> None:
+    """Raise unless this is a valid hosted daily AI cap: every
+    agent, no model, 24 hours, and 1 to `MAX_DAILY_CAP` calls."""
+    if agent_id is not None or model:
+        raise ValueError("The daily AI cap covers every agent, with no model")
+    if period_hours != DAILY_CAP_PERIOD_HOURS:
+        raise ValueError("The daily AI cap is per day (24 hours)")
+    if not 1 <= amount_limit <= MAX_DAILY_CAP:
+        raise ValueError(f"The daily AI cap is 1 to {MAX_DAILY_CAP} calls")
+
+
+# The metrics before hosted agents v2, in their order: with v2 off, a budget on
+# any other is refused with the same validation error as before v2.
+_V1Metric = StrEnum(  # type: ignore[misc]
+    "UsageMetric",
+    {
+        m.name: m.value
+        for m in UsageMetric
+        if m not in (UsageMetric.AWAKE_MINUTES, UsageMetric.HOSTED_AI_CALLS)
+    },
+)
+
+
 class BudgetCreateRequest(BaseModel):
     """A new budget. `agent_id` null covers every agent in the workspace;
     `model` empty covers every model."""
@@ -2091,9 +2142,39 @@ class BudgetCreateRequest(BaseModel):
     amount_limit: int = Field(gt=0, le=MAX_BUDGET_AMOUNT)
     period_hours: int = Field(gt=0, le=MAX_BUDGET_PERIOD_HOURS)
 
+    @field_validator("metric", mode="before")
+    @classmethod
+    def _v1_metrics_while_off(cls, value: Any) -> Any:
+        """The v1/v2 switch: with hosted agents v2 off, its
+        metrics don't exist. Refused as a field error, so the 422 lists the
+        same errors, in the same order and before the handler runs, as before
+        v2."""
+        if process_hosted_v2():
+            return value
+        try:
+            TypeAdapter(_V1Metric).validate_python(value)
+        except ValidationError as error:
+            first = error.errors()[0]
+            raise PydanticCustomError(
+                first["type"], first["msg"], first.get("ctx")
+            ) from None
+        return value
+
     @model_validator(mode="after")
     def _model_only_on_token_metrics(self) -> BudgetCreateRequest:
-        if self.model and self.metric in (UsageMetric.MESSAGES, UsageMetric.TURNS):
+        if self.metric is UsageMetric.HOSTED_AI_CALLS:
+            # The hosted daily AI cap: the gateway enforces it,
+            # so it's one number a day for every agent, and nothing else.
+            daily_cap_problem(
+                agent_id=self.agent_id,
+                model=self.model,
+                amount_limit=self.amount_limit,
+                period_hours=self.period_hours,
+            )
+            return self
+        if self.metric not in BUDGET_METRICS:
+            raise ValueError(f"A {self.metric.value} budget can't be set here")
+        if self.model and self.metric not in PER_MODEL_METRICS:
             raise ValueError(
                 f"A {self.metric.value} budget cannot name a model: "
                 f"{self.metric.value} are not counted per model"

@@ -1,0 +1,1358 @@
+import { createHash } from 'node:crypto';
+import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { commandSchema } from '@switch-console/shared/session-v1';
+import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
+import { z } from 'zod';
+import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
+import { ActivityReporter, type Report } from './activity-reporter';
+import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
+import { cliToolsBase, pinnedBinary } from './cli-binaries';
+import { HostWaker } from './handoff';
+import { agentHasOwnUser } from './host-permissions';
+import { Redactions } from './redaction';
+import {
+  followupCommandId,
+  RESET_ACCEPTED_LINE,
+  RESET_RESTING_LINE,
+  retryRefusal,
+  roomControlFollowup,
+  roomControlRefusal,
+  SESSION_READY_MS,
+} from './room-control-followup';
+import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
+import {
+  planAttachments,
+  roomCommand,
+  roomFreshStartCommandId,
+  roomMessageSchema,
+  type RoomAttachmentSource,
+} from './room-prompt';
+import { type ServiceEndpointServer, startServiceEndpoint } from './service-endpoint';
+import { githubRepositoryVisible } from './service-github';
+import {
+  CONNECTOR_APPROVAL_NOTICE,
+  serviceFallbackNotice,
+  ServiceNotices,
+} from './service-notices';
+import {
+  connectParent,
+  type BusyReason,
+  type BusyState,
+  type ParentChannel,
+  type ParentPort,
+} from './session-channel';
+import { HostedSession } from './session-host';
+import { startSessionMcp } from './session-mcp';
+import { owedSessionStart, settleSessionStart, type OwedSessionStart } from './session-start';
+import {
+  needsGitHubHelpers,
+  prepareSharedConfig,
+  type SessionServices,
+  type SharedHostConfig,
+} from './shared-config';
+import { SharedState } from './shared-state';
+import {
+  instructionsChangedNote,
+  readToldInstructions,
+  recordToldInstructions,
+} from './told-instructions';
+import {
+  readToldRoomInstructions,
+  recordToldRoomInstructions,
+  roomInstructionsNote,
+  roomInstructionsUnreadNote,
+} from './told-room-instructions';
+import { startVendorClis } from './vendor-cli';
+import {
+  CALL_TIMEOUT_MS,
+  LIST_TIMEOUT_MS,
+  startVendorServers,
+  type VendorServers,
+} from './vendor-mcp';
+
+/** How long a faulted host waits for its last reports to reach Switch before it stops. */
+const FINAL_REPORT_MS = 5_000;
+
+/**
+ * A session run on behalf of its agent.
+ *
+ * The host owns the session: its transcript, its generation (epoch) and its
+ * recovery are its own and live in its state root. Switch holds none of it.
+ * It is the child of whatever started it (Console for a local session, the
+ * agent's sidecar for a remote one) and takes everything over that IPC
+ * channel: room messages the agent's controller routed to it, commands from
+ * Console, room controls and approval wakes. What it reports goes to the
+ * `/agent-sessions` routes: that a new session started and how, a row per
+ * turn step, the requests a person can answer, and the acknowledgement of
+ * answers it has applied.
+ *
+ * A host with a parent parks itself after `parkAfterMs` with nothing to do:
+ * it records `parked` and exits, and its parent starts it again when the
+ * session is next needed. A hundred quiet sessions then cost nothing.
+ */
+export type SharedHostOptions = {
+  root: string;
+  resumeOperationId?: string;
+  authenticate?: () => Promise<void>;
+  agentApiUrl: string;
+  token: string;
+  session: Session;
+  input: ProviderSessionStartInput;
+  roomConnection?: z.infer<typeof roomConnectionSchema>;
+  grant?: { roomId: string; messageId: string };
+  /** The IPC channel to the process that started this host, or null if none did. */
+  parent: ParentChannel | null;
+  /** How long the host waits with nothing to do before parking; null never parks. */
+  parkAfterMs: number | null;
+  /**
+   * The agent's own instructions as its definition stands now; null for a
+   * configuration written before they were recorded apart.
+   */
+  instructions: string | null;
+  /** The service tokens this session has been handed, scrubbed from every event it records. */
+  redactions: Redactions;
+  /** Its services falling back to the machine's own sign-in, shown in the session once it is up. */
+  serviceNotices: ServiceNotices;
+  /** How long a reset waits for the session to finish starting; `SESSION_READY_MS` unless a test says otherwise. */
+  sessionReadyMs?: number;
+};
+
+/** How long a session sits idle before its host parks, unless the environment says otherwise. */
+const roomInstructionsAnswerSchema = z.object({ instructions: z.string() });
+
+const PARK_AFTER_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The park timeout for this process: `SWITCH_SESSION_PARK_AFTER_MS` in
+ * milliseconds, `off` to never park, or one day when unset.
+ */
+export function parkAfterMs(): number | null {
+  const value = process.env.SWITCH_SESSION_PARK_AFTER_MS;
+  if (value === undefined || value === '') return PARK_AFTER_MS;
+  if (value === 'off') return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0)
+    throw new Error(
+      `SWITCH_SESSION_PARK_AFTER_MS must be a positive number of milliseconds or "off", not "${value}".`
+    );
+  return parsed;
+}
+
+/**
+ * How long a session waiting on a fresh-conversation decision keeps its host
+ * busy. Past it the decision and the room messages it holds stay recorded,
+ * but no longer count as busy, so the host may park.
+ */
+export const RESET_HOLD_MS = 15 * 60_000;
+
+/** Whether a session waits on a reset decision, and if so whether its hold has ended. */
+export type ResetHold = 'none' | 'holding' | 'ended';
+
+/**
+ * Why a session is busy, if it is: what keeps a host from parking. A session
+ * that is stopped or failed with nothing left to decide is not busy. Work the provider is still doing after its turn
+ * ended, such as background subagents, counts as a running turn.
+ */
+export function sessionBusy(
+  snapshot: Readonly<Snapshot>,
+  reset: ResetHold,
+  roomsPending: number,
+  backgroundWork: boolean
+): BusyState {
+  const reasons: BusyReason[] = [];
+  const add = (kind: BusyReason['kind'], count: number) => {
+    if (count > 0) reasons.push({ kind, count });
+  };
+  const running = snapshot.turns.filter((turn) => turn.status === 'running').length;
+  add('turn_starting', snapshot.session.status === 'starting' ? 1 : 0);
+  add('turn_running', running || (snapshot.session.status === 'running' || backgroundWork ? 1 : 0));
+  add('approval_open', snapshot.requests.filter((request) => request.state === 'open').length);
+  add('reset_waiting', reset === 'holding' ? 1 : 0);
+  add('room_pending', reset === 'ended' ? 0 : roomsPending);
+  return { busy: reasons.length > 0, reasons };
+}
+
+/**
+ * The Switch tools that put something the agent wrote in front of a room.
+ * Each posts to the room the session is connected to (only `send_attachment`
+ * can name another), so a refusal counts whichever room it was for.
+ */
+export const ROOM_POSTING_TOOLS = new Set([
+  'post_message',
+  'send_targeted_message',
+  'send_attachment',
+]);
+
+/** Why a post to the room was refused, when the result is one; null for anything else. */
+export function postFailure(name: string, result: unknown): string | null {
+  if (!ROOM_POSTING_TOOLS.has(name)) return null;
+  if (typeof result !== 'object' || result === null) return null;
+  const { isError, content } = result as { isError?: unknown; content?: unknown };
+  if (isError !== true) return null;
+  const text = Array.isArray(content)
+    ? content
+        .map((part) => (part as { text?: unknown }).text)
+        .filter((part): part is string => typeof part === 'string')
+        .join(' ')
+        .trim()
+    : '';
+  return text || 'Switch refused the post.';
+}
+
+/** Whether a Switch tool result is a post that landed. */
+export function postedToRoom(name: string, result: unknown): boolean {
+  if (!ROOM_POSTING_TOOLS.has(name)) return false;
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as { isError?: unknown }).isError !== true
+  );
+}
+
+/**
+ * The Switch tools that only read: what Switch holds (rooms, context, roles,
+ * agents, templates) or a file copied to this machine. Calling them changes
+ * nothing anyone else can see, so a turn that called only these did nothing
+ * in Switch. Any other Switch tool acts, including one added after this list.
+ */
+export const READ_ONLY_SWITCH_TOOLS = new Set([
+  'connect_to_room',
+  'download_attachment',
+  'get_advanced_config',
+  'get_agent_detail',
+  'get_my_context',
+  'get_role_detail',
+  'get_room_detail',
+  'get_room_group_detail',
+  'get_template',
+  'get_template_guide',
+  'get_template_status',
+  'list_agents',
+  'list_all_references',
+  'list_all_rooms',
+  'list_bridges',
+  'list_linked_rooms',
+  'list_machines',
+  'list_managed_agents',
+  'list_participants',
+  'list_reference_types',
+  'list_references',
+  'list_roles',
+  'list_room_groups',
+  'list_rooms',
+  'list_templates',
+  'load_internal_documents',
+  'read_context',
+]);
+
+/**
+ * Whether a Switch tool call did something in Switch: it succeeded, and the
+ * tool is not one that only reads. Every call through this session's Switch
+ * MCP server is a Switch tool, whatever it is called.
+ */
+export function actedInSwitch(name: string, result: unknown): boolean {
+  if (READ_ONLY_SWITCH_TOOLS.has(name)) return false;
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as { isError?: unknown }).isError !== true
+  );
+}
+
+class TransportError extends Error {}
+class RequestError extends Error {
+  constructor(
+    readonly code: string,
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
+/** How a room control names the session's current generation and turn. */
+const CURRENT = 'current';
+
+/** The leading code of a refusal (`SESSION_STARTING`, `SESSION_BUSY`, ...), or its first word: never the rest. */
+export function refusalCode(message: string | null | undefined): string {
+  const text = (message ?? '').replace(/^Error: /, '');
+  return /^[A-Z][A-Z0-9_]+(?=:|$|\s)/.exec(text)?.[0] ?? /^[A-Za-z_]+/.exec(text)?.[0] ?? 'UNKNOWN';
+}
+
+const approvalOutcomesSchema = z.array(
+  z.object({
+    sessionId: z.string(),
+    requestId: z.string(),
+    kind: z.enum(['approval', 'questions']),
+    state: z.enum(['answered', 'expired']),
+    answer: z.string().nullable(),
+    // Stored as Switch took it from the platform, so its keys stay snake_case.
+    answers: z
+      .array(
+        z.object({
+          question_id: z.string(),
+          selected_option_ids: z.array(z.string()),
+          custom_text: z.string().nullable(),
+        })
+      )
+      .nullable(),
+    answeredBy: z.string().nullable(),
+  })
+);
+
+export async function runSharedHost(
+  options: SharedHostOptions,
+  adapter: ProviderAdapter,
+  signal: AbortSignal
+): Promise<void> {
+  const base = new URL(options.agentApiUrl);
+  if (
+    base.protocol !== 'https:' &&
+    !(base.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname))
+  )
+    throw new Error('Shared host credentials require HTTPS or a loopback server.');
+  if (base.username || base.password || base.search || base.hash)
+    throw new Error('Agent API URL must not contain credentials, a query, or a fragment.');
+  if (options.session.sessionId !== options.input.sessionId)
+    throw new Error('Shared host session identity mismatch.');
+  const state = await SharedState.open(options);
+  const stopped = new AbortController();
+  const executionSignal = AbortSignal.any([signal, stopped.signal]);
+  const agentId = options.session.agentId;
+  const sessionPath = `/${encodeURIComponent(options.session.sessionId)}`;
+  const origin = base.href.replace(/\/$/, '');
+  let host: HostedSession | null = null;
+  let failure: unknown = null;
+  let shutdown: Promise<void> | null = null;
+  let reporting: Promise<void> | null = null;
+  let stopHearingTools: (() => void) | null = null;
+
+  const callOnce = async (
+    route: string,
+    method: 'GET' | 'POST',
+    body: unknown
+  ): Promise<unknown> => {
+    let response: Response;
+    try {
+      response = await fetch(`${origin}${route}`, {
+        method,
+        headers: { authorization: `Bearer ${options.token}`, 'content-type': 'application/json' },
+        body: method === 'POST' ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.any([executionSignal, AbortSignal.timeout(5000)]),
+        redirect: 'error',
+      });
+    } catch (error) {
+      if (executionSignal.aborted) throw error;
+      throw new TransportError(`Switch unavailable: ${String(error)}`);
+    }
+    if ([429, 500, 502, 503, 504].includes(response.status))
+      throw new TransportError(`Switch unavailable (${response.status}).`);
+    if (!response.ok) {
+      const text = await response.text();
+      let code = '';
+      try {
+        code = JSON.parse(text).code ?? '';
+      } catch {
+        /* The response may be plain text. */
+      }
+      throw new RequestError(
+        code,
+        response.status,
+        `Switch refused ${route} (${response.status}): ${text}`
+      );
+    }
+    return response.json();
+  };
+  /** Retried while Switch is unreachable; any answer, including a refusal, returns. */
+  const agentSessions = async (path: string, method: 'GET' | 'POST', body: unknown) => {
+    let disconnected = false;
+    while (true) {
+      executionSignal.throwIfAborted();
+      try {
+        const result = await callOnce(`/agent-sessions${path}`, method, body);
+        if (disconnected) console.info('Connection to Switch restored.');
+        return result;
+      } catch (error) {
+        if (!(error instanceof TransportError)) throw error;
+        if (!disconnected) console.warn(error.message);
+        disconnected = true;
+        await delay(500, undefined, { signal: executionSignal });
+      }
+    }
+  };
+  const stopExecution = async () => {
+    if (host) {
+      shutdown ??= host.shutdown();
+      await shutdown;
+    }
+  };
+  const onAbort = () => {
+    void stopExecution().catch((error) => {
+      failure ??= error;
+    });
+  };
+  executionSignal.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    // Names this session to its parent, which makes the agent's tool calls
+    // as this session: the room it connects to is its own rather than its
+    // connection's, which it shares with the agent's other sessions.
+    let identified = '';
+    const identify = (session: { hostId: string; epoch: string }) => {
+      const identity = {
+        agentId,
+        sessionId: options.session.sessionId,
+        hostId: session.hostId,
+        epoch: session.epoch,
+      };
+      const key = JSON.stringify(identity);
+      if (key === identified) return;
+      identified = key;
+      options.parent?.identify(identity);
+    };
+    identify(options.session);
+    await state.journal.append({ type: 'running' });
+    // Read whether or not this session serves rooms: it is also where the
+    // agent's controller hands over commands Switch relayed from Console.
+    const waker = new HostWaker();
+    let lastActive = performance.now();
+    const active = () => {
+      lastActive = performance.now();
+    };
+    const rooms = options.roomConnection ? await SharedRoomInbox.open(options.root) : null;
+    // Room attachments fetched ahead of the command that names them, so one
+    // that cannot be fetched is left out and said, rather than failing the turn.
+    const roomAttachments = new Map<string, { data: Uint8Array; sha256: string }>();
+    const fetchRoomAttachment = async (
+      source: RoomAttachmentSource,
+      bytes: number
+    ): Promise<{ data: Uint8Array; sha256: string }> => {
+      const url = `${origin}/agents/${encodeURIComponent(agentId)}/rooms/${encodeURIComponent(source.roomId)}/media?mxc=${encodeURIComponent(source.mxc)}`;
+      const response = await fetch(url, {
+        headers: { authorization: `Bearer ${options.token}` },
+        signal: AbortSignal.any([executionSignal, AbortSignal.timeout(15000)]),
+        redirect: 'error',
+      });
+      if (!response.ok || !response.body)
+        throw new Error(`the room would not hand it over (${response.status})`);
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > MAX_ATTACHMENT_BYTES || size > bytes)
+            throw new Error('it is larger than the room said');
+          chunks.push(value);
+        }
+      } finally {
+        await reader.cancel();
+      }
+      const data = Buffer.concat(chunks);
+      if (data.byteLength !== bytes) throw new Error('it is not the size the room said');
+      return { data, sha256: createHash('sha256').update(data).digest('hex') };
+    };
+
+    const parentChannel = options.parent;
+    host = await HostedSession.start(
+      options.root,
+      {
+        ...(parentChannel && options.roomConnection
+          ? {
+              replyToRoom: async (reply) => {
+                const answer = await parentChannel.ask({ type: 'room-reply', ...reply });
+                return isAlready(answer) ? 'already' : 'posted';
+              },
+            }
+          : {}),
+        session: options.session,
+        input: options.input,
+        resumeOperationId: options.resumeOperationId,
+        authenticate: options.authenticate,
+        redactions: options.redactions,
+        connectorApproval: () => options.serviceNotices.raise(CONNECTOR_APPROVAL_NOTICE),
+        stageAttachments: (attachments) =>
+          Promise.all(
+            attachments.map((attachment) =>
+              stageAttachment(options.root, attachment, async () => {
+                const fetched =
+                  roomAttachments.get(attachment.attachmentId) ??
+                  (await readStagedAttachment(options.root, attachment));
+                if (!fetched)
+                  throw new Error(
+                    `Attachment ${attachment.name} is not one this session was given in a room, so there is nowhere to fetch it from.`
+                  );
+                roomAttachments.delete(attachment.attachmentId);
+                return fetched;
+              })
+            )
+          ),
+      },
+      adapter
+    );
+    // Every Switch tool call the provider makes goes up this pipe, whatever
+    // the provider calls the tool in its own transcript.
+    const hosted = host;
+    stopHearingTools =
+      parentChannel?.onToolAnswered((name, result) => {
+        if (postedToRoom(name, result)) hosted.agentPostedToRoom();
+        if (actedInSwitch(name, result)) hosted.agentActedInSwitch();
+        const failure = postFailure(name, result);
+        if (failure !== null) hosted.agentPostFailed(failure);
+      }) ?? null;
+
+    options.serviceNotices.attach((message) => host!.serviceFallback(message));
+
+    // ── What the host reports ────────────────────────────────────────────────
+    const reporter = await ActivityReporter.load(options.root);
+    // A session first reporting here may have a long history behind it, and
+    // reporting that would put cards up for requests settled long ago.
+    if (reporter.fresh) await reporter.advance(host.replay(0).throughSequence);
+    reporter.catchUp(host.replay(0).events.filter((event) => event.sequence <= reporter.cursor));
+    let reportingUnsupported = false;
+    const unsupported = (error: unknown): boolean => {
+      if (!(error instanceof RequestError) || error.status !== 404 || error.code) return false;
+      reportingUnsupported = true;
+      console.warn(
+        'This Switch server does not accept session activity or approval requests, so messaging platforms do not show what this session is doing.'
+      );
+      return true;
+    };
+    const send = async (report: Report): Promise<void> => {
+      if (report.kind === 'activity')
+        await agentSessions(`${sessionPath}/activity`, 'POST', report.row);
+      else if (report.kind === 'approval.open')
+        await agentSessions(`${sessionPath}/approvals`, 'POST', report.body);
+      else
+        await agentSessions(
+          `${sessionPath}/approvals/${encodeURIComponent(report.requestId)}/close`,
+          'POST',
+          null
+        );
+    };
+    // A server that predates usage refuses a row that carries it. The row is
+    // what platforms draw, so it goes again without, and the spend is not counted.
+    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
+      const { usage: _usage, ...row } = item.row;
+      console.warn(
+        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+      );
+      await send({ kind: 'activity', row });
+      return true;
+    };
+    // One report at a time: the loop below and the last one before a fault share the cursor.
+    let reportChain: Promise<void> = Promise.resolve();
+    const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
+    const report = async () => {
+      if (reportingUnsupported) return;
+      const { events } = host!.replay(reporter.cursor);
+      if (!events.length) return;
+      for (const event of events) {
+        const reports = reporter.reports(
+          event,
+          (turnId) => host!.originOf(turnId),
+          (turnId) => host!.usageOf(turnId)
+        );
+        for (const item of reports) {
+          try {
+            await send(item);
+          } catch (error) {
+            if (!(error instanceof RequestError)) throw error;
+            if (unsupported(error)) return;
+            if (await sentWithoutUsage(item, error)) continue;
+            // A request Switch refused, or one opened before this session
+            // first reported here, has nothing to close.
+            if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;
+            console.warn(
+              `Switch refused ${item.kind} from session event ${event.sequence}; it is not shown on messaging platforms: ${error.message}`
+            );
+          }
+        }
+      }
+      await reporter.advance(events.at(-1)!.sequence);
+    };
+    let outcomesCheckedAt = -Infinity;
+    const applyOutcomes = async (force: boolean) => {
+      if (reportingUnsupported) return;
+      const woken = waker.takeApprovalWake();
+      const waiting = host!.view().requests.some((r) => r.state === 'open');
+      // The watcher's wake is the prompt route; the interval only covers a
+      // wake that was lost, and only while a person's answer is awaited.
+      if (!force && !woken && !(waiting && performance.now() - outcomesCheckedAt >= 5000)) return;
+      outcomesCheckedAt = performance.now();
+      let listed: unknown;
+      try {
+        listed = await agentSessions('/approvals/outcomes', 'GET', null);
+      } catch (error) {
+        if (unsupported(error)) return;
+        throw error;
+      }
+      for (const outcome of approvalOutcomesSchema.parse(listed)) {
+        if (outcome.sessionId !== options.session.sessionId) continue;
+        try {
+          await host!.applyApprovalOutcome({
+            requestId: outcome.requestId,
+            kind: outcome.kind,
+            state: outcome.state,
+            answer: outcome.answer,
+            answers:
+              outcome.answers?.map((answer) => ({
+                questionId: answer.question_id,
+                selectedOptionIds: answer.selected_option_ids,
+                customText: answer.custom_text,
+              })) ?? null,
+            answeredBy: outcome.answeredBy,
+          });
+        } catch (error) {
+          if (String(error).includes('HOST_STOPPING')) throw error;
+          console.error(
+            `Could not apply the answer to request ${outcome.requestId}; it is settled as a provider error: ${String(error)}`
+          );
+        }
+        await agentSessions(
+          `${sessionPath}/approvals/${encodeURIComponent(outcome.requestId)}/delivered`,
+          'POST',
+          null
+        );
+      }
+    };
+
+    // ── What reaches the host ────────────────────────────────────────────────
+    /**
+     * A room control names the session's generation and turn as `current`:
+     * Switch keeps neither, so the host puts in its own. Null for an
+     * interrupt with no turn running, which has nothing to stop.
+     */
+    const current = (command: Command): Command | null => {
+      const snapshot = host!.snapshot();
+      const resolved =
+        command.epoch === CURRENT ? { ...command, epoch: snapshot.session.epoch } : command;
+      if (resolved.body.type !== 'turn.interrupt' || resolved.body.turnId !== CURRENT)
+        return resolved;
+      const running = snapshot.turns.find((turn) => turn.status === 'running');
+      if (!running) return null;
+      return { ...resolved, body: { ...resolved.body, turnId: running.turnId } };
+    };
+    // ── Rejoining the room after a room reset or compaction ─────────────────
+    type Followup = Extract<(typeof state.journal.records)[number], { type: 'followup' }>;
+    const followups = (): Followup[] =>
+      state.journal.records.filter((record): record is Followup => record.type === 'followup');
+    const followupFor = (command: Command, requesterName: string | null): Followup | null => {
+      const action =
+        command.body.type === 'session.reset'
+          ? 'reset'
+          : command.body.type === 'session.compact'
+            ? 'compact'
+            : null;
+      if (!action || !command.origin?.roomId) return null;
+      return {
+        type: 'followup',
+        commandId: command.commandId,
+        action,
+        roomId: command.origin.roomId,
+        threadId: command.origin.threadId,
+        actorId: command.origin.actorId,
+        requesterName,
+        surface: command.origin.surface,
+      };
+    };
+    /** Queues the follow-up once; a replay after a restart finds it already recorded. */
+    const sendFollowup = async (owed: Followup): Promise<void> => {
+      const commandId = followupCommandId(owed.commandId);
+      const snapshot = host!.snapshot();
+      if (snapshot.commandStatuses.some((entry) => entry.commandId === commandId)) return;
+      await run(
+        {
+          contractVersion: 1,
+          commandId,
+          sessionId: options.session.sessionId,
+          epoch: snapshot.session.epoch,
+          origin: {
+            surface: owed.surface,
+            actorId: owed.actorId,
+            roomId: owed.roomId,
+            threadId: owed.threadId,
+            messageId: null,
+          },
+          body: {
+            type: 'message.send',
+            text: roomControlFollowup(owed),
+            attachments: [],
+            delivery: 'queue',
+          },
+        },
+        null
+      );
+    };
+    /** Tells the parent whenever the session's busy state changes. */
+    let announcedBusy = '';
+    let resetHeldSince: number | null = null;
+    const resetHold = (): ResetHold => {
+      if (!host!.resetDecisionPending) {
+        resetHeldSince = null;
+        return 'none';
+      }
+      resetHeldSince ??= Date.now();
+      return Date.now() - resetHeldSince < RESET_HOLD_MS ? 'holding' : 'ended';
+    };
+    const busyNow = (): BusyState =>
+      sessionBusy(
+        host!.view(),
+        resetHold(),
+        rooms?.pending().length ?? 0,
+        host!.backgroundWorkRunning
+      );
+    const announceBusy = () => {
+      const state = busyNow();
+      const key = JSON.stringify(state);
+      if (key === announcedBusy) return;
+      if (resetHold() === 'ended')
+        console.warn(
+          `Session ${options.session.sessionId} has waited ${RESET_HOLD_MS / 60_000} min for a fresh-conversation decision; it no longer keeps its host busy. The decision and its ${rooms?.pending().length ?? 0} held room message(s) are kept for when it next runs.`
+        );
+      announcedBusy = key;
+      options.parent?.busy(state, null);
+    };
+    // ── Telling a running conversation its instructions changed ───────────
+    // A conversation that has not started yet is given the current ones as it
+    // starts. One that has, and was told others, gets a note with the next
+    // room message: its provider would otherwise keep the old ones.
+    const instructions = options.instructions;
+    let instructionsNote: string | null = null;
+    if (instructions !== null) {
+      const told = await readToldInstructions(options.root);
+      if (host.snapshot().turns.length === 0)
+        await recordToldInstructions(options.root, instructions);
+      else if (told !== instructions) instructionsNote = instructionsChangedNote(instructions);
+    }
+    const instructionsTold = async (): Promise<void> => {
+      if (instructions === null) return;
+      await recordToldInstructions(options.root, instructions);
+      instructionsNote = null;
+    };
+    // Where the provider takes a developer message mid-conversation, that is
+    // how it hears: it outranks anything said in a user message. Otherwise
+    // the note rides on the next room message.
+    if (instructionsNote !== null && adapter.addDeveloperMessage)
+      try {
+        await adapter.addDeveloperMessage(options.session.sessionId, instructionsNote);
+        await instructionsTold();
+      } catch (error) {
+        console.warn(
+          `Could not give session ${options.session.sessionId} its changed instructions as a developer message (${error instanceof Error ? error.message : String(error)}); it is told with its next room message instead.`
+        );
+      }
+    // ── Telling a conversation the instructions of the rooms it is in ─────
+    let toldRooms = await readToldRoomInstructions(options.root);
+    const roomInstructionsTold = async (rooms: Record<string, string>): Promise<void> => {
+      toldRooms = rooms;
+      await recordToldRoomInstructions(options.root, rooms);
+    };
+    /**
+     * What to tell the conversation about a room's instructions before its
+     * message, and the instructions to record as told once the message runs
+     * (null when they could not be read, so the next message tries again).
+     */
+    const roomInstructionsFor = async (
+      roomId: string
+    ): Promise<{ note: string | null; instructions: string | null }> => {
+      if (!parentChannel || !options.roomConnection) return { note: null, instructions: null };
+      if (host!.snapshot().turns.length === 0) toldRooms = {};
+      try {
+        const { instructions } = roomInstructionsAnswerSchema.parse(
+          await parentChannel.ask({ type: 'room-instructions', roomId })
+        );
+        return {
+          note: roomInstructionsNote(roomId, instructions, toldRooms[roomId]),
+          instructions,
+        };
+      } catch (error) {
+        executionSignal.throwIfAborted();
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `Could not read room ${roomId}'s instructions for session ${options.session.sessionId} (${reason}); the session is told to read them itself.`
+        );
+        return { note: roomInstructionsUnreadNote(roomId, reason), instructions: null };
+      }
+    };
+    /**
+     * The session is to park as soon as it is idle: its machine is short of
+     * memory, or it was started only to take a reset while resting.
+     */
+    let parkRequested = false;
+    let parkWhy = 'the machine is short of memory';
+    /**
+     * Waits, up to `limitMs`, for a session that is still starting to finish:
+     * true once it has, false if it is still starting at the limit.
+     */
+    const startedWithin = (limitMs: number): Promise<boolean> => {
+      const starting = () => host!.view().session.status === 'starting';
+      if (!starting()) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          off();
+          resolve(!starting());
+        };
+        const off = host!.onPublished(() => {
+          if (!starting()) finish();
+        });
+        const timer = setTimeout(finish, limitMs);
+      });
+    };
+    /** Runs a command, answering with what the host recorded for it, or why it did not run. */
+    const run = async (
+      value: unknown,
+      requesterName: string | null,
+      room: { told: boolean; resting: boolean } = { told: true, resting: false }
+    ): Promise<CommandStatus | string> => {
+      executionSignal.throwIfAborted();
+      active();
+      const parsed = commandSchema.safeParse(value);
+      if (!parsed.success) {
+        console.warn(`Ignoring an unreadable session command: ${parsed.error.message}`);
+        return `The command is not readable: ${parsed.error.message}`;
+      }
+      const command = current(parsed.data);
+      if (!command) return 'There is no turn running to interrupt.';
+      if (command.sessionId !== options.session.sessionId) {
+        console.warn(`Ignoring command ${command.commandId}, which is for another session.`);
+        return 'The command is for another session.';
+      }
+      // A command built against an earlier generation of the session was
+      // about a conversation a reset or a restart has since replaced.
+      if (command.epoch !== host!.snapshot().session.epoch)
+        return 'STALE_EPOCH: the session has been reset or restarted since this command was made.';
+      const control = followupFor(command, requesterName);
+      // A resting session's reset is answered with a line, not a turn: its
+      // next reply starts the fresh conversation.
+      const restingReset = room.resting && control?.action === 'reset';
+      const owed = restingReset ? null : control;
+      if (owed && !followups().some((record) => record.commandId === command.commandId))
+        await state.journal.append(owed);
+      const repeated = host!
+        .snapshot()
+        .commandStatuses.some((entry) => entry.commandId === command.commandId);
+      // A session started to take this reset (it was resting) reports ready a
+      // moment after its host is up; handed the reset before then, the host
+      // turned it away as busy and the room read "while I'm working on a
+      // turn". It waits, and one still starting at the
+      // limit is refused with a reason that reads as "couldn't reset".
+      const ready =
+        command.body.type !== 'session.reset' ||
+        repeated ||
+        (await startedWithin(options.sessionReadyMs ?? SESSION_READY_MS));
+      try {
+        if (!ready)
+          throw new Error(
+            'SESSION_STARTING: the session did not finish starting in time to take the reset.'
+          );
+        await host!.command(command);
+      } catch (error) {
+        await host!.reject(command, error);
+      }
+      const status = host!
+        .snapshot()
+        .commandStatuses.find((entry) => entry.commandId === command.commandId);
+      // A refused reset leaves a trace beyond the room line: ids and the
+      // reason's code only, never the message's own text.
+      if (command.body.type === 'session.reset' && status?.status === 'rejected' && !repeated)
+        console.warn(
+          `Reset ${command.commandId} of session ${command.sessionId} was refused: ${refusalCode(status.message)}.`
+        );
+      /** Says `body` in the room the control was typed in, as the agent. */
+      const tell = (body: string, what: string): Promise<void> =>
+        control && !repeated && parentChannel && options.roomConnection
+          ? parentChannel
+              .ask({ type: 'room-reply', roomId: control.roomId, threadId: control.threadId, body })
+              .then(
+                () => undefined,
+                (error: unknown) =>
+                  console.warn(
+                    `Could not tell room ${control.roomId} that ${what}: ${String(error)}`
+                  )
+              )
+          : Promise.resolve();
+      if (control && status?.status === 'applied') {
+        if (restingReset) {
+          // Said before going back to rest, so the line is not cut off with the host.
+          await tell(RESET_RESTING_LINE, 'its resting session was reset');
+          parkRequested = true;
+          parkWhy = 'it was started only to take a reset while resting';
+          waker.nudge();
+        } else if (control.action === 'reset' && !room.told)
+          void tell(RESET_ACCEPTED_LINE, 'its reset was taken');
+      }
+      if (owed && status?.status === 'applied') await sendFollowup(owed);
+      // A refusal is answered in the room the control was typed in.
+      if (control && status?.status === 'rejected')
+        void tell(
+          roomControlRefusal(control.action, status.message),
+          `its ${control.action} was refused`
+        );
+      // A retry asked for from a room that cannot run is answered there, where it was asked.
+      if (
+        command.body.type === 'message.retry' &&
+        status?.status === 'rejected' &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection &&
+        command.origin.roomId
+      )
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: command.origin.roomId,
+            threadId: command.origin.threadId,
+            body: retryRefusal(status.message),
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `Could not tell room ${command.origin.roomId} that its retry was refused: ${String(error)}`
+            )
+          );
+      // A fresh conversation starts with the instructions this host was given,
+      // and has been told no room's.
+      if (command.body.type === 'session.reset' && status?.status === 'applied') {
+        await instructionsTold();
+        await roomInstructionsTold({});
+      }
+      return status ?? 'The host did not record the command.';
+    };
+    /** Turn each room message handed over into the command it amounts to, in order. */
+    const admitRoomMessages = async (inbox: SharedRoomInbox): Promise<void> => {
+      for (const event of inbox.pending()) {
+        const message = roomMessageSchema.safeParse(event.event);
+        if (!message.success) {
+          await host!.notice(
+            `Room message ${event.messageId} reached this session without its content, so it could not be run. Ask the sender to address the agent again.`
+          );
+          await inbox.acknowledge(event);
+          continue;
+        }
+        const attachments = planAttachments({
+          roomId: event.roomId,
+          message: message.data,
+          supportedMimeTypes: host!.snapshot().session.capabilities.attachmentMimeTypes,
+        });
+        for (const planned of attachments) {
+          if (planned.refused !== null) continue;
+          try {
+            roomAttachments.set(
+              planned.attachmentId,
+              await fetchRoomAttachment(planned.source, planned.bytes)
+            );
+          } catch (error) {
+            if (executionSignal.aborted) throw error;
+            planned.refused = `It could not be fetched: ${error instanceof Error ? error.message : String(error)}.`;
+          }
+        }
+        const room = await roomInstructionsFor(event.roomId);
+        const preface = [instructionsNote, room.note].filter((note) => note !== null);
+        const command = roomCommand({
+          agentId,
+          sessionId: options.session.sessionId,
+          epoch: host!.snapshot().session.epoch,
+          roomId: event.roomId,
+          message: message.data,
+          surface: 'switch-web',
+          attachments,
+          preface: preface.length ? preface.join('\n\n') : null,
+          firstOfConversation: host!.snapshot().turns.length === 0,
+        });
+        if (message.data.payload.routed || message.data.payload.follow_up)
+          host!.unaskedRoomTurn(command.commandId);
+        // Taken by the host before the delivery is acknowledged: the host's
+        // inbox is durable, so a crash between the two runs the message once
+        // rather than losing it.
+        const outcome = await run(command, null);
+        if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
+          if (instructionsNote !== null) await instructionsTold();
+          if (room.instructions !== null)
+            await roomInstructionsTold({ ...toldRooms, [event.roomId]: room.instructions });
+        }
+        await inbox.acknowledge(event);
+      }
+    };
+
+    /**
+     * A room message reached a conversation that cannot continue as it was —
+     * its provider lost it, or a reset was cut off. Nobody in the room can
+     * press "Start a fresh conversation" for it, so the session does: the
+     * message would otherwise wait unseen for someone at the Console. The
+     * transcript keeps everything said before.
+     */
+    const startFreshFor = async (event: { roomId: string; messageId: string }): Promise<void> => {
+      await host!.startingFreshForRoom();
+      const outcome = await run(
+        {
+          contractVersion: 1,
+          commandId: roomFreshStartCommandId(agentId, event.roomId, event.messageId),
+          sessionId: options.session.sessionId,
+          epoch: host!.snapshot().session.epoch,
+          origin: {
+            surface: 'switch-web',
+            actorId: agentId,
+            roomId: null,
+            threadId: null,
+            messageId: null,
+          },
+          body: { type: 'session.reset' },
+        },
+        null
+      );
+      if (typeof outcome === 'string')
+        throw new Error(`Could not start a fresh conversation for a room message: ${outcome}`);
+      if (outcome.status === 'rejected' || outcome.status === 'unknown')
+        throw new Error(
+          `Could not start a fresh conversation for a room message: ${outcome.message ?? outcome.code ?? outcome.status}`
+        );
+    };
+
+    identify(host.snapshot().session);
+    // A parent that started this host talks to it over IPC: commands and room
+    // messages come down the pipe, and every recorded event goes up it.
+    const parent = options.parent;
+    parent?.serve({
+      // Busy is announced before the reply, so a parent that has the reply has
+      // already heard any change the command made.
+      command: async ({ command, requesterName, roomTold, resting }) => {
+        const outcome = await run(command, requesterName, {
+          told: roomTold !== false,
+          resting: resting === true,
+        });
+        announceBusy();
+        if (typeof outcome === 'string') throw new Error(outcome);
+        return outcome;
+      },
+      room: async ({ handoff }) => {
+        if (!rooms) throw new Error('This session serves no rooms.');
+        await rooms.accept(handoff);
+        active();
+        announceBusy();
+        waker.nudge();
+        return { accepted: true };
+      },
+      snapshot: async () => host!.snapshot(),
+      reasoning: async ({ turnIds }) => host!.reasoning(turnIds),
+      park: async () => {
+        const parking =
+          !host!.backgroundWorkRunning &&
+          host!.view().session.status === 'ready' &&
+          !busyNow().busy;
+        if (parking) {
+          parkRequested = true;
+          parkWhy = 'the machine is short of memory';
+          waker.nudge();
+        }
+        return { parking };
+      },
+      approvals: async () => {
+        active();
+        waker.approvalsWaiting();
+        return null;
+      },
+      'restart-replies': async () => ({ owed: host!.retryOwedRestartReplies() }),
+    });
+    host.onPublished(active);
+    host.onPublished(() => identify(host!.snapshot().session));
+    if (parent) {
+      host.onPublished(announceBusy);
+      parent.onBarrier(async () => {
+        await host!.barrier();
+        return busyNow();
+      });
+      host.onPublished((event) => parent.push(event));
+      announceBusy();
+      parent.ready();
+    }
+    /**
+     * Nothing running, nothing waiting on a person, nothing handed over, for
+     * long enough. Subagents still at work after their turn ended count as
+     * running, and the wait starts again from when the last of them stops.
+     */
+    const idleEnough = (): boolean => {
+      if (!parent || options.parkAfterMs === null) return false;
+      if (host!.backgroundWorkRunning) {
+        active();
+        return false;
+      }
+      if (!parkRequested && performance.now() - lastActive < options.parkAfterMs) return false;
+      const idle = host!.view().session.status === 'ready' && !busyNow().busy;
+      // Work arrived after the request: it is no longer this session's turn to go.
+      if (!idle) parkRequested = false;
+      return idle;
+    };
+    for (const owed of followups()) {
+      const applied = host
+        .snapshot()
+        .commandStatuses.some(
+          (entry) => entry.commandId === owed.commandId && entry.status === 'applied'
+        );
+      if (applied) await sendFollowup(owed);
+    }
+    /**
+     * Tells the server, once, that this session is new and how it started —
+     * what its launcher recorded when it created the state root. Owed until
+     * the server answers, so a host stopped before then reports it next time;
+     * the server counts a repeat once.
+     *
+     * Its own failures stay its own. A server that predates the route answers
+     * a bare 404, which says nothing about the activity routes, so it is not
+     * taken as the `unsupported` that switches all reporting off.
+     */
+    const reportStart = async (): Promise<void> => {
+      try {
+        let owed: OwedSessionStart | 'unreadable' | null;
+        try {
+          owed = await owedSessionStart(options.root);
+        } catch (error) {
+          console.warn(
+            `Could not read how this session started, so it is not reported: ${String(error)}`
+          );
+          owed = 'unreadable';
+        }
+        if (owed === null) return;
+        if (owed !== 'unreadable') {
+          try {
+            await agentSessions(`${sessionPath}/started`, 'POST', { start_source: owed });
+          } catch (error) {
+            if (!(error instanceof RequestError)) throw error;
+            if (error.status === 404 && !error.code)
+              console.warn(
+                'This Switch server does not accept session start reports, so how this session started is not reported.'
+              );
+            else console.warn(`Switch refused this session's start report: ${error.message}`);
+          }
+        }
+        await settleSessionStart(options.root);
+      } catch (error) {
+        // Stopping is the one reason to let go: whatever is still owed is
+        // reported the next time this session's host runs.
+        if (executionSignal.aborted) throw error;
+        console.warn(`Could not report how this session started: ${String(error)}`);
+      }
+    };
+    // Reporting runs beside the session rather than in its way: while Switch
+    // is unreachable the reports wait and retry, and the session keeps working.
+    let reportingFailure: unknown = null;
+    reporting = (async () => {
+      await reportStart();
+      let force = true;
+      while (!executionSignal.aborted) {
+        await reportInTurn();
+        await applyOutcomes(force);
+        force = false;
+        await waker.idleReporting(250, executionSignal);
+      }
+    })().catch((error: unknown) => {
+      if (!executionSignal.aborted) reportingFailure = error;
+    });
+    let heldForDecision = false;
+    while (!executionSignal.aborted) {
+      if (reportingFailure) throw reportingFailure;
+      const status = host.view().session.status;
+      if (status === 'stopped') break;
+      if (status === 'error' && !host.resetDecisionPending) {
+        // What faulted it, and the turn that ended with it, are what Switch most
+        // needs to show; stopping would drop them unreported, the turn left running.
+        await Promise.race([
+          reportInTurn().catch((error: unknown) =>
+            console.warn(`Could not report this session's last events: ${String(error)}`)
+          ),
+          delay(FINAL_REPORT_MS, undefined, { signal: executionSignal }).catch(() => {}),
+        ]);
+        throw new Error(
+          'HOST_FAULTED: Provider execution failed. Inspect the transcript before recovery.'
+        );
+      }
+      if (host.resetDecisionPending) {
+        heldForDecision = true;
+        const first = rooms?.pending()[0];
+        if (first) await startFreshFor(first);
+      } else if (heldForDecision) {
+        heldForDecision = false;
+        const held = rooms?.pending().length ?? 0;
+        if (held) await host.roomBacklogDelivered(held);
+      }
+      if (rooms && ['ready', 'running'].includes(status)) await admitRoomMessages(rooms);
+      announceBusy();
+      if (idleEnough()) {
+        console.info(
+          parkRequested
+            ? `Parking session ${options.session.sessionId} early: ${parkWhy}.`
+            : `Parking session ${options.session.sessionId} after ${Math.round(options.parkAfterMs! / 1000)} s idle.`
+        );
+        // Stops answering first: a request that arrives now waits for the
+        // exit, which the parent reads as the host being gone and starts it again.
+        parent?.close();
+        await state.journal.append({ type: 'parked' });
+        break;
+      }
+      await waker.idle(250, executionSignal);
+    }
+  } catch (error) {
+    if (!signal.aborted) failure ??= error;
+  } finally {
+    stopHearingTools?.();
+    stopped.abort();
+    await reporting;
+    try {
+      await stopExecution();
+      await state.journal.append({ type: 'quiesced' });
+    } catch (error) {
+      if (failure)
+        console.warn('Shared host cleanup failed after an earlier error:', String(error));
+      failure ??= error;
+    }
+    executionSignal.removeEventListener('abort', onAbort);
+  }
+  if (failure) throw failure;
+}
+
+/**
+ * A session host as its own process: the child of Console or the agent's
+ * sidecar, which it reaches over `port`.
+ *
+ * The Switch tools are served on loopback before the provider starts, so the
+ * CLI is launched already pointing at them; every call goes up the pipe to
+ * the parent. `authenticate` checks the provider's own sign-in with the
+ * environment the CLI will get, where there is one to check.
+ */
+export async function hostSessionProcess(input: {
+  root: string;
+  config: SharedHostConfig;
+  adapter: ProviderAdapter;
+  port: ParentPort;
+  authenticate: ((input: ProviderSessionStartInput) => Promise<void>) | null;
+  /** The agent's service grants, as this session starts. */
+  services: SessionServices;
+  /**
+   * What the session is told about services that went or came since its
+   * previous host (`servicesChangeSince`); null for nothing.
+   */
+  servicesChange: string | null;
+  /** This host's bundle, which the session's service helpers run from. */
+  entrypoint: string;
+  signal: AbortSignal;
+}): Promise<void> {
+  const { config } = input;
+  const parent = connectParent(input.port);
+  const mcp = await startSessionMcp(parent);
+  const redactions = new Redactions();
+  parent.onRedactions((values) => redactions.addListed(values));
+  const serviceNotices = new ServiceNotices();
+  // An agent run as a user of its own has no sign-in of the owner's to fall back to.
+  const fallback = !agentHasOwnUser();
+  let endpoint: ServiceEndpointServer | null = null;
+  let vendors: VendorServers | null = null;
+  let clis: VendorServers | null = null;
+  try {
+    const { grants, unavailable } = input.services;
+    vendors = await startVendorServers({
+      grants,
+      ask: parent.ask,
+      redactions,
+      listTimeoutMs: LIST_TIMEOUT_MS,
+      callTimeoutMs: CALL_TIMEOUT_MS,
+      fetch,
+    });
+    clis = await startVendorClis({
+      grants,
+      ask: parent.ask,
+      redactions,
+      cwd: config.start.input.cwd,
+      stateDir: join(input.root, 'service-cli'),
+      binary: pinnedBinary({
+        base: cliToolsBase(),
+        platform: process.platform,
+        arch: process.arch,
+        fetch,
+        tar: 'tar',
+      }),
+      hostEnv: process.env,
+      platform: process.platform,
+    });
+    for (const name of Object.keys(clis.specs))
+      if (name in vendors.specs) throw new Error(`Two granted services' tools are named ${name}.`);
+    if (unavailable !== null)
+      serviceNotices.raise(
+        serviceFallbackNotice('github', `its grants could not be read: ${unavailable}`, fallback)
+      );
+    if (needsGitHubHelpers(input.services)) {
+      if (process.platform === 'win32')
+        serviceNotices.raise(
+          serviceFallbackNotice('github', "Switch's GitHub helpers do not run on Windows yet", true)
+        );
+      else
+        endpoint = await startServiceEndpoint({
+          services: grants.map((grant) => grant.service),
+          unavailable,
+          ask: parent.ask,
+          redactions,
+          notices: serviceNotices,
+          fallback,
+          repositoryVisible: githubRepositoryVisible,
+          now: Date.now,
+        });
+    }
+    const prepared = await prepareSharedConfig(
+      input.root,
+      config,
+      mcp.spec,
+      input.services,
+      endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint },
+      { ...vendors.specs, ...clis.specs },
+      (secret) => redactions.add(secret)
+    );
+    for (const notice of prepared.notices) serviceNotices.raise(notice);
+    // The people watching see it as a notice; the agent reads it with the
+    // context it resumes under, so it does not go looking for tools it no
+    // longer has.
+    if (input.servicesChange !== null) {
+      serviceNotices.raise(input.servicesChange);
+      prepared.input.systemContext = [prepared.input.systemContext, input.servicesChange]
+        .filter(Boolean)
+        .join('\n\n');
+    }
+    const authenticate = input.authenticate;
+    await runSharedHost(
+      {
+        root: resolve(input.root),
+        agentApiUrl: prepared.agentApiUrl,
+        token: prepared.token,
+        session: config.session,
+        resumeOperationId: config.resumeOperationId,
+        ...(authenticate ? { authenticate: () => authenticate(prepared.input) } : {}),
+        input: prepared.input,
+        roomConnection: config.roomConnection,
+        grant: config.grant,
+        parent,
+        parkAfterMs: parkAfterMs(),
+        instructions: config.execution?.instructions ?? null,
+        redactions,
+        serviceNotices,
+      },
+      input.adapter,
+      input.signal
+    );
+  } finally {
+    await clis?.close();
+    await vendors?.close();
+    await endpoint?.close();
+    await mcp.close();
+  }
+}
+
+/** Whether the parent found a `once` room reply already in the room and did not post it. */
+function isAlready(answer: unknown): boolean {
+  return (
+    typeof answer === 'object' &&
+    answer !== null &&
+    (answer as { posted?: unknown }).posted === false
+  );
+}
