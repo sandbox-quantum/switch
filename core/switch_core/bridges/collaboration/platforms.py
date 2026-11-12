@@ -15,6 +15,10 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.google_chat.adapter import (
+    GoogleChatAdapter,
+    GoogleChatConnectionConfig,
+)
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
@@ -58,6 +62,7 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("discord", DiscordAdapter, DiscordConnectionConfig),
     PlatformRegistration("telegram", TelegramAdapter, TelegramConnectionConfig),
     PlatformRegistration("whatsapp", WhatsAppAdapter, WhatsAppConnectionConfig),
+    PlatformRegistration("google_chat", GoogleChatAdapter, GoogleChatConnectionConfig),
 )
 
 
