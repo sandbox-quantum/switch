@@ -27,7 +27,7 @@ import type {
   ChatUploadInput,
   WorkspaceMember,
 } from '@shared/core/chats/chats';
-import type { RoomAccess } from '@shared/core/switch-servers/switch-servers';
+import type { RoomAccess, SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type ActivityDeps, resolveChatActivity } from './activity';
 import {
@@ -36,7 +36,7 @@ import {
   resetChatStream,
   resyncChatStream,
 } from './chat-streams';
-import { type ChatCallOutcome, chatMentions, reportingChatCall } from './chat-telemetry';
+import { type ChatCallEmit, chatMentions, reportingChatCall } from './chat-telemetry';
 import { generateChatTitle } from './chat-title';
 import {
   addChatAgent,
@@ -135,12 +135,19 @@ async function warmChat(
   }
 }
 
-/** Reports a person or an agent added to or taken out of a chat. */
-function memberChanged(
-  change: 'added' | 'removed',
-  member_kind: 'person' | 'agent'
-): (outcome: ChatCallOutcome) => void {
-  return (outcome) => trackEvent('chat_member_changed', { ...outcome, change, member_kind });
+/**
+ * A chat call on the server that is reported to telemetry once it settles.
+ * `requestId` is the call's idempotency key, or null for a call without one.
+ */
+function reported<T>(
+  serverId: string,
+  requestId: string | null,
+  run: (server: SwitchServer) => Promise<T>,
+  emit: ChatCallEmit<T>
+): Promise<T> {
+  return onServer(serverId, (server) =>
+    reportingChatCall(server, requestId, () => run(server), emit)
+  );
 }
 
 /**
@@ -190,24 +197,24 @@ export const chatsController = createRPCController({
     access?: RoomAccess | null;
   }): Promise<ChatSummary> => {
     const agentIds = params.agentIds ?? [];
-    const people = params.memberUserIds?.length ?? 0;
-    const chat = await onServer(params.serverId, (server) =>
-      params.resumeOnly
-        ? createChat(server, params)
-        : reportingChatCall(
-            server,
-            () => createChat(server, params),
-            (outcome) =>
-              trackEvent('chat_created', {
-                ...outcome,
-                kind:
-                  params.kind === 'group' || agentIds.length > 1 || people > 0 ? 'group' : 'direct',
-                agent_count: agentIds.length,
-                person_count: people,
-                on_messaging_app: Boolean(params.bridgeId),
-              })
-          )
-    );
+    const asked = {
+      agent_count: agentIds.length,
+      person_count: params.memberUserIds?.length ?? 0,
+      on_messaging_app: Boolean(params.bridgeId),
+    };
+    const chat = await (params.resumeOnly
+      ? onServer(params.serverId, (server) => createChat(server, params))
+      : reported(
+          params.serverId,
+          params.requestId,
+          (server) => createChat(server, params),
+          (outcome, made) =>
+            trackEvent('chat_created', {
+              ...outcome,
+              ...asked,
+              kind: made === null ? 'unknown' : made.channelType === 'direct' ? 'direct' : 'group',
+            })
+        ));
     // A group's agent answers only when mentioned, so there is no first turn to get ready for.
     if (agentIds.length === 1 && params.kind !== 'group')
       void warmChat(
@@ -217,20 +224,20 @@ export const chatsController = createRPCController({
     return chat;
   },
   addAgent: (params: { serverId: string; roomId: string; agentId: string }): Promise<ChatSummary> =>
-    onServer(params.serverId, (server) =>
-      reportingChatCall(
-        server,
-        () => addChatAgent(server, params.roomId, params.agentId),
-        memberChanged('added', 'agent')
-      )
+    reported(
+      params.serverId,
+      null,
+      (server) => addChatAgent(server, params.roomId, params.agentId),
+      (outcome) =>
+        trackEvent('chat_member_changed', { ...outcome, change: 'added', member_kind: 'agent' })
     ),
   removeAgent: (params: { serverId: string; roomId: string; agentId: string }): Promise<void> =>
-    onServer(params.serverId, (server) =>
-      reportingChatCall(
-        server,
-        () => removeChatAgent(server, params.roomId, params.agentId),
-        memberChanged('removed', 'agent')
-      )
+    reported(
+      params.serverId,
+      null,
+      (server) => removeChatAgent(server, params.roomId, params.agentId),
+      (outcome) =>
+        trackEvent('chat_member_changed', { ...outcome, change: 'removed', member_kind: 'agent' })
     ),
   members: (serverId: string, roomId: string): Promise<ChatMember[]> =>
     onServer(serverId, (server) => listChatMembers(server, roomId)),
@@ -242,20 +249,20 @@ export const chatsController = createRPCController({
     roomId: string;
     userId: string;
   }): Promise<ChatMember[]> =>
-    onServer(params.serverId, (server) =>
-      reportingChatCall(
-        server,
-        () => addChatMember(server, params.roomId, params.userId),
-        memberChanged('added', 'person')
-      )
+    reported(
+      params.serverId,
+      null,
+      (server) => addChatMember(server, params.roomId, params.userId),
+      (outcome) =>
+        trackEvent('chat_member_changed', { ...outcome, change: 'added', member_kind: 'person' })
     ),
   removeMember: (params: { serverId: string; roomId: string; userId: string }): Promise<void> =>
-    onServer(params.serverId, (server) =>
-      reportingChatCall(
-        server,
-        () => removeChatMember(server, params.roomId, params.userId),
-        memberChanged('removed', 'person')
-      )
+    reported(
+      params.serverId,
+      null,
+      (server) => removeChatMember(server, params.roomId, params.userId),
+      (outcome) =>
+        trackEvent('chat_member_changed', { ...outcome, change: 'removed', member_kind: 'person' })
     ),
   /** The people of a workspace on the server, who a chat can be opened to. */
   workspaceMembers: (params: { serverId: string; tenantId: string }): Promise<WorkspaceMember[]> =>
@@ -284,29 +291,29 @@ export const chatsController = createRPCController({
         limit: Math.min(200, Math.max(1, params.limit)),
       })
     ),
-  send: (input: ChatSendInput): Promise<ChatMessage[]> =>
-    onServer(input.serverId, (server) =>
-      reportingChatCall(
-        server,
-        () =>
-          sendChatMessage(server, input.roomId, {
-            requestId: input.requestId,
-            body: input.body,
-            threadRootId: input.threadRootId,
-            uploadIds: input.uploadIds,
-            mentionAgentIds: input.mentionAgentIds,
-            mentionUserIds: input.mentionUserIds,
-            mentionSpans: input.mentionSpans,
-          }),
-        (outcome) =>
-          trackEvent('chat_message_sent', {
-            ...outcome,
-            has_attachment: input.uploadIds.length > 0,
-            in_thread: input.threadRootId !== null,
-            mentions: chatMentions(input),
-          })
-      )
-    ),
+  send: (input: ChatSendInput): Promise<ChatMessage[]> => {
+    // The input crosses IPC unvalidated, so absent fields must not throw here.
+    const shape = {
+      has_attachment: (input.uploadIds?.length ?? 0) > 0,
+      in_thread: input.threadRootId != null,
+      mentions: chatMentions(input),
+    };
+    return reported(
+      input.serverId,
+      input.requestId,
+      (server) =>
+        sendChatMessage(server, input.roomId, {
+          requestId: input.requestId,
+          body: input.body,
+          threadRootId: input.threadRootId,
+          uploadIds: input.uploadIds,
+          mentionAgentIds: input.mentionAgentIds,
+          mentionUserIds: input.mentionUserIds,
+          mentionSpans: input.mentionSpans,
+        }),
+      (outcome) => trackEvent('chat_message_sent', { ...outcome, ...shape })
+    );
+  },
   threadMessages: (params: {
     serverId: string;
     roomId: string;
@@ -377,18 +384,17 @@ export const chatsController = createRPCController({
     command: ChatControlCommand;
     messageId: string | null;
   }): Promise<string> =>
-    onServer(params.serverId, (server) =>
-      reportingChatCall(
-        server,
-        () =>
-          sendChatControl(server, params.roomId, {
-            requestId: params.requestId,
-            agentId: params.agentId,
-            command: params.command,
-            messageId: params.messageId,
-          }),
-        (outcome) => trackEvent('chat_control_sent', { ...outcome, command: params.command })
-      )
+    reported(
+      params.serverId,
+      params.requestId,
+      (server) =>
+        sendChatControl(server, params.roomId, {
+          requestId: params.requestId,
+          agentId: params.agentId,
+          command: params.command,
+          messageId: params.messageId,
+        }),
+      (outcome) => trackEvent('chat_control_sent', { ...outcome, command: params.command })
     ),
   answerApproval: (params: {
     serverId: string;
@@ -397,11 +403,10 @@ export const chatsController = createRPCController({
     requestId: string;
     answer: ChatApprovalAnswer;
   }): Promise<ChatApproval> =>
-    onServer(params.serverId, (server) =>
-      reportingChatCall(
-        server,
-        () => answerChatApproval(server, params, params.answer),
-        (outcome) => trackEvent('chat_approval_answered', outcome)
-      )
+    reported(
+      params.serverId,
+      `${params.agentId}:${params.sessionId}:${params.requestId}`,
+      (server) => answerChatApproval(server, params, params.answer),
+      (outcome) => trackEvent('chat_approval_answered', outcome)
     ),
 });

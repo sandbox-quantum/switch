@@ -231,21 +231,29 @@ export type TelemetryRoomCreateFailure =
 
 /**
  * Why a chat action failed, as an enumerated code. The gateway's own refusal
- * codes (`NOT_A_MEMBER`, `REQUEST_REUSED`, …) are not passed through: they are
- * the server's vocabulary and grow with it, and a refusal is one bucket here —
- * the server reports its own side.
+ * codes (`NOT_A_MEMBER`, …) are not passed through: they are the server's
+ * vocabulary and grow with it, and a refusal is one bucket here — the server
+ * reports its own side.
  */
 export type TelemetryChatFailure =
   | 'none'
   | 'unauthenticated'
-  /** The server answered and said no: a 4xx, coded or not. */
+  /** The server answered and said no: a 4xx not named below, coded or not. */
   | 'refused'
+  /** A 429: the server asked the app to slow down. */
+  | 'rate_limited'
+  /** `REQUEST_REUSED`: the request id was already used for a different request. */
+  | 'request_reused'
+  /** No answer: the server could not be reached, or the request timed out (408). */
   | 'network'
   | 'server_error'
   | 'error';
 
-/** A chat as it was asked for: one agent and its person, or a group. */
-export type TelemetryChatKind = 'direct' | 'group';
+/**
+ * A chat as the server made it: one agent and its person, or a group.
+ * `unknown` when the create failed, so there is no chat to read it from.
+ */
+export type TelemetryChatKind = 'direct' | 'group' | 'unknown';
 
 /** Whom a message named: nobody, an agent, a person, or both. Never which. */
 export type TelemetryChatMentions = 'none' | 'agent' | 'person' | 'both';
@@ -678,11 +686,12 @@ export type TelemetryEventMap = {
     docker_available: TelemetryDockerAvailability;
   };
   /**
-   * A Switch Console chat was made: a 1-1 with an agent, or a group. `kind`,
-   * `agent_count` and `person_count` are what was asked for — the counts of
-   * agents and of other people invited, never who. `on_messaging_app` is a chat
-   * opened in a messaging app connection rather than in Switch. Finishing a
-   * create an earlier attempt already made is not reported again.
+   * A Switch Console chat was made: a 1-1 with an agent, or a group. `kind` is
+   * read from the chat the server made. `agent_count` and `person_count` are
+   * what was asked for — the counts of agents and of other people invited,
+   * never who. `on_messaging_app` is a chat opened in a messaging app
+   * connection rather than in Switch. Finishing a create an earlier attempt
+   * already made, or a retry of one already reported, is not reported again.
    */
   chat_created: {
     server_kind: TelemetryServerKind;

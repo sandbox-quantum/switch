@@ -217,7 +217,7 @@ made is not known.
 
 | Event | Fields, with example values |
 |---|---|
-| `chat_created` | `server_kind` · `kind`: `direct` / `group` · `agent_count`: `1` · `person_count`: `0` · `on_messaging_app`: `false` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `refused` (the server turned the request down) / `network` / `server_error` / `error` |
+| `chat_created` | `server_kind` · `kind`: `direct` / `group` (as the server made it) / `unknown` (the create failed) · `agent_count`: `1` · `person_count`: `0` · `on_messaging_app`: `false` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `refused` (the server turned the request down) / `rate_limited` (the server asked the app to slow down) / `request_reused` (the request's id was already used for a different request) / `network` (no answer, or the request timed out) / `server_error` / `error` |
 | `chat_message_sent` | `server_kind` · `has_attachment`: `true` · `in_thread`: `false` · `mentions`: `none` / `agent` / `person` / `both` · `outcome` · `failure_reason` |
 | `chat_member_changed` | `server_kind` · `change`: `added` / `removed` · `member_kind`: `person` / `agent` · `outcome` · `failure_reason` |
 | `chat_control_sent` | `server_kind` · `command`: `interrupt` / `reset` / `compact` / `retry` · `outcome` · `failure_reason` |
@@ -227,7 +227,8 @@ A message sent tells us *"someone sent a message in a thread, with a file, that
 named an agent"*. It does not tell us the text, the file, the chat, or which
 agent or person was named. `mentions` is the kind of who was named, never who.
 A refusal is reported as `refused`, not with the server's code or message.
-Reopening a chat that already exists is not reported as a new one.
+Reopening a chat that already exists is not reported as a new one, and a retry
+of something already reported as done is not counted twice.
 
 **Remote hosts**
 
