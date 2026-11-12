@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.agent_runs import AgentOrigin
 from switch_core.authz import Principal
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import SystemActor
@@ -68,6 +69,7 @@ from switch_core.rooms_yaml import (
     interpolate,
     resolve_params,
 )
+from tests.telemetry_records import recording_telemetry
 
 
 class _AnyStr:
@@ -242,6 +244,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         room_role_store=RoomRoleStore(),
         session_factory=session_factory,
         room_group_store=RoomGroupStore(),
+        telemetry=None,
         console_rooms=console.wiring(enabled=True),
     )
 
@@ -433,6 +436,69 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
     assert result.failed_attachments == []
 
 
+@pytest.mark.parametrize(
+    ("ran_by_an_agent", "room_kind", "reference_kind"),
+    [(False, "user", "system"), (True, "agent", "agent")],
+)
+async def test_who_ran_a_template_is_who_made_its_room_references_and_docs(
+    env, monkeypatch: pytest.MonkeyPatch, ran_by_an_agent, room_kind, reference_kind
+):
+    """A person running a template asked for the room, not for each reference
+    or document in it; an agent running one made all of them."""
+    telemetry, sink = recording_telemetry()
+    env["resource_service"]._telemetry = telemetry
+    configs: list[RoomCreateConfig] = []
+    create_room = env["rooms"].create_room
+
+    async def recording(config: RoomCreateConfig) -> RoomCreateResult:
+        configs.append(config)
+        return await create_room(config)
+
+    monkeypatch.setattr(env["rooms"], "create_room", recording)
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Pilot"
+          description: "pilot room"
+          references:
+            - type: github
+              name: "Switch repo"
+              description: "the repo"
+              instructions: "use it"
+              value: { urls: ["https://github.com/example-org/switch"] }
+          docs:
+            - name: "Runbook"
+              description: "how we work"
+              instructions: "read before shipping"
+              content: "Ship small."
+        """
+    )
+    origin = (
+        AgentOrigin(
+            agent_id="agent-id",
+            agent_name="claude-code.alice",
+            owner_id=env["user_id"],
+            owner_name="alice",
+            parent_room_id=None,
+            run_id=None,
+        )
+        if ran_by_an_agent
+        else None
+    )
+
+    await _svc(env).provision(
+        spec, user_id=env["user_id"], is_admin=False, origin=origin
+    )
+
+    assert [config.created_by_kind for config in configs] == [room_kind]
+    assert [event["created_by_kind"] for event in sink.events("reference_created")] == [
+        reference_kind
+    ]
+    assert [event["created_by_kind"] for event in sink.events("document_created")] == [
+        reference_kind
+    ]
+
+
 @pytest.mark.asyncio
 async def test_provision_no_agents_or_users(env):
     spec, _ = _svc(env).parse(
@@ -548,6 +614,7 @@ async def test_provision_attach_reference_by_name(env):
     async with env["session_factory"]() as session:
         ref = await env["resource_service"].create_reference(
             session,
+            created_by_kind="user",
             owner_id=env["user_id"],
             is_admin=False,
             read_visibility="private",
@@ -596,6 +663,7 @@ async def test_provision_ambiguous_reference_name_fails(env):
         for _ in range(2):
             await env["resource_service"].create_reference(
                 session,
+                created_by_kind="user",
                 owner_id=env["user_id"],
                 is_admin=False,
                 read_visibility="private",
@@ -2351,6 +2419,17 @@ async def test_provision_group_two_rooms_linked(env):
         )
         assert link is not None
         assert link.label == "workroom"
+
+
+async def test_a_template_group_is_reported(env):
+    """`room_group_created` counted only the gateway's before."""
+    svc = _svc(env)
+    svc._telemetry, sink = recording_telemetry()
+    spec = _group(env, GROUP_TEMPLATE, {"newcomer": "dana"})
+
+    await svc.provision_group(spec, user_id=env["user_id"], is_admin=True)
+
+    assert sink.events("room_group_created") == [{"has_parent": False}]
 
 
 @pytest.mark.asyncio

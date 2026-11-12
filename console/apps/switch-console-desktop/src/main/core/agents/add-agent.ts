@@ -407,6 +407,6 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
   await autoSessionWatcher.bringUp(agent.id, 'explicit');
 
   await locationManager.openLocation(location);
-  agentEvents._emit('agent:created', agent, params.entryPoint);
+  agentEvents._emit('agent:created', agent, params.entryPoint, 'created');
   return { kind: 'created', agent };
 }

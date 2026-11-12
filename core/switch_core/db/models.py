@@ -591,6 +591,9 @@ class CloudMachine(Base):
     running_observed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    #: When the machine first became ready, at any revision. Telemetry tells a
+    #: new machine from one starting again by it.
+    first_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -2698,6 +2701,12 @@ class DeploymentIdentity(Base):
     `installed_at` is null where the identity was created against a database
     that already held content; milestones are suppressed for such a deployment
     rather than measured from a guess. The daily counts are unaffected.
+
+    `telemetry_enabled_since` is when reporting was last switched on: set at a
+    boot with telemetry on when it is null, and cleared at a boot with it off.
+    No period count or room activation is dated before it. The one exception
+    is `deployment_installed`, which states the install itself and is dated to
+    it (`TelemetryService.report_installed`).
     """
 
     __tablename__ = "deployment_identity"
@@ -2708,6 +2717,9 @@ class DeploymentIdentity(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     client_id: Mapped[str] = mapped_column(Text, nullable=False, default=_uuid)
     installed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    telemetry_enabled_since: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(

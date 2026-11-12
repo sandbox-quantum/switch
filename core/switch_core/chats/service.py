@@ -28,7 +28,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import markdown
 from sqlalchemy import (
@@ -108,8 +108,13 @@ from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import ACTIVITY_RETENTION
 from switch_core.sessions.attachments import normalise_mime_type
+from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.content import media_content, message_content
+from switch_core.transport.observer import (
+    ParticipantMessage,
+    ParticipantMessageObserver,
+)
 from switch_core.transport.types import MessageFormat
 from switch_core.trust.attachments import AttachmentsVerdict, check_attachments
 from switch_core.trust.client import (
@@ -121,6 +126,8 @@ from switch_core.trust.client import (
 )
 
 if TYPE_CHECKING:
+    from sqlalchemy.engine import CursorResult
+
     from switch_core.chats.signals import ChatSignals
     from switch_core.delivery.router import MessageRouter, Routed
 
@@ -194,9 +201,16 @@ class ChatService:
         buddy_slack_handoff_enabled: bool,
         connections: AgentConnectionRegistry,
         trust_client: TrustClient,
+        message_observer: ParticipantMessageObserver,
+        telemetry: TelemetryService | None,
     ) -> None:
         self.session_factory = session_factory
         self._trust_client = trust_client
+        # A post is stored straight through the router rather than sent by a
+        # transport, so it is told to the observer here, as the transport
+        # tells it of everything else said in a room.
+        self._message_observer = message_observer
+        self._telemetry = telemetry
         self._connections = connections
         self.agent_chats_enabled = agent_chats_enabled
         self.group_chats_enabled = group_chats_enabled
@@ -1056,6 +1070,7 @@ class ChatService:
             # The creator is the direct chat's own person; anyone else makes a group.
             if target_user_id not in (room.created_by, room.owner_id):
                 await self._make_group(session, room)
+            already_in = await self._is_in_room(session, client.id, room.id)
             with tenant_scope(tenant_id):
                 joined = await self._provisioning.record_join(
                     session, room.transport_room_id, client.transport_user_id
@@ -1063,6 +1078,8 @@ class ChatService:
             await self._start_reading(session, room.id, [target_user_id])
             await session.commit()
         joined()
+        if not already_in:
+            emit_safely(self._telemetry, "room_users_added", {"user_count": 1})
         await self._make_lasting(tenant_id, target_user_id, room.id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             member_ids = [member.id for member, _ in await self.members(session, room)]
@@ -1653,17 +1670,26 @@ class ChatService:
                 await self._start_reading(
                     session, room.id, [joiner.id for joiner in [user, *members]]
                 )
-                await session.execute(
+                finished = await session.execute(
                     update(ChatOperation)
                     .where(
                         ChatOperation.tenant_id == tenant_id,
                         ChatOperation.user_id == user.id,
                         ChatOperation.request_id == request_id,
+                        ChatOperation.state != "done",
                     )
                     .values(state="done", room_id=room.id, result={"roomId": room.id})
                 )
                 await session.commit()
         self._memberships_changed(tenant_id, [user.id, *member_user_ids], [room.id])
+        # The people the creator named, never the creator: once, by the
+        # attempt whose update finished the chat. A retry on another replica
+        # can get this far while the first is still provisioning, but only
+        # one of them moves the operation to done.
+        if members and cast("CursorResult[Any]", finished).rowcount == 1:
+            emit_safely(
+                self._telemetry, "room_users_added", {"user_count": len(members)}
+            )
         if len(agents) == 1:
             self._start_session(agents[0].id, room.id)
         return room
@@ -1987,12 +2013,43 @@ class ChatService:
             self._room_service.room_changed(tenant_id, room.id)
         for each in routed:
             each.committed()
+        self._observe(tenant_id, room.id, client.id, uploads, root)
         for content in contents:
             metrics().increment(
                 MESSAGES_SENT,
                 {"kind": "media" if "url" in content else "message", "actor": "human"},
             )
         return room, posted
+
+    def _observe(
+        self,
+        tenant_id: str,
+        room_id: str,
+        client_id: str,
+        uploads: list[StagedUpload],
+        thread_root: str | None,
+    ) -> None:
+        """Tell the observer a person said something, once per post however
+        many files it carried. After the commit, and guarded: the message is
+        already posted, and a failure here must not tell the sender otherwise,
+        or their retry would post it twice."""
+        try:
+            self._message_observer.observe(
+                ParticipantMessage(
+                    tenant_id=tenant_id,
+                    room_id=room_id,
+                    sender_client_id=client_id,
+                    sender_role=MEMBER_CLIENT_TYPE,
+                    sender_is_app=False,
+                    has_attachment=bool(uploads),
+                    in_thread=thread_root is not None,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Message observer failed on a Switch Console post; the message "
+                "itself was sent."
+            )
 
     async def control(
         self,

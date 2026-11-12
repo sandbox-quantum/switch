@@ -89,6 +89,7 @@ from switch_core.process_lease import ProcessLease
 from switch_core.providers.github import GitHubConnections, GitHubReach
 from switch_core.signals import SignalBus
 from switch_core.tenant_context import tenant_scope
+from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.github_seed import github_broker
@@ -334,6 +335,8 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         listener=_FakeListener(),
         activity=_FakeActivityListener(),
         connections=protocol.connections,
+        message_observer=IgnoreParticipantMessages(),
+        telemetry=None,
     )
     resource_service = ResourceService(
         reference_store=ReferenceStore(),

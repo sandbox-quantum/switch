@@ -1346,6 +1346,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
         trust_client=trust_client,
+        message_observer=message_telemetry,
+        telemetry=telemetry,
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
@@ -1855,8 +1857,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # which can report a milestone this settles.
     await telemetry.settle_superseded_milestones()
     telemetry.emit("deployment_started", tenant_count=len(tenant_ids))
-    # The funnel's first step, and only for a deployment with an install date.
-    await telemetry.emit_milestone("deployment_installed")
+    # The funnel's first step, dated to the install, and only for a
+    # deployment with an install date.
+    await telemetry.report_installed()
 
     server_config = uvicorn.Config(
         agent_bridge_app,

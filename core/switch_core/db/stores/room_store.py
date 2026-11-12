@@ -599,10 +599,11 @@ class RoomStore:
 
     async def remove_agents(
         self, session: AsyncSession, room_id: str, agent_ids: list[str]
-    ) -> None:
+    ) -> int:
+        """Take agents out of a room. Returns how many were in it."""
         if not agent_ids:
-            return
-        await session.execute(
+            return 0
+        result = await session.execute(
             delete(room_agents).where(
                 room_agents.c.room_id == room_id,
                 room_agents.c.agent_id.in_(agent_ids),
@@ -614,6 +615,7 @@ class RoomStore:
         if room is not None and main_agent_in(room.metadata_) in agent_ids:
             await self.set_main_agent(session, room_id, None)
         await session.flush()
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def get_rooms_for_agent(
         self, session: AsyncSession, agent_id: str, *, include_archived: bool = False
