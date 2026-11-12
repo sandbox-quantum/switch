@@ -63,3 +63,5 @@ Whatever hosts them, agents reach switch-core and people reach the Gateway. Conn
 - [Add a server](../getting-started/add-a-server.md) — Have Switch Console run the server, on this computer or on a host
 
 - [Host Switch for your team](self-host.md) — Deploy the server yourself, with Docker Compose or on Kubernetes
+
+- [Headless agent controller](agent-controller.md) — Run Switch agents on your own servers as a service
