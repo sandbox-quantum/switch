@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
+from switch_core.bridges.agent.protocol.types import OverallStatus
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelRetirement,
@@ -437,6 +438,35 @@ class AgentCapabilities(BaseModel):
 
 class GatewayAgentSummary(AgentSummary, AgentCapabilities):
     pass
+
+
+class AgentDevice(BaseModel):
+    """The device a managed agent is placed on."""
+
+    id: str
+    name: str
+    # Whose device it is: two people's devices can share a name, as every
+    # Switch cloud device does.
+    owner_name: str
+    # Removed from Switch. The agent stays placed on it, and runs nowhere,
+    # until its owner moves it.
+    removed: bool
+
+
+class GatewayAgentListEntry(GatewayAgentSummary):
+    """A row of the Gateway's agent list: the summary and what the caller may
+    do, with where the agent stands now. Only the list carries these: they are
+    read for every agent at once, and nothing else that returns an agent shows
+    them."""
+
+    # `online` while it holds a live connection or session, or its device
+    # runs it; `offline` otherwise; `not_tracked` for an agent that only
+    # polls, which holds nothing Switch can see between polls.
+    status: OverallStatus
+    # Named to the device's owner and to workspace admins, who see every
+    # device in the workspace. Null for an agent placed on no device, and for
+    # anyone else.
+    device: AgentDevice | None
 
 
 class GatewayAgentDetail(AgentDetail, AgentCapabilities):
@@ -2040,6 +2070,12 @@ class TemplateSummary(BaseModel):
     # client cannot tell from the user's global role.
     can_edit: bool
     can_manage: bool
+    # Why a person should not run it by hand, for a client to give beside a
+    # greyed Run; None when nothing stands in the way. Advice, not a refusal.
+    run_blocked_reason: str | None
+    # How many times it has been run in this workspace, by people and agents,
+    # since runs were first counted.
+    run_count: int
     version: int
     size_bytes: int
     created_at: str
@@ -2048,6 +2084,11 @@ class TemplateSummary(BaseModel):
 
 class TemplateDetail(TemplateSummary):
     content: str
+
+
+class TemplateRunRecorded(BaseModel):
+    template_id: str
+    run_count: int
 
 
 # The document has its own budget (TEMPLATE_MAX_BYTES); these are the labels

@@ -181,6 +181,71 @@ class TestSessionLiveness:
             assert agent.id not in live
 
 
+class TestLiveAnywhere:
+    """`agent_ids_live_anywhere` applies each slot's own TTL, as
+    `get_live_agent_ids` does slot by slot."""
+
+    async def test_a_fresh_beat_in_either_slot_is_live(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = AgentSessionStore()
+        async with session_factory() as session:
+            agnostic = await _make_agent(session, "anywhere-agnostic")
+            in_room = await _make_agent(session, "anywhere-room")
+            idle = await _make_agent(session, "anywhere-idle")
+            room = await _make_room(session, "anywhere-room-1")
+            await store.touch_heartbeat(session, agnostic.id, None)
+            await _age_heartbeat(session, agnostic.id, _IDLE_LONG_POLL)
+            await store.touch_heartbeat(session, in_room.id, room.id)
+            await session.commit()
+
+            live = await store.agent_ids_live_anywhere(
+                session, [agnostic.id, in_room.id, idle.id]
+            )
+            assert live == {agnostic.id, in_room.id}
+
+    async def test_each_slot_keeps_its_own_ttl(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A room beat past `SESSION_TTL` is stale even though it is well inside
+        `ALWAYS_ON_TTL`, and a room-agnostic beat past `ALWAYS_ON_TTL` is stale."""
+        store = AgentSessionStore()
+        async with session_factory() as session:
+            in_room = await _make_agent(session, "anywhere-stale-room")
+            agnostic = await _make_agent(session, "anywhere-stale-agnostic")
+            room = await _make_room(session, "anywhere-room-2")
+            await store.touch_heartbeat(session, in_room.id, room.id)
+            await _age_room_heartbeat(
+                session, in_room.id, room.id, timedelta(seconds=30)
+            )
+            await store.touch_heartbeat(session, agnostic.id, None)
+            await _age_heartbeat(
+                session,
+                agnostic.id,
+                AgentSessionStore.ALWAYS_ON_TTL + timedelta(seconds=5),
+            )
+            await session.commit()
+
+            assert (
+                await store.agent_ids_live_anywhere(session, [in_room.id, agnostic.id])
+                == set()
+            )
+
+    async def test_explicit_rows_are_not_liveness(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = AgentSessionStore()
+        async with session_factory() as session:
+            agent = await _make_agent(session, "anywhere-passive")
+            room = await _make_room(session, "anywhere-room-3")
+            await store.set_connected_room(
+                session, agent.id, room.id, "tx-anywhere", "explicit"
+            )
+            await session.commit()
+
+            assert await store.agent_ids_live_anywhere(session, [agent.id]) == set()
+
+
 class TestLiveConnectedRooms:
     async def test_returns_fresh_room_bound_sessions_only(
         self, session_factory: async_sessionmaker[AsyncSession]

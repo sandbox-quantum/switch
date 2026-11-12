@@ -2,7 +2,10 @@
 
 Connections are listed and disconnected by the person who holds them; grants
 are listed, set and removed by the agent's owner, on their own connection.
-Someone else's agent answers 404, as a missing one does. The credential broker
+Someone else's agent answers 404, as a missing one does. A workspace's admins
+also see everyone connected to a service and every agent granted it, and may
+end someone else's connection; nobody, admins included, grants on a
+connection that is not their own. The credential broker
 (`connections/broker.py`) makes every change and runs the checks; this module
 turns its refusals into the gateway's `{"detail": ...}`.
 """
@@ -14,7 +17,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.addressing import parse_policy
@@ -35,7 +38,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
-from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.auth import get_current_user, require_tenant_admin
 from switch_core.gateway.dependencies import get_session
 from switch_core.gateway.known_agents import known_agent_for
 
@@ -102,7 +105,7 @@ async def list_service_connections(
         connection.service: connection
         for connection in await STORE.list_connections(session, user.id)
     }
-    switched_off = await broker.workspace_disabled(session)
+    switches = await broker.workspace_switches(session)
     entries = []
     for entry in CATALOG.values():
         definition = entry.definition
@@ -115,6 +118,14 @@ async def list_service_connections(
                 "name": definition.name,
                 "category": definition.category,
                 "description": definition.description,
+                "publisher": definition.publisher,
+                "links": None
+                if definition.links is None
+                else definition.links.model_dump(),
+                # The vendor's MCP servers its agents' sessions call, if any.
+                "mcp_urls": []
+                if definition.mcp is None
+                else [server.url for server in definition.mcp.servers],
                 "enabled": definition.enabled,
                 "auth_type": definition.auth.type,
                 "connectable": standing.connectable,
@@ -132,7 +143,18 @@ async def list_service_connections(
                 # workspace's organization saved its own, else "server".
                 "app_source": standing.source,
                 # Whether a workspace admin left it on for this workspace.
-                "workspace_enabled": definition.slug not in switched_off,
+                "workspace_enabled": switches is None
+                or switches[definition.slug].enabled,
+                # Whether the workspace's organization locked it on or off,
+                # out of the workspace admin's reach.
+                "organization_locked": switches is not None
+                and switches[definition.slug].locked,
+                # Which setting `workspace_enabled` comes from, as the
+                # workspace's own switches name it (`Decider`); null on a
+                # server without the workspace switch.
+                "decided_by": None
+                if switches is None
+                else switches[definition.slug].decided_by,
                 # A grant hands the agent the owner's own token: it is on or
                 # off, at the connection's level, and lasts the token's life.
                 "pass_through": (
@@ -175,12 +197,11 @@ async def list_service_agents(
     service: str,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> list[dict[str, Any]]:
-    """The person's own agents in this workspace, whether each has a grant
-    on `service`, and whether others can address it."""
-    entry = CATALOG.get(service)
-    if entry is None or not entry.definition.enabled:
-        raise HTTPException(status_code=404, detail=f"No service named {service!r}.")
+    """The person's own agents in this workspace, each with its grant on
+    `service` if it has one, and whether others can address it."""
+    _enabled_entry(service)
     agents = list(
         await session.scalars(
             select(Agent)
@@ -188,24 +209,143 @@ async def list_service_agents(
             .order_by(Agent.name)
         )
     )
-    granted = set(
-        await session.scalars(
-            select(ServiceGrant.agent_id).where(
+    grants = {
+        grant.agent_id: grant
+        for grant in await session.scalars(
+            select(ServiceGrant).where(
                 ServiceGrant.tenant_id == require_tenant_id(),
                 ServiceGrant.owner_id == user.id,
                 ServiceGrant.service == service,
             )
         )
-    )
-    return [
+    }
+    entries = []
+    for agent in agents:
+        grant = grants.get(agent.id)
+        entries.append(
+            {
+                "agent_id": agent.id,
+                "name": agent.display_name or agent.name,
+                "granted": grant is not None,
+                # What it is granted, for a page that shows and changes it.
+                "grant": None
+                if grant is None
+                else await _grant_view(session, broker, agent, grant),
+                # Whether Switch Console starts it, and so may grant it a
+                # service: one on its own runtime cannot be.
+                "grantable": known_agent_for(agent) is not None,
+                "addressing_open": await _others_can_address(session, agent, user),
+            }
+        )
+    return entries
+
+
+def _enabled_entry(service: str) -> None:
+    entry = CATALOG.get(service)
+    if entry is None or not entry.definition.enabled:
+        raise HTTPException(status_code=404, detail=f"No service named {service!r}.")
+
+
+@router.get("/service-connections/{service}/workspace")
+async def service_in_workspace(
+    service: str,
+    admin: Annotated[User, Depends(require_tenant_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> dict[str, Any]:
+    """Who in this workspace uses `service`, for its admins: everyone
+    connected, with how many of their agents are granted it, and every agent
+    granted it, whoever owns it."""
+    _enabled_entry(service)
+    tenant_id = require_tenant_id()
+    standing = await broker.standing(session, service)
+    granted = {
+        owner_id: count
+        for owner_id, count in (
+            await session.execute(
+                select(ServiceGrant.owner_id, func.count(ServiceGrant.id))
+                .where(
+                    ServiceGrant.tenant_id == tenant_id,
+                    ServiceGrant.service == service,
+                )
+                .group_by(ServiceGrant.owner_id)
+            )
+        ).tuples()
+    }
+    people = [
         {
-            "agent_id": agent.id,
-            "name": agent.display_name or agent.name,
-            "granted": agent.id in granted,
-            "addressing_open": await _others_can_address(session, agent, user),
+            "user_id": person.id,
+            "name": person.name,
+            # As its owner sees it: one made through an app since replaced
+            # needs reconnecting.
+            "status": broker.connection_status(standing, connection),
+            "connected_at": connection.created_at.isoformat(),
+            "agents": granted.get(person.id, 0),
+            # Someone else's: an admin's own is disconnected, not revoked.
+            "can_revoke": person.id != admin.id,
         }
-        for agent in agents
+        for connection, person in (
+            await session.execute(
+                select(ServiceConnection, User)
+                .join(User, User.id == ServiceConnection.user_id)
+                .where(
+                    ServiceConnection.tenant_id == tenant_id,
+                    ServiceConnection.service == service,
+                )
+                .order_by(User.name, User.id)
+            )
+        ).tuples()
     ]
+    agents = []
+    for grant, agent, owner in (
+        await session.execute(
+            select(ServiceGrant, Agent, User)
+            .join(
+                Agent,
+                (Agent.tenant_id == ServiceGrant.tenant_id)
+                & (Agent.id == ServiceGrant.agent_id),
+            )
+            .join(User, User.id == ServiceGrant.owner_id)
+            .where(ServiceGrant.tenant_id == tenant_id, ServiceGrant.service == service)
+            .order_by(Agent.name, Agent.id)
+        )
+    ).tuples():
+        agents.append(
+            {
+                "agent_id": agent.id,
+                "name": agent.display_name or agent.name,
+                "owner_id": owner.id,
+                "owner_name": owner.name,
+                "grant": await _grant_view(session, broker, agent, grant),
+                # Whether others than its owner can address it, and so have
+                # it act as its owner on this connector.
+                "addressing_open": await _others_can_address(session, agent, owner),
+            }
+        )
+    return {"people": people, "agents": agents}
+
+
+@router.delete("/service-connections/{service}/people/{user_id}", response_model=None)
+async def revoke_service_connection(
+    service: str,
+    user_id: str,
+    admin: Annotated[User, Depends(require_tenant_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> dict[str, Any] | JSONResponse:
+    """End someone else's connection, for a workspace admin: the grants on it
+    go with it, and what was issued is revoked. Their own, an admin
+    disconnects as anyone does."""
+    if user_id == admin.id:
+        raise HTTPException(
+            status_code=409,
+            detail="That is your own connection: disconnect it instead.",
+        )
+    try:
+        warning = await broker.revoke_connection(session, admin.id, user_id, service)
+    except ServiceError as error:
+        return service_refusal(error)
+    return {"warning": warning}
 
 
 def _key_form(definition: ConnectionDefinition) -> dict[str, Any] | None:

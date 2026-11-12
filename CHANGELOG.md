@@ -53,6 +53,23 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Templates have a page of their own in the new dashboard layout, and say
+  how often each one is run.** Behind `gateway_v2`, Templates leaves the
+  Resources tabs: the workspace's own templates and the ones that come with
+  Switch sit in separate tables, with each template's type, owner (marked
+  "You" for your own), runs and last change, and a menu on every row to run,
+  edit, duplicate or delete it. Edit and Delete follow what the server allows:
+  someone else's template shows them greyed with the owner's name, and an
+  official one cannot be edited or deleted by anyone. Run opens the template's
+  form in Switch Console, in the workspace the dashboard is showing.
+  Duplicate makes a private copy under a free name. The API carries the same
+  facts: every template response has `run_count`, the runs in this workspace
+  counted since this release, and `run_blocked_reason`, why a person should
+  not run it by hand (switch-buddy, which Switch Console sets up itself).
+  `POST /templates/{id}/runs` counts a run of a template the caller may read.
+  Switch Console reports each finished run there, and the agent operation
+  `run_template` counts its own. Runs from before this release are not
+  counted.
 - **`switch-purge-organization` deletes an organization when its owner
   asks.** Run where switch-core runs, it shows what would go and what stays;
   with `--execute --request REFERENCE` it ends the organization's messaging
@@ -155,6 +172,51 @@ version of their own to them without also giving them a release of their own.
   `.env`, so a page can be checked as each role. Switching is an ordinary
   sign-in, so every check is the server's own. A production build leaves the
   switcher out, and `npm run build` now fails if it gets in.
+- **Deleting a room from the dashboard can retire its platform channel**, as
+  Switch Console already could. The delete dialog offers to archive the
+  channel on Slack and Mattermost, delete it on Discord, or have the bot leave
+  the chat on Telegram, and keeps it unless asked, saying what becomes of it
+  either way. On Microsoft Teams the channel always stays, and the dialog says
+  to remove it there. A channel that could not be retired is reported on the
+  Rooms page, with what is left to do by hand.
+- **Organization settings › Connectors and apps, in the new dashboard
+  layout** (`gateway_v2`). The organization's Services and Connectors become
+  one page with two tabs. Connectors shows the catalogue, each connector with
+  a switch: on leaves it to each workspace, off turns it off and locks it in
+  every workspace, after asking. A menu beside the switch sets the rest: on or
+  off by default, or on and locked. Each card says how far the setting
+  reaches, including the workspaces that set their own. A connector that
+  can't be used until the organization sets up its app offers "Set up org
+  account" in place of the switch. Apps & accounts lists each vendor app with
+  who set it up and when, and opens its details, checks, secret updates and
+  removal in a side panel.
+- **Each connector has its own page in the new layout**, opened from its
+  card. It shows who you're connected as, Disconnect, Add or Replace keys for
+  a key-based connector, and points to Switch Console for one that signs in at
+  the vendor. When the connector is off in the workspace, the page says who
+  turned it off and who can turn it back on. It lists the connector's
+  publisher, documentation, support and privacy pages, its MCP address, and
+  the agents using it, whose grants you can add, change and remove for your
+  own agents. A workspace admin also sees every agent in the workspace using
+  it, and everyone else connected, with Revoke.
+- **Workspace admins can see who uses a connector, and end someone else's
+  access.** `GET /gateway/service-connections/{service}/workspace` lists
+  everyone connected, with how many of their agents are granted it, and every
+  agent granted it. `DELETE /gateway/service-connections/{service}/people/{user_id}`
+  disconnects someone else, removing the grants on it and revoking what was
+  issued, and is recorded as `service.connection_revoked`. Nobody, admins
+  included, grants on another person's connector.
+- **The connector catalogue says who turned a connector off.**
+  `GET /gateway/service-connections` adds `organization_locked` and
+  `decided_by`, named as the workspace's own switches name it. The catalogue also
+  carries each connector's `publisher`, `links` (documentation, support,
+  privacy) and `mcp_urls`, and the agents list for a connector carries each
+  agent's grant and whether it can be granted one.
+- **Connector app usage counts agent grants.** A connector app's entry, its
+  impact and its removal add `agent_grants`, the grants relying on the
+  connections an app change touches, and an app saved in Switch says when it
+  was first set up (`created_at`). The organization's connector list adds
+  each connector's `category` and `description`.
 
 #### Changed
 - **The morning report's graph explains itself.** `daily_report.py` draws the
@@ -181,6 +243,13 @@ version of their own to them without also giving them a release of their own.
   bridge start, and "trusting unverified OIDC email" is said once per process.
   Two bridges connecting the same workspace, which pilot does on purpose, is
   said once per pair at info rather than as a warning on every start.
+- **Removing a connector app says what it touches first.** The dialog counts
+  the workspaces, connected accounts and agent grants affected, says whether
+  the organization's workspaces go back to Switch's app, and that nothing is
+  revoked: the accounts and grants are kept and work again once people
+  reconnect. Each app also says when it was set up and who changed it since.
+- **A connector's lock message points at the organization's connector
+  settings**, rather than a section name only the old layout has.
 - **The operator dashboard follows the current design.** A field's label sits
   above it rather than floating inside the box, and the field has a white fill
   and a firm border and ring when focused; switches are pills, and one that is
@@ -243,8 +312,35 @@ version of their own to them without also giving them a release of their own.
   an app or by Telegram's anonymous group admins. switch-core logs a warning
   each time a notice goes to the channel for want of a private route. Notices
   about an agent's message are still posted for the room.
+- **The Rooms page uses the dashboard's shared table.** It counts the rooms,
+  searches their name, description, group, owner and bridge, and filters from
+  the column headers: by group (with its sub-groups, or "No group"), owner,
+  bridge (or "Not bridged") and connected user. Active and archived rooms are
+  two tabs with their counts, newest first. Archive and Delete are in each
+  row's menu, offered only where the server allows them. Deleting from the
+  list keeps a bridged room's channel and says so; delete the room from its
+  own page to remove the channel too. With `gateway_v2` on, a member sees the
+  rooms they own, are in or have an agent in, as Overview counts them, and so
+  does the rooms graph; an admin sees every room, and today's layout is
+  unchanged.
+- **Room actions in the dashboard ask first, and say why when refused.**
+  Archiving a room, deleting a room, deleting a role and deleting a room
+  document confirm in a dialog that stays open with the server's reason when
+  the action fails. Deleting a role, which takes its instructions with it,
+  used to happen at one click, and a failed delete or bulk archive gave no
+  reason. Unarchiving still acts at once.
 
 #### Fixed
+- **Deleting an agent from the dashboard says why when it is refused**,
+  rather than only that it could not.
+- **A workspace's connector list credits an organization's default to the
+  organization.** It named nobody as having set a connector the organization
+  turned on or off for its workspaces without locking it.
+- **A workspace admin can no longer clear the workspace's own setting for a
+  connector its organization has locked**, as they already couldn't switch
+  it. The workspace's choice is kept for when the organization unlocks it.
+  A switch or clear made while an organization admin changes that connector
+  now waits for the change, so it never acts on a lock that is changing.
 - **Agents can maintain the documents a room template creates.** A
   template's `docs:` made documents no agent had written, and only the agent
   that wrote a document could update or delete it, so every agent got 403.
@@ -314,6 +410,14 @@ version of their own to them without also giving them a release of their own.
   first pod to record the socket going if the controller comes back sooner.
 - **Junie in the provider table**, so a managed agent can run on JetBrains'
   Junie CLI; its sign-in command is `junie`.
+- **The dashboard's Rooms page and Room groups say when they cannot load.**
+  They showed an empty page, or "No groups yet", when the rooms or groups
+  failed to load. The rooms graph, which said only "Failed to fetch data",
+  now gives the server's reason.
+- **The dashboard's New room says why Create is disabled.** Create stayed
+  greyed out with no explanation, most often because a room with no bridge
+  needs an agent. It now names what is missing, and Agents is marked required
+  while no bridge is chosen.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
@@ -478,6 +582,32 @@ version of their own to them without also giving them a release of their own.
   graph, which leaves the new rail. A workspace's admins see its totals; a
   member sees the agents they own and the rooms they take part in, marked
   "Yours", and every user. A count that cannot be read shows a dash and why.
+- **The new layout's Agents list.** The workspace's agents with their type,
+  availability, status, parent, owner and, where agent management is on, the
+  device each runs on, newest first. Filter by type, parent (including top
+  level), owner, status and device, or search. Rename, transfer and delete
+  from a row's menu, which offers only what you may do and says why a
+  transfer is blocked; deleting an agent says that its sub-agents become
+  top-level. A workspace's admins see every agent; a member sees the agents
+  they own, and an empty list says whether the workspace has no agents or
+  none of them are yours. `GET /gateway/agents` now reports each agent's
+  `status` (`online`, `offline`, or `not_tracked` for an agent that only
+  polls) and its `device` with whose device it is, which is named to the
+  device's owner and to workspace admins.
+- **An agent's page says when you can see the agent but not change it.**
+- **The new layout's Workspace › Connectors chooses which connectors the
+  workspace may use.** Each connector says whether it is enabled here and
+  what decided that: the organization's lock ("Set by" the organization, with
+  no switch for anyone), the organization's default, the workspace's own
+  choice, or the workspace's default. Workspace and organization admins
+  switch what is not locked, and a workspace that set its own can go back to
+  the default, the organization's where it set one; turning off a connector
+  people or agents use asks first. Members see the same page read-only. Each card says whether it
+  signs in through the organization's app or Switch's, or what stops anyone
+  using it. The workspace's connector list (`GET /workspace/services`) is now
+  readable by every member, with the counts of who a switch reaches left to
+  admins, and says which setting decides each connector, the organization's
+  default, whether the caller may change it, and why it can't be used.
 - **The gateway says what the caller may do with every object it shows**, so
   no page works a permission out for itself. Alongside the room, template and
   agent flags already there:
@@ -1142,6 +1272,14 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
+- **An agent's page no longer asks for your GitHub connection where GitHub
+  is not set up.** On a server with connectors on and no GitHub App, opening
+  an agent you own asked for it and was refused. The page already says GitHub
+  is not set up, and now asks nothing until it is.
+- **The operator is told why an organization's users are not theirs to
+  manage, without asking for them.** On an organization that has an admin,
+  its Users page asked for the members only to be refused, then explained;
+  it now explains from what the server has already said.
 - **A room's detail says whether the caller takes part in it, and whether
   it is a Switch Console chat.** The gateway's `GET /rooms/{id}`, and the
   room it returns from a create or change, always answered
@@ -3146,8 +3284,19 @@ version of their own to them without also giving them a release of their own.
 - **Confirm a linked chat account with a tap.** When the server can message
   the account, the link screen shows a number to tap in that message, with an
   **Open in …** button that opens the message in the chat app, the code below
-  it as the fallback, and "Send again" sends a fresh message and code. When it can't, the screen says why and shows the code as before. A
-  server from before this shows only the code.
+  it as the fallback, and "Send again" sends a fresh message and code. When it
+  can't, the screen says why and shows the code as before. A server from
+  before this shows only the code.
+- **A finished template run is counted on the server.** Once a run from a
+  stored or official template has fully succeeded, whichever way it ran,
+  Switch Console reports it, and so does switch-buddy's own setup, once. The
+  web dashboard shows the count beside each template. A server that does not
+  count runs is left alone, and the run is never failed for it.
+- **A Switch Console link can name a workspace and open a template's form.**
+  `workspace=<id>` switches to that workspace before opening the page, and on
+  a link to a template `use=1` opens its Use form. The web dashboard's Run
+  button needs both. A link for a workspace this Switch Console is not signed
+  in to says so and opens nothing.
 - **A service's note on agent access.** The connector page and the connect
   step show it where a service sets one (Sentry).
 - **Pi as an agent CLI.** Agents can run on Pi (`pi --mode rpc`, 1.5.0), on

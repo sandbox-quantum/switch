@@ -149,4 +149,8 @@ describe('the workspace switches as tiles', () => {
       '3 members connected · 1 agent uses it'
     );
   });
+
+  it('says nothing of who a switch reaches when the server keeps it to admins', () => {
+    expect(switchStanding(service({ connected_members: null, granted_agents: null }))).toBeNull();
+  });
 });
