@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, urlencode
@@ -106,6 +106,9 @@ class FakeLedger:
         self.spends[recipient] = self.spends.get(recipient, 0) + units
         return self.spends[recipient]
 
+    async def refund(self, recipient: str, units: int) -> None:
+        self.spends[recipient] = max(self.spends.get(recipient, 0) - units, 0)
+
     async def claim_limit_notice(self, recipient: str) -> bool:
         if recipient not in self.spends or recipient in self.told:
             return False
@@ -200,7 +203,10 @@ def bodies(twilio: FakeTwilio) -> list[str]:
 
 class TestCredentials:
     @staticmethod
-    async def _verify(twilio: FakeTwilio, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _verify(
+        twilio: Callable[[httpx.Request], httpx.Response],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         original = httpx.AsyncClient
 
         def mocked(**kwargs: Any) -> httpx.AsyncClient:
@@ -224,6 +230,15 @@ class TestCredentials:
         )
         with pytest.raises(BridgeCredentialError, match="Authenticate"):
             await self._verify(twilio, monkeypatch)
+
+    async def test_unreachable_twilio_is_not_called_bad_credentials(
+        self, twilio: FakeTwilio, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unreachable(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("no")
+
+        with pytest.raises(BridgeOperationError, match="Could not reach Twilio"):
+            await self._verify(unreachable, monkeypatch)
 
     async def test_a_twilio_outage_is_not_called_bad_credentials(
         self, twilio: FakeTwilio, monkeypatch: pytest.MonkeyPatch
@@ -387,7 +402,7 @@ class TestInbound:
         assert heard.messages == []
 
     @pytest.mark.parametrize(
-        "body", ["STOP", " stop ", "Unsubscribe", "START", "HELP", "cancel"]
+        "body", ["STOP", " stop ", "Unsubscribe", "START", "unstop", "cancel"]
     )
     async def test_twilio_keywords_do_not_reach_agents(
         self, adapter: SmsAdapter, heard: Heard, body: str
@@ -401,7 +416,9 @@ class TestInbound:
         await deliver(adapter, inbound(Body="please stop", OptOutType="STOP"))
         assert heard.messages == []
 
-    @pytest.mark.parametrize("body", ["yes", "stop the deploy", "A3 yes"])
+    @pytest.mark.parametrize(
+        "body", ["yes", "stop the deploy", "A3 yes", "help", "INFO"]
+    )
     async def test_ordinary_words_do_reach_agents(
         self, adapter: SmsAdapter, heard: Heard, body: str
     ) -> None:
@@ -414,6 +431,12 @@ class TestInbound:
         assert (command.command, command.args) == ("invite", "helper now")
         assert command.channel_id == PERSON
         assert heard.messages == []
+
+    async def test_help_flag_still_reaches_agents(
+        self, adapter: SmsAdapter, heard: Heard
+    ) -> None:
+        await deliver(adapter, inbound(Body="help", OptOutType="HELP"))
+        assert [m.content for m in heard.messages] == ["help"]
 
     @pytest.mark.parametrize("body", ["!", "!  ", "wow!"])
     async def test_a_bang_alone_is_just_text(
@@ -560,13 +583,54 @@ class TestOutbound:
         opted = [r.levelno for r in caplog.records if "opted out" in r.getMessage()]
         assert opted == [logging.ERROR, logging.WARNING]
 
-    async def test_a_refused_send_still_counts_against_the_hour(
+    async def test_a_refused_send_is_given_back_to_the_hour(
         self, adapter: SmsAdapter, twilio: FakeTwilio
     ) -> None:
         twilio.refusals.append(httpx.Response(500, json={"message": "boom"}))
         with pytest.raises(TwilioError):
             await adapter.send_message(PERSON, "helper", "hi")
-        assert await adapter.send_ledger.spent(PERSON) == 1
+        assert await adapter.send_ledger.spent(PERSON) == 0
+
+    async def test_a_send_to_someone_opted_out_is_given_back_to_the_hour(
+        self, adapter: SmsAdapter, twilio: FakeTwilio
+    ) -> None:
+        twilio.refusals.append(
+            httpx.Response(400, json={"code": 21610, "message": "opted out"})
+        )
+        await adapter.send_message(PERSON, "helper", "hi")
+        assert await adapter.send_ledger.spent(PERSON) == 0
+
+    @pytest.mark.parametrize(
+        ("exc", "counted"),
+        [
+            (httpx.ConnectError("no"), 0),
+            (httpx.ConnectTimeout("no"), 0),
+            (httpx.ReadTimeout("no"), 1),
+        ],
+    )
+    async def test_only_a_send_that_may_have_gone_out_stays_counted(
+        self, adapter: SmsAdapter, exc: httpx.HTTPError, counted: int
+    ) -> None:
+        def fail(request: httpx.Request) -> httpx.Response:
+            raise exc
+
+        adapter._http = httpx.AsyncClient(transport=httpx.MockTransport(fail))
+        adapter._client = TwilioClient(
+            http=adapter._http, account_sid=SID, auth_token=TOKEN
+        )
+        with pytest.raises(type(exc)):
+            await adapter.send_message(PERSON, "helper", "hi")
+        assert await adapter.send_ledger.spent(PERSON) == counted
+
+    async def test_retries_through_an_outage_do_not_spend_the_hour(
+        self, adapter: SmsAdapter, twilio: FakeTwilio
+    ) -> None:
+        for _ in range(10):
+            twilio.refusals.append(httpx.Response(503, json={"message": "down"}))
+            with pytest.raises(TwilioError):
+                await adapter.send_message(PERSON, "helper", "hi")
+        await adapter.send_message(PERSON, "helper", "hi")
+        assert bodies(twilio)[-1].endswith("hi")
 
     async def test_a_reply_stops_where_another_text_spent_the_hour(
         self, adapter: SmsAdapter, twilio: FakeTwilio
@@ -575,6 +639,7 @@ class TestOutbound:
         ref = await adapter._send_pieces(PERSON, ["one", "two"], capped=True)
         assert ref == "SM1"
         assert bodies(twilio) == ["one"]
+        assert await adapter.send_ledger.spent(PERSON) == 6
 
     async def test_refused_send_raises_so_it_can_be_retried(
         self, adapter: SmsAdapter, twilio: FakeTwilio

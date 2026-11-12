@@ -147,6 +147,8 @@ Four things limit the cost:
    the hour frees up. That includes texts saying an agent ran into a problem, and
    request cards, which stay answerable in the room. The count is kept in the
    database, so it holds however many Switch instances send and across restarts.
+   A text Twilio refused, or couldn't be reached for, doesn't count; one whose
+   request timed out does, since Twilio may have sent it.
    It counts clock hours, so up to twice the limit can go out across the turn of
    an hour.
 4. **A Twilio usage trigger.** As a backstop, also set a hard limit in Twilio:
@@ -157,8 +159,9 @@ Four things limit the cost:
 Twilio handles `STOP` and its other opt-out words itself: it replies to the person
 and refuses further texts to them (error `21610`) until they text `START`. Switch
 doesn't pass these words to agents: `stop`, `stopall`, `unsubscribe`, `cancel`,
-`end`, `quit`, `revoke`, `optout`, `start`, `unstop`, `help` and `info`, when
-sent as the whole text. A text to someone who has opted out is not sent and not
+`end`, `quit`, `revoke`, `optout`, `start` and `unstop`, when sent as the whole
+text. `help` and `info` get Twilio's help reply and also reach the agent, since
+they don't change whether the person can be texted. A text to someone who has opted out is not sent and not
 retried. It stays in the room, but nothing there says it didn't reach the phone:
 only the server log does, as an error. Make sure
 everyone on your allowed list has agreed to receive texts.

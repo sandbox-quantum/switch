@@ -52,6 +52,21 @@ class BridgeSendStore:
         assert total is not None  # an upsert always returns its row
         return total
 
+    async def refund(
+        self, session: AsyncSession, *, bridge_id: str, recipient: str, units: int
+    ) -> None:
+        """Take back `units` spent this hour on a send that did not go out. A
+        send spent in an hour that has since ended has nothing left to refund."""
+        await session.execute(
+            update(BridgeHourlySend)
+            .where(
+                BridgeHourlySend.bridge_id == bridge_id,
+                BridgeHourlySend.recipient == recipient,
+                BridgeHourlySend.hour == _THIS_HOUR,
+            )
+            .values(units=func.greatest(BridgeHourlySend.units - units, 0))
+        )
+
     async def claim_limit_notice(
         self, session: AsyncSession, *, bridge_id: str, recipient: str
     ) -> bool:

@@ -27,6 +27,10 @@ class SendLedger(Protocol):
         """Count `units` against this hour and return the hour's total."""
         ...
 
+    async def refund(self, recipient: str, units: int) -> None:
+        """Take back `units` spent on a send that did not go out."""
+        ...
+
     async def claim_limit_notice(self, recipient: str) -> bool:
         """True for the one caller this hour that should say the limit is reached."""
         ...
@@ -62,6 +66,13 @@ class StoredSendLedger:
             )
             await session.commit()
             return total
+
+    async def refund(self, recipient: str, units: int) -> None:
+        async with tenant_session(self._session_factory, self._tenant_id) as session:
+            await self._store.refund(
+                session, bridge_id=self._bridge_id, recipient=recipient, units=units
+            )
+            await session.commit()
 
     async def claim_limit_notice(self, recipient: str) -> bool:
         async with tenant_session(self._session_factory, self._tenant_id) as session:

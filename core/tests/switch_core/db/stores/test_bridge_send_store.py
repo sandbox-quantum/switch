@@ -65,6 +65,19 @@ async def test_concurrent_spends_are_all_counted(
     assert sorted(totals) == list(range(1, 11))
 
 
+async def test_a_refund_takes_back_what_was_spent_and_no_more(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    one = ledger(session_factory, await make_bridge(session_factory))
+    await one.refund(NUMBER, 1)  # nothing spent this hour
+    assert await one.spent(NUMBER) == 0
+    await one.spend(NUMBER, 3)
+    await one.refund(NUMBER, 2)
+    assert await one.spent(NUMBER) == 1
+    await one.refund(NUMBER, 5)
+    assert await one.spent(NUMBER) == 0
+
+
 async def test_an_earlier_hour_does_not_count_and_is_cleared(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

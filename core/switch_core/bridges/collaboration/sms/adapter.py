@@ -68,23 +68,14 @@ logger = logging.getLogger(__name__)
 _MAX_MEDIA = 10
 
 # Twilio answers these words itself and changes whether the person can be
-# messaged. They are an instruction to Twilio, not a message to an agent. "yes"
-# also opts back in, and is left out because a person says it to agents.
-_TWILIO_KEYWORDS = frozenset(
-    {
-        "stop",
-        "stopall",
-        "unsubscribe",
-        "cancel",
-        "end",
-        "quit",
-        "revoke",
-        "optout",
-        "start",
-        "unstop",
-        "help",
-        "info",
-    }
+# messaged, by default on every number, so they are an instruction to Twilio,
+# not a message to an agent. An opted-out person could not get an agent's
+# answer anyway. "yes" also opts back in, and is left out because a person says
+# it to agents. HELP and INFO change nothing, so they reach the agent like any
+# other text.
+_TWILIO_OPT_IN = frozenset({"start", "unstop"})
+_TWILIO_OPT_OUT = frozenset(
+    {"stop", "stopall", "unsubscribe", "cancel", "end", "quit", "revoke", "optout"}
 )
 
 # Delivery failed for good; every other status is progress.
@@ -220,7 +211,7 @@ class SmsAdapter(PlatformAdapter):
                     f"Twilio could not check the credentials: {exc}. Try again."
                 ) from exc
             except httpx.RequestError as exc:
-                raise BridgeCredentialError(
+                raise BridgeOperationError(
                     "Could not reach Twilio to check the credentials: "
                     f"{type(exc).__name__}. Try again."
                 ) from exc
@@ -360,12 +351,12 @@ class SmsAdapter(PlatformAdapter):
             )
             return
         text = str(fields.get("Body", ""))
-        if fields.get("OptOutType") == "START" or text.strip().lower() in {
-            "start",
-            "unstop",
-        }:
+        keyword = text.strip().lower()
+        opt_out_type = fields.get("OptOutType")
+        opting_in = opt_out_type == "START" or keyword in _TWILIO_OPT_IN
+        if opting_in:
             self._told_opted_out.discard(sender)
-        if fields.get("OptOutType") or text.strip().lower() in _TWILIO_KEYWORDS:
+        if opting_in or opt_out_type == "STOP" or keyword in _TWILIO_OPT_OUT:
             logger.info(
                 "Not relaying SMS %s from %s: Twilio handles this keyword itself.",
                 sid,
@@ -524,13 +515,19 @@ class SmsAdapter(PlatformAdapter):
         repeat what the person already has. With `capped`, a piece that would
         go past the hourly limit is not sent: another reply, perhaps from
         another process, spent the hour first.
+
+        A piece is counted before it is sent, so concurrent replies can't
+        overrun the hour, and given back when it surely did not go out: Twilio
+        answered with an error, or could not be reached. A timeout after the
+        request went out stays counted, since Twilio may have sent it.
         """
         assert self.webhook_url is not None  # `start` refuses to run without it
         first: str | None = None
         for piece in pieces:
-            # Counted before the send, so concurrent replies can't overrun the hour.
-            spent = await self.send_ledger.spend(number, count_segments(piece))
+            units = count_segments(piece)
+            spent = await self.send_ledger.spend(number, units)
             if capped and spent > self._config.max_segments_per_hour:
+                await self.send_ledger.refund(number, units)
                 if first is None:
                     return await self._tell_budget_spent(number)
                 logger.error(
@@ -541,12 +538,16 @@ class SmsAdapter(PlatformAdapter):
                 )
                 return first
             try:
-                sid = await self._client.send_message(
-                    from_number=self._config.phone_number,
-                    to=number,
-                    body=piece,
-                    status_callback=self.webhook_url,
-                )
+                try:
+                    sid = await self._client.send_message(
+                        from_number=self._config.phone_number,
+                        to=number,
+                        body=piece,
+                        status_callback=self.webhook_url,
+                    )
+                except (TwilioError, httpx.ConnectError, httpx.ConnectTimeout):
+                    await self.send_ledger.refund(number, units)
+                    raise
             except TwilioError as exc:
                 if exc.code == OPTED_OUT:
                     log = (
