@@ -381,6 +381,7 @@ async def test_existing_rest_identity_keeps_its_get_and_account_mapping():
 
     entry = yaml.safe_load(OAUTH_ENTRY)
     entry["auth"]["identity"] = {
+        "method": "GET",
         "url": "https://identity.example.test/me",
         "account_id": "id",
         "label": "label",
@@ -540,7 +541,7 @@ async def test_composite_identity_protocol(monkeypatch, source, parts, expected)
         source_fields = (
             {"mcp_tool": "get_user"}
             if source == "mcp"
-            else {"url": "https://example.com/me"}
+            else {"method": "GET", "url": "https://example.com/me"}
         )
         adapter._identity = ConnectionIdentity(
             **source_fields, account_id=["user", "org"], label="user"
@@ -557,7 +558,10 @@ async def test_composite_identity_refuses_any_invalid_component(bad):
     async with httpx.AsyncClient(transport=transport) as http:
         adapter = _adapter(http)
         adapter._identity = ConnectionIdentity(
-            url="https://example.com/me", account_id=["user", "org"], label="user"
+            method="GET",
+            url="https://example.com/me",
+            account_id=["user", "org"],
+            label="user",
         )
         with pytest.raises(ServiceAdapterError, match="account's id"):
             await adapter.identify("example-bearer-value")
@@ -569,7 +573,10 @@ async def test_composite_identity_changes_with_account():
     async with httpx.AsyncClient(transport=transport) as http:
         adapter = _adapter(http)
         adapter._identity = ConnectionIdentity(
-            url="https://example.com/me", account_id=["user", "org"], label="user"
+            method="GET",
+            url="https://example.com/me",
+            account_id=["user", "org"],
+            label="user",
         )
         first = await adapter.identify("example-bearer-value")
         payload["org"] = "second-account"

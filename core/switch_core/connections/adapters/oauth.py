@@ -785,10 +785,12 @@ class OAuthAdapter:
             body = await self._introspect(access_token)
         else:
             assert self._identity.url is not None
+            assert self._identity.method is not None
             response = await self._send(
                 self._http.build_request(
-                    "GET",
+                    self._identity.method,
                     self._identity.url,
+                    json=self._identity.body,
                     headers={
                         "Authorization": f"Bearer {access_token}",
                         "Accept": "application/json",

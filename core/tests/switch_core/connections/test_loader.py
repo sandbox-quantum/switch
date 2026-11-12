@@ -32,6 +32,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "google-workspace",
         "notion",
         "sentry",
@@ -40,6 +41,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "google-workspace",
         "notion",
@@ -49,6 +51,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
@@ -396,6 +399,60 @@ def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
         with_access_profiles(CATALOG, chosen)
 
 
+def test_the_shipped_dropbox_entry_signs_in_as_dropbox_documents_it():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Dropbox registers clients dynamically only for its trusted list, so
+    # each server's operator registers a Dropbox app.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "DROPBOX"
+    # A refresh token comes only with offline access.
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    assert definition.auth.refresh == "reusable"
+    # Endpoints come from the MCP server's metadata, which offers S256.
+    assert (oauth.authorization_url, oauth.token_url) == (None, None)
+    # Dropbox's revocation endpoint is not RFC 7009, so people remove Switch
+    # themselves.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None
+    assert "Connected apps" in oauth.remove_access
+    assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.url, identity.body) == (
+        "POST",
+        "https://api.dropboxapi.com/2/users/get_current_account",
+        None,
+    )
+    assert (identity.account_id, identity.label) == ("account_id", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        4 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = ["account_info.read", "files.metadata.read", "files.content.read"]
+    assert definition.access.read.scopes == read
+    assert definition.access.write.scopes == [*read, "files.content.write"]
+    # Never permanent deletion, sharing, file requests or a team scope.
+    every = set(definition.access.write.scopes)
+    assert "files.permanent_delete" not in every
+    assert not any(
+        scope.startswith(("sharing.", "file_requests.", "team", "members."))
+        for scope in every
+    )
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+
+
 @pytest.fixture
 def catalog_copy(tmp_path):
     root = tmp_path / "catalog"
@@ -630,6 +687,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -703,6 +761,38 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
 
 
 @pytest.mark.parametrize(
+    ("body", "expected"),
+    [("", None), ("    body: { include: all }\n", {"include": "all"})],
+    ids=["no-body", "json-body"],
+)
+def test_loads_a_post_identity_call_with_or_without_a_body(
+    catalog_copy, body, expected
+):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace("    method: GET\n", f"    method: POST\n{body}"),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.body) == ("POST", expected)
+
+
+def test_takes_token_access_type_as_an_authorization_param(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: static\n"
+            "    client_settings: EXAMPLE\n"
+            "    authorization_params: { token_access_type: offline }\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+
+
+@pytest.mark.parametrize(
     ("old", "new", "message"),
     [
         (
@@ -712,7 +802,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -829,6 +919,13 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n    unchecked: Publish it.\n",
             "unchecked is for a static client",
         ),
+        ("    method: GET\n", "", "method"),
+        ("    method: GET\n", "    method: PUT\n", "method"),
+        (
+            "    method: GET\n",
+            "    method: GET\n    body: { include: all }\n",
+            "only a POST identity call sends a body",
+        ),
     ],
 )
 def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
@@ -842,6 +939,7 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
 
 GET_IDENTITY = (
     "  identity:\n"
+    "    method: GET\n"
     "    url: https://api.example.test/me\n"
     "    account_id: account.id\n"
     "    label: account.email\n"
@@ -915,6 +1013,19 @@ def test_a_get_identity_stays_as_it_was(catalog_copy):
         (
             INTROSPECTION_IDENTITY.replace("[workspace_id, user_id]", "[]"),
             "account_id",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace(
+                "  identity:\n", "  identity:\n    method: POST\n"
+            ),
+            "an identity call to a url names its method",
+        ),
+        (
+            INTROSPECTION_IDENTITY.replace(
+                "    introspection: true\n",
+                "    mcp_tool: whoami\n    method: GET\n",
+            ),
+            "an identity call to a url names its method",
         ),
         (
             INTROSPECTION_IDENTITY.replace(

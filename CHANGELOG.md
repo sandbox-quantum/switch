@@ -137,6 +137,18 @@ version of their own to them without also giving them a release of their own.
   `.env`, so a page can be checked as each role. Switching is an ordinary
   sign-in, so every check is the server's own. A production build leaves the
   switcher out, and `npm run build` now fails if it gets in.
+- **The Dropbox connection.** A person connects Dropbox from Switch Console,
+  and a granted agent searches and reads their files, and creates, copies,
+  moves, deletes and restores them, as that person, through Dropbox's MCP
+  server (in beta). Dropbox's consent cannot be narrowed, so every
+  connection can write. Each server's operator registers a Dropbox app and
+  saves it under Connector apps, or names it in `DROPBOX_CLIENT_CONFIG_PATH`;
+  like Airtable, it needs `GATEWAY_PUBLIC_URL`. Sharing, file requests and
+  permanent deletion are not asked for. Dropbox's revocation endpoint is not
+  the standard one, so disconnecting says where in Dropbox to remove the app.
+  A catalog entry's identity call to a URL now names its `method`, `GET` or
+  `POST` with an optional JSON body, and `token_access_type` joins the
+  authorization parameters an entry may set.
 
 #### Changed
 - **The morning report's graph explains itself.** `daily_report.py` draws the
