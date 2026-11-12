@@ -33,6 +33,7 @@ import {
 } from "../data/capabilities";
 import type { SettingsArea } from "../data/settingsLanding";
 import AgentDetailPage from "../pages/agents/AgentDetailPage";
+import AgentListPage from "../pages/agents/AgentListPage";
 import AgentsPage from "../pages/agents/AgentsPage";
 import CollaborationsPage from "../pages/collaborations/CollaborationsPage";
 import ConnectorAppsPage from "../pages/connector-apps/ConnectorAppsPage";
@@ -190,7 +191,8 @@ export const ROUTES: readonly AppRoute[] = [
   page("/templates/:id", V2, everyone, <TemplateDetailPage />),
   redirect("/templates/:id", CURRENT, "/resources/templates/:id"),
 
-  page("/agents", BOTH, everyone, <AgentsPage />),
+  page("/agents", CURRENT, everyone, <AgentsPage />),
+  page("/agents", V2, everyone, <AgentListPage />),
   page("/agents/:agentId", BOTH, everyone, <AgentDetailPage />),
 
   // Today `/connectors` is the operator's server-wide connector apps. In the

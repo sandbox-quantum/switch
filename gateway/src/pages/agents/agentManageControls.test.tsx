@@ -166,3 +166,19 @@ describe("agent transfer", () => {
     expect(screen.queryByRole("button", { name: "Transfer ownership" })).toBeNull();
   });
 });
+
+describe("a read-only agent page", () => {
+  it("says so at the top for someone who may not manage the agent", () => {
+    showPageWith(OUTSIDER);
+
+    expect(screen.getByRole("status").textContent).toContain(
+      "only its owner and this workspace's admins can change it",
+    );
+  });
+
+  it("says nothing of the kind to whoever may manage it", () => {
+    showPageWith(MANAGER);
+
+    expect(screen.queryByText(/only its owner and this workspace's admins/)).toBeNull();
+  });
+});

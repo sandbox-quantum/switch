@@ -286,6 +286,8 @@ version of their own to them without also giving them a release of their own.
   reason. Unarchiving still acts at once.
 
 #### Fixed
+- **Deleting an agent from the dashboard says why when it is refused**,
+  rather than only that it could not.
 - **A workspace's connector list credits an organization's default to the
   organization.** It named nobody as having set a connector the organization
   turned on or off for its workspaces without locking it.
@@ -535,6 +537,19 @@ version of their own to them without also giving them a release of their own.
   graph, which leaves the new rail. A workspace's admins see its totals; a
   member sees the agents they own and the rooms they take part in, marked
   "Yours", and every user. A count that cannot be read shows a dash and why.
+- **The new layout's Agents list.** The workspace's agents with their type,
+  availability, status, parent, owner and, where agent management is on, the
+  device each runs on, newest first. Filter by type, parent (including top
+  level), owner, status and device, or search. Rename, transfer and delete
+  from a row's menu, which offers only what you may do and says why a
+  transfer is blocked; deleting an agent says that its sub-agents become
+  top-level. A workspace's admins see every agent; a member sees the agents
+  they own, and an empty list says whether the workspace has no agents or
+  none of them are yours. `GET /gateway/agents` now reports each agent's
+  `status` (`online`, `offline`, or `not_tracked` for an agent that only
+  polls) and its `device` with whose device it is, which is named to the
+  device's owner and to workspace admins.
+- **An agent's page says when you can see the agent but not change it.**
 - **The new layout's Workspace › Connectors chooses which connectors the
   workspace may use.** Each connector says whether it is enabled here and
   what decided that: the organization's lock ("Set by" the organization, with

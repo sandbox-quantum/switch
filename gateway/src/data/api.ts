@@ -92,6 +92,28 @@ export interface AgentSummary {
   transfer_blocked_reason: string | null;
 }
 
+/** A row of the agent list: the summary, with where the agent stands now.
+ * Only the list sends these. */
+export interface AgentListEntry extends AgentSummary {
+  // `not_tracked`: an agent that only polls, which holds nothing Switch can
+  // see between polls.
+  status: "online" | "offline" | "not_tracked";
+  // The device a managed agent is placed on, named to its owner and to
+  // workspace admins; null when it is placed on none, and for anyone else.
+  device: AgentDevice | null;
+}
+
+export interface AgentDevice {
+  id: string;
+  name: string;
+  // Whose device it is: two people's devices can share a name, as every
+  // Switch cloud device does.
+  owner_name: string;
+  // Removed from Switch: the agent stays placed on it, and runs nowhere,
+  // until its owner moves it.
+  removed: boolean;
+}
+
 export interface AgentToolSummary {
   name: string;
   description: string;
@@ -729,8 +751,8 @@ export async function fetchAgents(): Promise<AgentSummary[] | null> {
 
 /** The agents the Agents list shows, throwing rather than answering null so
  * a failure can say why. */
-export async function loadAgents(): Promise<AgentSummary[]> {
-  return jsonRequest<AgentSummary[]>("/agents", "GET");
+export async function loadAgents(): Promise<AgentListEntry[]> {
+  return jsonRequest<AgentListEntry[]>("/agents", "GET");
 }
 
 export async function fetchAgent(agentId: string): Promise<AgentDetail | null> {
@@ -744,10 +766,9 @@ export interface DeleteAgentResult {
   bridge_cleanup_failures: string[];
 }
 
-export async function deleteAgent(agentId: string): Promise<DeleteAgentResult | null> {
-  return fetchJson<DeleteAgentResult>(`/agents/${agentId}`, {
-    method: "DELETE",
-  });
+/** Throws `ApiError` with the server's reason when it refuses. */
+export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
+  return jsonRequest<DeleteAgentResult>(`/agents/${agentId}`, "DELETE");
 }
 
 export interface RenameAgentResult {
