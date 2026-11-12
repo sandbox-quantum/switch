@@ -89,7 +89,7 @@ export const browserSettingsSchema = z
   );
 
 /**
- * Whether the user lets the app send anonymous usage data, and when they were
+ * Whether the user lets the app send usage data, and when they were
  * asked.
  *
  * `enabled` defaults to on, and is the whole of the answer: see

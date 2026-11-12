@@ -14,12 +14,18 @@ const { h } = vi.hoisted(() => ({
     update: vi.fn(async () => {}),
     reset: vi.fn(async () => {}),
     resetField: vi.fn(async () => {}),
+    forgetInstallId: vi.fn(async () => {}),
+    logError: vi.fn(),
   },
 }));
 
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEvent }));
 vi.mock('@main/core/telemetry/launch-history', () => ({
   launchInstallKind: h.launchInstallKind,
+}));
+vi.mock('@main/core/telemetry/install-id', () => ({ forgetInstallId: h.forgetInstallId }));
+vi.mock('@main/lib/logger', () => ({
+  log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: h.logError },
 }));
 vi.mock('./settings-service', () => ({
   appSettingsService: {
@@ -96,8 +102,8 @@ describe('putting a setting back to its default', () => {
   });
 
   it('does not treat resetting telemetry as an agreement to share usage data', async () => {
-    // The default is off and never-asked, so a reset can only ever land on the
-    // answer that has nothing to report.
+    // A reset lands on the default, which has never been asked; an answer
+    // nobody gave is not an agreement.
     await appSettingsController.reset('telemetry');
 
     const names = h.trackEvent.mock.calls.map(([name]) => name);
@@ -222,5 +228,45 @@ describe('agreeing to share usage data', () => {
       source: 'first_run',
       install_kind: 'unknown',
     });
+  });
+});
+
+describe('turning sharing off', () => {
+  it('forgets the install id, so turning it back on starts a new one', async () => {
+    h.get.mockResolvedValue({ enabled: true, askedAt: 1 });
+
+    await appSettingsController.update('telemetry', { enabled: false, askedAt: 1 } as never);
+
+    expect(h.forgetInstallId).toHaveBeenCalledTimes(1);
+  });
+
+  it('forgets it only after the refusal is saved', async () => {
+    const order: string[] = [];
+    h.update.mockImplementation(async () => void order.push('write'));
+    h.forgetInstallId.mockImplementation(async () => void order.push('forget'));
+
+    await appSettingsController.update('telemetry', { enabled: false, askedAt: 1 } as never);
+
+    expect(order).toEqual(['write', 'forget']);
+  });
+
+  it('keeps the id when sharing stays on', async () => {
+    await appSettingsController.update('telemetry', { enabled: true, askedAt: 1 } as never);
+
+    expect(h.forgetInstallId).not.toHaveBeenCalled();
+  });
+
+  it('keeps the refusal and logs an error when the id cannot be deleted', async () => {
+    h.forgetInstallId.mockRejectedValueOnce(new Error('database is locked'));
+
+    await expect(
+      appSettingsController.update('telemetry', { enabled: false, askedAt: 1 } as never)
+    ).resolves.toBeUndefined();
+
+    expect(h.update).toHaveBeenCalledTimes(1);
+    expect(h.logError).toHaveBeenCalledWith(
+      expect.stringContaining('could not delete the install id'),
+      expect.anything()
+    );
   });
 });
