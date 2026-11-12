@@ -45,6 +45,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **WhatsApp is a messaging platform.** Connect a WhatsApp Business number
+  through Meta's Cloud API and people can talk to agents in one-to-one chats,
+  with files, quoted replies as threads and read receipts. Each connection
+  needs its own Meta app, and Switch checks the token's app and permissions
+  when you save it. Replies more than 24 hours after the person's last message
+  are refused by WhatsApp; Switch doesn't send template messages.
 - **switch-core counts controller reconnects.** `switch.controllers.connections`
   counts agent controller connections opened, adopted from another process,
   taken over and closed (with the close code as `reason`), so reconnect churn
@@ -232,6 +238,8 @@ version of their own to them without also giving them a release of their own.
   closed only at its next ping. It now lets the socket go as it closes, and
   the other pod takes the connection up, waiting up to 2 seconds for the
   first pod to record the socket going if the controller comes back sooner.
+- **Junie in the provider table**, so a managed agent can run on JetBrains'
+  Junie CLI; its sign-in command is `junie`.
 
 #### Security
 - **Only the people in a direct or group conversation decide who is in it.**
@@ -3049,6 +3057,15 @@ version of their own to them without also giving them a release of their own.
   starting a sign-in, and tells you to run `kiro-cli login` (or
   `kiro-cli login --use-device-flow` on a machine without a browser) when it
   is not. A `KIRO_API_KEY` on the machine is passed through.
+- **Junie as an agent provider.** JetBrains' Junie CLI (`junie`) can run a
+  Switch agent, through its ACP mode on the generic ACP adapter: approvals,
+  model choice, saved conversations and the Switch tools over MCP. Its sign-in
+  is read from the account Junie reports for an empty session, never by
+  signing it in; Switch's permission levels set its brave mode (Safe, Auto,
+  Brave); and its "Always allow", which Junie remembers for every later run,
+  is not offered. A provider whose permission level is a session config option
+  can now say so in its hooks, and a sign-in check can ask the agent more than
+  `initialize`.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

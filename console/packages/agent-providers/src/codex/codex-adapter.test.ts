@@ -1053,3 +1053,97 @@ describe('CodexAdapter connector tools', () => {
     }
   );
 });
+
+it('keeps a child running when its launch activity finishes', async () => {
+  const { adapter, server, events } = await start();
+  server.replyAlways('turn/start', () => ({ turn: { id: 'native', status: 'inProgress' } }));
+  await adapter.sendTurn({ sessionId: 'session-1', turnId: 'turn', text: 'delegate' });
+  server.notify('turn/started', turnNotification('native', 'inProgress'));
+  const activity = {
+    threadId: THREAD,
+    turnId: 'native',
+    item: {
+      type: 'subAgentActivity',
+      id: 'activity',
+      kind: 'started',
+      agentThreadId: 'child',
+      agentPath: '/root/read_readme',
+    },
+  };
+  server.notify('item/started', activity);
+  server.notify('item/completed', activity);
+  await vi.waitFor(() => expect(eventsOf(events, 'item.updated')).toHaveLength(1));
+  expect(eventsOf(events, 'item.updated')[0]).toMatchObject({
+    turnId: 'turn',
+    item: { id: 'child', type: 'subagent', status: 'in_progress', nativeChildId: 'child' },
+  });
+  expect(eventsOf(events, 'item.completed')).toHaveLength(0);
+  server.notify('item/completed', {
+    ...activity,
+    item: { ...activity.item, id: 'completed-activity', kind: 'completed' },
+  });
+  await vi.waitFor(() => expect(eventsOf(events, 'item.completed')).toHaveLength(1));
+  expect(eventsOf(events, 'item.completed')[0]).toMatchObject({
+    turnId: 'turn',
+    item: { id: 'child', type: 'subagent', status: 'completed', nativeChildId: 'child' },
+  });
+  await adapter.stopAll();
+});
+
+it('keeps child completion on its original turn when a later turn waits for it', async () => {
+  const { adapter, server, events } = await start();
+  let native = 'native-first';
+  server.replyAlways('turn/start', () => ({ turn: { id: native, status: 'inProgress' } }));
+  await adapter.sendTurn({ sessionId: 'session-1', turnId: 'first', text: 'delegate' });
+  server.notify('turn/started', turnNotification(native, 'inProgress'));
+  server.notify('item/completed', {
+    threadId: THREAD,
+    turnId: native,
+    item: {
+      type: 'collabAgentToolCall',
+      id: 'spawn',
+      tool: 'spawnAgent',
+      status: 'completed',
+      senderThreadId: THREAD,
+      receiverThreadIds: ['child'],
+      prompt: 'Review changes',
+      agentsStates: { child: { status: 'running' } },
+    },
+  });
+  await vi.waitFor(() =>
+    expect(
+      eventsOf(events, 'item.updated').some((event) => event.item.nativeChildId === 'child')
+    ).toBe(true)
+  );
+  expect(
+    eventsOf(events, 'item.updated').find((event) => event.item.nativeChildId === 'child')
+  ).toMatchObject({ turnId: 'first', item: { status: 'in_progress' } });
+  server.notify('turn/completed', turnNotification(native, 'completed'));
+  await vi.waitFor(() => expect(eventsOf(events, 'turn.completed')).toHaveLength(1));
+  native = 'native-second';
+  await adapter.sendTurn({ sessionId: 'session-1', turnId: 'second', text: 'wait' });
+  server.notify('turn/started', turnNotification(native, 'inProgress'));
+  server.notify('item/completed', {
+    threadId: THREAD,
+    turnId: native,
+    item: {
+      type: 'collabAgentToolCall',
+      id: 'wait',
+      tool: 'wait',
+      status: 'completed',
+      senderThreadId: THREAD,
+      receiverThreadIds: ['child'],
+      prompt: null,
+      agentsStates: { child: { status: 'completed' } },
+    },
+  });
+  await vi.waitFor(() =>
+    expect(
+      eventsOf(events, 'item.completed').some((event) => event.item.nativeChildId === 'child')
+    ).toBe(true)
+  );
+  expect(
+    eventsOf(events, 'item.completed').find((event) => event.item.nativeChildId === 'child')
+  ).toMatchObject({ turnId: 'first', item: { status: 'completed' } });
+  await adapter.stopAll();
+});

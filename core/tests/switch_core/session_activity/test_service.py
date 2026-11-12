@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import select, update
 
 from switch_core.addressing import owner_only_policy
-from switch_core.db.models import ApprovalRequest, TenantUsage
+from switch_core.db.models import AgentSessionActivityItem, ApprovalRequest, TenantUsage
 from switch_core.session_activity.service import (
     ApprovalOption,
     PlatformPerson,
@@ -235,6 +238,7 @@ async def test_a_turns_steps_are_read_in_the_order_first_reported(service):
     ("overrides", "message"),
     [
         ({"kind": "tool.exploded"}, "Unknown activity kind"),
+        ({"kind": "user-message", "subagent": True}, "Only tool activity"),
         ({"status": "running"}, "not a status"),
         ({"item_id": "turn"}, "Only the turn's own row"),
         ({"kind": "turn", "status": "running"}, "Only the turn's own row"),
@@ -812,3 +816,71 @@ async def test_a_room_control_takes_the_agents_addressing_policy(
             "guarded", room, PlatformPerson(stranger), doing="stop it"
         )
     assert error.value.code == "NOT_AUTHORIZED"
+
+
+async def test_subagent_progress_survives_duplicate_and_out_of_order_reports(service):
+    values = _step(
+        item_id="child-a",
+        kind="tool-activity",
+        subagent=True,
+        title="Reviewer: Check changes",
+    )
+    assert await service.report_item(AGENT, SESSION, **values)
+    assert await service.report_item(
+        AGENT, SESSION, **{**values, "revision": 3, "status": "completed"}
+    )
+    assert not await service.report_item(AGENT, SESSION, **values)
+    assert not await service.report_item(
+        AGENT, SESSION, **{**values, "revision": 2, "status": "in-progress"}
+    )
+    rows = await service.turn_items(AGENT, SESSION, "turn-1")
+    child = next(row for row in rows if row.item_id == "child-a")
+    assert (child.kind, child.status, child.revision, child.subagent) == (
+        "tool-activity",
+        "completed",
+        3,
+        True,
+    )
+
+
+async def test_subagent_migration_preserves_activity_on_downgrade_and_accepts_new_rows(
+    service, session_factory
+):
+    migration = import_module(
+        "switch_core.migrations.versions.ab802e19c401_subagent_activity"
+    )
+    values = _step(
+        item_id="child-migration",
+        kind="tool-activity",
+        subagent=True,
+        title="Review changes",
+    )
+    await service.report_item(AGENT, SESSION, **values)
+
+    def run(connection, direction):
+        with Operations.context(MigrationContext.configure(connection)):
+            getattr(migration, direction)()
+
+    async with session_factory() as db, db.begin():
+        connection = await db.connection()
+        await connection.run_sync(run, "downgrade")
+        assert (
+            await db.scalar(
+                select(AgentSessionActivityItem.kind).where(
+                    AgentSessionActivityItem.item_id == "child-migration"
+                )
+            )
+            == "tool-activity"
+        )
+        await connection.run_sync(run, "upgrade")
+
+    assert await service.report_item(
+        AGENT, SESSION, **{**values, "revision": 2, "status": "completed"}
+    )
+    rows = await service.turn_items(AGENT, SESSION, "turn-1")
+    child = next(row for row in rows if row.item_id == "child-migration")
+    assert (child.kind, child.status, child.subagent) == (
+        "tool-activity",
+        "completed",
+        True,
+    )

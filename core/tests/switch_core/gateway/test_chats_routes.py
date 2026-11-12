@@ -1753,7 +1753,14 @@ async def test_an_owner_who_created_the_chat_keeps_it_when_the_agent_goes(
 
 
 async def _step(
-    chats: _Harness, agent: Agent, room_id: str, turn_id: str, item_id: str, rev: int
+    chats: _Harness,
+    agent: Agent,
+    room_id: str,
+    turn_id: str,
+    item_id: str,
+    rev: int,
+    *,
+    subagent: bool = False,
 ) -> None:
     async with chats.factory() as session:
         await session.merge(
@@ -1764,6 +1771,7 @@ async def _step(
                 turn_id=turn_id,
                 item_id=item_id,
                 kind="turn" if item_id == "turn" else "tool-activity",
+                subagent=subagent,
                 revision=rev,
                 status="running" if item_id == "turn" else "in-progress",
                 title=f"{item_id} r{rev}",
@@ -1851,7 +1859,7 @@ async def test_room_activity_is_the_rooms_steps_and_requests_in_every_state(
     other_agent = await chats.agent("other", owner=chats.bob)
     other = await chats.new_chat(chats.bob, other_agent, "c2")
     await _step(chats, agent, mine, "t1", "turn", 1)
-    await _step(chats, agent, mine, "t1", "tool-1", 2)
+    await _step(chats, agent, mine, "t1", "tool-1", 2, subagent=True)
     await _step(chats, other_agent, other, "t9", "turn", 1)
     await _request(chats, agent, mine, "r-open", "open")
     await _request(chats, agent, mine, "r-done", "answered")
@@ -1866,6 +1874,9 @@ async def test_room_activity_is_the_rooms_steps_and_requests_in_every_state(
         ("t1", "turn", 1),
         ("t1", "tool-1", 2),
     ]
+    child = next(i for i in body["items"] if i["itemId"] == "tool-1")
+    assert child["kind"] == "tool-activity"
+    assert child["subagent"] is True
     assert {(a["requestId"], a["state"]) for a in body["approvals"]} == {
         ("r-open", "open"),
         ("r-done", "answered"),
