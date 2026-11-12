@@ -29,6 +29,7 @@ rather than to a path in this repository, which they cannot open.
 - [deploy/index](deploy/index.md) — <https://docs.switchagents.ai/flintai/switch/deploy>
 - [deploy/host-remotely](deploy/host-remotely.md) — <https://docs.switchagents.ai/flintai/switch/deploy/host-remotely>
 - [deploy/self-host](deploy/self-host.md) — <https://docs.switchagents.ai/flintai/switch/deploy/self-host>
+- [deploy/agent-controller](deploy/agent-controller.md) — <https://docs.switchagents.ai/flintai/switch/deploy/agent-controller>
 
 ## Deploy and connect › Connect your agents
 
