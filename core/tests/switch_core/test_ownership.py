@@ -16,7 +16,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core import main as main_module
@@ -25,8 +25,10 @@ from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.main import _release_process
 from switch_core.ownership import Fence, OwnedKind, Ownership, owner_of
-from switch_core.process_lease import LEASE_TTL, ProcessLease
+from switch_core.process_identity import new_process_id
+from switch_core.process_lease import LEASE_TTL, ProcessLease, read_leases
 from switch_core.signals import SignalBus
+from tests.conftest import TEST_KEYRING
 from tests.ownership import process_lease_on
 
 KIND = "work"
@@ -65,7 +67,30 @@ class _Process:
 def _process(
     session_factory: async_sessionmaker[AsyncSession], everywhere: _Everywhere
 ) -> _Process:
-    lease = process_lease_on(session_factory)
+    """A process that has finished booting, as most tests here want one."""
+    return _process_on(process_lease_on(session_factory), session_factory, everywhere)
+
+
+def _booting_process(
+    session_factory: async_sessionmaker[AsyncSession], everywhere: _Everywhere
+) -> _Process:
+    """A process as `main` starts one: its lease reads booting until its
+    ownership can take work."""
+    lease = ProcessLease(
+        process_id=new_process_id("test-pod"),
+        session_factory=session_factory,
+        processes=SwitchCoreProcessStore(),
+        key_ids=[key.id for key in TEST_KEYRING.keys],
+        booting=True,
+    )
+    return _process_on(lease, session_factory, everywhere)
+
+
+def _process_on(
+    lease: ProcessLease,
+    session_factory: async_sessionmaker[AsyncSession],
+    everywhere: _Everywhere,
+) -> _Process:
     process_id = lease.process_id
     ownership = Ownership(
         lease=lease,
@@ -465,6 +490,187 @@ class TestHandingOver:
         assert key in a.runs()
         renewed = a.kind.fence(key)
         assert renewed is not None and renewed.token == fence.token + 1
+
+
+async def _booting(session_factory: async_sessionmaker[AsyncSession]) -> set[str]:
+    """The processes whose lease reads booting."""
+    async with session_factory() as session:
+        rows = await session.execute(
+            select(SwitchCoreProcess.id).where(SwitchCoreProcess.booting)
+        )
+    return set(rows.scalars().all())
+
+
+class TestBooting:
+    async def test_a_booting_process_is_handed_its_share_once_it_can_hear(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        everywhere: _Everywhere,
+    ) -> None:
+        """Its lease holds from early in its boot. Handed its share then, it
+        could not take it up until the boot was done, and the share ran
+        nowhere meanwhile."""
+        a = _process(session_factory, everywhere)
+        await a.lease.renew()
+        for key in KEYS:
+            a.kind.want(key)
+        await a.ownership.balance()
+
+        b = _booting_process(session_factory, everywhere)
+        await b.lease.renew()
+        for key in KEYS:
+            b.kind.want(key)
+        await a.ownership.balance()
+        assert a.runs() == set(KEYS)
+
+        # Beside a process taking work, b's boot ends taking none.
+        await b.ownership.start()
+        await a.ownership.balance()
+        assert b.runs() == set()
+        assert a.runs() == set(KEYS)
+        assert await _booting(session_factory) == {b.process_id}
+
+        # Its signal bus listens: b says it takes work, a hands b's share
+        # over on hearing it, and b claims it on hearing that.
+        await b.ownership._resync()
+        await b.ownership.balance()
+        assert await _booting(session_factory) == set()
+        await a.ownership.balance()
+        await b.ownership.balance()
+
+        live = sorted([a.process_id, b.process_id])
+        b_share = {key for key in KEYS if owner_of(KIND, key, live) == b.process_id}
+        assert b.runs() == b_share
+        assert a.runs() == set(KEYS) - b_share
+        assert everywhere.overlaps == []
+
+    async def test_a_share_handed_over_early_is_taken_up_while_booting(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        everywhere: _Everywhere,
+    ) -> None:
+        """A release from before the booting flag counts a starting process as
+        soon as its lease holds and hands it its share then, as every process
+        did. That share is taken up at once, not once the boot is done."""
+        a = _process(session_factory, everywhere)
+        await a.lease.renew()
+        for key in KEYS:
+            a.kind.want(key)
+        await a.ownership.balance()
+
+        b = _booting_process(session_factory, everywhere)
+        await b.lease.renew()
+        for key in KEYS:
+            b.kind.want(key)
+        live = sorted([a.process_id, b.process_id])
+        b_share = {key for key in KEYS if owner_of(KIND, key, live) == b.process_id}
+        # What an older `a` does on seeing b's lease.
+        await a.kind._stop_held(sorted(b_share))
+        await a.ownership.release(KIND, sorted(b_share))
+
+        await b.ownership.start()
+
+        assert b.runs() == b_share
+        assert b.lease.booting
+        assert everywhere.overlaps == []
+
+    async def test_a_process_starting_alone_takes_everything_at_once(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        everywhere: _Everywhere,
+    ) -> None:
+        only = _booting_process(session_factory, everywhere)
+        for key in KEYS:
+            only.kind.want(key)
+
+        await only.ownership.start()
+
+        assert only.runs() == set(KEYS)
+        assert await _booting(session_factory) == set()
+
+    async def test_another_process_still_booting_does_not_hold_one_back(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        everywhere: _Everywhere,
+    ) -> None:
+        """Two processes starting together with nobody taking work, as a
+        deployment's first boot: the first to finish takes everything at
+        once, and the other its share once it can hear."""
+        first = _booting_process(session_factory, everywhere)
+        second = _booting_process(session_factory, everywhere)
+        await second.lease.renew()
+        for process in (first, second):
+            for key in KEYS:
+                process.kind.want(key)
+
+        await first.ownership.start()
+        assert first.runs() == set(KEYS)
+
+        await second.ownership.start()
+        await second.ownership._resync()
+        await second.ownership.balance()
+        await first.ownership.balance()
+        await second.ownership.balance()
+        assert first.runs() and second.runs()
+        assert first.runs() | second.runs() == set(KEYS)
+        assert everywhere.overlaps == []
+
+    async def test_a_booting_process_keeps_saying_so_until_a_renewal_does(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        everywhere: _Everywhere,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        only = _booting_process(session_factory, everywhere)
+        for key in KEYS:
+            only.kind.want(key)
+        store = only.lease._processes
+        real_renew = store.renew
+        failed: list[bool] = []
+
+        async def renew(*args: Any, booting: bool, **kwargs: Any) -> None:
+            if not booting and not failed:
+                failed.append(True)
+                raise ConnectionError("the database went away")
+            await real_renew(*args, booting=booting, **kwargs)
+
+        monkeypatch.setattr(store, "renew", renew)
+
+        with pytest.raises(ConnectionError):
+            await only.ownership.start()
+        assert only.lease.booting
+        assert only.runs() == set()
+
+        await only.ownership.balance()
+        assert not only.lease.booting
+        assert only.runs() == set(KEYS)
+
+    async def test_a_late_renewal_saying_booting_does_not_undo_its_end(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The renewal loop may send one while the boot ends, and have it
+        commit after."""
+        store = SwitchCoreProcessStore()
+        async with session_factory() as session:
+            await store.renew(session, "p", key_ids=[], booting=True)
+            await store.renew(session, "p", key_ids=[], booting=False)
+            await store.renew(session, "p", key_ids=[], booting=True)
+            await session.commit()
+
+        assert await _booting(session_factory) == set()
+
+    async def test_a_process_from_before_the_column_takes_work(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A release before it writes no value: the others count it."""
+        async with session_factory() as session:
+            await session.execute(
+                insert(SwitchCoreProcess).values(id="older", key_ids=[])
+            )
+            await session.commit()
+            leases = await read_leases(session, SwitchCoreProcessStore())
+
+        assert leases.takes_work("older")
 
 
 class TestRendezvous:

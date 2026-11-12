@@ -10,16 +10,26 @@ Each piece of work is a kind and a key ("client" and a client id). A process
 wants the keys it could run, and runs those it owns. Which process owns a key
 is decided twice over:
 
-- **Who should.** Rendezvous hashing over the processes whose lease in
-  `switch_core_processes` holds: every process scores every key against every
-  live process and the highest score wins. All processes reading the same
-  leases agree, and a process coming or going moves only the keys it wins or
-  held, not everyone's. A key that can only run beside another kind's key is
-  hashed as that key (`OwnedKind.want`), so both land on the same process.
+- **Who should.** Rendezvous hashing over the processes that take work: those
+  whose lease in `switch_core_processes` holds and has finished booting. Every
+  process scores every key against every one of them and the highest score
+  wins. All processes reading the same leases agree, and a process coming or
+  going moves only the keys it wins or held, not everyone's. A key that can
+  only run beside another kind's key is hashed as that key (`OwnedKind.want`),
+  so both land on the same process.
 - **Who does.** A row in `ownership_leases`, claimed in one statement and only
   while nobody holds it or its holder's process lease has lapsed. The hash says
   who tries; the row makes sure only one succeeds, whatever two processes
   briefly believe about each other.
+
+A process starting beside others is handed work only once it can hear them.
+Its lease is claimed early in its boot and reads booting until its signal bus
+listens (`_resync`): handed its share before then, it could not take it up
+until its boot was done, and the share ran nowhere meanwhile. Listening, it
+hears each handover as it happens. It counts itself all along, so it takes up
+work nobody holds, such as a share a process from before the booting flag
+handed it; and a process starting alone takes everything at once, as a
+deployment of one process always has.
 
 A key moves without overlap. The process that should no longer own it stops
 the work first and then releases the row, and only then can the new owner claim
@@ -286,6 +296,10 @@ class Ownership:
         self._nudged = asyncio.Event()
         self._suspended = False
         self._stopped = False
+        # Whether this process's lease may stop reading booting, so the
+        # others hand it its share: its signal bus listens, or no other
+        # process took work as it started.
+        self._can_finish_booting = False
         # Whether `stop` saw every piece of work here stop, rather than being
         # cancelled first.
         self._work_stopped = False
@@ -328,8 +342,18 @@ class Ownership:
         other processes are told this one is here.
 
         The lease is renewed first, so the work starts with all the time the
-        lease is sure for, however long the boot took since it was claimed."""
+        lease is sure for, however long the boot took since it was claimed.
+        With other processes taking work, the lease reads booting until this
+        one can hear them (`_resync`), and it takes only work nobody holds."""
         await self._lease.renew()
+        if not self._can_finish_booting:
+            async with self._session_factory() as session:
+                leases = await read_leases(session, self._processes)
+            self._can_finish_booting = not any(
+                leases.takes_work(process_id)
+                for process_id in leases.leases
+                if process_id != self.process_id
+            )
         await self.balance()
         self._bus.publish(OWNERSHIP_CHANGED_SIGNAL)
 
@@ -406,11 +430,24 @@ class Ownership:
             if not self._lease.surely_held():
                 await self._suspend()
                 return
+            if self._lease.booting and self._can_finish_booting:
+                await self._lease.finish_booting()
+                logger.info(
+                    "This process's lease %s has finished booting; taking its "
+                    "share of the work",
+                    self.process_id,
+                )
+                self._bus.publish(OWNERSHIP_CHANGED_SIGNAL)
             async with self._session_factory() as session:
                 leases = await read_leases(session, self._processes)
             await self._prune_now_and_then()
+            # Itself while its lease holds, booting or not: the others count
+            # it once it has finished booting.
             live = sorted(
-                process_id for process_id in leases.leases if leases.holds(process_id)
+                process_id
+                for process_id in leases.leases
+                if leases.takes_work(process_id)
+                or (process_id == self.process_id and leases.holds(process_id))
             )
             if self.process_id not in live:
                 # Sure of its own lease by its own clock but not yet seen
@@ -487,5 +524,7 @@ class Ownership:
 
     async def _resync(self) -> None:
         """Signals sent while this process was not listening are gone; the
-        balance reads what they would have said."""
+        balance reads what they would have said. Listening, a booting process
+        can be handed work: it hears every handover from here on."""
+        self._can_finish_booting = True
         self.nudge()

@@ -1533,6 +1533,13 @@ version of their own to them without also giving them a release of their own.
   taking over another pod's agents during a roll, was restarted and handed its
   work over again. A startup probe now gives a booting pod up to five minutes,
   and liveness waits five seconds for an answer.
+- **A messaging app bridge is no longer handed to a switch-core pod that is
+  still booting.** The other pods counted a starting pod as soon as it
+  started, and handed it its share of the bridges and consumers while it
+  could not run any of them yet, so a bridge could sit with no connection to
+  its platform until that pod's boot was done. A starting pod now takes work
+  once it can hear the other pods, and they hand its share over then. A pod
+  starting alone takes everything at once, as before.
 - **A messaging app bridge that cannot start stops being retried at every
   hand-over, and a retired one stops reading as crashed.** A bridge refused
   before it runs (its host no longer resolves, say) is logged once as an error

@@ -2921,6 +2921,12 @@ class SwitchCoreProcess(Base):
     # what it writes (`db/key_rotation.py`). Ids only, never key material.
     # NULL for a process from before the column.
     key_ids: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    # True from the claim until the process can take work promptly: the others
+    # hand it none before then (`ownership.py`). False for a process from
+    # before the column, which took work from its claim.
+    booting: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
 
 
 # ── Schema revisions ─────────────────────────────────────────────────────────

@@ -45,6 +45,7 @@ def process_lease_on(
         session_factory=session_factory,
         processes=SwitchCoreProcessStore(),
         key_ids=[key.id for key in TEST_KEYRING.keys],
+        booting=False,
     )
 
 

@@ -139,14 +139,18 @@ class TestLeases:
 
     def test_a_fresh_lease_holds(self) -> None:
         leases = self._leases(
-            p=ProcessLeaseRow(beat_at=self.now, stopped_at=None, key_ids=None)
+            p=ProcessLeaseRow(
+                beat_at=self.now, stopped_at=None, key_ids=None, booting=False
+            )
         )
         assert leases.holds("p")
 
     def test_a_lease_older_than_the_ttl_does_not(self) -> None:
         beat_at = self.now - LEASE_TTL
         leases = self._leases(
-            p=ProcessLeaseRow(beat_at=beat_at, stopped_at=None, key_ids=None)
+            p=ProcessLeaseRow(
+                beat_at=beat_at, stopped_at=None, key_ids=None, booting=False
+            )
         )
         assert not leases.holds("p")
         assert leases.ended("p") == (beat_at, "server_lost")
@@ -154,7 +158,9 @@ class TestLeases:
     def test_a_stopped_lease_does_not(self) -> None:
         stopped_at = self.now - timedelta(seconds=1)
         leases = self._leases(
-            p=ProcessLeaseRow(beat_at=self.now, stopped_at=stopped_at, key_ids=None)
+            p=ProcessLeaseRow(
+                beat_at=self.now, stopped_at=stopped_at, key_ids=None, booting=False
+            )
         )
         assert not leases.holds("p")
         assert leases.ended("p") == (stopped_at, "server_shutdown")
