@@ -211,7 +211,7 @@ describe("wording", () => {
   it("warns before switching apps, GitHub's repositories included", () => {
     expect(switchWarning(app(), { connected_members: 12, workspaces: 3, agent_grants: 0 })).toEqual([
       "Everyone connected through the current app (12 people in 3 workspaces) will need to reconnect, and their agents lose Google Workspace until they do.",
-      "If the old app's secret leaked, also delete it at Google: tokens already handed to agents stay valid for up to an hour.",
+      "If the old app's secret leaked, also delete it at Google: tokens already handed to agents stay valid until they expire.",
     ]);
     expect(switchWarning(GITHUB, { connected_members: 2, workspaces: 1, agent_grants: 0 })).toContain(
       "They will also need to choose their repositories again.",
@@ -374,6 +374,18 @@ describe("Airtable, and an app that sends people back to Switch Console", () => 
     const steps = setupInstructions(LOOPBACK, "internal", null);
     expect(steps[0]!.text).toBe("Register an OAuth client for Switch at Example, with these redirect URIs:");
     expect(steps.flatMap((s) => s.copy)).toEqual(LOOPBACK_REDIRECTS);
+  });
+
+  it("lists the scopes to give another vendor's app, and none when it asks for none", () => {
+    const scopes = ["mcp", "read_api", "read_user", "api"];
+    const scoped = app({ ...AIRTABLE, slug: "example", name: "Example", scopes });
+    const steps = setupInstructions(scoped, "internal", PUBLIC_URL);
+    expect(steps.map((s) => s.text)).toEqual([
+      "Register an OAuth client for Switch at Example, with this redirect URI:",
+      "Give it exactly these scopes:",
+    ]);
+    expect(steps[1]!.items).toEqual(scopes);
+    expect(setupInstructions(app({ ...scoped, scopes: [] }), "internal", PUBLIC_URL)).toHaveLength(1);
   });
 });
 

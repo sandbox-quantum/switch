@@ -164,6 +164,11 @@ async def list_service_connections(
                 "token_lifetime": (
                     None if definition.token is None else definition.token.max_lifetime
                 ),
+                # What limits agent access beyond that lifetime, for people
+                # to read; null for most services.
+                "agent_access_note": (
+                    None if definition.token is None else definition.token.note
+                ),
                 # The ports Switch Console's listener may take a sign-in back
                 # on, for a vendor that matches them; null for any port.
                 "loopback_ports": (

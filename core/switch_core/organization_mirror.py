@@ -203,7 +203,7 @@ async def apply_from_directory(
                             "workspace": tenant.name,
                         },
                     )
-                revoked = await remove_membership(
+                removal = await remove_membership(
                     session,
                     revocation,
                     membership,
@@ -212,7 +212,7 @@ async def apply_from_directory(
                     keep_agent_keys=True,
                 )
                 await session.commit()
-                warning = await revocation.finish(session, user_id, revoked)
+                warning = await revocation.finish(session, user_id, removal.revoked)
             if warning:
                 warnings.append(f"{tenant.name}: {warning}")
 
