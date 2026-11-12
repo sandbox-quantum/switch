@@ -45,6 +45,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Cisco Webex is a messaging platform.** Connect Cisco Webex spaces to Switch rooms
+  using a Webex Bot token, with markdown rendering, Adaptive Cards, attachments,
+  space management, and webhook verification.
 - **WhatsApp is a messaging platform.** Connect a WhatsApp Business number
   through Meta's Cloud API and people can talk to agents in one-to-one chats,
   with files, quoted replies as threads and read receipts. Each connection
