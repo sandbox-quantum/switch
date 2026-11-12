@@ -820,8 +820,10 @@ def _introspected_world(
     return _world(
         session_factory,
         root,
-        entry=OAUTH_ENTRY.replace(GET_IDENTITY, INTROSPECTION_IDENTITY),
-        redirect="[loopback, core]\n    revocation_discovered: true",
+        entry=OAUTH_ENTRY.replace(GET_IDENTITY, INTROSPECTION_IDENTITY).replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_discovered: true\n",
+        ),
     )
 
 
@@ -899,5 +901,52 @@ class TestIntrospectedAccount:
             await _loopback_connect(world, Console(client, ada))
             agent_id = await _grant_agent(session_factory, ada)
             await _loopback_connect(world, Console(client, ada))
+        issued = await _issue(session_factory, world, agent_id)
+        assert issued.token in world.vendor.live_access
+
+    async def test_the_ids_in_the_token_response_are_never_stored(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        world.vendor.token_extras = {"workspace_id": "ws-token", "user_id": "u-token"}
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert connection.account_id == "ws-1:user-1"
+
+    async def test_a_sign_in_without_introspection_is_refused_and_keeps_the_connection(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _introspected_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _loopback_connect(world, Console(client, ada))
+        agent_id = await _grant_agent(session_factory, ada)
+        kept = await _connection(session_factory, ada.id)
+        assert kept is not None
+        flows_before = await _flow_ids(session_factory)
+
+        # The adapter keeps the endpoints it discovered, so a vendor that
+        # stops advertising introspection is a new world built without it.
+        lapsed = _introspected_world(session_factory, tmp_path / "lapsed")
+        del lapsed.vendor.metadata["introspection_endpoint"]
+        async with lapsed.harness.client() as client:
+            refused = await Console(client, ada).start()
+        assert refused.status_code == 502
+        assert refused.json()["detail"] == (
+            "Example's authorization server offers no token introspection, "
+            "so Switch cannot tell whose sign-in this is."
+        )
+        assert await _flow_ids(session_factory) <= flows_before
+        after = await _connection(session_factory, ada.id)
+        assert after is not None
+        assert (
+            after.account_id,
+            after.encrypted_secret,
+            after.secret_revision,
+            after.status,
+        ) == (kept.account_id, kept.encrypted_secret, kept.secret_revision, kept.status)
         issued = await _issue(session_factory, world, agent_id)
         assert issued.token in world.vendor.live_access

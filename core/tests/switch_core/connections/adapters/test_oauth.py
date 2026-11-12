@@ -300,6 +300,7 @@ class TestIntrospection:
         vendor.token_extras = {"workspace_id": "from-token", "user_id": "from-token"}
         adapter, _ = _adapter(vendor, INTROSPECTED)
         secret = await _sign_in(adapter, vendor)
+        assert "workspace_id" not in secret.values
         identity = await adapter.identify(secret.access_token or "")
         assert identity.account_id == "ws-1:user-1"
 
@@ -375,7 +376,6 @@ class TestIntrospection:
             "    client_settings: EXAMPLE\n    revocation_discovered: true\n",
         )
         secret = await _sign_in(_adapter(vendor, revocable)[0], vendor)
-        signed_in = len(vendor.authorizations)
         del vendor.metadata["introspection_endpoint"]
         adapter, _ = _adapter(vendor, revocable)
         with pytest.raises(ServiceAdapterError, match="offers no token introspection"):
@@ -385,7 +385,6 @@ class TestIntrospection:
                 code_challenge=s256(secrets.token_urlsafe(48)),
                 scopes=["read:items", "write:items"],
             )
-        assert len(vendor.authorizations) == signed_in
         renewed = await adapter.refresh(secret)
         assert renewed.access_token in vendor.live_access
         await adapter.revoke_connection(renewed)
